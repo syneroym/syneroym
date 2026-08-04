@@ -111,6 +111,21 @@ define_string_wrapper!(
         if s.contains('#') {
             return Err(anyhow!("AppInstanceId cannot contain '#'"));
         }
+        // M05A A7 review finding 5: `..` and `\` are valid here but not as
+        // a vault backup name (`validate_backup_name`,
+        // `crates/app_supervisor/src/keys.rs`) -- an instance id built
+        // from one of these was refused only at `adopt`'s app-master mint,
+        // by which point a services-less plan had already been accepted
+        // by `submit`. Closed at construction instead: an id that can
+        // never be backed up must never exist, not merely fail late and
+        // permanently on the one verb (`adopt`) that is also the only way
+        // back from `retired`.
+        if s.contains("..") {
+            return Err(anyhow!("AppInstanceId cannot contain '..'"));
+        }
+        if s.contains('\\') {
+            return Err(anyhow!("AppInstanceId cannot contain '\\'"));
+        }
         Ok(())
     }
 );
@@ -1014,6 +1029,20 @@ mod tests {
     fn an_app_instance_id_containing_a_separator_is_refused() {
         assert!(AppInstanceId::try_new("inst/1").is_err());
         assert!(AppInstanceId::try_new("inst#1").is_err());
+        assert!(AppInstanceId::try_new("inst-1").is_ok());
+    }
+
+    /// M05A A7 review finding 5: `..` and `\` are refused at construction
+    /// now, not only later at `crates/app_supervisor/src/keys.rs`'s
+    /// `validate_backup_name` -- an id that can never be a vault backup
+    /// name must never exist, rather than being accepted here and only
+    /// failing, permanently, the first time `adopt` tries to mint the
+    /// app-instance master under it.
+    #[test]
+    fn an_app_instance_id_that_could_never_be_backed_up_is_refused_at_construction() {
+        assert!(AppInstanceId::try_new("..").is_err());
+        assert!(AppInstanceId::try_new("inst..1").is_err());
+        assert!(AppInstanceId::try_new("back\\slash").is_err());
         assert!(AppInstanceId::try_new("inst-1").is_ok());
     }
 

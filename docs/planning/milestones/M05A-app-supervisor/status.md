@@ -2733,7 +2733,8 @@ cause) before applying the fix.
 **Two of §3's specified unit tests needed correction against real fixture
 behaviour, the same discipline the plan's own review passes name (§7
 of this plan; A5e's §40 records the identical rule).** Tests 92
-(`a_second_adopt_reports_the_same_app_master_did_at_the_next_generation`)
+(`a_second_adopt_reports_the_same_app_master_did`, renamed from
+`…_at_the_next_generation` in the post-merge review below)
 and 96 (`an_instance_row_with_no_app_master_gains_one_on_its_next_adopt`)
 were specified assuming a second `adopt` over a services-less plan claims
 a higher generation than the first. It does not: `claim_next_generation`
@@ -2783,6 +2784,154 @@ Counted directly from the diff.
 - `wasm32-wasip2`: `greeter` builds clean, unaffected — A7 touches no WIT
   interface any guest fixture imports (`supervisor.wit` is a
   native-service interface only).
+
+### Post-merge code review (2026-08-04), ten findings, all incorporated
+
+An independent review of the merged commit (`361a47b`) found two medium
+findings, both in vault custody, plus five low and three nit findings. All
+ten were agreed with and fixed in the same pass; none were pushed back on.
+Every exit criterion the review checked was already met and stayed met —
+these are hardening and coverage, not correctness regressions in what
+shipped.
+
+**Medium — vault custody, both reachable because A7 makes `import-master`
+part of a routine operator flow rather than a one-time migration step:**
+
+- **`import-master` could silently destroy an existing app master.**
+  `MasterVault::import`/`import_master` wrote unconditionally, with no
+  existence check and no warning — a typo'd instance id or a stale
+  `.key` file in `master_backup_dir` could replace a live app identity
+  with nothing to notice, directly against D-A7-11's standing rule that a
+  master is never forgotten. Fixed: `import` now reads the existing entry
+  first and logs `tracing::warn!` naming both DIDs when it is about to
+  replace a *different* key (an idempotent re-import of the same key
+  stays silent). Not a refusal — a deliberate handover replacement must
+  still succeed. Tests: `import_over_an_existing_different_key_replaces_
+  it_and_warns`, `importing_the_same_key_again_does_not_warn`
+  (`keys.rs`).
+- **`import` bypassed `mint_lock`, so a concurrent `adopt` could race
+  it.** `get_or_mint` holds `mint_lock` across its own read-then-write;
+  `import`/`import_master` took no lock at all. Without it, the warning
+  above could itself be skipped by a stale read: `import`'s own
+  existence-check could run before a concurrent `get_or_mint`'s write had
+  landed, see nothing, and overwrite silently — the exact "worse than the
+  base case, this time without any operator error" scenario the review
+  named. Fixed: `import` now takes `mint_lock` too, so its check always
+  sees an up-to-date vault and the warning above fires reliably
+  regardless of which operation's critical section runs first. (This
+  narrows the race; it does not extend to the full `handle_adopt` call
+  the mint is part of — a concurrent import landing *after* `adopt` has
+  minted but *before* it writes the row is still possible and still
+  self-corrects on the next `adopt`, the same standing property D-A7-5
+  already documents and the backlog's *"Two supervisors can mint two
+  different app masters"* row already carries.) Tests:
+  `get_or_mint_after_an_import_resolves_the_imported_key_rather_than_
+  minting`, plus the two above (`keys.rs`).
+
+**Low:**
+
+- **Test 101 could pass on a regression it exists to catch.** Its final
+  assertion compared two `Option<String>` values; if the mint ever
+  stopped running before the claim, both reads would return `None` and
+  `None == None` would still pass. Fixed: `.expect(...)` in place of
+  `.map(...)`, so a missing key now fails the test outright
+  (`service.rs`).
+- **The fixture's temp-directory fix leaked one directory per
+  fixture-built test, permanently.** The `.keep()` fix for the
+  encrypted-mint bug (this file's own evidence above) applied to every
+  fixture, not only the encrypted ones — measured at ~100 leaked
+  directories per full test run, never cleaned up. Fixed: the directory
+  now lives on a new `#[cfg(test)] _fixture_tempdir` field on
+  `SupervisorService` itself, so it drops with the service at each test's
+  own end, restoring ordinary cleanup while keeping the original fix.
+  Verified: 0 new leaked directories after a full `-p
+  syneroym-app-supervisor` run.
+- **An instance id containing `..` or `\` became permanently
+  un-adoptable.** `AppInstanceId::try_new` refused only empty, `/`, and
+  `#`, so such an id could pass `submit` (a services-less plan skips the
+  member-name validator that would otherwise have caught it) and then
+  fail every `adopt` forever at the vault-name check — and since `adopt`
+  is also the only way back from `retired`, such an instance could never
+  recover. Fixed at the type, closing it for every caller rather than
+  only this one call site: `AppInstanceId`'s validator now refuses `..`
+  and `\` too, alongside the existing `#` guard. Tests:
+  `an_app_instance_id_that_could_never_be_backed_up_is_refused_at_
+  construction` (`crates/app_orchestration/src/models.rs`).
+- **`adopt` made four separate, un-transacted writes to one row.** A
+  crash between `set_generation`/`un_retire`/`set_app_master_did` could
+  leave a claimed generation with no recorded app master — the exact
+  state D-A7-4's "the row always agrees with the vault" claim rests on
+  not happening. Fixed: a new `SupervisorStore::record_adopt` combines
+  the generation, the un-retired flag, and the app master DID into one
+  SQL statement, atomic by construction; `clear_remediation_for_instance`
+  stays a separate, best-effort call, matching its existing behavior (its
+  own failure has never blocked `adopt` from succeeding). Tests:
+  `record_adopt_writes_generation_retired_and_app_master_did_together`,
+  `record_adopt_fails_for_an_instance_with_no_desired_state` (`store.rs`).
+- **Three coverage gaps behind decisions the slice states as
+  guarantees.** D-A7-7's "and nowhere else" had no case proving
+  `force-reconcile` or a resident-loop pass leave the field alone;
+  un-retire running back to back with the app-master write had store-level
+  coverage but nothing through the service; the import/mint interaction
+  had no test at all. Closed by
+  `app_master_did_stays_empty_through_force_reconcile_and_a_loop_pass_
+  without_adopt`, `adopt_on_a_retired_instance_un_retires_and_records_
+  the_app_master_together` (`service.rs`), and the import/mint tests
+  listed under the medium findings above (`keys.rs`).
+
+**Nits:**
+
+- `Fixture::backup_dir`'s doc comment described a `TempDir` the builder
+  drops before returning — true before the tempdir fix above, stale
+  after. Corrected in the same pass as the fix itself.
+- Test 92's name promised a generation increment it could not assert
+  (`a_second_adopt_reports_the_same_app_master_did_at_the_next_
+  generation`, over a services-less plan that has no substrate to
+  remember a prior claim). Renamed to
+  `a_second_adopt_reports_the_same_app_master_did`.
+- `get_or_mint`'s `MasterKind`-selected wording (D-A7-9) had no test
+  proving either string. Closed with
+  `get_or_mint_warns_with_the_wording_matching_its_kind`, using a
+  `MockWriter`-over-`tracing_subscriber::fmt::layer` capture (the same
+  shape `crates/data_db/src/sqlite.rs`'s `test_insecure_mode_warning`
+  already uses in this tree), adapted for an async callee by driving a
+  private, single-purpose `current_thread` runtime inside the
+  subscriber's own scope. **Found while building this adapter, not by
+  the review itself:** a runtime built fresh per call and dropped at
+  return deadlocks, because `MasterVault`'s writer thread
+  (`task::spawn_blocking` inside `open_service_db`) outlives the
+  individual call and is only joined when the runtime that spawned it
+  drops — while the vault it belongs to is still alive and being reused.
+  Fixed by sharing one runtime per test, declared before the vault so the
+  vault (and its writer channel) drops first, letting the runtime's own
+  drop succeed. Recorded in `run_capturing_logs`'s own doc comment so the
+  next person adapting this pattern does not rediscover it by hanging a
+  CI run.
+
+**New dev-dependency:** `tracing-subscriber` added to
+`crates/app_supervisor/Cargo.toml`'s `[dev-dependencies]` (already a
+workspace dependency; this is its first use in this crate), for the
+`MockWriter` capture above.
+
+**Test count: 101 → 110** (9 new, counted directly by diffing test
+attributes against the pre-review commit, not asserted).
+
+**Gates, re-run 2026-08-04 after all ten fixes:**
+
+- `cargo +nightly fmt --all -- --check`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace` (sandboxed, `--no-fail-fast`): identical
+  failing-target set to the pre-review run above (the same pre-existing
+  sandbox-bind category) — no new failures from the
+  `AppInstanceId` validator change or any other fix.
+  `syneroym-app-supervisor` 160/160, `syneroym-app-orchestration` 112/112,
+  `roymctl` 63/63, all green. `app_instance_identity_e2e` (1/1, ~83s) and
+  `supervisor_interface_e2e` (6/6, ~90s) independently re-verified
+  passing with the sandbox disabled.
+- `mise run test:e2e` (sandbox disabled): 12/12 green (8 main + 4
+  multi-hop), unchanged.
+- `wasm32-wasip2`: `greeter` still builds clean.
 
 ## Dependencies pulled in
 

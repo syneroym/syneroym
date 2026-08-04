@@ -256,8 +256,34 @@ impl MasterVault {
     }
 
     /// Imports raw key bytes directly -- used by `import_master` once it has
-    /// read them from the backup directory.
+    /// read them from the backup directory. Takes `mint_lock` (M05A A7
+    /// review finding 2), the same lock `get_or_mint` holds across its own
+    /// read-then-write: without it, a concurrent `adopt` can see an empty
+    /// slot, mint, and store, and then have this import's write land
+    /// after -- the row would then name a DID the vault no longer holds.
+    /// Warns, rather than refuses, when this replaces an existing,
+    /// different key (finding 1): D-A7-11's standing rule is that a
+    /// master is never forgotten, and the handover A7 makes routine
+    /// (`import-master` before every `adopt`) can otherwise silently
+    /// destroy a live identity on a typo'd instance id or a stale backup
+    /// file, with nothing to notice. Not a refusal -- a deliberate
+    /// replacement (the actual handover case) must still succeed.
     pub async fn import(&self, name: &str, key_bytes: &[u8; 32]) -> Result<(), VaultError> {
+        let _guard = self.mint_lock.lock().await;
+        if let Some(existing) = self.get(name).await? {
+            let existing_did = substrate::derive_did_key(&existing.public_key());
+            let incoming_did =
+                substrate::derive_did_key(&Identity::from_bytes(key_bytes).public_key());
+            if existing_did != incoming_did {
+                tracing::warn!(
+                    name,
+                    existing_did,
+                    incoming_did,
+                    "import replaces an existing, different key under this name in the vault -- \
+                     the old identity is now unrecoverable unless it was exported first"
+                );
+            }
+        }
         self.store_bytes(name, key_bytes).await
     }
 
@@ -279,11 +305,13 @@ impl MasterVault {
     /// Adopts a master already placed in the backup directory (an A0-A4
     /// deployment's `identities/member-*.key`, copied there by the
     /// operator) into the vault. Reads by name from that directory only.
+    /// Routes through `import` so a replacement is locked and warned
+    /// about the same way a direct `import` call is.
     pub async fn import_master(&self, name: &str) -> Result<(), VaultError> {
         validate_backup_name(name)?;
         let path = self.backup_dir.join(format!("{name}.key"));
         let identity = Identity::load_from_path(&path).map_err(VaultError::Storage)?;
-        self.store_bytes(name, &identity.to_bytes()).await
+        self.import(name, &identity.to_bytes()).await
     }
 }
 
@@ -457,15 +485,73 @@ pub async fn mint_and_substitute(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, sync::Mutex};
 
     use syneroym_app_orchestration::models::{
         AppBlueprintId, AppInstanceId, LogicalServiceName, LogicalServiceRef, PlannedService,
         RotationPolicy, ServiceConfig, ServiceType, TopologyMode,
     };
     use syneroym_data_db::SqliteStorageProvider;
+    use tokio::runtime::{Builder, Runtime};
+    use tracing_subscriber::prelude::*;
 
     use super::*;
+
+    struct MockWriter {
+        logs: Arc<Mutex<Vec<u8>>>,
+    }
+    impl std::io::Write for MockWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.logs.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Runs `f` under a scoped tracing subscriber and returns its result
+    /// alongside everything logged during the call, as text -- the same
+    /// `MockWriter`-over-`fmt::layer` shape already used elsewhere in this
+    /// tree (e.g. `crates/data_db/src/sqlite.rs`'s
+    /// `test_insecure_mode_warning`), adapted to an async callee by
+    /// driving a private, current-thread runtime inside the subscriber's
+    /// own scope: `with_default` sets a thread-local for the duration of
+    /// a *synchronous* closure, so the whole future must be polled to
+    /// completion on this one thread, not handed to the outer
+    /// `#[tokio::test]` runtime's own scheduler, or the capture would miss
+    /// anything logged after a hop to a different worker thread.
+    ///
+    /// Takes `rt` by reference rather than building one per call: a
+    /// `MasterVault`'s `open_service_db` spawns its writer loop with
+    /// `task::spawn_blocking`, which outlives the individual `get_or_mint`/
+    /// `import` call and is only joined when the *runtime* that spawned it
+    /// drops. A runtime built fresh inside this function and dropped at
+    /// its return would then block forever trying to join a writer thread
+    /// still kept alive by a vault the *caller* goes on using -- callers
+    /// build one `rt` for the whole test and declare it before the vault,
+    /// so the vault (and its writer channel) drops first, at the test's
+    /// own end, letting the runtime's final join succeed.
+    fn run_capturing_logs<F, Fut, T>(rt: &Runtime, f: F) -> (T, String)
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_clone = logs.clone();
+        let make_writer = move || MockWriter { logs: logs_clone.clone() };
+        let layer = tracing_subscriber::fmt::layer().with_writer(make_writer);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        let result = tracing::subscriber::with_default(subscriber, || rt.block_on(f()));
+
+        let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        (result, logs_content)
+    }
+
+    fn test_runtime() -> Runtime {
+        Builder::new_current_thread().enable_all().build().unwrap()
+    }
 
     fn vault(dir: &Path) -> MasterVault {
         let storage_provider: Arc<dyn StorageProvider> =
@@ -829,5 +915,104 @@ mod tests {
         v2.import_master(&vault_name).await.unwrap();
         let imported = v2.get(&vault_name).await.unwrap().unwrap();
         assert_eq!(substrate::derive_did_key(&imported.public_key()), did);
+    }
+
+    // ── M05A A7 code review (2026-08-04): findings 1, 2, 7b, 10 ─────────
+
+    /// D-A7-9, review finding 10: `get_or_mint`'s warning names the right
+    /// noun and the right loss for each `MasterKind` -- the whole payload
+    /// of a decision that otherwise touched twelve call sites for no
+    /// externally visible effect.
+    #[test]
+    fn get_or_mint_warns_with_the_wording_matching_its_kind() {
+        // Declared before `dir`/`v`: dropped last, after the vault (and
+        // its background writer thread) is already gone -- see
+        // `run_capturing_logs`'s own doc for why the other order deadlocks.
+        let rt = test_runtime();
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+
+        let (_, member_logs) = run_capturing_logs(&rt, || {
+            v.get_or_mint("member-inst-1#backend-0", MasterKind::Member)
+        });
+        assert!(member_logs.contains("member master"), "{member_logs}");
+        assert!(member_logs.contains("orphans every row"), "{member_logs}");
+
+        let (_, app_logs) =
+            run_capturing_logs(&rt, || v.get_or_mint("app-inst-1", MasterKind::App));
+        assert!(app_logs.contains("app-instance master"), "{app_logs}");
+        assert!(app_logs.contains("network identity"), "{app_logs}");
+    }
+
+    /// Review finding 7b (the ordering `import` taking `mint_lock` makes
+    /// safe, §0.5's own handover sequence): if `import-master` lands
+    /// *before* anything has minted under this name, `get_or_mint`
+    /// resolves the imported key rather than minting a second identity --
+    /// the exact "`import-master` before `adopt`" order the developer
+    /// guide recommends.
+    #[tokio::test]
+    async fn get_or_mint_after_an_import_resolves_the_imported_key_rather_than_minting() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+        let imported = Identity::generate().unwrap();
+
+        v.import("app-inst-1", &imported.to_bytes()).await.unwrap();
+        let resolved = v.get_or_mint("app-inst-1", MasterKind::App).await.unwrap();
+
+        assert_eq!(resolved.public_key(), imported.public_key());
+    }
+
+    /// Review findings 1 and 2 together: if a mint already landed under
+    /// this name before `import` runs, `import` still wins (a deliberate
+    /// handover replacement must succeed), but it must never do so
+    /// silently -- the exact "reverse interleaving" finding 2 called
+    /// worse than the base case, because nothing before this fix warned
+    /// at all. Sequential, not raced: the two lock-acquisition orderings
+    /// this fix distinguishes are each individually deterministic, and
+    /// this is the one where `import` runs second. Not `#[tokio::test]`:
+    /// `run_capturing_logs` drives its own runtime, and nesting one
+    /// inside another panics.
+    #[test]
+    fn import_over_an_existing_different_key_replaces_it_and_warns() {
+        let rt = test_runtime();
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+
+        let ((minted_did, replacement_did, final_did), logs) = run_capturing_logs(&rt, || async {
+            let minted = v.get_or_mint("app-inst-1", MasterKind::App).await.unwrap();
+            let minted_did = substrate::derive_did_key(&minted.public_key());
+
+            let replacement = Identity::generate().unwrap();
+            let replacement_did = substrate::derive_did_key(&replacement.public_key());
+            v.import("app-inst-1", &replacement.to_bytes()).await.unwrap();
+
+            let final_identity = v.get("app-inst-1").await.unwrap().unwrap();
+            let final_did = substrate::derive_did_key(&final_identity.public_key());
+
+            (minted_did, replacement_did, final_did)
+        });
+
+        assert_ne!(minted_did, replacement_did);
+        assert_eq!(final_did, replacement_did, "import must still win over the earlier mint");
+        assert!(logs.contains("replaces an existing, different key"), "{logs}");
+    }
+
+    /// The companion case: importing the *same* key a second time (an
+    /// idempotent re-run of a handover step) must not warn -- there is
+    /// nothing to lose, since the incoming and existing DIDs are equal.
+    #[test]
+    fn importing_the_same_key_again_does_not_warn() {
+        let rt = test_runtime();
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+
+        let ((), logs) = run_capturing_logs(&rt, || async {
+            let identity = Identity::generate().unwrap();
+            let bytes = identity.to_bytes();
+            v.import("app-inst-1", &bytes).await.unwrap();
+            v.import("app-inst-1", &bytes).await.unwrap();
+        });
+
+        assert!(!logs.contains("replaces an existing"), "{logs}");
     }
 }

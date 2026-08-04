@@ -657,6 +657,39 @@ impl SupervisorStore {
         }
         Ok(())
     }
+
+    /// `adopt`'s own combined write, once the claim has succeeded: the
+    /// generation, the un-retired flag, and the resolved app master DID,
+    /// together in one statement (M05A A7 review finding 6). Before this,
+    /// `handle_adopt` called `set_generation`/`un_retire`/
+    /// `set_app_master_did` as three separate writes, so a crash between
+    /// them could leave a claimed generation with no recorded app
+    /// master -- exactly the state D-A7-4's "the row always agrees with
+    /// the vault" claim rests on not happening.
+    ///
+    /// `clear_remediation_for_instance` stays a separate call at the
+    /// caller: unlike these three fields, its own failure has never
+    /// blocked `adopt` from succeeding (it is a `let _ =`-ignored
+    /// best-effort clear today), and folding it in here would change
+    /// that.
+    pub fn record_adopt(
+        &self,
+        app_instance_id: &str,
+        generation: u64,
+        app_master_did: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        let now = chrono::Utc::now().timestamp();
+        let updated = conn.execute(
+            "UPDATE desired_state SET generation = ?1, retired = 0, app_master_did = ?2, \
+             updated_at = ?3 WHERE app_instance_id = ?4",
+            params![generation as i64, app_master_did, now, app_instance_id],
+        )?;
+        if updated == 0 {
+            return Err(anyhow!("no desired state submitted for app instance '{app_instance_id}'"));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -956,5 +989,31 @@ mod tests {
 
         store.retire("inst-1").unwrap();
         assert_eq!(store.get("inst-1").unwrap().unwrap().app_master_did, "did:key:zAppMaster");
+    }
+
+    /// M05A A7 review finding 6: `handle_adopt`'s combined write -- the
+    /// generation, the un-retired flag, and the app master DID all land
+    /// in one statement, so there is no window where a crash could leave
+    /// a claimed generation with no recorded DID.
+    #[test]
+    fn record_adopt_writes_generation_retired_and_app_master_did_together() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.submit("inst-1", "{}", "{}", "did:key:owner", 0).unwrap();
+        store.retire("inst-1").unwrap();
+        assert!(store.get("inst-1").unwrap().unwrap().retired);
+
+        store.record_adopt("inst-1", 3, "did:key:zAppMaster").unwrap();
+
+        let state = store.get("inst-1").unwrap().unwrap();
+        assert_eq!(state.generation, 3);
+        assert!(!state.retired, "record_adopt must also un-retire, like un_retire did");
+        assert_eq!(state.app_master_did, "did:key:zAppMaster");
+    }
+
+    #[test]
+    fn record_adopt_fails_for_an_instance_with_no_desired_state() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        let err = store.record_adopt("never-submitted", 1, "did:key:zAppMaster").unwrap_err();
+        assert!(err.to_string().contains("no desired state"), "{err}");
     }
 }
