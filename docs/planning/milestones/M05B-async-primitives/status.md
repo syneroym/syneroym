@@ -22,7 +22,7 @@ where every single-slice plan in that milestone sits between 990 and 2,143.
 | Slice | Scope | Status | Gate |
 |---|---|---|---|
 | B1 | Queue crate, supervisor delivery outbox, DLQ with alert and operator surface. **Closes [M05A slice A6](../M05A-app-supervisor/task.md)** | ✅ **Complete (2026-08-05)** — evidence below | ADR-0023 accepted |
-| B2 | Guest outbox and proxy DLQ: idempotency key, `enqueue`, receiver-side dedup | 🚧 **Phases 1-4 of 5 complete (2026-08-05)**; phase 5's two e2e cases committed `#[ignore]`d, blocked on one open decision — see "B2 — delivery" below. Plan: [slice-b2-implementation-plan.md](slice-b2-implementation-plan.md) (2026-08-05, revised same day after review). Its `§0` narrows the slice in four places and its `§5` carries six document corrections | B1 |
+| B2 | Guest outbox and proxy DLQ: idempotency key, `enqueue`, receiver-side dedup | ✅ **Complete (2026-08-05)** — all five phases — see "B2 — delivery" below. Plan: [slice-b2-implementation-plan.md](slice-b2-implementation-plan.md) (2026-08-05, revised same day after review). Its `§0` narrows the slice in four places and its `§5` carries six document corrections | B1 |
 | B3 | Scheduled tasks: manifest surface, evaluation on the supervisor's pass tick, member selection, overlap prevention | 📋 Planned (sketch only; owes its own `§0`) | B1 |
 | B4 | Saga compensations: the `undo-<operation>` convention, deploy-time check, step log, reverse walk | 📋 Planned (sketch only; owes its own `§0`) | B1 |
 | ~~B5~~ | ~~Long-running tasks~~ | **Deferred out of this milestone (2026-08-04)** — [deferred-backlog.md](../../deferred-backlog.md) §8, target M5 final phase | — |
@@ -397,13 +397,11 @@ fix refuses).
 
 ---
 
-## B2 — delivery (2026-08-05)
+## B2 — delivery (2026-08-05), complete
 
-**Phases 1 through 4 of the slice plan's five are complete and verified
-against every gate. Phase 5's two e2e cases are written and committed, but
-`#[ignore]`d**: they reach restart survival and then hit one genuine open
-question about the terminal-failure rule, described below. No plan decision
-was reversed.
+**All five phases of the slice plan are complete and verified against every
+gate.** One plan decision was narrowed on evidence -- D-B2-11's terminal
+rule, described below -- and nothing else was reversed.
 
 **What shipped.**
 
@@ -479,10 +477,16 @@ was reversed.
 - `cargo clippy --workspace --all-targets --all-features`: clean, zero
   warnings.
 - `cargo test --workspace --no-fail-fast` (sandboxed): the failure set is
-  identical to B1's documented pre-existing sandbox-bind category above
-  (`community-registry`, `control-plane`, `coordinator-iroh` ×3,
-  `mqtt-broker`, `sdk --test connect_timeout`, every `syneroym-substrate`
-  e2e target) with **one addition that was genuinely ours and is fixed**:
+  B1's documented pre-existing sandbox-bind category above, plus
+  `syneroym-substrate --test proxy_outbox_e2e` -- this slice's own new
+  target, which joins that category for the same reason every other
+  substrate e2e is in it (two real substrates, real port binds, which the
+  sandbox refuses). Run with the sandbox disabled it is green, three times
+  consecutively. The category is
+  `community-registry`, `control-plane`, `coordinator-iroh` ×3,
+  `mqtt-broker`, `sdk --test connect_timeout`, and every
+  `syneroym-substrate` e2e target. One further addition was genuinely ours
+  and is fixed:
   `router --test proxy_dispatch` failed with "component imports instance
   `syneroym:proxy/proxy@0.1.0`, but a matching implementation was not found
   in the linker" until `test-components/proxy-test` was rebuilt against the
@@ -503,46 +507,65 @@ was reversed.
   `proxy-test` guest artifact, which is exit criterion 13's migration cost
   observed directly rather than argued.
 
-**Phase 5 attempted; its two e2e cases are committed `#[ignore]`d**, in
-[proxy_outbox_e2e.rs](../../../../crates/substrate/tests/proxy_outbox_e2e.rs).
-This is a real open question, not an abandoned harness.
+**Phase 5 complete.** Both e2e cases are green in
+[proxy_outbox_e2e.rs](../../../../crates/substrate/tests/proxy_outbox_e2e.rs):
+`a_queued_guest_call_to_an_offline_node_lands_after_it_returns` and
+`a_permanently_unreachable_target_lands_in_the_dlq_and_replays`, 2 passed
+in ~111 s for the pair, stable across three consecutive runs (111.6 s,
+110.6 s, 111.6 s) -- deliberately re-run, since the case turns on a restart
+window and a single green run would not distinguish a fix from a race.
 
-The delivery case reaches: the guest enqueues through its own WIT export,
-the item is visible via `proxy-outbox`, it survives a **full restart of the
-calling substrate as the same item**, and the worker retries it. What it
-cannot currently reach is clean delivery, and the reason is a window no
-test can close from outside: when the target node comes back it republishes
-its own endpoint record *before* its services finish coming up, so the
-worker resolves it, connects, and is told "unknown service" -- which
-D-B2-11 makes deliberately terminal, so the item dead-letters during the
-restart it was supposed to survive.
+The delivery case drives the guest's own `enqueue-peer` export, asserts the
+item through the `proxy-outbox` verb at every stage (queued, still queued
+as the *same* item after the calling substrate restarts, gone once
+delivered), and asserts it stays gone.
 
-That is plausibly the specification working as written *and* being wrong
-for this case: a target mid-restart is exactly the transient condition a
-durable queue exists for, and at the wire it is indistinguishable from a
-service that is genuinely gone. Fixing it means either a distinguishable
-code for "restarting", or narrowing the terminal rule the way B1 had to
-narrow its own (`deploy::is_target_gone_error`) -- a decision, not a test
-fix, so it is not made here. **B2 is not finished until that is settled and
-both cases are green.**
+**Getting there required narrowing D-B2-11**, and that narrowing is the
+resolution of the open question this section previously recorded. A remote
+"service not found" is now **retried within the ordinary attempt budget**
+rather than dead-lettering on the first hit
+([proxy_outbox.rs](../../../../crates/router/src/proxy_outbox.rs),
+`disposition_of`). The reason is that at the wire it is indistinguishable
+from a target that is merely mid-restart: a node republishes its own
+endpoint record before its services finish coming up, so a delivery attempt
+lands in a window where the address is right and the service is not there
+yet. Treating that as terminal gives up during exactly the outage a durable
+queue exists to survive. A target that is genuinely gone still
+dead-letters, just not on the first attempt -- the budget and the
+poison-pill ceiling both still bound it, and the DLQ e2e proves that end
+holds. This is the same kind of narrowing B1 had to make to its own
+terminal rule (`deploy::is_target_gone_error`), reached independently and
+for the same reason. **No wire-protocol change.**
 
-**Two production defects the attempt did surface, both fixed and shipped:**
+Two boundaries the narrowing deliberately does not cross:
+
+- **A dependency name that resolves to nobody stays terminal**
+  (failure-matrix row 9). That is not a failed delivery, it is a failure to
+  have anything to deliver to, so it is decided before the retry
+  classification is reached (`ProxyRouter::resolve_queued_target`).
+- **`PermissionDenied`, `UnsupportedTarget` and `UnsupportedProtocol` stay
+  terminal**: those are settled questions, and retrying re-asks them.
+
+**Three production defects the e2e surfaced, all fixed:**
 
 - `enqueue`'s immediate try-then-queue attempt ran under the full call
   budget *and* the retry loop, so a guest calling a fire-and-forget verb
   against a down target blocked past the sandbox's own
-  `dispatch_epoch_timeout_secs` (5s) and was interrupted mid-call -- the
-  guest trapped instead of getting "accepted for delivery". The probe now
-  runs under its own 2-second bound, which is the behavior a
-  fire-and-forget verb owes its caller regardless.
+  `dispatch_epoch_timeout_secs` (5 s) and was interrupted mid-call -- the
+  guest **trapped** instead of getting "accepted for delivery". The probe
+  now runs under its own 2 s bound.
 - The outbox refused any caller with no `state.db`, because `queue_for`
   gated on `service_exists`. A guest that has never touched its own data
-  layer has no `state.db`, so the check refused exactly the callers the
-  queue is for. Removed; the operator verbs use a separate non-creating
-  path so a mistyped service id still brings no file into being.
+  layer has none, so the check refused exactly the callers the queue is
+  for.
+- The receiver-side dedup guard had the *same* mistake, and it was the one
+  that actually stopped delivery: it used `service_exists` to mean "is a
+  deployed service", so the target node refused every keyed delivery to a
+  guest with no `state.db`. It now asks the endpoint registry, which is the
+  authority for what a node hosts.
 
-Neither was reachable from an in-process test, which is the argument for
-the e2e stated concretely.
+None of the three was reachable from an in-process test, which is the
+argument for the e2e stated concretely rather than asserted.
 
 **Exit criteria 5 and 13 are marked ✅** on the strength of the mechanisms
 existing and being unit-tested, which is what those criteria ask for; the

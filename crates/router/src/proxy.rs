@@ -304,14 +304,25 @@ impl ProxyRouter {
 
     /// Delivers one queued item: re-resolve, then invoke. Split out so the
     /// worker and the immediate try-then-queue attempt cannot drift apart.
-    async fn deliver_queued(&self, call: &QueuedCall) -> Result<Value, ProxyError> {
-        let outbox = self
-            .outbox
+    /// Returns `Err` only when there is nothing to deliver *to* -- the
+    /// stored dependency name no longer resolves to any member.
+    ///
+    /// Kept separate from the delivery itself because the two failures are
+    /// not the same kind. "This name is bound to nobody" is settled: no
+    /// number of retries invents a member, so it is terminal. "I could not
+    /// reach the member it is bound to" is not settled at all, and is
+    /// handled by the ordinary retry classification.
+    ///
+    /// Re-resolved on every attempt and never stored, so a binding
+    /// re-pushed while the item waited takes effect (ADR-0021 §2).
+    fn resolve_queued_target(&self, call: &QueuedCall) -> Result<String, ProxyError> {
+        self.outbox
             .as_ref()
-            .ok_or_else(|| ProxyError::Internal("no durable outbox on this node".to_string()))?;
-        // Re-resolved on every attempt, never stored: a binding re-pushed
-        // while the item waited has to take effect (ADR-0021 §2).
-        let target = outbox.resolve_target(call)?;
+            .ok_or_else(|| ProxyError::Internal("no durable outbox on this node".to_string()))?
+            .resolve_target(call)
+    }
+
+    async fn deliver_queued(&self, call: &QueuedCall, target: String) -> Result<Value, ProxyError> {
         self.invoke_inner(&self.request_from(call, target)).await
     }
 
@@ -892,7 +903,25 @@ impl ProxyRouter {
                 continue;
             };
             settled += 1;
-            match self.deliver_queued(&call).await {
+            // A name bound to nobody is terminal on its own terms: this is
+            // a failure to have a target at all, not a failed delivery, so
+            // it does not go through the retry classification.
+            let target = match self.resolve_queued_target(&call) {
+                Ok(target) => target,
+                Err(e) => {
+                    proxy_outbox::log_delivery_failure(&call.idempotency_key, &e);
+                    let message = e.to_string();
+                    let outcome = tokio::task::spawn_blocking(move || {
+                        queue.fail(item.id, now, &message, true)
+                    })
+                    .await;
+                    if let Ok(Ok(FailOutcome::DeadLettered { .. })) = outcome {
+                        metrics::counter!("substrate.proxy.outbox.dead_lettered").increment(1);
+                    }
+                    continue;
+                }
+            };
+            match self.deliver_queued(&call, target).await {
                 Ok(_) => {
                     metrics::counter!("substrate.proxy.outbox.delivered").increment(1);
                     let _ = tokio::task::spawn_blocking(move || queue.complete(item.id)).await;
@@ -958,7 +987,7 @@ mod tests {
     use syneroym_identity::{delegation::SCOPE_SERVICE_INSTANCE, substrate};
     use syneroym_rpc::{
         AuthLevel, CallerContext, CallerProof, NativeDispatchRegistry, NativeResponse,
-        NativeService, QueuedTarget, RpcResult, SessionContext,
+        NativeService, QueuedTarget, RpcResult, SERVICE_NOT_FOUND_RPC_CODE, SessionContext,
     };
 
     use super::*;
@@ -1054,6 +1083,7 @@ mod tests {
         std::fs::create_dir_all(&service_dir).unwrap();
         std::fs::write(service_dir.join("state.db"), b"").unwrap();
 
+        let guard_registry = registry.clone();
         let router = ProxyRouter::new(
             registry,
             empty_registry_client(),
@@ -1068,6 +1098,7 @@ mod tests {
             router.with_dedup_guard(Arc::new(crate::CallDedupGuard::new(
                 provider,
                 Arc::new(KeyStore::new()),
+                guard_registry,
                 DedupConfig {
                     ttl_ms: 600_000,
                     claim_window_ms: 60_000,
@@ -1212,6 +1243,7 @@ mod tests {
             .with_dedup_guard(Arc::new(crate::CallDedupGuard::new(
                 guard_provider,
                 Arc::new(KeyStore::new()),
+                registry.clone(),
                 syneroym_async_queue::DedupConfig {
                     ttl_ms: 600_000,
                     claim_window_ms: 60_000,
@@ -1464,8 +1496,18 @@ mod tests {
         node.target.fail_with.store(true, Ordering::SeqCst);
 
         node.router.drain_outboxes_once().await;
-        assert_eq!(node.dead_letters().await.len(), 1);
+        let dead = node.dead_letters().await;
+        assert_eq!(dead.len(), 1);
         assert!(node.queued().await.is_empty());
+        // The target refused on its own terms. Pinned explicitly so this
+        // test cannot quietly become vacuous: "service not found" is
+        // retried rather than dead-lettered, so a scenario that drifted
+        // onto that code would assert nothing.
+        assert!(
+            !dead[0].last_error.contains(&SERVICE_NOT_FOUND_RPC_CODE.to_string()),
+            "this case must exercise a genuine callee refusal, not the retried not-found code: {}",
+            dead[0].last_error
+        );
     }
 
     /// The retryable case: the item stays, with an attempt spent.

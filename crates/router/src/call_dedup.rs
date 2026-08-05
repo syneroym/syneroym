@@ -32,7 +32,7 @@ use syneroym_async_queue::{
     CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, DedupConfig, DedupDecision,
     DedupStore, FirstOutcome,
 };
-use syneroym_core::local_registry::NODE_NATIVE_INTERFACES;
+use syneroym_core::local_registry::{EndpointRegistry, NODE_NATIVE_INTERFACES};
 use syneroym_data_db::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::ProxyError;
@@ -136,6 +136,9 @@ pub(crate) fn is_node_level_interface(interface: &str) -> bool {
 pub struct CallDedupGuard {
     storage_provider: Arc<dyn StorageProvider>,
     key_store: Arc<KeyStore>,
+    /// What this node actually hosts. The deployed-service check reads
+    /// this rather than the filesystem -- see `store_for`.
+    registry: EndpointRegistry,
     config: DedupConfig,
     /// Opened once per service and reused. Without this every keyed call
     /// would pay a SQLCipher key derivation, which is a real cost on the
@@ -155,9 +158,10 @@ impl CallDedupGuard {
     pub fn new(
         storage_provider: Arc<dyn StorageProvider>,
         key_store: Arc<KeyStore>,
+        registry: EndpointRegistry,
         config: DedupConfig,
     ) -> Self {
-        Self { storage_provider, key_store, config, stores: Mutex::new(HashMap::new()) }
+        Self { storage_provider, key_store, registry, config, stores: Mutex::new(HashMap::new()) }
     }
 
     /// How many per-service connections this guard currently holds --
@@ -199,12 +203,13 @@ impl CallDedupGuard {
         // Before any DEK is resolved: the key layer generates one on first
         // use, so asking about a service that does not exist would create
         // the very thing the check is meant to establish is absent.
-        if !self
-            .storage_provider
-            .service_exists(service_id)
-            .await
-            .map_err(|e| ProxyError::Internal(format!("cannot check target service: {e}")))?
-        {
+        //
+        // The endpoint registry is the authority for "is a deployed
+        // service on this node", *not* whether it has a `state.db`. A
+        // guest that has never touched its own data layer has no
+        // `state.db` at all, so keying this off storage refuses exactly
+        // the ordinary service a keyed call is most likely aimed at.
+        if self.registry.lookup_by_service(service_id).is_empty() {
             return Err(ProxyError::ServiceNotFound(service_id.to_string()));
         }
 
@@ -355,9 +360,11 @@ mod tests {
         }
     }
 
-    /// A node with `services` already holding `service_id`, so
-    /// `service_exists` answers true without the guard creating anything.
-    fn node(encryption: bool, services: &[&str]) -> Node {
+    /// A node whose registry knows `services` -- which is what makes them
+    /// deployed services as far as the guard is concerned. Deliberately
+    /// *no* `state.db` is created: a guest that has never touched its own
+    /// data layer has none, and the guard must still fence calls to it.
+    async fn node(encryption: bool, services: &[&str]) -> Node {
         let dir = tempfile::tempdir().expect("tempdir");
         let provider =
             Arc::new(SqliteStorageProvider::new(dir.path(), encryption).expect("provider"));
@@ -365,12 +372,21 @@ mod tests {
         if encryption {
             key_store.inject_kek([9u8; 32]).expect("kek");
         }
+        let registry =
+            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
         for service in services {
-            let service_dir = dir.path().join("services").join(service);
-            std::fs::create_dir_all(&service_dir).expect("service dir");
-            std::fs::write(service_dir.join("state.db"), b"").expect("state.db");
+            registry
+                .register(
+                    (*service).to_string(),
+                    "greeter".to_string(),
+                    syneroym_core::local_registry::SubstrateEndpoint::WasmChannel {
+                        service_id: (*service).to_string(),
+                    },
+                )
+                .await
+                .expect("register");
         }
-        Node { guard: Arc::new(CallDedupGuard::new(provider, key_store, config())), dir }
+        Node { guard: Arc::new(CallDedupGuard::new(provider, key_store, registry, config())), dir }
     }
 
     fn async_db_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -388,7 +404,7 @@ mod tests {
     /// is no safe place to file this call.
     #[tokio::test]
     async fn a_keyed_call_from_an_unidentified_caller_is_refused() {
-        let node = node(false, &["svc-a"]);
+        let node = node(false, &["svc-a"]).await;
         let outcome = node.guard.begin("svc-a", "greeter", None, Some("k1")).await;
         assert!(
             matches!(outcome, GuardOutcome::Refuse(ProxyError::PermissionDenied(_))),
@@ -403,7 +419,7 @@ mod tests {
     /// and a database for a service that does not exist.
     #[tokio::test]
     async fn a_keyed_call_to_a_node_level_interface_is_refused_and_creates_no_database() {
-        let node = node(true, &[]);
+        let node = node(true, &[]).await;
         for interface in ["orchestrator", "security"] {
             let outcome = node
                 .guard
@@ -424,7 +440,7 @@ mod tests {
     /// answer for another's.
     #[tokio::test]
     async fn a_key_is_scoped_to_its_target_service() {
-        let node = node(false, &["svc-a", "svc-b"]);
+        let node = node(false, &["svc-a", "svc-b"]).await;
         let first = node.guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await;
         let GuardOutcome::Execute(Some(claim)) = first else { panic!("expected a claim") };
         claim.settle(&Ok(serde_json::json!("from-a"))).await;
@@ -443,12 +459,21 @@ mod tests {
     async fn a_keyed_call_is_refused_when_the_dedup_store_cannot_be_opened() {
         let dir = tempfile::tempdir().expect("tempdir");
         let provider = Arc::new(SqliteStorageProvider::new(dir.path(), true).expect("provider"));
-        let service_dir = dir.path().join("services").join("svc-a");
-        std::fs::create_dir_all(&service_dir).expect("service dir");
-        std::fs::write(service_dir.join("state.db"), b"").expect("state.db");
+        let registry =
+            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        registry
+            .register(
+                "svc-a".to_string(),
+                "greeter".to_string(),
+                syneroym_core::local_registry::SubstrateEndpoint::WasmChannel {
+                    service_id: "svc-a".to_string(),
+                },
+            )
+            .await
+            .expect("register");
         // No KEK injected: the vault is locked, exactly as it is after
         // every substrate restart until an operator injects one.
-        let guard = CallDedupGuard::new(provider, Arc::new(KeyStore::new()), config());
+        let guard = CallDedupGuard::new(provider, Arc::new(KeyStore::new()), registry, config());
 
         let outcome = guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await;
         assert!(matches!(outcome, GuardOutcome::Refuse(_)), "got {outcome:?}");
@@ -460,7 +485,7 @@ mod tests {
     /// ever asked for.
     #[tokio::test]
     async fn a_keyed_call_works_with_encryption_disabled_for_the_deployment() {
-        let node = node(false, &["svc-a"]);
+        let node = node(false, &["svc-a"]).await;
         let outcome = node.guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await;
         assert!(matches!(outcome, GuardOutcome::Execute(Some(_))), "got {outcome:?}");
     }
@@ -469,7 +494,7 @@ mod tests {
     /// than as a timing so it cannot pass by being fast on a quick machine.
     #[tokio::test]
     async fn a_call_with_no_idempotency_key_never_opens_a_dedup_store() {
-        let node = node(true, &["svc-a"]);
+        let node = node(true, &["svc-a"]).await;
         for _ in 0..5 {
             let outcome = node.guard.begin("svc-a", "greeter", Some("did:key:zC"), None).await;
             assert!(matches!(outcome, GuardOutcome::Execute(None)));
@@ -486,7 +511,7 @@ mod tests {
     /// and which no other assertion here would notice.
     #[tokio::test]
     async fn a_second_keyed_call_to_one_target_opens_no_second_connection() {
-        let node = node(true, &["svc-a"]);
+        let node = node(true, &["svc-a"]).await;
         node.guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await;
         node.guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k2")).await;
         assert_eq!(
@@ -506,7 +531,7 @@ mod tests {
         let runtime =
             tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
         runtime.block_on(async {
-            let node = node(false, &["svc-a"]);
+            let node = node(false, &["svc-a"]).await;
             node.guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await;
             let probe = PROBE_THREAD.lock().expect("probe record").take();
             assert!(

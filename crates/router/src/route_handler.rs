@@ -243,6 +243,7 @@ impl RouteHandler {
         let dedup_guard = Arc::new(CallDedupGuard::new(
             deps.storage_provider.clone(),
             deps.key_store.clone(),
+            registry.clone(),
             DedupConfig::derive(
                 queue_config.total_retry_window_ms(),
                 queue_config.visibility_timeout_ms,

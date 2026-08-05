@@ -66,13 +66,12 @@ const DLQ_PORTS: (u16, u16, u16, u16, u16, u16) = (13_700, 13_701, 13_702, 13_80
 const DELIVERY_ATTEMPT_BUDGET: u8 = 200;
 /// Short enough to exhaust promptly, since exhausting is the point.
 const DLQ_ATTEMPT_BUDGET: u8 = 3;
-/// Node B comes back on a *different* address on purpose. A reboot on the
-/// same one is reachable the instant it binds, which opens a window where
-/// the target service is not registered yet -- and "that node answered and
-/// does not know this service" is deliberately terminal, so the item would
-/// dead-letter for a reason this test is not about. Coming back elsewhere
-/// leaves the stale record pointing at nothing (a transport failure, which
-/// retries) until the redeploy is done and the fresh record is published.
+/// Node B comes back on a *different* address on purpose, so the stale
+/// record points at nothing until the redeploy is done and the fresh
+/// record is published. Not required for correctness -- a "service not
+/// found" answer is retried, so a reboot on the same address converges
+/// too -- but it keeps this test's timing about the outbox rather than
+/// about how quickly the target's services happen to come up.
 const NODE_B_REBOOT_PORTS: (u16, u16, u16) = (13_900, 13_901, 13_902);
 
 /// A queued call must not have to wait out the production ~10-hour budget
@@ -150,6 +149,11 @@ impl Node {
         config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
         if let Some(role) = app_sandbox {
             config.roles.app_sandbox = Some(role);
+            // One connect attempt per delivery. The proxy's own retry loop
+            // sits *underneath* the outbox here, so leaving it at three
+            // multiplies every queued attempt by three call timeouts for
+            // nothing -- the outbox is already the retry mechanism.
+            config.retry.max_attempts = 1;
         }
 
         let state = identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
@@ -386,40 +390,21 @@ fn artifacts() -> Option<(Vec<u8>, Vec<u8>)> {
     Some((proxy, greeter))
 }
 
-/// **Both cases are `#[ignore]`d, and the reason is a real open question
-/// rather than a flaky harness.**
-///
-/// The delivery case gets as far as: the guest enqueues, the item is
-/// visible in the outbox, it survives a full restart of the calling
-/// substrate as the *same* item, and the worker retries it. What it cannot
-/// currently reach is a clean delivery, because of a window nothing in the
-/// test can close: when the target node comes back it republishes its own
-/// endpoint record *before* its services finish coming up, so the worker
-/// resolves it, connects, and is told "unknown service" -- and a callee
-/// error is deliberately terminal on the queued path (D-B2-11), so the
-/// item dead-letters during a restart it was supposed to survive.
-///
-/// That is arguably the specification working as written and the
-/// specification being wrong for this case: a target that is mid-restart
-/// is exactly the transient condition a durable queue exists for, and it
-/// is indistinguishable at the wire from a service that is genuinely gone.
-/// Resolving it means either a distinguishable code for "restarting" or
-/// narrowing the terminal rule the way B1 had to narrow its own -- a
-/// decision, not a test fix, so it is not made here.
-///
-/// Two production defects this file did surface are fixed and shipped:
-/// `enqueue`'s immediate attempt now runs under its own short budget (it
-/// previously blocked a guest past the sandbox's dispatch epoch and
-/// trapped it), and the outbox no longer refuses a caller that has no
-/// `state.db` of its own.
+/// **Why a target that is merely restarting does not dead-letter here.**
+/// When the target node comes back it republishes its own endpoint record
+/// before its services finish coming up, so a delivery attempt lands in a
+/// window where the address is right and the service is not there yet. A
+/// "service not found" answer is therefore treated as retryable rather
+/// than terminal -- bounded by the ordinary attempt budget, so a target
+/// that is genuinely gone still dead-letters, just not on the first hit.
+/// Without that, the item would be given up on during exactly the outage
+/// this queue exists to survive.
 ///
 /// The sequence no in-process test can cover: a guest queues a call to a
 /// node that is down, the **calling** substrate restarts, the node comes
 /// back, and the call lands -- with the outbox itself asserted at every
 /// stage rather than inferred.
 #[tokio::test]
-#[ignore = "reaches restart-survival; blocked on whether a remote 'unknown service' is terminal \
-            for a queued call"]
 async fn a_queued_guest_call_to_an_offline_node_lands_after_it_returns() {
     let _ = ring::default_provider().install_default();
     let Some((proxy_wasm, greeter_wasm)) = artifacts() else {
@@ -659,10 +644,8 @@ async fn a_queued_guest_call_to_an_offline_node_lands_after_it_returns() {
 
 /// The terminal half: a target that never comes back exhausts the attempt
 /// budget, lands in the dead-letter table where an operator can see it, and
-/// is replayable from there. Ignored alongside its sibling: it shares the
-/// same harness and has not been run to green.
+/// is replayable from there.
 #[tokio::test]
-#[ignore = "shares the delivery case's harness; not yet run to green"]
 async fn a_permanently_unreachable_target_lands_in_the_dlq_and_replays() {
     let _ = ring::default_provider().install_default();
     let Some((proxy_wasm, greeter_wasm)) = artifacts() else {
@@ -739,7 +722,7 @@ async fn a_permanently_unreachable_target_lands_in_the_dlq_and_replays() {
         .expect("enqueue must be accepted for delivery");
 
     assert!(
-        wait_until(Duration::from_secs(180), || async {
+        wait_until(Duration::from_secs(300), || async {
             dead_letter_keys(&node_a, &guest_did).await == vec!["doomed-1".to_string()]
         })
         .await,

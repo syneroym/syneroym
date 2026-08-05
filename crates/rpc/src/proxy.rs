@@ -119,7 +119,7 @@ impl ProxyError {
     #[must_use]
     pub fn code(&self) -> i32 {
         match self {
-            Self::ServiceNotFound(_) => -32601,
+            Self::ServiceNotFound(_) => SERVICE_NOT_FOUND_RPC_CODE,
             Self::UnsupportedProtocol(_) => UNSUPPORTED_PROTOCOL_RPC_CODE,
             Self::UnsupportedTarget(_) => UNSUPPORTED_TARGET_RPC_CODE,
             Self::PermissionDenied(_) => -32010, // same shape as data-layer denial
@@ -133,6 +133,11 @@ impl ProxyError {
 /// Reserved JSON-RPC error code for a caller declaring a protocol scheme this
 /// node does not speak (the minimal `[LFC-VER]` behavior kept from the
 /// deferred protocol-negotiation slice, A.7).
+/// JSON-RPC code a node answers with when it does not host the service a
+/// call named. Named rather than inlined because a *caller* has to
+/// recognise it on the wire: it is the one "the callee answered" code that
+/// can mean "not yet" rather than "no".
+pub const SERVICE_NOT_FOUND_RPC_CODE: i32 = -32601;
 pub const UNSUPPORTED_PROTOCOL_RPC_CODE: i32 = -32091;
 /// Reserved JSON-RPC error code for a proxy transport failure (connect
 /// failure, malformed response, or exhausted retries).

@@ -18,7 +18,9 @@ use std::sync::{
 use dashmap::DashMap;
 use serde_json::{Value, json};
 use syneroym_core::{
-    config::SubstrateConfig, http_routes::HttpRouteRegistry, local_registry::EndpointRegistry,
+    config::SubstrateConfig,
+    http_routes::HttpRouteRegistry,
+    local_registry::{EndpointRegistry, SubstrateEndpoint},
     storage::MockStorage,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
@@ -79,12 +81,18 @@ async fn harness() -> Harness {
     let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
-    // The guard opens a store only for a target that is a deployed
-    // service, established without creating anything -- so the fixture has
-    // to make the target genuinely exist.
-    let service_dir = dir.path().join("services").join(TARGET_SERVICE);
-    std::fs::create_dir_all(&service_dir).unwrap();
-    std::fs::write(service_dir.join("state.db"), b"").unwrap();
+    // The guard fences a key only for a target the endpoint registry knows
+    // is deployed here, so the fixture has to register it the way a deploy
+    // would. Deliberately no `state.db`: a service that has never touched
+    // its own data layer has none, and must still be fenceable.
+    registry
+        .register(
+            TARGET_SERVICE.to_string(),
+            "greeter".to_string(),
+            SubstrateEndpoint::NativeHostChannel { service_id: TARGET_SERVICE.to_string() },
+        )
+        .await
+        .unwrap();
 
     let app_sandbox_engine = Arc::new(
         AppSandboxEngine::init(

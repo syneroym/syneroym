@@ -38,6 +38,7 @@ use syneroym_data_db::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::{
     DeadLetterInfo, ProxyError, ProxyQueueInspector, QueuedCall, QueuedCallInfo, QueuedTarget,
+    SERVICE_NOT_FOUND_RPC_CODE,
 };
 use tokio::task;
 use tracing::warn;
@@ -61,9 +62,23 @@ pub enum Disposition {
 /// This is deliberately **not** the synchronous rule. There, a callee
 /// answer is definitive and the caller reads it; here the caller is long
 /// gone, so a callee error that merely completed the item would be silent
-/// loss. Every callee error is terminal instead, and the one reserved code
-/// that means "the receiver is running this exact item right now" retries
-/// -- definitive-looking, temporary in fact.
+/// loss. Callee errors are therefore terminal by default -- with two
+/// named exceptions, both cases where a definitive-looking answer is in
+/// fact temporary.
+///
+/// **"Service not found" retries, whether this node failed to resolve the
+/// target or the target's node answered that it does not host it.** At the
+/// wire those two are indistinguishable from a service that is merely
+/// mid-restart: a node republishes its own endpoint record before its
+/// services finish coming up, so a delivery attempt lands in a window
+/// where the address is right and the service is not there yet. Treating
+/// that as terminal dead-letters an item during exactly the outage a
+/// durable queue exists to survive. It stays bounded: a service that is
+/// genuinely gone still exhausts the attempt budget and dead-letters, just
+/// not on the first hit.
+///
+/// The other exception is the reserved code meaning the receiver is
+/// running this exact item right now.
 ///
 /// `Internal` retries: it covers "sandbox engine unavailable" and "native
 /// dispatch registry gone", which are shutdown-window states rather than
@@ -71,15 +86,20 @@ pub enum Disposition {
 /// genuine host defect reaches the dead-letter table instead of looping.
 ///
 /// `PermissionDenied` is terminal on purpose: the gate is deterministic, so
-/// retrying re-asks a question that is already settled.
+/// retrying re-asks a question that is already settled. So is a target
+/// whose *dependency name* no longer resolves at all -- but that is
+/// decided before this function is reached, since it is not a delivery
+/// failure but a failure to have anything to deliver to.
 #[must_use]
 pub fn disposition_of(error: &ProxyError) -> Disposition {
     match error {
-        ProxyError::Callee { code, .. } if *code == CALL_ALREADY_RUNNING_RPC_CODE => {
+        ProxyError::Callee { code, .. }
+            if *code == CALL_ALREADY_RUNNING_RPC_CODE || *code == SERVICE_NOT_FOUND_RPC_CODE =>
+        {
             Disposition::Retry
         }
+        ProxyError::ServiceNotFound(_) => Disposition::Retry,
         ProxyError::Callee { .. }
-        | ProxyError::ServiceNotFound(_)
         | ProxyError::UnsupportedTarget(_)
         | ProxyError::PermissionDenied(_)
         | ProxyError::UnsupportedProtocol(_) => Disposition::Terminal,
@@ -444,10 +464,46 @@ mod tests {
     }
 
     #[test]
-    fn a_transport_failure_retries_and_an_unknown_service_is_terminal() {
+    fn a_transport_failure_retries() {
         assert_eq!(disposition_of(&ProxyError::Transport("down".into())), Disposition::Retry);
         assert_eq!(
-            disposition_of(&ProxyError::ServiceNotFound("gone".into())),
+            disposition_of(&ProxyError::Timeout(std::time::Duration::from_secs(1))),
+            Disposition::Retry
+        );
+    }
+
+    /// The narrowing: at the wire, "I do not host that service" is
+    /// indistinguishable from a node that republished its endpoint record
+    /// before its services finished coming up. Dead-lettering on the first
+    /// hit would give up during exactly the outage a durable queue exists
+    /// to survive; the attempt budget still bounds a target that really is
+    /// gone.
+    #[test]
+    fn an_unknown_service_retries_whether_it_is_local_or_reported_by_the_target() {
+        assert_eq!(
+            disposition_of(&ProxyError::ServiceNotFound("mid-restart".into())),
+            Disposition::Retry
+        );
+        assert_eq!(
+            disposition_of(&ProxyError::Callee {
+                code: SERVICE_NOT_FOUND_RPC_CODE,
+                message: "unknown service".into(),
+                data: None,
+            }),
+            Disposition::Retry
+        );
+    }
+
+    /// The boundary the narrowing must not cross: an unreachable target
+    /// kind and a denied call are settled questions, and stay terminal.
+    #[test]
+    fn the_narrowing_does_not_reach_the_settled_refusals() {
+        assert_eq!(
+            disposition_of(&ProxyError::UnsupportedTarget("tcp".into())),
+            Disposition::Terminal
+        );
+        assert_eq!(
+            disposition_of(&ProxyError::UnsupportedProtocol("wrpc".into())),
             Disposition::Terminal
         );
     }
