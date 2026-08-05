@@ -717,6 +717,7 @@ mod tests {
             method: method.to_string(),
             params,
             id: None,
+            idempotency_key: None,
         };
         engine.execute_wasm(service_id, MESSAGING_TEST_DRIVER_INTERFACE, &request).await.unwrap()
     }

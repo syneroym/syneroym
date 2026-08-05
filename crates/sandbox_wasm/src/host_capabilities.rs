@@ -1100,9 +1100,15 @@ impl proxy::Host for HostState {
                 .map_err(|e| proxy::ProxyError::Internal(format!("params must be JSON: {e}")))?
         };
 
-        let (protocol_tag, idempotent, timeout_ms, routing_key) = match &options {
-            Some(o) => (o.protocol.as_deref(), o.idempotent, o.timeout_ms, o.routing_key.clone()),
-            None => (None, false, None, None),
+        let (protocol_tag, idempotent, timeout_ms, routing_key, idempotency_key) = match &options {
+            Some(o) => (
+                o.protocol.as_deref(),
+                o.idempotent,
+                o.timeout_ms,
+                o.routing_key.clone(),
+                o.idempotency_key.clone(),
+            ),
+            None => (None, false, None, None, None),
         };
         let protocol =
             ProxyProtocol::parse(protocol_tag).map_err(proxy::ProxyError::UnsupportedProtocol)?;
@@ -1183,6 +1189,7 @@ impl proxy::Host for HostState {
             origin: CallOrigin::Guest { service_id: self.component_id.clone() },
             protocol,
             idempotent,
+            idempotency_key,
             timeout: timeout_ms.map(|ms| Duration::from_millis(ms.into())),
         };
 
@@ -1723,6 +1730,7 @@ pub(crate) mod tests {
             idempotent: false,
             timeout_ms: None,
             routing_key: Some("user-42".to_string()),
+            idempotency_key: None,
         });
         proxy::Host::call(
             &mut host,
@@ -1749,6 +1757,62 @@ pub(crate) mod tests {
         let second = proxy.last_request.lock().unwrap().take().unwrap().target_service;
 
         assert_eq!(first, second, "the same routing key must select the same member every time");
+    }
+
+    /// The guest's fence has to reach the request the router builds, or
+    /// nothing downstream can put it on the wire for the receiver to
+    /// dedup on (ADR-0023 §4).
+    #[tokio::test]
+    async fn the_host_function_passes_the_guests_key_into_the_proxy_request() {
+        let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
+        let resolver = Arc::new(LogicalResolver::new(registry));
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = dependency_host("frontend", None, resolver, &proxy, temp_dir.path());
+
+        proxy::Host::call(
+            &mut host,
+            CallTarget::Service("did:key:zBackend".to_string()),
+            "greeter".to_string(),
+            "greet".to_string(),
+            "null".to_string(),
+            Some(CallOptions {
+                protocol: None,
+                idempotent: false,
+                timeout_ms: None,
+                routing_key: None,
+                idempotency_key: Some("msg-7".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let received = proxy.last_request.lock().unwrap().take().unwrap();
+        assert_eq!(received.idempotency_key.as_deref(), Some("msg-7"));
+    }
+
+    /// The ordinary call is unchanged: no options, no key.
+    #[tokio::test]
+    async fn a_call_with_no_options_carries_no_idempotency_key() {
+        let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
+        let resolver = Arc::new(LogicalResolver::new(registry));
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = dependency_host("frontend", None, resolver, &proxy, temp_dir.path());
+
+        proxy::Host::call(
+            &mut host,
+            CallTarget::Service("did:key:zBackend".to_string()),
+            "greeter".to_string(),
+            "greet".to_string(),
+            "null".to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let received = proxy.last_request.lock().unwrap().take().unwrap();
+        assert_eq!(received.idempotency_key, None);
     }
 
     #[tokio::test]

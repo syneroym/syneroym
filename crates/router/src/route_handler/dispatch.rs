@@ -476,6 +476,7 @@ impl RouteHandler {
                         method: MESSAGING_MESSAGE_METHOD.to_string(),
                         params,
                         id: None,
+                        idempotency_key: None,
                     };
                     let Ok(bytes) = serde_json::to_vec(&notify) else { continue };
                     if framing::write_frame(&mut writer, &bytes).await.is_err() {

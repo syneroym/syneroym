@@ -84,6 +84,7 @@ async fn run_crud_scenario(engine: &AppSandboxEngine, count: u32) -> u32 {
         method: "run-crud-scenario".to_string(),
         params: serde_json::json!([count]),
         id: None,
+        idempotency_key: None,
     };
     // `execute_wasm` returns a successful `result<string, _>` guest value as
     // the raw string, not JSON-quoted -- see
@@ -102,6 +103,7 @@ async fn run_query_scenario(engine: &AppSandboxEngine, limit: u32) -> u32 {
         method: "run-query-scenario".to_string(),
         params: serde_json::json!([limit]),
         id: None,
+        idempotency_key: None,
     };
     let result = engine.execute_wasm(SERVICE_ID, TEST_DRIVER_INTERFACE, &request).await.unwrap();
     result.parse::<u32>().unwrap()
@@ -147,6 +149,7 @@ async fn get_creator_id(engine: &AppSandboxEngine, id: &str) -> String {
         method: "get-creator-id".to_string(),
         params: serde_json::json!([id]),
         id: None,
+        idempotency_key: None,
     };
     engine.execute_wasm(SERVICE_ID, TEST_DRIVER_INTERFACE, &request).await.unwrap()
 }
@@ -405,6 +408,7 @@ async fn test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d
         method: "run-query-scenario".to_string(),
         params: serde_json::json!([7]),
         id: None,
+        idempotency_key: None,
     };
     let result = engine
         .execute_wasm_json(SERVICE_ID, TEST_DRIVER_INTERFACE, &request, Some(real_caller))
@@ -490,6 +494,7 @@ async fn test_deployed_policy_authorizes_guest_originated_writes_for_a_real_call
         method: "run-crud-scenario".to_string(),
         params: serde_json::json!([3]),
         id: None,
+        idempotency_key: None,
     };
     let result = engine
         .execute_wasm_json(SERVICE_ID, TEST_DRIVER_INTERFACE, &request, Some(writer))
@@ -514,6 +519,7 @@ async fn test_deployed_policy_authorizes_guest_originated_writes_for_a_real_call
         method: "run-crud-scenario".to_string(),
         params: serde_json::json!([1]),
         id: None,
+        idempotency_key: None,
     };
     let err = engine
         .execute_wasm_json(SERVICE_ID, TEST_DRIVER_INTERFACE, &request, Some(stranger))

@@ -327,6 +327,7 @@ impl ProxyRouter {
                     method: req.method.clone(),
                     params: req.params.clone(),
                     id: Some(Value::from(1)),
+                    idempotency_key: req.idempotency_key.clone(),
                 };
                 time::timeout(
                     call_timeout,
@@ -450,6 +451,7 @@ impl ProxyRouter {
             method: req.method.clone(),
             params: req.params.clone(),
             id: Some(Value::from(1)),
+            idempotency_key: req.idempotency_key.clone(),
         };
         let call_timeout = req.timeout.unwrap_or(DEFAULT_PROXY_CALL_TIMEOUT);
 
@@ -557,6 +559,7 @@ mod tests {
             caller: test_caller("did:key:zTestCaller"),
             origin: CallOrigin::Native { service_id: None },
             protocol: ProxyProtocol::JsonRpcV1,
+            idempotency_key: None,
             idempotent: false,
             timeout: Some(Duration::from_secs(1)),
         }

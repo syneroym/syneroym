@@ -995,6 +995,7 @@ async fn test_cross_node_native_capability_identity_forwarding() -> Result<()> {
         },
         origin: CallOrigin::Native { service_id: None },
         protocol: ProxyProtocol::JsonRpcV1,
+        idempotency_key: None,
         idempotent: false,
         timeout: Some(Duration::from_secs(5)),
     };

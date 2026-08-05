@@ -75,10 +75,19 @@ pub struct ProxyRequest {
     pub caller: CallerContext,
     pub origin: CallOrigin,
     pub protocol: ProxyProtocol,
-    /// Retry eligibility. Transport failures are retried with backoff only
-    /// when `true`; a callee-returned error is never retried. Failed-after-
-    /// retries fails directly -- no queueing (DLQ is M5).
+    /// Retry eligibility asserted by the caller. Transport failures are
+    /// retried with backoff only when `true` (or when
+    /// [`Self::idempotency_key`] is set, which is a strictly stronger
+    /// fence); a callee-returned error is never retried.
     pub idempotent: bool,
+    /// The receiver-side fence for at-least-once delivery (ADR-0023 §4).
+    /// Present means the receiving node records the call's first outcome
+    /// under `(caller, key)` and answers any duplicate from that record,
+    /// which is what makes a retry -- and a dead letter's later replay --
+    /// safe. Absent means the call has no fence, so it is never queued for
+    /// redelivery and never written to a dead-letter table: the caller is
+    /// alive and holding the error, and there is nothing safe to replay.
+    pub idempotency_key: Option<String>,
     /// Per-call deadline. `None` uses [`DEFAULT_PROXY_CALL_TIMEOUT`].
     pub timeout: Option<Duration>,
 }

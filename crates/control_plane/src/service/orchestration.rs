@@ -2874,6 +2874,7 @@ impl ControlPlaneService {
                     method: p.method.clone(),
                     params: Value::Array(vec![]),
                     id: Some(Value::from(1)),
+                    idempotency_key: None,
                 };
                 // M05A A5c §19.13/D-A5c-12: `execute_probe_json`, not
                 // `execute_wasm_json` directly -- bounded by the engine's

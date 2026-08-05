@@ -458,6 +458,7 @@ impl SyneroymClient {
             method: method.to_string(),
             params,
             id: Some(Value::Number(1.into())),
+            idempotency_key: None,
         };
         self.request_raw(interface, request).await
     }
@@ -543,6 +544,7 @@ impl SyneroymClient {
             method: "subscribe".to_string(),
             params: serde_json::json!({"topic": topic}),
             id: Some(Value::Number(1.into())),
+            idempotency_key: None,
         };
         let (send, mut recv) = self.open_request_stream(interface, &request).await?;
 

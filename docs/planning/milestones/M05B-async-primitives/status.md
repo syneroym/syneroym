@@ -5,7 +5,8 @@
 [implementation-plan.md](implementation-plan.md)
 
 **Overall:** 🚧 **B1 complete 2026-08-05**, all gates green (evidence below).
-ADR-0023 accepted 2026-08-04. B2-B4 remain planned (sketch only).
+ADR-0023 accepted 2026-08-04. **B2 has a full plan as of 2026-08-05** (not
+started); B3 and B4 remain sketch only.
 
 **Plan layout.** [implementation-plan.md](implementation-plan.md) is milestone
 level: the split call, cross-cutting findings and decisions, slice sequence,
@@ -21,7 +22,7 @@ where every single-slice plan in that milestone sits between 990 and 2,143.
 | Slice | Scope | Status | Gate |
 |---|---|---|---|
 | B1 | Queue crate, supervisor delivery outbox, DLQ with alert and operator surface. **Closes [M05A slice A6](../M05A-app-supervisor/task.md)** | ✅ **Complete (2026-08-05)** — evidence below | ADR-0023 accepted |
-| B2 | Guest outbox and proxy DLQ: idempotency key, `enqueue`, receiver-side dedup | 📋 Planned (sketch only; owes its own `§0`) | B1 |
+| B2 | Guest outbox and proxy DLQ: idempotency key, `enqueue`, receiver-side dedup | 📋 **Planned in full, not started** — [slice-b2-implementation-plan.md](slice-b2-implementation-plan.md) (2026-08-05, revised same day after review). Its `§0` narrows the slice in four places and its `§5` carries six document corrections | B1 |
 | B3 | Scheduled tasks: manifest surface, evaluation on the supervisor's pass tick, member selection, overlap prevention | 📋 Planned (sketch only; owes its own `§0`) | B1 |
 | B4 | Saga compensations: the `undo-<operation>` convention, deploy-time check, step log, reverse walk | 📋 Planned (sketch only; owes its own `§0`) | B1 |
 | ~~B5~~ | ~~Long-running tasks~~ | **Deferred out of this milestone (2026-08-04)** — [deferred-backlog.md](../../deferred-backlog.md) §8, target M5 final phase | — |
