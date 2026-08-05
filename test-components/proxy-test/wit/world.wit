@@ -17,6 +17,21 @@ interface test-driver {
         params: string,
         target-kind: string,
     ) -> result<string, string>;
+
+    /// Hands a call to this service's durable outbox at
+    /// `syneroym:proxy/proxy::enqueue`, returning the `proxy-error`
+    /// debug-formatted on failure. `idempotency-key` is passed through
+    /// verbatim, including empty -- an empty string is sent as *absent*, so
+    /// a test can drive the no-key refusal through the real guest boundary
+    /// rather than against a Rust-level fake.
+    enqueue-peer: func(
+        service: string,
+        %interface: string,
+        method: string,
+        params: string,
+        target-kind: string,
+        idempotency-key: string,
+    ) -> result<_, string>;
 }
 
 world proxy-test {

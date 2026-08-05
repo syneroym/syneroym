@@ -46,6 +46,35 @@ impl TestDriverGuest for ProxyTestComponent {
         };
         proxy::call(&target, &interface, &method, &params, None).map_err(|e| format!("{e:?}"))
     }
+
+    fn enqueue_peer(
+        service: String,
+        interface: String,
+        method: String,
+        params: String,
+        target_kind: String,
+        idempotency_key: String,
+    ) -> Result<(), String> {
+        let target = match target_kind.as_str() {
+            "dependency" => proxy::CallTarget::Dependency(service),
+            _ => proxy::CallTarget::Service(service),
+        };
+        let options = proxy::CallOptions {
+            protocol: None,
+            idempotent: false,
+            timeout_ms: None,
+            routing_key: None,
+            // Empty means absent, so the host's own no-key refusal can be
+            // driven from real guest code.
+            idempotency_key: if idempotency_key.is_empty() {
+                None
+            } else {
+                Some(idempotency_key)
+            },
+        };
+        proxy::enqueue(&target, &interface, &method, &params, Some(&options))
+            .map_err(|e| format!("{e:?}"))
+    }
 }
 
 /// Deterministic, fixed behavior (no `app-config`-driven mode switching like
