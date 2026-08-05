@@ -1730,6 +1730,10 @@ impl StorageProvider for SqliteStorageProvider {
         Ok(service_db_dir.join("state.db").exists())
     }
 
+    fn service_db_dir(&self, service_id: &str) -> anyhow::Result<PathBuf> {
+        self.resolve_service_db_dir(service_id)
+    }
+
     async fn load_service_dek(
         &self,
         service_id: &str,

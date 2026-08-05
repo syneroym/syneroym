@@ -35,9 +35,17 @@ use std::{
 use anyhow::{Result, anyhow};
 use rusqlite::{Connection, OptionalExtension, params};
 use syneroym_core::{
-    config::{RetryPolicy, SupervisorRole},
+    config::{AppSandboxRole, RetryPolicy, SupervisorRole},
     retry::calculate_jittered_backoff,
 };
+use zeroize::Zeroizing;
+
+pub use crate::dedup::{
+    CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, DedupConfig, DedupDecision,
+    DedupStore, FirstOutcome,
+};
+
+mod dedup;
 
 /// The retry curve ([`RetryPolicy`], reused per M05B D-B1-13 -- its struct
 /// and `calculate_jittered_backoff`, not `retry_with_backoff`, which sleeps
@@ -79,6 +87,39 @@ impl From<&SupervisorRole> for QueueConfig {
             visibility_timeout_ms: role.queue_visibility_timeout_secs.saturating_mul(1000),
             dlq_max_rows: role.queue_dlq_max_rows,
         }
+    }
+}
+
+/// The sandbox role's five `queue_*` fields, converted -- the guest proxy
+/// outbox's own budget. Same shape and same clamp as the supervisor's:
+/// initial backoff and multiplier stay `RetryPolicy`'s defaults, since the
+/// role configures the attempt budget and the ceiling, not the shape of the
+/// early curve.
+impl From<&AppSandboxRole> for QueueConfig {
+    fn from(role: &AppSandboxRole) -> Self {
+        let defaults = RetryPolicy::default();
+        Self {
+            retry: RetryPolicy {
+                max_attempts: role.queue_max_attempts.max(1),
+                initial_backoff_ms: defaults.initial_backoff_ms,
+                backoff_multiplier: defaults.backoff_multiplier,
+                max_backoff_ms: role.queue_max_backoff_secs.saturating_mul(1000),
+            },
+            visibility_timeout_ms: role.queue_visibility_timeout_secs.saturating_mul(1000),
+            dlq_max_rows: role.queue_dlq_max_rows,
+        }
+    }
+}
+
+impl QueueConfig {
+    /// The nominal, unjittered time this budget spends retrying one item
+    /// before it dead-letters: the sum of every wait the backoff curve
+    /// produces over the attempt budget.
+    #[must_use]
+    pub fn total_retry_window_ms(&self) -> u64 {
+        (1..u32::from(self.retry.max_attempts))
+            .map(|wait| backoff_before_wait(&self.retry, wait))
+            .sum()
     }
 }
 
@@ -167,13 +208,23 @@ pub struct Queue {
 #[allow(clippy::expect_used)]
 impl Queue {
     pub fn open<P: AsRef<Path>>(dir: P, db_name: &str, config: QueueConfig) -> Result<Self> {
-        if db_name.contains('/') || db_name.contains('\\') || db_name.contains("..") {
-            return Err(anyhow!("Invalid database name: {}", db_name));
-        }
-        let path = dir.as_ref().join(db_name);
-        let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-        Self::from_connection(Arc::new(Mutex::new(conn)), config)
+        Self::from_connection(Arc::new(Mutex::new(open_connection(dir, db_name, None)?)), config)
+    }
+
+    /// Opens a queue in a SQLCipher-encrypted file, keyed with `dek`.
+    ///
+    /// A queued payload is the caller's own data, so it must not sit in a
+    /// store weaker than the database that data came from. `dek: None`
+    /// means encryption is disabled for the whole deployment, in which case
+    /// the file is plain SQLite -- matching, not exceeding, the protection
+    /// the surrounding data has.
+    pub fn open_encrypted<P: AsRef<Path>>(
+        dir: P,
+        db_name: &str,
+        dek: Option<&[u8; 32]>,
+        config: QueueConfig,
+    ) -> Result<Self> {
+        Self::from_connection(Arc::new(Mutex::new(open_connection(dir, db_name, dek)?)), config)
     }
 
     pub fn open_in_memory(config: QueueConfig) -> Result<Self> {
@@ -587,6 +638,29 @@ impl Queue {
     }
 }
 
+/// Opens (creating on first use) a WAL-mode SQLite connection at
+/// `dir/db_name`, applying `PRAGMA key` before anything else touches the
+/// file when `dek` is present. The key pragma must be the first statement
+/// on the connection: SQLCipher decides the page cipher from it, so running
+/// schema DDL first would create an unencrypted file that later opens
+/// refuse.
+fn open_connection<P: AsRef<Path>>(
+    dir: P,
+    db_name: &str,
+    dek: Option<&[u8; 32]>,
+) -> Result<Connection> {
+    if db_name.contains('/') || db_name.contains('\\') || db_name.contains("..") {
+        return Err(anyhow!("Invalid database name: {}", db_name));
+    }
+    let conn = Connection::open(dir.as_ref().join(db_name))?;
+    if let Some(dek) = dek {
+        let pragma = Zeroizing::new(format!("x'{}'", hex::encode(dek)));
+        conn.pragma_update(None, "key", &*pragma)?;
+    }
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    Ok(conn)
+}
+
 /// The un-jittered backoff before the wait that follows a `wait_number`'th
 /// failed attempt (1-indexed), capped at `policy.max_backoff_ms` --
 /// `RetryPolicy`'s own curve. [`Queue::fail`] applies
@@ -632,6 +706,48 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].payload, b"payload-a");
         assert_eq!(items[0].queue_key, "inst-1/backend@did:key:zB");
+    }
+
+    /// Durability and the SQLCipher key in one assertion: an item written
+    /// to an encrypted queue file is still there after the process that
+    /// wrote it is gone, and still readable with the same key.
+    #[test]
+    fn a_queued_item_survives_reopening_the_encrypted_queue_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dek = [7u8; 32];
+        {
+            let queue =
+                Queue::open_encrypted(dir.path(), "async.db", Some(&dek), config()).unwrap();
+            queue.enqueue("did:key:zTarget", "msg-7", b"payload-a", 1_000).unwrap();
+        }
+        let queue = Queue::open_encrypted(dir.path(), "async.db", Some(&dek), config()).unwrap();
+        let items = queue.all().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].payload, b"payload-a");
+        assert_eq!(items[0].queue_key, "msg-7");
+    }
+
+    /// A queued payload is the calling service's own data, so the file it
+    /// waits in must be no weaker than the database that data came from.
+    /// Scoped to an encryption-enabled deployment: with encryption
+    /// disabled the queue is plain SQLite, exactly as `state.db` is then,
+    /// and this property is not claimed.
+    #[test]
+    fn the_queue_file_is_unreadable_without_the_services_dek() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let queue =
+                Queue::open_encrypted(dir.path(), "async.db", Some(&[7u8; 32]), config()).unwrap();
+            queue.enqueue("did:key:zTarget", "msg-7", b"secret-payload", 1_000).unwrap();
+        }
+        assert!(
+            Queue::open(dir.path(), "async.db", config()).is_err(),
+            "an unkeyed open of an encrypted queue file must fail"
+        );
+        assert!(
+            Queue::open_encrypted(dir.path(), "async.db", Some(&[8u8; 32]), config()).is_err(),
+            "the wrong key must fail exactly like no key"
+        );
     }
 
     /// Test 3: failure-matrix row 6.
@@ -780,6 +896,29 @@ mod tests {
             (36_737_000.0..=36_739_000.0).contains(&(total_ms as f64)),
             "expected ~36,738,000 ms, got {total_ms} ms"
         );
+    }
+
+    /// The guest proxy outbox's own defaults must give the same overnight
+    /// window the supervisor's do -- a message queued at 22:00 has to be
+    /// deliverable at 07:00.
+    #[test]
+    fn the_sandbox_role_defaults_give_the_same_ten_hour_window() {
+        let cfg = QueueConfig::from(&AppSandboxRole::default());
+        assert_eq!(cfg.retry.max_attempts, 54);
+        assert_eq!(cfg.retry.max_backoff_ms, 900_000);
+        assert_eq!(cfg.visibility_timeout_ms, 120_000);
+        assert_eq!(cfg.dlq_max_rows, 1000);
+        let total = cfg.total_retry_window_ms() as f64;
+        assert!(
+            (36_737_000.0..=36_739_000.0).contains(&total),
+            "expected ~36,738,000 ms, got {total} ms"
+        );
+    }
+
+    #[test]
+    fn a_configured_zero_sandbox_max_attempts_is_clamped_to_one() {
+        let role = AppSandboxRole { queue_max_attempts: 0, ..AppSandboxRole::default() };
+        assert_eq!(QueueConfig::from(&role).retry.max_attempts, 1);
     }
 
     /// M05B B1 review finding 9: a configured `queue_max_attempts` of 0

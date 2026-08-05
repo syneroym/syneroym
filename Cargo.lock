@@ -7353,9 +7353,11 @@ name = "syneroym-async-queue"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hex",
  "rusqlite",
  "syneroym-core",
  "tempfile",
+ "zeroize",
 ]
 
 [[package]]

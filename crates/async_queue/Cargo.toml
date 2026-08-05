@@ -9,7 +9,9 @@ workspace = true
 [dependencies]
 syneroym-core.workspace = true
 anyhow.workspace = true
+hex.workspace = true
 rusqlite.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

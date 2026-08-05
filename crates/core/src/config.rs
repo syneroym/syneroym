@@ -479,6 +479,50 @@ pub struct AppSandboxRole {
     /// runs on the hot read path, not once per deploy. A starting point, to
     /// be re-tuned against a measured `criterion` bench.
     pub abac_epoch_timeout_secs: u64,
+    /// The guest proxy outbox worker's own tick. Recovery after an
+    /// unreachable target returns is bounded by this, and nothing finer
+    /// helps when the wait is for a peer to come back.
+    pub queue_tick_secs: u64,
+    /// The outbox's attempt budget before an item dead-letters. See
+    /// [`default_proxy_queue_max_attempts`] for the ~10-hour window this
+    /// and `queue_max_backoff_secs` together produce.
+    pub queue_max_attempts: u8,
+    /// The ceiling the outbox's backoff curve settles at. The early
+    /// retries stay sub-second, so a peer that only blipped is served
+    /// immediately.
+    pub queue_max_backoff_secs: u64,
+    /// How long a claimed outbox item stays invisible to a second claim
+    /// before a crashed worker's hold on it is assumed gone.
+    pub queue_visibility_timeout_secs: u64,
+    /// Dead letters are pruned oldest-first past this row count, within
+    /// one target: a permanently broken recipient must not be able to
+    /// evict every other conversation's dead letters.
+    pub queue_dlq_max_rows: u32,
+}
+
+/// The guest proxy outbox lives wherever a guest does, so its knobs live on
+/// the sandbox role rather than on the supervisor's -- a substrate hosting
+/// guests may run no supervisor at all.
+const fn default_proxy_queue_tick_secs() -> u64 {
+    5
+}
+/// 54 attempts with a 100 ms initial backoff, x2 multiplier and a 900 s
+/// ceiling sum to roughly 10.2 hours of retrying. A message queued at 22:00
+/// must still be deliverable at 07:00.
+const fn default_proxy_queue_max_attempts() -> u8 {
+    54
+}
+const fn default_proxy_queue_max_backoff_secs() -> u64 {
+    900
+}
+/// Four times the proxy's own 30 s per-call budget, which bounds a single
+/// delivery attempt. Too short re-delivers work still in flight; too long
+/// strands a crashed worker's item for no reason.
+const fn default_proxy_queue_visibility_timeout_secs() -> u64 {
+    120
+}
+const fn default_proxy_queue_dlq_max_rows() -> u32 {
+    1000
 }
 
 impl AppSandboxRole {
@@ -501,6 +545,11 @@ impl Default for AppSandboxRole {
             lifecycle_hook_epoch_timeout_secs: default_lifecycle_hook_epoch_timeout_secs(),
             abac_max_instructions: default_abac_max_instructions(),
             abac_epoch_timeout_secs: default_abac_epoch_timeout_secs(),
+            queue_tick_secs: default_proxy_queue_tick_secs(),
+            queue_max_attempts: default_proxy_queue_max_attempts(),
+            queue_max_backoff_secs: default_proxy_queue_max_backoff_secs(),
+            queue_visibility_timeout_secs: default_proxy_queue_visibility_timeout_secs(),
+            queue_dlq_max_rows: default_proxy_queue_dlq_max_rows(),
         }
     }
 }
