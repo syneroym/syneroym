@@ -41,6 +41,16 @@ use crate::{
     proxy_outbox::{self, Disposition, ProxyOutbox},
 };
 
+/// How long `enqueue`'s immediate try-then-queue attempt may take before
+/// the item is simply queued instead.
+///
+/// Deliberately well under the sandbox's own `dispatch_epoch_timeout_secs`
+/// (5s by default): a guest calling a fire-and-forget verb must get an
+/// answer promptly whatever the target is doing, and anything this probe
+/// would have waited longer to learn is something the outbox worker will
+/// find out on its own schedule.
+const ENQUEUE_PROBE_BUDGET: Duration = Duration::from_secs(2);
+
 /// One wire's worth of "send this JSON-RPC request to that node and read the
 /// response". The transport-agnostic seam a future wRPC wire (A.5) slots
 /// into: a second impl plus a second `ProxyProtocol` variant, nothing else.
@@ -750,16 +760,37 @@ impl ProxyRouter {
             )));
         }
 
-        match self.invoke_inner(&self.request_from(&call, target)).await {
-            Ok(_) => Ok(()),
-            Err(e) if proxy_outbox::disposition_of(&e) == Disposition::Retry => {
+        // The immediate attempt is a *probe*, not a delivery, so it runs
+        // under its own tight bound rather than the call's full budget.
+        //
+        // Without this the guest waits out a doomed connect and every
+        // retry underneath it -- comfortably past the sandbox's own
+        // `dispatch_epoch_timeout_secs` (5s), which interrupts the guest
+        // mid-call and turns a successful "accepted for delivery" into a
+        // trap. That is the opposite of what a fire-and-forget verb owes
+        // its caller, and the outbox already *is* the retry mechanism, so
+        // there is nothing to gain by waiting longer here.
+        let probe = time::timeout(
+            ENQUEUE_PROBE_BUDGET,
+            self.invoke_inner(&self.request_from(&call, target)),
+        )
+        .await;
+        match probe {
+            Ok(Ok(_)) => Ok(()),
+            // The probe ran out of its own budget: nothing is known about
+            // the target, which is exactly the retryable case.
+            Err(_) => {
+                warn!("proxy enqueue probe timed out; queueing");
+                outbox.store(&call).await
+            }
+            Ok(Err(e)) if proxy_outbox::disposition_of(&e) == Disposition::Retry => {
                 warn!(error = %e, "proxy enqueue could not deliver now; queueing");
                 outbox.store(&call).await
             }
             // Terminal on the very first attempt: the caller is still here
             // to be told, which is a better answer than a dead letter it
             // cannot read.
-            Err(e) => Err(e),
+            Ok(Err(e)) => Err(e),
         }
     }
 }

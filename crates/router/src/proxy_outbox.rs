@@ -121,7 +121,17 @@ impl ProxyOutbox {
     }
 
     /// Opens (once) the outbox for `service_id`, on that service's own
-    /// database with that service's own key.
+    /// database with that service's own key, creating the file if it is
+    /// not there yet.
+    ///
+    /// Deliberately **not** gated on the service having a `state.db`. The
+    /// owner of an outbox is the service that is making the call, which
+    /// exists by construction -- and a guest that has never touched its
+    /// own data layer has no `state.db` at all, so gating on one refuses
+    /// exactly the caller this queue is for. `service_db_dir` still
+    /// validates the id and blocks traversal, which is what that check was
+    /// really buying. The operator verbs, which take an id from a human,
+    /// go through [`Self::existing_queue_for`] instead.
     pub async fn queue_for(&self, service_id: &str) -> Result<Queue, ProxyError> {
         if let Some(queue) = self
             .queues
@@ -131,14 +141,6 @@ impl ProxyOutbox {
             .cloned()
         {
             return Ok(queue);
-        }
-        if !self
-            .storage_provider
-            .service_exists(service_id)
-            .await
-            .map_err(|e| ProxyError::Internal(format!("cannot check calling service: {e}")))?
-        {
-            return Err(ProxyError::ServiceNotFound(service_id.to_string()));
         }
         let dek = self
             .storage_provider
@@ -276,6 +278,16 @@ impl ProxyOutbox {
         self.queues.lock().map(|q| q.keys().cloned().collect()).unwrap_or_default()
     }
 
+    /// The outbox for `service_id` **only if it already exists**, for the
+    /// operator verbs: an id typed by a human must not bring a queue file
+    /// into being just by being asked about.
+    pub async fn existing_queue_for(&self, service_id: &str) -> Result<Option<Queue>, ProxyError> {
+        if !self.queue_file_exists(service_id) {
+            return Ok(None);
+        }
+        self.queue_for(service_id).await.map(Some)
+    }
+
     /// Whether `service_id` already has a queue file on disk.
     ///
     /// Checked before opening, so a worker tick does not create an empty
@@ -304,7 +316,10 @@ impl ProxyOutbox {
 #[async_trait::async_trait]
 impl ProxyQueueInspector for ProxyOutbox {
     async fn queued_calls(&self, service_id: &str) -> Result<Vec<QueuedCallInfo>, String> {
-        let queue = self.queue_for(service_id).await.map_err(|e| e.to_string())?;
+        let Some(queue) = self.existing_queue_for(service_id).await.map_err(|e| e.to_string())?
+        else {
+            return Ok(Vec::new());
+        };
         let items = task::spawn_blocking(move || queue.all())
             .await
             .map_err(|e| e.to_string())?
@@ -320,7 +335,10 @@ impl ProxyQueueInspector for ProxyOutbox {
     }
 
     async fn dead_letters(&self, service_id: &str) -> Result<Vec<DeadLetterInfo>, String> {
-        let queue = self.queue_for(service_id).await.map_err(|e| e.to_string())?;
+        let Some(queue) = self.existing_queue_for(service_id).await.map_err(|e| e.to_string())?
+        else {
+            return Ok(Vec::new());
+        };
         let items = task::spawn_blocking(move || queue.dead_letters())
             .await
             .map_err(|e| e.to_string())?
@@ -338,7 +356,10 @@ impl ProxyQueueInspector for ProxyOutbox {
     }
 
     async fn replay_dead_letter(&self, service_id: &str, id: u64) -> Result<(), String> {
-        let queue = self.queue_for(service_id).await.map_err(|e| e.to_string())?;
+        let Some(queue) = self.existing_queue_for(service_id).await.map_err(|e| e.to_string())?
+        else {
+            return Err(format!("service '{service_id}' has no durable proxy queue"));
+        };
         let now = now_ms();
         task::spawn_blocking(move || queue.replay(id as i64, now))
             .await
