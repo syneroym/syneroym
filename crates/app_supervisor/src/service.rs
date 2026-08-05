@@ -196,6 +196,28 @@ impl QueueConnector for LiveQueueConnector {
     }
 }
 
+/// What one call to [`SupervisorService::push_bindings`] actually did.
+/// Not a bare `Vec<BindingWriteOutcome>`, because that is genuinely
+/// ambiguous: a *real, attempted* write can legitimately carry zero
+/// outcomes when it has zero bindings to send (every `depends_on` a
+/// service declared was just removed from its manifest -- an ordinary
+/// deploy, not an edge case), and an earlier version of this code used
+/// exactly `Vec::new()` as its own sentinel for "not attempted, deferred
+/// to an already-pending queue item" (M05B B1 review, two review passes
+/// deep: the first found the epoch-skew this sentinel was meant to fix; a
+/// second found the sentinel itself was ambiguous with a real, empty
+/// success, permanently downgrading a service that had simply lost its
+/// last dependency).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PushOutcome {
+    /// The write was actually attempted -- successfully or not, and
+    /// possibly with zero outcomes if `svc` had zero bindings to send.
+    Landed(Vec<BindingWriteOutcome>),
+    /// Not attempted this call: an item for this exact key is already
+    /// durably queued, so this call defers to it entirely.
+    Deferred,
+}
+
 pub struct SupervisorService {
     node_did: String,
     store: SupervisorStore,
@@ -1303,12 +1325,16 @@ impl SupervisorService {
                 &svc.member_ref().to_string(),
                 substrate_did,
             );
-            // An empty `Ok` means the push deferred to an already-pending
-            // queued delivery rather than landing this pass -- it must
+            // `Deferred` means the push did not land this pass -- it must
             // count the same as an error here (M05B B1 review follow-on
             // 1), or a redeploy landing in the same pass would journal
             // this member's new baseline as converged while the queue
-            // still holds stale content for it.
+            // still holds stale content for it. Distinct from `Landed`
+            // with zero outcomes (every dependency was just removed from
+            // this member's manifest), which is a real, converged
+            // success, not deferred (M05B B1 review follow-up: an earlier
+            // version of this match used an empty `Vec` as the deferred
+            // sentinel, which that case collided with).
             match self
                 .push_bindings(
                     instance_id,
@@ -1321,8 +1347,8 @@ impl SupervisorService {
                 )
                 .await
             {
-                Ok(outcomes) if outcomes.is_empty() => any_push_failed = true,
-                Ok(_) => {}
+                Ok(PushOutcome::Deferred) => any_push_failed = true,
+                Ok(PushOutcome::Landed(_)) => {}
                 Err(_) => any_push_failed = true,
             }
         }
@@ -2519,11 +2545,12 @@ impl SupervisorService {
                 &svc.member_ref().to_string(),
                 substrate_did,
             );
-            // An empty `Ok` means the push deferred to an already-pending
-            // queued delivery rather than landing this call -- must count
-            // the same as an error here too (M05B B1 review follow-on 1),
-            // so `submit`/`force-reconcile` reports it and the downgrade
-            // below fires, same as the resident loop's own call site.
+            // `Deferred` means the push did not land this call -- must
+            // count the same as an error here too (M05B B1 review
+            // follow-on 1), so `submit`/`force-reconcile` reports it and
+            // the downgrade below fires, same as the resident loop's own
+            // call site. `Landed` with zero outcomes (every dependency
+            // just removed) is a real success, not deferred.
             match self
                 .push_bindings(
                     &plan.app_instance_id,
@@ -2536,13 +2563,13 @@ impl SupervisorService {
                 )
                 .await
             {
-                Ok(outcomes) if outcomes.is_empty() => {
+                Ok(PushOutcome::Deferred) => {
                     push_errors.push(format!(
                         "{}: deferred to an already-pending queued delivery",
                         svc.member_ref()
                     ));
                 }
-                Ok(_) => {}
+                Ok(PushOutcome::Landed(_)) => {}
                 Err(e) => push_errors.push(format!("{}: {e}", svc.member_ref())),
             }
         }
@@ -2821,7 +2848,7 @@ impl SupervisorService {
         actor: &Arc<dyn SubstrateActor>,
         generation: u64,
         opened: &mut Vec<(AlertKind, String)>,
-    ) -> Result<Vec<BindingWriteOutcome>, String> {
+    ) -> Result<PushOutcome, String> {
         let app_instance_id = plan.app_instance_id.to_string();
         let l_ref = svc.member_ref().to_string();
 
@@ -2860,12 +2887,7 @@ impl SupervisorService {
         // proper `Err` on the very next line's `advance_binding_epoch`
         // instead of a silent no-op.
         if self.store.queue.has_pending(&queue_key.to_string()).unwrap_or(false) {
-            // Nothing landed this pass -- an empty `Vec` here is a
-            // sentinel every caller must treat the same as a failure for
-            // downgrade/reporting purposes (M05B B1 review follow-on 1),
-            // never as "there was nothing to push": a real push always
-            // returns at least one outcome.
-            return Ok(Vec::new());
+            return Ok(PushOutcome::Deferred);
         }
 
         let epoch = self
@@ -2932,7 +2954,7 @@ impl SupervisorService {
                 AlertKind::BindingConflict,
             );
         }
-        Ok(outcomes)
+        Ok(PushOutcome::Landed(outcomes))
     }
 
     /// The alert half of matrix row 11: a push that fails to reach the
@@ -6748,7 +6770,7 @@ mod tests {
             .unwrap();
         let elapsed = start.elapsed();
 
-        assert_eq!(outcomes, vec![BindingWriteOutcome::Applied]);
+        assert_eq!(outcomes, PushOutcome::Landed(vec![BindingWriteOutcome::Applied]));
         assert!(
             elapsed < Duration::from_secs(1),
             "the measured interval must cover the routing decision and the write's own latency, \
@@ -6775,10 +6797,49 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(outcomes, vec![BindingWriteOutcome::Applied]);
+        assert_eq!(outcomes, PushOutcome::Landed(vec![BindingWriteOutcome::Applied]));
         assert_eq!(actor.calls.lock().unwrap().len(), 1);
         assert_eq!(s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(), 1);
         assert!(opened.is_empty());
+    }
+
+    /// M05B B1 review follow-up (2026-08-05): a write with zero bindings
+    /// is a real, converged success -- not the same value `push_bindings`
+    /// used to signal "deferred to an already-pending queue item" before
+    /// `PushOutcome` existed. Reachable in the ordinary course of a
+    /// deploy: removing a service's last `depends_on` leaves
+    /// `resolved_dependencies` empty, `only_resolved_dependencies_changed`
+    /// still classifies the member as a push candidate purely because the
+    /// field *changed*, and the write this produces legitimately carries
+    /// zero bindings -- `orchestration.rs`'s `write_bindings_impl` builds
+    /// one outcome per binding sent, so the substrate legitimately answers
+    /// with zero too. Before `PushOutcome`, this collapsed onto the same
+    /// `Vec::new()` the deferred-to-queue sentinel used, permanently
+    /// downgrading the member every pass.
+    #[tokio::test]
+    async fn a_push_with_zero_bindings_lands_rather_than_reading_as_deferred() {
+        let s = service();
+        let svc = PlannedService {
+            resolved_dependencies: BTreeMap::new(),
+            ..dependent_service("frontend", "backend")
+        };
+        let plan = plan_with_one_dependent(svc.clone());
+        let actor = Arc::new(BindingActor::default());
+        actor.responses.lock().unwrap().push(Ok(Vec::new()));
+        let dyn_actor: Arc<dyn SubstrateActor> = actor.clone();
+        let instance_id = AppInstanceId::new("inst-1");
+        let mut opened = Vec::new();
+
+        let outcome = s
+            .push_bindings(&instance_id, &plan, &svc, "did:key:zEdge1", &dyn_actor, 0, &mut opened)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            PushOutcome::Landed(Vec::new()),
+            "zero bindings is a real, converged success, not a deferral"
+        );
     }
 
     /// D-A5e-4: `map_deployment_plan_to_wit` reads a binding's `mode` off
@@ -7579,7 +7640,7 @@ mod tests {
         let second = s
             .push_bindings(&instance_id, &plan, &svc, "did:key:zEdge1", &dyn_actor, 0, &mut opened)
             .await;
-        assert_eq!(second.unwrap(), vec![BindingWriteOutcome::Applied]);
+        assert_eq!(second.unwrap(), PushOutcome::Landed(vec![BindingWriteOutcome::Applied]));
         assert_eq!(
             s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(),
             2,
@@ -7662,7 +7723,11 @@ mod tests {
                 &mut opened,
             )
             .await;
-        assert!(second.is_ok(), "an already-pending key defers to the queue, it is not an error");
+        assert_eq!(
+            second.unwrap(),
+            PushOutcome::Deferred,
+            "an already-pending key defers to the queue, it is not an error"
+        );
 
         assert_eq!(
             s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(),
