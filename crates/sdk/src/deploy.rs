@@ -5,8 +5,9 @@
 //! `PlanApplier` is ADR-0021 §5's narrow "apply this action to that
 //! substrate" boundary, introduced here rather than at A5 for two reasons:
 //! partial-failure behavior is otherwise not testable without killing a live
-//! substrate mid-test, and A5's durable outbox implementation then replaces
-//! this trait's body instead of restructuring its callers.
+//! substrate mid-test, and a durable, queue-backed implementation
+//! ([`build_durable_actor`]) replaces this trait's body instead of
+//! restructuring its callers.
 
 use std::{
     collections::BTreeMap,
@@ -41,9 +42,10 @@ pub const DEFAULT_INSTANCE_CERT_EXPIRES_HOURS: u64 = 24;
 /// ADR-0021 §5's narrow "apply this action to that substrate" boundary.
 /// Three actions, not one: A3 introduced this trait (as `PlanApplier`) when
 /// applying a plan was the only action, and A5 adds the two the
-/// supervisor's own loop issues. A6 replaces the implementation with an
-/// outbox/DLQ-backed one and nothing above this trait changes -- which only
-/// holds if every action it must make durable is *on* it.
+/// supervisor's own loop issues. [`build_durable_actor`] wraps this trait
+/// with an outbox/DLQ-backed implementation, and nothing above it changed --
+/// which holds only because every action that must be made durable is *on*
+/// this trait, not bolted on beside it.
 #[async_trait::async_trait]
 pub trait SubstrateActor: fmt::Debug + Send + Sync {
     async fn apply_plan(&self, plan: WitDeploymentPlan) -> Result<(), String>;
@@ -51,9 +53,12 @@ pub trait SubstrateActor: fmt::Debug + Send + Sync {
     -> Result<Vec<BindingWriteOutcome>, String>;
     /// Included for the same reason `stop` sits beside `start` on an
     /// engine: a fake in a test must be able to answer every action the
-    /// supervisor takes. A6 may keep this synchronous -- a restart queued
-    /// for later delivery is usually wrong -- and that is a decision for
-    /// A6's implementation, not a reason to leave it outside the trait.
+    /// supervisor takes. Never queued: a restart is remediation for a
+    /// condition observed *now*, and delivering it later restarts a
+    /// service that may already have recovered on its own -- the
+    /// supervisor's own bounded remediation policy decides what a failed
+    /// restart means, and a queue behind it would be a second policy
+    /// disagreeing with the first.
     async fn restart(&self, service_id: String, generation: u64) -> Result<(), String>;
     /// Install a freshly-issued instance certificate in place, without a
     /// reinstall (M05A A5's unattended renewal). On the trait for the same
