@@ -36,7 +36,9 @@ use syneroym_async_queue::{CALL_ALREADY_RUNNING_RPC_CODE, Queue, QueueConfig};
 use syneroym_core::local_registry::EndpointRegistry;
 use syneroym_data_db::StorageProvider;
 use syneroym_data_keystore::KeyStore;
-use syneroym_rpc::{ProxyError, QueuedCall, QueuedTarget};
+use syneroym_rpc::{
+    DeadLetterInfo, ProxyError, ProxyQueueInspector, QueuedCall, QueuedCallInfo, QueuedTarget,
+};
 use tokio::task;
 use tracing::warn;
 
@@ -290,6 +292,58 @@ impl ProxyOutbox {
     /// Whether the endpoint registry still knows `service_id`.
     pub fn is_still_deployed(registry: &EndpointRegistry, service_id: &str) -> bool {
         registry.owner_of(service_id).is_some() || registry.instance_cert(service_id).is_some()
+    }
+}
+
+/// The operator's read-and-replay view of a service's queues.
+///
+/// Enumeration is by service id, which an operator already has from
+/// `status`. These verbs deliberately do not scan the filesystem for queue
+/// files, so an undeployed service's leftover `async.db` is not listable --
+/// and does not need to be, since nothing will ever drain it.
+#[async_trait::async_trait]
+impl ProxyQueueInspector for ProxyOutbox {
+    async fn queued_calls(&self, service_id: &str) -> Result<Vec<QueuedCallInfo>, String> {
+        let queue = self.queue_for(service_id).await.map_err(|e| e.to_string())?;
+        let items = task::spawn_blocking(move || queue.all())
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        Ok(items
+            .into_iter()
+            .map(|item| QueuedCallInfo {
+                id: item.id as u64,
+                idempotency_key: item.queue_key,
+                attempts: item.attempts,
+            })
+            .collect())
+    }
+
+    async fn dead_letters(&self, service_id: &str) -> Result<Vec<DeadLetterInfo>, String> {
+        let queue = self.queue_for(service_id).await.map_err(|e| e.to_string())?;
+        let items = task::spawn_blocking(move || queue.dead_letters())
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        Ok(items
+            .into_iter()
+            .map(|item| DeadLetterInfo {
+                id: item.id as u64,
+                idempotency_key: item.queue_key,
+                attempts: item.attempts,
+                last_error: item.last_error,
+                created_at: item.created_at,
+            })
+            .collect())
+    }
+
+    async fn replay_dead_letter(&self, service_id: &str, id: u64) -> Result<(), String> {
+        let queue = self.queue_for(service_id).await.map_err(|e| e.to_string())?;
+        let now = now_ms();
+        task::spawn_blocking(move || queue.replay(id as i64, now))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
     }
 }
 

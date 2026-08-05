@@ -286,6 +286,47 @@ interface orchestrator {
     /// Check the readiness of the orchestrator
     readyz: func(service-id: string) -> result<_, string>;
 
+    /// One queued proxy call still waiting for delivery, or currently
+    /// claimed by the worker.
+    record proxy-queued-call {
+        id: u64,
+        /// The caller's own idempotency key -- also the queue's dedup key,
+        /// so a service that re-enqueues the same logical operation has
+        /// one row here, not two.
+        idempotency-key: string,
+        attempts: u32,
+    }
+
+    /// One queued proxy call that will never be delivered: its attempt
+    /// budget ran out, or it failed for a reason no retry could fix.
+    record proxy-dead-letter {
+        id: u64,
+        idempotency-key: string,
+        attempts: u32,
+        last-error: string,
+        created-at: s64,
+    }
+
+    /// Every call waiting in `service-id`'s own durable outbox, oldest
+    /// first.
+    ///
+    /// These three verbs are `proxy-` prefixed because the supervisor
+    /// interface already exports `outbox`, `dead-letters` and `replay`
+    /// keyed by *app instance*. Two same-named pairs keyed differently is
+    /// how an operator ends up reading the wrong list.
+    proxy-outbox: func(service-id: string) -> result<list<proxy-queued-call>, string>;
+
+    /// Every dead letter `service-id`'s outbox holds, oldest first.
+    proxy-dead-letters: func(service-id: string) -> result<list<proxy-dead-letter>, string>;
+
+    /// Re-enqueues a dead letter for another delivery attempt. It never
+    /// executes inline, and it refuses when the outbox already holds a
+    /// pending row for the same key. Safe only because every call that can
+    /// reach this table carried an idempotency key, so a redelivery the
+    /// receiver has already seen is answered from its record rather than
+    /// run twice.
+    proxy-replay: func(service-id: string, dead-letter-id: u64) -> result<_, string>;
+
     /// How a logical service name maps to physical members. Mirrors
     /// `TopologyMode` in the app model.
     variant topology-mode {

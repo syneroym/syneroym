@@ -34,7 +34,8 @@ use syneroym_data_keystore::KeyStore;
 use syneroym_identity::{Identity, substrate};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::{
-    DEFAULT_PROXY_CALL_TIMEOUT, NativeDispatchRegistry, NativeService, RowAuthorizer, ServiceProxy,
+    DEFAULT_PROXY_CALL_TIMEOUT, NativeDispatchRegistry, NativeService, ProxyQueueInspector,
+    RowAuthorizer, ServiceProxy,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::io::AsyncWriteExt;
@@ -271,7 +272,7 @@ impl RouteHandler {
                 config.retry.clone(),
             )
             .with_dedup_guard(dedup_guard.clone())
-            .with_outbox(outbox),
+            .with_outbox(outbox.clone()),
         );
         deps.app_sandbox_engine
             .service_proxy
@@ -306,6 +307,14 @@ impl RouteHandler {
                 .set(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>)
                 .map_err(|_| {
                     anyhow::anyhow!("ControlPlaneService::service_proxy set more than once")
+                })?;
+            // The `proxy-*` operator verbs read the queues the router owns,
+            // so they need the outbox itself rather than the proxy.
+            control_plane
+                .proxy_queues
+                .set(Arc::downgrade(&outbox) as Weak<dyn ProxyQueueInspector>)
+                .map_err(|_| {
+                    anyhow::anyhow!("ControlPlaneService::proxy_queues set more than once")
                 })?;
         }
 

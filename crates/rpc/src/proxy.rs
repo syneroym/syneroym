@@ -186,6 +186,40 @@ pub struct QueuedCall {
     pub timeout_ms: Option<u64>,
 }
 
+/// One queued call, as an operator listing shows it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct QueuedCallInfo {
+    pub id: u64,
+    pub idempotency_key: String,
+    pub attempts: u32,
+}
+
+/// One terminally failed queued call, as an operator listing shows it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DeadLetterInfo {
+    pub id: u64,
+    pub idempotency_key: String,
+    pub attempts: u32,
+    pub last_error: String,
+    pub created_at: i64,
+}
+
+/// Read-and-replay access to a service's durable proxy queues, for the
+/// operator verbs.
+///
+/// Defined here rather than on the outbox itself because the control plane
+/// exposes those verbs and the router owns the queues, and the dependency
+/// runs router -> control-plane. Same shape and same reason as
+/// [`ServiceProxy`]: the contract lives in the crate both sides already
+/// share.
+#[async_trait::async_trait]
+pub trait ProxyQueueInspector: Send + Sync + Debug {
+    async fn queued_calls(&self, service_id: &str) -> Result<Vec<QueuedCallInfo>, String>;
+    async fn dead_letters(&self, service_id: &str) -> Result<Vec<DeadLetterInfo>, String>;
+    /// Re-enqueues a dead letter. Never executes inline.
+    async fn replay_dead_letter(&self, service_id: &str, id: u64) -> Result<(), String>;
+}
+
 #[async_trait::async_trait]
 pub trait ServiceProxy: Send + Sync + Debug {
     /// Returns the callee's JSON-RPC `result` value on success.

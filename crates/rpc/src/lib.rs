@@ -27,9 +27,9 @@ pub use native::{
     AuthLevel, CallerContext, CallerProof, NativeInvocation, NativeResponse, NativeService,
 };
 pub use proxy::{
-    CallOrigin, DEFAULT_PROXY_CALL_TIMEOUT, PROXY_TRANSPORT_RPC_CODE, ProxyError, ProxyProtocol,
-    ProxyRequest, QueuedCall, QueuedTarget, ServiceProxy, UNSUPPORTED_PROTOCOL_RPC_CODE,
-    UNSUPPORTED_TARGET_RPC_CODE,
+    CallOrigin, DEFAULT_PROXY_CALL_TIMEOUT, DeadLetterInfo, PROXY_TRANSPORT_RPC_CODE, ProxyError,
+    ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCall, QueuedCallInfo, QueuedTarget,
+    ServiceProxy, UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
 };
 pub use relationship_proof::{
     RELATIONSHIP_PROOF_TTL_SECS, RelationshipProof, RelationshipProofError,

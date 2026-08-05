@@ -1601,6 +1601,40 @@ mod tests {
         );
     }
 
+    /// The property that makes replay safe at all, and the reason a dead
+    /// letter needs a key to exist: replaying a call the target already
+    /// ran must not run it twice. Drives a replay against a target that
+    /// already executed the original.
+    #[tokio::test]
+    async fn a_replayed_call_is_deduplicated_at_the_receiver_if_the_first_one_landed() {
+        use syneroym_rpc::ProxyQueueInspector;
+
+        let node = outbox_node(true, 50).await;
+
+        // The original lands.
+        node.router
+            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+            .await
+            .unwrap();
+        assert_eq!(node.target.invoked.load(Ordering::SeqCst), 1);
+
+        // An operator finds a dead letter for the same logical operation
+        // and replays it -- the situation replay exists for, where it is
+        // not knowable whether the first attempt landed.
+        let call = queued_call(QueuedTarget::Dependency("backend".into()), "k1");
+        node.outbox.record_dead_letter(&call, "looked unreachable").await.unwrap();
+        let dead = node.outbox.dead_letters(CALLER).await.unwrap();
+        assert_eq!(dead.len(), 1);
+        node.outbox.replay_dead_letter(CALLER, dead[0].id).await.unwrap();
+
+        node.router.drain_outboxes_once().await;
+        assert_eq!(
+            node.target.invoked.load(Ordering::SeqCst),
+            1,
+            "the receiver's record of the first call must stop the replay re-executing it"
+        );
+    }
+
     fn keyed_request(key: &str) -> ProxyRequest {
         let mut req = base_request("svc-a", "greeter");
         req.caller = CallerContext::service_system("svc-caller");
