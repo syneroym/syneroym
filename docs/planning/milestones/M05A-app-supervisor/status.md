@@ -8,7 +8,10 @@
 A5d, A5e, A7 complete; A5 splits into five sub-slices per
 [slice-a5-implementation-plan.md](slice-a5-implementation-plan.md) §2. A7
 (pulled forward 2026-08-02) landed 2026-08-04, the second of A5e/A7 to land
-— **the milestone is closed.**
+— **the milestone is closed.** A6, gated on an external trigger this
+milestone does not control, closed separately on 2026-08-05 when
+[M05B slice B1](../M05B-async-primitives/slice-b1-implementation-plan.md)
+landed and executed its whole scope.
 
 ## Slice status
 
@@ -25,7 +28,7 @@ A5d, A5e, A7 complete; A5 splits into five sub-slices per
 | A5c | The resident reconcile loop and bounded remediation | **Complete (2026-08-02)** — [implementation plan](slice-a5-implementation-plan.md) Part IV, evidence below | A5b (Complete) |
 | A5d | Unattended certificate renewal, master-anchor refresh, revocation surface | **Complete (2026-08-03)** — [implementation plan](slice-a5-implementation-plan.md) Part V, evidence below | A5c (Complete) |
 | A5e | Scale-out, budgets (cross-app probes moved to overlay slice S4) | **Complete (2026-08-04)** — [implementation plan](slice-a5-implementation-plan.md) Part VI, evidence below | A5c, A5d (Complete) |
-| A6 | Durable delivery via outbox/DLQ | **Deferred, post-M5** | M5 item 1 Complete |
+| A6 | Durable delivery via outbox/DLQ | **Complete (2026-08-05)** — executed as [M05B slice B1](../M05B-async-primitives/slice-b1-implementation-plan.md), evidence in that slice's own status | M05B slice B1 landing (fired) |
 | A7 | App-instance master identity | **Complete (2026-08-04)** — [implementation plan](slice-a7-implementation-plan.md), evidence below | A5b (Complete) |
 
 **A1 was added after design review** (2026-07-27) on finding that the

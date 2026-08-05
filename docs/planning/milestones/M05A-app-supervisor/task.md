@@ -595,7 +595,7 @@ three things A0 deliberately left out:
 Until A5d lands, **a missed renewal cadence is an outage** (matrix row 3), and
 that is the milestone's standing operating cost through A0–A5c.
 
-### A6 — Durable delivery *(post-M5 item 1 — do not start before it lands)*
+### A6 — Durable delivery — **Complete (2026-08-05, executed as [M05B slice B1](../M05B-async-primitives/slice-b1-implementation-plan.md))**
 Replace the A5 trait's implementation with an outbox/DLQ-backed one: durable push
 delivery, retry against substrates that are offline at the time of the change,
 terminal-failure handling, and a single-writer cron lease if redundant
