@@ -44,6 +44,7 @@ use syneroym_rpc::{NativeDispatchRegistry, NativeService};
 use syneroym_sandbox_podman::ContainerEngine;
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::{net::TcpListener, signal, task::JoinHandle, time};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::identity;
@@ -181,6 +182,22 @@ pub struct RuntimeServices {
     /// queue exists for) would make shutdown itself hang on the very
     /// condition it is meant to survive.
     queue_worker_join: Option<JoinHandle<anyhow::Result<()>>>,
+    /// The guest proxy outbox worker's task. Constructed only when this
+    /// node has a Universal Proxy with a durable outbox behind it -- the
+    /// same condition that makes a guest, and therefore the queue's only
+    /// producer, possible at all.
+    ///
+    /// Raced beside the others and, like `queue_worker_join`, **not**
+    /// awaited in `shutdown`: a delivery in flight against an unreachable
+    /// peer is the exact case this queue exists for, and waiting for it
+    /// would make shutdown hang on the condition it is meant to survive.
+    /// The abandoned item stays on disk and returns after its visibility
+    /// timeout.
+    proxy_outbox_join: Option<JoinHandle<()>>,
+    /// Cancels `proxy_outbox_join`'s loop. Held separately because the
+    /// worker takes the token rather than a handle with a `shutdown`
+    /// method of its own.
+    proxy_outbox_cancel: CancellationToken,
 }
 
 impl Debug for RuntimeServices {
@@ -229,6 +246,8 @@ impl RuntimeServices {
             supervisor: None,
             supervisor_join: None,
             queue_worker_join: None,
+            proxy_outbox_join: None,
+            proxy_outbox_cancel: CancellationToken::new(),
         })
     }
 
@@ -256,6 +275,16 @@ impl RuntimeServices {
         // used to be.
         self.supervisor_join = spawn_supervisor_role(&self.supervisor);
         self.queue_worker_join = spawn_queue_worker_role(&self.supervisor);
+        // Spawned here rather than in `init` for the same reason the two
+        // above are: the loop must start only after both composition calls
+        // have already run.
+        self.proxy_outbox_join = connection_router.proxy().map(|proxy| {
+            let tick = Duration::from_secs(
+                config.roles.app_sandbox.as_ref().map_or(5, |role| role.queue_tick_secs).max(1),
+            );
+            let cancel = self.proxy_outbox_cancel.clone();
+            tokio::spawn(async move { proxy.run_outbox_worker(tick, cancel).await })
+        });
 
         #[cfg(feature = "community_registry")]
         let mut registry_fut = pin::pin!(async {
@@ -382,6 +411,20 @@ impl RuntimeServices {
                 None => pending_component().await,
             }
         });
+        // Raced the same way the others are, so a panic in the outbox
+        // worker still brings the substrate down rather than silently
+        // stopping delivery.
+        let mut proxy_outbox_fut = pin::pin!(async {
+            match self.proxy_outbox_join.as_mut() {
+                Some(handle) => match handle.await {
+                    Ok(()) => Ok(()),
+                    Err(join_err) => {
+                        Err(anyhow::anyhow!("proxy outbox worker task panicked: {join_err}"))
+                    }
+                },
+                None => pending_component().await,
+            }
+        });
         let mut shutdown_signal = pin::pin!(shutdown_signal);
 
         info!(profile = %config.profile, "starting substrate components");
@@ -394,6 +437,7 @@ impl RuntimeServices {
             res = &mut metrics_fut => log_component_exit("metrics server", res),
             res = &mut supervisor_fut => log_component_exit("supervisor", res),
             res = &mut queue_worker_fut => log_component_exit("queue worker", res),
+            res = &mut proxy_outbox_fut => log_component_exit("proxy outbox worker", res),
             () = &mut expiry_sweep_fut => {},
             () = &mut shutdown_signal => warn!("received shutdown signal"),
         }
@@ -424,6 +468,11 @@ impl RuntimeServices {
         // it. Dropping the handle detaches the task; the process exiting
         // shortly after this function returns is what actually ends it.
         drop(self.queue_worker_join.take());
+
+        // Same rule, same reason: cancel so the loop stops ticking, but do
+        // not await a delivery that may be waiting on an offline peer.
+        self.proxy_outbox_cancel.cancel();
+        drop(self.proxy_outbox_join.take());
 
         #[cfg(feature = "client_gateway")]
         if let Some(service) = self.client_gateway.as_mut()
@@ -931,7 +980,7 @@ async fn build_route_handler_deps(
         native_dispatch.clone(),
         http_routes.clone(),
         node_identity,
-        logical_resolver,
+        logical_resolver.clone(),
     )
     .await?;
     let control_plane_service = Arc::new(control_plane_service);
@@ -946,6 +995,7 @@ async fn build_route_handler_deps(
 
     Ok((
         RouteHandlerDeps {
+            logical_resolver: logical_resolver.clone(),
             key_store,
             storage_provider,
             app_sandbox_engine,

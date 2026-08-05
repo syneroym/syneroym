@@ -61,6 +61,7 @@ async fn test_route_handler() -> RouteHandler {
     );
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
     let deps = RouteHandlerDeps {
+        logical_resolver: syneroym_app_orchestration::empty_resolver(),
         key_store,
         storage_provider,
         app_sandbox_engine,

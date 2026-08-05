@@ -149,6 +149,7 @@ async fn test_route_handler_with_proxy_components() -> Option<RouteHandler> {
 
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
     let deps = RouteHandlerDeps {
+        logical_resolver: syneroym_app_orchestration::empty_resolver(),
         key_store,
         storage_provider,
         app_sandbox_engine,
@@ -260,6 +261,7 @@ async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, A
 
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
     let deps = RouteHandlerDeps {
+        logical_resolver: logical_resolver.clone(),
         key_store,
         storage_provider,
         app_sandbox_engine,
@@ -592,6 +594,7 @@ async fn test_route_handler_with_self_native_data_layer(
 
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
     let deps = RouteHandlerDeps {
+        logical_resolver: syneroym_app_orchestration::empty_resolver(),
         key_store: key_store.clone(),
         storage_provider: storage_provider.clone(),
         app_sandbox_engine,
@@ -716,6 +719,7 @@ async fn test_route_handler_with_self_native_data_layer_and_stage4(
 
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
     let deps = RouteHandlerDeps {
+        logical_resolver: syneroym_app_orchestration::empty_resolver(),
         key_store: key_store.clone(),
         storage_provider: storage_provider.clone(),
         app_sandbox_engine,

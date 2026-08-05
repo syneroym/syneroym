@@ -12,6 +12,7 @@ clap.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 pkarr.workspace = true
 hex.workspace = true
 syneroym-identity.workspace = true

@@ -143,10 +143,67 @@ pub const UNSUPPORTED_TARGET_RPC_CODE: i32 = -32093;
 /// Default per-call deadline when [`ProxyRequest::timeout`] is `None`.
 pub const DEFAULT_PROXY_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// What a queued call is addressed to, stored as the caller *named* it.
+///
+/// A dependency is deliberately not resolved before storage: resolution
+/// happens host-side on every attempt precisely so a caller can never
+/// snapshot the resolved DID past a re-pushed binding (ADR-0021 §2), and a
+/// queued call that stored the resolved DID would snapshot exactly that --
+/// for hours, which is longer than any caller could manage on its own.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum QueuedTarget {
+    /// A declared dependency name, re-resolved at each delivery attempt.
+    Dependency(String),
+    /// A DID (or registry alias) the caller named directly.
+    Service(String),
+}
+
+/// One durable, fire-and-forget call, as it waits in a service's outbox.
+///
+/// Carries everything a delivery attempt needs long after the calling
+/// component instance that produced it is gone: `app_instance_id` because
+/// dependency resolution is scoped to an app instance and the host reads it
+/// from the live instance rather than from the caller, and
+/// `caller_service_id` because the identity the call travels under has to be
+/// rebuilt identically to the live path or authorization at the receiver
+/// would silently diverge between the two.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct QueuedCall {
+    pub app_instance_id: Option<String>,
+    pub caller_service_id: String,
+    pub target: QueuedTarget,
+    pub routing_key: Option<String>,
+    pub interface: String,
+    pub method: String,
+    pub params: Value,
+    /// Always present: a queued call with no fence could not be retried
+    /// safely, let alone replayed out of a dead-letter table, so
+    /// `enqueue` refuses one outright rather than storing it.
+    pub idempotency_key: String,
+    /// [`ProxyProtocol`]'s wire tag, stored as text so the payload does not
+    /// depend on a Rust enum's shape.
+    pub protocol: Option<String>,
+    pub timeout_ms: Option<u64>,
+}
+
 #[async_trait::async_trait]
 pub trait ServiceProxy: Send + Sync + Debug {
     /// Returns the callee's JSON-RPC `result` value on success.
     async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError>;
+
+    /// Hands a call to the calling service's durable outbox: delivery
+    /// survives an unreachable target and a process restart, and the caller
+    /// never sees the outcome.
+    ///
+    /// Try-then-queue: a reachable target costs one call and zero queue
+    /// writes, and only a transport failure puts the item on disk. The
+    /// default body refuses -- a proxy with no per-service storage behind
+    /// it has nowhere to keep the item, and pretending otherwise would drop
+    /// a call the caller believes is durable.
+    async fn enqueue(&self, call: QueuedCall) -> Result<(), ProxyError> {
+        let _ = call;
+        Err(ProxyError::Internal("this proxy has no durable outbox behind it".to_string()))
+    }
 }
 
 #[cfg(test)]

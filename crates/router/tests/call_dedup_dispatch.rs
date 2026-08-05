@@ -102,6 +102,7 @@ async fn harness() -> Harness {
     );
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
     let deps = RouteHandlerDeps {
+        logical_resolver: syneroym_app_orchestration::empty_resolver(),
         key_store,
         storage_provider: storage_provider as Arc<dyn StorageProvider>,
         app_sandbox_engine,

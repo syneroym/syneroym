@@ -28,7 +28,8 @@ pub use native::{
 };
 pub use proxy::{
     CallOrigin, DEFAULT_PROXY_CALL_TIMEOUT, PROXY_TRANSPORT_RPC_CODE, ProxyError, ProxyProtocol,
-    ProxyRequest, ServiceProxy, UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
+    ProxyRequest, QueuedCall, QueuedTarget, ServiceProxy, UNSUPPORTED_PROTOCOL_RPC_CODE,
+    UNSUPPORTED_TARGET_RPC_CODE,
 };
 pub use relationship_proof::{
     RELATIONSHIP_PROOF_TTL_SECS, RelationshipProof, RelationshipProofError,

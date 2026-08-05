@@ -81,4 +81,30 @@ interface proxy {
         params: string,
         options: option<call-options>,
     ) -> result<string, proxy-error>;
+
+    /// Fire-and-forget delivery that survives an unreachable target and a
+    /// restart of this substrate. The call is attempted immediately; only
+    /// a transport failure puts it in this service's own durable outbox,
+    /// where it is retried on a backoff schedule for hours before it is
+    /// given up on. The caller never sees the result -- success here means
+    /// "accepted for delivery", not "delivered".
+    ///
+    /// `options.idempotency-key` is **required**: a queued call is
+    /// delivered at least once, so without a fence a retry would run the
+    /// target twice. An `enqueue` without one is refused rather than
+    /// quietly made unsafe.
+    ///
+    /// Also refused: a target that is this component's own service (local
+    /// and already running, so durability buys it nothing), a node-level
+    /// interface (which keeps no record to fence a key with), and a call
+    /// from a service holding no unexpired instance certificate (every
+    /// delivery attempt would be refused as anonymous, so failing now is
+    /// the same answer given sooner and louder).
+    enqueue: func(
+        target: call-target,
+        %interface: string,
+        method: string,
+        params: string,
+        options: option<call-options>,
+    ) -> result<_, proxy-error>;
 }

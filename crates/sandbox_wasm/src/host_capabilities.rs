@@ -34,8 +34,8 @@ use syneroym_mqtt_broker::{
 };
 use syneroym_rpc::{
     AbacError, Ability, AuthLevel, CallOrigin, CallerContext, CandidateRow,
-    ProxyError as RpcProxyError, ProxyProtocol, ProxyRequest, ResourceUri, RowAuthorizer,
-    ServiceProxy, apply_stage4, union_masked_fields,
+    ProxyError as RpcProxyError, ProxyProtocol, ProxyRequest, QueuedCall, QueuedTarget,
+    ResourceUri, RowAuthorizer, ServiceProxy, apply_stage4, union_masked_fields,
 };
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::{self, ConfigError},
@@ -1201,6 +1201,102 @@ impl proxy::Host for HostState {
             other => other.to_string(),
         })
     }
+
+    /// Hands a call to this service's durable outbox.
+    ///
+    /// Unlike `call`, a dependency name is **not** resolved here: the queued
+    /// item stores the name, and resolution happens again on every delivery
+    /// attempt, so a binding re-pushed while the item waits takes effect
+    /// (ADR-0021 §2). Resolving once and storing the answer would snapshot
+    /// the resolved DID for hours -- the exact thing that rule forbids, and
+    /// for far longer than a guest could manage on its own.
+    async fn enqueue(
+        &mut self,
+        target: CallTarget,
+        interface: String,
+        method: String,
+        params: String,
+        options: Option<CallOptions>,
+    ) -> Result<(), proxy::ProxyError> {
+        if self.read_only {
+            return Err(proxy::ProxyError::Internal(
+                "stage-4 after-step instances may not originate proxy calls".to_string(),
+            ));
+        }
+        let service_proxy = self
+            .service_proxy
+            .upgrade()
+            .ok_or_else(|| proxy::ProxyError::Internal("proxy unavailable".to_string()))?;
+
+        let params: Value = if params.trim().is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&params)
+                .map_err(|e| proxy::ProxyError::Internal(format!("params must be JSON: {e}")))?
+        };
+
+        let options = options.unwrap_or(CallOptions {
+            protocol: None,
+            idempotent: false,
+            timeout_ms: None,
+            routing_key: None,
+            idempotency_key: None,
+        });
+
+        // Refused before anything is resolved, written, or attempted. A
+        // queued call is delivered at least once, so one with no fence
+        // would run the target twice on the first retry -- there is no
+        // safe way to accept this, and naming the missing field is what
+        // makes the refusal actionable.
+        let idempotency_key = options.idempotency_key.clone().ok_or_else(|| {
+            proxy::ProxyError::Internal(
+                "enqueue requires call-options.idempotency-key: a queued call is delivered at \
+                 least once, so it must carry a key the receiver can deduplicate on"
+                    .to_string(),
+            )
+        })?;
+
+        // Validated here so an unsupported tag fails at the call rather
+        // than hours later in a dead letter.
+        ProxyProtocol::parse(options.protocol.as_deref())
+            .map_err(proxy::ProxyError::UnsupportedProtocol)?;
+
+        let target = match target {
+            CallTarget::Service(service) => QueuedTarget::Service(service),
+            CallTarget::Dependency(name) => {
+                // Validated now, resolved later: an unusable name should
+                // fail at the call, but the resolution itself must happen
+                // at delivery.
+                LogicalServiceName::try_new(&name).map_err(|e| {
+                    proxy::ProxyError::DependencyNotBound(format!("invalid dependency name: {e}"))
+                })?;
+                if self.app_instance_id.is_none() {
+                    return Err(proxy::ProxyError::DependencyNotBound(format!(
+                        "component '{}' was not deployed as part of an app instance, so it has no \
+                         declared dependency '{name}'",
+                        self.component_id
+                    )));
+                }
+                QueuedTarget::Dependency(name)
+            }
+        };
+
+        service_proxy
+            .enqueue(QueuedCall {
+                app_instance_id: self.app_instance_id.clone(),
+                caller_service_id: self.component_id.clone(),
+                target,
+                routing_key: options.routing_key,
+                interface,
+                method,
+                params,
+                idempotency_key,
+                protocol: options.protocol,
+                timeout_ms: options.timeout_ms.map(u64::from),
+            })
+            .await
+            .map_err(map_proxy_error)
+    }
 }
 
 fn map_blob_error(e: BlobStoreError) -> BlobError {
@@ -1448,6 +1544,8 @@ pub(crate) mod tests {
     struct RecordingProxy {
         last_request: Mutex<Option<ProxyRequest>>,
         invoke_count: AtomicUsize,
+        last_enqueued: Mutex<Option<QueuedCall>>,
+        enqueue_count: AtomicUsize,
     }
 
     #[async_trait::async_trait]
@@ -1458,6 +1556,103 @@ pub(crate) mod tests {
             *self.last_request.lock().unwrap() = Some(recorded);
             Ok(Value::Null)
         }
+
+        async fn enqueue(&self, call: QueuedCall) -> Result<(), RpcProxyError> {
+            self.enqueue_count.fetch_add(1, Ordering::SeqCst);
+            *self.last_enqueued.lock().unwrap() = Some(call);
+            Ok(())
+        }
+    }
+
+    fn enqueue_options(idempotency_key: Option<&str>) -> Option<CallOptions> {
+        Some(CallOptions {
+            protocol: None,
+            idempotent: false,
+            timeout_ms: None,
+            routing_key: None,
+            idempotency_key: idempotency_key.map(str::to_string),
+        })
+    }
+
+    /// A queued call is delivered at least once, so one with no fence
+    /// would run the target twice on the first retry. Refused before
+    /// anything is resolved, written, or attempted -- and the refusal
+    /// names the missing field, so a future slice relaxing this has to
+    /// confront the argument.
+    #[tokio::test]
+    async fn an_enqueue_without_an_idempotency_key_is_refused() {
+        let resolver = Arc::new(LogicalResolver::new(Arc::new(
+            syneroym_app_orchestration::StaticInventory::new(),
+        )));
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = dependency_host("frontend", None, resolver, &proxy, temp_dir.path());
+
+        let err = proxy::Host::enqueue(
+            &mut host,
+            CallTarget::Service("did:key:zBackend".to_string()),
+            "greeter".to_string(),
+            "greet".to_string(),
+            "null".to_string(),
+            enqueue_options(None),
+        )
+        .await
+        .expect_err("an unkeyed enqueue must be refused");
+
+        let proxy::ProxyError::Internal(message) = err else {
+            panic!("expected an internal refusal, got {err:?}");
+        };
+        assert!(
+            message.contains("idempotency-key"),
+            "the refusal must name the missing field, got: {message}"
+        );
+        assert_eq!(
+            proxy.enqueue_count.load(Ordering::SeqCst),
+            0,
+            "nothing may reach the outbox for an unfenced call"
+        );
+    }
+
+    /// The stored item names the dependency, never a resolved DID: the
+    /// worker resolves again at every attempt, so a re-pushed binding
+    /// takes effect (ADR-0021 §2).
+    #[tokio::test]
+    async fn an_enqueued_dependency_is_stored_by_name_not_resolved_at_the_host() {
+        use syneroym_app_orchestration::AppRegistry;
+
+        let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
+        registry.register(
+            AppInstanceId::new("app-1"),
+            LogicalServiceName::new("backend"),
+            dependency_topology_entry(vec!["did:key:zBackendMember"]),
+        );
+        let resolver = Arc::new(LogicalResolver::new(registry));
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = dependency_host(
+            "frontend",
+            Some("app-1".to_string()),
+            resolver,
+            &proxy,
+            temp_dir.path(),
+        );
+
+        proxy::Host::enqueue(
+            &mut host,
+            CallTarget::Dependency("backend".to_string()),
+            "greeter".to_string(),
+            "greet".to_string(),
+            "null".to_string(),
+            enqueue_options(Some("msg-7")),
+        )
+        .await
+        .unwrap();
+
+        let stored = proxy.last_enqueued.lock().unwrap().take().unwrap();
+        assert_eq!(stored.target, QueuedTarget::Dependency("backend".to_string()));
+        assert_eq!(stored.idempotency_key, "msg-7");
+        assert_eq!(stored.app_instance_id.as_deref(), Some("app-1"));
+        assert_eq!(stored.caller_service_id, "frontend");
     }
 
     /// D-04-02-h ingress (ii)'s self-proxy forwarding (`proxy::Host::call`)

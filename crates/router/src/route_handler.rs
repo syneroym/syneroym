@@ -19,6 +19,7 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler as IrohProtocolHandler},
 };
+use syneroym_app_orchestration::LogicalResolver;
 use syneroym_async_queue::{DedupConfig, QueueConfig};
 use syneroym_control_plane::ControlPlaneService;
 use syneroym_core::{
@@ -43,6 +44,7 @@ use crate::{
     call_dedup::CallDedupGuard,
     net_iroh::IrohStream,
     proxy::{IrohHop, ProxyRouter},
+    proxy_outbox::ProxyOutbox,
 };
 
 pub mod dispatch;
@@ -167,6 +169,12 @@ impl Debug for RouteHandler {
 pub struct RouteHandlerDeps {
     pub key_store: Arc<KeyStore>,
     pub storage_provider: Arc<dyn StorageProvider>,
+    /// Resolves a declared dependency name to the member currently bound
+    /// to it. Held here (not only inside the sandbox engine) because the
+    /// durable outbox re-resolves a queued call's dependency at every
+    /// delivery attempt, long after the component instance that wrote it
+    /// is gone.
+    pub logical_resolver: Arc<LogicalResolver>,
     pub app_sandbox_engine: Arc<AppSandboxEngine>,
     pub messaging_broker: Arc<MqttBroker>,
     pub native_dispatch: NativeDispatchRegistry,
@@ -241,6 +249,17 @@ impl RouteHandler {
             ),
         ));
 
+        // One queue per calling service, in that service's own encrypted
+        // database. The resolver is handed over so a queued dependency is
+        // re-resolved at every delivery attempt rather than snapshotted
+        // when the item was written (ADR-0021 §2).
+        let outbox = Arc::new(ProxyOutbox::new(
+            deps.storage_provider.clone(),
+            deps.key_store.clone(),
+            deps.logical_resolver.clone(),
+            queue_config.clone(),
+        ));
+
         let proxy = Arc::new(
             ProxyRouter::new(
                 registry.clone(),
@@ -251,7 +270,8 @@ impl RouteHandler {
                 identity.clone(),
                 config.retry.clone(),
             )
-            .with_dedup_guard(dedup_guard.clone()),
+            .with_dedup_guard(dedup_guard.clone())
+            .with_outbox(outbox),
         );
         deps.app_sandbox_engine
             .service_proxy
@@ -351,6 +371,14 @@ impl RouteHandler {
             dedup_guard: None,
         });
         Self { inner }
+    }
+
+    /// The Universal Proxy this handler dispatches through, when it has
+    /// one. Published for the substrate's composition root, which drives
+    /// the durable outbox worker off the same router live calls use.
+    #[must_use]
+    pub fn proxy(&self) -> Option<Arc<ProxyRouter>> {
+        self.inner._proxy.clone()
     }
 
     pub fn register_native_service(&self, service_id: String, service: Arc<dyn NativeService>) {

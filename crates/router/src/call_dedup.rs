@@ -118,6 +118,20 @@ pub fn replay_as_result(outcome: FirstOutcome) -> Result<serde_json::Value, Prox
     }
 }
 
+/// Whether `interface` is one of the node's own interfaces rather than a
+/// deployed service's.
+///
+/// These have no DEK and no directory, and asking for one anyway *works*:
+/// the id passes validation and the key layer generates a DEK on first
+/// use, so a naive caller would mint a key and a database for a service
+/// that does not exist. Matched by short hash as well as by name, since
+/// the hash is an unsalted prefix a guest can compute for itself.
+pub(crate) fn is_node_level_interface(interface: &str) -> bool {
+    NODE_NATIVE_INTERFACES
+        .iter()
+        .any(|name| *name == interface || syneroym_core::util::short_hash(name) == interface)
+}
+
 /// The guard itself: one per node, holding a connection per target service.
 pub struct CallDedupGuard {
     storage_provider: Arc<dyn StorageProvider>,
@@ -166,9 +180,7 @@ impl CallDedupGuard {
     /// caller sends a key to one today: the supervisor's own traffic is
     /// fenced by generations and epochs, not by keys.
     fn is_node_level_interface(interface: &str) -> bool {
-        NODE_NATIVE_INTERFACES
-            .iter()
-            .any(|name| *name == interface || syneroym_core::util::short_hash(name) == interface)
+        is_node_level_interface(interface)
     }
 
     /// Opens (once) the dedup store for `service_id`, on that service's own

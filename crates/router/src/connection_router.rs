@@ -41,6 +41,7 @@ use webrtc::{
 use crate::{
     net_iroh,
     net_webrtc::WebRTCStream,
+    proxy::ProxyRouter,
     route_handler::{RouteHandler, RouteHandlerDeps},
 };
 
@@ -52,6 +53,12 @@ pub const SYNEROYM_ALPN: &[u8] = b"syneroym/0.1";
 #[derive(Debug, Clone)]
 pub struct ConnectionRouter {
     iroh_router: Option<IrohRouter>,
+    /// The Universal Proxy this router's handler dispatches through.
+    /// Published so the substrate's composition root can drive the durable
+    /// outbox worker off it -- the worker delivers by making an ordinary
+    /// proxy call, so it needs the same router every live call uses, not a
+    /// second one with its own caches.
+    proxy: Option<Arc<ProxyRouter>>,
 }
 
 impl ConnectionRouter {
@@ -62,7 +69,7 @@ impl ConnectionRouter {
         service_id: String,
         route_handler_deps: RouteHandlerDeps,
     ) -> Result<Self> {
-        let mut router = Self { iroh_router: None };
+        let mut router = Self { iroh_router: None, proxy: None };
 
         // Built *before* `RouteHandler::init` (M04A Slice A1, fixes F7): the
         // Universal Proxy's outbound remote hop needs a live Iroh endpoint,
@@ -101,6 +108,7 @@ impl ConnectionRouter {
             route_handler_deps,
         )
         .await?;
+        router.proxy = route_handler.proxy();
 
         for comm in &config.substrate.communication_interfaces {
             match comm.as_str() {
@@ -126,6 +134,13 @@ impl ConnectionRouter {
         }
 
         Ok(router)
+    }
+
+    /// The Universal Proxy behind this router, when it has one (absent in
+    /// coordinator mode).
+    #[must_use]
+    pub fn proxy(&self) -> Option<Arc<ProxyRouter>> {
+        self.proxy.clone()
     }
 
     /// Spawns the Iroh protocol handler on an already-built, already-bound
