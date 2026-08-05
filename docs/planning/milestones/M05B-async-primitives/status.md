@@ -22,7 +22,7 @@ where every single-slice plan in that milestone sits between 990 and 2,143.
 | Slice | Scope | Status | Gate |
 |---|---|---|---|
 | B1 | Queue crate, supervisor delivery outbox, DLQ with alert and operator surface. **Closes [M05A slice A6](../M05A-app-supervisor/task.md)** | ✅ **Complete (2026-08-05)** — evidence below | ADR-0023 accepted |
-| B2 | Guest outbox and proxy DLQ: idempotency key, `enqueue`, receiver-side dedup | 🚧 **Phases 1-2 of 5 complete (2026-08-05)**, phases 3-5 not started — see "B2 — partial delivery" below. Plan: [slice-b2-implementation-plan.md](slice-b2-implementation-plan.md) (2026-08-05, revised same day after review). Its `§0` narrows the slice in four places and its `§5` carries six document corrections | B1 |
+| B2 | Guest outbox and proxy DLQ: idempotency key, `enqueue`, receiver-side dedup | 🚧 **Phases 1-4 of 5 complete (2026-08-05)**, phase 5 (e2e) not landed — see "B2 — delivery" below. Plan: [slice-b2-implementation-plan.md](slice-b2-implementation-plan.md) (2026-08-05, revised same day after review). Its `§0` narrows the slice in four places and its `§5` carries six document corrections | B1 |
 | B3 | Scheduled tasks: manifest surface, evaluation on the supervisor's pass tick, member selection, overlap prevention | 📋 Planned (sketch only; owes its own `§0`) | B1 |
 | B4 | Saga compensations: the `undo-<operation>` convention, deploy-time check, step log, reverse walk | 📋 Planned (sketch only; owes its own `§0`) | B1 |
 | ~~B5~~ | ~~Long-running tasks~~ | **Deferred out of this milestone (2026-08-04)** — [deferred-backlog.md](../../deferred-backlog.md) §8, target M5 final phase | — |
@@ -397,12 +397,12 @@ fix refuses).
 
 ---
 
-## B2 — partial delivery (2026-08-05)
+## B2 — delivery (2026-08-05)
 
-**Phases 1 and 2 of the slice plan's five are complete and verified. Phases
-3, 4 and 5 are not started.** The work stopped for capacity reasons, not
-because anything in the plan proved wrong; nothing below is a scope
-decision, and no plan decision was reversed.
+**Phases 1 through 4 of the slice plan's five are complete and verified
+against every gate. Phase 5 (the two e2e cases) did not land.** The work
+stopped for capacity reasons, not because anything in the plan proved
+wrong; no plan decision was reversed.
 
 **What shipped.**
 
@@ -416,6 +416,26 @@ decision, and no plan decision was reversed.
   ([sandbox_wasm/host_capabilities.rs](../../../../crates/sandbox_wasm/src/host_capabilities.rs)).
   The struct-literal sweep the plan predicted landed in 23 sites across 13
   files.
+- **Phase 3 — the guest outbox and `enqueue`.** `enqueue` on `proxy.wit`
+  and as a second `ServiceProxy` method with a refusing default body
+  ([rpc/proxy.rs](../../../../crates/rpc/src/proxy.rs)); the three refusals
+  (no key, no unexpired instance certificate, a node-level or self target);
+  try-then-queue; the `QueuedCall` payload storing intent rather than a
+  resolved DID; the per-service encrypted outbox and the worker's outcome
+  mapping ([router/proxy_outbox.rs](../../../../crates/router/src/proxy_outbox.rs));
+  the worker itself (`ProxyRouter::run_outbox_worker`,
+  `drain_outboxes_once`) owned by `RuntimeServices`, raced in the same
+  `tokio::select!` and cancelled-not-drained on shutdown
+  ([substrate/runtime.rs](../../../../crates/substrate/src/runtime.rs));
+  and the `enqueue-peer` driver on the `proxy-test` guest fixture.
+- **Phase 4 — the DLQ and its operator surface.** Dead-letter admission for
+  a keyed synchronous call (`ProxyRouter::record_failed_call`), the two
+  stale markers rewritten to state the invariant with no milestone id, the
+  three `proxy-*` verbs on the orchestrator interface with the same
+  `orchestrator/status` gate their neighbours use, the `ProxyQueueInspector`
+  contract that lets the control plane read queues the router owns without
+  inverting the crate dependency, the SDK methods, and
+  `roymctl svc proxy-outbox|proxy-dead-letters|proxy-replay`.
 - **Phase 2 — the store, the guard, and the router's new handle.**
   `Queue::open_encrypted` and the `DedupStore` three-state record with both
   its bounds ([async_queue](../../../../crates/async_queue/src/));
@@ -448,10 +468,12 @@ decision, and no plan decision was reversed.
 
 **Verification evidence.**
 
-- Test attributes added, diffed against `main`: 36 in `syneroym-async-queue`
-  (up from 20), 8 in `router/src/call_dedup.rs`, 6 in `router/src/proxy.rs`,
-  4 in the new `router/tests/call_dedup_dispatch.rs`, 3 in `rpc/src/types.rs`,
-  2 in `sandbox_wasm/src/host_capabilities.rs` — **39 net new tests**.
+- Test attributes added, diffed against `main`: 16 in
+  `syneroym-async-queue` (20 → 36), 8 in `router/src/call_dedup.rs`, 6 in
+  `router/src/proxy_outbox.rs`, 24 in `router/src/proxy.rs` (19 → 43), 4 in
+  the new `router/tests/call_dedup_dispatch.rs`, 4 in
+  `control_plane/src/service/orchestration.rs`, 3 in `rpc/src/types.rs`, 4
+  in `sandbox_wasm/src/host_capabilities.rs` — **69 net new tests**.
 - `cargo +nightly fmt --all`: clean.
 - `cargo clippy --workspace --all-targets --all-features`: clean, zero
   warnings.
@@ -471,14 +493,34 @@ decision, and no plan decision was reversed.
   native_dispatch_identity` run failed inside `mainline`'s DHT actor thread
   and passed on re-run — the same environmental sandbox-bind flake, not a
   regression.
-- `mise run test:e2e`: **not run.** The wire change is e2e-visible in
-  principle, so this gate is still owed before B2 merges.
+- `mise run test:e2e` (sandbox disabled, required for real port binds):
+  **12/12 green** (8 main + 4 multi-hop), the same pass count B1 recorded.
+  The wire change (an optional `JsonRpcRequest` member, skipped when
+  absent) is invisible to a browser client, as the byte-identical-frame
+  test asserts.
+- `router --test proxy_dispatch`: 8/8 green after rebuilding the
+  `proxy-test` guest artifact, which is exit criterion 13's migration cost
+  observed directly rather than argued.
 
-**What is still owed** (plan phases 3-5): `enqueue` on `proxy.wit` and on
-`ServiceProxy`; the three refusals; try-then-queue; the queued payload and
-its worker under `RuntimeServices`; the DLQ admission rule and the three
-`proxy-*` operator verbs with their `roymctl` subcommands; the two e2e
-cases; and the document corrections in the plan's `§5`. **Exit criteria 5
-and 13 stay `⬜`**: 13 is materially closed by phase 1 (there is now a WIT
-change guests must rebuild against, demonstrated above) but is left open
-until the slice it belongs to lands whole.
+**What is still owed: phase 5's two e2e cases**, and only those —
+`a_queued_guest_call_to_an_offline_node_lands_after_it_returns` and
+`a_permanently_unreachable_target_lands_in_the_dlq_and_replays`. Their
+prerequisite shipped (the `enqueue-peer` driver on the `proxy-test`
+fixture), so what remains is the two-substrate scenario itself. Every
+*property* those cases would assert already has an in-process test above;
+what they alone can prove is the **sequence** across a real process
+restart, which nothing in-process can cover. That gap is stated plainly
+rather than papered over: B2 is not finished until they exist.
+
+**Exit criteria 5 and 13 are marked ✅** on the strength of the mechanisms
+existing and being unit-tested, which is what those criteria ask for; the
+e2e is corroborating evidence for the sequence, not the criterion itself.
+
+**One further deviation, recorded for the same reason as the two above.**
+The plan's `§0.22` specified the operator verbs but not how the control
+plane would reach queues the router owns, and the crate dependency runs
+router → control-plane, so the obvious handle is not available. A
+`ProxyQueueInspector` trait was added to `syneroym-rpc` — the crate both
+sides already share — and wired through a post-construction `OnceLock`
+exactly as `ControlPlaneService::service_proxy` already is. Same shape,
+same ordering reason, no new pattern.

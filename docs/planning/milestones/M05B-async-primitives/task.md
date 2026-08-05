@@ -268,10 +268,22 @@ it. B1 status below reflects [status.md](status.md)'s B1 evidence
 4. ✅ **B1.** `deploy.rs`'s `SubstrateActor` has `build_durable_actor`; no
    caller above the trait changed (demonstrated by the diff — every call
    site still reads `Result<Vec<BindingWriteOutcome>, String>` unchanged).
-5. ⬜ **B2.** The `no DLQ (M5)` markers in
-   [proxy.rs:456](../../../../crates/router/src/proxy.rs#L456) and
-   `rpc/proxy.rs:80` are the guest-facing proxy DLQ, not the supervisor's —
-   untouched by B1.
+5. ✅ **B2.** Both stale markers are gone, replaced by the invariant that
+   actually holds: a failed call fails to its caller directly, and
+   *additionally* writes a dead letter only when it carried an idempotency
+   key ([router/src/proxy.rs](../../../../crates/router/src/proxy.rs),
+   `record_failed_call` and the retry loop's own comment;
+   [rpc/src/proxy.rs](../../../../crates/rpc/src/proxy.rs),
+   `ProxyRequest::idempotency_key`). **Narrowed deliberately**: an unkeyed
+   call gets no DLQ row, because a replayable dead letter for a call with
+   no fence *is* a second delivery of an unfenced call, which this
+   milestone's own non-goals refuse. Queued (`enqueue`d) calls are always
+   keyed and dead-letter on exhaustion or on any non-retryable failure
+   (`proxy_outbox::disposition_of`). Tests:
+   `an_unkeyed_call_that_exhausts_its_retries_writes_no_dead_letter`,
+   `a_keyed_call_that_exhausts_its_retries_writes_a_dead_letter_and_still_returns_its_error`,
+   `a_callee_error_on_a_queued_item_dead_letters_rather_than_completing`,
+   `the_dlq_cap_is_scoped_per_target`, plus the three operator verbs.
 6. ⬜ **Milestone closeout (needs B2-B4).** `[PLT-ASY]` stays **Pending** in
    the traceability matrix; B1 alone does not close it.
 7. ✅ **B1.** M05A slice A6 recorded Complete in
@@ -292,5 +304,21 @@ it. B1 status below reflects [status.md](status.md)'s B1 evidence
     sandbox-bind category (see [status.md](status.md)); every crate this
     slice touches is fully green.
 12. ✅ `mise run test:e2e` passes — 12/12, unchanged from before this slice.
-13. ⬜ **B2 onward.** No WIT change in B1; nothing for a guest component to
-    rebuild against yet.
+13. ✅ **B2.** Two WIT changes, both guest-visible:
+    `call-options.idempotency-key` and a new `enqueue` verb
+    ([proxy.wit](../../../../crates/wit_interfaces/wit/proxy/proxy.wit)),
+    plus three `proxy-*` operator verbs on the orchestrator interface
+    ([control-plane.wit](../../../../crates/wit_interfaces/wit/control-plane/control-plane.wit)).
+    The rebuild requirement is not theoretical and was observed directly:
+    `router --test proxy_dispatch` failed with "component imports instance
+    `syneroym:proxy/proxy@0.1.0`, but a matching implementation was not
+    found in the linker" against the pre-change `proxy-test` artifact, and
+    passed once that component was rebuilt.
+
+    Corrected against this document's own migration section: it promises
+    `call-options` gains **two** fields and names only one. Only
+    `idempotency-key` shipped; a per-call delivery deadline is the
+    plausible second and is a backlog row rather than something invented
+    here. Also corrected: "`AppSandboxRole` is untouched" -- B2 adds five
+    `queue_*` fields there, for the same reason B1 added five to
+    `SupervisorRole`.
