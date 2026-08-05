@@ -224,6 +224,41 @@ impl ProxyOutbox {
         Ok(())
     }
 
+    /// Records a call that failed for good straight into the dead-letter
+    /// table, without it ever having waited in the outbox.
+    ///
+    /// This is the synchronous caller's tier: it already has the error, so
+    /// the row buys operator visibility and an optional replay rather than
+    /// rescuing a lost call. Only a *keyed* call earns one -- replaying an
+    /// unfenced call would be a second delivery of something with no
+    /// fence, which is exactly what the key exists to prevent.
+    ///
+    /// Written through the ordinary enqueue-then-fail path so the row is
+    /// shaped and capped identically to one that got there by exhausting a
+    /// real retry schedule.
+    pub async fn record_dead_letter(
+        &self,
+        call: &QueuedCall,
+        error: &str,
+    ) -> Result<(), ProxyError> {
+        let queue = self.queue_for(&call.caller_service_id).await?;
+        let payload = serde_json::to_vec(call)
+            .map_err(|e| ProxyError::Internal(format!("cannot record dead letter: {e}")))?;
+        let (group, key, error) =
+            (group_key_of(call), call.idempotency_key.clone(), error.to_string());
+        let now = now_ms();
+        task::spawn_blocking(move || -> anyhow::Result<()> {
+            let id = queue.enqueue(&group, &key, &payload, now)?;
+            queue.fail(id, now, &error, true)?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| ProxyError::Internal(format!("dead-letter task failed: {e}")))?
+        .map_err(|e| ProxyError::Internal(format!("cannot record dead letter: {e}")))?;
+        metrics::counter!("substrate.proxy.outbox.dead_lettered").increment(1);
+        Ok(())
+    }
+
     /// Which services the worker should drain this tick: every one whose
     /// outbox is already open, filtered to those the endpoint registry
     /// still knows.

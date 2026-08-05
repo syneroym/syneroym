@@ -255,6 +255,43 @@ impl ProxyRouter {
         }
     }
 
+    /// Writes a dead letter for a failed call that carried a fence.
+    ///
+    /// An **unkeyed** call writes nothing, and that is the rule rather
+    /// than an omission: its caller is alive and holding the error, so
+    /// this is not silent loss, and there would be nothing safe to replay
+    /// -- a replayable dead letter for a call with no fence *is* a second
+    /// delivery of an unfenced call.
+    ///
+    /// The recorded target is the DID this attempt actually resolved to,
+    /// not the dependency name: this row describes one specific attempt an
+    /// operator may choose to repeat, and the resolution already happened
+    /// before the request existed.
+    async fn record_failed_call(&self, req: &ProxyRequest, error: &ProxyError) {
+        let (Some(outbox), Some(key)) = (&self.outbox, req.idempotency_key.as_deref()) else {
+            return;
+        };
+        let CallOrigin::Guest { service_id } = &req.origin else { return };
+        // A queued item that failed is dead-lettered by the worker, which
+        // owns its own retry history; this path is only for the caller
+        // that is still holding the error.
+        let call = QueuedCall {
+            app_instance_id: None,
+            caller_service_id: service_id.clone(),
+            target: syneroym_rpc::QueuedTarget::Service(req.target_service.clone()),
+            routing_key: None,
+            interface: req.interface.clone(),
+            method: req.method.clone(),
+            params: req.params.clone(),
+            idempotency_key: key.to_string(),
+            protocol: None,
+            timeout_ms: req.timeout.map(|t| t.as_millis() as u64),
+        };
+        if let Err(e) = outbox.record_dead_letter(&call, &error.to_string()).await {
+            warn!(error = %e, "could not record a dead letter for a failed keyed call");
+        }
+    }
+
     /// Delivers one queued item: re-resolve, then invoke. Split out so the
     /// worker and the immediate try-then-queue attempt cannot drift apart.
     async fn deliver_queued(&self, call: &QueuedCall) -> Result<Value, ProxyError> {
@@ -265,7 +302,7 @@ impl ProxyRouter {
         // Re-resolved on every attempt, never stored: a binding re-pushed
         // while the item waited has to take effect (ADR-0021 §2).
         let target = outbox.resolve_target(call)?;
-        self.invoke(self.request_from(call, target)).await
+        self.invoke_inner(&self.request_from(call, target)).await
     }
 
     /// [`Self::invoke_local`] under the receiver-side fence.
@@ -579,11 +616,20 @@ impl ProxyRouter {
         };
         let call_timeout = req.timeout.unwrap_or(DEFAULT_PROXY_CALL_TIMEOUT);
 
-        // Retry loop. Only *transport* failures are retried, and only when
-        // the caller declared the call idempotent. A callee-returned error
-        // is never retried. Failed-after-retries fails directly -- no DLQ
-        // (M5).
-        let attempts: u8 = if req.idempotent { self.retry_policy.max_attempts.max(1) } else { 1 };
+        // Retry loop. Only *transport* failures are retried; a
+        // callee-returned error is a definitive answer and is never
+        // retried. Retry-eligible means the caller declared the call
+        // idempotent, or supplied an idempotency key -- a key is a
+        // strictly stronger fence than the caller's own assertion, since
+        // the receiver enforces it.
+        //
+        // Exhausting the budget always fails the caller directly. It
+        // additionally writes a dead letter *only* when the call carried a
+        // key (`record_failed_call`): a dead letter exists to be replayed,
+        // and replaying a call with no fence would be a second delivery of
+        // something nothing can deduplicate.
+        let retry_eligible = req.idempotent || req.idempotency_key.is_some();
+        let attempts: u8 = if retry_eligible { self.retry_policy.max_attempts.max(1) } else { 1 };
         let mut backoff = self.retry_policy.initial_backoff_ms;
         let mut attempt: u8 = 1;
         loop {
@@ -609,9 +655,15 @@ impl ProxyRouter {
     }
 }
 
-#[async_trait::async_trait]
-impl ServiceProxy for ProxyRouter {
-    async fn invoke(&self, req: ProxyRequest) -> Result<Value, ProxyError> {
+impl ProxyRouter {
+    /// The dispatch itself, with no dead-letter side effect.
+    ///
+    /// Split from the trait method so the two callers that own their own
+    /// failure record -- the outbox worker, which dead-letters through the
+    /// queue's retry history, and `enqueue`'s immediate attempt, which
+    /// either queues the item or hands the error back -- cannot also
+    /// produce a second row through `record_failed_call`.
+    async fn invoke_inner(&self, req: &ProxyRequest) -> Result<Value, ProxyError> {
         // Protocol gate: the minimal `[LFC-VER]` behavior kept from the
         // deferred protocol-negotiation slice (A.7). `ProxyProtocol` has
         // exactly one variant today, so this is a no-op in practice; it
@@ -622,7 +674,7 @@ impl ServiceProxy for ProxyRouter {
 
         // Capability gate: a WASM guest must not reach another service's
         // native capabilities through the proxy.
-        self.check_native_capability_gate(&req)?;
+        self.check_native_capability_gate(req)?;
 
         metrics::counter!("substrate.proxy.calls").increment(1);
         let started = Instant::now();
@@ -631,9 +683,9 @@ impl ServiceProxy for ProxyRouter {
         // hosted on this node (this is also the <5ms same-node path).
         let outcome = match self.registry.lookup(&req.target_service, &req.interface) {
             Some((endpoint, canonical_iface)) => {
-                self.invoke_local_guarded(&req, endpoint, canonical_iface).await
+                self.invoke_local_guarded(req, endpoint, canonical_iface).await
             }
-            None => self.invoke_remote(&req).await,
+            None => self.invoke_remote(req).await,
         };
 
         metrics::histogram!("substrate.proxy.duration_ms")
@@ -651,7 +703,7 @@ impl ServiceProxy for ProxyRouter {
     /// for the same reason: each names a condition every later delivery
     /// attempt would hit too, so failing now is the same answer given
     /// hours sooner, to a caller that is still alive to read it.
-    async fn enqueue(&self, call: QueuedCall) -> Result<(), ProxyError> {
+    async fn enqueue_call(&self, call: QueuedCall) -> Result<(), ProxyError> {
         let Some(outbox) = &self.outbox else {
             return Err(ProxyError::Internal(
                 "this node keeps no per-service storage, so it has no durable outbox".to_string(),
@@ -698,7 +750,7 @@ impl ServiceProxy for ProxyRouter {
             )));
         }
 
-        match self.invoke(self.request_from(&call, target)).await {
+        match self.invoke_inner(&self.request_from(&call, target)).await {
             Ok(_) => Ok(()),
             Err(e) if proxy_outbox::disposition_of(&e) == Disposition::Retry => {
                 warn!(error = %e, "proxy enqueue could not deliver now; queueing");
@@ -709,6 +761,24 @@ impl ServiceProxy for ProxyRouter {
             // cannot read.
             Err(e) => Err(e),
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl ServiceProxy for ProxyRouter {
+    /// Dispatches a call, and -- when it fails and carried a fence --
+    /// records it for an operator. See [`Self::record_failed_call`] for
+    /// why an unkeyed failure writes nothing.
+    async fn invoke(&self, req: ProxyRequest) -> Result<Value, ProxyError> {
+        let outcome = self.invoke_inner(&req).await;
+        if let Err(error) = &outcome {
+            self.record_failed_call(&req, error).await;
+        }
+        outcome
+    }
+
+    async fn enqueue(&self, call: QueuedCall) -> Result<(), ProxyError> {
+        ProxyRouter::enqueue_call(self, call).await
     }
 }
 
@@ -1461,6 +1531,73 @@ mod tests {
         assert!(
             stopped.is_ok(),
             "the worker must stop promptly on cancellation rather than draining its queue"
+        );
+    }
+
+    // -- the dead-letter tier ----------------------------------------------
+
+    /// A guest-origin call that failed for good, as the synchronous tier
+    /// produces it: unreachable target, so the retry budget is exhausted.
+    fn failing_guest_request(key: Option<&str>) -> ProxyRequest {
+        let mut req = base_request("did:key:zTarget", "greeter");
+        req.origin = CallOrigin::Guest { service_id: CALLER.to_string() };
+        req.caller = CallerContext::service_system(CALLER);
+        req.idempotency_key = key.map(str::to_string);
+        req
+    }
+
+    /// D-B2-1's first tier, and the assertion that keeps the whole rule
+    /// coherent: with no fence there is nothing safe to replay, so there
+    /// is no row. The caller is alive and holding the error -- this is not
+    /// silent loss.
+    #[tokio::test]
+    async fn an_unkeyed_call_that_exhausts_its_retries_writes_no_dead_letter() {
+        let node = outbox_node(false, 50).await;
+        let result = node.router.invoke(failing_guest_request(None)).await;
+        assert!(result.is_err(), "the call must still fail to its caller");
+        assert!(
+            !node.queue_file_exists(),
+            "an unfenced failure must leave no replayable record behind"
+        );
+    }
+
+    /// The second tier: the row is *additional*, never a substitute for
+    /// the caller's own error.
+    #[tokio::test]
+    async fn a_keyed_call_that_exhausts_its_retries_writes_a_dead_letter_and_still_returns_its_error()
+     {
+        let node = outbox_node(false, 50).await;
+        let result = node.router.invoke(failing_guest_request(Some("k1"))).await;
+        assert!(result.is_err(), "the caller must still get its error");
+
+        let dead = node.dead_letters().await;
+        assert_eq!(dead.len(), 1, "a keyed failure must also be recorded for an operator");
+        assert_eq!(dead[0].queue_key, "k1");
+        assert!(node.queued().await.is_empty(), "and must not linger in the outbox");
+    }
+
+    /// One permanently broken recipient must not be able to evict every
+    /// other conversation's dead letters, which is what scoping the cap by
+    /// target buys.
+    #[tokio::test]
+    async fn the_dlq_cap_is_scoped_per_target() {
+        let node = outbox_node(false, 50).await;
+        let queue = node.outbox.queue_for(CALLER).await.unwrap();
+
+        // Two targets, and a cap that the first one alone would blow past.
+        for i in 0..4 {
+            let call =
+                queued_call(QueuedTarget::Service("did:key:zNoisy".into()), &format!("n{i}"));
+            node.outbox.record_dead_letter(&call, "unreachable").await.unwrap();
+        }
+        let quiet = queued_call(QueuedTarget::Service("did:key:zQuiet".into()), "q0");
+        node.outbox.record_dead_letter(&quiet, "unreachable").await.unwrap();
+
+        let keys: Vec<String> =
+            queue.dead_letters().unwrap().into_iter().map(|d| d.queue_key).collect();
+        assert!(
+            keys.contains(&"q0".to_string()),
+            "the quiet target's dead letter must survive the noisy one's overflow, got {keys:?}"
         );
     }
 

@@ -14,9 +14,9 @@ use serde_json::Value;
 
 use crate::CallerContext;
 
-/// Reserved wire tag (A.5/A.7): only `JsonRpcV1` exists in M4. A future wRPC
-/// wire adds a variant here plus a `RemoteHop` impl in `syneroym-router` --
-/// no other type changes.
+/// Reserved wire tag: only `JsonRpcV1` exists today. A future wRPC wire
+/// adds a variant here plus a `RemoteHop` impl in `syneroym-router` -- no
+/// other type changes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ProxyProtocol {
     #[default]
@@ -26,10 +26,10 @@ pub enum ProxyProtocol {
 impl ProxyProtocol {
     pub const JSON_RPC_V1_TAG: &'static str = "json-rpc/v1";
 
-    /// `None`/`"json-rpc/v1"` decode to [`Self::JsonRpcV1`]; anything else is
-    /// `Err(tag)` -- the caller turns that into
-    /// [`ProxyError::UnsupportedProtocol`] (the minimal `[LFC-VER]` behavior
-    /// kept from the deferred protocol-negotiation slice, A.7).
+    /// `None`/`"json-rpc/v1"` decode to [`Self::JsonRpcV1`]; anything else
+    /// is `Err(tag)` -- the caller turns that into
+    /// [`ProxyError::UnsupportedProtocol`]. Protocol negotiation does not
+    /// exist: a node either speaks the tag or refuses it.
     pub fn parse(tag: Option<&str>) -> Result<Self, String> {
         match tag {
             None | Some(Self::JSON_RPC_V1_TAG) => Ok(Self::JsonRpcV1),
