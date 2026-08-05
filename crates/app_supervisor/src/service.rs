@@ -46,7 +46,7 @@ use syneroym_sdk::{
 };
 use syneroym_wit_interfaces::supervisor::exports::syneroym::supervisor::supervisor::{
     AdoptResult, Alert, BindingConvergence, DeadLetter, InstanceStatus, ManagedService,
-    ManagedState, MintedMaster as WitMintedMaster, Submission, SubmitResult,
+    ManagedState, MintedMaster as WitMintedMaster, OutboxItem, Submission, SubmitResult,
 };
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
@@ -438,9 +438,80 @@ impl SupervisorService {
                 return;
             }
         };
+        let max_attempts = self.store.queue.max_attempts();
         for item in items {
-            self.deliver_queued_item(item).await;
+            // D-B1-8/§0.7: shutdown abandons work in flight rather than
+            // draining it -- checked between every item, not only between
+            // ticks, and raced into the delivery itself below, so
+            // cancelling mid-tick does not wait out the rest of a claim
+            // batch (up to `QUEUE_WORKER_CLAIM_LIMIT` items, each up to
+            // `MANAGED_SUBSTRATE_CONNECT_TIMEOUT`) against exactly the
+            // unreachable substrates this is meant never to wait on (M05B
+            // B1 review finding 5). An item not yet started this tick is
+            // left claimed; its own visibility timeout returns it to
+            // `Pending` on the next start, same as a crashed worker.
+            if self.cancellation_token.is_cancelled() {
+                return;
+            }
+            // M05B B1 review finding 7: an item claimed `max_attempts`
+            // times without ever reaching `fail`/`complete` (a worker
+            // panic or crash on every delivery) would otherwise be handed
+            // out forever -- `attempts` alone cannot bound it, since only
+            // `fail` advances that counter. Dead-letter it through the
+            // ordinary terminal path instead of attempting delivery again.
+            if item.claim_count > u32::from(max_attempts) {
+                self.dead_letter_poison_pill(item).await;
+                continue;
+            }
+            tokio::select! {
+                () = self.cancellation_token.cancelled() => return,
+                () = self.deliver_queued_item(item) => {}
+            }
         }
+    }
+
+    /// Parses a claimed item's queue key into what every path past this
+    /// point needs, dead-lettering it (terminal) and returning `None` when
+    /// it does not parse -- shared by `deliver_queued_item` and
+    /// [`Self::dead_letter_poison_pill`].
+    fn parse_or_dead_letter(
+        &self,
+        item: &QueueItem,
+        now: i64,
+    ) -> Option<(AppInstanceId, QueueKey)> {
+        let Ok(key) = item.queue_key.parse::<QueueKey>() else {
+            tracing::warn!(
+                queue_key = %item.queue_key,
+                "outbox item carries an unparseable queue key; dead-lettering"
+            );
+            let _ = self.store.queue.fail(item.id, now, "unparseable queue key", true);
+            return None;
+        };
+        let Ok(instance_id) = AppInstanceId::try_new(key.app_instance_id.clone()) else {
+            let _ =
+                self.store.queue.fail(item.id, now, "queue key's app instance id is invalid", true);
+            return None;
+        };
+        Some((instance_id, key))
+    }
+
+    /// An item whose claim count alone exhausted the attempt budget,
+    /// without `fail` ever being called for it (M05B B1 review finding 7)
+    /// -- dead-lettered through the same terminal path and alerting
+    /// `fail_queued_item` already gives every other terminal reason.
+    async fn dead_letter_poison_pill(&self, item: QueueItem) {
+        let now = outbox::now_ms();
+        let Some((instance_id, key)) = self.parse_or_dead_letter(&item, now) else { return };
+        self.fail_queued_item(
+            &instance_id,
+            &key,
+            item.id,
+            now,
+            "delivery attempt budget exhausted without a recorded outcome (repeated crash or \
+             panic during delivery)",
+            true,
+        )
+        .await;
     }
 
     /// Replays one claimed item: reconnects to its target substrate,
@@ -459,25 +530,13 @@ impl SupervisorService {
     /// from real split-brain.
     async fn deliver_queued_item(&self, item: QueueItem) {
         let now = outbox::now_ms();
-        let Ok(key) = item.queue_key.parse::<QueueKey>() else {
-            tracing::warn!(
-                queue_key = %item.queue_key,
-                "outbox item carries an unparseable queue key; dead-lettering"
-            );
-            let _ = self.store.queue.fail(item.id, now, "unparseable queue key", true);
-            return;
-        };
+        let Some((instance_id, key)) = self.parse_or_dead_letter(&item, now) else { return };
         let Ok(queued) = serde_json::from_slice::<outbox::QueuedBindingWrite>(&item.payload) else {
             tracing::warn!(
                 queue_key = %item.queue_key,
                 "outbox item carries an unparseable payload; dead-lettering"
             );
             let _ = self.store.queue.fail(item.id, now, "unparseable payload", true);
-            return;
-        };
-        let Ok(instance_id) = AppInstanceId::try_new(key.app_instance_id.clone()) else {
-            let _ =
-                self.store.queue.fail(item.id, now, "queue key's app instance id is invalid", true);
             return;
         };
 
@@ -488,6 +547,17 @@ impl SupervisorService {
             let _ = self.store.queue.fail(item.id, now, "app instance no longer known", true);
             return;
         };
+        if state.retired {
+            // The operator retired this instance between enqueue and
+            // delivery. Neither attempting the write (it would resurrect a
+            // binding the operator just released) nor dead-lettering it
+            // with a `DeliveryExhausted` alert (noise against an instance
+            // nobody is going to act on) is right -- the item's own intent
+            // is simply moot now, the same as `applied`/`no-op`/`stale`
+            // (M05B B1 review finding 16).
+            let _ = self.store.queue.complete(item.id);
+            return;
+        }
         let Ok(inventory) = serde_json::from_str::<SupervisorInventory>(&state.inventory_json)
         else {
             let _ =
@@ -513,8 +583,23 @@ impl SupervisorService {
                     error = %e,
                     "queue worker delivery attempt failed to connect"
                 );
-                self.fail_queued_item(&instance_id, &key, item.id, now, &e.to_string(), false)
-                    .await;
+                // Re-read the clock rather than reusing `now` from function
+                // entry: `connect` can burn up to
+                // `MANAGED_SUBSTRATE_CONNECT_TIMEOUT` (10s), and the early
+                // backoff waits this feeds are sub-second -- a stale `now`
+                // can put `next_attempt_at` in the past, governing the wait
+                // by `queue_tick_secs` instead of the configured curve
+                // (M05B B1 review finding 8).
+                let failed_at = outbox::now_ms();
+                self.fail_queued_item(
+                    &instance_id,
+                    &key,
+                    item.id,
+                    failed_at,
+                    &e.to_string(),
+                    false,
+                )
+                .await;
                 return;
             }
         };
@@ -557,9 +642,30 @@ impl SupervisorService {
                 }
             }
             Err(err) => {
-                let terminal = deploy::is_callee_error(&err);
-                self.fail_queued_item(&instance_id, &key, item.id, now, &err.to_string(), terminal)
-                    .await;
+                let failed_at = outbox::now_ms();
+                // Only the narrower "the substrate answered that this
+                // write's own target is gone" case is terminal here
+                // (failure-matrix row 9) -- `deploy::is_callee_error`
+                // alone would also dead-letter a transient,
+                // reached-and-answered error (a locked database, a service
+                // still starting) that the wire protocol cannot currently
+                // distinguish from "gone" by error code, only by message
+                // text (M05B B1 review finding 10). Treating every callee
+                // error as terminal on this path -- the only path that can
+                // reach an *already-durable* item, unlike the synchronous
+                // path's "decline to enqueue" -- would prematurely give up
+                // on work that survived a restart specifically to be
+                // retried.
+                let terminal = deploy::is_target_gone_error(&err);
+                self.fail_queued_item(
+                    &instance_id,
+                    &key,
+                    item.id,
+                    failed_at,
+                    &err.to_string(),
+                    terminal,
+                )
+                .await;
             }
         }
     }
@@ -578,9 +684,7 @@ impl SupervisorService {
         terminal: bool,
     ) {
         let Ok(outcome) = self.store.queue.fail(item_id, now, error, terminal) else { return };
-        if !matches!(outcome, FailOutcome::DeadLettered) {
-            return;
-        }
+        let FailOutcome::DeadLettered { pruned_keys } = outcome else { return };
         let count = self
             .store
             .queue
@@ -603,6 +707,22 @@ impl SupervisorService {
                 &[(AlertKind::DeliveryExhausted, key.logical_ref.clone())],
             )
             .await;
+        }
+
+        // The DLQ cap just pruned these other keys' oldest dead letters
+        // (D-B1-9) -- if that was their *last* one, their own standing
+        // alert must clear too, or a prune leaves a permanent red mark
+        // nothing can ever clear (failure-matrix row 4a, M05B B1 review
+        // finding 3). A pruned key's group is always this same instance
+        // (group_key == app_instance_id, `outbox.rs`), but parsed
+        // generically here rather than assumed, since this crate does not
+        // enforce that pairing.
+        for pruned_key in pruned_keys {
+            let Ok(pruned) = pruned_key.parse::<QueueKey>() else { continue };
+            let Ok(pruned_instance) = AppInstanceId::try_new(pruned.app_instance_id.clone()) else {
+                continue;
+            };
+            self.clear_delivery_exhausted_if_empty(&pruned_instance, &pruned);
         }
     }
 
@@ -2686,6 +2806,32 @@ impl SupervisorService {
         let app_instance_id = plan.app_instance_id.to_string();
         let l_ref = svc.member_ref().to_string();
 
+        // M05B B1 review finding 1: this call advances the binding epoch
+        // unconditionally, before every attempt. `DurableActor::write_
+        // bindings` only enqueues on a transport failure, and its own
+        // dedup guard (`already_pending`) discards a second enqueue for a
+        // key that already has a pending row -- so a *second* transport
+        // failure for the same key (this pass reconnects fine but the
+        // write itself times out, a narrower case than the connect-level
+        // failure `enqueue_unreachable_push` already guards this way)
+        // would advance the local epoch again while the queue still only
+        // holds the first, older-epoch payload. `written_epoch` -- read
+        // back for convergence from the same counter this advances --
+        // would then race ahead of what the worker can ever actually
+        // deliver, and `is_converged` would read the eventual successful
+        // delivery of the *queued* item as still unconverged. Checking
+        // first, and deferring entirely to the queue when a row already
+        // exists, is the same fix `enqueue_unreachable_push` already
+        // applies to its own, more common case.
+        let queue_key = QueueKey {
+            app_instance_id: app_instance_id.clone(),
+            logical_ref: l_ref.clone(),
+            substrate_did: substrate_did.to_string(),
+        };
+        if SupervisorOutbox::new(self.store.queue.clone()).already_pending(&queue_key.to_string()) {
+            return Ok(Vec::new());
+        }
+
         let epoch = self
             .store
             .advance_binding_epoch(&app_instance_id, &l_ref)
@@ -4047,6 +4193,36 @@ impl SupervisorService {
         Ok(NativeResponse { payload: serde_json::to_value(alerts).unwrap_or(Value::Null) })
     }
 
+    /// Every item belonging to this instance still in the outbox -- pending
+    /// or claimed, not yet dead-lettered (M05B B1 review finding 13):
+    /// `roymctl supervisor outbox`'s own listing, and what the reference
+    /// scenario's own steps 4/5/7 need to assert the item is actually
+    /// queued rather than only inferring it from alerts or `is_converged`.
+    async fn handle_outbox(
+        &self,
+        caller: &CallerContext,
+        params: Value,
+    ) -> RpcResult<NativeResponse> {
+        self.require_admin(caller)?;
+        let (app_instance_id,): (String,) = serde_json::from_value(params)
+            .map_err(|e| RpcError::InvalidParams(format!("failed to parse outbox params: {e}")))?;
+
+        let rows = self.store.queue.all().map_err(|e| RpcError::InternalError(e.to_string()))?;
+        let items: Vec<OutboxItem> = rows
+            .into_iter()
+            .filter_map(|item| {
+                let key: QueueKey = item.queue_key.parse().ok()?;
+                (key.app_instance_id == app_instance_id).then_some(OutboxItem {
+                    id: item.id as u64,
+                    logical_ref: key.logical_ref,
+                    substrate_did: key.substrate_did,
+                    attempts: item.attempts,
+                })
+            })
+            .collect();
+        Ok(NativeResponse { payload: serde_json::to_value(items).unwrap_or(Value::Null) })
+    }
+
     /// Every dead letter belonging to this instance, oldest first (M05B B1,
     /// D-B1-6) -- `roymctl supervisor dead-letters`'s own listing.
     async fn handle_dead_letters(
@@ -4095,17 +4271,25 @@ impl SupervisorService {
 
         let rows =
             self.store.queue.dead_letters().map_err(|e| RpcError::InternalError(e.to_string()))?;
+        // Both branches below are the caller naming a dead letter that is
+        // not theirs to replay -- an unknown id and one that belongs to a
+        // different instance are the same class of mistake as a malformed
+        // parameter, not a server problem, so both answer `InvalidParams`
+        // (M05B B1 review finding 12). Neither names which other instance
+        // (if any) actually owns the id: that would confirm to a caller
+        // that an id exists under someone else's instance, which an
+        // instance-scoped admin grant should not leak.
         let Some(row) = rows.iter().find(|d| d.id as u64 == dead_letter_id) else {
-            return Err(RpcError::InternalError(format!(
-                "no dead letter with id {dead_letter_id}"
+            return Err(RpcError::InvalidParams(format!(
+                "no dead letter with id {dead_letter_id} for app instance '{app_instance_id}'"
             )));
         };
         let key: QueueKey = row.queue_key.parse().map_err(|e| {
             RpcError::InternalError(format!("dead letter carries an unparseable queue key: {e}"))
         })?;
         if key.app_instance_id != app_instance_id {
-            return Err(RpcError::InternalError(format!(
-                "dead letter {dead_letter_id} does not belong to app instance '{app_instance_id}'"
+            return Err(RpcError::InvalidParams(format!(
+                "no dead letter with id {dead_letter_id} for app instance '{app_instance_id}'"
             )));
         }
 
@@ -4165,6 +4349,7 @@ impl NativeService for SupervisorService {
             }
             "status" => self.handle_status(&invocation.caller, invocation.params).await,
             "alerts" => self.handle_alerts(&invocation.caller, invocation.params).await,
+            "outbox" => self.handle_outbox(&invocation.caller, invocation.params).await,
             "dead-letters" => self.handle_dead_letters(&invocation.caller, invocation.params).await,
             "replay" => self.handle_replay(&invocation.caller, invocation.params).await,
             method => Err(RpcError::MethodNotFound(method.to_string())),
@@ -4176,6 +4361,7 @@ impl NativeService for SupervisorService {
 mod tests {
     use std::{
         collections::{BTreeMap, VecDeque},
+        future,
         path::{Path, PathBuf},
         sync::Mutex,
         time::Instant,
@@ -4188,6 +4374,8 @@ mod tests {
             TopologyMode,
         },
     };
+    use syneroym_async_queue::{Queue, QueueConfig};
+    use syneroym_core::config::SupervisorRole;
     use syneroym_identity::{DelegationCertificate, substrate};
     use syneroym_rpc::AuthLevel;
 
@@ -4391,6 +4579,7 @@ mod tests {
             ("alerts", serde_json::json!(["i", false])),
             // M05B B1, D-B1-6/D-B1-7, test 32: no new resource namespace --
             // gated exactly like the neighbouring verbs above.
+            ("outbox", serde_json::json!(["i"])),
             ("dead-letters", serde_json::json!(["i"])),
             ("replay", serde_json::json!(["i", 1])),
         ] {
@@ -7362,6 +7551,123 @@ mod tests {
         );
     }
 
+    /// M05B B1 review finding 1: `push_bindings` advances the binding
+    /// epoch before every attempt, but a *durable* actor only enqueues
+    /// once per key (`already_pending`) -- so a second transport failure
+    /// for the same key while the first attempt's item is still queued
+    /// must not advance the epoch again, or `written_epoch` races ahead of
+    /// what the worker can ever actually deliver and a later successful
+    /// delivery of the (older, still-queued) item would read as
+    /// unconverged forever. Uses `deploy::build_durable_actor` directly
+    /// (not `BindingActor`, which is never durable) so this exercises the
+    /// same enqueue path `DurableActor::write_bindings` takes in
+    /// production.
+    #[tokio::test]
+    async fn two_consecutive_transport_failures_for_one_key_do_not_strand_the_written_epoch() {
+        let s = service();
+        let svc = dependent_service("frontend", "backend");
+        let plan = plan_with_one_dependent(svc.clone());
+        let instance_id = AppInstanceId::new("inst-1");
+        let mut opened = Vec::new();
+        let outbox: Arc<dyn WriteBindingsOutbox> =
+            Arc::new(SupervisorOutbox::new(s.store.queue.clone()));
+        let queue_key = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/frontend#0".to_string(),
+            substrate_did: "did:key:zEdge1".to_string(),
+        }
+        .to_string();
+
+        let first_client = Arc::new(FakeSubstrateClient::default());
+        *first_client.write_bindings_outcome.lock().unwrap() =
+            Some(Err("connection reset mid-write".to_string()));
+        let first_actor = deploy::build_durable_actor(
+            first_client,
+            "did:key:zEdge1".to_string(),
+            queue_key.clone(),
+            outbox.clone(),
+        );
+        let first = s
+            .push_bindings(
+                &instance_id,
+                &plan,
+                &svc,
+                "did:key:zEdge1",
+                &first_actor,
+                0,
+                &mut opened,
+            )
+            .await;
+        assert!(first.is_err());
+        assert_eq!(s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(), 1);
+        let queued = s.store.queue.all().unwrap();
+        assert_eq!(queued.len(), 1, "the first failure must have enqueued exactly one item");
+
+        // A second pass: reconnects fine (a fresh `DurableActor`), but the
+        // write itself fails again for the same key -- while the first
+        // failure's item is still sitting in the outbox.
+        let second_client = Arc::new(FakeSubstrateClient::default());
+        *second_client.write_bindings_outcome.lock().unwrap() =
+            Some(Err("connection reset mid-write".to_string()));
+        let second_actor = deploy::build_durable_actor(
+            second_client,
+            "did:key:zEdge1".to_string(),
+            queue_key,
+            outbox,
+        );
+        let second = s
+            .push_bindings(
+                &instance_id,
+                &plan,
+                &svc,
+                "did:key:zEdge1",
+                &second_actor,
+                0,
+                &mut opened,
+            )
+            .await;
+        assert!(second.is_ok(), "an already-pending key defers to the queue, it is not an error");
+
+        assert_eq!(
+            s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(),
+            1,
+            "the epoch must not advance again while the first attempt's item is still queued"
+        );
+        let queued = s.store.queue.all().unwrap();
+        assert_eq!(queued.len(), 1, "the second pass must not have enqueued a duplicate");
+        let payload: outbox::QueuedBindingWrite =
+            serde_json::from_slice(&queued[0].payload).unwrap();
+        assert_eq!(
+            payload.write.generation, 0,
+            "the queued payload is still the first attempt's, carrying epoch 1"
+        );
+
+        // Once the worker eventually delivers the queued (epoch-1) item,
+        // it must read as converged, matching what is actually in the
+        // outbox -- not stranded behind a local epoch nothing will ever
+        // deliver.
+        let report = health::HealthReport {
+            substrates: Vec::new(),
+            services: vec![health::ServiceHealth {
+                logical_ref: svc.logical_ref.clone(),
+                service_id: svc.service_id.to_string(),
+                alias: svc.substrate.clone(),
+                substrate_did: "did:key:zEdge1".to_string(),
+                signal: Signal::Healthy,
+                instance_certificate_issued_at: None,
+                instance_certificate_expires_at: None,
+                binding_epochs: vec![("backend".to_string(), 1)],
+                member_index: svc.member_index,
+            }],
+        };
+        let rows = s.binding_convergence_rows("inst-1", &plan, &report);
+        assert!(
+            rows[0].converged,
+            "the epoch the worker will eventually deliver (1) must still be the one convergence \
+             checks against: {rows:?}"
+        );
+    }
+
     // ── M05A A5d: unattended renewal, anchor refresh, revocation ─────────
 
     /// A fake substrate for the renewal path: answers `instance_identity`
@@ -9409,6 +9715,13 @@ mod tests {
         /// is not downcastable to `JsonRpcError`, so it would be classified
         /// as transport, same as `ConnectFails`).
         CalleeError(String),
+        /// The reconnect never resolves -- stands in for a substrate that
+        /// never answers, so a test can prove something is genuinely
+        /// in-flight when shutdown is asked for (M05B B1 review finding 5).
+        /// Distinct from an absent scripted entry (`None` below), which
+        /// returns an error immediately and proves nothing about
+        /// abandoning in-flight work.
+        Blocks,
     }
 
     impl FakeQueueConnector {
@@ -9450,6 +9763,7 @@ mod tests {
                     Err(syneroym_rpc::JsonRpcError { code: -32010, message: msg, data: None }
                         .into())
                 }
+                Some(FakeDelivery::Blocks) => future::pending().await,
                 None => return Err(anyhow::anyhow!("no scripted delivery for {}", entry.did)),
             };
             Ok(Arc::new(ScriptedAttempt { result: Mutex::new(Some(result)) }))
@@ -9565,7 +9879,12 @@ mod tests {
             outbox::QueuedBindingWrite { substrate_did: substrate_did.to_string(), write };
         store
             .queue
-            .enqueue(&key.to_string(), &serde_json::to_vec(&payload).unwrap(), outbox::now_ms())
+            .enqueue(
+                app_instance_id,
+                &key.to_string(),
+                &serde_json::to_vec(&payload).unwrap(),
+                outbox::now_ms(),
+            )
             .unwrap()
     }
 
@@ -9710,16 +10029,51 @@ mod tests {
         assert!(s.store.queue.dead_letters().unwrap().is_empty());
     }
 
-    /// Failure-matrix row 9: a callee error on replay (the substrate
-    /// reached and refusing, e.g. because the target no longer exists) is
-    /// terminal -- straight to the DLQ, not retried.
+    /// M05B B1 review finding 10: a callee error that does *not* name this
+    /// write's own target as gone -- a transient, reached-and-answered
+    /// refusal the wire protocol cannot currently distinguish from "gone"
+    /// by error code -- must stay retryable on the queued path, not
+    /// dead-letter on its first delivery. Otherwise a queued item that
+    /// survived a restart specifically to be retried would be given up on
+    /// by a hiccup a later attempt would have cleared.
+    #[tokio::test]
+    async fn an_ambiguous_callee_error_on_replay_retries_rather_than_dead_lettering() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector.script(
+            "did:key:zB",
+            FakeDelivery::CalleeError("database is locked, try again".to_string()),
+        );
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        s.queue_worker_tick().await;
+
+        let remaining = s.store.queue.all().unwrap();
+        assert_eq!(remaining.len(), 1, "an ambiguous callee error must stay in the outbox");
+        assert!(s.store.queue.dead_letters().unwrap().is_empty());
+    }
+
+    /// Failure-matrix row 9: a callee error on replay naming this write's
+    /// own target as gone (the exact wording `control_plane`'s
+    /// `write-bindings` dispatch uses for that specific refusal, M05B B1
+    /// review finding 10) is terminal -- straight to the DLQ, not retried.
     #[tokio::test]
     async fn a_callee_error_on_replay_dead_letters_immediately() {
         let mut s = service();
         let connector = Arc::new(FakeQueueConnector::default());
         connector.script(
             "did:key:zB",
-            FakeDelivery::CalleeError("service no longer exists".to_string()),
+            FakeDelivery::CalleeError(
+                "'did:key:zSvc' has no app context on this substrate".to_string(),
+            ),
         );
         s.queue_connector = connector;
         seed_inventory(&s.store, "inst-1", "did:key:zB");
@@ -9781,18 +10135,20 @@ mod tests {
     }
 
     /// Test 23: D-B1-8. Cancelling the token must not wait for a delivery
-    /// in flight -- `run_queue_worker` returns as soon as the next
-    /// `select!` iteration observes cancellation, not after the item its
-    /// current tick claimed finishes.
+    /// *genuinely in flight* -- `FakeDelivery::Blocks` makes `connect`
+    /// never resolve, so if `shutdown` returned promptly here it is
+    /// because cancellation actually interrupted a real, ongoing delivery
+    /// (M05B B1 review finding 5: an earlier version of this test left the
+    /// substrate unscripted, which fails `connect` immediately and
+    /// proves nothing about abandoning work in flight -- its own comment
+    /// also claimed `queue_tick_secs` was 1s here when it was actually set
+    /// to 3600, so the tick this test depended on never fired at all
+    /// inside its own real-clock sleep).
     #[tokio::test]
     async fn shutdown_abandons_in_flight_work_rather_than_draining() {
-        let mut s = Fixture { queue_tick_secs: Some(3600), ..Fixture::default() }.build();
+        let mut s = Fixture { queue_tick_secs: Some(1), ..Fixture::default() }.build();
         let connector = Arc::new(FakeQueueConnector::default());
-        // Never resolves within this test's own bound: `ConnectFails`
-        // would return promptly, so instead the item is left unscripted --
-        // `connect` blocks forever waiting on a scripted delivery that
-        // never arrives, standing in for a substrate that never answers.
-        let _ = &connector;
+        connector.script("did:key:zB", FakeDelivery::Blocks);
         s.queue_connector = connector;
         seed_inventory(&s.store, "inst-1", "did:key:zB");
         enqueue_test_item(
@@ -9808,9 +10164,9 @@ mod tests {
             let s = s.clone();
             tokio::spawn(async move { s.run_queue_worker().await })
         };
-        // Give the interval its first tick a chance to fire and claim the
-        // one item -- `queue_tick_secs` is 1s below via `build_pass_interval`'s
-        // `.max(1)`, so this is well past that.
+        // Give the 1s interval its first tick a chance to fire, claim the
+        // item, and reach `connect` -- which then blocks forever, so by
+        // the time this returns a delivery is genuinely in flight.
         tokio::time::sleep(Duration::from_millis(1200)).await;
 
         let start = Instant::now();
@@ -9818,11 +10174,19 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), run_handle)
             .await
             .expect(
-                "run_queue_worker must return promptly on shutdown, not wait for the claimed item",
+                "run_queue_worker must return promptly on shutdown, not wait for the delivery in \
+                 flight",
             )
             .unwrap()
             .unwrap();
         assert!(start.elapsed() < Duration::from_secs(2));
+
+        // The abandoned item is still claimed (invisible) right after
+        // shutdown -- dropped mid-delivery, not completed or failed.
+        assert!(
+            s.store.queue.claim_due(outbox::now_ms(), 10).unwrap().is_empty(),
+            "the item must still be invisible, not silently completed or requeued"
+        );
     }
 
     /// Test 24: the in-process analogue of e2e step 5 -- a queued item
@@ -10021,6 +10385,14 @@ mod tests {
             "one dead letter for this key still remains; the alert must stay active"
         );
 
+        // The first replay's own row must resolve before the second dead
+        // letter for the identical key can be replayed too -- `Queue::
+        // replay` refuses a second pending row for one key (M05B B1 review
+        // finding 2), so this drives the worker to deliver (and complete)
+        // the first replay's item before trying the second.
+        s.queue_worker_tick().await;
+        assert!(s.store.queue.all().unwrap().is_empty(), "the first replay must have landed");
+
         dispatch(
             &s,
             admin_caller("did:key:zSupervisorNode"),
@@ -10037,6 +10409,111 @@ mod tests {
                 .iter()
                 .any(|a| a.kind == AlertKind::DeliveryExhausted),
             "the last dead letter for this key is gone; the alert must clear"
+        );
+    }
+
+    /// M05B B1 review finding 3: a *pruned* dead letter (the DLQ cap
+    /// evicting the oldest row on write, D-B1-9) must clear its own
+    /// standing alert exactly the same way an explicit `replay` does --
+    /// not just when a human happens to replay it. Distinct from the test
+    /// above, which only exercises the replay path.
+    #[tokio::test]
+    async fn a_pruned_dead_letter_clears_its_own_alert_too() {
+        let mut s = service();
+        // A cap of 1 so the second key's own dead letter immediately
+        // evicts the first key's -- both keys share one group (the app
+        // instance), so the cap applies across them (M05B B1 review
+        // finding 4).
+        s.store.queue = Queue::open_in_memory(QueueConfig {
+            dlq_max_rows: 1,
+            ..QueueConfig::from(&SupervisorRole::default())
+        })
+        .unwrap();
+
+        let instance_id = AppInstanceId::try_new("inst-1".to_string()).unwrap();
+        let key_a = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/backend-a".to_string(),
+            substrate_did: "did:key:zB".to_string(),
+        };
+        let key_b = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/backend-b".to_string(),
+            substrate_did: "did:key:zB".to_string(),
+        };
+        let id_a = enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend-a",
+            "did:key:zB",
+            test_binding_write("did:key:zSvcA", "inst-1"),
+        );
+        s.fail_queued_item(&instance_id, &key_a, id_a, outbox::now_ms(), "boom", true).await;
+        assert!(
+            s.store
+                .alerts
+                .active(&instance_id)
+                .unwrap()
+                .iter()
+                .any(|a| a.kind == AlertKind::DeliveryExhausted
+                    && a.logical_ref.as_deref() == Some("inst-1/backend-a")),
+            "key a's dead letter must raise its own alert"
+        );
+
+        let id_b = enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend-b",
+            "did:key:zB",
+            test_binding_write("did:key:zSvcB", "inst-1"),
+        );
+        // This dead-letters key b, which prunes key a's now-oldest row
+        // past the cap of 1 -- with no `replay` in sight.
+        s.fail_queued_item(&instance_id, &key_b, id_b, outbox::now_ms(), "boom too", true).await;
+
+        assert_eq!(s.store.queue.dead_letters().unwrap().len(), 1, "the cap must still hold");
+        let active = s.store.alerts.active(&instance_id).unwrap();
+        assert!(
+            !active.iter().any(|a| a.kind == AlertKind::DeliveryExhausted
+                && a.logical_ref.as_deref() == Some("inst-1/backend-a")),
+            "key a's dead letter was pruned; its alert must clear, not linger forever: {active:?}"
+        );
+        assert!(
+            active.iter().any(|a| a.kind == AlertKind::DeliveryExhausted
+                && a.logical_ref.as_deref() == Some("inst-1/backend-b")),
+            "key b's own alert must still be active: {active:?}"
+        );
+    }
+
+    /// M05B B1 review finding 14: row 12's outbox growth bound -- "at most
+    /// one row per `(instance, logical_ref, substrate)`" -- is enforced by
+    /// `SupervisorOutbox::already_pending`, but nothing asserted it as the
+    /// bound directly.
+    #[tokio::test]
+    async fn the_outbox_holds_at_most_one_row_per_key_regardless_of_how_many_enqueue_attempts() {
+        let queue = Queue::open_in_memory(QueueConfig::from(&SupervisorRole::default())).unwrap();
+        let outbox = SupervisorOutbox::new(queue.clone());
+        let key = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/backend".to_string(),
+            substrate_did: "did:key:zB".to_string(),
+        };
+        let write = test_binding_write("did:key:zSvc", "inst-1");
+
+        for generation in 0..50u64 {
+            outbox
+                .enqueue(
+                    &key.to_string(),
+                    "did:key:zB",
+                    &BindingWrite { generation, ..write.clone() },
+                )
+                .await;
+        }
+
+        assert_eq!(
+            queue.all().unwrap().len(),
+            1,
+            "fifty enqueue attempts for one key must still leave exactly one outbox row"
         );
     }
 
@@ -10138,7 +10615,12 @@ mod tests {
     async fn a_replayed_item_that_fails_again_returns_to_the_dlq_with_its_history() {
         let mut s = service();
         let connector = Arc::new(FakeQueueConnector::default());
-        connector.script("did:key:zB", FakeDelivery::CalleeError("still refused".to_string()));
+        connector.script(
+            "did:key:zB",
+            FakeDelivery::CalleeError(
+                "'did:key:zSvc' has no app context on this substrate".to_string(),
+            ),
+        );
         s.queue_connector = connector;
         seed_inventory(&s.store, "inst-1", "did:key:zB");
         let instance_id = AppInstanceId::try_new("inst-1".to_string()).unwrap();

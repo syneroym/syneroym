@@ -126,7 +126,19 @@ impl WriteBindingsOutbox for SupervisorOutbox {
                 return;
             }
         };
-        if let Err(e) = self.queue.enqueue(queue_key, &bytes, now_ms()) {
+        // `group_key` scopes the DLQ cap this item's eventual failure
+        // would count against (D-B1-9) -- the app instance, parsed back
+        // out of `queue_key` rather than threaded through this trait's own
+        // signature, so one noisy instance cannot evict another's dead
+        // letters (M05B B1 review finding 4). A queue key this crate wrote
+        // always parses; an unparseable one is a caller bug elsewhere, not
+        // something to guess a group for.
+        let group_key = queue_key.parse::<QueueKey>().map(|k| k.app_instance_id);
+        let group_key = match &group_key {
+            Ok(g) => g.as_str(),
+            Err(_) => queue_key,
+        };
+        if let Err(e) = self.queue.enqueue(group_key, queue_key, &bytes, now_ms()) {
             tracing::warn!(
                 error = %e,
                 "failed to enqueue a binding write onto the durable outbox"
@@ -138,13 +150,18 @@ impl WriteBindingsOutbox for SupervisorOutbox {
 impl SupervisorOutbox {
     /// Whether `queue_key` already has a row in the outbox -- pending or
     /// claimed, either way already durable and already on its own retry
-    /// schedule. A linear scan over `Queue::all()`, not an indexed lookup:
-    /// this is the supervisor's own per-instance outbox, not a shared
-    /// multi-tenant one, so its size is bounded by how many distinct
-    /// members are simultaneously mid-retry, not by anything unbounded.
+    /// schedule. Backed by `Queue::has_pending`'s indexed lookup, not a
+    /// scan of every payload (M05B B1 review finding 15).
+    ///
+    /// Fails **closed**: a read that cannot be answered (`Err`) reports
+    /// `true` (already pending), so the caller skips this enqueue and the
+    /// next pass tries again -- the opposite of `is_ok_and`'s old fail-open
+    /// behavior, which reported a broken read as "not pending" and wrote
+    /// the duplicate row the guard exists to prevent (M05B B1 review
+    /// finding 11).
     #[must_use]
     pub fn already_pending(&self, queue_key: &str) -> bool {
-        self.queue.all().is_ok_and(|items| items.iter().any(|item| item.queue_key == queue_key))
+        self.queue.has_pending(queue_key).unwrap_or(true)
     }
 }
 

@@ -376,6 +376,27 @@ fn is_converged(status: &Value) -> bool {
     frontend_binding(status).and_then(|b| b.get("converged")).and_then(Value::as_bool) == Some(true)
 }
 
+/// The ids of every item this instance's outbox currently holds against
+/// `substrate_did` -- M05B B1 review finding 13: the reference scenario's
+/// own steps 4/5/7 ask to assert the item is "in the outbox"/"still
+/// queued"/"the outbox is empty", which only this verb (not `alerts` or
+/// `is_converged`) can answer directly.
+async fn outbox_item_ids(supervisor_node: &Node, substrate_did: &str) -> Vec<u64> {
+    let items = supervisor_node
+        .substrate_client
+        .request("supervisor", "outbox", json!([INSTANCE_ID]))
+        .await
+        .expect("outbox failed")
+        .result;
+    items
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|i| str_field(i, "substrate_did") == Some(substrate_did))
+        .filter_map(|i| i.get("id").and_then(Value::as_u64))
+        .collect()
+}
+
 async fn active_alert_kinds(supervisor_node: &Node, substrate_did: &str) -> BTreeSet<String> {
     let alerts = supervisor_node
         .substrate_client
@@ -533,6 +554,12 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
         str_field(&status, "state") == Some("Degraded") && !is_converged(&status),
         "once the push has failed the instance must report Degraded, unconverged: {status:?}"
     );
+    let outbox_ids_before_restart = outbox_item_ids(&supervisor_node, &managed_b_did).await;
+    assert_eq!(
+        outbox_ids_before_restart.len(),
+        1,
+        "task.md step 4: the failed push must be in the outbox, not merely inferred from alerts"
+    );
 
     // Step 5: restart the supervisor process. The queued item survives --
     // this is the step no in-process retry can.
@@ -557,6 +584,12 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
     assert!(
         !is_converged(&status),
         "the item must still be queued right after restart: {status:?}"
+    );
+    assert_eq!(
+        outbox_item_ids(&supervisor_node, &managed_b_did).await,
+        outbox_ids_before_restart,
+        "task.md step 5: the exact same item must still be queued across the restart, not a \
+         different or duplicated one"
     );
 
     // Step 6: bring managed-b back, same identity.
@@ -596,6 +629,11 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
     assert!(
         active_alert_kinds(&supervisor_node, &managed_b_did).await.is_empty(),
         "the earlier BindingConflict must clear once delivery converges"
+    );
+    assert!(
+        outbox_item_ids(&supervisor_node, &managed_b_did).await.is_empty(),
+        "task.md step 7: the outbox must be empty once delivery converges, not merely the alert \
+         cleared"
     );
 
     supervisor_node.teardown().await;

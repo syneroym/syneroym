@@ -92,6 +92,17 @@ impl SupervisorStore {
 
     fn from_connection(conn: Connection, role: &SupervisorRole) -> Result<Self> {
         Self::init_schema(&conn)?;
+        // `QueueConfig::from` clamps a configured 0 to 1 silently -- it has
+        // no `tracing` dependency of its own to log through. This is the
+        // one caller that constructs it from operator config, so it is the
+        // one that warns, mirroring `SupervisorService::new`'s existing
+        // `max_renewals_per_pass == 0` clamp (M05B B1 review finding 9).
+        if role.queue_max_attempts == 0 {
+            tracing::warn!(
+                "supervisor.queue_max_attempts was configured to 0, which would dead-letter every \
+                 queued item on its first failure; clamped to 1"
+            );
+        }
         let conn = Arc::new(Mutex::new(conn));
         let journal = DeploymentJournal::from_connection(conn.clone())?;
         let alerts = AlertStore::from_connection(conn.clone())?;
@@ -724,7 +735,7 @@ mod tests {
     fn the_queue_lives_in_supervisor_db_under_the_same_protection_as_desired_state() {
         let dir = tempfile::tempdir().unwrap();
         let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
-        store.queue.enqueue("k", b"payload", 1_000).unwrap();
+        store.queue.enqueue("g", "k", b"payload", 1_000).unwrap();
 
         assert!(
             !dir.path().join("supervisor.db-outbox").exists()

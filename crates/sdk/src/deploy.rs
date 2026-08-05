@@ -206,6 +206,31 @@ pub fn is_callee_error(err: &anyhow::Error) -> bool {
     err.downcast_ref::<JsonRpcError>().is_some()
 }
 
+/// `true` when `err` is specifically the substrate answering that this
+/// write's own target no longer exists (failure-matrix row 9) -- narrower
+/// than [`is_callee_error`], which is `true` for *every* reached-and-
+/// answered failure. `control_plane`'s `write-bindings` dispatch maps every
+/// server-side refusal (a stale generation, an authorization gap, a
+/// genuinely gone service) to the same wire-level `InternalError` code, so
+/// the message text is the only signal this crate can read without a wire
+/// protocol change; matched against the one message `write_bindings_impl`
+/// emits for "gone" specifically, not against `InternalError` generally.
+///
+/// Used only by the queue worker's terminal decision for an *already-
+/// durable* item ([`DurableActor::write_bindings`]'s own enqueue decision
+/// stays on the broader [`is_callee_error`], since declining to enqueue is
+/// cheap to get wrong in either direction -- the write is not yet
+/// durable). Dead-lettering a queued item on any callee error, as
+/// `is_callee_error` alone would, would also give up on a transient,
+/// reached-and-answered failure (a locked database, a service still
+/// starting) that a later retry would have cleared (M05B B1 review finding
+/// 10).
+#[must_use]
+pub fn is_target_gone_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<JsonRpcError>()
+        .is_some_and(|e| e.message.contains("has no app context on this substrate"))
+}
+
 /// What `DurableActor` calls to attempt a delivery -- narrower than
 /// `SubstrateActor` itself so a test can fake exactly the transport-vs-
 /// callee distinction `write_bindings`'s durability decision rests on

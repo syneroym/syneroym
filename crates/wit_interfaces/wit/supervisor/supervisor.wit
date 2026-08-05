@@ -125,6 +125,19 @@ interface supervisor {
         created-at: s64,
     }
 
+    /// One binding write still waiting for delivery, or currently claimed
+    /// by the worker -- the supervisor's own delivery outbox before it
+    /// either lands or exhausts its budget into `dead-letter` (M05B B1
+    /// review finding 13: the reference scenario's own steps 4/5/7 need to
+    /// assert the outbox directly, which nothing on this interface could
+    /// do until this verb existed).
+    record outbox-item {
+        id: u64,
+        logical-ref: string,
+        substrate-did: string,
+        attempts: u32,
+    }
+
     submit:          func(s: submission)          -> result<submit-result, string>;
 
     /// `adopt`'s result: the claimed generation, plus the app instance's
@@ -212,6 +225,10 @@ interface supervisor {
     status:  func(app-instance-id: string)            -> result<instance-status, string>;
     alerts:  func(app-instance-id: string, all: bool) -> result<list<alert>, string>;
 
+    /// Every item this instance's outbox currently holds -- pending or
+    /// claimed, not yet dead-lettered -- oldest first (M05B B1 review
+    /// finding 13).
+    outbox: func(app-instance-id: string) -> result<list<outbox-item>, string>;
     /// Every dead letter this instance's outbox currently holds, oldest
     /// first (M05B B1, D-B1-6).
     dead-letters: func(app-instance-id: string) -> result<list<dead-letter>, string>;

@@ -259,3 +259,136 @@ Counted by diffing test-attribute counts against `main`.
   either run's log: `a_binding_push_to_an_offline_substrate_converges_
   after_it_returns` 1/1 (~287s), `a_permanently_unreachable_substrate_
   lands_in_the_dlq_and_replays` 1/1 (~403s).
+
+## B1 — Post-landing review pass (2026-08-05)
+
+An independent review of the shipped B1 code (not of the plan — the code
+actually on `feat/m05b-b1-async-queue-outbox-dlq`) found sixteen further
+gaps: four correctness bugs left the outbox/DLQ inconsistent with the
+invariants its own comments and D-B1-6/D-B1-9 state; four concurrency/
+shutdown claims did not hold, most seriously the queue worker not actually
+honoring D-B1-8 despite a test that claimed it did; four config/security
+edges; four coverage gaps, including the reference scenario's own steps
+4/5/7 having no RPC surface to assert the outbox directly. All sixteen were
+verified against the shipped source (not taken on the review's word) before
+being incorporated — none were pushed back on outright, though two landed
+narrower than the review's own suggested fix, noted below.
+
+**Fixed, by area:**
+
+- **Epoch/outbox skew (finding 1).** `push_bindings` advanced the binding
+  epoch on every call, but `DurableActor::write_bindings` only enqueues
+  once per key. Two consecutive connect-succeeds-write-fails passes for the
+  same key could advance `written_epoch` past what the queue would ever
+  actually deliver, permanently reading a later successful delivery as
+  unconverged. Fixed with the same already-pending guard
+  `enqueue_unreachable_push` already carried, now applied symmetrically.
+  Regression test: `two_consecutive_transport_failures_for_one_key_do_not_
+  strand_the_written_epoch` (confirmed to fail without the fix).
+- **`replay` bypassing the one-row-per-key invariant (finding 2).**
+  `Queue::replay` now refuses when the outbox already holds a pending row
+  for the dead letter's key, rather than inserting a second one.
+- **An unnotified DLQ prune (finding 3) and a global, not per-instance, cap
+  (finding 4).** `FailOutcome::DeadLettered` now carries `pruned_keys`; the
+  cap and its eviction are scoped by a caller-supplied `group_key` the
+  queue crate stores but never parses (the supervisor's own app instance
+  id), so one instance's dead letters cannot evict another's, and every
+  pruned key's `DeliveryExhausted` alert clears the same way an explicit
+  `replay` already did.
+- **Shutdown did not actually honor D-B1-8 (finding 5).** `run_queue_worker`
+  only raced cancellation against the next interval tick; once a tick
+  fired, `queue_worker_tick` ran every claimed item (up to
+  `QUEUE_WORKER_CLAIM_LIMIT`, each up to `MANAGED_SUBSTRATE_CONNECT_TIMEOUT`)
+  to completion regardless of `shutdown`. The test that claimed otherwise
+  was vacuous: it set `queue_tick_secs` to 3600 (contradicting its own
+  comment) against an unpaused clock, so the interval never ticked inside
+  the test's own window, and it left the substrate unscripted, which fails
+  `connect` immediately rather than modeling a delivery in flight. Fixed by
+  racing cancellation into `deliver_queued_item` itself via `tokio::select!`,
+  checked between every item; the test now uses a `FakeDelivery::Blocks`
+  variant that genuinely never resolves, so a passing result means
+  cancellation interrupted a real, ongoing connect.
+- **A poison-pill item never reached its attempt budget (finding 7).**
+  `attempts` only advances inside `Queue::fail`; a delivery that panics or
+  a worker that crashes before calling it left the counter untouched, so
+  the item was reclaimed forever. Added `claim_count`, advanced on every
+  `claim_due`, independent of `attempts`; the queue worker dead-letters an
+  item through the ordinary terminal path once its claim count alone
+  reaches the configured budget.
+- **The retry clock read before the connect it was timing (finding 8).**
+  `deliver_queued_item` captured `now` at function entry and reused it
+  after a `connect` that can itself take up to 10s, understating the early
+  backoff waits. Fixed by re-reading the clock immediately before
+  `fail_queued_item`.
+- **`queue_max_attempts = 0` silently disabled retry (finding 9).** Clamped
+  to 1, mirroring the existing `max_renewals_per_pass == 0` clamp, with the
+  same `tracing::warn!`.
+- **Every reached-and-answered write-bindings failure was terminal on the
+  queued path (finding 10).** `is_callee_error` is `true` for any
+  `JsonRpcError`, but `control_plane`'s dispatch maps every server-side
+  refusal — stale generation, authorization gap, a genuinely gone service —
+  to the same wire code. Narrowed with `deploy::is_target_gone_error`,
+  matched against the one message `write_bindings_impl` emits specifically
+  for "gone". **Landed narrower than the review's other suggested option**
+  (a dedicated wire error code) — that needs a `control_plane` dispatch
+  taxonomy decision out of scope here; tracked in
+  [deferred-backlog.md](../../deferred-backlog.md) as a message-text
+  fragility, not closed.
+- **`already_pending` failed open on a broken read (finding 11).**
+  `is_ok_and` reported a failed read as "not pending", writing the
+  duplicate row the guard exists to prevent. Also replaced the linear
+  `Queue::all()` scan with an indexed `Queue::has_pending` lookup (folding
+  in finding 15's measurement gap: the production enqueue path was paying
+  a full-table scan the `< 1ms` budget test never actually exercised).
+- **`replay`'s error codes named a caller's own mistake as an internal
+  error (finding 12).** An unknown or cross-instance dead-letter id now
+  answers `InvalidParams`, without naming which other instance (if any)
+  actually owns the id.
+- **No RPC surface for the outbox itself (finding 13).** `supervisor.wit`
+  gained `outbox` beside `dead-letters`/`replay`, gated identically;
+  `roymctl supervisor outbox`. `durable_outbox_e2e.rs`'s steps 4/5/7 now
+  assert the item is actually in the outbox, survives the restart as the
+  same item, and is gone once delivery converges — task.md's own wording
+  for those steps, previously only inferred from alerts/`is_converged`.
+- **Coverage (findings 14, 16).** Added a direct test for row 12's outbox
+  bound (`the_outbox_holds_at_most_one_row_per_key_regardless_of_how_many_
+  enqueue_attempts`) and for the prune-clears-alert path
+  (`a_pruned_dead_letter_clears_its_own_alert_too`). A retired instance's
+  still-queued item is now completed silently rather than delivered (which
+  would resurrect a binding the operator just released) or dead-lettered
+  with a noisy alert against an instance nobody is going to act on.
+
+**Confirmed already correct, not touched:** the `instance_lock` acquisition
+(D-B1-14) and its test; the queueability declaration (`restart`/`apply_
+plan`/`renew_cert` never queued); the D-B1-15 outcome mapping; the
+ten-hour-window arithmetic; admin gating on both new verbs.
+
+**Tests:** 9 new (5 in `syneroym-async-queue`, 4 in
+`syneroym-app-supervisor`), 3 existing tests corrected where they had
+relied on the since-fixed behavior (`a_callee_error_on_replay_dead_letters_
+immediately` and `a_replayed_item_that_fails_again_returns_to_the_dlq_
+with_its_history` now script the exact "gone" message finding 10's fix
+checks for; `the_alert_clears_when_the_last_dead_letter_for_that_key_is_
+gone` now lets the first replay's item resolve before replaying the second,
+since two simultaneous pending rows for one key is exactly what finding 2's
+fix refuses).
+
+**Gates, re-run 2026-08-05 after the review fixes:**
+
+- `cargo +nightly fmt --all`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace` (sandboxed, `--no-fail-fast`): 1412 passed, 64
+  failed. Every failure is either the same pre-existing sandbox-bind
+  category this slice's original evidence already documents, or one
+  additional pre-existing flake (`keys::tests::get_or_mint_warns_with_the_
+  wording_matching_its_kind`, in a file this review never touched; passes
+  in isolation, so it is order/concurrency-sensitive under the full
+  workspace run rather than caused by anything here). Every crate this
+  review touched — `syneroym-async-queue`, `syneroym-app-supervisor`,
+  `syneroym-sdk`, `syneroym-wit-interfaces`, `roymctl` — is fully green run
+  in isolation.
+- `durable_outbox_e2e` (sandbox disabled): both tests still green with the
+  new outbox assertions added, `2 passed; 0 failed`, ~690s combined.
+- `mise run test:e2e`: unaffected, no browser-visible surface changed by
+  this pass either.
