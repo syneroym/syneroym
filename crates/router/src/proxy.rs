@@ -31,7 +31,11 @@ use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::time;
 use tracing::warn;
 
-use crate::{net_iroh, preamble::RoutePreamble};
+use crate::{
+    call_dedup::{self, CallDedupGuard, GuardOutcome},
+    net_iroh,
+    preamble::RoutePreamble,
+};
 
 /// One wire's worth of "send this JSON-RPC request to that node and read the
 /// response". The transport-agnostic seam a future wRPC wire (A.5) slots
@@ -156,6 +160,19 @@ pub struct ProxyRouter {
     hop: Arc<dyn RemoteHop>,
     node_identity: Arc<Identity>,
     retry_policy: RetryPolicy,
+    /// The receiver-side idempotency fence for calls that land on *this*
+    /// node. `None` on a node with no storage provider at all (a
+    /// coordinator), which hosts no deployed services and therefore has
+    /// nowhere to remember a key -- a keyed call there is refused rather
+    /// than executed unfenced.
+    ///
+    /// Attached after construction rather than taken as an eighth
+    /// constructor argument: the router already takes seven, and every one
+    /// of its test and bench call sites would otherwise have to pass a
+    /// `None` that says nothing. "This node can fence" is a property of the
+    /// deployment, so it reads better as something a node either has or
+    /// does not.
+    dedup_guard: Option<Arc<CallDedupGuard>>,
 }
 
 impl Debug for ProxyRouter {
@@ -183,6 +200,57 @@ impl ProxyRouter {
             hop,
             node_identity,
             retry_policy,
+            dedup_guard: None,
+        }
+    }
+
+    /// Gives this router the fence it applies to keyed calls arriving for
+    /// a service on this node.
+    #[must_use]
+    pub fn with_dedup_guard(mut self, guard: Arc<CallDedupGuard>) -> Self {
+        self.dedup_guard = Some(guard);
+        self
+    }
+
+    /// [`Self::invoke_local`] under the receiver-side fence.
+    ///
+    /// A call with no key runs straight through, touching no store: that
+    /// is every call on the hot path today, and it is what keeps the
+    /// fence off the existing call budget.
+    async fn invoke_local_guarded(
+        &self,
+        req: &ProxyRequest,
+        endpoint: SubstrateEndpoint,
+        canonical_iface: String,
+    ) -> Result<Value, ProxyError> {
+        let Some(guard) = &self.dedup_guard else {
+            if req.idempotency_key.is_some() {
+                return Err(ProxyError::Internal(
+                    "this node keeps no per-service storage, so it cannot honour an idempotency \
+                     key"
+                    .to_string(),
+                ));
+            }
+            return self.invoke_local(req, endpoint, canonical_iface).await;
+        };
+        match guard
+            .begin(
+                &req.target_service,
+                &req.interface,
+                Some(&req.caller.caller_did),
+                req.idempotency_key.as_deref(),
+            )
+            .await
+        {
+            GuardOutcome::Refuse(e) => Err(e),
+            GuardOutcome::Answer(outcome) => call_dedup::replay_as_result(outcome),
+            GuardOutcome::Execute(claim) => {
+                let outcome = self.invoke_local(req, endpoint, canonical_iface).await;
+                if let Some(claim) = claim {
+                    claim.settle(&outcome).await;
+                }
+                outcome
+            }
         }
     }
 
@@ -507,7 +575,7 @@ impl ServiceProxy for ProxyRouter {
         // hosted on this node (this is also the <5ms same-node path).
         let outcome = match self.registry.lookup(&req.target_service, &req.interface) {
             Some((endpoint, canonical_iface)) => {
-                self.invoke_local(&req, endpoint, canonical_iface).await
+                self.invoke_local_guarded(&req, endpoint, canonical_iface).await
             }
             None => self.invoke_remote(&req).await,
         };
@@ -594,6 +662,163 @@ mod tests {
                 max_backoff_ms: 5,
             },
         )
+    }
+
+    /// A node whose registry holds `svc-a` as a native endpoint backed by
+    /// `service`, with a dedup guard over a real (unencrypted) per-service
+    /// store. Unencrypted deliberately: the fence's behavior is the
+    /// subject here, and the SQLCipher half is pinned in the queue crate.
+    struct GuardedNode {
+        router: ProxyRouter,
+        service: Arc<RecordingNativeService>,
+        _native_dispatch: NativeDispatchRegistry,
+        _dir: tempfile::TempDir,
+    }
+
+    async fn guarded_node(with_store: bool) -> GuardedNode {
+        use syneroym_async_queue::DedupConfig;
+        use syneroym_data_db::SqliteStorageProvider;
+        use syneroym_data_keystore::KeyStore;
+
+        let registry = empty_registry();
+        registry
+            .register(
+                "svc-a".to_string(),
+                "greeter".to_string(),
+                SubstrateEndpoint::NativeHostChannel { service_id: "svc-a".to_string() },
+            )
+            .await
+            .unwrap();
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let service = Arc::new(RecordingNativeService::default());
+        native_dispatch.insert("svc-a".to_string(), service.clone() as Arc<dyn NativeService>);
+
+        let dir = tempfile::tempdir().unwrap();
+        let service_dir = dir.path().join("services").join("svc-a");
+        std::fs::create_dir_all(&service_dir).unwrap();
+        std::fs::write(service_dir.join("state.db"), b"").unwrap();
+
+        let router = ProxyRouter::new(
+            registry,
+            empty_registry_client(),
+            Arc::downgrade(&native_dispatch),
+            Weak::new(),
+            Arc::new(MockHop::default()),
+            Arc::new(Identity::generate().unwrap()),
+            RetryPolicy::default(),
+        );
+        let router = if with_store {
+            let provider = Arc::new(SqliteStorageProvider::new(dir.path(), false).unwrap());
+            router.with_dedup_guard(Arc::new(crate::CallDedupGuard::new(
+                provider,
+                Arc::new(KeyStore::new()),
+                DedupConfig {
+                    ttl_ms: 600_000,
+                    claim_window_ms: 60_000,
+                    max_rows: 100,
+                    max_result_bytes: 64 * 1024,
+                },
+            )))
+        } else {
+            router
+        };
+        GuardedNode { router, service, _native_dispatch: native_dispatch, _dir: dir }
+    }
+
+    fn keyed_request(key: &str) -> ProxyRequest {
+        let mut req = base_request("svc-a", "greeter");
+        req.caller = CallerContext::service_system("svc-caller");
+        req.idempotency_key = Some(key.to_string());
+        req
+    }
+
+    /// The `invoke_local` entry point. Together with the
+    /// `dispatch_json_rpc_once` case, this is what makes "one guard, both
+    /// entry points" a fact rather than an intention.
+    #[tokio::test]
+    async fn a_local_call_is_deduplicated_by_the_proxy() {
+        let node = guarded_node(true).await;
+        let first = node.router.invoke(keyed_request("k1")).await.unwrap();
+        assert_eq!(first, Value::String("ok".to_string()));
+        assert_eq!(node.service.invoked.load(Ordering::SeqCst), 1);
+
+        let repeat = node.router.invoke(keyed_request("k1")).await.unwrap();
+        assert_eq!(repeat, first, "the duplicate must get the first call's own result");
+        assert_eq!(
+            node.service.invoked.load(Ordering::SeqCst),
+            1,
+            "the target must not run a second time"
+        );
+    }
+
+    /// A different key is a different call, so the target does run again
+    /// -- the fence must not swallow genuinely distinct work.
+    #[tokio::test]
+    async fn a_different_key_is_a_different_call() {
+        let node = guarded_node(true).await;
+        node.router.invoke(keyed_request("k1")).await.unwrap();
+        node.router.invoke(keyed_request("k2")).await.unwrap();
+        assert_eq!(node.service.invoked.load(Ordering::SeqCst), 2);
+    }
+
+    /// An unkeyed call is untouched by any of this, including on a node
+    /// that has a store: it executes every time, exactly as before.
+    #[tokio::test]
+    async fn an_unkeyed_call_is_never_deduplicated() {
+        let node = guarded_node(true).await;
+        let mut req = base_request("svc-a", "greeter");
+        req.caller = CallerContext::service_system("svc-caller");
+        node.router.invoke(req.clone()).await.unwrap();
+        node.router.invoke(req).await.unwrap();
+        assert_eq!(node.service.invoked.load(Ordering::SeqCst), 2);
+    }
+
+    /// Coordinator mode: no storage provider at all, so there is nowhere
+    /// to remember a key. Refused rather than executed unfenced.
+    #[tokio::test]
+    async fn a_keyed_call_is_refused_on_a_node_with_no_storage_provider() {
+        let node = guarded_node(false).await;
+        let result = node.router.invoke(keyed_request("k1")).await;
+        assert!(matches!(result, Err(ProxyError::Internal(_))), "got {result:?}");
+        assert_eq!(node.service.invoked.load(Ordering::SeqCst), 0);
+    }
+
+    /// A denial or an unknown service happens before the target runs, so
+    /// it must leave no claim behind -- otherwise a corrected retry is
+    /// blocked for the whole claim window for something that never ran.
+    #[tokio::test]
+    async fn a_failure_before_the_target_ran_leaves_no_claim_behind() {
+        let node = guarded_node(true).await;
+
+        // A guest reaching another service's native capability is denied
+        // by the capability gate, which runs before any dispatch.
+        let mut denied = keyed_request("k1");
+        denied.interface = "data-layer".to_string();
+        denied.target_service = "svc-a".to_string();
+        denied.origin = CallOrigin::Guest { service_id: "svc-caller".to_string() };
+        assert!(matches!(node.router.invoke(denied).await, Err(ProxyError::PermissionDenied(_))));
+
+        // The same key, corrected, must still be free to run.
+        let corrected = node.router.invoke(keyed_request("k1")).await;
+        assert!(corrected.is_ok(), "a corrected retry must not be blocked: {corrected:?}");
+        assert_eq!(node.service.invoked.load(Ordering::SeqCst), 1);
+    }
+
+    /// The invariant that makes the local `system:<id>` and the remote DID
+    /// namespaces safe to keep disjoint: whether a target is local or
+    /// remote never changes between attempts, so one caller reaches one
+    /// target under one identity every time.
+    #[tokio::test]
+    async fn one_caller_reaches_one_target_under_one_identity_on_every_attempt() {
+        let node = guarded_node(true).await;
+        node.router.invoke(keyed_request("k1")).await.unwrap();
+        let first_identity = node.service.last_caller_did.lock().unwrap().clone();
+
+        // A second, differently-keyed call from the same caller to the
+        // same target arrives under the same identity.
+        node.router.invoke(keyed_request("k2")).await.unwrap();
+        assert_eq!(*node.service.last_caller_did.lock().unwrap(), first_identity);
+        assert_eq!(first_identity.as_deref(), Some("system:svc-caller"));
     }
 
     #[derive(Debug, Default)]

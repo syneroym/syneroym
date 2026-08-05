@@ -19,7 +19,9 @@ syneroym-data-keystore.workspace = true
 syneroym-data-db.workspace = true
 syneroym-data-blob.workspace = true
 syneroym-mqtt-broker.workspace = true
+syneroym-async-queue.workspace = true
 anyhow.workspace = true
+chrono.workspace = true
 
 async-trait.workspace = true
 bytes.workspace = true

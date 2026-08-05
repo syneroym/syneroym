@@ -7,12 +7,14 @@ use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
 
 use anyhow::{Result, anyhow};
 use serde_json::Value;
+use syneroym_async_queue::FirstOutcome;
 use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
 use syneroym_core::local_registry::SubstrateEndpoint;
 use syneroym_mqtt_broker::{namespace_topic, namespace_topic_for_publish};
 use syneroym_rpc::{
-    CallerContext, JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD,
-    MessagingNotification, NativeService, UNSUPPORTED_PROTOCOL_RPC_CODE, framing,
+    CallerContext, JsonRpcConverter, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse,
+    MESSAGING_MESSAGE_METHOD, MessagingNotification, NativeService, ProxyError,
+    UNSUPPORTED_PROTOCOL_RPC_CODE, framing,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, BufReader},
@@ -22,6 +24,7 @@ use tracing::{debug, error};
 
 use super::RouteHandler;
 use crate::{
+    call_dedup::{GuardOutcome, replay_as_result},
     preamble::{RoutePreamble, RouteProtocol, RouteTransport},
     routing::{AdaptationStage, RoutePipeline, ServiceStage},
 };
@@ -51,6 +54,57 @@ impl LongLivedStreamMethod {
     }
 }
 
+/// The two members the fence needs out of an incoming frame, without
+/// paying a full parse for the overwhelming majority of frames that carry
+/// no key at all.
+struct KeyProbe {
+    key: String,
+    id: Option<Value>,
+}
+
+impl KeyProbe {
+    fn of(body: &[u8]) -> Option<Self> {
+        const MARKER: &[u8] = b"\"idempotency_key\"";
+        if body.len() < MARKER.len() || !body.windows(MARKER.len()).any(|w| w == MARKER) {
+            return None;
+        }
+        let request: JsonRpcRequest = serde_json::from_slice(body).ok()?;
+        Some(Self { key: request.idempotency_key?, id: request.id })
+    }
+}
+
+/// Reads what a dispatched frame answered, so the fence can remember it.
+/// A dispatch that failed outright answered nothing definitive, so it
+/// records nothing and the claim is released.
+fn frame_as_outcome(response: &Result<Vec<u8>>) -> Result<Value, ProxyError> {
+    let Ok(bytes) = response else {
+        return Err(ProxyError::Transport("dispatch failed".to_string()));
+    };
+    if let Ok(ok) = serde_json::from_slice::<JsonRpcResponse>(bytes) {
+        return Ok(ok.result);
+    }
+    match serde_json::from_slice::<JsonRpcErrorResponse>(bytes) {
+        Ok(err) => Err(ProxyError::Callee {
+            code: err.error.code,
+            message: err.error.message,
+            data: err.error.data,
+        }),
+        Err(_) => Err(ProxyError::Transport("unreadable response frame".to_string())),
+    }
+}
+
+/// Rebuilds the response frame a duplicate gets from the first call's
+/// stored outcome, under the *duplicate's* own request id.
+fn replay_frame(id: Option<Value>, outcome: FirstOutcome) -> Result<Vec<u8>> {
+    match replay_as_result(outcome) {
+        Ok(result) => {
+            let response = JsonRpcResponse { jsonrpc: "2.0".to_string(), result, id };
+            serde_json::to_vec(&response).map_err(Into::into)
+        }
+        Err(e) => JsonRpcConverter::json_error(id, e.code(), e.to_string()),
+    }
+}
+
 impl RouteHandler {
     /// Looks up a native service by its channel ID.
     fn native_service(&self, channel_id: &str) -> Option<Arc<dyn NativeService>> {
@@ -69,6 +123,62 @@ impl RouteHandler {
     /// ignoring it -- a WASM guest still admits an anonymous (`None`)
     /// caller, per design §6.1.2.
     pub async fn dispatch_json_rpc_once(
+        &self,
+        pipeline: &RoutePipeline,
+        preamble: &RoutePreamble,
+        caller: Option<&CallerContext>,
+        body: &[u8],
+    ) -> Result<Vec<u8>> {
+        // Almost no frame carries a key, and parsing every body a second
+        // time to discover that would put a real cost on the hot path. A
+        // scan for the member name rejects the common case before any
+        // parse happens.
+        let Some(probe) = KeyProbe::of(body) else {
+            return self.dispatch_json_rpc_unfenced(pipeline, preamble, caller, body).await;
+        };
+
+        let target_service = match &pipeline.service {
+            ServiceStage::NativeService { service_id }
+            | ServiceStage::WasmComponent { service_id } => service_id.as_str(),
+            _ => preamble.service_id.as_str(),
+        };
+        let Some(guard) = &self.inner.dedup_guard else {
+            return JsonRpcConverter::json_error(
+                probe.id,
+                -32603,
+                "this node keeps no per-service storage, so it cannot honour an idempotency key"
+                    .to_string(),
+            );
+        };
+
+        match guard
+            .begin(
+                target_service,
+                &preamble.interface,
+                caller.map(|c| c.caller_did.as_str()),
+                Some(&probe.key),
+            )
+            .await
+        {
+            GuardOutcome::Refuse(e) => {
+                metrics::counter!("substrate.request.errors").increment(1);
+                JsonRpcConverter::json_error(probe.id, e.code(), e.to_string())
+            }
+            GuardOutcome::Answer(outcome) => replay_frame(probe.id, outcome),
+            GuardOutcome::Execute(claim) => {
+                let response =
+                    self.dispatch_json_rpc_unfenced(pipeline, preamble, caller, body).await;
+                if let Some(claim) = claim {
+                    claim.settle(&frame_as_outcome(&response)).await;
+                }
+                response
+            }
+        }
+    }
+
+    /// The dispatch itself, with no fence applied -- the body of the
+    /// former `dispatch_json_rpc_once`.
+    async fn dispatch_json_rpc_unfenced(
         &self,
         pipeline: &RoutePipeline,
         preamble: &RoutePreamble,

@@ -4,6 +4,7 @@
 //! Integrates Iroh, WebRTC, HTTP, and raw-byte channels (wRPC — TODO: not yet
 //! implemented) into a unified, alias-aware internal peer network.
 
+mod call_dedup;
 mod connection_router;
 pub mod handshake;
 pub mod net_iroh;
@@ -14,6 +15,7 @@ mod route_handler;
 mod routing;
 mod stop_signal;
 
+pub use call_dedup::{ASYNC_DB_NAME, CallDedupGuard, DedupClaim, GuardOutcome, replay_as_result};
 pub use connection_router::{ConnectionRouter, SYNEROYM_ALPN};
 pub use handshake::{HandshakeVerifier, MasterAnchorResolver, VerifiedIdentity};
 pub use preamble::{RoutePreamble, RouteProtocol, RouteTransport};

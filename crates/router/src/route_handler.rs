@@ -19,6 +19,7 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler as IrohProtocolHandler},
 };
+use syneroym_async_queue::{DedupConfig, QueueConfig};
 use syneroym_control_plane::ControlPlaneService;
 use syneroym_core::{
     config::{RetryPolicy, SubstrateConfig},
@@ -31,12 +32,15 @@ use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_identity::{Identity, substrate};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
-use syneroym_rpc::{NativeDispatchRegistry, NativeService, RowAuthorizer, ServiceProxy};
+use syneroym_rpc::{
+    DEFAULT_PROXY_CALL_TIMEOUT, NativeDispatchRegistry, NativeService, RowAuthorizer, ServiceProxy,
+};
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, error};
 
 use crate::{
+    call_dedup::CallDedupGuard,
     net_iroh::IrohStream,
     proxy::{IrohHop, ProxyRouter},
 };
@@ -138,6 +142,11 @@ pub struct RouteHandlerInner {
     /// for as long as this `RouteHandler` is (mirrors `_parent_relay_url`'s
     /// established underscore convention for a stored-but-unread field).
     pub _proxy: Option<Arc<ProxyRouter>>,
+    /// The receiver-side idempotency fence, shared with `ProxyRouter` so a
+    /// call arriving over the wire and one dispatched on this node meet the
+    /// same guard and the same records. `None` in coordinator mode, where
+    /// there is no per-service storage to remember a key in.
+    pub dedup_guard: Option<Arc<CallDedupGuard>>,
 }
 
 impl Debug for RouteHandler {
@@ -217,15 +226,33 @@ impl RouteHandler {
         // never a second strong ref, matching the `RouteHandlerInner ->
         // ProxyRouter -> AppSandboxEngine -> ProxyRouter` cycle avoidance
         // documented on `RouteHandlerInner::proxy`.
-        let proxy = Arc::new(ProxyRouter::new(
-            registry.clone(),
-            registry_client.clone(),
-            Arc::downgrade(&deps.native_dispatch),
-            Arc::downgrade(&deps.app_sandbox_engine),
-            Arc::new(IrohHop::new(iroh_endpoint.clone(), config.retry.clone())),
-            identity.clone(),
-            config.retry.clone(),
+        // The fence a keyed call meets, whichever entry point it arrives
+        // through. Its windows are derived from the outbox's own retry
+        // budget rather than separately configured: a TTL shorter than the
+        // sender's retry window silently converts dedup into no dedup.
+        let queue_config = QueueConfig::from(&config.roles.app_sandbox.clone().unwrap_or_default());
+        let dedup_guard = Arc::new(CallDedupGuard::new(
+            deps.storage_provider.clone(),
+            deps.key_store.clone(),
+            DedupConfig::derive(
+                queue_config.total_retry_window_ms(),
+                queue_config.visibility_timeout_ms,
+                DEFAULT_PROXY_CALL_TIMEOUT.as_millis() as u64,
+            ),
         ));
+
+        let proxy = Arc::new(
+            ProxyRouter::new(
+                registry.clone(),
+                registry_client.clone(),
+                Arc::downgrade(&deps.native_dispatch),
+                Arc::downgrade(&deps.app_sandbox_engine),
+                Arc::new(IrohHop::new(iroh_endpoint.clone(), config.retry.clone())),
+                identity.clone(),
+                config.retry.clone(),
+            )
+            .with_dedup_guard(dedup_guard.clone()),
+        );
         deps.app_sandbox_engine
             .service_proxy
             .set(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>)
@@ -280,6 +307,7 @@ impl RouteHandler {
             admin_ucan_root: config.iam.admin_ucan_root.clone(),
             node_did: service_id.clone(),
             _proxy: Some(proxy),
+            dedup_guard: Some(dedup_guard),
         });
 
         let s = Self { inner };
@@ -318,8 +346,9 @@ impl RouteHandler {
             admin_ucan_root: None,
             node_did,
             // Coordinators have no native capabilities or sandbox to proxy
-            // to.
+            // to, and no per-service storage to fence a keyed call with.
             _proxy: None,
+            dedup_guard: None,
         });
         Self { inner }
     }
