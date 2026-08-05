@@ -24,7 +24,10 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use rusqlite::{Connection, OptionalExtension, params};
-use syneroym_core::{config::RetryPolicy, retry::calculate_jittered_backoff};
+use syneroym_core::{
+    config::{RetryPolicy, SupervisorRole},
+    retry::calculate_jittered_backoff,
+};
 
 /// The retry curve ([`RetryPolicy`], reused per M05B D-B1-13 -- its struct
 /// and `calculate_jittered_backoff`, not `retry_with_backoff`, which sleeps
@@ -45,8 +48,8 @@ pub struct QueueConfig {
 /// initial backoff and multiplier stay `RetryPolicy`'s own defaults (100 ms,
 /// x2) since `SupervisorRole` configures only the attempt budget and the
 /// ceiling, not the shape of the early curve.
-impl From<&syneroym_core::config::SupervisorRole> for QueueConfig {
-    fn from(role: &syneroym_core::config::SupervisorRole) -> Self {
+impl From<&SupervisorRole> for QueueConfig {
+    fn from(role: &SupervisorRole) -> Self {
         let defaults = RetryPolicy::default();
         Self {
             retry: RetryPolicy {
@@ -554,7 +557,7 @@ mod tests {
     /// drift apart.
     #[test]
     fn supervisor_role_defaults_convert_into_the_same_ten_hour_window() {
-        let role = syneroym_core::config::SupervisorRole::default();
+        let role = SupervisorRole::default();
         let cfg = QueueConfig::from(&role);
         assert_eq!(cfg.retry.max_attempts, 54);
         assert_eq!(cfg.retry.max_backoff_ms, 900_000);

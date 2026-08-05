@@ -25,7 +25,7 @@ use syneroym_app_orchestration::{
         RotationPolicy, ServiceId, SubstrateAlias,
     },
 };
-use syneroym_async_queue::QueueItem;
+use syneroym_async_queue::{FailOutcome, QueueItem};
 use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
 use syneroym_identity::{
     Identity,
@@ -38,7 +38,9 @@ use syneroym_rpc::{
 };
 use syneroym_sdk::{
     BindingWrite, BindingWriteOutcome, SyneroymClient,
-    deploy::{self, ApplyRequest, DeployTarget, SubstrateActor, WriteBindingsAttempt},
+    deploy::{
+        self, ApplyRequest, DeployTarget, SubstrateActor, WriteBindingsAttempt, WriteBindingsOutbox,
+    },
     health::{self, ExpectedService, HealthTarget, Signal, StatusQuery},
     mapper::map_deployment_plan_to_wit,
 };
@@ -505,6 +507,12 @@ impl SupervisorService {
         let client = match self.queue_connector.connect(entry).await {
             Ok(c) => c,
             Err(e) => {
+                tracing::debug!(
+                    queue_key = %item.queue_key,
+                    attempt = item.attempts,
+                    error = %e,
+                    "queue worker delivery attempt failed to connect"
+                );
                 self.fail_queued_item(&instance_id, &key, item.id, now, &e.to_string(), false)
                     .await;
                 return;
@@ -570,7 +578,7 @@ impl SupervisorService {
         terminal: bool,
     ) {
         let Ok(outcome) = self.store.queue.fail(item_id, now, error, terminal) else { return };
-        if !matches!(outcome, syneroym_async_queue::FailOutcome::DeadLettered) {
+        if !matches!(outcome, FailOutcome::DeadLettered) {
             return;
         }
         let count = self
@@ -1129,25 +1137,43 @@ impl SupervisorService {
             // "nothing to push". Raised through the same alert
             // `write_bindings_at_epoch` itself failing would raise, so the
             // operator sees the same row either way.
+            //
+            // M05B B1 review: raising the alert and moving on used to be
+            // the whole story here, which left a substrate this pass could
+            // not even reach with nothing durable behind it -- the DLQ's
+            // try-then-queue only fires *inside* an attempted call
+            // (`DurableActor::write_bindings`), and neither branch below
+            // gets far enough to make one. `enqueue_unreachable_push`
+            // queues the write directly so a substrate that is durably
+            // offline, not merely flaky mid-call, still converges once it
+            // returns.
             let Some(alias) = did_to_alias.get(substrate_did) else {
-                self.raise_binding_push_failure(
+                self.enqueue_unreachable_push(
                     instance_id,
+                    app_instance_id,
+                    plan,
+                    svc,
                     substrate_did,
-                    &svc.member_ref().to_string(),
+                    fresh_state.generation,
                     "this pass has no known substrate alias for the member's landed DID",
                     &mut opened,
-                );
+                )
+                .await;
                 any_push_failed = true;
                 continue;
             };
             let Some(client) = clients.get(&SubstrateAlias::new(alias.clone())) else {
-                self.raise_binding_push_failure(
+                self.enqueue_unreachable_push(
                     instance_id,
+                    app_instance_id,
+                    plan,
+                    svc,
                     substrate_did,
-                    &svc.member_ref().to_string(),
+                    fresh_state.generation,
                     &format!("failed to connect to substrate alias '{alias}' this pass"),
                     &mut opened,
-                );
+                )
+                .await;
                 any_push_failed = true;
                 continue;
             };
@@ -2337,14 +2363,23 @@ impl SupervisorService {
                 // same as any other push failure, not just returned to
                 // this call's own caller -- the resident loop's next pass
                 // does not re-raise a fresh alert for the same cause until
-                // this one clears.
-                self.raise_binding_push_failure(
+                // this one clears. M05B B1: also queued, the same reason
+                // the resident loop's own analogous branch is
+                // (`enqueue_unreachable_push`'s doc comment) -- a fallback-
+                // placed member with no client this call is exactly as
+                // unreachable as one the resident loop could not connect
+                // to, and needs the same durability.
+                self.enqueue_unreachable_push(
                     &plan.app_instance_id,
+                    &plan.app_instance_id.to_string(),
+                    plan,
+                    svc,
                     substrate_did,
-                    &svc.member_ref().to_string(),
+                    generation,
                     "not connected to its landed substrate this call",
                     &mut opened,
-                );
+                )
+                .await;
                 push_errors.push(format!(
                     "{}: not connected to its landed substrate this call",
                     svc.member_ref()
@@ -2747,14 +2782,17 @@ impl SupervisorService {
     /// alone, at `epoch`, and sends it -- the standalone half of
     /// `push_bindings`, split out so a retry at a different epoch is a
     /// second call to this, not a copy of the mapping logic.
-    async fn write_bindings_at_epoch(
-        &self,
+    /// The `binding-write` a real deploy would emit for `svc` alone, at
+    /// `epoch` -- pure, no actor, no store. Shared by `write_bindings_at_
+    /// epoch` (which sends it through a live actor) and
+    /// `enqueue_unreachable_push` (which has no actor to send it through
+    /// at all and must still capture *what* would have been sent).
+    fn build_binding_write(
         plan: &DeploymentPlan,
         svc: &PlannedService,
-        actor: &Arc<dyn SubstrateActor>,
         generation: u64,
         epoch: u64,
-    ) -> Result<Vec<BindingWriteOutcome>, String> {
+    ) -> Result<BindingWrite, String> {
         let binding_epochs = BTreeMap::from([(svc.member_ref(), epoch)]);
         let wit_plan = map_deployment_plan_to_wit(
             plan,
@@ -2773,14 +2811,102 @@ impl SupervisorService {
             .and_then(|s| s.app_context)
             .map(|ctx| ctx.bindings)
             .unwrap_or_default();
-        actor
-            .write_bindings(BindingWrite {
-                service_id: svc.service_id.to_string(),
-                app_instance_id: plan.app_instance_id.to_string(),
-                bindings,
-                generation,
-            })
-            .await
+        Ok(BindingWrite {
+            service_id: svc.service_id.to_string(),
+            app_instance_id: plan.app_instance_id.to_string(),
+            bindings,
+            generation,
+        })
+    }
+
+    async fn write_bindings_at_epoch(
+        &self,
+        plan: &DeploymentPlan,
+        svc: &PlannedService,
+        actor: &Arc<dyn SubstrateActor>,
+        generation: u64,
+        epoch: u64,
+    ) -> Result<Vec<BindingWriteOutcome>, String> {
+        let write = Self::build_binding_write(plan, svc, generation, epoch)?;
+        actor.write_bindings(write).await
+    }
+
+    /// The durable half of a push candidate this pass could not even reach
+    /// an actor for -- no known alias for its landed DID, or a connect
+    /// that timed out before a client existed to wrap in a `DurableActor`
+    /// at all. `DurableActor::write_bindings` is what normally enqueues on
+    /// a transport failure (D-B1-1), but that only fires *inside* an
+    /// attempted call; a substrate this pass never managed to dial has no
+    /// call to attempt. Left at "raise an alert and move on" (the shape
+    /// this had before), a substrate that is durably offline -- the exact
+    /// case ADR-0023's reference scenario is built around -- would never
+    /// be queued at all, only ever reported.
+    ///
+    /// Advances the binding epoch itself, the same as `push_bindings`
+    /// does before a live attempt: the queued payload must carry a real
+    /// epoch for the epoch guard to mean anything once a worker delivers
+    /// it, and skipping the advance here would leave every queued item
+    /// from this pass sharing the stale epoch a *reachable* pass last
+    /// used.
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_unreachable_push(
+        &self,
+        instance_id: &AppInstanceId,
+        app_instance_id: &str,
+        plan: &DeploymentPlan,
+        svc: &PlannedService,
+        substrate_did: &str,
+        generation: u64,
+        reason: &str,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) {
+        let l_ref = svc.member_ref().to_string();
+        self.raise_binding_push_failure(instance_id, substrate_did, &l_ref, reason, opened);
+        let queue_key = QueueKey {
+            app_instance_id: app_instance_id.to_string(),
+            logical_ref: l_ref.clone(),
+            substrate_did: substrate_did.to_string(),
+        };
+        let outbox = SupervisorOutbox::new(self.store.queue.clone());
+        // A5e's own retry (falling `compute_diff` back to the previous
+        // baseline on Degraded) reclassifies this member as a push
+        // candidate every pass until its push lands, so this branch runs
+        // repeatedly while the substrate stays offline. A pending row
+        // already covers the intent; advancing the epoch again for a
+        // write that will not even be queued would strand the local
+        // counter ahead of whatever the eventually-delivered, earlier-
+        // epoch write actually lands -- `is_converged` would then never
+        // agree, even after delivery succeeds.
+        if outbox.already_pending(&queue_key.to_string()) {
+            return;
+        }
+        let epoch = match self.store.advance_binding_epoch(app_instance_id, &l_ref) {
+            Ok(epoch) => epoch,
+            Err(e) => {
+                tracing::warn!(
+                    app_instance_id,
+                    l_ref,
+                    error = %e,
+                    "failed to advance the binding epoch for an unreachable push; not queued \
+                     this pass"
+                );
+                return;
+            }
+        };
+        let write = match Self::build_binding_write(plan, svc, generation, epoch) {
+            Ok(write) => write,
+            Err(e) => {
+                tracing::warn!(
+                    app_instance_id,
+                    l_ref,
+                    error = %e,
+                    "failed to build the binding write for an unreachable push; not queued this \
+                     pass"
+                );
+                return;
+            }
+        };
+        outbox.enqueue(&queue_key.to_string(), substrate_did, &write).await;
     }
 
     async fn handle_submit(
@@ -4052,6 +4178,7 @@ mod tests {
         collections::{BTreeMap, VecDeque},
         path::{Path, PathBuf},
         sync::Mutex,
+        time::Instant,
     };
 
     use syneroym_app_orchestration::{
@@ -6383,7 +6510,7 @@ mod tests {
         // The membership change: the moment a `submit`'s own diff would
         // see it, before the classifier has decided anything. The clock
         // stops when the write this decision routes to returns.
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let landed = s.store.journal.get_completed_actions_for_instance(&instance_id).unwrap();
         let diff = Reconciler::new(&s.store.journal).compute_diff(&plan).unwrap();
         let (_, push_candidates) =
@@ -9642,7 +9769,7 @@ mod tests {
 
         tokio::select! {
             _ = &mut tick => panic!("the worker must block on instance_lock while a pass holds it"),
-            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+            () = tokio::time::sleep(Duration::from_millis(50)) => {}
         }
 
         drop(guard);
@@ -9684,18 +9811,18 @@ mod tests {
         // Give the interval its first tick a chance to fire and claim the
         // one item -- `queue_tick_secs` is 1s below via `build_pass_interval`'s
         // `.max(1)`, so this is well past that.
-        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        tokio::time::sleep(Duration::from_millis(1200)).await;
 
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         s.shutdown().await.unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), run_handle)
+        tokio::time::timeout(Duration::from_secs(2), run_handle)
             .await
             .expect(
                 "run_queue_worker must return promptly on shutdown, not wait for the claimed item",
             )
             .unwrap()
             .unwrap();
-        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(start.elapsed() < Duration::from_secs(2));
     }
 
     /// Test 24: the in-process analogue of e2e step 5 -- a queued item
@@ -9765,10 +9892,10 @@ mod tests {
             tokio::spawn(async move { s.run_queue_worker().await })
         };
 
-        tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        tokio::time::advance(Duration::from_secs(6)).await;
         // Yield so the worker's now-elapsed tick actually runs.
         tokio::task::yield_now().await;
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
 
         assert!(
             s.store.queue.all().unwrap().is_empty(),
@@ -9776,7 +9903,7 @@ mod tests {
         );
 
         s.shutdown().await.unwrap();
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), run_handle).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), run_handle).await;
     }
 
     // ── M05B B1: the DLQ surface ─────────────────────────────────────────

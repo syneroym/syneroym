@@ -97,6 +97,23 @@ impl SupervisorOutbox {
 #[async_trait::async_trait]
 impl WriteBindingsOutbox for SupervisorOutbox {
     async fn enqueue(&self, queue_key: &str, substrate_did: &str, write: &BindingWrite) {
+        // A5e's resident loop reclassifies a member as a push candidate on
+        // every pass until its push actually lands (the downgrade-to-
+        // Degraded comment on the loop's own write phase explains why:
+        // `compute_diff` deliberately falls back to the previous baseline
+        // so the next pass retries the same push). Left unguarded, every
+        // one of those passes would enqueue its own row for the identical
+        // logical write while a substrate stays offline, flooding the
+        // outbox with duplicates that each start their own attempt budget
+        // from zero -- the queue would never actually exhaust a budget,
+        // since a newer, immediately-due duplicate keeps winning the next
+        // claim over an older one waiting out its backoff. One pending row
+        // per key is already this intent's durable record; a pass that
+        // finds one is a no-op here; the row's own retry schedule is what
+        // answers it.
+        if self.already_pending(queue_key) {
+            return;
+        }
         let payload =
             QueuedBindingWrite { substrate_did: substrate_did.to_string(), write: write.clone() };
         let bytes = match serde_json::to_vec(&payload) {
@@ -118,8 +135,24 @@ impl WriteBindingsOutbox for SupervisorOutbox {
     }
 }
 
+impl SupervisorOutbox {
+    /// Whether `queue_key` already has a row in the outbox -- pending or
+    /// claimed, either way already durable and already on its own retry
+    /// schedule. A linear scan over `Queue::all()`, not an indexed lookup:
+    /// this is the supervisor's own per-instance outbox, not a shared
+    /// multi-tenant one, so its size is bounded by how many distinct
+    /// members are simultaneously mid-retry, not by anything unbounded.
+    #[must_use]
+    pub fn already_pending(&self, queue_key: &str) -> bool {
+        self.queue.all().is_ok_and(|items| items.iter().any(|item| item.queue_key == queue_key))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use syneroym_async_queue::QueueConfig;
+    use syneroym_core::config::SupervisorRole;
+
     use super::*;
 
     #[test]
@@ -135,10 +168,7 @@ mod tests {
 
     #[tokio::test]
     async fn enqueue_writes_a_row_the_queue_key_can_be_parsed_back_out_of() {
-        let queue = Queue::open_in_memory(syneroym_async_queue::QueueConfig::from(
-            &syneroym_core::config::SupervisorRole::default(),
-        ))
-        .unwrap();
+        let queue = Queue::open_in_memory(QueueConfig::from(&SupervisorRole::default())).unwrap();
         let outbox = SupervisorOutbox::new(queue.clone());
         let key = QueueKey {
             app_instance_id: "inst-1".to_string(),
@@ -161,5 +191,50 @@ mod tests {
         let payload: QueuedBindingWrite = serde_json::from_slice(&items[0].payload).unwrap();
         assert_eq!(payload.substrate_did, "did:key:zB");
         assert_eq!(payload.write.generation, 3);
+    }
+
+    /// M05B B1 review: A5e's resident loop reclassifies an unlanded push as
+    /// a candidate every pass until it lands, so `enqueue_unreachable_push`
+    /// (`service.rs`) calls this repeatedly for the identical key while a
+    /// substrate stays offline. Left unguarded that floods the outbox with
+    /// duplicates, each starting its own attempt budget at zero -- so an
+    /// item never actually exhausts one, since a newer, immediately-due
+    /// duplicate keeps winning the next claim over an older one waiting out
+    /// its backoff.
+    #[tokio::test]
+    async fn a_second_enqueue_for_the_same_key_while_one_is_still_pending_is_a_no_op() {
+        let queue = Queue::open_in_memory(QueueConfig::from(&SupervisorRole::default())).unwrap();
+        let outbox = SupervisorOutbox::new(queue.clone());
+        let key = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/backend".to_string(),
+            substrate_did: "did:key:zB".to_string(),
+        };
+        let first_write = BindingWrite {
+            service_id: "did:key:zSvc".to_string(),
+            app_instance_id: "inst-1".to_string(),
+            bindings: vec![],
+            generation: 3,
+        };
+        let later_write = BindingWrite { generation: 9, ..first_write.clone() };
+
+        outbox.enqueue(&key.to_string(), "did:key:zB", &first_write).await;
+        assert!(outbox.already_pending(&key.to_string()));
+        outbox.enqueue(&key.to_string(), "did:key:zB", &later_write).await;
+
+        let items = queue.all().unwrap();
+        assert_eq!(items.len(), 1, "a pending row for the key must not be duplicated");
+        let payload: QueuedBindingWrite = serde_json::from_slice(&items[0].payload).unwrap();
+        assert_eq!(
+            payload.write.generation, 3,
+            "the first pending write is untouched, not replaced by the later one"
+        );
+    }
+
+    #[tokio::test]
+    async fn already_pending_is_false_for_a_key_never_enqueued() {
+        let queue = Queue::open_in_memory(QueueConfig::from(&SupervisorRole::default())).unwrap();
+        let outbox = SupervisorOutbox::new(queue);
+        assert!(!outbox.already_pending("inst-1\u{1}inst-1/backend\u{1}did:key:zB"));
     }
 }
