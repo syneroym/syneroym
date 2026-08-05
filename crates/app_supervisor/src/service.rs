@@ -1303,7 +1303,13 @@ impl SupervisorService {
                 &svc.member_ref().to_string(),
                 substrate_did,
             );
-            if self
+            // An empty `Ok` means the push deferred to an already-pending
+            // queued delivery rather than landing this pass -- it must
+            // count the same as an error here (M05B B1 review follow-on
+            // 1), or a redeploy landing in the same pass would journal
+            // this member's new baseline as converged while the queue
+            // still holds stale content for it.
+            match self
                 .push_bindings(
                     instance_id,
                     plan,
@@ -1314,9 +1320,10 @@ impl SupervisorService {
                     &mut opened,
                 )
                 .await
-                .is_err()
             {
-                any_push_failed = true;
+                Ok(outcomes) if outcomes.is_empty() => any_push_failed = true,
+                Ok(_) => {}
+                Err(_) => any_push_failed = true,
             }
         }
         // Review round 2, finding A (same shape, narrower window here):
@@ -2512,7 +2519,12 @@ impl SupervisorService {
                 &svc.member_ref().to_string(),
                 substrate_did,
             );
-            if let Err(e) = self
+            // An empty `Ok` means the push deferred to an already-pending
+            // queued delivery rather than landing this call -- must count
+            // the same as an error here too (M05B B1 review follow-on 1),
+            // so `submit`/`force-reconcile` reports it and the downgrade
+            // below fires, same as the resident loop's own call site.
+            match self
                 .push_bindings(
                     &plan.app_instance_id,
                     plan,
@@ -2524,7 +2536,14 @@ impl SupervisorService {
                 )
                 .await
             {
-                push_errors.push(format!("{}: {e}", svc.member_ref()));
+                Ok(outcomes) if outcomes.is_empty() => {
+                    push_errors.push(format!(
+                        "{}: deferred to an already-pending queued delivery",
+                        svc.member_ref()
+                    ));
+                }
+                Ok(_) => {}
+                Err(e) => push_errors.push(format!("{}: {e}", svc.member_ref())),
             }
         }
         self.publish_opened_alerts(&plan.app_instance_id.to_string(), &opened).await;
@@ -2828,7 +2847,24 @@ impl SupervisorService {
             logical_ref: l_ref.clone(),
             substrate_did: substrate_did.to_string(),
         };
-        if SupervisorOutbox::new(self.store.queue.clone()).already_pending(&queue_key.to_string()) {
+        // Deliberately not `SupervisorOutbox::already_pending`, whose
+        // fail-*closed* default (an unreadable queue reads as "already
+        // pending") is right for its own purpose -- a guard against
+        // writing a duplicate row should err toward not writing. Here it
+        // would mean the opposite: an unreadable queue silently skips the
+        // live attempt and returns `Ok`, reporting success for a push that
+        // never happened and was never durably queued either (M05B B1
+        // review follow-on 1). Failing *open* instead is safe specifically
+        // because the queue and every other supervisor table share one
+        // connection (D-B1-5) -- a genuinely broken connection surfaces a
+        // proper `Err` on the very next line's `advance_binding_epoch`
+        // instead of a silent no-op.
+        if self.store.queue.has_pending(&queue_key.to_string()).unwrap_or(false) {
+            // Nothing landed this pass -- an empty `Vec` here is a
+            // sentinel every caller must treat the same as a failure for
+            // downgrade/reporting purposes (M05B B1 review follow-on 1),
+            // never as "there was nothing to push": a real push always
+            // returns at least one outcome.
             return Ok(Vec::new());
         }
 
@@ -9968,6 +10004,47 @@ mod tests {
         assert!(
             s.store.queue.dead_letters().unwrap().is_empty(),
             "a stale delivery is convergence, not a failure"
+        );
+    }
+
+    /// M05B B1 review follow-on 4: a queued item whose instance was
+    /// retired between enqueue and delivery must be quietly completed --
+    /// no delivery attempt (it would resurrect a binding the operator just
+    /// released) and no `DeliveryExhausted` alert (noise against an
+    /// instance nobody is going to act on). Unscripted `FakeQueueConnector`
+    /// is deliberate: reaching `connect` at all would fail the test with
+    /// "no scripted delivery", so this also proves the retired branch
+    /// returns before ever attempting one.
+    #[tokio::test]
+    async fn a_queued_item_for_a_retired_instance_completes_quietly() {
+        let mut s = service();
+        s.queue_connector = Arc::new(FakeQueueConnector::default());
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+        s.store.retire("inst-1").unwrap();
+
+        s.queue_worker_tick().await;
+
+        assert!(s.store.queue.all().unwrap().is_empty(), "the item must be gone from the outbox");
+        assert!(
+            s.store.queue.dead_letters().unwrap().is_empty(),
+            "a retired instance's stale intent is moot, not a failure"
+        );
+        let instance_id = AppInstanceId::try_new("inst-1".to_string()).unwrap();
+        assert!(
+            !s.store
+                .alerts
+                .active(&instance_id)
+                .unwrap()
+                .iter()
+                .any(|a| a.kind == AlertKind::DeliveryExhausted),
+            "a retired instance must not gain a fresh DeliveryExhausted alert"
         );
     }
 

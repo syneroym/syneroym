@@ -106,6 +106,20 @@ pub struct QueueItem {
     /// expected to dead-letter (via `Queue::fail(..., terminal: true)`) an
     /// item whose `claim_count` reaches the same attempt budget, closing
     /// the poison-pill gap the M05B B1 review found (finding 7).
+    ///
+    /// **Also counts a claim a caller abandoned on purpose**, not only a
+    /// crash: the supervisor's own worker (`app_supervisor::service::
+    /// queue_worker_tick`) races cancellation into a delivery via
+    /// `tokio::select!` so shutdown does not wait for one in flight (D-B1-8,
+    /// finding 5) -- a restart caught at exactly that instant drops the
+    /// delivery after this count was already advanced, with no `attempts`
+    /// to show for it (review follow-on, 2026-08-05). Indistinguishable
+    /// from a real poison pill from inside this crate, and deliberately
+    /// left that way: the failure mode is one claim spent for no attempt,
+    /// bounded by the same budget either way, and it takes the same number
+    /// of consecutive occurrences (the configured `max_attempts`, 54 by
+    /// default) to matter -- an operator sees a real, replayable dead
+    /// letter either way, never silent loss.
     pub claim_count: u32,
 }
 
