@@ -92,7 +92,7 @@ converges without an operator touching anything, closing
 | Gate | State |
 |---|---|
 | **M05A slices P0, A0–A5e, A7 Complete** | ✅ Complete 2026-08-04. B1's consumer is the shipped `SubstrateActor` and its shipped fences |
-| **ADR-0023 accepted** | ⛔ **Proposed.** Blocks B1. The delivery-semantics decisions cannot be discovered during implementation — §2 alone changes what the durable implementation is |
+| **ADR-0023 accepted** | ✅ **Accepted 2026-08-04.** The delivery-semantics decisions cannot be discovered during implementation — §2 alone changes what the durable implementation is |
 | **`[PLT-ASY]` matrix row created** | ⛔ Not created. Blocks *closing* the milestone, not starting it |
 | M04B FDAE | ✅ Complete. B2's guest surface is authorized through the existing proxy gate; no new authorization model |
 | M7 replication | Not required, and must not become required — see non-goals |
@@ -247,37 +247,50 @@ Steps 5–7 are exactly ADR-0021's second convergence clause, which its
 
 ## Measurable exit criteria
 
-1. The reference scenario above passes end to end against two real substrates.
-2. Every row of the failure/security matrix has a named test that asserts it.
-3. Every performance budget above has a measurement — the happy-path one as an
-   assertion that the queue is untouched, not as a timing.
-4. `crates/sdk/src/deploy.rs`'s `SubstrateActor` has an outbox-backed
-   implementation, and **no caller above the trait changed**. Demonstrated by
-   the diff, not asserted in prose.
-5. The `no DLQ (M5)` markers are gone from
-   [proxy.rs:456](../../../../crates/router/src/proxy.rs#L456) and from
-   `system-architecture.md`'s Universal Proxy implementation-status note, with
-   the behavior they describe actually built.
-6. `[PLT-ASY]` exists as a traceability-matrix row and is marked **Complete for
-   the four mechanisms built here**, with long-running-task restart rules named
-   in the row as deferred and carrying its backlog link. Marking a row Complete
-   while part of it is deferred is only acceptable when the row says exactly
-   what is and is not in it — the shape `[PLT-DAP]`'s "Complete (foundations
-   only)" already uses. **M05A slice A6's pickup trigger fires on this**, and it
-   is sound: A6 consumes the delivery half (B1), which is fully built.
-7. M05A slice A6 is recorded Complete in
-   [M05A status.md](../M05A-app-supervisor/status.md), and its
-   [deferred-backlog.md](../../deferred-backlog.md) §8 row moves to *Recently
-   resolved* — **when B1 lands, not at milestone closeout.** B1 discharges A6's
-   whole scope; holding its status until B3's scheduling work lands would be
-   bookkeeping rather than truth. The `[PLT-ASY]` row above is a *milestone* row
-   and does close at closeout; these are different things closing at different
-   times. *(Corrected 2026-08-04 after review — three documents disagreed. See
-   the [B1 plan](slice-b1-implementation-plan.md) §4.)*
-8. The deferred B5 has a backlog row with a reason, a target, and a pickup
-   trigger, and the six unused dependencies are gone.
-9. `cargo +nightly fmt --all` clean.
-10. `cargo clippy --workspace --all-targets --all-features` clean.
-11. `cargo test --workspace` passes.
-12. `mise run test:e2e` passes.
-13. `wasm32-wasip2` test components rebuild against the changed WIT (B2 onward).
+These are milestone-level; the annotation on each names which slice closes
+it. B1 status below reflects [status.md](status.md)'s B1 evidence
+(2026-08-05).
+
+1. ✅ **B1.** The reference scenario above passes end to end against two real
+   substrates —
+   [durable_outbox_e2e.rs](../../../../crates/substrate/tests/durable_outbox_e2e.rs).
+   Steps 1-7 (`a_binding_push_to_an_offline_substrate_converges_after_it_returns`)
+   and step 8 (`a_permanently_unreachable_substrate_lands_in_the_dlq_and_replays`)
+   both green.
+2. ✅ **B1**, for the rows B1 owns (1-6, 9, 12-14 — push delivery, at-least-
+   once, `restart` never queued, the certificate-bearing narrowing, DLQ
+   arrival/alert/clear, queue-growth bound, at-rest protection, replay
+   authorization). Rows 7-8 (guest idempotency-key refusal/replay) are B2's.
+   DLQ-related rows (4, 5) share step 8's e2e verification above;
+   every row also has its own in-process unit test, already green.
+3. ✅ **B1.** `a_reachable_substrate_never_touches_the_queue` asserts the
+   happy path as untouched, not timed.
+4. ✅ **B1.** `deploy.rs`'s `SubstrateActor` has `build_durable_actor`; no
+   caller above the trait changed (demonstrated by the diff — every call
+   site still reads `Result<Vec<BindingWriteOutcome>, String>` unchanged).
+5. ⬜ **B2.** The `no DLQ (M5)` markers in
+   [proxy.rs:456](../../../../crates/router/src/proxy.rs#L456) and
+   `rpc/proxy.rs:80` are the guest-facing proxy DLQ, not the supervisor's —
+   untouched by B1.
+6. ⬜ **Milestone closeout (needs B2-B4).** `[PLT-ASY]` stays **Pending** in
+   the traceability matrix; B1 alone does not close it.
+7. ✅ **B1.** M05A slice A6 recorded Complete in
+   [M05A status.md](../M05A-app-supervisor/status.md) (2026-08-05); its
+   [deferred-backlog.md](../../deferred-backlog.md) §8 row moved to
+   *Recently resolved* the same day, on B1 landing rather than at milestone
+   closeout, per the correction this row already carried.
+8. ✅ **B1**, with a correction. B5's backlog row exists. The dependency
+   sweep found two of the originally-reviewed six (`assert_cmd`/`sysinfo` in
+   `syneroym-perf`, `metrics` in `syneroym-sandbox-podman`) still have other
+   consumers on the shipped tree; **four** are gone (`quinn`, `metrics-util`,
+   `syneroym-sdk` from `syneroym-smoke-tests`, `chromiumoxide`), not six —
+   [deferred-backlog.md](../../deferred-backlog.md)'s matching row corrected
+   to match.
+9. ✅ `cargo +nightly fmt --all` clean.
+10. ✅ `cargo clippy --workspace --all-targets --all-features` clean.
+11. ✅ `cargo test --workspace` passes — every failure is the pre-existing
+    sandbox-bind category (see [status.md](status.md)); every crate this
+    slice touches is fully green.
+12. ✅ `mise run test:e2e` passes — 12/12, unchanged from before this slice.
+13. ⬜ **B2 onward.** No WIT change in B1; nothing for a guest component to
+    rebuild against yet.

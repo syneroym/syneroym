@@ -5,8 +5,9 @@
 //! `PlanApplier` is ADR-0021 §5's narrow "apply this action to that
 //! substrate" boundary, introduced here rather than at A5 for two reasons:
 //! partial-failure behavior is otherwise not testable without killing a live
-//! substrate mid-test, and A5's durable outbox implementation then replaces
-//! this trait's body instead of restructuring its callers.
+//! substrate mid-test, and a durable, queue-backed implementation
+//! ([`build_durable_actor`]) replaces this trait's body instead of
+//! restructuring its callers.
 
 use std::{
     collections::BTreeMap,
@@ -27,6 +28,7 @@ use syneroym_core::dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo,
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
 };
+use syneroym_rpc::JsonRpcError;
 
 use crate::{
     BindingWrite, BindingWriteOutcome, DeploymentPlan as WitDeploymentPlan, InstanceIdentity,
@@ -40,9 +42,10 @@ pub const DEFAULT_INSTANCE_CERT_EXPIRES_HOURS: u64 = 24;
 /// ADR-0021 §5's narrow "apply this action to that substrate" boundary.
 /// Three actions, not one: A3 introduced this trait (as `PlanApplier`) when
 /// applying a plan was the only action, and A5 adds the two the
-/// supervisor's own loop issues. A6 replaces the implementation with an
-/// outbox/DLQ-backed one and nothing above this trait changes -- which only
-/// holds if every action it must make durable is *on* it.
+/// supervisor's own loop issues. [`build_durable_actor`] wraps this trait
+/// with an outbox/DLQ-backed implementation, and nothing above it changed --
+/// which holds only because every action that must be made durable is *on*
+/// this trait, not bolted on beside it.
 #[async_trait::async_trait]
 pub trait SubstrateActor: fmt::Debug + Send + Sync {
     async fn apply_plan(&self, plan: WitDeploymentPlan) -> Result<(), String>;
@@ -50,9 +53,12 @@ pub trait SubstrateActor: fmt::Debug + Send + Sync {
     -> Result<Vec<BindingWriteOutcome>, String>;
     /// Included for the same reason `stop` sits beside `start` on an
     /// engine: a fake in a test must be able to answer every action the
-    /// supervisor takes. A6 may keep this synchronous -- a restart queued
-    /// for later delivery is usually wrong -- and that is a decision for
-    /// A6's implementation, not a reason to leave it outside the trait.
+    /// supervisor takes. Never queued: a restart is remediation for a
+    /// condition observed *now*, and delivering it later restarts a
+    /// service that may already have recovered on its own -- the
+    /// supervisor's own bounded remediation policy decides what a failed
+    /// restart means, and a queue behind it would be a second policy
+    /// disagreeing with the first.
     async fn restart(&self, service_id: String, generation: u64) -> Result<(), String>;
     /// Install a freshly-issued instance certificate in place, without a
     /// reinstall (M05A A5's unattended renewal). On the trait for the same
@@ -148,6 +154,185 @@ impl SubstrateActor for SyneroymClient {
             .map_err(|e| e.to_string())?;
         Ok(res.result.get("generation").and_then(serde_json::Value::as_u64))
     }
+}
+
+/// The single point every call site with no durable queue behind it upcasts
+/// a connected client (or, in a test, a fake) into the trait-object shape
+/// [`DeployTarget::actor`] and [`ApplyRequest`]'s targets consume --
+/// replacing ten near-identical `client.clone() as Arc<dyn SubstrateActor>`
+/// expressions (M05B B1, D-B1-4). `roymctl` and the SDK's own e2e fixtures
+/// call this deliberately (D-B1-11): a one-shot process exits when its
+/// command finishes, so a durable queue behind it would be written and never
+/// drained. [`build_durable_actor`] is the other call this function's
+/// callers choose between, for the one action-owner that keeps a worker
+/// alive to drain what it enqueues.
+#[must_use]
+pub fn build_actor<T: SubstrateActor + 'static>(actor: Arc<T>) -> Arc<dyn SubstrateActor> {
+    actor
+}
+
+/// What a durable actor's `write_bindings` enqueues onto when it cannot
+/// reach its target (D-B1-1: try synchronously first, enqueue only on
+/// transport failure). A trait here, rather than this crate depending on
+/// `syneroym-async-queue` directly, so the queue's storage, its worker, and
+/// the `instance_lock` it coordinates with stay owned by the crate that
+/// also owns those (`syneroym-app-supervisor`) -- this crate only needs to
+/// know that *something* durable exists to hand a failed write to.
+#[async_trait::async_trait]
+pub trait WriteBindingsOutbox: fmt::Debug + Send + Sync {
+    /// `queue_key` is opaque to this crate -- the caller's own grouping key
+    /// (the supervisor's is `(instance, logical_ref, substrate)`, D-B1-6),
+    /// bound in at [`build_durable_actor`] rather than derived here, since
+    /// `BindingWrite` alone does not carry a logical ref. Infallible from
+    /// this trait's own perspective: an enqueue that cannot itself be
+    /// written is a queue-storage problem the implementation logs and
+    /// swallows, not a second failure `write_bindings` should report on top
+    /// of the transport error it is already returning.
+    async fn enqueue(&self, queue_key: &str, substrate_did: &str, write: &BindingWrite);
+}
+
+/// `true` when `err` is the substrate answering and refusing the call
+/// (a `JsonRpcError` wire response, e.g. `PermissionDenied`) rather than a
+/// failure to reach it at all. `SyneroymClient::request_raw` is the only
+/// place a `JsonRpcError` enters the chain -- an error response frame
+/// deserializes into one; every other failure along the connect/write/read
+/// path (a dropped connection, a malformed response, a timeout) surfaces as
+/// some other error type. A callee error is never worth retrying: the
+/// substrate was reached and it said no, and retrying against the same
+/// answer forever would be a second, silent policy competing with the one
+/// that already reported it (test 16, D-B1-1).
+#[must_use]
+pub fn is_callee_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<JsonRpcError>().is_some()
+}
+
+/// `true` when `err` is specifically the substrate answering that this
+/// write's own target no longer exists (failure-matrix row 9) -- narrower
+/// than [`is_callee_error`], which is `true` for *every* reached-and-
+/// answered failure. `control_plane`'s `write-bindings` dispatch maps every
+/// server-side refusal (a stale generation, an authorization gap, a
+/// genuinely gone service) to the same wire-level `InternalError` code, so
+/// the message text is the only signal this crate can read without a wire
+/// protocol change; matched against the one message `write_bindings_impl`
+/// emits for "gone" specifically, not against `InternalError` generally.
+///
+/// Used only by the queue worker's terminal decision for an *already-
+/// durable* item ([`DurableActor::write_bindings`]'s own enqueue decision
+/// stays on the broader [`is_callee_error`], since declining to enqueue is
+/// cheap to get wrong in either direction -- the write is not yet
+/// durable). Dead-lettering a queued item on any callee error, as
+/// `is_callee_error` alone would, would also give up on a transient,
+/// reached-and-answered failure (a locked database, a service still
+/// starting) that a later retry would have cleared (M05B B1 review finding
+/// 10).
+#[must_use]
+pub fn is_target_gone_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<JsonRpcError>()
+        .is_some_and(|e| e.message.contains("has no app context on this substrate"))
+}
+
+/// What `DurableActor` calls to attempt a delivery -- narrower than
+/// `SubstrateActor` itself so a test can fake exactly the transport-vs-
+/// callee distinction `write_bindings`'s durability decision rests on
+/// (`is_callee_error`), without faking a live client. `SyneroymClient`'s own
+/// inherent `write_bindings` (not the trait method a few lines below, which
+/// stringifies the error before this decision can be made) is the only
+/// production implementation.
+#[async_trait::async_trait]
+pub trait WriteBindingsAttempt: fmt::Debug + Send + Sync {
+    async fn attempt_write_bindings(&self, write: BindingWrite)
+    -> Result<Vec<BindingWriteOutcome>>;
+}
+
+#[async_trait::async_trait]
+impl WriteBindingsAttempt for SyneroymClient {
+    async fn attempt_write_bindings(
+        &self,
+        write: BindingWrite,
+    ) -> Result<Vec<BindingWriteOutcome>> {
+        self.write_bindings(write).await
+    }
+}
+
+/// The durable `SubstrateActor`: every action but `write_bindings` stays
+/// exactly the synchronous, undurable call the trait already made
+/// (D-B1-3/D-B1-12 -- `restart`, `apply_plan`, and `renew_cert` are never
+/// queued, the last two because they embed a certificate that expires in
+/// hours, not because queueing them is hard). `write_bindings` attempts
+/// synchronously first and, only on a transport failure, also enqueues onto
+/// `outbox` before returning the same error a bare client would have
+/// returned (D-B1-1) -- so a caller reading the return value sees no
+/// difference from today, and `push_bindings`'s existing alert/`Degraded`
+/// handling needs no change at all.
+#[derive(Debug)]
+struct DurableActor<T> {
+    inner: Arc<T>,
+    substrate_did: String,
+    /// The caller's own grouping key (D-B1-6), bound at construction --
+    /// `BindingWrite` alone carries no logical ref for this to derive.
+    queue_key: String,
+    outbox: Arc<dyn WriteBindingsOutbox>,
+}
+
+#[async_trait::async_trait]
+impl<T: SubstrateActor + WriteBindingsAttempt + 'static> SubstrateActor for DurableActor<T> {
+    async fn apply_plan(&self, plan: WitDeploymentPlan) -> Result<(), String> {
+        <T as SubstrateActor>::apply_plan(&self.inner, plan).await
+    }
+
+    async fn write_bindings(
+        &self,
+        write: BindingWrite,
+    ) -> Result<Vec<BindingWriteOutcome>, String> {
+        match self.inner.attempt_write_bindings(write.clone()).await {
+            Ok(outcomes) => Ok(outcomes),
+            Err(err) => {
+                if !is_callee_error(&err) {
+                    self.outbox.enqueue(&self.queue_key, &self.substrate_did, &write).await;
+                }
+                Err(err.to_string())
+            }
+        }
+    }
+
+    async fn restart(&self, service_id: String, generation: u64) -> Result<(), String> {
+        <T as SubstrateActor>::restart(&self.inner, service_id, generation).await
+    }
+
+    async fn renew_cert(
+        &self,
+        service_id: String,
+        generation: u64,
+        instance_certificate: String,
+    ) -> Result<(), String> {
+        <T as SubstrateActor>::renew_cert(&self.inner, service_id, generation, instance_certificate)
+            .await
+    }
+
+    async fn instance_identity(&self, service_id: &str) -> Result<InstanceIdentity, String> {
+        <T as SubstrateActor>::instance_identity(&self.inner, service_id).await
+    }
+
+    async fn held_generation(&self, app_instance_id: &str) -> Result<Option<u64>, String> {
+        <T as SubstrateActor>::held_generation(&self.inner, app_instance_id).await
+    }
+}
+
+/// The other constructor [`build_actor`]'s callers choose between: wraps a
+/// connected client so its `write_bindings` survives a transport failure
+/// past this process's own lifetime (D-B1-4). `substrate_did` and
+/// `queue_key` are carried alongside the client because
+/// `WriteBindingsOutbox::enqueue` needs both and `SubstrateActor` itself
+/// never learns which substrate -- or which of its caller's own logical
+/// groupings -- it is bound to.
+#[must_use]
+pub fn build_durable_actor<T: SubstrateActor + WriteBindingsAttempt + 'static>(
+    client: Arc<T>,
+    substrate_did: String,
+    queue_key: String,
+    outbox: Arc<dyn WriteBindingsOutbox>,
+) -> Arc<dyn SubstrateActor> {
+    Arc::new(DurableActor { inner: client, substrate_did, queue_key, outbox })
 }
 
 /// A connected deploy target: the alias it was named by (`None` for the
@@ -974,5 +1159,212 @@ mod tests {
             deployment_id,
         );
         assert_send(fut);
+    }
+
+    // ── M05B B1: the durable actor's try-then-queue decision ────────────
+
+    /// A fake standing in for `SyneroymClient`: `attempt_write_bindings`
+    /// returns whatever `outcome` says, and `write_bindings`/every other
+    /// `SubstrateActor` method is exercised only where a test names it, so
+    /// each one's own `should_fail` flag drives it directly rather than
+    /// sharing one flag across five unrelated actions.
+    #[derive(Debug, Default)]
+    struct DurableTestActor {
+        write_bindings_outcome: Mutex<Option<Result<Vec<BindingWriteOutcome>>>>,
+        apply_plan_should_fail: bool,
+        restart_should_fail: bool,
+        renew_cert_should_fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl WriteBindingsAttempt for DurableTestActor {
+        async fn attempt_write_bindings(
+            &self,
+            _write: BindingWrite,
+        ) -> Result<Vec<BindingWriteOutcome>> {
+            self.write_bindings_outcome.lock().unwrap().take().expect("outcome not set for test")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SubstrateActor for DurableTestActor {
+        async fn apply_plan(&self, _plan: WitDeploymentPlan) -> Result<(), String> {
+            if self.apply_plan_should_fail { Err("apply_plan failed".to_string()) } else { Ok(()) }
+        }
+
+        async fn write_bindings(
+            &self,
+            _write: BindingWrite,
+        ) -> Result<Vec<BindingWriteOutcome>, String> {
+            unimplemented!("DurableActor<T> never calls T::write_bindings directly")
+        }
+
+        async fn restart(&self, _service_id: String, _generation: u64) -> Result<(), String> {
+            if self.restart_should_fail { Err("restart failed".to_string()) } else { Ok(()) }
+        }
+
+        async fn renew_cert(
+            &self,
+            _service_id: String,
+            _generation: u64,
+            _instance_certificate: String,
+        ) -> Result<(), String> {
+            if self.renew_cert_should_fail { Err("renew_cert failed".to_string()) } else { Ok(()) }
+        }
+
+        async fn instance_identity(&self, _service_id: &str) -> Result<InstanceIdentity, String> {
+            unimplemented!("not exercised by the durable-actor tests")
+        }
+
+        async fn held_generation(&self, _app_instance_id: &str) -> Result<Option<u64>, String> {
+            unimplemented!("not exercised by the durable-actor tests")
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingOutbox {
+        enqueued: Mutex<Vec<(String, String, BindingWrite)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl WriteBindingsOutbox for RecordingOutbox {
+        async fn enqueue(&self, queue_key: &str, substrate_did: &str, write: &BindingWrite) {
+            self.enqueued.lock().unwrap().push((
+                queue_key.to_string(),
+                substrate_did.to_string(),
+                write.clone(),
+            ));
+        }
+    }
+
+    fn binding_write() -> BindingWrite {
+        BindingWrite {
+            service_id: "did:key:zSvc".to_string(),
+            app_instance_id: "inst-1".to_string(),
+            bindings: vec![],
+            generation: 0,
+        }
+    }
+
+    /// Test 14: D-B1-1 -- a successful call returns exactly what the trait
+    /// returns today, with no queue involvement.
+    #[tokio::test]
+    async fn a_successful_write_bindings_returns_the_same_outcomes_it_returns_today() {
+        let inner = Arc::new(DurableTestActor {
+            write_bindings_outcome: Mutex::new(Some(Ok(vec![BindingWriteOutcome::Applied]))),
+            ..Default::default()
+        });
+        let outbox = Arc::new(RecordingOutbox::default());
+        let actor = build_durable_actor(
+            inner,
+            "did:key:zB".to_string(),
+            "inst-1/backend@did:key:zB".to_string(),
+            outbox.clone(),
+        );
+
+        let outcomes = actor.write_bindings(binding_write()).await.unwrap();
+        assert_eq!(outcomes, vec![BindingWriteOutcome::Applied]);
+        assert!(outbox.enqueued.lock().unwrap().is_empty());
+    }
+
+    /// Test 15 (the enqueue half; `Degraded` reporting is
+    /// `push_bindings`'s own concern in `app_supervisor`, unchanged by this
+    /// wrap per D-B1-1): a transport failure enqueues before returning the
+    /// same error a bare client would have.
+    #[tokio::test]
+    async fn a_transport_failure_enqueues_and_returns_the_same_error_a_bare_client_would() {
+        let inner = Arc::new(DurableTestActor {
+            write_bindings_outcome: Mutex::new(Some(Err(anyhow::anyhow!("connection refused")))),
+            ..Default::default()
+        });
+        let outbox = Arc::new(RecordingOutbox::default());
+        let actor = build_durable_actor(
+            inner,
+            "did:key:zB".to_string(),
+            "inst-1/backend@did:key:zB".to_string(),
+            outbox.clone(),
+        );
+
+        let err = actor.write_bindings(binding_write()).await.unwrap_err();
+        assert!(err.contains("connection refused"), "{err}");
+        let enqueued = outbox.enqueued.lock().unwrap();
+        assert_eq!(enqueued.len(), 1);
+        assert_eq!(enqueued[0].0, "inst-1/backend@did:key:zB");
+        assert_eq!(enqueued[0].1, "did:key:zB");
+    }
+
+    /// Test 16: a callee error (the substrate reached and refused the
+    /// call) is never enqueued -- retrying the same refusal forever would
+    /// be a second policy competing with the one that already answered.
+    #[tokio::test]
+    async fn a_callee_error_is_not_enqueued() {
+        let callee_err =
+            JsonRpcError { code: -32010, message: "not authorized".to_string(), data: None };
+        let inner = Arc::new(DurableTestActor {
+            write_bindings_outcome: Mutex::new(Some(Err(callee_err.into()))),
+            ..Default::default()
+        });
+        let outbox = Arc::new(RecordingOutbox::default());
+        let actor = build_durable_actor(
+            inner,
+            "did:key:zB".to_string(),
+            "inst-1/backend@did:key:zB".to_string(),
+            outbox.clone(),
+        );
+
+        let err = actor.write_bindings(binding_write()).await.unwrap_err();
+        assert!(err.contains("not authorized"), "{err}");
+        assert!(outbox.enqueued.lock().unwrap().is_empty(), "a callee error must not be queued");
+    }
+
+    /// Test 17: D-B1-3, failure-matrix row 3 -- `restart` never touches
+    /// the outbox at all, whatever it returns.
+    #[tokio::test]
+    async fn a_failed_restart_is_never_enqueued() {
+        let inner = Arc::new(DurableTestActor { restart_should_fail: true, ..Default::default() });
+        let outbox = Arc::new(RecordingOutbox::default());
+        let actor = build_durable_actor(
+            inner,
+            "did:key:zB".to_string(),
+            "inst-1/backend@did:key:zB".to_string(),
+            outbox.clone(),
+        );
+
+        let err = actor.restart("svc".to_string(), 0).await.unwrap_err();
+        assert_eq!(err, "restart failed");
+        assert!(outbox.enqueued.lock().unwrap().is_empty());
+    }
+
+    /// Test 18: D-B1-12 -- `apply_plan` and `renew_cert` embed a
+    /// certificate that expires in hours, so neither is ever queued
+    /// either, whatever it returns.
+    #[tokio::test]
+    async fn a_failed_apply_plan_and_renew_cert_are_never_enqueued() {
+        let inner = Arc::new(DurableTestActor {
+            apply_plan_should_fail: true,
+            renew_cert_should_fail: true,
+            ..Default::default()
+        });
+        let outbox = Arc::new(RecordingOutbox::default());
+        let actor = build_durable_actor(
+            inner,
+            "did:key:zB".to_string(),
+            "inst-1/backend@did:key:zB".to_string(),
+            outbox.clone(),
+        );
+
+        assert!(
+            actor
+                .apply_plan(WitDeploymentPlan {
+                    app_instance_id: "inst-1".to_string(),
+                    blueprint_id: "syneroym:test".to_string(),
+                    version: "1.0.0".to_string(),
+                    services: vec![],
+                })
+                .await
+                .is_err()
+        );
+        assert!(actor.renew_cert("svc".to_string(), 0, "cert".to_string()).await.is_err());
+        assert!(outbox.enqueued.lock().unwrap().is_empty());
     }
 }

@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use axum::{Router, routing::get};
-use iroh::{Endpoint, EndpointAddr, SecretKey, protocol::Router as IrohRouter};
+use iroh::{Endpoint, EndpointAddr, SecretKey, TransportAddr, protocol::Router as IrohRouter};
 use iroh_relay::server::Server;
 use reqwest::Client;
 use syneroym_core::{
@@ -268,7 +268,29 @@ impl CoordinatorIroh {
 
         let endpoint_addr = iroh_endpoint.addr();
         let node_id = endpoint_addr.id;
-        let endpoint_addr_payload = endpoint_addr;
+        // `Endpoint::addr()` self-enumerates every local network interface
+        // -- LAN IP, global and link-local IPv6, even loopback's own
+        // link-local address -- as "direct address" candidates,
+        // independent of relay mode. None of those can ever be dialed
+        // between two processes that only share a self-hosted relay (this
+        // endpoint always configures one -- see `net_iroh::
+        // build_iroh_endpoint`), and a link-local address loses the
+        // interface scope id that makes it routable at all once
+        // serialized into this payload -- every peer that receives it
+        // still pays a full connect timeout trying each one before
+        // falling back to the relay it was always going to need.
+        // `Endpoint::builder(...).addr_filter(...)` cannot fix this: it
+        // only gates addresses handed to a registered `.address_lookup(...)`
+        // service, and this endpoint registers none -- `watch_addr()`,
+        // which `.addr()` reads, builds straight from the socket layer's
+        // own `ip_addrs()`/`home_relay()`, a path the filter never
+        // touches. Filtered here instead, the same way the global-
+        // registry registration path above already avoids the problem
+        // with a bare `EndpointAddr::new(node_id)`.
+        let endpoint_addr_payload = EndpointAddr::from_parts(
+            node_id,
+            endpoint_addr.addrs.into_iter().filter(TransportAddr::is_relay),
+        );
         let endpoint_addr_bytes = serde_json::to_vec(&endpoint_addr_payload)?;
         let parent_relay_url = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone());
         let relay_url = resolve_relay_url(parent_relay_url.as_deref(), relay_server, iroh_cfg);

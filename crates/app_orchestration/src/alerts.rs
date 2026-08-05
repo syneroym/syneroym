@@ -90,6 +90,15 @@ pub enum AlertKind {
     /// alert kind that survives a healthy renewal -- cleared only once the
     /// restart itself succeeds, not by the certificate window closing.
     RotationRestartPending,
+    /// A queued binding write exhausted its delivery attempt budget
+    /// (M05B B1, D-B1-6). One standing row per `(instance, logical_ref,
+    /// substrate)` with the current dead-letter count in `detail`,
+    /// refreshed as more accumulate -- `AlertStore`'s unique index cannot
+    /// express one row per item, and an operator wants the standing fact
+    /// ("this member has undeliverable work") over a flood of individual
+    /// rows anyway. Cleared when that key's last dead letter is gone, by
+    /// replay or by prune.
+    DeliveryExhausted,
 }
 
 impl fmt::Display for AlertKind {
@@ -108,6 +117,7 @@ impl fmt::Display for AlertKind {
             Self::VaultLocked => "VAULT_LOCKED",
             Self::InstanceRevoked => "INSTANCE_REVOKED",
             Self::RotationRestartPending => "ROTATION_RESTART_PENDING",
+            Self::DeliveryExhausted => "DELIVERY_EXHAUSTED",
         };
         write!(f, "{}", s)
     }
@@ -131,6 +141,7 @@ impl FromStr for AlertKind {
             "VAULT_LOCKED" => Ok(Self::VaultLocked),
             "INSTANCE_REVOKED" => Ok(Self::InstanceRevoked),
             "ROTATION_RESTART_PENDING" => Ok(Self::RotationRestartPending),
+            "DELIVERY_EXHAUSTED" => Ok(Self::DeliveryExhausted),
             _ => Err(anyhow!("Unknown alert kind: {}", s)),
         }
     }
@@ -432,6 +443,7 @@ mod tests {
             AlertKind::VaultLocked,
             AlertKind::InstanceRevoked,
             AlertKind::RotationRestartPending,
+            AlertKind::DeliveryExhausted,
         ];
         for kind in all {
             let round_tripped: AlertKind = kind.to_string().parse().unwrap();

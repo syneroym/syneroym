@@ -9,7 +9,6 @@ workspace = true
 [dependencies]
 syneroym-core.workspace = true
 syneroym-identity.workspace = true
-syneroym-sdk.workspace = true
 syneroym-rpc.workspace = true
 syneroym-coordinator-iroh.workspace = true
 syneroym-app-orchestration.workspace = true

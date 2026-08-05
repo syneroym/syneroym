@@ -569,6 +569,38 @@ const fn default_supervisor_renewed_cert_expires_hours() -> u64 {
 const fn default_supervisor_max_renewals_per_pass() -> u32 {
     5
 }
+/// Six times finer than `poll_interval_secs` (30): the queue's whole point
+/// is convergence within one worker tick, not one poll interval (M05B
+/// D-B1-13, task.md's performance budget). Finer buys nothing -- the wait is
+/// for a substrate to come back, not for the queue to notice.
+const fn default_supervisor_queue_tick_secs() -> u64 {
+    5
+}
+/// The primary bound on the outbox's attempt budget. Chosen, together with
+/// `queue_max_backoff_secs`, so the combined window covers roughly a
+/// 10-hour outage -- see the M05B B1 plan §0.12 for the arithmetic. Must
+/// outlast a human noticing an outage, not a transient socket error.
+const fn default_supervisor_queue_max_attempts() -> u8 {
+    54
+}
+/// The ceiling the outbox's backoff curve settles at (15 minutes). Initial
+/// backoff and multiplier stay `RetryPolicy`'s own defaults (100 ms, x2), so
+/// the first few retries are fast -- a substrate that blipped is served in
+/// under a second.
+const fn default_supervisor_queue_max_backoff_secs() -> u64 {
+    900
+}
+/// Four times `DEFAULT_PROXY_CALL_TIMEOUT` (30s), which bounds a single
+/// delivery attempt. Too short re-delivers work still in flight; too long
+/// strands a crashed worker's item for no reason.
+const fn default_supervisor_queue_visibility_timeout_secs() -> u64 {
+    120
+}
+/// Dead letters are pruned oldest-first on every write past this count -- a
+/// bound and a trigger, not an adjective.
+const fn default_supervisor_queue_dlq_max_rows() -> u32 {
+    1000
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -624,6 +656,22 @@ pub struct SupervisorRole {
     /// this pass are simply taken on the next one; the near-expiry window
     /// is wide relative to the pass interval, so nothing is at risk.
     pub max_renewals_per_pass: u32,
+    /// The durable outbox worker's own tick, independent of
+    /// `poll_interval_secs` (M05B B1, D-B1-13). Recovery after a target
+    /// returns is measured against this, not against the resident loop's
+    /// poll interval -- see `default_supervisor_queue_tick_secs`'s doc.
+    pub queue_tick_secs: u64,
+    /// The outbox's attempt budget before an item dead-letters. See
+    /// `default_supervisor_queue_max_attempts`'s doc for the arithmetic
+    /// this and `queue_max_backoff_secs` together produce.
+    pub queue_max_attempts: u8,
+    /// The ceiling the outbox's backoff curve settles at.
+    pub queue_max_backoff_secs: u64,
+    /// How long a claimed outbox item stays invisible to a second claim
+    /// before a crashed worker's hold on it is assumed gone.
+    pub queue_visibility_timeout_secs: u64,
+    /// Dead letters are pruned oldest-first past this row count.
+    pub queue_dlq_max_rows: u32,
 }
 
 impl Default for SupervisorRole {
@@ -639,6 +687,11 @@ impl Default for SupervisorRole {
                 default_supervisor_master_anchor_refresh_interval_secs(),
             renewed_cert_expires_hours: default_supervisor_renewed_cert_expires_hours(),
             max_renewals_per_pass: default_supervisor_max_renewals_per_pass(),
+            queue_tick_secs: default_supervisor_queue_tick_secs(),
+            queue_max_attempts: default_supervisor_queue_max_attempts(),
+            queue_max_backoff_secs: default_supervisor_queue_max_backoff_secs(),
+            queue_visibility_timeout_secs: default_supervisor_queue_visibility_timeout_secs(),
+            queue_dlq_max_rows: default_supervisor_queue_dlq_max_rows(),
         }
     }
 }

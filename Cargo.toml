@@ -60,6 +60,7 @@ syneroym-fdae = { path = "crates/fdae" }
 syneroym-mqtt-broker = { path = "crates/mqtt_broker" }
 syneroym-chunk-transfer = { path = "crates/chunk_transfer" }
 syneroym-app-supervisor = { path = "crates/app_supervisor" }
+syneroym-async-queue = { path = "crates/async_queue" }
 miniapp-demo1-web = { path = "test-components/miniapp-demo1-web" }
 
 # Networking & Async
@@ -94,7 +95,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 metrics = "0.23"
-metrics-util = "0.18"
 sysinfo = "0.30"
 dashmap = "6.1"
 httparse = "1.10"
@@ -166,7 +166,6 @@ zeroize = { version = "1.8", features = ["derive"] }
 tokio-tungstenite = "0.29"
 futures-util = "0.3"
 futures = "0.3"
-chromiumoxide = { version = "0.9" }
 tokio-stream = "0.1"
 tokio-util = "0.7"
 # Embedded MQTT broker for syneroym:messaging (M3B Slice 6A, ADR-0010).

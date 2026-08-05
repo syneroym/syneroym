@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 syneroym-app-orchestration.workspace = true
+syneroym-async-queue.workspace = true
 syneroym-control-plane.workspace = true
 syneroym-core.workspace = true
 syneroym-data-db.workspace = true

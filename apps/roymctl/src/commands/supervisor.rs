@@ -106,6 +106,24 @@ pub enum SupervisorCommands {
         /// `<instance-id>/<service-name>#<index>` (M05A A5e).
         logical_ref: String,
     },
+    /// List this instance's outbox: binding writes still waiting for
+    /// delivery, or currently claimed by the worker (M05B B1 review
+    /// finding 13).
+    Outbox {
+        instance_id: String,
+    },
+    /// List this instance's dead letters: queued binding writes whose
+    /// delivery attempt budget is exhausted (M05B B1).
+    DeadLetters {
+        instance_id: String,
+    },
+    /// Re-enqueue a dead letter -- it is delivered through the ordinary
+    /// worker path, not executed inline. A second failure returns it here
+    /// with its attempt history intact.
+    Replay {
+        instance_id: String,
+        dead_letter_id: u64,
+    },
 }
 
 fn resolve_under(dir: &Path, path: &Path) -> PathBuf {
@@ -376,6 +394,28 @@ pub async fn handle(
                  `reconcile`."
             );
             println!("  Its process is still running -- remove it separately if that is intended.");
+        }
+        SupervisorCommands::Outbox { instance_id } => {
+            let res = client
+                .request("supervisor", "outbox", serde_json::to_value([instance_id.clone()])?)
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&res.result)?);
+        }
+        SupervisorCommands::DeadLetters { instance_id } => {
+            let res = client
+                .request("supervisor", "dead-letters", serde_json::to_value([instance_id.clone()])?)
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&res.result)?);
+        }
+        SupervisorCommands::Replay { instance_id, dead_letter_id } => {
+            client
+                .request(
+                    "supervisor",
+                    "replay",
+                    serde_json::to_value((instance_id.clone(), *dead_letter_id))?,
+                )
+                .await?;
+            println!("Replayed dead letter {dead_letter_id} for '{instance_id}'.");
         }
     }
     Ok(())

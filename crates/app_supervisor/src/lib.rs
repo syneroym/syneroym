@@ -8,10 +8,12 @@
 pub mod anchors;
 pub mod inventory;
 pub mod keys;
+pub mod outbox;
 pub mod service;
 pub mod store;
 
 pub use anchors::{AnchorWriter, RegistryAnchorWriter};
 pub use keys::{MasterVault, MintedMaster, VaultError};
+pub use outbox::{QueueKey, SupervisorOutbox};
 pub use service::SupervisorService;
 pub use store::{DesiredState, SupervisorStore};

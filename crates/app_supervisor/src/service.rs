@@ -25,6 +25,7 @@ use syneroym_app_orchestration::{
         RotationPolicy, ServiceId, SubstrateAlias,
     },
 };
+use syneroym_async_queue::{FailOutcome, QueueItem};
 use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
 use syneroym_identity::{
     Identity,
@@ -37,13 +38,15 @@ use syneroym_rpc::{
 };
 use syneroym_sdk::{
     BindingWrite, BindingWriteOutcome, SyneroymClient,
-    deploy::{self, ApplyRequest, DeployTarget, SubstrateActor},
+    deploy::{
+        self, ApplyRequest, DeployTarget, SubstrateActor, WriteBindingsAttempt, WriteBindingsOutbox,
+    },
     health::{self, ExpectedService, HealthTarget, Signal, StatusQuery},
     mapper::map_deployment_plan_to_wit,
 };
 use syneroym_wit_interfaces::supervisor::exports::syneroym::supervisor::supervisor::{
-    AdoptResult, Alert, BindingConvergence, InstanceStatus, ManagedService, ManagedState,
-    MintedMaster as WitMintedMaster, Submission, SubmitResult,
+    AdoptResult, Alert, BindingConvergence, DeadLetter, InstanceStatus, ManagedService,
+    ManagedState, MintedMaster as WitMintedMaster, OutboxItem, Submission, SubmitResult,
 };
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
@@ -51,7 +54,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     AnchorWriter, MasterVault, MintedMaster,
     inventory::{SupervisorInventory, SupervisorInventoryEntry},
-    keys,
+    keys, outbox,
+    outbox::{QueueKey, SupervisorOutbox},
     store::{RemediationState, SupervisorStore},
 };
 
@@ -147,6 +151,73 @@ enum RenewalFailure {
     },
 }
 
+/// How the queue worker reconnects to a claimed item's target substrate
+/// (M05B B1, D-B1-1). A trait rather than a direct call to
+/// `SupervisorService::connected_client`, so `deliver_queued_item` is
+/// testable against a fake instead of a live substrate -- the same
+/// tradeoff `push_bindings`/`attempt_restart` already made by taking an
+/// already-connected `&Arc<dyn SubstrateActor>` rather than connecting
+/// themselves.
+#[async_trait::async_trait]
+trait QueueConnector: fmt::Debug + Send + Sync {
+    async fn connect(
+        &self,
+        entry: &SupervisorInventoryEntry,
+    ) -> anyhow::Result<Arc<dyn WriteBindingsAttempt>>;
+}
+
+/// The production `QueueConnector`: a fresh `SyneroymClient` per delivery,
+/// closed by `Drop` rather than an explicit `shutdown()` call -- unlike
+/// `connected_client`'s other callers, a queue delivery is one-shot and
+/// short-lived, and `Arc<dyn WriteBindingsAttempt>` has no `shutdown` to
+/// call even if it mattered here.
+#[derive(Debug)]
+struct LiveQueueConnector {
+    client_identity_bytes: [u8; 32],
+}
+
+#[async_trait::async_trait]
+impl QueueConnector for LiveQueueConnector {
+    async fn connect(
+        &self,
+        entry: &SupervisorInventoryEntry,
+    ) -> anyhow::Result<Arc<dyn WriteBindingsAttempt>> {
+        let identity = Identity::from_bytes(&self.client_identity_bytes);
+        let mut client = SyneroymClient::new_with_identity(
+            entry.did.clone(),
+            entry.api_url.clone().unwrap_or_default(),
+            identity,
+        );
+        if let Some(token) = &entry.ucan {
+            client = client.with_ucan(token.clone());
+        }
+        client.wait_for_ready(MANAGED_SUBSTRATE_CONNECT_TIMEOUT).await?;
+        Ok(Arc::new(client))
+    }
+}
+
+/// What one call to [`SupervisorService::push_bindings`] actually did.
+/// Not a bare `Vec<BindingWriteOutcome>`, because that is genuinely
+/// ambiguous: a *real, attempted* write can legitimately carry zero
+/// outcomes when it has zero bindings to send (every `depends_on` a
+/// service declared was just removed from its manifest -- an ordinary
+/// deploy, not an edge case), and an earlier version of this code used
+/// exactly `Vec::new()` as its own sentinel for "not attempted, deferred
+/// to an already-pending queue item" (M05B B1 review, two review passes
+/// deep: the first found the epoch-skew this sentinel was meant to fix; a
+/// second found the sentinel itself was ambiguous with a real, empty
+/// success, permanently downgrading a service that had simply lost its
+/// last dependency).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PushOutcome {
+    /// The write was actually attempted -- successfully or not, and
+    /// possibly with zero outcomes if `svc` had zero bindings to send.
+    Landed(Vec<BindingWriteOutcome>),
+    /// Not attempted this call: an item for this exact key is already
+    /// durably queued, so this call defers to it entirely.
+    Deferred,
+}
+
 pub struct SupervisorService {
     node_did: String,
     store: SupervisorStore,
@@ -190,6 +261,17 @@ pub struct SupervisorService {
     max_renewals_per_pass: u32,
     /// `SupervisorRole.master_anchor_refresh_interval_secs` (default 12h).
     master_anchor_refresh_interval_secs: u64,
+    /// `SupervisorRole.queue_tick_secs` (default 5s, M05B B1) -- the
+    /// durable outbox worker's own `tokio::interval` period, independent of
+    /// `poll_interval_secs` (task.md's recovery budget: within one worker
+    /// tick, not one poll interval).
+    queue_tick_secs: u64,
+    /// How the queue worker reconnects to a claimed item's target
+    /// substrate (M05B B1). `LiveQueueConnector` in production; a test
+    /// substitutes a fake, the same reason `push_bindings`/`attempt_restart`
+    /// take an already-connected `&Arc<dyn SubstrateActor>` rather than
+    /// connecting themselves.
+    queue_connector: Arc<dyn QueueConnector>,
     /// Where master-anchor refreshes and revocations are published.
     /// `None` when this node has no registry configured: an anchor
     /// published nowhere would leave every consumer failing closed on a
@@ -256,6 +338,7 @@ impl SupervisorService {
         max_renewals_per_pass: u32,
         master_anchor_refresh_interval_secs: u64,
         anchor_writer: Option<Arc<dyn AnchorWriter>>,
+        queue_tick_secs: u64,
     ) -> Self {
         // `.take(0)` in `renewal_candidates` silently disables renewal for
         // the whole node, with no warning and no config validation to
@@ -286,6 +369,10 @@ impl SupervisorService {
             max_renewals_per_pass,
             master_anchor_refresh_interval_secs,
             anchor_writer,
+            queue_tick_secs,
+            queue_connector: Arc::new(LiveQueueConnector {
+                client_identity_bytes: client_identity.to_bytes(),
+            }),
             instance_locks: DashMap::new(),
             last_reconciled: DashMap::new(),
             cancellation_token: CancellationToken::new(),
@@ -338,6 +425,346 @@ impl SupervisorService {
         let mut interval = tokio::time::interval(Duration::from_secs(poll_interval_secs.max(1)));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval
+    }
+
+    /// How many items one worker tick claims before yielding back to the
+    /// interval -- generous relative to any one supervisor's realistic
+    /// outage-time backlog, and bounded so one tick cannot starve every
+    /// later one if the backlog is somehow larger.
+    const QUEUE_WORKER_CLAIM_LIMIT: u32 = 100;
+
+    /// The durable outbox worker (M05B B1, D-B1-1): claims items due from
+    /// this supervisor's own queue and replays each `write_bindings`
+    /// against its target substrate. Spawned beside the resident loop
+    /// (`RuntimeServices::run_until_shutdown`), on the same
+    /// `queue_tick_secs` cadence and the same cancellation token -- and,
+    /// like the resident loop, **not** drained on shutdown (D-B1-8): work
+    /// in flight is abandoned, and the visibility timeout returns it to
+    /// `Pending` on the next start.
+    pub async fn run_queue_worker(&self) -> anyhow::Result<()> {
+        let mut interval = Self::build_pass_interval(self.queue_tick_secs);
+        loop {
+            tokio::select! {
+                () = self.cancellation_token.cancelled() => return Ok(()),
+                _ = interval.tick() => self.queue_worker_tick().await,
+            }
+        }
+    }
+
+    async fn queue_worker_tick(&self) {
+        let now = outbox::now_ms();
+        let items = match self.store.queue.claim_due(now, Self::QUEUE_WORKER_CLAIM_LIMIT) {
+            Ok(items) => items,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to claim due items from the outbox this tick");
+                return;
+            }
+        };
+        let max_attempts = self.store.queue.max_attempts();
+        for item in items {
+            // D-B1-8/§0.7: shutdown abandons work in flight rather than
+            // draining it -- checked between every item, not only between
+            // ticks, and raced into the delivery itself below, so
+            // cancelling mid-tick does not wait out the rest of a claim
+            // batch (up to `QUEUE_WORKER_CLAIM_LIMIT` items, each up to
+            // `MANAGED_SUBSTRATE_CONNECT_TIMEOUT`) against exactly the
+            // unreachable substrates this is meant never to wait on (M05B
+            // B1 review finding 5). An item not yet started this tick is
+            // left claimed; its own visibility timeout returns it to
+            // `Pending` on the next start, same as a crashed worker.
+            if self.cancellation_token.is_cancelled() {
+                return;
+            }
+            // M05B B1 review finding 7: an item claimed `max_attempts`
+            // times without ever reaching `fail`/`complete` (a worker
+            // panic or crash on every delivery) would otherwise be handed
+            // out forever -- `attempts` alone cannot bound it, since only
+            // `fail` advances that counter. Dead-letter it through the
+            // ordinary terminal path instead of attempting delivery again.
+            if item.claim_count > u32::from(max_attempts) {
+                self.dead_letter_poison_pill(item).await;
+                continue;
+            }
+            tokio::select! {
+                () = self.cancellation_token.cancelled() => return,
+                () = self.deliver_queued_item(item) => {}
+            }
+        }
+    }
+
+    /// Parses a claimed item's queue key into what every path past this
+    /// point needs, dead-lettering it (terminal) and returning `None` when
+    /// it does not parse -- shared by `deliver_queued_item` and
+    /// [`Self::dead_letter_poison_pill`].
+    fn parse_or_dead_letter(
+        &self,
+        item: &QueueItem,
+        now: i64,
+    ) -> Option<(AppInstanceId, QueueKey)> {
+        let Ok(key) = item.queue_key.parse::<QueueKey>() else {
+            tracing::warn!(
+                queue_key = %item.queue_key,
+                "outbox item carries an unparseable queue key; dead-lettering"
+            );
+            let _ = self.store.queue.fail(item.id, now, "unparseable queue key", true);
+            return None;
+        };
+        let Ok(instance_id) = AppInstanceId::try_new(key.app_instance_id.clone()) else {
+            let _ =
+                self.store.queue.fail(item.id, now, "queue key's app instance id is invalid", true);
+            return None;
+        };
+        Some((instance_id, key))
+    }
+
+    /// An item whose claim count alone exhausted the attempt budget,
+    /// without `fail` ever being called for it (M05B B1 review finding 7)
+    /// -- dead-lettered through the same terminal path and alerting
+    /// `fail_queued_item` already gives every other terminal reason.
+    async fn dead_letter_poison_pill(&self, item: QueueItem) {
+        let now = outbox::now_ms();
+        let Some((instance_id, key)) = self.parse_or_dead_letter(&item, now) else { return };
+        self.fail_queued_item(
+            &instance_id,
+            &key,
+            item.id,
+            now,
+            "delivery attempt budget exhausted without a recorded outcome (repeated crash or \
+             panic during delivery)",
+            true,
+        )
+        .await;
+    }
+
+    /// Replays one claimed item: reconnects to its target substrate,
+    /// attempts the write again, and applies the outcome mapping D-B1-15
+    /// specifies -- `applied`/`no-op`/`stale` complete and clear any
+    /// `BindingConflict` the original transport failure raised; `conflict`
+    /// completes **and** raises that same alert, exactly as the
+    /// synchronous path does; a transport error retries; a callee error
+    /// (the substrate reached and refused -- e.g. its target no longer
+    /// exists, failure-matrix row 9) is terminal.
+    ///
+    /// Takes the same `instance_lock` the resident loop's own pass holds
+    /// (D-B1-14) for the whole delivery -- without it, a queued write and a
+    /// live pass write for the same instance could interleave and race
+    /// this supervisor into a spurious `BindingConflict`, indistinguishable
+    /// from real split-brain.
+    async fn deliver_queued_item(&self, item: QueueItem) {
+        let now = outbox::now_ms();
+        let Some((instance_id, key)) = self.parse_or_dead_letter(&item, now) else { return };
+        let Ok(queued) = serde_json::from_slice::<outbox::QueuedBindingWrite>(&item.payload) else {
+            tracing::warn!(
+                queue_key = %item.queue_key,
+                "outbox item carries an unparseable payload; dead-lettering"
+            );
+            let _ = self.store.queue.fail(item.id, now, "unparseable payload", true);
+            return;
+        };
+
+        let lock = self.instance_lock(&key.app_instance_id);
+        let _guard = lock.lock().await;
+
+        let Ok(Some(state)) = self.store.get(&key.app_instance_id) else {
+            let _ = self.store.queue.fail(item.id, now, "app instance no longer known", true);
+            return;
+        };
+        if state.retired {
+            // The operator retired this instance between enqueue and
+            // delivery. Neither attempting the write (it would resurrect a
+            // binding the operator just released) nor dead-lettering it
+            // with a `DeliveryExhausted` alert (noise against an instance
+            // nobody is going to act on) is right -- the item's own intent
+            // is simply moot now, the same as `applied`/`no-op`/`stale`
+            // (M05B B1 review finding 16).
+            let _ = self.store.queue.complete(item.id);
+            return;
+        }
+        let Ok(inventory) = serde_json::from_str::<SupervisorInventory>(&state.inventory_json)
+        else {
+            let _ =
+                self.store.queue.fail(item.id, now, "stored inventory-json does not parse", true);
+            return;
+        };
+        let Some(entry) = inventory.values().find(|e| e.did == queued.substrate_did) else {
+            let _ = self.store.queue.fail(
+                item.id,
+                now,
+                "target substrate is no longer in this instance's inventory",
+                true,
+            );
+            return;
+        };
+
+        let client = match self.queue_connector.connect(entry).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::debug!(
+                    queue_key = %item.queue_key,
+                    attempt = item.attempts,
+                    error = %e,
+                    "queue worker delivery attempt failed to connect"
+                );
+                // Re-read the clock rather than reusing `now` from function
+                // entry: `connect` can burn up to
+                // `MANAGED_SUBSTRATE_CONNECT_TIMEOUT` (10s), and the early
+                // backoff waits this feeds are sub-second -- a stale `now`
+                // can put `next_attempt_at` in the past, governing the wait
+                // by `queue_tick_secs` instead of the configured curve
+                // (M05B B1 review finding 8).
+                let failed_at = outbox::now_ms();
+                self.fail_queued_item(
+                    &instance_id,
+                    &key,
+                    item.id,
+                    failed_at,
+                    &e.to_string(),
+                    false,
+                )
+                .await;
+                return;
+            }
+        };
+        let outcome = client.attempt_write_bindings(queued.write.clone()).await;
+
+        match outcome {
+            Ok(outcomes) => {
+                let _ = self.store.queue.complete(item.id);
+                let conflict =
+                    outcomes.iter().any(|o| matches!(o, BindingWriteOutcome::Conflict(_)));
+                if conflict {
+                    if let Ok(true) = self.store.alerts.raise(
+                        &instance_id,
+                        Some(&key.logical_ref),
+                        None,
+                        &queued.substrate_did,
+                        AlertKind::BindingConflict,
+                        &format!(
+                            "a queued binding push for '{}' landed as a conflict on replay: \
+                             {outcomes:?}",
+                            key.logical_ref
+                        ),
+                    ) {
+                        self.publish_opened_alerts(
+                            &key.app_instance_id,
+                            &[(AlertKind::BindingConflict, key.logical_ref.clone())],
+                        )
+                        .await;
+                    }
+                } else {
+                    // The original transport failure's own alert (raised
+                    // when this item was first enqueued) is stale now that
+                    // delivery has actually converged.
+                    let _ = self.store.alerts.clear(
+                        &instance_id,
+                        Some(&key.logical_ref),
+                        &queued.substrate_did,
+                        AlertKind::BindingConflict,
+                    );
+                }
+            }
+            Err(err) => {
+                let failed_at = outbox::now_ms();
+                // Only the narrower "the substrate answered that this
+                // write's own target is gone" case is terminal here
+                // (failure-matrix row 9) -- `deploy::is_callee_error`
+                // alone would also dead-letter a transient,
+                // reached-and-answered error (a locked database, a service
+                // still starting) that the wire protocol cannot currently
+                // distinguish from "gone" by error code, only by message
+                // text (M05B B1 review finding 10). Treating every callee
+                // error as terminal on this path -- the only path that can
+                // reach an *already-durable* item, unlike the synchronous
+                // path's "decline to enqueue" -- would prematurely give up
+                // on work that survived a restart specifically to be
+                // retried.
+                let terminal = deploy::is_target_gone_error(&err);
+                self.fail_queued_item(
+                    &instance_id,
+                    &key,
+                    item.id,
+                    failed_at,
+                    &err.to_string(),
+                    terminal,
+                )
+                .await;
+            }
+        }
+    }
+
+    /// Records a failed delivery attempt and, when the item's own budget is
+    /// now exhausted, raises or refreshes the standing `DeliveryExhausted`
+    /// alert with the current dead-letter count for this key (D-B1-6) --
+    /// the DLQ's whole stated purpose fails unless something surfaces it.
+    async fn fail_queued_item(
+        &self,
+        instance_id: &AppInstanceId,
+        key: &QueueKey,
+        item_id: i64,
+        now: i64,
+        error: &str,
+        terminal: bool,
+    ) {
+        let Ok(outcome) = self.store.queue.fail(item_id, now, error, terminal) else { return };
+        let FailOutcome::DeadLettered { pruned_keys } = outcome else { return };
+        let count = self
+            .store
+            .queue
+            .dead_letters()
+            .map(|rows| rows.iter().filter(|d| d.queue_key == key.to_string()).count())
+            .unwrap_or(0);
+        if let Ok(true) = self.store.alerts.raise(
+            instance_id,
+            Some(&key.logical_ref),
+            None,
+            &key.substrate_did,
+            AlertKind::DeliveryExhausted,
+            &format!(
+                "{count} binding write(s) for '{}' exhausted their delivery attempt budget",
+                key.logical_ref
+            ),
+        ) {
+            self.publish_opened_alerts(
+                &key.app_instance_id,
+                &[(AlertKind::DeliveryExhausted, key.logical_ref.clone())],
+            )
+            .await;
+        }
+
+        // The DLQ cap just pruned these other keys' oldest dead letters
+        // (D-B1-9) -- if that was their *last* one, their own standing
+        // alert must clear too, or a prune leaves a permanent red mark
+        // nothing can ever clear (failure-matrix row 4a, M05B B1 review
+        // finding 3). A pruned key's group is always this same instance
+        // (group_key == app_instance_id, `outbox.rs`), but parsed
+        // generically here rather than assumed, since this crate does not
+        // enforce that pairing.
+        for pruned_key in pruned_keys {
+            let Ok(pruned) = pruned_key.parse::<QueueKey>() else { continue };
+            let Ok(pruned_instance) = AppInstanceId::try_new(pruned.app_instance_id.clone()) else {
+                continue;
+            };
+            self.clear_delivery_exhausted_if_empty(&pruned_instance, &pruned);
+        }
+    }
+
+    /// Clears the standing `DeliveryExhausted` alert for `key` once none of
+    /// its dead letters remain -- `replay`'s own clearing path (D-B1-6).
+    fn clear_delivery_exhausted_if_empty(&self, instance_id: &AppInstanceId, key: &QueueKey) {
+        let remaining = self
+            .store
+            .queue
+            .dead_letters()
+            .map(|rows| rows.iter().any(|d| d.queue_key == key.to_string()))
+            .unwrap_or(true);
+        if !remaining {
+            let _ = self.store.alerts.clear(
+                instance_id,
+                Some(&key.logical_ref),
+                &key.substrate_did,
+                AlertKind::DeliveryExhausted,
+            );
+        }
     }
 
     /// Cancels the loop's token -- the spawn site (`RuntimeServices`) is
@@ -852,30 +1279,63 @@ impl SupervisorService {
             // "nothing to push". Raised through the same alert
             // `write_bindings_at_epoch` itself failing would raise, so the
             // operator sees the same row either way.
+            //
+            // M05B B1 review: raising the alert and moving on used to be
+            // the whole story here, which left a substrate this pass could
+            // not even reach with nothing durable behind it -- the DLQ's
+            // try-then-queue only fires *inside* an attempted call
+            // (`DurableActor::write_bindings`), and neither branch below
+            // gets far enough to make one. `enqueue_unreachable_push`
+            // queues the write directly so a substrate that is durably
+            // offline, not merely flaky mid-call, still converges once it
+            // returns.
             let Some(alias) = did_to_alias.get(substrate_did) else {
-                self.raise_binding_push_failure(
+                self.enqueue_unreachable_push(
                     instance_id,
+                    app_instance_id,
+                    plan,
+                    svc,
                     substrate_did,
-                    &svc.member_ref().to_string(),
+                    fresh_state.generation,
                     "this pass has no known substrate alias for the member's landed DID",
                     &mut opened,
-                );
+                )
+                .await;
                 any_push_failed = true;
                 continue;
             };
             let Some(client) = clients.get(&SubstrateAlias::new(alias.clone())) else {
-                self.raise_binding_push_failure(
+                self.enqueue_unreachable_push(
                     instance_id,
+                    app_instance_id,
+                    plan,
+                    svc,
                     substrate_did,
-                    &svc.member_ref().to_string(),
+                    fresh_state.generation,
                     &format!("failed to connect to substrate alias '{alias}' this pass"),
                     &mut opened,
-                );
+                )
+                .await;
                 any_push_failed = true;
                 continue;
             };
-            let actor = client.clone() as Arc<dyn SubstrateActor>;
-            if self
+            let actor = self.durable_actor(
+                client.clone(),
+                app_instance_id,
+                &svc.member_ref().to_string(),
+                substrate_did,
+            );
+            // `Deferred` means the push did not land this pass -- it must
+            // count the same as an error here (M05B B1 review follow-on
+            // 1), or a redeploy landing in the same pass would journal
+            // this member's new baseline as converged while the queue
+            // still holds stale content for it. Distinct from `Landed`
+            // with zero outcomes (every dependency was just removed from
+            // this member's manifest), which is a real, converged
+            // success, not deferred (M05B B1 review follow-up: an earlier
+            // version of this match used an empty `Vec` as the deferred
+            // sentinel, which that case collided with).
+            match self
                 .push_bindings(
                     instance_id,
                     plan,
@@ -886,9 +1346,10 @@ impl SupervisorService {
                     &mut opened,
                 )
                 .await
-                .is_err()
             {
-                any_push_failed = true;
+                Ok(PushOutcome::Deferred) => any_push_failed = true,
+                Ok(PushOutcome::Landed(_)) => {}
+                Err(_) => any_push_failed = true,
             }
         }
         // Review round 2, finding A (same shape, narrower window here):
@@ -919,7 +1380,8 @@ impl SupervisorService {
         for (logical_ref, service_id, substrate_did) in restart_candidates {
             let Some(alias) = did_to_alias.get(substrate_did) else { continue };
             let Some(client) = clients.get(&SubstrateAlias::new(alias.clone())) else { continue };
-            let actor = client.clone() as Arc<dyn SubstrateActor>;
+            let actor =
+                self.durable_actor(client.clone(), app_instance_id, logical_ref, substrate_did);
             self.attempt_restart(
                 instance_id,
                 app_instance_id,
@@ -1867,16 +2329,44 @@ impl SupervisorService {
     }
 
     /// Upcasts a connected client set into the trait-object shape
-    /// `max_held_generation_from_clients` (and, in later phases, the
-    /// remediation/push call sites) takes -- one place doing the upcast
-    /// rather than each call site repeating it.
+    /// `max_held_generation_from_clients` takes. Deliberately the plain,
+    /// undurable constructor (M05B B1): every actor this builds is used for
+    /// exactly one read, `held_generation`, and never for `write_bindings`
+    /// -- durability would add a queue key with nothing meaningful to bind
+    /// it to and no call that could ever use it.
     fn actors_from_clients(
         clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
     ) -> BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>> {
-        clients
-            .iter()
-            .map(|(alias, c)| (alias.clone(), c.clone() as Arc<dyn SubstrateActor>))
-            .collect()
+        clients.iter().map(|(alias, c)| (alias.clone(), deploy::build_actor(c.clone()))).collect()
+    }
+
+    /// The durable constructor every other app-supervisor call site with a
+    /// real client builds through (M05B B1, D-B1-4/D-B1-5): `write_bindings`
+    /// on the returned actor attempts synchronously first and enqueues onto
+    /// this supervisor's own outbox only on a transport failure (D-B1-1).
+    /// Every other action stays exactly as undurable as `build_actor` would
+    /// make it (D-B1-3/D-B1-12) -- that declaration lives inside
+    /// `DurableActor` itself, not in which call sites choose this over
+    /// `build_actor`.
+    fn durable_actor(
+        &self,
+        client: Arc<SyneroymClient>,
+        app_instance_id: &str,
+        logical_ref: &str,
+        substrate_did: &str,
+    ) -> Arc<dyn SubstrateActor> {
+        let queue_key = QueueKey {
+            app_instance_id: app_instance_id.to_string(),
+            logical_ref: logical_ref.to_string(),
+            substrate_did: substrate_did.to_string(),
+        };
+        let outbox = Arc::new(SupervisorOutbox::new(self.store.queue.clone()));
+        deploy::build_durable_actor(
+            client,
+            substrate_did.to_string(),
+            queue_key.to_string(),
+            outbox,
+        )
     }
 
     /// Raises or clears `AlertKind::SupervisorSuperseded` from a
@@ -2026,22 +2516,42 @@ impl SupervisorService {
                 // same as any other push failure, not just returned to
                 // this call's own caller -- the resident loop's next pass
                 // does not re-raise a fresh alert for the same cause until
-                // this one clears.
-                self.raise_binding_push_failure(
+                // this one clears. M05B B1: also queued, the same reason
+                // the resident loop's own analogous branch is
+                // (`enqueue_unreachable_push`'s doc comment) -- a fallback-
+                // placed member with no client this call is exactly as
+                // unreachable as one the resident loop could not connect
+                // to, and needs the same durability.
+                self.enqueue_unreachable_push(
                     &plan.app_instance_id,
+                    &plan.app_instance_id.to_string(),
+                    plan,
+                    svc,
                     substrate_did,
-                    &svc.member_ref().to_string(),
+                    generation,
                     "not connected to its landed substrate this call",
                     &mut opened,
-                );
+                )
+                .await;
                 push_errors.push(format!(
                     "{}: not connected to its landed substrate this call",
                     svc.member_ref()
                 ));
                 continue;
             };
-            let actor = client.clone() as Arc<dyn SubstrateActor>;
-            if let Err(e) = self
+            let actor = self.durable_actor(
+                client.clone(),
+                &plan.app_instance_id.to_string(),
+                &svc.member_ref().to_string(),
+                substrate_did,
+            );
+            // `Deferred` means the push did not land this call -- must
+            // count the same as an error here too (M05B B1 review
+            // follow-on 1), so `submit`/`force-reconcile` reports it and
+            // the downgrade below fires, same as the resident loop's own
+            // call site. `Landed` with zero outcomes (every dependency
+            // just removed) is a real success, not deferred.
+            match self
                 .push_bindings(
                     &plan.app_instance_id,
                     plan,
@@ -2053,7 +2563,14 @@ impl SupervisorService {
                 )
                 .await
             {
-                push_errors.push(format!("{}: {e}", svc.member_ref()));
+                Ok(PushOutcome::Deferred) => {
+                    push_errors.push(format!(
+                        "{}: deferred to an already-pending queued delivery",
+                        svc.member_ref()
+                    ));
+                }
+                Ok(PushOutcome::Landed(_)) => {}
+                Err(e) => push_errors.push(format!("{}: {e}", svc.member_ref())),
             }
         }
         self.publish_opened_alerts(&plan.app_instance_id.to_string(), &opened).await;
@@ -2213,6 +2730,12 @@ impl SupervisorService {
             .journal
             .append(record_plan, DeploymentState::Applying)
             .map_err(|e| e.to_string())?;
+        // Deliberately the plain, undurable constructor (M05B B1): `deploy::
+        // apply_plan` only ever calls `actor.apply_plan(..)` on these
+        // targets, never `write_bindings`, and `apply_plan` is never queued
+        // regardless (D-B1-12) -- there is no per-service logical ref to
+        // bind a queue key to here anyway, since one alias's actor covers
+        // every service placed on it.
         let targets: BTreeMap<SubstrateAlias, DeployTarget> = clients
             .iter()
             .map(|(alias, c)| {
@@ -2221,7 +2744,7 @@ impl SupervisorService {
                     DeployTarget {
                         alias: Some(alias.clone()),
                         substrate_did: c.service_id().to_string(),
-                        actor: c.clone() as Arc<dyn SubstrateActor>,
+                        actor: deploy::build_actor(c.clone()),
                     },
                 )
             })
@@ -2325,9 +2848,47 @@ impl SupervisorService {
         actor: &Arc<dyn SubstrateActor>,
         generation: u64,
         opened: &mut Vec<(AlertKind, String)>,
-    ) -> Result<Vec<BindingWriteOutcome>, String> {
+    ) -> Result<PushOutcome, String> {
         let app_instance_id = plan.app_instance_id.to_string();
         let l_ref = svc.member_ref().to_string();
+
+        // M05B B1 review finding 1: this call advances the binding epoch
+        // unconditionally, before every attempt. `DurableActor::write_
+        // bindings` only enqueues on a transport failure, and its own
+        // dedup guard (`already_pending`) discards a second enqueue for a
+        // key that already has a pending row -- so a *second* transport
+        // failure for the same key (this pass reconnects fine but the
+        // write itself times out, a narrower case than the connect-level
+        // failure `enqueue_unreachable_push` already guards this way)
+        // would advance the local epoch again while the queue still only
+        // holds the first, older-epoch payload. `written_epoch` -- read
+        // back for convergence from the same counter this advances --
+        // would then race ahead of what the worker can ever actually
+        // deliver, and `is_converged` would read the eventual successful
+        // delivery of the *queued* item as still unconverged. Checking
+        // first, and deferring entirely to the queue when a row already
+        // exists, is the same fix `enqueue_unreachable_push` already
+        // applies to its own, more common case.
+        let queue_key = QueueKey {
+            app_instance_id: app_instance_id.clone(),
+            logical_ref: l_ref.clone(),
+            substrate_did: substrate_did.to_string(),
+        };
+        // Deliberately not `SupervisorOutbox::already_pending`, whose
+        // fail-*closed* default (an unreadable queue reads as "already
+        // pending") is right for its own purpose -- a guard against
+        // writing a duplicate row should err toward not writing. Here it
+        // would mean the opposite: an unreadable queue silently skips the
+        // live attempt and returns `Ok`, reporting success for a push that
+        // never happened and was never durably queued either (M05B B1
+        // review follow-on 1). Failing *open* instead is safe specifically
+        // because the queue and every other supervisor table share one
+        // connection (D-B1-5) -- a genuinely broken connection surfaces a
+        // proper `Err` on the very next line's `advance_binding_epoch`
+        // instead of a silent no-op.
+        if self.store.queue.has_pending(&queue_key.to_string()).unwrap_or(false) {
+            return Ok(PushOutcome::Deferred);
+        }
 
         let epoch = self
             .store
@@ -2393,7 +2954,7 @@ impl SupervisorService {
                 AlertKind::BindingConflict,
             );
         }
-        Ok(outcomes)
+        Ok(PushOutcome::Landed(outcomes))
     }
 
     /// The alert half of matrix row 11: a push that fails to reach the
@@ -2425,14 +2986,17 @@ impl SupervisorService {
     /// alone, at `epoch`, and sends it -- the standalone half of
     /// `push_bindings`, split out so a retry at a different epoch is a
     /// second call to this, not a copy of the mapping logic.
-    async fn write_bindings_at_epoch(
-        &self,
+    /// The `binding-write` a real deploy would emit for `svc` alone, at
+    /// `epoch` -- pure, no actor, no store. Shared by `write_bindings_at_
+    /// epoch` (which sends it through a live actor) and
+    /// `enqueue_unreachable_push` (which has no actor to send it through
+    /// at all and must still capture *what* would have been sent).
+    fn build_binding_write(
         plan: &DeploymentPlan,
         svc: &PlannedService,
-        actor: &Arc<dyn SubstrateActor>,
         generation: u64,
         epoch: u64,
-    ) -> Result<Vec<BindingWriteOutcome>, String> {
+    ) -> Result<BindingWrite, String> {
         let binding_epochs = BTreeMap::from([(svc.member_ref(), epoch)]);
         let wit_plan = map_deployment_plan_to_wit(
             plan,
@@ -2451,14 +3015,102 @@ impl SupervisorService {
             .and_then(|s| s.app_context)
             .map(|ctx| ctx.bindings)
             .unwrap_or_default();
-        actor
-            .write_bindings(BindingWrite {
-                service_id: svc.service_id.to_string(),
-                app_instance_id: plan.app_instance_id.to_string(),
-                bindings,
-                generation,
-            })
-            .await
+        Ok(BindingWrite {
+            service_id: svc.service_id.to_string(),
+            app_instance_id: plan.app_instance_id.to_string(),
+            bindings,
+            generation,
+        })
+    }
+
+    async fn write_bindings_at_epoch(
+        &self,
+        plan: &DeploymentPlan,
+        svc: &PlannedService,
+        actor: &Arc<dyn SubstrateActor>,
+        generation: u64,
+        epoch: u64,
+    ) -> Result<Vec<BindingWriteOutcome>, String> {
+        let write = Self::build_binding_write(plan, svc, generation, epoch)?;
+        actor.write_bindings(write).await
+    }
+
+    /// The durable half of a push candidate this pass could not even reach
+    /// an actor for -- no known alias for its landed DID, or a connect
+    /// that timed out before a client existed to wrap in a `DurableActor`
+    /// at all. `DurableActor::write_bindings` is what normally enqueues on
+    /// a transport failure (D-B1-1), but that only fires *inside* an
+    /// attempted call; a substrate this pass never managed to dial has no
+    /// call to attempt. Left at "raise an alert and move on" (the shape
+    /// this had before), a substrate that is durably offline -- the exact
+    /// case ADR-0023's reference scenario is built around -- would never
+    /// be queued at all, only ever reported.
+    ///
+    /// Advances the binding epoch itself, the same as `push_bindings`
+    /// does before a live attempt: the queued payload must carry a real
+    /// epoch for the epoch guard to mean anything once a worker delivers
+    /// it, and skipping the advance here would leave every queued item
+    /// from this pass sharing the stale epoch a *reachable* pass last
+    /// used.
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_unreachable_push(
+        &self,
+        instance_id: &AppInstanceId,
+        app_instance_id: &str,
+        plan: &DeploymentPlan,
+        svc: &PlannedService,
+        substrate_did: &str,
+        generation: u64,
+        reason: &str,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) {
+        let l_ref = svc.member_ref().to_string();
+        self.raise_binding_push_failure(instance_id, substrate_did, &l_ref, reason, opened);
+        let queue_key = QueueKey {
+            app_instance_id: app_instance_id.to_string(),
+            logical_ref: l_ref.clone(),
+            substrate_did: substrate_did.to_string(),
+        };
+        let outbox = SupervisorOutbox::new(self.store.queue.clone());
+        // A5e's own retry (falling `compute_diff` back to the previous
+        // baseline on Degraded) reclassifies this member as a push
+        // candidate every pass until its push lands, so this branch runs
+        // repeatedly while the substrate stays offline. A pending row
+        // already covers the intent; advancing the epoch again for a
+        // write that will not even be queued would strand the local
+        // counter ahead of whatever the eventually-delivered, earlier-
+        // epoch write actually lands -- `is_converged` would then never
+        // agree, even after delivery succeeds.
+        if outbox.already_pending(&queue_key.to_string()) {
+            return;
+        }
+        let epoch = match self.store.advance_binding_epoch(app_instance_id, &l_ref) {
+            Ok(epoch) => epoch,
+            Err(e) => {
+                tracing::warn!(
+                    app_instance_id,
+                    l_ref,
+                    error = %e,
+                    "failed to advance the binding epoch for an unreachable push; not queued \
+                     this pass"
+                );
+                return;
+            }
+        };
+        let write = match Self::build_binding_write(plan, svc, generation, epoch) {
+            Ok(write) => write,
+            Err(e) => {
+                tracing::warn!(
+                    app_instance_id,
+                    l_ref,
+                    error = %e,
+                    "failed to build the binding write for an unreachable push; not queued this \
+                     pass"
+                );
+                return;
+            }
+        };
+        outbox.enqueue(&queue_key.to_string(), substrate_did, &write).await;
     }
 
     async fn handle_submit(
@@ -3598,6 +4250,114 @@ impl SupervisorService {
             .collect();
         Ok(NativeResponse { payload: serde_json::to_value(alerts).unwrap_or(Value::Null) })
     }
+
+    /// Every item belonging to this instance still in the outbox -- pending
+    /// or claimed, not yet dead-lettered (M05B B1 review finding 13):
+    /// `roymctl supervisor outbox`'s own listing, and what the reference
+    /// scenario's own steps 4/5/7 need to assert the item is actually
+    /// queued rather than only inferring it from alerts or `is_converged`.
+    async fn handle_outbox(
+        &self,
+        caller: &CallerContext,
+        params: Value,
+    ) -> RpcResult<NativeResponse> {
+        self.require_admin(caller)?;
+        let (app_instance_id,): (String,) = serde_json::from_value(params)
+            .map_err(|e| RpcError::InvalidParams(format!("failed to parse outbox params: {e}")))?;
+
+        let rows = self.store.queue.all().map_err(|e| RpcError::InternalError(e.to_string()))?;
+        let items: Vec<OutboxItem> = rows
+            .into_iter()
+            .filter_map(|item| {
+                let key: QueueKey = item.queue_key.parse().ok()?;
+                (key.app_instance_id == app_instance_id).then_some(OutboxItem {
+                    id: item.id as u64,
+                    logical_ref: key.logical_ref,
+                    substrate_did: key.substrate_did,
+                    attempts: item.attempts,
+                })
+            })
+            .collect();
+        Ok(NativeResponse { payload: serde_json::to_value(items).unwrap_or(Value::Null) })
+    }
+
+    /// Every dead letter belonging to this instance, oldest first (M05B B1,
+    /// D-B1-6) -- `roymctl supervisor dead-letters`'s own listing.
+    async fn handle_dead_letters(
+        &self,
+        caller: &CallerContext,
+        params: Value,
+    ) -> RpcResult<NativeResponse> {
+        self.require_admin(caller)?;
+        let (app_instance_id,): (String,) = serde_json::from_value(params).map_err(|e| {
+            RpcError::InvalidParams(format!("failed to parse dead-letters params: {e}"))
+        })?;
+
+        let rows =
+            self.store.queue.dead_letters().map_err(|e| RpcError::InternalError(e.to_string()))?;
+        let dead_letters: Vec<DeadLetter> = rows
+            .into_iter()
+            .filter_map(|d| {
+                let key: QueueKey = d.queue_key.parse().ok()?;
+                (key.app_instance_id == app_instance_id).then_some(DeadLetter {
+                    id: d.id as u64,
+                    logical_ref: key.logical_ref,
+                    substrate_did: key.substrate_did,
+                    attempts: d.attempts,
+                    last_error: d.last_error,
+                    created_at: d.created_at,
+                })
+            })
+            .collect();
+        Ok(NativeResponse { payload: serde_json::to_value(dead_letters).unwrap_or(Value::Null) })
+    }
+
+    /// Re-enqueues a dead letter -- it never executes inline (D-B1-7).
+    /// Refuses a dead letter belonging to a different app instance, rather
+    /// than silently replaying it: the caller named one instance, and a
+    /// wrong id must not act on someone else's queued work.
+    async fn handle_replay(
+        &self,
+        caller: &CallerContext,
+        params: Value,
+    ) -> RpcResult<NativeResponse> {
+        self.require_admin(caller)?;
+        let (app_instance_id, dead_letter_id): (String, u64) = serde_json::from_value(params)
+            .map_err(|e| RpcError::InvalidParams(format!("failed to parse replay params: {e}")))?;
+        let instance_id = AppInstanceId::try_new(app_instance_id.clone())
+            .map_err(|e| RpcError::InternalError(e.to_string()))?;
+
+        let rows =
+            self.store.queue.dead_letters().map_err(|e| RpcError::InternalError(e.to_string()))?;
+        // Both branches below are the caller naming a dead letter that is
+        // not theirs to replay -- an unknown id and one that belongs to a
+        // different instance are the same class of mistake as a malformed
+        // parameter, not a server problem, so both answer `InvalidParams`
+        // (M05B B1 review finding 12). Neither names which other instance
+        // (if any) actually owns the id: that would confirm to a caller
+        // that an id exists under someone else's instance, which an
+        // instance-scoped admin grant should not leak.
+        let Some(row) = rows.iter().find(|d| d.id as u64 == dead_letter_id) else {
+            return Err(RpcError::InvalidParams(format!(
+                "no dead letter with id {dead_letter_id} for app instance '{app_instance_id}'"
+            )));
+        };
+        let key: QueueKey = row.queue_key.parse().map_err(|e| {
+            RpcError::InternalError(format!("dead letter carries an unparseable queue key: {e}"))
+        })?;
+        if key.app_instance_id != app_instance_id {
+            return Err(RpcError::InvalidParams(format!(
+                "no dead letter with id {dead_letter_id} for app instance '{app_instance_id}'"
+            )));
+        }
+
+        self.store
+            .queue
+            .replay(dead_letter_id as i64, outbox::now_ms())
+            .map_err(|e| RpcError::InternalError(e.to_string()))?;
+        self.clear_delivery_exhausted_if_empty(&instance_id, &key);
+        Ok(NativeResponse { payload: serde_json::json!({"status": "replayed"}) })
+    }
 }
 
 /// A `StatusQuery` that always fails, for a substrate this supervisor
@@ -3647,6 +4407,9 @@ impl NativeService for SupervisorService {
             }
             "status" => self.handle_status(&invocation.caller, invocation.params).await,
             "alerts" => self.handle_alerts(&invocation.caller, invocation.params).await,
+            "outbox" => self.handle_outbox(&invocation.caller, invocation.params).await,
+            "dead-letters" => self.handle_dead_letters(&invocation.caller, invocation.params).await,
+            "replay" => self.handle_replay(&invocation.caller, invocation.params).await,
             method => Err(RpcError::MethodNotFound(method.to_string())),
         }
     }
@@ -3655,8 +4418,11 @@ impl NativeService for SupervisorService {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::{BTreeMap, VecDeque},
+        future,
         path::{Path, PathBuf},
         sync::Mutex,
+        time::Instant,
     };
 
     use syneroym_app_orchestration::{
@@ -3666,6 +4432,8 @@ mod tests {
             TopologyMode,
         },
     };
+    use syneroym_async_queue::{Queue, QueueConfig};
+    use syneroym_core::config::SupervisorRole;
     use syneroym_identity::{DelegationCertificate, substrate};
     use syneroym_rpc::AuthLevel;
 
@@ -3706,6 +4474,13 @@ mod tests {
         /// operator-carried file), which the default cannot do -- so the
         /// test owns and passes one in, held for the whole test (§0.5).
         backup_dir: Option<PathBuf>,
+        /// `None` leaves the default (5s). Tests driving the queue worker
+        /// against a fake clock set this explicitly (M05B B1).
+        queue_tick_secs: Option<u64>,
+        /// `None` leaves the default (30s). Tests proving recovery happens
+        /// within one worker tick rather than one poll interval set this
+        /// explicitly, far above the tick (M05B B1).
+        poll_interval_secs: Option<u64>,
     }
 
     impl Fixture {
@@ -3775,13 +4550,14 @@ mod tests {
                 &identity,
                 test_broker(),
                 "supervisor/alerts".to_string(),
-                30,
+                self.poll_interval_secs.unwrap_or(30),
                 3,
                 30,
                 4,
                 self.max_renewals_per_pass.unwrap_or(5),
                 self.master_anchor_refresh_interval_secs.unwrap_or(12 * 3600),
                 self.anchor_writer,
+                self.queue_tick_secs.unwrap_or(5),
             );
             service._fixture_tempdir = Some(dir);
             (service, key_store)
@@ -3859,6 +4635,11 @@ mod tests {
             ("import-master", serde_json::json!(["m"])),
             ("status", serde_json::json!(["i"])),
             ("alerts", serde_json::json!(["i", false])),
+            // M05B B1, D-B1-6/D-B1-7, test 32: no new resource namespace --
+            // gated exactly like the neighbouring verbs above.
+            ("outbox", serde_json::json!(["i"])),
+            ("dead-letters", serde_json::json!(["i"])),
+            ("replay", serde_json::json!(["i", 1])),
         ] {
             let err = dispatch(&s, unauthenticated_caller(), method, params).await.unwrap_err();
             assert_eq!(err.code(), PERMISSION_DENIED_CODE, "{method} must deny without admin");
@@ -5976,7 +6757,7 @@ mod tests {
         // The membership change: the moment a `submit`'s own diff would
         // see it, before the classifier has decided anything. The clock
         // stops when the write this decision routes to returns.
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let landed = s.store.journal.get_completed_actions_for_instance(&instance_id).unwrap();
         let diff = Reconciler::new(&s.store.journal).compute_diff(&plan).unwrap();
         let (_, push_candidates) =
@@ -5989,7 +6770,7 @@ mod tests {
             .unwrap();
         let elapsed = start.elapsed();
 
-        assert_eq!(outcomes, vec![BindingWriteOutcome::Applied]);
+        assert_eq!(outcomes, PushOutcome::Landed(vec![BindingWriteOutcome::Applied]));
         assert!(
             elapsed < Duration::from_secs(1),
             "the measured interval must cover the routing decision and the write's own latency, \
@@ -6016,10 +6797,49 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(outcomes, vec![BindingWriteOutcome::Applied]);
+        assert_eq!(outcomes, PushOutcome::Landed(vec![BindingWriteOutcome::Applied]));
         assert_eq!(actor.calls.lock().unwrap().len(), 1);
         assert_eq!(s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(), 1);
         assert!(opened.is_empty());
+    }
+
+    /// M05B B1 review follow-up (2026-08-05): a write with zero bindings
+    /// is a real, converged success -- not the same value `push_bindings`
+    /// used to signal "deferred to an already-pending queue item" before
+    /// `PushOutcome` existed. Reachable in the ordinary course of a
+    /// deploy: removing a service's last `depends_on` leaves
+    /// `resolved_dependencies` empty, `only_resolved_dependencies_changed`
+    /// still classifies the member as a push candidate purely because the
+    /// field *changed*, and the write this produces legitimately carries
+    /// zero bindings -- `orchestration.rs`'s `write_bindings_impl` builds
+    /// one outcome per binding sent, so the substrate legitimately answers
+    /// with zero too. Before `PushOutcome`, this collapsed onto the same
+    /// `Vec::new()` the deferred-to-queue sentinel used, permanently
+    /// downgrading the member every pass.
+    #[tokio::test]
+    async fn a_push_with_zero_bindings_lands_rather_than_reading_as_deferred() {
+        let s = service();
+        let svc = PlannedService {
+            resolved_dependencies: BTreeMap::new(),
+            ..dependent_service("frontend", "backend")
+        };
+        let plan = plan_with_one_dependent(svc.clone());
+        let actor = Arc::new(BindingActor::default());
+        actor.responses.lock().unwrap().push(Ok(Vec::new()));
+        let dyn_actor: Arc<dyn SubstrateActor> = actor.clone();
+        let instance_id = AppInstanceId::new("inst-1");
+        let mut opened = Vec::new();
+
+        let outcome = s
+            .push_bindings(&instance_id, &plan, &svc, "did:key:zEdge1", &dyn_actor, 0, &mut opened)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            PushOutcome::Landed(Vec::new()),
+            "zero bindings is a real, converged success, not a deferral"
+        );
     }
 
     /// D-A5e-4: `map_deployment_plan_to_wit` reads a binding's `mode` off
@@ -6820,11 +7640,132 @@ mod tests {
         let second = s
             .push_bindings(&instance_id, &plan, &svc, "did:key:zEdge1", &dyn_actor, 0, &mut opened)
             .await;
-        assert_eq!(second.unwrap(), vec![BindingWriteOutcome::Applied]);
+        assert_eq!(second.unwrap(), PushOutcome::Landed(vec![BindingWriteOutcome::Applied]));
         assert_eq!(
             s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(),
             2,
             "the retry must carry a fresh epoch, not reuse the one the failed attempt spent"
+        );
+    }
+
+    /// M05B B1 review finding 1: `push_bindings` advances the binding
+    /// epoch before every attempt, but a *durable* actor only enqueues
+    /// once per key (`already_pending`) -- so a second transport failure
+    /// for the same key while the first attempt's item is still queued
+    /// must not advance the epoch again, or `written_epoch` races ahead of
+    /// what the worker can ever actually deliver and a later successful
+    /// delivery of the (older, still-queued) item would read as
+    /// unconverged forever. Uses `deploy::build_durable_actor` directly
+    /// (not `BindingActor`, which is never durable) so this exercises the
+    /// same enqueue path `DurableActor::write_bindings` takes in
+    /// production.
+    #[tokio::test]
+    async fn two_consecutive_transport_failures_for_one_key_do_not_strand_the_written_epoch() {
+        let s = service();
+        let svc = dependent_service("frontend", "backend");
+        let plan = plan_with_one_dependent(svc.clone());
+        let instance_id = AppInstanceId::new("inst-1");
+        let mut opened = Vec::new();
+        let outbox: Arc<dyn WriteBindingsOutbox> =
+            Arc::new(SupervisorOutbox::new(s.store.queue.clone()));
+        let queue_key = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/frontend#0".to_string(),
+            substrate_did: "did:key:zEdge1".to_string(),
+        }
+        .to_string();
+
+        let first_client = Arc::new(FakeSubstrateClient::default());
+        *first_client.write_bindings_outcome.lock().unwrap() =
+            Some(Err("connection reset mid-write".to_string()));
+        let first_actor = deploy::build_durable_actor(
+            first_client,
+            "did:key:zEdge1".to_string(),
+            queue_key.clone(),
+            outbox.clone(),
+        );
+        let first = s
+            .push_bindings(
+                &instance_id,
+                &plan,
+                &svc,
+                "did:key:zEdge1",
+                &first_actor,
+                0,
+                &mut opened,
+            )
+            .await;
+        assert!(first.is_err());
+        assert_eq!(s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(), 1);
+        let queued = s.store.queue.all().unwrap();
+        assert_eq!(queued.len(), 1, "the first failure must have enqueued exactly one item");
+
+        // A second pass: reconnects fine (a fresh `DurableActor`), but the
+        // write itself fails again for the same key -- while the first
+        // failure's item is still sitting in the outbox.
+        let second_client = Arc::new(FakeSubstrateClient::default());
+        *second_client.write_bindings_outcome.lock().unwrap() =
+            Some(Err("connection reset mid-write".to_string()));
+        let second_actor = deploy::build_durable_actor(
+            second_client,
+            "did:key:zEdge1".to_string(),
+            queue_key,
+            outbox,
+        );
+        let second = s
+            .push_bindings(
+                &instance_id,
+                &plan,
+                &svc,
+                "did:key:zEdge1",
+                &second_actor,
+                0,
+                &mut opened,
+            )
+            .await;
+        assert_eq!(
+            second.unwrap(),
+            PushOutcome::Deferred,
+            "an already-pending key defers to the queue, it is not an error"
+        );
+
+        assert_eq!(
+            s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(),
+            1,
+            "the epoch must not advance again while the first attempt's item is still queued"
+        );
+        let queued = s.store.queue.all().unwrap();
+        assert_eq!(queued.len(), 1, "the second pass must not have enqueued a duplicate");
+        let payload: outbox::QueuedBindingWrite =
+            serde_json::from_slice(&queued[0].payload).unwrap();
+        assert_eq!(
+            payload.write.generation, 0,
+            "the queued payload is still the first attempt's, carrying epoch 1"
+        );
+
+        // Once the worker eventually delivers the queued (epoch-1) item,
+        // it must read as converged, matching what is actually in the
+        // outbox -- not stranded behind a local epoch nothing will ever
+        // deliver.
+        let report = health::HealthReport {
+            substrates: Vec::new(),
+            services: vec![health::ServiceHealth {
+                logical_ref: svc.logical_ref.clone(),
+                service_id: svc.service_id.to_string(),
+                alias: svc.substrate.clone(),
+                substrate_did: "did:key:zEdge1".to_string(),
+                signal: Signal::Healthy,
+                instance_certificate_issued_at: None,
+                instance_certificate_expires_at: None,
+                binding_epochs: vec![("backend".to_string(), 1)],
+                member_index: svc.member_index,
+            }],
+        };
+        let rows = s.binding_convergence_rows("inst-1", &plan, &report);
+        assert!(
+            rows[0].converged,
+            "the epoch the worker will eventually deliver (1) must still be the one convergence \
+             checks against: {rows:?}"
         );
     }
 
@@ -7025,7 +7966,7 @@ mod tests {
     }
 
     fn edge_1_actor(actor: Arc<RenewalActor>) -> BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>> {
-        BTreeMap::from([(SubstrateAlias::new("edge-1"), actor as Arc<dyn SubstrateActor>)])
+        BTreeMap::from([(SubstrateAlias::new("edge-1"), deploy::build_actor(actor))])
     }
 
     fn edge_1_alias() -> BTreeMap<String, String> {
@@ -8848,5 +9789,1010 @@ mod tests {
         assert!(!row.retired, "adopt must un-retire the instance");
         let did = adopt_field(&res, "app_master_did").and_then(Value::as_str).unwrap();
         assert_eq!(row.app_master_did, did);
+    }
+
+    // ── M05B B1: the durable outbox worker ──────────────────────────────
+
+    /// A fake standing in for a connected substrate on the queue worker's
+    /// replay path: one scripted delivery per DID, consumed in FIFO order.
+    /// `ConnectFails` simulates the substrate still being unreachable;
+    /// `Attempt` simulates a reconnect that succeeds, with `write_bindings`
+    /// itself returning whatever the test scripts.
+    #[derive(Debug, Default)]
+    struct FakeQueueConnector {
+        scripted: Mutex<BTreeMap<String, VecDeque<FakeDelivery>>>,
+    }
+
+    #[derive(Debug)]
+    enum FakeDelivery {
+        /// The reconnect itself fails -- a transport failure.
+        ConnectFails,
+        /// Reconnected; `write_bindings` returns this outcome.
+        Attempt(Result<Vec<BindingWriteOutcome>, String>),
+        /// Reconnected, and the substrate answered with a `JsonRpcError` --
+        /// the callee-error shape `deploy::is_callee_error` classifies as
+        /// terminal, distinct from a plain transport failure (which
+        /// `Attempt(Err(_))` alone cannot express: an ordinary string error
+        /// is not downcastable to `JsonRpcError`, so it would be classified
+        /// as transport, same as `ConnectFails`).
+        CalleeError(String),
+        /// The reconnect never resolves -- stands in for a substrate that
+        /// never answers, so a test can prove something is genuinely
+        /// in-flight when shutdown is asked for (M05B B1 review finding 5).
+        /// Distinct from an absent scripted entry (`None` below), which
+        /// returns an error immediately and proves nothing about
+        /// abandoning in-flight work.
+        Blocks,
+    }
+
+    impl FakeQueueConnector {
+        fn script(&self, did: &str, delivery: FakeDelivery) {
+            self.scripted.lock().unwrap().entry(did.to_string()).or_default().push_back(delivery);
+        }
+    }
+
+    #[derive(Debug)]
+    struct ScriptedAttempt {
+        result: Mutex<Option<anyhow::Result<Vec<BindingWriteOutcome>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl WriteBindingsAttempt for ScriptedAttempt {
+        async fn attempt_write_bindings(
+            &self,
+            _write: BindingWrite,
+        ) -> anyhow::Result<Vec<BindingWriteOutcome>> {
+            self.result.lock().unwrap().take().expect("scripted result already consumed")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl QueueConnector for FakeQueueConnector {
+        async fn connect(
+            &self,
+            entry: &SupervisorInventoryEntry,
+        ) -> anyhow::Result<Arc<dyn WriteBindingsAttempt>> {
+            let next =
+                self.scripted.lock().unwrap().get_mut(&entry.did).and_then(VecDeque::pop_front);
+            let result: anyhow::Result<Vec<BindingWriteOutcome>> = match next {
+                Some(FakeDelivery::ConnectFails) => {
+                    return Err(anyhow::anyhow!("simulated connect failure"));
+                }
+                Some(FakeDelivery::Attempt(Ok(outcomes))) => Ok(outcomes),
+                Some(FakeDelivery::Attempt(Err(msg))) => Err(anyhow::anyhow!(msg)),
+                Some(FakeDelivery::CalleeError(msg)) => {
+                    Err(syneroym_rpc::JsonRpcError { code: -32010, message: msg, data: None }
+                        .into())
+                }
+                Some(FakeDelivery::Blocks) => future::pending().await,
+                None => return Err(anyhow::anyhow!("no scripted delivery for {}", entry.did)),
+            };
+            Ok(Arc::new(ScriptedAttempt { result: Mutex::new(Some(result)) }))
+        }
+    }
+
+    /// Every real fake in this crate implements the full `SubstrateActor`
+    /// trait, not just `WriteBindingsAttempt` -- `deploy::build_durable_actor`
+    /// requires both, since a durable actor still answers every other
+    /// action synchronously (D-B1-3).
+    #[derive(Debug, Default)]
+    struct FakeSubstrateClient {
+        write_bindings_outcome: Mutex<Option<Result<Vec<BindingWriteOutcome>, String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl WriteBindingsAttempt for FakeSubstrateClient {
+        async fn attempt_write_bindings(
+            &self,
+            _write: BindingWrite,
+        ) -> anyhow::Result<Vec<BindingWriteOutcome>> {
+            match self
+                .write_bindings_outcome
+                .lock()
+                .unwrap()
+                .take()
+                .expect("outcome not set for test")
+            {
+                Ok(outcomes) => Ok(outcomes),
+                Err(msg) => Err(anyhow::anyhow!(msg)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SubstrateActor for FakeSubstrateClient {
+        async fn apply_plan(&self, _plan: syneroym_sdk::DeploymentPlan) -> Result<(), String> {
+            unimplemented!("not exercised by the queue worker tests")
+        }
+
+        async fn write_bindings(
+            &self,
+            _write: BindingWrite,
+        ) -> Result<Vec<BindingWriteOutcome>, String> {
+            unimplemented!("DurableActor never calls the inner T::write_bindings directly")
+        }
+
+        async fn restart(&self, _service_id: String, _generation: u64) -> Result<(), String> {
+            unimplemented!("not exercised by the queue worker tests")
+        }
+
+        async fn renew_cert(
+            &self,
+            _service_id: String,
+            _generation: u64,
+            _instance_certificate: String,
+        ) -> Result<(), String> {
+            unimplemented!("not exercised by the queue worker tests")
+        }
+
+        async fn instance_identity(
+            &self,
+            _service_id: &str,
+        ) -> Result<syneroym_sdk::InstanceIdentity, String> {
+            unimplemented!("not exercised by the queue worker tests")
+        }
+
+        async fn held_generation(&self, _app_instance_id: &str) -> Result<Option<u64>, String> {
+            unimplemented!("not exercised by the queue worker tests")
+        }
+    }
+
+    fn test_binding_write(service_id: &str, app_instance_id: &str) -> BindingWrite {
+        BindingWrite {
+            service_id: service_id.to_string(),
+            app_instance_id: app_instance_id.to_string(),
+            bindings: vec![],
+            generation: 0,
+        }
+    }
+
+    /// Submits minimal desired state whose inventory names one substrate
+    /// alias/DID pair -- enough for `deliver_queued_item` to resolve a
+    /// queued item's target, without a real plan or a real deploy.
+    fn seed_inventory(store: &SupervisorStore, app_instance_id: &str, substrate_did: &str) {
+        let inventory_json =
+            serde_json::json!({"edge-1": {"did": substrate_did, "api_url": "http://127.0.0.1:1"}})
+                .to_string();
+        store
+            .submit(
+                app_instance_id,
+                &plan_json_no_services(app_instance_id),
+                &inventory_json,
+                "did:key:owner",
+                0,
+            )
+            .unwrap();
+    }
+
+    fn enqueue_test_item(
+        store: &SupervisorStore,
+        app_instance_id: &str,
+        logical_ref: &str,
+        substrate_did: &str,
+        write: BindingWrite,
+    ) -> i64 {
+        let key = QueueKey {
+            app_instance_id: app_instance_id.to_string(),
+            logical_ref: logical_ref.to_string(),
+            substrate_did: substrate_did.to_string(),
+        };
+        let payload =
+            outbox::QueuedBindingWrite { substrate_did: substrate_did.to_string(), write };
+        store
+            .queue
+            .enqueue(
+                app_instance_id,
+                &key.to_string(),
+                &serde_json::to_vec(&payload).unwrap(),
+                outbox::now_ms(),
+            )
+            .unwrap()
+    }
+
+    /// Test 13: the load-bearing budget. A reachable substrate's
+    /// `write_bindings` call must never touch the real, wired-up
+    /// supervisor outbox -- asserted as "the queue is untouched", not as a
+    /// timing, so it cannot pass by being fast.
+    #[tokio::test]
+    async fn a_reachable_substrate_never_touches_the_queue() {
+        let s = service();
+        let fake = Arc::new(FakeSubstrateClient {
+            write_bindings_outcome: Mutex::new(Some(Ok(vec![BindingWriteOutcome::Applied]))),
+        });
+        let outbox = Arc::new(SupervisorOutbox::new(s.store.queue.clone()));
+        let key = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/backend".to_string(),
+            substrate_did: "did:key:zB".to_string(),
+        };
+        let actor =
+            deploy::build_durable_actor(fake, "did:key:zB".to_string(), key.to_string(), outbox);
+
+        let outcomes =
+            actor.write_bindings(test_binding_write("did:key:zSvc", "inst-1")).await.unwrap();
+        assert_eq!(outcomes, vec![BindingWriteOutcome::Applied]);
+        assert!(s.store.queue.all().unwrap().is_empty());
+        assert!(s.store.queue.dead_letters().unwrap().is_empty());
+    }
+
+    /// Test 19: failure-matrix row 2. The worker's replay of an
+    /// already-applied write must be a no-op from the substrate's own
+    /// epoch guard's perspective -- scripted here as the fake simply
+    /// reporting `NoOp` on delivery, which the worker must complete
+    /// exactly like `Applied`.
+    #[tokio::test]
+    async fn applying_a_queued_write_bindings_twice_is_a_no_op() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector.script("did:key:zB", FakeDelivery::Attempt(Ok(vec![BindingWriteOutcome::NoOp])));
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        let id = enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        s.queue_worker_tick().await;
+
+        assert!(
+            s.store.queue.all().unwrap().is_empty(),
+            "the item {id} must be gone from the outbox"
+        );
+        assert!(s.store.queue.dead_letters().unwrap().is_empty());
+    }
+
+    /// Test 20: D-B1-15. A `stale` delivery means a newer epoch already
+    /// landed -- convergence, not loss -- so it must complete and must not
+    /// dead-letter.
+    #[tokio::test]
+    async fn a_queued_write_delivered_stale_completes_and_does_not_dead_letter() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector
+            .script("did:key:zB", FakeDelivery::Attempt(Ok(vec![BindingWriteOutcome::Stale(7)])));
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        s.queue_worker_tick().await;
+
+        assert!(s.store.queue.all().unwrap().is_empty());
+        assert!(
+            s.store.queue.dead_letters().unwrap().is_empty(),
+            "a stale delivery is convergence, not a failure"
+        );
+    }
+
+    /// M05B B1 review follow-on 4: a queued item whose instance was
+    /// retired between enqueue and delivery must be quietly completed --
+    /// no delivery attempt (it would resurrect a binding the operator just
+    /// released) and no `DeliveryExhausted` alert (noise against an
+    /// instance nobody is going to act on). Unscripted `FakeQueueConnector`
+    /// is deliberate: reaching `connect` at all would fail the test with
+    /// "no scripted delivery", so this also proves the retired branch
+    /// returns before ever attempting one.
+    #[tokio::test]
+    async fn a_queued_item_for_a_retired_instance_completes_quietly() {
+        let mut s = service();
+        s.queue_connector = Arc::new(FakeQueueConnector::default());
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+        s.store.retire("inst-1").unwrap();
+
+        s.queue_worker_tick().await;
+
+        assert!(s.store.queue.all().unwrap().is_empty(), "the item must be gone from the outbox");
+        assert!(
+            s.store.queue.dead_letters().unwrap().is_empty(),
+            "a retired instance's stale intent is moot, not a failure"
+        );
+        let instance_id = AppInstanceId::try_new("inst-1".to_string()).unwrap();
+        assert!(
+            !s.store
+                .alerts
+                .active(&instance_id)
+                .unwrap()
+                .iter()
+                .any(|a| a.kind == AlertKind::DeliveryExhausted),
+            "a retired instance must not gain a fresh DeliveryExhausted alert"
+        );
+    }
+
+    /// Test 21: D-B1-15's `conflict` row -- the case test 14's synchronous
+    /// coverage misses. Completes **and** raises the same `BindingConflict`
+    /// alert the synchronous path does.
+    #[tokio::test]
+    async fn a_queued_write_delivered_conflicting_raises_the_same_alert_as_the_synchronous_path() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector.script(
+            "did:key:zB",
+            FakeDelivery::Attempt(Ok(vec![BindingWriteOutcome::Conflict(9)])),
+        );
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        s.queue_worker_tick().await;
+
+        assert!(s.store.queue.all().unwrap().is_empty(), "a conflict still completes the item");
+        let instance_id = AppInstanceId::try_new("inst-1".to_string()).unwrap();
+        let active = s.store.alerts.active(&instance_id).unwrap();
+        assert!(
+            active.iter().any(|a| a.kind == AlertKind::BindingConflict
+                && a.logical_ref.as_deref() == Some("inst-1/backend")),
+            "{active:?}"
+        );
+    }
+
+    /// A transport failure on replay must return the item to the outbox
+    /// rather than dead-lettering it outright -- the queue's own retry
+    /// budget governs when it finally gives up, not one failed replay.
+    #[tokio::test]
+    async fn a_transport_failure_on_replay_retries_rather_than_dead_lettering() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector.script("did:key:zB", FakeDelivery::ConnectFails);
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        s.queue_worker_tick().await;
+
+        let remaining = s.store.queue.all().unwrap();
+        assert_eq!(remaining.len(), 1, "a transport failure must stay in the outbox");
+        assert!(s.store.queue.dead_letters().unwrap().is_empty());
+    }
+
+    /// M05B B1 review finding 10: a callee error that does *not* name this
+    /// write's own target as gone -- a transient, reached-and-answered
+    /// refusal the wire protocol cannot currently distinguish from "gone"
+    /// by error code -- must stay retryable on the queued path, not
+    /// dead-letter on its first delivery. Otherwise a queued item that
+    /// survived a restart specifically to be retried would be given up on
+    /// by a hiccup a later attempt would have cleared.
+    #[tokio::test]
+    async fn an_ambiguous_callee_error_on_replay_retries_rather_than_dead_lettering() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector.script(
+            "did:key:zB",
+            FakeDelivery::CalleeError("database is locked, try again".to_string()),
+        );
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        s.queue_worker_tick().await;
+
+        let remaining = s.store.queue.all().unwrap();
+        assert_eq!(remaining.len(), 1, "an ambiguous callee error must stay in the outbox");
+        assert!(s.store.queue.dead_letters().unwrap().is_empty());
+    }
+
+    /// Failure-matrix row 9: a callee error on replay naming this write's
+    /// own target as gone (the exact wording `control_plane`'s
+    /// `write-bindings` dispatch uses for that specific refusal, M05B B1
+    /// review finding 10) is terminal -- straight to the DLQ, not retried.
+    #[tokio::test]
+    async fn a_callee_error_on_replay_dead_letters_immediately() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector.script(
+            "did:key:zB",
+            FakeDelivery::CalleeError(
+                "'did:key:zSvc' has no app context on this substrate".to_string(),
+            ),
+        );
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        s.queue_worker_tick().await;
+
+        assert!(s.store.queue.all().unwrap().is_empty());
+        let dead = s.store.queue.dead_letters().unwrap();
+        assert_eq!(dead.len(), 1);
+        assert_eq!(dead[0].attempts, 1, "a terminal failure dead-letters on its first attempt");
+    }
+
+    /// Test 22: D-B1-14. Without taking `instance_lock`, the worker could
+    /// interleave with a live pass write for the same instance and race
+    /// this supervisor into a spurious `BindingConflict`. Proven by
+    /// holding the lock externally (as a live pass would) and asserting
+    /// the worker's own attempt to take it blocks until released.
+    #[tokio::test]
+    async fn the_worker_and_a_loop_pass_never_write_one_instance_concurrently() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector
+            .script("did:key:zB", FakeDelivery::Attempt(Ok(vec![BindingWriteOutcome::Applied])));
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        let held = s.instance_lock("inst-1");
+        let guard = held.lock().await;
+
+        let s = Arc::new(s);
+        let s_clone = s.clone();
+        let mut tick = tokio::spawn(async move { s_clone.queue_worker_tick().await });
+
+        tokio::select! {
+            _ = &mut tick => panic!("the worker must block on instance_lock while a pass holds it"),
+            () = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+
+        drop(guard);
+        tick.await.unwrap();
+        assert!(
+            s.store.queue.all().unwrap().is_empty(),
+            "the worker delivers once the lock frees up"
+        );
+    }
+
+    /// Test 23: D-B1-8. Cancelling the token must not wait for a delivery
+    /// *genuinely in flight* -- `FakeDelivery::Blocks` makes `connect`
+    /// never resolve, so if `shutdown` returned promptly here it is
+    /// because cancellation actually interrupted a real, ongoing delivery
+    /// (M05B B1 review finding 5: an earlier version of this test left the
+    /// substrate unscripted, which fails `connect` immediately and
+    /// proves nothing about abandoning work in flight -- its own comment
+    /// also claimed `queue_tick_secs` was 1s here when it was actually set
+    /// to 3600, so the tick this test depended on never fired at all
+    /// inside its own real-clock sleep).
+    #[tokio::test]
+    async fn shutdown_abandons_in_flight_work_rather_than_draining() {
+        let mut s = Fixture { queue_tick_secs: Some(1), ..Fixture::default() }.build();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector.script("did:key:zB", FakeDelivery::Blocks);
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        let s = Arc::new(s);
+        let run_handle = {
+            let s = s.clone();
+            tokio::spawn(async move { s.run_queue_worker().await })
+        };
+        // Give the 1s interval its first tick a chance to fire, claim the
+        // item, and reach `connect` -- which then blocks forever, so by
+        // the time this returns a delivery is genuinely in flight.
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+
+        let start = Instant::now();
+        s.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), run_handle)
+            .await
+            .expect(
+                "run_queue_worker must return promptly on shutdown, not wait for the delivery in \
+                 flight",
+            )
+            .unwrap()
+            .unwrap();
+        assert!(start.elapsed() < Duration::from_secs(2));
+
+        // The abandoned item is still claimed (invisible) right after
+        // shutdown -- dropped mid-delivery, not completed or failed.
+        assert!(
+            s.store.queue.claim_due(outbox::now_ms(), 10).unwrap().is_empty(),
+            "the item must still be invisible, not silently completed or requeued"
+        );
+    }
+
+    /// Test 24: the in-process analogue of e2e step 5 -- a queued item
+    /// survives a supervisor restart (a fresh `SupervisorStore` opened
+    /// against the same database file) and the new process's worker
+    /// resumes it.
+    #[tokio::test]
+    async fn the_worker_resumes_a_queued_item_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+            seed_inventory(&store, "inst-1", "did:key:zB");
+            enqueue_test_item(
+                &store,
+                "inst-1",
+                "inst-1/backend",
+                "did:key:zB",
+                test_binding_write("did:key:zSvc", "inst-1"),
+            );
+        }
+
+        let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+        let mut s = Fixture::default().build();
+        s.store = store;
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector
+            .script("did:key:zB", FakeDelivery::Attempt(Ok(vec![BindingWriteOutcome::Applied])));
+        s.queue_connector = connector;
+
+        s.queue_worker_tick().await;
+
+        assert!(
+            s.store.queue.all().unwrap().is_empty(),
+            "the resumed item must have been delivered"
+        );
+    }
+
+    /// Test 25: the budget the plan's first draft asserted nowhere.
+    /// Recovery must complete within one `queue_tick_secs`, not one
+    /// `poll_interval_secs` -- driven against a paused clock with
+    /// `poll_interval_secs` set far above the worker tick, so passing by
+    /// accident (both loops running for real) is impossible.
+    #[tokio::test(start_paused = true)]
+    async fn recovery_completes_within_one_worker_tick_and_not_one_poll_interval() {
+        let mut s = Fixture {
+            queue_tick_secs: Some(5),
+            poll_interval_secs: Some(3600),
+            ..Fixture::default()
+        }
+        .build();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector
+            .script("did:key:zB", FakeDelivery::Attempt(Ok(vec![BindingWriteOutcome::Applied])));
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        let s = Arc::new(s);
+        let run_handle = {
+            let s = s.clone();
+            tokio::spawn(async move { s.run_queue_worker().await })
+        };
+
+        tokio::time::advance(Duration::from_secs(6)).await;
+        // Yield so the worker's now-elapsed tick actually runs.
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+
+        assert!(
+            s.store.queue.all().unwrap().is_empty(),
+            "recovery must land within one 5s worker tick, well under the 3600s poll interval"
+        );
+
+        s.shutdown().await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(1), run_handle).await;
+    }
+
+    // ── M05B B1: the DLQ surface ─────────────────────────────────────────
+
+    /// Test 27: D-B1-6. `AlertStore`'s unique index cannot express one row
+    /// per dead letter, and an operator wants the standing fact anyway --
+    /// a second dead letter for the same key must refresh the existing
+    /// alert's count, not open a second row.
+    #[tokio::test]
+    async fn a_second_dead_letter_for_one_member_refreshes_the_alert_and_raises_its_count() {
+        let s = service();
+        let instance_id = AppInstanceId::try_new("inst-1".to_string()).unwrap();
+        let key = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/backend".to_string(),
+            substrate_did: "did:key:zB".to_string(),
+        };
+        let id1 = enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc1", "inst-1"),
+        );
+        let id2 = enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc2", "inst-1"),
+        );
+
+        s.fail_queued_item(&instance_id, &key, id1, outbox::now_ms(), "boom", true).await;
+        let active = s.store.alerts.active(&instance_id).unwrap();
+        assert_eq!(active.iter().filter(|a| a.kind == AlertKind::DeliveryExhausted).count(), 1);
+        assert!(
+            active.iter().any(|a| a.kind == AlertKind::DeliveryExhausted && a.detail.contains('1'))
+        );
+
+        s.fail_queued_item(&instance_id, &key, id2, outbox::now_ms(), "boom again", true).await;
+        let active = s.store.alerts.active(&instance_id).unwrap();
+        assert_eq!(
+            active.iter().filter(|a| a.kind == AlertKind::DeliveryExhausted).count(),
+            1,
+            "a second dead letter must refresh the existing row, not open a second one"
+        );
+        assert!(
+            active.iter().any(|a| a.kind == AlertKind::DeliveryExhausted && a.detail.contains('2'))
+        );
+    }
+
+    /// Test 28: D-B1-6's clear path -- the thing `RemediationExhausted`
+    /// already documents and the draft omitted. Replaying every dead
+    /// letter for a key clears its alert; an earlier replay leaving one
+    /// behind must not.
+    #[tokio::test]
+    async fn the_alert_clears_when_the_last_dead_letter_for_that_key_is_gone() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector
+            .script("did:key:zB", FakeDelivery::Attempt(Ok(vec![BindingWriteOutcome::Applied])));
+        connector
+            .script("did:key:zB", FakeDelivery::Attempt(Ok(vec![BindingWriteOutcome::Applied])));
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        let instance_id = AppInstanceId::try_new("inst-1".to_string()).unwrap();
+        let key = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/backend".to_string(),
+            substrate_did: "did:key:zB".to_string(),
+        };
+        let id1 = enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc1", "inst-1"),
+        );
+        let id2 = enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc2", "inst-1"),
+        );
+        s.fail_queued_item(&instance_id, &key, id1, outbox::now_ms(), "boom", true).await;
+        s.fail_queued_item(&instance_id, &key, id2, outbox::now_ms(), "boom again", true).await;
+        assert!(
+            s.store
+                .alerts
+                .active(&instance_id)
+                .unwrap()
+                .iter()
+                .any(|a| a.kind == AlertKind::DeliveryExhausted)
+        );
+
+        let dead = s.store.queue.dead_letters().unwrap();
+        assert_eq!(dead.len(), 2);
+
+        dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "replay",
+            serde_json::json!(["inst-1", dead[0].id as u64]),
+        )
+        .await
+        .unwrap();
+        assert!(
+            s.store
+                .alerts
+                .active(&instance_id)
+                .unwrap()
+                .iter()
+                .any(|a| a.kind == AlertKind::DeliveryExhausted),
+            "one dead letter for this key still remains; the alert must stay active"
+        );
+
+        // The first replay's own row must resolve before the second dead
+        // letter for the identical key can be replayed too -- `Queue::
+        // replay` refuses a second pending row for one key (M05B B1 review
+        // finding 2), so this drives the worker to deliver (and complete)
+        // the first replay's item before trying the second.
+        s.queue_worker_tick().await;
+        assert!(s.store.queue.all().unwrap().is_empty(), "the first replay must have landed");
+
+        dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "replay",
+            serde_json::json!(["inst-1", dead[1].id as u64]),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !s.store
+                .alerts
+                .active(&instance_id)
+                .unwrap()
+                .iter()
+                .any(|a| a.kind == AlertKind::DeliveryExhausted),
+            "the last dead letter for this key is gone; the alert must clear"
+        );
+    }
+
+    /// M05B B1 review finding 3: a *pruned* dead letter (the DLQ cap
+    /// evicting the oldest row on write, D-B1-9) must clear its own
+    /// standing alert exactly the same way an explicit `replay` does --
+    /// not just when a human happens to replay it. Distinct from the test
+    /// above, which only exercises the replay path.
+    #[tokio::test]
+    async fn a_pruned_dead_letter_clears_its_own_alert_too() {
+        let mut s = service();
+        // A cap of 1 so the second key's own dead letter immediately
+        // evicts the first key's -- both keys share one group (the app
+        // instance), so the cap applies across them (M05B B1 review
+        // finding 4).
+        s.store.queue = Queue::open_in_memory(QueueConfig {
+            dlq_max_rows: 1,
+            ..QueueConfig::from(&SupervisorRole::default())
+        })
+        .unwrap();
+
+        let instance_id = AppInstanceId::try_new("inst-1".to_string()).unwrap();
+        let key_a = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/backend-a".to_string(),
+            substrate_did: "did:key:zB".to_string(),
+        };
+        let key_b = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/backend-b".to_string(),
+            substrate_did: "did:key:zB".to_string(),
+        };
+        let id_a = enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend-a",
+            "did:key:zB",
+            test_binding_write("did:key:zSvcA", "inst-1"),
+        );
+        s.fail_queued_item(&instance_id, &key_a, id_a, outbox::now_ms(), "boom", true).await;
+        assert!(
+            s.store
+                .alerts
+                .active(&instance_id)
+                .unwrap()
+                .iter()
+                .any(|a| a.kind == AlertKind::DeliveryExhausted
+                    && a.logical_ref.as_deref() == Some("inst-1/backend-a")),
+            "key a's dead letter must raise its own alert"
+        );
+
+        let id_b = enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend-b",
+            "did:key:zB",
+            test_binding_write("did:key:zSvcB", "inst-1"),
+        );
+        // This dead-letters key b, which prunes key a's now-oldest row
+        // past the cap of 1 -- with no `replay` in sight.
+        s.fail_queued_item(&instance_id, &key_b, id_b, outbox::now_ms(), "boom too", true).await;
+
+        assert_eq!(s.store.queue.dead_letters().unwrap().len(), 1, "the cap must still hold");
+        let active = s.store.alerts.active(&instance_id).unwrap();
+        assert!(
+            !active.iter().any(|a| a.kind == AlertKind::DeliveryExhausted
+                && a.logical_ref.as_deref() == Some("inst-1/backend-a")),
+            "key a's dead letter was pruned; its alert must clear, not linger forever: {active:?}"
+        );
+        assert!(
+            active.iter().any(|a| a.kind == AlertKind::DeliveryExhausted
+                && a.logical_ref.as_deref() == Some("inst-1/backend-b")),
+            "key b's own alert must still be active: {active:?}"
+        );
+    }
+
+    /// M05B B1 review finding 14: row 12's outbox growth bound -- "at most
+    /// one row per `(instance, logical_ref, substrate)`" -- is enforced by
+    /// `SupervisorOutbox::already_pending`, but nothing asserted it as the
+    /// bound directly.
+    #[tokio::test]
+    async fn the_outbox_holds_at_most_one_row_per_key_regardless_of_how_many_enqueue_attempts() {
+        let queue = Queue::open_in_memory(QueueConfig::from(&SupervisorRole::default())).unwrap();
+        let outbox = SupervisorOutbox::new(queue.clone());
+        let key = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/backend".to_string(),
+            substrate_did: "did:key:zB".to_string(),
+        };
+        let write = test_binding_write("did:key:zSvc", "inst-1");
+
+        for generation in 0..50u64 {
+            outbox
+                .enqueue(
+                    &key.to_string(),
+                    "did:key:zB",
+                    &BindingWrite { generation, ..write.clone() },
+                )
+                .await;
+        }
+
+        assert_eq!(
+            queue.all().unwrap().len(),
+            1,
+            "fifty enqueue attempts for one key must still leave exactly one outbox row"
+        );
+    }
+
+    /// Test 29: `dead-letters` lists exactly what the store holds, mapped
+    /// onto the WIT shape (logical ref and substrate DID pulled back out
+    /// of the opaque queue key).
+    #[tokio::test]
+    async fn dead_letters_lists_what_the_store_holds() {
+        let s = service();
+        let instance_id = AppInstanceId::try_new("inst-1".to_string()).unwrap();
+        let key = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/backend".to_string(),
+            substrate_did: "did:key:zB".to_string(),
+        };
+        let id = enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+        s.fail_queued_item(&instance_id, &key, id, outbox::now_ms(), "unreachable", true).await;
+
+        let res = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "dead-letters",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        let rows: Vec<DeadLetter> = serde_json::from_value(res.payload).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].logical_ref, "inst-1/backend");
+        assert_eq!(rows[0].substrate_did, "did:key:zB");
+        assert_eq!(rows[0].last_error, "unreachable");
+        assert_eq!(rows[0].attempts, 1);
+
+        // A different instance's dead letters must not leak through.
+        let other = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "dead-letters",
+            serde_json::json!(["inst-2"]),
+        )
+        .await
+        .unwrap();
+        let other_rows: Vec<DeadLetter> = serde_json::from_value(other.payload).unwrap();
+        assert!(other_rows.is_empty());
+    }
+
+    /// Test 30: D-B1-7. `replay` re-enqueues through the ordinary worker
+    /// path and does not execute inline -- proven by scripting no delivery
+    /// at all for the target DID and asserting the RPC call still
+    /// succeeds, since replay itself never calls the connector.
+    #[tokio::test]
+    async fn replay_re_enqueues_and_does_not_execute_inline() {
+        let mut s = service();
+        s.queue_connector = Arc::new(FakeQueueConnector::default());
+        let instance_id = AppInstanceId::try_new("inst-1".to_string()).unwrap();
+        let key = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/backend".to_string(),
+            substrate_did: "did:key:zB".to_string(),
+        };
+        let id = enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+        s.fail_queued_item(&instance_id, &key, id, outbox::now_ms(), "unreachable", true).await;
+        let dead_id = s.store.queue.dead_letters().unwrap()[0].id as u64;
+
+        // No `FakeDelivery` scripted for "did:key:zB" -- if `replay`
+        // executed inline it would have to reach the connector and this
+        // call would fail closed (`FakeQueueConnector::connect` errors
+        // with nothing scripted).
+        dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "replay",
+            serde_json::json!(["inst-1", dead_id]),
+        )
+        .await
+        .unwrap();
+
+        assert!(s.store.queue.dead_letters().unwrap().is_empty());
+        let requeued = s.store.queue.all().unwrap();
+        assert_eq!(requeued.len(), 1);
+    }
+
+    /// Test 31: failure-matrix row 5, over the RPC surface -- a replayed
+    /// item that fails again returns to the DLQ with its attempt history
+    /// intact, listable the same way the first one was.
+    #[tokio::test]
+    async fn a_replayed_item_that_fails_again_returns_to_the_dlq_with_its_history() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector.script(
+            "did:key:zB",
+            FakeDelivery::CalleeError(
+                "'did:key:zSvc' has no app context on this substrate".to_string(),
+            ),
+        );
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        let instance_id = AppInstanceId::try_new("inst-1".to_string()).unwrap();
+        let key = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/backend".to_string(),
+            substrate_did: "did:key:zB".to_string(),
+        };
+        let id = enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+        s.fail_queued_item(&instance_id, &key, id, outbox::now_ms(), "first refusal", true).await;
+        let dead_id = s.store.queue.dead_letters().unwrap()[0].id as u64;
+
+        dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "replay",
+            serde_json::json!(["inst-1", dead_id]),
+        )
+        .await
+        .unwrap();
+        s.queue_worker_tick().await;
+
+        let dead = s.store.queue.dead_letters().unwrap();
+        assert_eq!(dead.len(), 1, "the replayed item must be back in the DLQ after failing again");
+        assert_eq!(dead[0].attempts, 2, "the attempt count must carry over, not reset");
     }
 }

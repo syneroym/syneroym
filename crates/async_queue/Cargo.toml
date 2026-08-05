@@ -1,0 +1,15 @@
+[package]
+name = "syneroym-async-queue"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+syneroym-core.workspace = true
+anyhow.workspace = true
+rusqlite.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,10 +1,10 @@
 # M05B Implementation Plan — Async Primitives (milestone level)
 
-**Status:** 📋 Planned (2026-08-04). Not started. Milestone:
+**Status:** 📋 Planned (2026-08-04). B1 starting. Milestone:
 [task.md](task.md). Design of record:
-[ADR-0023](../../../decisions/0023-durable-async-primitives.md) (**Proposed** —
-accepting it is step zero, see §2). Depends on **M05A P0, A0–A5e, A7 — all
-Complete**. Gates **M6** and **M05A slice A6**.
+[ADR-0023](../../../decisions/0023-durable-async-primitives.md) (**Accepted
+2026-08-04**, see §2 for why acceptance was step zero). Depends on **M05A P0,
+A0–A5e, A7 — all Complete**. Gates **M6** and **M05A slice A6**.
 
 **This document is milestone level only.** It holds the split call,
 cross-cutting findings, cross-cutting decisions, the slice sequence and merge
@@ -283,7 +283,7 @@ is fine — but from one file carrying five. So:
 
 **Created by this plan (documentation, no code):**
 
-- [ADR-0023](../../../decisions/0023-durable-async-primitives.md) — **Proposed**.
+- [ADR-0023](../../../decisions/0023-durable-async-primitives.md) — **Accepted 2026-08-04**.
 - `[PLT-ASY]` row in [traceability-matrix.md](../../traceability-matrix.md),
   status **Pending**, target M5B (D-B-7, §0.2).
 - A pointer from `meta-implementation-plan.md`'s M5 item 1 to this milestone, in
