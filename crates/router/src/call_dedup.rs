@@ -29,9 +29,10 @@ use std::{
 };
 
 use syneroym_async_queue::{
-    CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, DedupConfig, DedupDecision,
-    DedupStore, FirstOutcome,
+    CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, ClaimToken, DedupConfig,
+    DedupDecision, DedupStore, FirstOutcome,
 };
+use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
 use syneroym_core::local_registry::{EndpointRegistry, NODE_NATIVE_INTERFACES};
 use syneroym_data_db::StorageProvider;
 use syneroym_data_keystore::KeyStore;
@@ -63,6 +64,9 @@ pub struct DedupClaim {
     store: DedupStore,
     caller: String,
     key: String,
+    /// Identifies *this* attempt's hold, so a settlement that arrives
+    /// after the claim was retaken cannot stamp over the newer one.
+    token: ClaimToken,
 }
 
 impl DedupClaim {
@@ -112,9 +116,9 @@ impl DedupClaim {
         let now = now_ms();
         let recorded = task::spawn_blocking(move || match settlement {
             Settlement::Record(outcome) => {
-                self.store.finish(&self.caller, &self.key, &outcome, now)
+                self.store.finish(&self.caller, &self.key, self.token, &outcome, now)
             }
-            Settlement::Release => self.store.release(&self.caller, &self.key),
+            Settlement::Release => self.store.release(&self.caller, &self.key, self.token),
             Settlement::LeaveInFlight => Ok(()),
         })
         .await
@@ -170,8 +174,16 @@ pub fn replay_as_result(outcome: FirstOutcome) -> Result<serde_json::Value, Prox
 /// that does not exist. Matched by short hash as well as by name, since
 /// the hash is an unsalted prefix a guest can compute for itself.
 pub(crate) fn is_node_level_interface(interface: &str) -> bool {
+    // `NODE_NATIVE_INTERFACES` covers `orchestrator` and `security`. The
+    // supervisor's own interface is the third of the same kind -- it is
+    // registered under the node's own service id, not a deployed
+    // service's -- and it is *not* in that list, so it has to be named
+    // here. Left out, a keyed call aimed at it would sail past this check
+    // and mint a DEK and a database for the node's own id: precisely the
+    // pseudo-service database this refusal exists to prevent.
     NODE_NATIVE_INTERFACES
         .iter()
+        .chain(std::iter::once(&SUPERVISOR_RESERVED_SERVICE_ID))
         .any(|name| *name == interface || syneroym_core::util::short_hash(name) == interface)
 }
 
@@ -365,8 +377,8 @@ impl CallDedupGuard {
             .await
         };
         match probe {
-            Ok(Ok(DedupDecision::Execute)) => {
-                GuardOutcome::Execute(Some(DedupClaim { store, caller, key }))
+            Ok(Ok(DedupDecision::Execute(token))) => {
+                GuardOutcome::Execute(Some(DedupClaim { store, caller, key, token }))
             }
             Ok(Ok(DedupDecision::Replay(outcome))) => {
                 metrics::counter!("substrate.proxy.dedup.replayed").increment(1);
@@ -488,7 +500,7 @@ mod tests {
     #[tokio::test]
     async fn a_keyed_call_to_a_node_level_interface_is_refused_and_creates_no_database() {
         let node = node(true, &[]).await;
-        for interface in ["orchestrator", "security"] {
+        for interface in ["orchestrator", "security", SUPERVISOR_RESERVED_SERVICE_ID] {
             let outcome = node
                 .guard
                 .begin("did:key:zNodeItself", interface, Some("did:key:zC"), Some("k1"))

@@ -47,6 +47,10 @@ use tracing::warn;
 
 use crate::call_dedup::ASYNC_DB_NAME;
 
+/// Ceiling on one queued call's stored payload. The params are the
+/// guest's own data and travel on every attempt.
+const MAX_QUEUED_PAYLOAD_BYTES: usize = 256 * 1024;
+
 /// How many items one service may have claimed in a single worker tick.
 /// One service with a permanently unreachable target must not spend the
 /// whole node's tick budget on its own backlog.
@@ -264,6 +268,32 @@ impl ProxyOutbox {
         let queue = self.queue_for(&call.caller_service_id).await?;
         let payload = serde_json::to_vec(call)
             .map_err(|e| ProxyError::Internal(format!("cannot store queued call: {e}")))?;
+
+        // Two bounds, both refusing rather than accepting work this node
+        // cannot keep. The dead-letter table is capped and the outbox
+        // drains, but nothing otherwise bounds *pending* rows: a guest
+        // enqueuing distinct keys at an unreachable target holds every one
+        // of them for the full attempt budget, which is hours.
+        if payload.len() > MAX_QUEUED_PAYLOAD_BYTES {
+            return Err(ProxyError::UnsupportedTarget(format!(
+                "queued call is {} bytes; the limit is {MAX_QUEUED_PAYLOAD_BYTES}",
+                payload.len()
+            )));
+        }
+        let pending = {
+            let queue = queue.clone();
+            task::spawn_blocking(move || queue.pending_count())
+                .await
+                .map_err(|e| ProxyError::Internal(format!("outbox task failed: {e}")))?
+                .map_err(|e| ProxyError::Internal(format!("cannot read the outbox: {e}")))?
+        };
+        if pending >= self.config.max_pending_rows {
+            return Err(ProxyError::UnsupportedTarget(format!(
+                "service '{}' already has {pending} calls waiting for delivery, at its limit of \
+                 {}; refusing rather than accepting work that cannot be kept",
+                call.caller_service_id, self.config.max_pending_rows
+            )));
+        }
         let (group, key) = (group_key_of(call), call.idempotency_key.clone());
         let now = now_ms();
         task::spawn_blocking(move || -> anyhow::Result<()> {

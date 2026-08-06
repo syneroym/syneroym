@@ -841,20 +841,39 @@ impl ControlPlaneService {
         service_id: &str,
         caller: &CallerContext,
     ) -> Result<(), String> {
+        self.authorize_proxy_queue(service_id, caller, Ability::ORCHESTRATOR_STATUS)
+    }
+
+    /// `proxy-replay` re-enqueues a call the worker then *sends*, so it is
+    /// a lifecycle write and takes the write gate -- the same one
+    /// `restart` uses, for the same reason. Listing the queues is a read
+    /// and keeps the read gate; a holder of read-only status must not be
+    /// able to make a service emit calls.
+    fn authorize_proxy_queue_write(
+        &self,
+        service_id: &str,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        self.authorize_proxy_queue(service_id, caller, Ability::ORCHESTRATOR_DEPLOY)
+    }
+
+    fn authorize_proxy_queue(
+        &self,
+        service_id: &str,
+        caller: &CallerContext,
+        ability: &'static str,
+    ) -> Result<(), String> {
         if service_id.is_empty() {
             return Err("a service id is required".to_string());
         }
-        if self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_STATUS) {
+        if self.has_node_wide_ability(caller, ability) {
             return Ok(());
         }
         let resource = ResourceUri(format!("substrate:{}/app/{service_id}", self.node_did));
-        if caller.has_capability(&resource, &Ability(Ability::ORCHESTRATOR_STATUS.to_string())) {
+        if caller.has_capability(&resource, &Ability(ability.to_string())) {
             return Ok(());
         }
-        Err(format!(
-            "caller {} holds no orchestrator/status grant for '{service_id}'",
-            caller.caller_did
-        ))
+        Err(format!("caller {} holds no {ability} grant for '{service_id}'", caller.caller_did))
     }
 
     /// The router's queue view, once it has been wired in. Absent means
@@ -908,7 +927,7 @@ impl OrchestratorInterface for ControlPlaneService {
         dead_letter_id: u64,
         caller: &CallerContext,
     ) -> Result<(), String> {
-        self.authorize_proxy_queue_access(&service_id, caller)?;
+        self.authorize_proxy_queue_write(&service_id, caller)?;
         self.proxy_queue_inspector()?.replay_dead_letter(&service_id, dead_letter_id).await
     }
 
@@ -8809,6 +8828,47 @@ mod tests {
             1,
             "a refused replay must not have consumed the dead letter"
         );
+    }
+
+    /// Replay re-enqueues a call the worker then sends, so it is a
+    /// lifecycle write and must not be reachable with the read grant the
+    /// listing verbs use. `status_capable_caller` holds both, so this
+    /// drives a caller holding *only* the read one.
+    #[tokio::test]
+    async fn proxy_replay_is_not_reachable_with_only_the_read_grant() {
+        use syneroym_rpc::{AuthLevel, Capability, SessionContext};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let queues = Arc::new(FakeProxyQueues::default());
+        queues.dead.lock().unwrap().push(a_dead_letter(1, "msg-7"));
+        let service = service_with_proxy_queues(temp_dir.path(), &queues).await;
+
+        let read_only = CallerContext {
+            caller_did: "did:key:zReader".to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: "did:key:zReader".to_string(),
+                capabilities: vec![Capability {
+                    with: ResourceUri::substrate("did:key:zTestNode"),
+                    can: Ability(Ability::ORCHESTRATOR_STATUS.to_string()),
+                    caveats: None,
+                }],
+                ..Default::default()
+            },
+            auth: AuthLevel::Delegated,
+            proof: None,
+        };
+
+        // The listings are reads and stay reachable.
+        assert!(service.proxy_outbox("svc-a".to_string(), &read_only).await.is_ok());
+        assert!(service.proxy_dead_letters("svc-a".to_string(), &read_only).await.is_ok());
+
+        // The write is not.
+        assert!(
+            service.proxy_replay("svc-a".to_string(), 1, &read_only).await.is_err(),
+            "a read grant must not let a caller make a service emit calls"
+        );
+        assert_eq!(queues.dead.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

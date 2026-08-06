@@ -41,8 +41,8 @@ use syneroym_core::{
 use zeroize::Zeroizing;
 
 pub use crate::dedup::{
-    CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, DedupConfig, DedupDecision,
-    DedupStore, FirstOutcome,
+    CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, ClaimToken, DedupConfig,
+    DedupDecision, DedupStore, FirstOutcome,
 };
 
 mod dedup;
@@ -61,6 +61,11 @@ pub struct QueueConfig {
     /// every write past this count (D-B1-9) -- a bound and a trigger, not
     /// an adjective.
     pub dlq_max_rows: u32,
+    /// Ceiling on items waiting for delivery. Unlike the dead-letter cap
+    /// this one **refuses** rather than evicting: a pending item is work
+    /// somebody is still expecting to happen, so dropping the oldest
+    /// silently would be exactly the loss the queue exists to prevent.
+    pub max_pending_rows: u32,
 }
 
 /// The supervisor's five `queue_*` fields, converted (M05B D-B1-13):
@@ -86,6 +91,7 @@ impl From<&SupervisorRole> for QueueConfig {
             },
             visibility_timeout_ms: role.queue_visibility_timeout_secs.saturating_mul(1000),
             dlq_max_rows: role.queue_dlq_max_rows,
+            max_pending_rows: DEFAULT_MAX_PENDING_ROWS,
         }
     }
 }
@@ -107,6 +113,7 @@ impl From<&AppSandboxRole> for QueueConfig {
             },
             visibility_timeout_ms: role.queue_visibility_timeout_secs.saturating_mul(1000),
             dlq_max_rows: role.queue_dlq_max_rows,
+            max_pending_rows: DEFAULT_MAX_PENDING_ROWS,
         }
     }
 }
@@ -122,6 +129,12 @@ impl QueueConfig {
             .sum()
     }
 }
+
+/// How many items one queue may hold waiting for delivery before it
+/// refuses more. Derived beside the other budgets rather than configured,
+/// for the same reason the dedup bounds are: the only interesting setting
+/// is one that breaks the guarantee.
+pub const DEFAULT_MAX_PENDING_ROWS: u32 = 10_000;
 
 /// One item due for delivery, as [`Queue::claim_due`] hands it to a worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -335,6 +348,14 @@ impl Queue {
             )
             .optional()?
             .is_some())
+    }
+
+    /// How many items are waiting or in flight. The bound a caller
+    /// applies before accepting more work.
+    pub fn pending_count(&self) -> Result<u32> {
+        let conn = self.conn.lock().expect("queue connection lock poisoned");
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))?;
+        Ok(count as u32)
     }
 
     /// Writes one item unless `queue_key` already has a pending row, and
@@ -727,6 +748,7 @@ mod tests {
             },
             visibility_timeout_ms: 120_000,
             dlq_max_rows: 1000,
+            max_pending_rows: DEFAULT_MAX_PENDING_ROWS,
         }
     }
 

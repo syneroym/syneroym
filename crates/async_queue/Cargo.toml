@@ -10,6 +10,7 @@ workspace = true
 syneroym-core.workspace = true
 anyhow.workspace = true
 hex.workspace = true
+rand.workspace = true
 rusqlite.workspace = true
 zeroize.workspace = true
 

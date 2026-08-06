@@ -1046,6 +1046,12 @@ impl store::Host for HostState {
     }
 }
 
+/// Ceiling on a guest-supplied idempotency key. It travels on every
+/// attempt and becomes part of a primary key on the receiving node, so it
+/// is bounded like any other guest-controlled string that leaves the
+/// sandbox. Generous next to any real key (a UUID is 36 bytes).
+const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
+
 /// Maps the proxy's transport-agnostic `syneroym_rpc::ProxyError` onto the
 /// guest-facing `syneroym:proxy/proxy::proxy-error` WIT variant.
 fn map_proxy_error(e: RpcProxyError) -> proxy::ProxyError {
@@ -1255,6 +1261,27 @@ impl proxy::Host for HostState {
                     .to_string(),
             )
         })?;
+        // Present is not the same as usable. An empty key is the sharp
+        // case: it becomes this service's queue key, so the *first*
+        // enqueue takes it and every later one is silently treated as a
+        // duplicate of that one and dropped -- a guest would see nothing
+        // but success while nothing was ever queued. The length bound is
+        // the ordinary one for a guest-controlled string that becomes a
+        // primary-key component on the receiving node.
+        if idempotency_key.trim().is_empty() {
+            return Err(proxy::ProxyError::Internal(
+                "enqueue requires a non-empty call-options.idempotency-key: an empty key would be \
+                 shared by every call this service queues"
+                    .to_string(),
+            ));
+        }
+        if idempotency_key.len() > MAX_IDEMPOTENCY_KEY_BYTES {
+            return Err(proxy::ProxyError::Internal(format!(
+                "call-options.idempotency-key is {} bytes; the limit is \
+                 {MAX_IDEMPOTENCY_KEY_BYTES}",
+                idempotency_key.len()
+            )));
+        }
 
         // Validated here so an unsupported tag fails at the call rather
         // than hours later in a dead letter.
@@ -1611,6 +1638,64 @@ pub(crate) mod tests {
             0,
             "nothing may reach the outbox for an unfenced call"
         );
+    }
+
+    /// Present is not usable. An empty key becomes this service's queue
+    /// key, so the first enqueue would take it and every later one would
+    /// be silently dropped as a duplicate -- the guest seeing success
+    /// while nothing was queued.
+    #[tokio::test]
+    async fn an_enqueue_with_a_blank_idempotency_key_is_refused() {
+        let resolver = Arc::new(LogicalResolver::new(Arc::new(
+            syneroym_app_orchestration::StaticInventory::new(),
+        )));
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = dependency_host("frontend", None, resolver, &proxy, temp_dir.path());
+
+        for blank in ["", "   "] {
+            let err = proxy::Host::enqueue(
+                &mut host,
+                CallTarget::Service("did:key:zBackend".to_string()),
+                "greeter".to_string(),
+                "greet".to_string(),
+                "null".to_string(),
+                enqueue_options(Some(blank)),
+            )
+            .await
+            .expect_err("a blank key must be refused");
+            assert!(
+                matches!(err, proxy::ProxyError::Internal(ref m) if m.contains("non-empty")),
+                "unexpected error for {blank:?}: {err:?}"
+            );
+        }
+        assert_eq!(proxy.enqueue_count.load(Ordering::SeqCst), 0);
+    }
+
+    /// The key travels on every attempt and becomes part of a primary key
+    /// on the receiving node, so it is bounded like any other
+    /// guest-controlled string that leaves the sandbox.
+    #[tokio::test]
+    async fn an_over_long_idempotency_key_is_refused() {
+        let resolver = Arc::new(LogicalResolver::new(Arc::new(
+            syneroym_app_orchestration::StaticInventory::new(),
+        )));
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = dependency_host("frontend", None, resolver, &proxy, temp_dir.path());
+
+        let err = proxy::Host::enqueue(
+            &mut host,
+            CallTarget::Service("did:key:zBackend".to_string()),
+            "greeter".to_string(),
+            "greet".to_string(),
+            "null".to_string(),
+            enqueue_options(Some(&"k".repeat(MAX_IDEMPOTENCY_KEY_BYTES + 1))),
+        )
+        .await
+        .expect_err("an over-long key must be refused");
+        assert!(matches!(err, proxy::ProxyError::Internal(_)), "{err:?}");
+        assert_eq!(proxy.enqueue_count.load(Ordering::SeqCst), 0);
     }
 
     /// The stored item names the dependency, never a resolved DID: the

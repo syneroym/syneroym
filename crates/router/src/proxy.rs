@@ -1170,6 +1170,7 @@ mod tests {
         resolver: Arc<syneroym_app_orchestration::LogicalResolver>,
         target: Arc<RecordingNativeService>,
         outbox: Arc<ProxyOutbox>,
+        provider: Arc<syneroym_data_db::SqliteStorageProvider>,
         _native_dispatch: NativeDispatchRegistry,
         dir: tempfile::TempDir,
     }
@@ -1270,9 +1271,10 @@ mod tests {
             },
             visibility_timeout_ms: 0,
             dlq_max_rows: 100,
+            max_pending_rows: syneroym_async_queue::DEFAULT_MAX_PENDING_ROWS,
         };
         let outbox = Arc::new(ProxyOutbox::new(
-            provider,
+            provider.clone(),
             Arc::new(KeyStore::new()),
             resolver.clone(),
             config,
@@ -1306,6 +1308,7 @@ mod tests {
             resolver,
             target,
             outbox,
+            provider,
             _native_dispatch: native_dispatch,
             dir,
         }
@@ -1698,6 +1701,49 @@ mod tests {
         assert_eq!(dead.len(), 1, "a keyed failure must also be recorded for an operator");
         assert_eq!(dead[0].queue_key, "k1");
         assert!(node.queued().await.is_empty(), "and must not linger in the outbox");
+    }
+
+    /// Failure-matrix row 12 says queue growth is bounded. The
+    /// dead-letter table was; the *pending* outbox was not, so a guest
+    /// aimed at an unreachable target could hold unbounded rows for the
+    /// whole attempt budget. It refuses rather than evicting: a pending
+    /// item is work somebody still expects to happen.
+    #[tokio::test]
+    async fn a_full_outbox_refuses_further_enqueues_rather_than_evicting() {
+        let node = outbox_node(false, 50).await;
+        {
+            let mut cfg = node.outbox.config().clone();
+            cfg.max_pending_rows = 2;
+            // Rebuild with the tighter bound; the queue file is already
+            // there, so this exercises the same store.
+            let tight = Arc::new(ProxyOutbox::new(
+                node.provider.clone(),
+                Arc::new(syneroym_data_keystore::KeyStore::new()),
+                node.resolver.clone(),
+                cfg,
+            ));
+            for i in 0..2 {
+                tight
+                    .store(&queued_call(
+                        QueuedTarget::Service("did:key:zTarget".into()),
+                        &format!("k{i}"),
+                    ))
+                    .await
+                    .unwrap();
+            }
+            let refused = tight
+                .store(&queued_call(QueuedTarget::Service("did:key:zTarget".into()), "k2"))
+                .await;
+            assert!(
+                matches!(refused, Err(ProxyError::UnsupportedTarget(_))),
+                "a full outbox must refuse, got {refused:?}"
+            );
+            assert_eq!(
+                tight.queue_for(CALLER).await.unwrap().all().unwrap().len(),
+                2,
+                "and must not have evicted anything to make room"
+            );
+        }
     }
 
     /// The fence's own answers are not delivery failures, so none of them
