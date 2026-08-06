@@ -5,7 +5,8 @@
 [implementation-plan.md](implementation-plan.md)
 
 **Overall:** 🚧 **B1 complete 2026-08-05**, all gates green (evidence below).
-ADR-0023 accepted 2026-08-04. B2-B4 remain planned (sketch only).
+ADR-0023 accepted 2026-08-04. **B2 has a full plan as of 2026-08-05** (not
+started); B3 and B4 remain sketch only.
 
 **Plan layout.** [implementation-plan.md](implementation-plan.md) is milestone
 level: the split call, cross-cutting findings and decisions, slice sequence,
@@ -21,7 +22,7 @@ where every single-slice plan in that milestone sits between 990 and 2,143.
 | Slice | Scope | Status | Gate |
 |---|---|---|---|
 | B1 | Queue crate, supervisor delivery outbox, DLQ with alert and operator surface. **Closes [M05A slice A6](../M05A-app-supervisor/task.md)** | ✅ **Complete (2026-08-05)** — evidence below | ADR-0023 accepted |
-| B2 | Guest outbox and proxy DLQ: idempotency key, `enqueue`, receiver-side dedup | 📋 Planned (sketch only; owes its own `§0`) | B1 |
+| B2 | Guest outbox and proxy DLQ: idempotency key, `enqueue`, receiver-side dedup | ✅ **Complete (2026-08-05)** — all five phases — see "B2 — delivery" below. Plan: [slice-b2-implementation-plan.md](slice-b2-implementation-plan.md) (2026-08-05, revised same day after review). Its `§0` narrows the slice in four places and its `§5` carries six document corrections | B1 |
 | B3 | Scheduled tasks: manifest surface, evaluation on the supervisor's pass tick, member selection, overlap prevention | 📋 Planned (sketch only; owes its own `§0`) | B1 |
 | B4 | Saga compensations: the `undo-<operation>` convention, deploy-time check, step log, reverse walk | 📋 Planned (sketch only; owes its own `§0`) | B1 |
 | ~~B5~~ | ~~Long-running tasks~~ | **Deferred out of this milestone (2026-08-04)** — [deferred-backlog.md](../../deferred-backlog.md) §8, target M5 final phase | — |
@@ -392,3 +393,281 @@ fix refuses).
   new outbox assertions added, `2 passed; 0 failed`, ~690s combined.
 - `mise run test:e2e`: unaffected, no browser-visible surface changed by
   this pass either.
+
+
+---
+
+## B2 — delivery (2026-08-05), complete
+
+**All five phases of the slice plan are complete and verified against every
+gate.** One plan decision was narrowed on evidence -- D-B2-11's terminal
+rule, described below -- and nothing else was reversed.
+
+**What shipped.**
+
+- **Phase 1 — the key, end to end, reading nothing.** `idempotency-key` on
+  `call-options` ([proxy.wit](../../../../crates/wit_interfaces/wit/proxy/proxy.wit));
+  `ProxyRequest.idempotency_key`
+  ([rpc/proxy.rs](../../../../crates/rpc/src/proxy.rs)); the optional
+  `JsonRpcRequest` member, `#[serde(default)]` and skipped when absent
+  ([rpc/types.rs](../../../../crates/rpc/src/types.rs)); the host function
+  passing it through
+  ([sandbox_wasm/host_capabilities.rs](../../../../crates/sandbox_wasm/src/host_capabilities.rs)).
+  The struct-literal sweep the plan predicted landed in 23 sites across 13
+  files.
+- **Phase 3 — the guest outbox and `enqueue`.** `enqueue` on `proxy.wit`
+  and as a second `ServiceProxy` method with a refusing default body
+  ([rpc/proxy.rs](../../../../crates/rpc/src/proxy.rs)); the three refusals
+  (no key, no unexpired instance certificate, a node-level or self target);
+  try-then-queue; the `QueuedCall` payload storing intent rather than a
+  resolved DID; the per-service encrypted outbox and the worker's outcome
+  mapping ([router/proxy_outbox.rs](../../../../crates/router/src/proxy_outbox.rs));
+  the worker itself (`ProxyRouter::run_outbox_worker`,
+  `drain_outboxes_once`) owned by `RuntimeServices`, raced in the same
+  `tokio::select!` and cancelled-not-drained on shutdown
+  ([substrate/runtime.rs](../../../../crates/substrate/src/runtime.rs));
+  and the `enqueue-peer` driver on the `proxy-test` guest fixture.
+- **Phase 4 — the DLQ and its operator surface.** Dead-letter admission for
+  a keyed synchronous call (`ProxyRouter::record_failed_call`), the two
+  stale markers rewritten to state the invariant with no milestone id, the
+  three `proxy-*` verbs on the orchestrator interface with the same
+  `orchestrator/status` gate their neighbours use, the `ProxyQueueInspector`
+  contract that lets the control plane read queues the router owns without
+  inverting the crate dependency, the SDK methods, and
+  `roymctl svc proxy-outbox|proxy-dead-letters|proxy-replay`.
+- **Phase 2 — the store, the guard, and the router's new handle.**
+  `Queue::open_encrypted` and the `DedupStore` three-state record with both
+  its bounds ([async_queue](../../../../crates/async_queue/src/));
+  `StorageProvider::service_db_dir` promoted with a default body so the
+  test fakes keep compiling
+  ([data_db/traits.rs](../../../../crates/data_db/src/traits.rs)); the five
+  `queue_*` fields on `AppSandboxRole`
+  ([core/config.rs](../../../../crates/core/src/config.rs)); the shared
+  guard on both dispatch entry points
+  ([router/call_dedup.rs](../../../../crates/router/src/call_dedup.rs),
+  called from `ProxyRouter::invoke_local_guarded` and
+  `RouteHandler::dispatch_json_rpc_once`).
+
+**Deviations from the plan, and why.**
+
+- **`ProxyRouter::new` did not gain parameters.** The plan's `§0.18`
+  predicted ~10 mechanical call-site edits for a new constructor argument.
+  A `with_dedup_guard` builder was used instead: the constructor already
+  takes seven arguments, and nine of the ten call sites would have passed a
+  `None` that says nothing. "This node can fence" is a property of the
+  deployment, so it reads better as something a node either has or does
+  not. The coordinator-mode case the plan wanted covered
+  (`a_keyed_call_is_refused_on_a_node_with_no_storage_provider`) is covered
+  either way.
+- **`ServiceProxy` was not yet extended.** That belongs to phase 3.
+- **The dedup store lives in `syneroym-async-queue`, not in the router.**
+  It shares `async.db` and the queue crate's own connection/timestamp
+  conventions, so putting it beside the queue avoided a second `rusqlite`
+  dependency and a second set of the same idioms.
+
+**Verification evidence.**
+
+- Test attributes added, diffed against `main`: 16 in
+  `syneroym-async-queue` (20 → 36), 8 in `router/src/call_dedup.rs`, 6 in
+  `router/src/proxy_outbox.rs`, 24 in `router/src/proxy.rs` (19 → 43), 4 in
+  the new `router/tests/call_dedup_dispatch.rs`, 4 in
+  `control_plane/src/service/orchestration.rs`, 3 in `rpc/src/types.rs`, 4
+  in `sandbox_wasm/src/host_capabilities.rs` — **69 net new tests**.
+- `cargo +nightly fmt --all`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace --no-fail-fast` (sandboxed): the failure set is
+  B1's documented pre-existing sandbox-bind category above, plus
+  `syneroym-substrate --test proxy_outbox_e2e` -- this slice's own new
+  target, which joins that category for the same reason every other
+  substrate e2e is in it (two real substrates, real port binds, which the
+  sandbox refuses). Run with the sandbox disabled it is green, three times
+  consecutively. The category is
+  `community-registry`, `control-plane`, `coordinator-iroh` ×3,
+  `mqtt-broker`, `sdk --test connect_timeout`, and every
+  `syneroym-substrate` e2e target. One further addition was genuinely ours
+  and is fixed:
+  `router --test proxy_dispatch` failed with "component imports instance
+  `syneroym:proxy/proxy@0.1.0`, but a matching implementation was not found
+  in the linker" until `test-components/proxy-test` was rebuilt against the
+  changed WIT. That is exit criterion 13's migration cost observed
+  directly, not a defect. After the rebuild: 8/8 green.
+- Every crate touched is green in the same run: `syneroym-rpc`,
+  `syneroym-core`, `syneroym-data-db`, `syneroym-async-queue`,
+  `syneroym-router`, `syneroym-sandbox-wasm`. One `router --test
+  native_dispatch_identity` run failed inside `mainline`'s DHT actor thread
+  and passed on re-run — the same environmental sandbox-bind flake, not a
+  regression.
+- `mise run test:e2e` (sandbox disabled, required for real port binds):
+  **12/12 green** (8 main + 4 multi-hop), the same pass count B1 recorded.
+  The wire change (an optional `JsonRpcRequest` member, skipped when
+  absent) is invisible to a browser client, as the byte-identical-frame
+  test asserts.
+- `router --test proxy_dispatch`: 8/8 green after rebuilding the
+  `proxy-test` guest artifact, which is exit criterion 13's migration cost
+  observed directly rather than argued.
+
+**Phase 5 complete.** Both e2e cases are green in
+[proxy_outbox_e2e.rs](../../../../crates/substrate/tests/proxy_outbox_e2e.rs):
+`a_queued_guest_call_to_an_offline_node_lands_after_it_returns` and
+`a_permanently_unreachable_target_lands_in_the_dlq_and_replays`, 2 passed
+in ~111 s for the pair, stable across three consecutive runs (111.6 s,
+110.6 s, 111.6 s) -- deliberately re-run, since the case turns on a restart
+window and a single green run would not distinguish a fix from a race.
+
+The delivery case drives the guest's own `enqueue-peer` export, asserts the
+item through the `proxy-outbox` verb at every stage (queued, still queued
+as the *same* item after the calling substrate restarts, gone once
+delivered), and asserts it stays gone.
+
+**Getting there required narrowing D-B2-11**, and that narrowing is the
+resolution of the open question this section previously recorded. A remote
+"service not found" is now **retried within the ordinary attempt budget**
+rather than dead-lettering on the first hit
+([proxy_outbox.rs](../../../../crates/router/src/proxy_outbox.rs),
+`disposition_of`). The reason is that at the wire it is indistinguishable
+from a target that is merely mid-restart: a node republishes its own
+endpoint record before its services finish coming up, so a delivery attempt
+lands in a window where the address is right and the service is not there
+yet. Treating that as terminal gives up during exactly the outage a durable
+queue exists to survive. A target that is genuinely gone still
+dead-letters, just not on the first attempt -- the budget and the
+poison-pill ceiling both still bound it, and the DLQ e2e proves that end
+holds. This is the same kind of narrowing B1 had to make to its own
+terminal rule (`deploy::is_target_gone_error`), reached independently and
+for the same reason. **No wire-protocol change.**
+
+Two boundaries the narrowing deliberately does not cross:
+
+- **A dependency name that resolves to nobody stays terminal**
+  (failure-matrix row 9). That is not a failed delivery, it is a failure to
+  have anything to deliver to, so it is decided before the retry
+  classification is reached (`ProxyRouter::resolve_queued_target`).
+- **`PermissionDenied`, `UnsupportedTarget` and `UnsupportedProtocol` stay
+  terminal**: those are settled questions, and retrying re-asks them.
+
+**Three production defects the e2e surfaced, all fixed:**
+
+- `enqueue`'s immediate try-then-queue attempt ran under the full call
+  budget *and* the retry loop, so a guest calling a fire-and-forget verb
+  against a down target blocked past the sandbox's own
+  `dispatch_epoch_timeout_secs` (5 s) and was interrupted mid-call -- the
+  guest **trapped** instead of getting "accepted for delivery". The probe
+  now runs under its own 2 s bound.
+- The outbox refused any caller with no `state.db`, because `queue_for`
+  gated on `service_exists`. A guest that has never touched its own data
+  layer has none, so the check refused exactly the callers the queue is
+  for.
+- The receiver-side dedup guard had the *same* mistake, and it was the one
+  that actually stopped delivery: it used `service_exists` to mean "is a
+  deployed service", so the target node refused every keyed delivery to a
+  guest with no `state.db`. It now asks the endpoint registry, which is the
+  authority for what a node hosts.
+
+None of the three was reachable from an in-process test, which is the
+argument for the e2e stated concretely rather than asserted.
+
+**Exit criteria 5 and 13 are marked ✅** on the strength of the mechanisms
+existing and being unit-tested, which is what those criteria ask for; the
+e2e is corroborating evidence for the sequence, not the criterion itself.
+
+**One further deviation, recorded for the same reason as the two above.**
+The plan's `§0.22` specified the operator verbs but not how the control
+plane would reach queues the router owns, and the crate dependency runs
+router → control-plane, so the obvious handle is not available. A
+`ProxyQueueInspector` trait was added to `syneroym-rpc` — the crate both
+sides already share — and wired through a post-construction `OnceLock`
+exactly as `ControlPlaneService::service_proxy` already is. Same shape,
+same ordering reason, no new pattern.
+
+---
+
+## B2 — review response (2026-08-06)
+
+An independent static review of the shipped branch raised 22 findings.
+Each was checked against the source rather than taken on trust; two did
+not survive that check and are pushed back with reasoning, and one was
+right about the problem but wrong about the fix. **17 fixed, 3 pushed
+back, 2 accepted as backlog rows.** Every fix carries a test that fails
+without it.
+
+### Critical
+
+| # | Finding | Disposition |
+|---|---|---|
+| F1 | A cold cache lets two concurrent duplicates both win the claim | **Fixed.** Real, and the sharpest of the 22. `store_for` was check-then-insert: two callers missing the cache each built an independent handle, and two handles to one file are two connections, so the claim's "atomicity" rested on a mutex neither shared. Both the store open and the queue open are now single-flighted behind an async lock with a re-check, and `DedupStore::begin` runs its read *and* its claiming write inside one `BEGIN IMMEDIATE`, so the guarantee is the database's however many handles exist. `Queue::enqueue_if_absent` does the same for the outbox's has-pending-then-insert. Test: `two_concurrent_duplicates_through_a_cold_cache_produce_one_claim`. |
+| F2 | A timed-out call releases its claim, so the retry re-executes it | **Fixed.** Real. `settle` released on every non-callee error, but a dispatch is *wrapped* in a timeout, so the deadline fires around a call that may still be running -- and an unreadable response frame is by definition something the target produced. Release is now restricted to failures raised before dispatch (`precedes_execution`); anything ambiguous keeps its claim and lets the window expire. Holding a claim wrongly costs one window of "already running" answers, which a sender retries; releasing one wrongly costs a double execution. Tests: `a_timed_out_call_keeps_its_claim_so_a_retry_does_not_re_execute`, `an_unreadable_response_keeps_its_claim`, and `a_pre_dispatch_refusal_still_releases_its_claim` for the boundary. |
+| F3 | A delivered call can dead-letter forever on the not-retained code | **Fixed.** Real. `disposition_of` had no case for the reserved "already ran, result too large" code, so it fell into the catch-all and dead-lettered an item that had landed -- and since a replay produces the same code, the row could never be cleared. `Disposition` gains a `Delivered` variant and the worker completes on it. Tests: `a_result_too_large_to_retain_is_a_delivery_not_a_failure`, `the_fences_own_answers_never_earn_a_dead_letter`. |
+
+### Major
+
+| # | Finding | Disposition |
+|---|---|---|
+| F4 | A correctly fenced duplicate writes an operator-visible dead letter | **Fixed.** Real. `record_failed_call` fired for every keyed failure, including the guard's own refusals -- so a call succeeding on another task right now produced a dead letter indistinguishable from an exhausted delivery, never cleared. Now gated on `target_produced`: only a failure the target actually produced earns a row, since a dead letter exists to be replayed and replaying a refusal just re-earns it. |
+| F5 | `finish` can overwrite a newer attempt's claim | **Fixed, but not the way the review suggested.** The problem is real. The suggested guard (`AND state = in_flight AND claim_expires_at > now`) does **not** work, and the test written for it proved that: a newer attempt's claim satisfies exactly that predicate, so a late finish still matched. Fixed with the review's *alternative* -- an explicit `ClaimToken` minted per attempt and matched on write. Test: `a_finish_from_an_attempt_that_lost_its_claim_records_nothing`, plus `a_finish_from_the_attempt_holding_the_claim_records_its_outcome` for the ordinary path. |
+| F6 | One caller can evict another caller's fence records | **Fixed.** Real: the cap counted and evicted across the whole table, so a peer this node can merely identify could flush someone else's records, and a pruned record re-executes. Cap and eviction are now per caller, with an index to match. The trade -- total size bounded by callers x cap rather than by cap alone -- is taken deliberately and written down at the call site; the TTL sweep bounds it in time regardless. Test: `one_caller_cannot_evict_another_callers_records`. |
+| F7 | `proxy-replay` causes delivery but is gated by a read ability | **Fixed.** Real. Replay re-enqueues a call the worker then sends, which is a lifecycle write -- `restart` gates on `orchestrator/deploy` for exactly that reason. The listings keep the read gate; replay takes the write gate. Test: `proxy_replay_is_not_reachable_with_only_the_read_grant`. |
+| F8 | An empty idempotency key passes, then swallows every later enqueue | **Fixed.** Real and nasty: an empty key becomes the queue key, so the first enqueue takes it and every later one is dropped as a duplicate while the guest sees success. Blank and whitespace-only keys are refused with the same message shape as a missing one, and the key is length-bounded. Tests: `an_enqueue_with_a_blank_idempotency_key_is_refused`, `an_over_long_idempotency_key_is_refused`. |
+| F9 | The pending outbox has no row or byte bound | **Fixed.** Real -- failure-matrix row 12's three bounds were all true of `dead_letters` and none of the pending table. Adds a per-service pending-row cap and a payload ceiling, both **refusing** rather than evicting: a pending item is work somebody still expects to happen. Test: `a_full_outbox_refuses_further_enqueues_rather_than_evicting`. |
+| F11 | The supervisor id is missing from the node-level refusal | **Fixed.** Real, and worse than the review states. `NODE_NATIVE_INTERFACES` holds only `orchestrator`/`security`, and the supervisor's interface is registered under the node's own id in exactly the same way -- so a keyed call aimed at it passed the refusal, reached `store_for`, found the node id *does* have registered endpoints, and would have minted a DEK and a database for the node itself. That is precisely the pseudo-service database the refusal exists to prevent. Now named explicitly. Test extended (F21). |
+| F12 | The local/remote namespace split rests on an invariant the code breaks | **Accepted as a backlog row, not fixed here.** The reasoning is sound: re-resolution at every attempt is deliberate, so a rebinding that moves a target on or off this node *does* change which namespace the record lands in, and the call re-executes. It is not reachable in a way this slice can close cheaply -- unifying the namespace means deciding what a local call's stable caller identity is when the guest forwards a synthesized context, which is the same question F10 turns on. Recorded with a pickup trigger rather than guessed at. |
+| F18 | The shutdown test is vacuous | **Fixed.** Real, and exactly the failure the plan warned about. The target failed immediately, so nothing was ever in flight and the assertion passed regardless. The fixture now blocks until released; the test asserts the worker entered the delivery, that cancellation returns well before the release, and that the abandoned item is still on the outbox afterwards. |
+| F19 | The e2e never asserts "exactly once" at the receiver | **Pushed back, with a backlog row.** The gap is real but the suggested fix is not reachable here: the target is a stateless WASM fixture with no counter, and its dedup store is SQLCipher-encrypted under a DEK the test does not hold, so neither a side effect nor the record itself is observable from the test process. The property *is* directly asserted, at the receiver, by two in-process tests that count target invocations -- `a_local_call_is_deduplicated_by_the_proxy` and `a_remote_call_is_deduplicated_at_the_receiving_node`, one per entry point. What the e2e adds is the restart sequence. Closing this properly needs a countable target fixture; recorded with that as the pickup trigger. |
+
+### Minor
+
+| # | Finding | Disposition |
+|---|---|---|
+| F10 | The anonymous-caller refusal is unreachable on the local entry point | **Pushed back.** The observation is correct; the conclusion is not. It conflates "the guest's own caller was anonymous" with "the dedup principal is anonymous". On a self-proxy the principal making the call *is the guest*, and `system:<service id>` names it exactly -- one principal, not a shared bucket. The guest chooses its own keys and is responsible for making them identify its own logical operations; two anonymous clients colliding means the guest reused a key for two different operations, which no namespace can fix. D-B2-20's refusal is about the wire path, where the caller identity *is* the namespace and an unidentified caller genuinely has none -- and that refusal is reachable and tested. Passing `None` locally would refuse the ordinary case of a service acting as itself. |
+| F13 | The two entry points key the store on different identifiers | **Fixed.** Real: the proxy passed the addressed id, the wire path the resolved endpoint's. They agree for a deployed service and disagree for a native channel registered under a different id, which would make "one guard, both entry points" one guard reading two keys. Both now use the resolved endpoint id. |
+| F14 | `enqueue` refuses at call time on the condition the worker retries | **Pushed back, deliberately.** The asymmetry is real and intended. At enqueue the caller is alive and can be told; a hard error now is a better answer than accepting work and reporting failure hours later through a channel the guest cannot read (which is the very gap F19/the guest-dead-letter backlog row describes). Once an item *is* queued the caller is gone, so carrying it through a transient window is the only useful behavior. Same two-moments reasoning as the up-front certificate and self-target refusals, which the plan already argues. Now written down at the call site rather than left implicit. |
+| F15 | The worker and guard are built on nodes with no sandbox role | **Fixed as documentation.** The observation is accurate -- the worker is spawned whenever the router exists, not only when the sandbox role is enabled, so D-B2-22's wording overstates it. Behaviourally harmless (an idle tick against no queue files), and gating it would mean a node that *later* gains a sandbox never starts one. Recorded here as a deviation from D-B2-22 rather than changed. |
+| F16 | Every keyed call pays a TTL sweep and a full `COUNT(*)` | **Fixed.** The `COUNT` is now per-caller and indexed, and amortised behind a check interval so it is off the hot path; the TTL sweep is an indexed range delete and stays on every claim. The row-cap test was rewritten to state the contract the code actually makes -- a ceiling with bounded overshoot -- rather than an exact limit it no longer promises. |
+| F17 | The key probe scans the whole body of every JSON-RPC frame | **Pushed back.** The scan is a byte-window compare over a frame already about to be parsed, and the false positive it describes is benign: a spurious hit costs one parse that then finds no top-level member and takes the unfenced path. Adding a substring-search dependency to buy a constant factor on a path that already parses the same bytes is not a trade worth making without a measurement. Left as-is. |
+| F20 | No test drives two duplicates concurrently | **Fixed** by F1's test, which is exactly this: two keyed calls joined through a cold guard, asserting one claim and one store. |
+| F21 | The node-level refusal test covers two of the three ids | **Fixed.** The loop now covers the supervisor id too -- the case F11 showed behaves differently. |
+| F22 | Six deferred-backlog rows are duplicated inside §8 | **Fixed.** Seven, in fact: the six B2 rows plus B1's planning-doc-ids row. The later "(planned)" block is removed and the block describing what actually shipped kept. |
+
+**Gates re-run after the fixes:** `cargo +nightly fmt --all` clean;
+`cargo clippy --workspace --all-targets --all-features` clean, zero
+warnings; `cargo test --workspace --no-fail-fast` the documented
+pre-existing sandbox-bind set only (`syneroym-core --lib` and `router
+--test native_dispatch_identity` both join it under the sandboxed
+parallel run and pass in isolation, twice each); `mise run test:e2e`
+12/12; `proxy_outbox_e2e` 2/2 in ~155 s.
+
+---
+
+## B2 — verification pass response (2026-08-06)
+
+A follow-up pass re-checked the 22-finding response against source and by
+re-running targeted tests. It confirmed 14 fixed and upheld all four
+push-backs, and found **six still open** -- including F18, vacuous for a
+*second* time. All six are now fixed. **Every fix in this round was proved
+by reverting the fix and confirming its test fails**, rather than by
+observing that it passes; two of the six only became real fixes because of
+that check.
+
+| # | Finding | Disposition |
+|---|---|---|
+| N1 | `Disposition::Delivered` unhandled on the enqueue path | **Fixed.** Real and user-visible: `drain_one_outbox` learned to complete on `Delivered`, but the synchronous probe still matched only `Retry`, so a guest re-enqueueing a key the receiver had already run was handed an *error* for a call that succeeded -- exactly the confusion the queued-path fix removed, one layer up. Both sites now `match` on the enum rather than comparing against one variant, so a future third disposition is a compile error instead of a silent fall-through. That is how this one slipped through. Test: `an_enqueue_whose_target_already_ran_it_reports_success`, confirmed failing against the old arm (`got Err(Callee { code: -32095 })`). |
+| F18 | The shutdown test is still vacuous | **Fixed, and this time verified.** Both diagnoses were right: `target.invoked` was already 1 from the enqueue probe so the wait returned without yielding, and -- structurally -- the probe's own claim meant the worker met `AlreadyRunning` before ever reaching the target. The item is now written straight into the queue, bypassing the probe entirely, so no claim exists and the invocation count starts at zero. **A third cause the pass did not name also had to be fixed:** the fixture's 500 ms per-call timeout meant the "blocked" dispatch resolved on its own, so the test still passed against a worker that never raced cancellation into the delivery. With a 30 s budget it does not. Proved by reverting `run_outbox_worker` to check cancellation only between ticks: the test fails on the 2 s assertion. |
+| N2 | F16's amortisation made F6's own test vacuous | **Fixed.** Correct: 21 claims never crossed a cap-check boundary, so the eviction branch never ran and the test would have passed against the old global cap. The noisy caller now makes `CAP_CHECK_INTERVAL * 5` claims, mirroring its sibling, plus a precondition asserting eviction actually happened. Proved by reverting the cap to global: the test fails on "the victim's fence must survive another caller's overflow". |
+| N3 | `record_dead_letter` writes a transient row outside a transaction | **Fixed.** Real: enqueue-then-fail as two transactions leaves a row for that key briefly visible, and a concurrent sender's `enqueue_if_absent` would see it, report the key already pending, and back off -- then this call would move that same row into `dead_letters`, losing the enqueue the sender believed had succeeded. Adds `Queue::record_dead_letter`, one immediate transaction straight into `dead_letters`. Test: `recording_a_dead_letter_never_makes_the_key_look_pending`. |
+| N4 | The two classifiers disagree about `ServiceNotFound` | **Fixed, in the direction the pass suggested.** They genuinely contradicted each other: the queued path treats not-found as transient (a node republishes its endpoint record before its services finish coming up), while `target_produced` called it a settled pre-dispatch refusal -- so a keyed synchronous call to a momentarily-absent target left *no record at all*, silently narrowing the second dead-letter tier. If it is transient enough to retry when queued, it is transient enough to be worth a replayable row when synchronous. The test now asserts both classifiers agree about that one error, so they cannot drift apart again. |
+| N5 | The DLQ-tier tests no longer exercise retry exhaustion | **Fixed by making the failure real and the names true.** The pass was right that both had been switched to a callee error, which is never retried. They now run against a target that never answers, so the failure is transport-class -- the kind a retry budget is spent on. One honest correction to the pass's framing: genuine *loop* exhaustion is not reachable in this fixture at all, because the retry loop lives on the remote path and the harness has no registry client to resolve an address with. Rather than fake it, the two are renamed to `..._fails_at_the_transport_...` and the callee-error case gets its own test that says what it covers. |
+
+**One self-inflicted error caught by a clippy warning, not by a test.**
+The range replacement that rewrote the two DLQ-tier tests also deleted
+`the_fences_own_answers_never_earn_a_dead_letter` and
+`a_full_outbox_refuses_further_enqueues_rather_than_evicting` -- F4's and
+F9's regression tests from the previous round. A `field 'provider' is
+never read` warning was the only signal. Both restored; the router suite
+went 137 → 139. Worth recording because the tests were silently gone while
+everything still passed.
+
+**Gates:** `cargo +nightly fmt --all` clean; `cargo clippy --workspace
+--all-targets --all-features` clean, zero warnings; `cargo test
+--workspace --no-fail-fast` the documented pre-existing sandbox-bind set
+only, no additions; `mise run test:e2e` 12/12; `proxy_outbox_e2e` 2/2 in
+~178 s; `router --lib` 139, `async-queue` 40, `rpc` 44, `sandbox-wasm` 60.

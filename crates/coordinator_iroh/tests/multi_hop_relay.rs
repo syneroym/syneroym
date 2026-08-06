@@ -152,6 +152,7 @@ async fn build_test_route_handler_deps(
     let control_plane_service = Arc::new(control_plane_service);
 
     Ok(RouteHandlerDeps {
+        logical_resolver: syneroym_app_orchestration::empty_resolver(),
         key_store,
         storage_provider,
         app_sandbox_engine,
@@ -995,6 +996,7 @@ async fn test_cross_node_native_capability_identity_forwarding() -> Result<()> {
         },
         origin: CallOrigin::Native { service_id: None },
         protocol: ProxyProtocol::JsonRpcV1,
+        idempotency_key: None,
         idempotent: false,
         timeout: Some(Duration::from_secs(5)),
     };

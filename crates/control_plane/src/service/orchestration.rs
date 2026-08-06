@@ -34,7 +34,10 @@ use syneroym_fdae::Policy;
 use syneroym_identity::{
     DelegationCertificate, delegation::SCOPE_SERVICE_INSTANCE, substrate::derive_did_key,
 };
-use syneroym_rpc::{Ability, CallerContext, JsonRpcRequest, NativeService, ResourceUri};
+use syneroym_rpc::{
+    Ability, CallerContext, DeadLetterInfo, JsonRpcRequest, NativeService, ProxyQueueInspector,
+    QueuedCallInfo, ResourceUri,
+};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     AppContext, AppInstanceManagement as AppInstanceManagementWire, ArtifactSource, BindingWrite,
     BindingWriteOutcome as BindingWriteOutcomeWire, ContainerManifest, DependencyBinding,
@@ -61,6 +64,25 @@ const MAX_INSTANCE_CERT_LIFETIME_SECS: u64 = 30 * 24 * 3600;
 #[async_trait::async_trait]
 pub trait OrchestratorInterface {
     async fn readyz(&self, service_id: String, caller: &CallerContext) -> Result<(), String>;
+    /// Every call waiting in `service_id`'s durable proxy outbox.
+    async fn proxy_outbox(
+        &self,
+        service_id: String,
+        caller: &CallerContext,
+    ) -> Result<Vec<QueuedCallInfo>, String>;
+    /// Every dead letter `service_id`'s proxy outbox holds.
+    async fn proxy_dead_letters(
+        &self,
+        service_id: String,
+        caller: &CallerContext,
+    ) -> Result<Vec<DeadLetterInfo>, String>;
+    /// Re-enqueues one dead letter; it never executes inline.
+    async fn proxy_replay(
+        &self,
+        service_id: String,
+        dead_letter_id: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String>;
     /// The instance signing key this substrate would derive for `service_id`
     /// under `caller`'s identity, answerable before the service is deployed
     /// (ADR-0020 §3): the master holder certifies this key without the
@@ -807,6 +829,65 @@ impl ControlPlaneService {
     }
 }
 
+impl ControlPlaneService {
+    /// The `proxy-*` verbs read and replay one service's queued work, so
+    /// they are gated exactly as their per-service neighbours on this
+    /// interface are -- `orchestrator/status`, node-wide or scoped to that
+    /// one service. No new resource namespace: a second way to name the
+    /// same authority is how an operator ends up holding a grant that does
+    /// not mean what they think.
+    fn authorize_proxy_queue_access(
+        &self,
+        service_id: &str,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        self.authorize_proxy_queue(service_id, caller, Ability::ORCHESTRATOR_STATUS)
+    }
+
+    /// `proxy-replay` re-enqueues a call the worker then *sends*, so it is
+    /// a lifecycle write and takes the write gate -- the same one
+    /// `restart` uses, for the same reason. Listing the queues is a read
+    /// and keeps the read gate; a holder of read-only status must not be
+    /// able to make a service emit calls.
+    fn authorize_proxy_queue_write(
+        &self,
+        service_id: &str,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        self.authorize_proxy_queue(service_id, caller, Ability::ORCHESTRATOR_DEPLOY)
+    }
+
+    fn authorize_proxy_queue(
+        &self,
+        service_id: &str,
+        caller: &CallerContext,
+        ability: &'static str,
+    ) -> Result<(), String> {
+        if service_id.is_empty() {
+            return Err("a service id is required".to_string());
+        }
+        if self.has_node_wide_ability(caller, ability) {
+            return Ok(());
+        }
+        let resource = ResourceUri(format!("substrate:{}/app/{service_id}", self.node_did));
+        if caller.has_capability(&resource, &Ability(ability.to_string())) {
+            return Ok(());
+        }
+        Err(format!("caller {} holds no {ability} grant for '{service_id}'", caller.caller_did))
+    }
+
+    /// The router's queue view, once it has been wired in. Absent means
+    /// this node has no durable proxy path at all (coordinator mode, or a
+    /// test harness with no router), which is a different answer from "the
+    /// queue is empty" and is reported as such.
+    fn proxy_queue_inspector(&self) -> Result<Arc<dyn ProxyQueueInspector>, String> {
+        self.proxy_queues
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| "this node keeps no durable proxy queues".to_string())
+    }
+}
+
 #[async_trait::async_trait]
 impl OrchestratorInterface for ControlPlaneService {
     /// M04A Slice B7b (§2.4.1): `readyz` has two forms, and only one is a
@@ -822,6 +903,34 @@ impl OrchestratorInterface for ControlPlaneService {
     /// passes for free; otherwise the caller needs a grant covering this
     /// app. An unowned substrate holds no node-wide authority, so this
     /// always falls through to the per-app grant check there.
+    async fn proxy_outbox(
+        &self,
+        service_id: String,
+        caller: &CallerContext,
+    ) -> Result<Vec<QueuedCallInfo>, String> {
+        self.authorize_proxy_queue_access(&service_id, caller)?;
+        self.proxy_queue_inspector()?.queued_calls(&service_id).await
+    }
+
+    async fn proxy_dead_letters(
+        &self,
+        service_id: String,
+        caller: &CallerContext,
+    ) -> Result<Vec<DeadLetterInfo>, String> {
+        self.authorize_proxy_queue_access(&service_id, caller)?;
+        self.proxy_queue_inspector()?.dead_letters(&service_id).await
+    }
+
+    async fn proxy_replay(
+        &self,
+        service_id: String,
+        dead_letter_id: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        self.authorize_proxy_queue_write(&service_id, caller)?;
+        self.proxy_queue_inspector()?.replay_dead_letter(&service_id, dead_letter_id).await
+    }
+
     async fn readyz(&self, service_id: String, caller: &CallerContext) -> Result<(), String> {
         if !service_id.is_empty() {
             if !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_STATUS) {
@@ -2874,6 +2983,7 @@ impl ControlPlaneService {
                     method: p.method.clone(),
                     params: Value::Array(vec![]),
                     id: Some(Value::from(1)),
+                    idempotency_key: None,
                 };
                 // M05A A5c §19.13/D-A5c-12: `execute_probe_json`, not
                 // `execute_wasm_json` directly -- bounded by the engine's
@@ -8559,6 +8669,206 @@ mod tests {
             matches!(tcp_phase, InstancePhase::Unknown(_)),
             "expected Unknown, got {tcp_phase:?}"
         );
+    }
+
+    // -- the durable proxy queue's operator surface ------------------------
+
+    /// Stands in for the router's outbox, which this crate cannot depend
+    /// on. Records what was asked of it so `replay` can be shown not to
+    /// execute anything inline.
+    #[derive(Debug, Default)]
+    struct FakeProxyQueues {
+        queued: std::sync::Mutex<Vec<QueuedCallInfo>>,
+        dead: std::sync::Mutex<Vec<DeadLetterInfo>>,
+        replayed: std::sync::Mutex<Vec<(String, u64)>>,
+        delivered: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ProxyQueueInspector for FakeProxyQueues {
+        async fn queued_calls(&self, _service_id: &str) -> Result<Vec<QueuedCallInfo>, String> {
+            Ok(self.queued.lock().unwrap().clone())
+        }
+
+        async fn dead_letters(&self, _service_id: &str) -> Result<Vec<DeadLetterInfo>, String> {
+            Ok(self.dead.lock().unwrap().clone())
+        }
+
+        async fn replay_dead_letter(&self, service_id: &str, id: u64) -> Result<(), String> {
+            // Re-enqueue only: a replay that executed here would be doing
+            // the delivery itself, which is exactly what must not happen.
+            self.replayed.lock().unwrap().push((service_id.to_string(), id));
+            let mut dead = self.dead.lock().unwrap();
+            let Some(pos) = dead.iter().position(|d| d.id == id) else {
+                return Err(format!("no dead letter with id {id}"));
+            };
+            let letter = dead.remove(pos);
+            self.queued.lock().unwrap().push(QueuedCallInfo {
+                id: letter.id,
+                idempotency_key: letter.idempotency_key,
+                attempts: letter.attempts,
+            });
+            Ok(())
+        }
+    }
+
+    async fn service_with_proxy_queues(
+        dir: &std::path::Path,
+        queues: &Arc<FakeProxyQueues>,
+    ) -> ControlPlaneService {
+        let service = service_for_inline_tests(dir).await;
+        service
+            .proxy_queues
+            .set(Arc::downgrade(queues) as std::sync::Weak<dyn ProxyQueueInspector>)
+            .expect("proxy queues set once");
+        service
+    }
+
+    fn a_dead_letter(id: u64, key: &str) -> DeadLetterInfo {
+        DeadLetterInfo {
+            id,
+            idempotency_key: key.to_string(),
+            attempts: 54,
+            last_error: "target unreachable".to_string(),
+            created_at: 1_700_000_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_dead_letters_lists_what_the_services_queue_holds() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let queues = Arc::new(FakeProxyQueues::default());
+        queues.dead.lock().unwrap().push(a_dead_letter(1, "msg-7"));
+        let service = service_with_proxy_queues(temp_dir.path(), &queues).await;
+
+        let listed = service
+            .proxy_dead_letters("svc-a".to_string(), &status_capable_caller("owner"))
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].idempotency_key, "msg-7");
+        assert_eq!(listed[0].last_error, "target unreachable");
+    }
+
+    /// The verb B1 shipped without and had to add afterwards, because its
+    /// e2e could not otherwise assert that an item was queued, survived a
+    /// restart, and then left.
+    #[tokio::test]
+    async fn proxy_outbox_lists_an_item_before_it_lands() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let queues = Arc::new(FakeProxyQueues::default());
+        queues.queued.lock().unwrap().push(QueuedCallInfo {
+            id: 1,
+            idempotency_key: "msg-7".to_string(),
+            attempts: 2,
+        });
+        let service = service_with_proxy_queues(temp_dir.path(), &queues).await;
+
+        let listed = service
+            .proxy_outbox("svc-a".to_string(), &status_capable_caller("owner"))
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].idempotency_key, "msg-7");
+        assert_eq!(listed[0].attempts, 2);
+    }
+
+    #[tokio::test]
+    async fn replay_re_enqueues_and_does_not_execute_inline() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let queues = Arc::new(FakeProxyQueues::default());
+        queues.dead.lock().unwrap().push(a_dead_letter(1, "msg-7"));
+        let service = service_with_proxy_queues(temp_dir.path(), &queues).await;
+
+        service
+            .proxy_replay("svc-a".to_string(), 1, &status_capable_caller("owner"))
+            .await
+            .unwrap();
+
+        assert!(queues.dead.lock().unwrap().is_empty(), "the dead letter must be consumed");
+        assert_eq!(
+            queues.queued.lock().unwrap().len(),
+            1,
+            "and reappear in the outbox for the worker to pick up"
+        );
+        assert_eq!(
+            queues.delivered.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "replay must not deliver anything itself"
+        );
+    }
+
+    /// Failure-matrix row 14, extending the gate their neighbours already
+    /// use rather than inventing a second authority to hold.
+    #[tokio::test]
+    async fn the_new_verbs_are_refused_without_the_gate_their_neighbours_use() {
+        use syneroym_rpc::{AuthLevel, SessionContext};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let queues = Arc::new(FakeProxyQueues::default());
+        queues.dead.lock().unwrap().push(a_dead_letter(1, "msg-7"));
+        let service = service_with_proxy_queues(temp_dir.path(), &queues).await;
+
+        let ungranted = CallerContext {
+            caller_did: "did:key:zStranger".to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: "did:key:zStranger".to_string(),
+                ..Default::default()
+            },
+            auth: AuthLevel::Delegated,
+            proof: None,
+        };
+
+        assert!(service.proxy_outbox("svc-a".to_string(), &ungranted).await.is_err());
+        assert!(service.proxy_dead_letters("svc-a".to_string(), &ungranted).await.is_err());
+        assert!(service.proxy_replay("svc-a".to_string(), 1, &ungranted).await.is_err());
+        assert_eq!(
+            queues.dead.lock().unwrap().len(),
+            1,
+            "a refused replay must not have consumed the dead letter"
+        );
+    }
+
+    /// Replay re-enqueues a call the worker then sends, so it is a
+    /// lifecycle write and must not be reachable with the read grant the
+    /// listing verbs use. `status_capable_caller` holds both, so this
+    /// drives a caller holding *only* the read one.
+    #[tokio::test]
+    async fn proxy_replay_is_not_reachable_with_only_the_read_grant() {
+        use syneroym_rpc::{AuthLevel, Capability, SessionContext};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let queues = Arc::new(FakeProxyQueues::default());
+        queues.dead.lock().unwrap().push(a_dead_letter(1, "msg-7"));
+        let service = service_with_proxy_queues(temp_dir.path(), &queues).await;
+
+        let read_only = CallerContext {
+            caller_did: "did:key:zReader".to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: "did:key:zReader".to_string(),
+                capabilities: vec![Capability {
+                    with: ResourceUri::substrate("did:key:zTestNode"),
+                    can: Ability(Ability::ORCHESTRATOR_STATUS.to_string()),
+                    caveats: None,
+                }],
+                ..Default::default()
+            },
+            auth: AuthLevel::Delegated,
+            proof: None,
+        };
+
+        // The listings are reads and stay reachable.
+        assert!(service.proxy_outbox("svc-a".to_string(), &read_only).await.is_ok());
+        assert!(service.proxy_dead_letters("svc-a".to_string(), &read_only).await.is_ok());
+
+        // The write is not.
+        assert!(
+            service.proxy_replay("svc-a".to_string(), 1, &read_only).await.is_err(),
+            "a read grant must not let a caller make a service emit calls"
+        );
+        assert_eq!(queues.dead.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

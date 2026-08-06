@@ -39,6 +39,23 @@ pub trait StorageProvider: Send + Sync {
     /// whether the guest's `init()` or `migrate()` lifecycle hook is invoked.
     async fn service_exists(&self, service_id: &str) -> anyhow::Result<bool>;
 
+    /// The directory this provider keeps `service_id`'s own databases in,
+    /// validated and guarded against path traversal, without touching the
+    /// filesystem. Exposed so a host-owned sibling database -- one that
+    /// must sit beside `state.db` and be protected by the same DEK, but
+    /// must not be reachable through the guest's own read surface -- can be
+    /// opened at the right path without re-deriving (and re-validating) it
+    /// at the call site.
+    ///
+    /// The default body refuses: a provider with no on-disk per-service
+    /// layout has no such directory, and inventing one would be worse than
+    /// saying so.
+    fn service_db_dir(&self, service_id: &str) -> anyhow::Result<std::path::PathBuf> {
+        Err(anyhow::anyhow!(
+            "this storage provider keeps no per-service directory (service '{service_id}')"
+        ))
+    }
+
     /// Saves a new configuration generation for a service.
     async fn save_config_generation(
         &self,

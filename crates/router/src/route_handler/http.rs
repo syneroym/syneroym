@@ -178,6 +178,7 @@ async fn dispatch_native(
         method: method.to_string(),
         params,
         id: Some(Value::Number(1.into())),
+        idempotency_key: None,
     };
     let body = serde_json::to_vec(&request)?;
     let synthetic = RoutePreamble { interface: interface.to_string(), ..preamble.clone() };

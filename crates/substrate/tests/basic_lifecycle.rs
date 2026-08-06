@@ -596,6 +596,7 @@ async fn test_http_proxy_invocation(
         method: "greet".to_string(),
         params: serde_json::json!(["proxy-tester"]),
         id: Some(Value::Number(42.into())),
+        idempotency_key: None,
     };
 
     let req_client = Client::new();

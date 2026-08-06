@@ -62,6 +62,7 @@ mod tests {
             method: method.to_string(),
             params,
             id: Some(Value::Number(1.into())),
+            idempotency_key: None,
         }
     }
 

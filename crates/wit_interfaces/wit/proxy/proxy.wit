@@ -1,13 +1,13 @@
 package syneroym:proxy@0.1.0;
 
-/// The Universal Proxy (M04A Slice A1). A component calls another service --
-/// local or on another node -- without knowing where it lives. `params` and
-/// the success value are JSON text; the **callee** binds them against its
-/// real WIT signature (records/variants/lists/options -- see
-/// `conversions.rs`), so the call is typed at the dispatch boundary even
-/// though the wire is JSON-RPC. A binary wRPC wire is deferred (M04A
-/// Decision Register A.5); when it lands, `call-options.protocol` selects it
-/// and this interface does not change.
+/// The Universal Proxy. A component calls another service -- local or on
+/// another node -- without knowing where it lives. `params` and the success
+/// value are JSON text; the **callee** binds them against its real WIT
+/// signature (records/variants/lists/options -- see `conversions.rs`), so
+/// the call is typed at the dispatch boundary even though the wire is
+/// JSON-RPC. A binary wRPC wire is reserved but not implemented; when it
+/// lands, `call-options.protocol` selects it and this interface does not
+/// change.
 interface proxy {
     record callee-error {
         code: s32,
@@ -44,8 +44,8 @@ interface proxy {
 
     record call-options {
         /// Reserved wire tag. `none` or "json-rpc/v1" today; any other
-        /// value returns `unsupported-protocol` (negotiation is deferred --
-        /// A.7).
+        /// value returns `unsupported-protocol` -- protocol negotiation
+        /// does not exist yet.
         protocol: option<string>,
         /// Retry transport failures with exponential backoff. Only set this
         /// for calls that are safe to repeat; a callee-returned error is
@@ -57,6 +57,15 @@ interface proxy {
         /// for `redundant`, required for `sharded`, ignored for
         /// `singleton` and for a raw-DID target.
         routing-key: option<string>,
+        /// Fence for at-least-once delivery (ADR-0023 §4). The receiving
+        /// node remembers this key and answers a duplicate from the first
+        /// call's stored outcome instead of running the target twice, so a
+        /// call carrying one is always safe to retry -- whatever
+        /// `idempotent` says. Choose a value that identifies the *logical*
+        /// operation, not the attempt: two attempts at the same operation
+        /// must carry the same key, and two different operations must not.
+        /// Required by `enqueue`; optional here.
+        idempotency-key: option<string>,
     }
 
     /// `target` is the target's DID (or a registry alias), or a declared
@@ -72,4 +81,30 @@ interface proxy {
         params: string,
         options: option<call-options>,
     ) -> result<string, proxy-error>;
+
+    /// Fire-and-forget delivery that survives an unreachable target and a
+    /// restart of this substrate. The call is attempted immediately; only
+    /// a transport failure puts it in this service's own durable outbox,
+    /// where it is retried on a backoff schedule for hours before it is
+    /// given up on. The caller never sees the result -- success here means
+    /// "accepted for delivery", not "delivered".
+    ///
+    /// `options.idempotency-key` is **required**: a queued call is
+    /// delivered at least once, so without a fence a retry would run the
+    /// target twice. An `enqueue` without one is refused rather than
+    /// quietly made unsafe.
+    ///
+    /// Also refused: a target that is this component's own service (local
+    /// and already running, so durability buys it nothing), a node-level
+    /// interface (which keeps no record to fence a key with), and a call
+    /// from a service holding no unexpired instance certificate (every
+    /// delivery attempt would be refused as anonymous, so failing now is
+    /// the same answer given sooner and louder).
+    enqueue: func(
+        target: call-target,
+        %interface: string,
+        method: string,
+        params: string,
+        options: option<call-options>,
+    ) -> result<_, proxy-error>;
 }

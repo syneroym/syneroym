@@ -111,6 +111,7 @@ async fn resolve_one_fetch(
         protocol: ProxyProtocol::default(),
         // Read-only, idempotent by construction -- safe for the proxy's own
         // transport-failure retry loop.
+        idempotency_key: None,
         idempotent: true,
         timeout: Some(FDAE_FETCH_TIMEOUT),
     };

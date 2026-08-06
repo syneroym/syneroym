@@ -145,8 +145,13 @@ async fn call(
     method: &str,
     params: serde_json::Value,
 ) -> String {
-    let request =
-        JsonRpcRequest { jsonrpc: "2.0".to_string(), method: method.to_string(), params, id: None };
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: method.to_string(),
+        params,
+        id: None,
+        idempotency_key: None,
+    };
     engine.execute_wasm(service_id, TEST_DRIVER_INTERFACE, &request).await.unwrap()
 }
 

@@ -14,9 +14,9 @@ use serde_json::Value;
 
 use crate::CallerContext;
 
-/// Reserved wire tag (A.5/A.7): only `JsonRpcV1` exists in M4. A future wRPC
-/// wire adds a variant here plus a `RemoteHop` impl in `syneroym-router` --
-/// no other type changes.
+/// Reserved wire tag: only `JsonRpcV1` exists today. A future wRPC wire
+/// adds a variant here plus a `RemoteHop` impl in `syneroym-router` -- no
+/// other type changes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ProxyProtocol {
     #[default]
@@ -26,10 +26,10 @@ pub enum ProxyProtocol {
 impl ProxyProtocol {
     pub const JSON_RPC_V1_TAG: &'static str = "json-rpc/v1";
 
-    /// `None`/`"json-rpc/v1"` decode to [`Self::JsonRpcV1`]; anything else is
-    /// `Err(tag)` -- the caller turns that into
-    /// [`ProxyError::UnsupportedProtocol`] (the minimal `[LFC-VER]` behavior
-    /// kept from the deferred protocol-negotiation slice, A.7).
+    /// `None`/`"json-rpc/v1"` decode to [`Self::JsonRpcV1`]; anything else
+    /// is `Err(tag)` -- the caller turns that into
+    /// [`ProxyError::UnsupportedProtocol`]. Protocol negotiation does not
+    /// exist: a node either speaks the tag or refuses it.
     pub fn parse(tag: Option<&str>) -> Result<Self, String> {
         match tag {
             None | Some(Self::JSON_RPC_V1_TAG) => Ok(Self::JsonRpcV1),
@@ -75,10 +75,19 @@ pub struct ProxyRequest {
     pub caller: CallerContext,
     pub origin: CallOrigin,
     pub protocol: ProxyProtocol,
-    /// Retry eligibility. Transport failures are retried with backoff only
-    /// when `true`; a callee-returned error is never retried. Failed-after-
-    /// retries fails directly -- no queueing (DLQ is M5).
+    /// Retry eligibility asserted by the caller. Transport failures are
+    /// retried with backoff only when `true` (or when
+    /// [`Self::idempotency_key`] is set, which is a strictly stronger
+    /// fence); a callee-returned error is never retried.
     pub idempotent: bool,
+    /// The receiver-side fence for at-least-once delivery (ADR-0023 §4).
+    /// Present means the receiving node records the call's first outcome
+    /// under `(caller, key)` and answers any duplicate from that record,
+    /// which is what makes a retry -- and a dead letter's later replay --
+    /// safe. Absent means the call has no fence, so it is never queued for
+    /// redelivery and never written to a dead-letter table: the caller is
+    /// alive and holding the error, and there is nothing safe to replay.
+    pub idempotency_key: Option<String>,
     /// Per-call deadline. `None` uses [`DEFAULT_PROXY_CALL_TIMEOUT`].
     pub timeout: Option<Duration>,
 }
@@ -110,7 +119,7 @@ impl ProxyError {
     #[must_use]
     pub fn code(&self) -> i32 {
         match self {
-            Self::ServiceNotFound(_) => -32601,
+            Self::ServiceNotFound(_) => SERVICE_NOT_FOUND_RPC_CODE,
             Self::UnsupportedProtocol(_) => UNSUPPORTED_PROTOCOL_RPC_CODE,
             Self::UnsupportedTarget(_) => UNSUPPORTED_TARGET_RPC_CODE,
             Self::PermissionDenied(_) => -32010, // same shape as data-layer denial
@@ -124,6 +133,11 @@ impl ProxyError {
 /// Reserved JSON-RPC error code for a caller declaring a protocol scheme this
 /// node does not speak (the minimal `[LFC-VER]` behavior kept from the
 /// deferred protocol-negotiation slice, A.7).
+/// JSON-RPC code a node answers with when it does not host the service a
+/// call named. Named rather than inlined because a *caller* has to
+/// recognise it on the wire: it is the one "the callee answered" code that
+/// can mean "not yet" rather than "no".
+pub const SERVICE_NOT_FOUND_RPC_CODE: i32 = -32601;
 pub const UNSUPPORTED_PROTOCOL_RPC_CODE: i32 = -32091;
 /// Reserved JSON-RPC error code for a proxy transport failure (connect
 /// failure, malformed response, or exhausted retries).
@@ -134,10 +148,101 @@ pub const UNSUPPORTED_TARGET_RPC_CODE: i32 = -32093;
 /// Default per-call deadline when [`ProxyRequest::timeout`] is `None`.
 pub const DEFAULT_PROXY_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// What a queued call is addressed to, stored as the caller *named* it.
+///
+/// A dependency is deliberately not resolved before storage: resolution
+/// happens host-side on every attempt precisely so a caller can never
+/// snapshot the resolved DID past a re-pushed binding (ADR-0021 §2), and a
+/// queued call that stored the resolved DID would snapshot exactly that --
+/// for hours, which is longer than any caller could manage on its own.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum QueuedTarget {
+    /// A declared dependency name, re-resolved at each delivery attempt.
+    Dependency(String),
+    /// A DID (or registry alias) the caller named directly.
+    Service(String),
+}
+
+/// One durable, fire-and-forget call, as it waits in a service's outbox.
+///
+/// Carries everything a delivery attempt needs long after the calling
+/// component instance that produced it is gone: `app_instance_id` because
+/// dependency resolution is scoped to an app instance and the host reads it
+/// from the live instance rather than from the caller, and
+/// `caller_service_id` because the identity the call travels under has to be
+/// rebuilt identically to the live path or authorization at the receiver
+/// would silently diverge between the two.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct QueuedCall {
+    pub app_instance_id: Option<String>,
+    pub caller_service_id: String,
+    pub target: QueuedTarget,
+    pub routing_key: Option<String>,
+    pub interface: String,
+    pub method: String,
+    pub params: Value,
+    /// Always present: a queued call with no fence could not be retried
+    /// safely, let alone replayed out of a dead-letter table, so
+    /// `enqueue` refuses one outright rather than storing it.
+    pub idempotency_key: String,
+    /// [`ProxyProtocol`]'s wire tag, stored as text so the payload does not
+    /// depend on a Rust enum's shape.
+    pub protocol: Option<String>,
+    pub timeout_ms: Option<u64>,
+}
+
+/// One queued call, as an operator listing shows it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct QueuedCallInfo {
+    pub id: u64,
+    pub idempotency_key: String,
+    pub attempts: u32,
+}
+
+/// One terminally failed queued call, as an operator listing shows it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DeadLetterInfo {
+    pub id: u64,
+    pub idempotency_key: String,
+    pub attempts: u32,
+    pub last_error: String,
+    pub created_at: i64,
+}
+
+/// Read-and-replay access to a service's durable proxy queues, for the
+/// operator verbs.
+///
+/// Defined here rather than on the outbox itself because the control plane
+/// exposes those verbs and the router owns the queues, and the dependency
+/// runs router -> control-plane. Same shape and same reason as
+/// [`ServiceProxy`]: the contract lives in the crate both sides already
+/// share.
+#[async_trait::async_trait]
+pub trait ProxyQueueInspector: Send + Sync + Debug {
+    async fn queued_calls(&self, service_id: &str) -> Result<Vec<QueuedCallInfo>, String>;
+    async fn dead_letters(&self, service_id: &str) -> Result<Vec<DeadLetterInfo>, String>;
+    /// Re-enqueues a dead letter. Never executes inline.
+    async fn replay_dead_letter(&self, service_id: &str, id: u64) -> Result<(), String>;
+}
+
 #[async_trait::async_trait]
 pub trait ServiceProxy: Send + Sync + Debug {
     /// Returns the callee's JSON-RPC `result` value on success.
     async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError>;
+
+    /// Hands a call to the calling service's durable outbox: delivery
+    /// survives an unreachable target and a process restart, and the caller
+    /// never sees the outcome.
+    ///
+    /// Try-then-queue: a reachable target costs one call and zero queue
+    /// writes, and only a transport failure puts the item on disk. The
+    /// default body refuses -- a proxy with no per-service storage behind
+    /// it has nowhere to keep the item, and pretending otherwise would drop
+    /// a call the caller believes is durable.
+    async fn enqueue(&self, call: QueuedCall) -> Result<(), ProxyError> {
+        let _ = call;
+        Err(ProxyError::Internal("this proxy has no durable outbox behind it".to_string()))
+    }
 }
 
 #[cfg(test)]

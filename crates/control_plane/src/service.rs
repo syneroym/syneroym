@@ -26,8 +26,8 @@ use syneroym_identity::Identity;
 use syneroym_mqtt_broker::MqttBroker;
 use syneroym_rpc::{
     Ability, CallerContext, NativeDispatchRegistry, NativeInvocation, NativeResponse,
-    NativeService, PERMISSION_DENIED_CODE, ResourceUri, RowAuthorizer, RpcError, RpcResult,
-    ServiceProxy, WeakNativeDispatchRegistry, empty_row_authorizer,
+    NativeService, PERMISSION_DENIED_CODE, ProxyQueueInspector, ResourceUri, RowAuthorizer,
+    RpcError, RpcResult, ServiceProxy, WeakNativeDispatchRegistry, empty_row_authorizer,
 };
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     BindingWrite, DeployManifest, DeploymentPlan, ProbeStatus,
@@ -97,6 +97,11 @@ pub struct ControlPlaneService {
     /// calls `.set(...)` on this field the same way it already does for
     /// `AppSandboxEngine`'s.
     pub service_proxy: OnceLock<Weak<dyn ServiceProxy>>,
+    /// Read-and-replay access to the durable proxy queues, for the
+    /// `proxy-*` operator verbs. Wired the same post-construction way, and
+    /// for the same ordering reason, as `service_proxy` above: the router
+    /// owns the queues and is built after this service.
+    pub proxy_queues: OnceLock<Weak<dyn ProxyQueueInspector>>,
     /// The stage-4 ABAC after-step invoker (ADR-0017 §7), threaded on into
     /// each deployed service's `SynSvcNativeService` exactly like
     /// `service_proxy` above -- same reason (`AppSandboxEngine`, the sole
@@ -185,6 +190,7 @@ impl ControlPlaneService {
             node_identity,
             logical_resolver,
             service_proxy: OnceLock::new(),
+            proxy_queues: OnceLock::new(),
             row_authorizer: OnceLock::new(),
             endpoint_publisher: OnceLock::new(),
             native_dispatch: Arc::downgrade(&native_dispatch),
@@ -542,6 +548,39 @@ impl NativeService for ControlPlaneService {
                     .map_err(RpcError::InternalError)?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "released"}) })
             }
+            "proxy-outbox" => {
+                let service_id = parse_service_id_param(invocation.params);
+                let items = self
+                    .proxy_outbox(service_id, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::to_value(items).unwrap_or(Value::Null) })
+            }
+            "proxy-dead-letters" => {
+                let service_id = parse_service_id_param(invocation.params);
+                let items = self
+                    .proxy_dead_letters(service_id, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::to_value(items).unwrap_or(Value::Null) })
+            }
+            "proxy-replay" => {
+                #[derive(serde::Deserialize)]
+                struct ReplayParams {
+                    #[serde(alias = "service-id")]
+                    service_id: String,
+                    #[serde(alias = "dead-letter-id")]
+                    dead_letter_id: u64,
+                }
+                let params = serde_json::from_value::<(String, u64)>(invocation.params.clone())
+                    .map(|(service_id, dead_letter_id)| ReplayParams { service_id, dead_letter_id })
+                    .or_else(|_| serde_json::from_value::<ReplayParams>(invocation.params))
+                    .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                self.proxy_replay(params.service_id, params.dead_letter_id, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::json!({"status": "replayed"}) })
+            }
             "list" => {
                 let services =
                     self.list(&invocation.caller).await.map_err(RpcError::InternalError)?;
@@ -580,6 +619,24 @@ fn ready_response() -> NativeResponse {
 /// named params. Anything unparseable is treated as an empty list ("every
 /// service this caller may see") rather than a hard error, matching
 /// `readyz`'s own `unwrap_or_default()`.
+/// The single `service-id` argument the `proxy-*` verbs take, accepted in
+/// the same three shapes the neighbouring per-service verbs already do
+/// (positional tuple, bare string, or a named object).
+fn parse_service_id_param(params: Value) -> String {
+    serde_json::from_value::<(String,)>(params.clone())
+        .map(|(s,)| s)
+        .or_else(|_| serde_json::from_value::<String>(params.clone()))
+        .or_else(|_| {
+            #[derive(serde::Deserialize)]
+            struct ServiceIdPayload {
+                #[serde(alias = "service-id")]
+                service_id: String,
+            }
+            serde_json::from_value::<ServiceIdPayload>(params).map(|p| p.service_id)
+        })
+        .unwrap_or_default()
+}
+
 fn parse_status_params(params: Value) -> Vec<String> {
     serde_json::from_value::<(Vec<String>,)>(params.clone())
         .map(|(ids,)| ids)
@@ -717,6 +774,7 @@ mod tests {
             method: method.to_string(),
             params,
             id: None,
+            idempotency_key: None,
         };
         engine.execute_wasm(service_id, MESSAGING_TEST_DRIVER_INTERFACE, &request).await.unwrap()
     }

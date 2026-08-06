@@ -6,6 +6,7 @@
 //! only implementation.
 
 use std::{
+    collections::BTreeSet,
     fmt::{self, Debug, Formatter},
     sync::{Arc, Weak},
     time::{Duration, Instant},
@@ -13,6 +14,9 @@ use std::{
 
 use iroh::{Endpoint, EndpointAddr};
 use serde_json::Value;
+use syneroym_async_queue::{
+    CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, FailOutcome, Queue,
+};
 use syneroym_core::{
     config::RetryPolicy,
     dht_registry::RegistryClient,
@@ -23,15 +27,65 @@ use syneroym_core::{
 };
 use syneroym_identity::{DelegationCertificate, Identity};
 use syneroym_rpc::{
-    CallOrigin, DEFAULT_PROXY_CALL_TIMEOUT, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse,
-    NativeInvocation, ProxyError, ProxyProtocol, ProxyRequest, RpcError, ServiceProxy,
-    WeakNativeDispatchRegistry, framing,
+    CallOrigin, CallerContext, DEFAULT_PROXY_CALL_TIMEOUT, JsonRpcErrorResponse, JsonRpcRequest,
+    JsonRpcResponse, NativeInvocation, ProxyError, ProxyProtocol, ProxyRequest, QueuedCall,
+    RpcError, ServiceProxy, WeakNativeDispatchRegistry, framing,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::time;
-use tracing::warn;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
 
-use crate::{net_iroh, preamble::RoutePreamble};
+use crate::{
+    call_dedup::{self, CallDedupGuard, GuardOutcome},
+    net_iroh,
+    preamble::RoutePreamble,
+    proxy_outbox::{self, Disposition, ProxyOutbox},
+};
+
+/// Whether `error` came from the call actually reaching its target, as
+/// opposed to being the receiver-side fence's own answer or a refusal
+/// raised before anything was attempted.
+///
+/// Only the former is worth a dead letter: a dead letter exists to be
+/// replayed, and replaying a refusal just re-earns the refusal.
+fn target_produced(error: &ProxyError) -> bool {
+    match error {
+        ProxyError::Callee { code, .. } => {
+            *code != CALL_ALREADY_RUNNING_RPC_CODE && *code != CALL_RESULT_NOT_RETAINED_RPC_CODE
+        }
+        ProxyError::Transport(_) | ProxyError::Timeout(_) => true,
+        // A target that is not found *is* worth a row, and this is the
+        // one place the two classifiers have to be read together. The
+        // queued path treats not-found as retryable, because a node
+        // republishes its endpoint record before its services finish
+        // coming up, so the answer is often "not yet" rather than "no".
+        // The same reasoning applies here: the synchronous caller has
+        // exhausted its own budget against a target that may simply have
+        // been mid-restart, which is exactly a call worth being able to
+        // replay later. Excluding it would silently drop the second tier
+        // of the dead-letter rule for the most transient failure there is.
+        ProxyError::ServiceNotFound(_) => true,
+        // Raised instead of a dispatch, and settled: a denied gate, an
+        // unusable target kind, a protocol this node does not speak, or a
+        // store it could not open. Replaying any of these re-earns the
+        // same refusal.
+        ProxyError::PermissionDenied(_)
+        | ProxyError::UnsupportedTarget(_)
+        | ProxyError::UnsupportedProtocol(_)
+        | ProxyError::Internal(_) => false,
+    }
+}
+
+/// How long `enqueue`'s immediate try-then-queue attempt may take before
+/// the item is simply queued instead.
+///
+/// Deliberately well under the sandbox's own `dispatch_epoch_timeout_secs`
+/// (5s by default): a guest calling a fire-and-forget verb must get an
+/// answer promptly whatever the target is doing, and anything this probe
+/// would have waited longer to learn is something the outbox worker will
+/// find out on its own schedule.
+const ENQUEUE_PROBE_BUDGET: Duration = Duration::from_secs(2);
 
 /// One wire's worth of "send this JSON-RPC request to that node and read the
 /// response". The transport-agnostic seam a future wRPC wire (A.5) slots
@@ -156,6 +210,23 @@ pub struct ProxyRouter {
     hop: Arc<dyn RemoteHop>,
     node_identity: Arc<Identity>,
     retry_policy: RetryPolicy,
+    /// The receiver-side idempotency fence for calls that land on *this*
+    /// node. `None` on a node with no storage provider at all (a
+    /// coordinator), which hosts no deployed services and therefore has
+    /// nowhere to remember a key -- a keyed call there is refused rather
+    /// than executed unfenced.
+    ///
+    /// Attached after construction rather than taken as an eighth
+    /// constructor argument: the router already takes seven, and every one
+    /// of its test and bench call sites would otherwise have to pass a
+    /// `None` that says nothing. "This node can fence" is a property of the
+    /// deployment, so it reads better as something a node either has or
+    /// does not.
+    dedup_guard: Option<Arc<CallDedupGuard>>,
+    /// The durable outbox behind `enqueue`, one queue per calling service.
+    /// `None` on a node with no per-service storage, where there is
+    /// nowhere to keep an item and no guest to produce one.
+    outbox: Option<Arc<ProxyOutbox>>,
 }
 
 impl Debug for ProxyRouter {
@@ -183,6 +254,179 @@ impl ProxyRouter {
             hop,
             node_identity,
             retry_policy,
+            dedup_guard: None,
+            outbox: None,
+        }
+    }
+
+    /// Gives this router the fence it applies to keyed calls arriving for
+    /// a service on this node.
+    #[must_use]
+    pub fn with_dedup_guard(mut self, guard: Arc<CallDedupGuard>) -> Self {
+        self.dedup_guard = Some(guard);
+        self
+    }
+
+    /// Gives this router the durable outbox behind `enqueue`.
+    #[must_use]
+    pub fn with_outbox(mut self, outbox: Arc<ProxyOutbox>) -> Self {
+        self.outbox = Some(outbox);
+        self
+    }
+
+    #[must_use]
+    pub fn outbox(&self) -> Option<&Arc<ProxyOutbox>> {
+        self.outbox.as_ref()
+    }
+
+    /// Rebuilds the live cross-service call a stored item describes.
+    ///
+    /// The identity has to match what `proxy::Host::call` builds for the
+    /// same cross-service call exactly -- `service_system(caller)` plus a
+    /// guest origin -- or authorization at the receiver would silently
+    /// differ between the immediate attempt and every later one.
+    fn request_from(&self, call: &QueuedCall, target_service: String) -> ProxyRequest {
+        ProxyRequest {
+            target_service,
+            interface: call.interface.clone(),
+            method: call.method.clone(),
+            params: call.params.clone(),
+            caller: CallerContext::service_system(&call.caller_service_id),
+            origin: CallOrigin::Guest { service_id: call.caller_service_id.clone() },
+            protocol: ProxyProtocol::parse(call.protocol.as_deref())
+                .unwrap_or(ProxyProtocol::JsonRpcV1),
+            idempotent: true,
+            idempotency_key: Some(call.idempotency_key.clone()),
+            timeout: call.timeout_ms.map(Duration::from_millis),
+        }
+    }
+
+    /// Writes a dead letter for a failed call that carried a fence.
+    ///
+    /// An **unkeyed** call writes nothing, and that is the rule rather
+    /// than an omission: its caller is alive and holding the error, so
+    /// this is not silent loss, and there would be nothing safe to replay
+    /// -- a replayable dead letter for a call with no fence *is* a second
+    /// delivery of an unfenced call.
+    ///
+    /// The recorded target is the DID this attempt actually resolved to,
+    /// not the dependency name: this row describes one specific attempt an
+    /// operator may choose to repeat, and the resolution already happened
+    /// before the request existed.
+    async fn record_failed_call(&self, req: &ProxyRequest, error: &ProxyError) {
+        let (Some(outbox), Some(key)) = (&self.outbox, req.idempotency_key.as_deref()) else {
+            return;
+        };
+        let CallOrigin::Guest { service_id } = &req.origin else { return };
+
+        // Only a failure the *target* produced earns a row. The fence's
+        // own answers are not delivery failures at all:
+        //
+        // - "already running here" means the call is succeeding on another task right
+        //   now, so a dead letter for it would be indistinguishable from a genuine
+        //   exhausted delivery and would never be cleared when the real call finished;
+        // - "already ran, result too large to retain" is a delivery;
+        // - a fail-closed refusal (no store, anonymous caller, node-level target) means
+        //   nothing was attempted, so there is nothing to replay -- and replaying would
+        //   hit the same refusal.
+        if !target_produced(error) {
+            return;
+        }
+
+        // A queued item that failed is dead-lettered by the worker, which
+        // owns its own retry history; this path is only for the caller
+        // that is still holding the error.
+        let call = QueuedCall {
+            app_instance_id: None,
+            caller_service_id: service_id.clone(),
+            target: syneroym_rpc::QueuedTarget::Service(req.target_service.clone()),
+            routing_key: None,
+            interface: req.interface.clone(),
+            method: req.method.clone(),
+            params: req.params.clone(),
+            idempotency_key: key.to_string(),
+            protocol: None,
+            timeout_ms: req.timeout.map(|t| t.as_millis() as u64),
+        };
+        if let Err(e) = outbox.record_dead_letter(&call, &error.to_string()).await {
+            warn!(error = %e, "could not record a dead letter for a failed keyed call");
+        }
+    }
+
+    /// Delivers one queued item: re-resolve, then invoke. Split out so the
+    /// worker and the immediate try-then-queue attempt cannot drift apart.
+    /// Returns `Err` only when there is nothing to deliver *to* -- the
+    /// stored dependency name no longer resolves to any member.
+    ///
+    /// Kept separate from the delivery itself because the two failures are
+    /// not the same kind. "This name is bound to nobody" is settled: no
+    /// number of retries invents a member, so it is terminal. "I could not
+    /// reach the member it is bound to" is not settled at all, and is
+    /// handled by the ordinary retry classification.
+    ///
+    /// Re-resolved on every attempt and never stored, so a binding
+    /// re-pushed while the item waited takes effect (ADR-0021 §2).
+    fn resolve_queued_target(&self, call: &QueuedCall) -> Result<String, ProxyError> {
+        self.outbox
+            .as_ref()
+            .ok_or_else(|| ProxyError::Internal("no durable outbox on this node".to_string()))?
+            .resolve_target(call)
+    }
+
+    async fn deliver_queued(&self, call: &QueuedCall, target: String) -> Result<Value, ProxyError> {
+        self.invoke_inner(&self.request_from(call, target)).await
+    }
+
+    /// [`Self::invoke_local`] under the receiver-side fence.
+    ///
+    /// A call with no key runs straight through, touching no store: that
+    /// is every call on the hot path today, and it is what keeps the
+    /// fence off the existing call budget.
+    async fn invoke_local_guarded(
+        &self,
+        req: &ProxyRequest,
+        endpoint: SubstrateEndpoint,
+        canonical_iface: String,
+    ) -> Result<Value, ProxyError> {
+        let Some(guard) = &self.dedup_guard else {
+            if req.idempotency_key.is_some() {
+                return Err(ProxyError::Internal(
+                    "this node keeps no per-service storage, so it cannot honour an idempotency \
+                     key"
+                    .to_string(),
+                ));
+            }
+            return self.invoke_local(req, endpoint, canonical_iface).await;
+        };
+        // Keyed on the *resolved* endpoint's service id, not the id the
+        // caller addressed. The wire entry point keys on the resolved one
+        // too, and for a native channel registered under a different id
+        // than it is addressed by the two disagree -- which would make
+        // "one guard, both entry points" one guard reading two different
+        // keys.
+        let store_owner = match &endpoint {
+            SubstrateEndpoint::NativeHostChannel { service_id }
+            | SubstrateEndpoint::WasmChannel { service_id } => service_id.clone(),
+            _ => req.target_service.clone(),
+        };
+        match guard
+            .begin(
+                &store_owner,
+                &req.interface,
+                Some(&req.caller.caller_did),
+                req.idempotency_key.as_deref(),
+            )
+            .await
+        {
+            GuardOutcome::Refuse(e) => Err(e),
+            GuardOutcome::Answer(outcome) => call_dedup::replay_as_result(outcome),
+            GuardOutcome::Execute(claim) => {
+                let outcome = self.invoke_local(req, endpoint, canonical_iface).await;
+                if let Some(claim) = claim {
+                    claim.settle(&outcome).await;
+                }
+                outcome
+            }
         }
     }
 
@@ -327,6 +571,7 @@ impl ProxyRouter {
                     method: req.method.clone(),
                     params: req.params.clone(),
                     id: Some(Value::from(1)),
+                    idempotency_key: req.idempotency_key.clone(),
                 };
                 time::timeout(
                     call_timeout,
@@ -450,14 +695,24 @@ impl ProxyRouter {
             method: req.method.clone(),
             params: req.params.clone(),
             id: Some(Value::from(1)),
+            idempotency_key: req.idempotency_key.clone(),
         };
         let call_timeout = req.timeout.unwrap_or(DEFAULT_PROXY_CALL_TIMEOUT);
 
-        // Retry loop. Only *transport* failures are retried, and only when
-        // the caller declared the call idempotent. A callee-returned error
-        // is never retried. Failed-after-retries fails directly -- no DLQ
-        // (M5).
-        let attempts: u8 = if req.idempotent { self.retry_policy.max_attempts.max(1) } else { 1 };
+        // Retry loop. Only *transport* failures are retried; a
+        // callee-returned error is a definitive answer and is never
+        // retried. Retry-eligible means the caller declared the call
+        // idempotent, or supplied an idempotency key -- a key is a
+        // strictly stronger fence than the caller's own assertion, since
+        // the receiver enforces it.
+        //
+        // Exhausting the budget always fails the caller directly. It
+        // additionally writes a dead letter *only* when the call carried a
+        // key (`record_failed_call`): a dead letter exists to be replayed,
+        // and replaying a call with no fence would be a second delivery of
+        // something nothing can deduplicate.
+        let retry_eligible = req.idempotent || req.idempotency_key.is_some();
+        let attempts: u8 = if retry_eligible { self.retry_policy.max_attempts.max(1) } else { 1 };
         let mut backoff = self.retry_policy.initial_backoff_ms;
         let mut attempt: u8 = 1;
         loop {
@@ -483,9 +738,15 @@ impl ProxyRouter {
     }
 }
 
-#[async_trait::async_trait]
-impl ServiceProxy for ProxyRouter {
-    async fn invoke(&self, req: ProxyRequest) -> Result<Value, ProxyError> {
+impl ProxyRouter {
+    /// The dispatch itself, with no dead-letter side effect.
+    ///
+    /// Split from the trait method so the two callers that own their own
+    /// failure record -- the outbox worker, which dead-letters through the
+    /// queue's retry history, and `enqueue`'s immediate attempt, which
+    /// either queues the item or hands the error back -- cannot also
+    /// produce a second row through `record_failed_call`.
+    async fn invoke_inner(&self, req: &ProxyRequest) -> Result<Value, ProxyError> {
         // Protocol gate: the minimal `[LFC-VER]` behavior kept from the
         // deferred protocol-negotiation slice (A.7). `ProxyProtocol` has
         // exactly one variant today, so this is a no-op in practice; it
@@ -496,7 +757,7 @@ impl ServiceProxy for ProxyRouter {
 
         // Capability gate: a WASM guest must not reach another service's
         // native capabilities through the proxy.
-        self.check_native_capability_gate(&req)?;
+        self.check_native_capability_gate(req)?;
 
         metrics::counter!("substrate.proxy.calls").increment(1);
         let started = Instant::now();
@@ -505,9 +766,9 @@ impl ServiceProxy for ProxyRouter {
         // hosted on this node (this is also the <5ms same-node path).
         let outcome = match self.registry.lookup(&req.target_service, &req.interface) {
             Some((endpoint, canonical_iface)) => {
-                self.invoke_local(&req, endpoint, canonical_iface).await
+                self.invoke_local_guarded(req, endpoint, canonical_iface).await
             }
-            None => self.invoke_remote(&req).await,
+            None => self.invoke_remote(req).await,
         };
 
         metrics::histogram!("substrate.proxy.duration_ms")
@@ -516,6 +777,282 @@ impl ServiceProxy for ProxyRouter {
             metrics::counter!("substrate.proxy.errors").increment(1);
         }
         outcome
+    }
+
+    /// Try-then-queue. A reachable target costs one call and zero queue
+    /// writes; only a retryable failure puts the item on disk.
+    ///
+    /// The three refusals all happen before anything is written, and all
+    /// for the same reason: each names a condition every later delivery
+    /// attempt would hit too, so failing now is the same answer given
+    /// hours sooner, to a caller that is still alive to read it.
+    async fn enqueue_call(&self, call: QueuedCall) -> Result<(), ProxyError> {
+        let Some(outbox) = &self.outbox else {
+            return Err(ProxyError::Internal(
+                "this node keeps no per-service storage, so it has no durable outbox".to_string(),
+            ));
+        };
+
+        // A node-level interface keeps no record to fence a key with, so
+        // it could never honour the guarantee a queued call depends on.
+        if call_dedup::is_node_level_interface(&call.interface) {
+            return Err(ProxyError::PermissionDenied(format!(
+                "node-level interface '{}' cannot be reached through the durable outbox: it keeps \
+                 no record to deduplicate a redelivery against",
+                call.interface
+            )));
+        }
+
+        // Without an unexpired instance certificate every delivery attempt
+        // would present as anonymous, and the receiver refuses a keyed
+        // call it cannot scope to a caller. Queuing it would mean ten
+        // hours of retries ending in a dead letter, to say the same "no".
+        let certified = self
+            .registry
+            .instance_cert(&call.caller_service_id)
+            .is_some_and(|cert| !cert.is_expired());
+        if !certified {
+            return Err(ProxyError::PermissionDenied(format!(
+                "service '{}' holds no unexpired instance certificate, so a queued call from it \
+                 would be refused as anonymous at every delivery attempt",
+                call.caller_service_id
+            )));
+        }
+
+        let target = outbox.resolve_target(&call)?;
+
+        // The one caller identity that cannot be rebuilt at delivery is a
+        // guest's own forwarded caller, which is exactly what a self-call
+        // uses. It is also local and by definition running, so durability
+        // buys it nothing.
+        if target == call.caller_service_id {
+            return Err(ProxyError::UnsupportedTarget(format!(
+                "service '{}' cannot enqueue a call to itself: it is local and already running, \
+                 so there is nothing for a durable queue to survive",
+                call.caller_service_id
+            )));
+        }
+
+        // The immediate attempt is a *probe*, not a delivery, so it runs
+        // under its own tight bound rather than the call's full budget.
+        //
+        // Without this the guest waits out a doomed connect and every
+        // retry underneath it -- comfortably past the sandbox's own
+        // `dispatch_epoch_timeout_secs` (5s), which interrupts the guest
+        // mid-call and turns a successful "accepted for delivery" into a
+        // trap. That is the opposite of what a fire-and-forget verb owes
+        // its caller, and the outbox already *is* the retry mechanism, so
+        // there is nothing to gain by waiting longer here.
+        let probe = time::timeout(
+            ENQUEUE_PROBE_BUDGET,
+            self.invoke_inner(&self.request_from(&call, target)),
+        )
+        .await;
+        match probe {
+            Ok(Ok(_)) => Ok(()),
+            // The probe ran out of its own budget: nothing is known about
+            // the target, which is exactly the retryable case.
+            Err(_) => {
+                warn!("proxy enqueue probe timed out; queueing");
+                outbox.store(&call).await
+            }
+            // Matched on the enum rather than compared against one
+            // variant, so a future third disposition is a compile error
+            // here instead of silently falling through to "terminal" --
+            // which is exactly how `Delivered` slipped past this arm when
+            // it was added for the worker.
+            Ok(Err(e)) => match proxy_outbox::disposition_of(&e) {
+                // The receiver already ran this call and could not hand
+                // its result back. Reporting that to the guest as a
+                // failure would be the same confusion the queued path was
+                // fixed for, one layer up: the call succeeded.
+                Disposition::Delivered => Ok(()),
+                Disposition::Retry => {
+                    warn!(error = %e, "proxy enqueue could not deliver now; queueing");
+                    outbox.store(&call).await
+                }
+                // Terminal on the very first attempt: the caller is still
+                // here to be told, which is a better answer than a dead
+                // letter it cannot read.
+                Disposition::Terminal => Err(e),
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ServiceProxy for ProxyRouter {
+    /// Dispatches a call, and -- when it fails and carried a fence --
+    /// records it for an operator. See [`Self::record_failed_call`] for
+    /// why an unkeyed failure writes nothing.
+    async fn invoke(&self, req: ProxyRequest) -> Result<Value, ProxyError> {
+        let outcome = self.invoke_inner(&req).await;
+        if let Err(error) = &outcome {
+            self.record_failed_call(&req, error).await;
+        }
+        outcome
+    }
+
+    async fn enqueue(&self, call: QueuedCall) -> Result<(), ProxyError> {
+        ProxyRouter::enqueue_call(self, call).await
+    }
+}
+
+impl ProxyRouter {
+    /// One pass over every outbox this node currently has open, plus every
+    /// deployed service whose queue file already exists on disk -- the
+    /// second half is what lets a restart pick up items written before it.
+    ///
+    /// Returns how many items it settled, for tests and metrics.
+    pub async fn drain_outboxes_once(&self) -> usize {
+        let Some(outbox) = &self.outbox else { return 0 };
+        let deployed: BTreeSet<String> = self
+            .registry
+            .get_all_endpoints()
+            .into_iter()
+            .map(|(service_id, _, _)| service_id)
+            .collect();
+
+        let mut services: BTreeSet<String> = outbox.open_services().into_iter().collect();
+        for service_id in &deployed {
+            if outbox.queue_file_exists(service_id) {
+                services.insert(service_id.clone());
+            }
+        }
+
+        let mut settled = 0;
+        for service_id in services {
+            let Ok(queue) = outbox.queue_for(&service_id).await else { continue };
+            // Nothing removes a service's data directory on undeploy, so
+            // an outbox can outlive the service that wrote it. Its items
+            // are completed silently: delivering would resurrect intent an
+            // operator withdrew, and dead-lettering would raise noise
+            // about a service nobody is going to act on.
+            let still_deployed = deployed.contains(&service_id);
+            settled += self.drain_one_outbox(&queue, still_deployed).await;
+        }
+        settled
+    }
+
+    async fn drain_one_outbox(&self, queue: &Queue, still_deployed: bool) -> usize {
+        let now = proxy_outbox::now_ms();
+        let claimed = {
+            let queue = queue.clone();
+            match tokio::task::spawn_blocking(move || {
+                queue.claim_due(now, proxy_outbox::CLAIM_LIMIT_PER_TICK)
+            })
+            .await
+            {
+                Ok(Ok(items)) => items,
+                _ => return 0,
+            }
+        };
+
+        let mut settled = 0;
+        for item in claimed {
+            let queue = queue.clone();
+            if !still_deployed {
+                let _ = tokio::task::spawn_blocking(move || queue.complete(item.id)).await;
+                settled += 1;
+                continue;
+            }
+            // A claim that never resolves through `fail`/`complete` -- a
+            // panic, a crash, a shutdown caught mid-delivery -- is bounded
+            // by this rather than by the attempt count, which only `fail`
+            // advances.
+            if item.claim_count > u32::from(queue.max_attempts()) {
+                let _ = tokio::task::spawn_blocking(move || {
+                    queue.fail(item.id, now, "claimed repeatedly without ever completing", true)
+                })
+                .await;
+                settled += 1;
+                continue;
+            }
+            let Ok(call) = serde_json::from_slice::<QueuedCall>(&item.payload) else {
+                let _ = tokio::task::spawn_blocking(move || {
+                    queue.fail(item.id, now, "queued payload is unreadable", true)
+                })
+                .await;
+                settled += 1;
+                continue;
+            };
+            settled += 1;
+            // A name bound to nobody is terminal on its own terms: this is
+            // a failure to have a target at all, not a failed delivery, so
+            // it does not go through the retry classification.
+            let target = match self.resolve_queued_target(&call) {
+                Ok(target) => target,
+                Err(e) => {
+                    proxy_outbox::log_delivery_failure(&call.idempotency_key, &e);
+                    let message = e.to_string();
+                    let outcome = tokio::task::spawn_blocking(move || {
+                        queue.fail(item.id, now, &message, true)
+                    })
+                    .await;
+                    if let Ok(Ok(FailOutcome::DeadLettered { .. })) = outcome {
+                        metrics::counter!("substrate.proxy.outbox.dead_lettered").increment(1);
+                    }
+                    continue;
+                }
+            };
+            match self.deliver_queued(&call, target).await {
+                Ok(_) => {
+                    metrics::counter!("substrate.proxy.outbox.delivered").increment(1);
+                    let _ = tokio::task::spawn_blocking(move || queue.complete(item.id)).await;
+                }
+                Err(e) => match proxy_outbox::disposition_of(&e) {
+                    // The receiver already ran this item and could not
+                    // hand back its result. That is a delivery reported
+                    // through the error channel, so the item is done.
+                    Disposition::Delivered => {
+                        metrics::counter!("substrate.proxy.outbox.delivered").increment(1);
+                        let _ = tokio::task::spawn_blocking(move || queue.complete(item.id)).await;
+                    }
+                    disposition => {
+                        proxy_outbox::log_delivery_failure(&call.idempotency_key, &e);
+                        let terminal = disposition == Disposition::Terminal;
+                        let message = e.to_string();
+                        let outcome = tokio::task::spawn_blocking(move || {
+                            queue.fail(item.id, now, &message, terminal)
+                        })
+                        .await;
+                        if let Ok(Ok(FailOutcome::DeadLettered { .. })) = outcome {
+                            metrics::counter!("substrate.proxy.outbox.dead_lettered").increment(1);
+                        }
+                    }
+                },
+            }
+        }
+        settled
+    }
+
+    /// The outbox worker's resident loop.
+    ///
+    /// Cancellation is raced *into* a delivery, not merely against the
+    /// next tick: a shutdown that had to wait out an in-flight call to an
+    /// unreachable peer would wait the full call budget. The abandoned
+    /// item stays on disk, still claimed, and returns after its visibility
+    /// timeout -- nothing is lost by not draining.
+    pub async fn run_outbox_worker(self: Arc<Self>, tick: Duration, cancel: CancellationToken) {
+        if self.outbox.is_none() {
+            return;
+        }
+        let mut ticker = time::interval(tick);
+        ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                () = cancel.cancelled() => return,
+                _ = ticker.tick() => {}
+            }
+            tokio::select! {
+                () = cancel.cancelled() => return,
+                settled = self.drain_outboxes_once() => {
+                    if settled > 0 {
+                        debug!(settled, "proxy outbox worker settled queued calls");
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -528,15 +1065,16 @@ mod tests {
 
     use dashmap::DashMap;
     use iroh::SecretKey;
+    use syneroym_async_queue::QueueConfig;
     use syneroym_core::{dht_registry::MasterAnchorPayload, storage::MockStorage};
     use syneroym_identity::{delegation::SCOPE_SERVICE_INSTANCE, substrate};
     use syneroym_rpc::{
         AuthLevel, CallerContext, CallerProof, NativeDispatchRegistry, NativeResponse,
-        NativeService, RpcResult, SessionContext,
+        NativeService, QueuedTarget, RpcResult, SERVICE_NOT_FOUND_RPC_CODE, SessionContext,
     };
 
     use super::*;
-    use crate::{HandshakeVerifier, MasterAnchorResolver};
+    use crate::{HandshakeVerifier, MasterAnchorResolver, proxy_outbox::ProxyOutbox};
 
     fn test_caller(did: &str) -> CallerContext {
         CallerContext {
@@ -557,6 +1095,7 @@ mod tests {
             caller: test_caller("did:key:zTestCaller"),
             origin: CallOrigin::Native { service_id: None },
             protocol: ProxyProtocol::JsonRpcV1,
+            idempotency_key: None,
             idempotent: false,
             timeout: Some(Duration::from_secs(1)),
         }
@@ -593,10 +1132,1001 @@ mod tests {
         )
     }
 
+    /// A node whose registry holds `svc-a` as a native endpoint backed by
+    /// `service`, with a dedup guard over a real (unencrypted) per-service
+    /// store. Unencrypted deliberately: the fence's behavior is the
+    /// subject here, and the SQLCipher half is pinned in the queue crate.
+    struct GuardedNode {
+        router: ProxyRouter,
+        service: Arc<RecordingNativeService>,
+        _native_dispatch: NativeDispatchRegistry,
+        _dir: tempfile::TempDir,
+    }
+
+    async fn guarded_node(with_store: bool) -> GuardedNode {
+        use syneroym_async_queue::DedupConfig;
+        use syneroym_data_db::SqliteStorageProvider;
+        use syneroym_data_keystore::KeyStore;
+
+        let registry = empty_registry();
+        registry
+            .register(
+                "svc-a".to_string(),
+                "greeter".to_string(),
+                SubstrateEndpoint::NativeHostChannel { service_id: "svc-a".to_string() },
+            )
+            .await
+            .unwrap();
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let service = Arc::new(RecordingNativeService::default());
+        native_dispatch.insert("svc-a".to_string(), service.clone() as Arc<dyn NativeService>);
+
+        let dir = tempfile::tempdir().unwrap();
+        let service_dir = dir.path().join("services").join("svc-a");
+        std::fs::create_dir_all(&service_dir).unwrap();
+        std::fs::write(service_dir.join("state.db"), b"").unwrap();
+
+        let guard_registry = registry.clone();
+        let router = ProxyRouter::new(
+            registry,
+            empty_registry_client(),
+            Arc::downgrade(&native_dispatch),
+            Weak::new(),
+            Arc::new(MockHop::default()),
+            Arc::new(Identity::generate().unwrap()),
+            RetryPolicy::default(),
+        );
+        let router = if with_store {
+            let provider = Arc::new(SqliteStorageProvider::new(dir.path(), false).unwrap());
+            router.with_dedup_guard(Arc::new(crate::CallDedupGuard::new(
+                provider,
+                Arc::new(KeyStore::new()),
+                guard_registry,
+                DedupConfig {
+                    ttl_ms: 600_000,
+                    claim_window_ms: 60_000,
+                    max_rows: 100,
+                    max_result_bytes: 64 * 1024,
+                },
+            )))
+        } else {
+            router
+        };
+        GuardedNode { router, service, _native_dispatch: native_dispatch, _dir: dir }
+    }
+
+    // -- the durable outbox ------------------------------------------------
+
+    /// A node that can enqueue: a certified calling service, a real
+    /// per-service store, and a resolver whose bindings a test can change
+    /// between attempts.
+    struct OutboxNode {
+        router: Arc<ProxyRouter>,
+        registry: EndpointRegistry,
+        resolver: Arc<syneroym_app_orchestration::LogicalResolver>,
+        target: Arc<RecordingNativeService>,
+        outbox: Arc<ProxyOutbox>,
+        provider: Arc<syneroym_data_db::SqliteStorageProvider>,
+        _native_dispatch: NativeDispatchRegistry,
+        dir: tempfile::TempDir,
+    }
+
+    const CALLER: &str = "did:key:zCaller";
+
+    /// `target_reachable` decides whether the immediate attempt succeeds:
+    /// a registered native endpoint answers, while a WASM endpoint with no
+    /// engine behind it fails with the retryable "sandbox engine
+    /// unavailable" -- a shutdown-window state, which is exactly the shape
+    /// that must queue rather than fail the caller.
+    async fn outbox_node(target_reachable: bool, max_attempts: u8) -> OutboxNode {
+        use syneroym_app_orchestration::{
+            AppInstanceId, LogicalResolver, LogicalServiceName, ServiceId, StaticInventory,
+            TopologyEntry, TopologyEpoch, TopologyMode,
+        };
+        use syneroym_data_db::SqliteStorageProvider;
+        use syneroym_data_keystore::KeyStore;
+
+        let registry = empty_registry();
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let target = Arc::new(RecordingNativeService::default());
+        native_dispatch
+            .insert("did:key:zTarget".to_string(), target.clone() as Arc<dyn NativeService>);
+        registry
+            .register(
+                "did:key:zTarget".to_string(),
+                "greeter".to_string(),
+                if target_reachable {
+                    SubstrateEndpoint::NativeHostChannel {
+                        service_id: "did:key:zTarget".to_string(),
+                    }
+                } else {
+                    SubstrateEndpoint::WasmChannel { service_id: "did:key:zTarget".to_string() }
+                },
+            )
+            .await
+            .unwrap();
+
+        // The calling service is itself deployed on this node: the worker
+        // only drains services the endpoint registry still knows, so
+        // without this every queued item would look orphaned.
+        registry
+            .register(
+                CALLER.to_string(),
+                "caller-iface".to_string(),
+                SubstrateEndpoint::WasmChannel { service_id: CALLER.to_string() },
+            )
+            .await
+            .unwrap();
+
+        // The calling service holds an unexpired instance certificate, so
+        // `enqueue`'s certificate refusal does not fire.
+        let node_identity = Arc::new(Identity::generate().unwrap());
+        let owner = "did:key:zOwner".to_string();
+        registry.set_owner(CALLER.to_string(), owner.clone()).await.unwrap();
+        let instance = node_identity.derive_service_identity(&owner, CALLER);
+        let cert = DelegationCertificate::issue(
+            &Identity::generate().unwrap(),
+            instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        registry.set_instance_cert(CALLER.to_string(), cert).await.unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        for service in [CALLER, "did:key:zTarget"] {
+            let service_dir = dir.path().join("services").join(service);
+            std::fs::create_dir_all(&service_dir).unwrap();
+            std::fs::write(service_dir.join("state.db"), b"").unwrap();
+        }
+
+        let inventory = Arc::new(StaticInventory::new());
+        let resolver = Arc::new(LogicalResolver::new(inventory));
+        resolver.register(
+            AppInstanceId::new("app-1"),
+            LogicalServiceName::new("backend"),
+            TopologyEntry {
+                mode: TopologyMode::Singleton,
+                members: vec![ServiceId::new("did:key:zTarget")],
+                sharding_strategy: None,
+                epoch: TopologyEpoch::default(),
+                // No caching, so a test that re-registers a binding sees
+                // the change on the very next resolution.
+                cache_ttl: Duration::ZERO,
+            },
+        );
+
+        let provider = Arc::new(SqliteStorageProvider::new(dir.path(), false).unwrap());
+        let guard_provider = provider.clone();
+        let config = QueueConfig {
+            retry: RetryPolicy {
+                max_attempts,
+                initial_backoff_ms: 1,
+                backoff_multiplier: 2.0,
+                max_backoff_ms: 4,
+            },
+            visibility_timeout_ms: 0,
+            dlq_max_rows: 100,
+            max_pending_rows: syneroym_async_queue::DEFAULT_MAX_PENDING_ROWS,
+        };
+        let outbox = Arc::new(ProxyOutbox::new(
+            provider.clone(),
+            Arc::new(KeyStore::new()),
+            resolver.clone(),
+            config,
+        ));
+        let router = Arc::new(
+            ProxyRouter::new(
+                registry.clone(),
+                empty_registry_client(),
+                Arc::downgrade(&native_dispatch),
+                Weak::new(),
+                Arc::new(MockHop::default()),
+                node_identity,
+                RetryPolicy { max_attempts: 1, ..RetryPolicy::default() },
+            )
+            .with_dedup_guard(Arc::new(crate::CallDedupGuard::new(
+                guard_provider,
+                Arc::new(KeyStore::new()),
+                registry.clone(),
+                syneroym_async_queue::DedupConfig {
+                    ttl_ms: 600_000,
+                    claim_window_ms: 60_000,
+                    max_rows: 100,
+                    max_result_bytes: 64 * 1024,
+                },
+            )))
+            .with_outbox(outbox.clone()),
+        );
+        OutboxNode {
+            router,
+            registry,
+            resolver,
+            target,
+            outbox,
+            provider,
+            _native_dispatch: native_dispatch,
+            dir,
+        }
+    }
+
+    fn queued_call(target: QueuedTarget, key: &str) -> QueuedCall {
+        QueuedCall {
+            app_instance_id: Some("app-1".to_string()),
+            caller_service_id: CALLER.to_string(),
+            target,
+            routing_key: None,
+            interface: "greeter".to_string(),
+            method: "greet".to_string(),
+            params: Value::Null,
+            idempotency_key: key.to_string(),
+            protocol: None,
+            timeout_ms: Some(500),
+        }
+    }
+
+    impl OutboxNode {
+        async fn queued(&self) -> Vec<syneroym_async_queue::QueueItem> {
+            self.outbox.queue_for(CALLER).await.unwrap().all().unwrap()
+        }
+
+        async fn dead_letters(&self) -> Vec<syneroym_async_queue::DeadLetter> {
+            self.outbox.queue_for(CALLER).await.unwrap().dead_letters().unwrap()
+        }
+
+        fn queue_file_exists(&self) -> bool {
+            self.dir.path().join("services").join(CALLER).join("async.db").exists()
+        }
+    }
+
+    /// A guest re-enqueueing a key the receiver already ran -- and whose
+    /// result was too large to retain -- must be told the call succeeded,
+    /// not handed an error. The fence answers through the error channel
+    /// because there is no value to return; that is a delivery, and the
+    /// synchronous probe has to read it the same way the worker does.
+    #[tokio::test]
+    async fn an_enqueue_whose_target_already_ran_it_reports_success() {
+        let node = outbox_node(true, 50).await;
+
+        // Stand in for the receiver's answer: the fence reports "already
+        // ran here, result not retained" through a callee error.
+        let already_ran = ProxyError::Callee {
+            code: syneroym_async_queue::CALL_RESULT_NOT_RETAINED_RPC_CODE,
+            message: "this call already ran here".to_string(),
+            data: None,
+        };
+        assert_eq!(
+            proxy_outbox::disposition_of(&already_ran),
+            Disposition::Delivered,
+            "precondition: this is the code the receiver answers a duplicate with"
+        );
+
+        node.target.answer_with.lock().unwrap().replace(already_ran);
+        let outcome = node
+            .router
+            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+            .await;
+        assert!(
+            outcome.is_ok(),
+            "a call the receiver already ran must report success to the guest, got {outcome:?}"
+        );
+        assert!(!node.queue_file_exists(), "and must not be queued for another delivery attempt");
+    }
+
+    /// The happy path: a reachable target costs one call and zero queue
+    /// writes. Asserted as "untouched" -- no queue file is created at all.
+    #[tokio::test]
+    async fn an_enqueue_to_a_reachable_target_delivers_synchronously_and_never_touches_the_queue() {
+        let node = outbox_node(true, 3).await;
+        node.router
+            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+            .await
+            .unwrap();
+        assert_eq!(node.target.invoked.load(Ordering::SeqCst), 1);
+        assert!(!node.queue_file_exists(), "a delivered call must not create an outbox");
+    }
+
+    #[tokio::test]
+    async fn an_enqueue_to_an_unreachable_target_lands_in_that_services_own_outbox() {
+        let node = outbox_node(false, 3).await;
+        node.router
+            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+            .await
+            .unwrap();
+        let queued = node.queued().await;
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].queue_key, "k1", "the queue key is the idempotency key");
+    }
+
+    /// The same failure B1's review found the hard way, prevented here by
+    /// construction: the queue key is the idempotency key, so a caller
+    /// re-enqueueing the same logical operation gets one item, not two.
+    #[tokio::test]
+    async fn a_second_enqueue_for_the_same_key_while_one_is_pending_is_a_no_op() {
+        let node = outbox_node(false, 3).await;
+        for _ in 0..3 {
+            node.router
+                .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+                .await
+                .unwrap();
+        }
+        assert_eq!(node.queued().await.len(), 1);
+    }
+
+    /// Without a certificate every delivery attempt would present as
+    /// anonymous and be refused, so this fails at the call rather than ten
+    /// hours later at the dead-letter table.
+    #[tokio::test]
+    async fn an_enqueue_from_a_service_with_no_unexpired_certificate_is_refused() {
+        let node = outbox_node(true, 3).await;
+        node.registry.remove_instance_cert(CALLER).await.unwrap();
+        let result = node
+            .router
+            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+            .await;
+        assert!(matches!(result, Err(ProxyError::PermissionDenied(_))), "got {result:?}");
+        assert!(!node.queue_file_exists());
+    }
+
+    /// The one caller identity that cannot be rebuilt at delivery, and a
+    /// target that is local and running anyway.
+    #[tokio::test]
+    async fn an_enqueue_to_the_calling_service_itself_is_refused() {
+        let node = outbox_node(true, 3).await;
+        let result =
+            node.router.enqueue(queued_call(QueuedTarget::Service(CALLER.to_string()), "k1")).await;
+        assert!(matches!(result, Err(ProxyError::UnsupportedTarget(_))), "got {result:?}");
+        assert!(!node.queue_file_exists());
+    }
+
+    #[tokio::test]
+    async fn an_enqueue_to_a_node_level_interface_is_refused() {
+        let node = outbox_node(true, 3).await;
+        let mut call = queued_call(QueuedTarget::Service("did:key:zNode".into()), "k1");
+        call.interface = "orchestrator".to_string();
+        let result = node.router.enqueue(call).await;
+        assert!(matches!(result, Err(ProxyError::PermissionDenied(_))), "got {result:?}");
+    }
+
+    /// A queued delivery must reach the receiver under the identity the
+    /// live cross-service path builds, or authorization would silently
+    /// differ between the immediate attempt and every later one.
+    #[tokio::test]
+    async fn a_delivered_call_carries_the_same_caller_identity_the_live_path_builds() {
+        let node = outbox_node(true, 3).await;
+        node.router
+            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+            .await
+            .unwrap();
+        let immediate = node.target.last_caller_did.lock().unwrap().clone();
+        assert_eq!(immediate.as_deref(), Some("system:did:key:zCaller"));
+
+        // And the worker's own rebuild agrees with it.
+        let queued = queued_call(QueuedTarget::Dependency("backend".into()), "k2");
+        let rebuilt = node.router.request_from(&queued, "did:key:zTarget".to_string());
+        assert_eq!(rebuilt.caller.caller_did, "system:did:key:zCaller");
+        assert_eq!(rebuilt.origin, CallOrigin::Guest { service_id: CALLER.to_string() });
+        assert_eq!(rebuilt.idempotency_key.as_deref(), Some("k2"));
+        assert!(rebuilt.idempotent, "a keyed call is always retry-eligible");
+    }
+
+    /// The entire reason the payload stores intent: a binding re-pushed
+    /// while the item waited has to take effect on the next attempt.
+    #[tokio::test]
+    async fn a_queued_call_resolves_its_dependency_again_at_delivery() {
+        use syneroym_app_orchestration::{
+            AppInstanceId, LogicalServiceName, ServiceId, TopologyEntry, TopologyEpoch,
+            TopologyMode,
+        };
+        let node = outbox_node(false, 3).await;
+        node.router
+            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+            .await
+            .unwrap();
+        assert_eq!(node.queued().await.len(), 1);
+
+        // Re-point the dependency at a member that actually answers, the
+        // way a re-pushed binding would. It is a deployed service too, so
+        // the receiver-side fence can open a store for it.
+        let moved_dir = node.dir.path().join("services").join("did:key:zMoved");
+        std::fs::create_dir_all(&moved_dir).unwrap();
+        std::fs::write(moved_dir.join("state.db"), b"").unwrap();
+        let reachable = Arc::new(RecordingNativeService::default());
+        node._native_dispatch
+            .insert("did:key:zMoved".to_string(), reachable.clone() as Arc<dyn NativeService>);
+        node.registry
+            .register(
+                "did:key:zMoved".to_string(),
+                "greeter".to_string(),
+                SubstrateEndpoint::NativeHostChannel { service_id: "did:key:zMoved".to_string() },
+            )
+            .await
+            .unwrap();
+        node.resolver.register(
+            AppInstanceId::new("app-1"),
+            LogicalServiceName::new("backend"),
+            TopologyEntry {
+                mode: TopologyMode::Singleton,
+                members: vec![ServiceId::new("did:key:zMoved")],
+                sharding_strategy: None,
+                epoch: TopologyEpoch::default(),
+                cache_ttl: Duration::ZERO,
+            },
+        );
+
+        node.router.drain_outboxes_once().await;
+        assert_eq!(
+            reachable.invoked.load(Ordering::SeqCst),
+            1,
+            "the re-pushed binding must take effect at delivery"
+        );
+        assert!(node.queued().await.is_empty(), "a delivered item leaves the outbox");
+    }
+
+    /// Failure-matrix row 9, raised by the worker itself before `invoke`
+    /// rather than as a proxy error.
+    #[tokio::test]
+    async fn a_queued_call_whose_dependency_no_longer_resolves_is_terminal() {
+        use syneroym_app_orchestration::{
+            AppInstanceId, LogicalServiceName, TopologyEntry, TopologyEpoch, TopologyMode,
+        };
+        let node = outbox_node(false, 50).await;
+        node.router
+            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+            .await
+            .unwrap();
+
+        // The binding goes away entirely.
+        node.resolver.register(
+            AppInstanceId::new("app-1"),
+            LogicalServiceName::new("backend"),
+            TopologyEntry {
+                mode: TopologyMode::Singleton,
+                members: vec![],
+                sharding_strategy: None,
+                epoch: TopologyEpoch::default(),
+                cache_ttl: Duration::ZERO,
+            },
+        );
+
+        node.router.drain_outboxes_once().await;
+        let dead = node.dead_letters().await;
+        assert_eq!(dead.len(), 1, "an unresolvable dependency is terminal, not retried to budget");
+        assert!(node.queued().await.is_empty());
+    }
+
+    /// A callee error has no reader on this path, so recording it is the
+    /// only way it is ever seen -- the reverse of the synchronous rule.
+    #[tokio::test]
+    async fn a_callee_error_on_a_queued_item_dead_letters_rather_than_completing() {
+        let node = outbox_node(false, 50).await;
+        node.router
+            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+            .await
+            .unwrap();
+        // Make the target answer definitively rather than being absent.
+        node.registry
+            .register(
+                "did:key:zTarget".to_string(),
+                "greeter".to_string(),
+                SubstrateEndpoint::NativeHostChannel { service_id: "did:key:zTarget".to_string() },
+            )
+            .await
+            .unwrap();
+        node.target.fail_with.store(true, Ordering::SeqCst);
+
+        node.router.drain_outboxes_once().await;
+        let dead = node.dead_letters().await;
+        assert_eq!(dead.len(), 1);
+        assert!(node.queued().await.is_empty());
+        // The target refused on its own terms. Pinned explicitly so this
+        // test cannot quietly become vacuous: "service not found" is
+        // retried rather than dead-lettered, so a scenario that drifted
+        // onto that code would assert nothing.
+        assert!(
+            !dead[0].last_error.contains(&SERVICE_NOT_FOUND_RPC_CODE.to_string()),
+            "this case must exercise a genuine callee refusal, not the retried not-found code: {}",
+            dead[0].last_error
+        );
+    }
+
+    /// The retryable case: the item stays, with an attempt spent.
+    #[tokio::test]
+    async fn a_transport_failure_retries_on_the_configured_schedule() {
+        let node = outbox_node(false, 50).await;
+        node.router
+            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+            .await
+            .unwrap();
+        node.router.drain_outboxes_once().await;
+
+        let queued = node.queued().await;
+        assert_eq!(queued.len(), 1, "a retryable failure keeps the item");
+        assert_eq!(queued[0].attempts, 1, "and spends exactly one attempt");
+        assert!(node.dead_letters().await.is_empty());
+    }
+
+    /// The poison-pill ceiling: a delivery that never resolves through
+    /// `fail`/`complete` still consumes a bounded number of claims.
+    #[tokio::test]
+    async fn an_item_whose_claim_count_reaches_the_budget_dead_letters() {
+        let node = outbox_node(false, 2).await;
+        node.router
+            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+            .await
+            .unwrap();
+        let queue = node.outbox.queue_for(CALLER).await.unwrap();
+        // Simulate claims that never resolved -- a crashed worker.
+        for _ in 0..3 {
+            queue.claim_due(proxy_outbox::now_ms(), 10).unwrap();
+        }
+        node.router.drain_outboxes_once().await;
+        assert_eq!(
+            node.dead_letters().await.len(),
+            1,
+            "a poison pill must not be handed out forever"
+        );
+    }
+
+    /// Nothing removes a service's data directory on undeploy, so an
+    /// outbox can outlive its service. Delivering would resurrect intent
+    /// an operator withdrew; dead-lettering would raise noise nobody will
+    /// act on.
+    #[tokio::test]
+    async fn an_item_for_an_undeployed_service_is_completed_not_delivered() {
+        let node = outbox_node(false, 50).await;
+        node.router
+            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+            .await
+            .unwrap();
+        assert_eq!(node.queued().await.len(), 1);
+
+        // The calling service is undeployed: its endpoints go away.
+        node.registry.remove(CALLER, "greeter").await.ok();
+        for (interface, _) in node.registry.lookup_by_service(CALLER) {
+            node.registry.remove(CALLER, &interface).await.ok();
+        }
+
+        node.router.drain_outboxes_once().await;
+        assert!(node.queued().await.is_empty(), "the item must be completed");
+        assert!(
+            node.dead_letters().await.is_empty(),
+            "and silently -- not raised as a dead letter for a service nobody will act on"
+        );
+        assert_eq!(node.target.invoked.load(Ordering::SeqCst), 0, "and never delivered");
+    }
+
+    /// Cancellation must interrupt a delivery that genuinely never
+    /// resolves, not merely win a race against the next tick -- a worker
+    /// waiting out a call to an unreachable peer is exactly the case this
+    /// queue exists for, so shutdown must not wait for it.
+    #[tokio::test]
+    async fn shutdown_abandons_an_in_flight_delivery_rather_than_draining() {
+        let node = outbox_node(true, 50).await;
+
+        // Written *straight into the queue*, not through `enqueue`. The
+        // probe would claim this key on the way past, and a claim left in
+        // flight makes the worker's own delivery hit the fence's
+        // "already running here" before it ever reaches the target -- so
+        // there would be no in-flight delivery to abandon, structurally,
+        // however the timing fell. Bypassing the probe also leaves the
+        // target's invocation count at zero, so the wait below can only be
+        // satisfied by the worker.
+        // A long per-call budget on purpose. With the fixture's usual
+        // 500 ms the "blocked" dispatch resolves on its own via the call
+        // timeout, the drain returns, and the test passes whether or not
+        // cancellation is raced into the delivery -- which is precisely
+        // how this test was vacuous twice. At 30 s the only way the worker
+        // returns inside the assertion below is by being interrupted.
+        let mut item = queued_call(QueuedTarget::Dependency("backend".into()), "worker-only");
+        item.timeout_ms = Some(30_000);
+        node.outbox.store(&item).await.unwrap();
+        assert_eq!(node.queued().await.len(), 1);
+        assert_eq!(
+            node.target.invoked.load(Ordering::SeqCst),
+            0,
+            "nothing may have reached the target before the worker starts"
+        );
+
+        // The target blocks and is never released during the test, so any
+        // delivery the worker starts genuinely never resolves on its own.
+        let release = Arc::new(tokio::sync::Notify::new());
+        *node.target.hold.lock().unwrap() = Some(release.clone());
+
+        let cancel = CancellationToken::new();
+        let worker = {
+            let router = node.router.clone();
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                router.run_outbox_worker(Duration::from_millis(5), cancel).await;
+            })
+        };
+
+        let entered =
+            wait_for(Duration::from_secs(5), || node.target.invoked.load(Ordering::SeqCst) >= 1)
+                .await;
+        assert!(
+            entered,
+            "the worker never reached the target, so this test would prove nothing about \
+             abandoning a delivery"
+        );
+
+        // The load-bearing assertion. The delivery in flight right now
+        // cannot finish -- nothing will notify `release` before the
+        // assertion below. So the worker can only return if cancellation
+        // is raced *into* the delivery; a worker that merely checks
+        // cancellation between ticks stays inside `drain_outboxes_once`
+        // forever and this times out.
+        cancel.cancel();
+        let stopped = tokio::time::timeout(Duration::from_secs(2), worker).await;
+        assert!(
+            stopped.is_ok(),
+            "shutdown must interrupt a delivery that never resolves, not wait it out"
+        );
+
+        // Nothing was lost by not draining: the abandoned item is still
+        // on the outbox, and its visibility timeout returns it to a later
+        // worker.
+        release.notify_waiters();
+        assert_eq!(node.queued().await.len(), 1, "the abandoned item must still be on the outbox");
+    }
+
+    /// Polls until `check` holds or the budget runs out.
+    async fn wait_for<F: FnMut() -> bool>(budget: Duration, mut check: F) -> bool {
+        let deadline = std::time::Instant::now() + budget;
+        while std::time::Instant::now() < deadline {
+            if check() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    // -- the dead-letter tier ----------------------------------------------
+
+    /// A guest-origin call that failed for good, as the synchronous tier
+    /// produces it. The target is registered and *answers* -- a refusal it
+    /// produced itself -- because only a failure the target produced earns
+    /// a dead letter: this node's own refusals have nothing to replay.
+    /// A call that runs out of its own deadline against a target that
+    /// never answers -- a transport-class failure, not a callee one.
+    ///
+    /// This is the closest a unit fixture gets to "the budget ran out":
+    /// the retry *loop* itself lives on the remote path, which needs a
+    /// resolvable address this harness has no registry client for. What
+    /// matters for the tier rule below is that the failure is one the
+    /// caller is left holding and that a retry could plausibly have
+    /// fixed, which a definitive callee refusal is not.
+    fn timing_out_guest_request(key: Option<&str>) -> ProxyRequest {
+        let mut req = base_request("did:key:zTarget", "greeter");
+        req.origin = CallOrigin::Guest { service_id: CALLER.to_string() };
+        req.caller = CallerContext::service_system(CALLER);
+        req.idempotency_key = key.map(str::to_string);
+        req.idempotent = true;
+        req.timeout = Some(Duration::from_millis(100));
+        req
+    }
+
+    fn failing_guest_request(key: Option<&str>) -> ProxyRequest {
+        let mut req = base_request("did:key:zTarget", "greeter");
+        req.origin = CallOrigin::Guest { service_id: CALLER.to_string() };
+        req.caller = CallerContext::service_system(CALLER);
+        req.idempotency_key = key.map(str::to_string);
+        req
+    }
+
+    /// D-B2-1's first tier, and the assertion that keeps the whole rule
+    /// coherent: with no fence there is nothing safe to replay, so there
+    /// is no row. The caller is alive and holding the error -- this is not
+    /// silent loss.
+    ///
+    /// Driven through a real transport-class failure (the call runs out
+    /// of its deadline against a target that never answers), not a callee
+    /// refusal -- a callee error is never retried, so a pair built on one
+    /// would be testing something other than what these names say.
+    #[tokio::test]
+    async fn an_unkeyed_call_that_fails_at_the_transport_writes_no_dead_letter() {
+        let node = outbox_node(true, 50).await;
+        let release = Arc::new(tokio::sync::Notify::new());
+        *node.target.hold.lock().unwrap() = Some(release.clone());
+        let result = node.router.invoke(timing_out_guest_request(None)).await;
+        assert!(
+            matches!(result, Err(ProxyError::Transport(_)) | Err(ProxyError::Timeout(_))),
+            "the call must have failed at the transport, got {result:?}"
+        );
+        assert!(
+            !node.queue_file_exists(),
+            "an unfenced failure must leave no replayable record behind"
+        );
+        release.notify_waiters();
+    }
+
+    /// The second tier: the row is *additional*, never a substitute for
+    /// the caller's own error. Same real transport failure as its twin.
+    #[tokio::test]
+    async fn a_keyed_call_that_fails_at_the_transport_writes_a_dead_letter_and_still_returns_its_error()
+     {
+        let node = outbox_node(true, 50).await;
+        let release = Arc::new(tokio::sync::Notify::new());
+        *node.target.hold.lock().unwrap() = Some(release.clone());
+        let result = node.router.invoke(timing_out_guest_request(Some("k1"))).await;
+        assert!(
+            matches!(result, Err(ProxyError::Transport(_)) | Err(ProxyError::Timeout(_))),
+            "the caller must still get its own transport error, got {result:?}"
+        );
+        release.notify_waiters();
+
+        let dead = node.dead_letters().await;
+        assert_eq!(dead.len(), 1, "a keyed failure must also be recorded for an operator");
+        assert_eq!(dead[0].queue_key, "k1");
+        assert!(node.queued().await.is_empty(), "and must not linger in the outbox");
+    }
+
+    /// A keyed call the *target itself* refused. Distinct from exhaustion
+    /// above: a callee error is never retried, so nothing is exhausted --
+    /// but it is still an answer the target produced, so it still earns a
+    /// row an operator can see.
+    #[tokio::test]
+    async fn a_keyed_call_a_target_refuses_writes_a_dead_letter_without_retrying() {
+        let node = outbox_node(true, 50).await;
+        node.target.fail_with.store(true, Ordering::SeqCst);
+        let result = node.router.invoke(failing_guest_request(Some("k1"))).await;
+        assert!(matches!(result, Err(ProxyError::Callee { .. })), "got {result:?}");
+        assert_eq!(
+            node.target.invoked.load(Ordering::SeqCst),
+            1,
+            "a callee error is definitive and must not be retried"
+        );
+        assert_eq!(node.dead_letters().await.len(), 1);
+    }
+
+    /// The fence's own answers are not delivery failures, so none of them
+    /// may leave an operator-visible dead letter. "Already running here"
+    /// is the sharp case: the call is succeeding on another task right
+    /// now, and a row for it would be indistinguishable from a genuine
+    /// exhausted delivery and never cleared.
+    #[test]
+    fn the_fences_own_answers_never_earn_a_dead_letter() {
+        for code in [
+            syneroym_async_queue::CALL_ALREADY_RUNNING_RPC_CODE,
+            syneroym_async_queue::CALL_RESULT_NOT_RETAINED_RPC_CODE,
+        ] {
+            let error = ProxyError::Callee { code, message: "fence".to_string(), data: None };
+            assert!(!target_produced(&error), "code {code} must not earn a dead letter");
+        }
+        // Nor may a refusal raised before anything was attempted:
+        // replaying it just re-earns the refusal.
+        assert!(!target_produced(&ProxyError::PermissionDenied("no store".to_string())));
+        assert!(!target_produced(&ProxyError::Internal("no storage provider".to_string())));
+
+        // A not-found target is worth a row, and the two classifiers must
+        // agree about that: the queued path retries it as "not yet", so
+        // the synchronous path must not silently drop it.
+        let not_found = ProxyError::ServiceNotFound("mid-restart".to_string());
+        assert!(target_produced(&not_found));
+        assert_eq!(
+            proxy_outbox::disposition_of(&not_found),
+            Disposition::Retry,
+            "the two classifiers must not disagree about one error"
+        );
+
+        // And a real answer from the target does.
+        assert!(target_produced(&ProxyError::Callee {
+            code: -32010,
+            message: "denied by the target".to_string(),
+            data: None,
+        }));
+        assert!(target_produced(&ProxyError::Transport("peer went away".to_string())));
+    }
+
+    /// Failure-matrix row 12 says queue growth is bounded. The
+    /// dead-letter table was; the *pending* outbox was not, so a guest
+    /// aimed at an unreachable target could hold unbounded rows for the
+    /// whole attempt budget. It refuses rather than evicting: a pending
+    /// item is work somebody still expects to happen.
+    #[tokio::test]
+    async fn a_full_outbox_refuses_further_enqueues_rather_than_evicting() {
+        let node = outbox_node(false, 50).await;
+        let mut cfg = node.outbox.config().clone();
+        cfg.max_pending_rows = 2;
+        let tight = Arc::new(ProxyOutbox::new(
+            node.provider.clone(),
+            Arc::new(syneroym_data_keystore::KeyStore::new()),
+            node.resolver.clone(),
+            cfg,
+        ));
+        for i in 0..2 {
+            tight
+                .store(&queued_call(
+                    QueuedTarget::Service("did:key:zTarget".into()),
+                    &format!("k{i}"),
+                ))
+                .await
+                .unwrap();
+        }
+        let refused =
+            tight.store(&queued_call(QueuedTarget::Service("did:key:zTarget".into()), "k2")).await;
+        assert!(
+            matches!(refused, Err(ProxyError::UnsupportedTarget(_))),
+            "a full outbox must refuse, got {refused:?}"
+        );
+        assert_eq!(
+            tight.queue_for(CALLER).await.unwrap().all().unwrap().len(),
+            2,
+            "and must not have evicted anything to make room"
+        );
+    }
+
+    /// One permanently broken recipient must not be able to evict every
+    /// other conversation's dead letters, which is what scoping the cap by
+    /// target buys.
+    #[tokio::test]
+    async fn the_dlq_cap_is_scoped_per_target() {
+        let node = outbox_node(false, 50).await;
+        let queue = node.outbox.queue_for(CALLER).await.unwrap();
+
+        // Two targets, and a cap that the first one alone would blow past.
+        for i in 0..4 {
+            let call =
+                queued_call(QueuedTarget::Service("did:key:zNoisy".into()), &format!("n{i}"));
+            node.outbox.record_dead_letter(&call, "unreachable").await.unwrap();
+        }
+        let quiet = queued_call(QueuedTarget::Service("did:key:zQuiet".into()), "q0");
+        node.outbox.record_dead_letter(&quiet, "unreachable").await.unwrap();
+
+        let keys: Vec<String> =
+            queue.dead_letters().unwrap().into_iter().map(|d| d.queue_key).collect();
+        assert!(
+            keys.contains(&"q0".to_string()),
+            "the quiet target's dead letter must survive the noisy one's overflow, got {keys:?}"
+        );
+    }
+
+    /// The property that makes replay safe at all, and the reason a dead
+    /// letter needs a key to exist: replaying a call the target already
+    /// ran must not run it twice. Drives a replay against a target that
+    /// already executed the original.
+    #[tokio::test]
+    async fn a_replayed_call_is_deduplicated_at_the_receiver_if_the_first_one_landed() {
+        use syneroym_rpc::ProxyQueueInspector;
+
+        let node = outbox_node(true, 50).await;
+
+        // The original lands.
+        node.router
+            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+            .await
+            .unwrap();
+        assert_eq!(node.target.invoked.load(Ordering::SeqCst), 1);
+
+        // An operator finds a dead letter for the same logical operation
+        // and replays it -- the situation replay exists for, where it is
+        // not knowable whether the first attempt landed.
+        let call = queued_call(QueuedTarget::Dependency("backend".into()), "k1");
+        node.outbox.record_dead_letter(&call, "looked unreachable").await.unwrap();
+        let dead = node.outbox.dead_letters(CALLER).await.unwrap();
+        assert_eq!(dead.len(), 1);
+        node.outbox.replay_dead_letter(CALLER, dead[0].id).await.unwrap();
+
+        node.router.drain_outboxes_once().await;
+        assert_eq!(
+            node.target.invoked.load(Ordering::SeqCst),
+            1,
+            "the receiver's record of the first call must stop the replay re-executing it"
+        );
+    }
+
+    fn keyed_request(key: &str) -> ProxyRequest {
+        let mut req = base_request("svc-a", "greeter");
+        req.caller = CallerContext::service_system("svc-caller");
+        req.idempotency_key = Some(key.to_string());
+        req
+    }
+
+    /// The `invoke_local` entry point. Together with the
+    /// `dispatch_json_rpc_once` case, this is what makes "one guard, both
+    /// entry points" a fact rather than an intention.
+    #[tokio::test]
+    async fn a_local_call_is_deduplicated_by_the_proxy() {
+        let node = guarded_node(true).await;
+        let first = node.router.invoke(keyed_request("k1")).await.unwrap();
+        assert_eq!(first, Value::String("ok".to_string()));
+        assert_eq!(node.service.invoked.load(Ordering::SeqCst), 1);
+
+        let repeat = node.router.invoke(keyed_request("k1")).await.unwrap();
+        assert_eq!(repeat, first, "the duplicate must get the first call's own result");
+        assert_eq!(
+            node.service.invoked.load(Ordering::SeqCst),
+            1,
+            "the target must not run a second time"
+        );
+    }
+
+    /// A different key is a different call, so the target does run again
+    /// -- the fence must not swallow genuinely distinct work.
+    #[tokio::test]
+    async fn a_different_key_is_a_different_call() {
+        let node = guarded_node(true).await;
+        node.router.invoke(keyed_request("k1")).await.unwrap();
+        node.router.invoke(keyed_request("k2")).await.unwrap();
+        assert_eq!(node.service.invoked.load(Ordering::SeqCst), 2);
+    }
+
+    /// An unkeyed call is untouched by any of this, including on a node
+    /// that has a store: it executes every time, exactly as before.
+    #[tokio::test]
+    async fn an_unkeyed_call_is_never_deduplicated() {
+        let node = guarded_node(true).await;
+        let mut req = base_request("svc-a", "greeter");
+        req.caller = CallerContext::service_system("svc-caller");
+        node.router.invoke(req.clone()).await.unwrap();
+        node.router.invoke(req).await.unwrap();
+        assert_eq!(node.service.invoked.load(Ordering::SeqCst), 2);
+    }
+
+    /// Coordinator mode: no storage provider at all, so there is nowhere
+    /// to remember a key. Refused rather than executed unfenced.
+    #[tokio::test]
+    async fn a_keyed_call_is_refused_on_a_node_with_no_storage_provider() {
+        let node = guarded_node(false).await;
+        let result = node.router.invoke(keyed_request("k1")).await;
+        assert!(matches!(result, Err(ProxyError::Internal(_))), "got {result:?}");
+        assert_eq!(node.service.invoked.load(Ordering::SeqCst), 0);
+    }
+
+    /// A denial or an unknown service happens before the target runs, so
+    /// it must leave no claim behind -- otherwise a corrected retry is
+    /// blocked for the whole claim window for something that never ran.
+    #[tokio::test]
+    async fn a_failure_before_the_target_ran_leaves_no_claim_behind() {
+        let node = guarded_node(true).await;
+
+        // A guest reaching another service's native capability is denied
+        // by the capability gate, which runs before any dispatch.
+        let mut denied = keyed_request("k1");
+        denied.interface = "data-layer".to_string();
+        denied.target_service = "svc-a".to_string();
+        denied.origin = CallOrigin::Guest { service_id: "svc-caller".to_string() };
+        assert!(matches!(node.router.invoke(denied).await, Err(ProxyError::PermissionDenied(_))));
+
+        // The same key, corrected, must still be free to run.
+        let corrected = node.router.invoke(keyed_request("k1")).await;
+        assert!(corrected.is_ok(), "a corrected retry must not be blocked: {corrected:?}");
+        assert_eq!(node.service.invoked.load(Ordering::SeqCst), 1);
+    }
+
+    /// The invariant that makes the local `system:<id>` and the remote DID
+    /// namespaces safe to keep disjoint: whether a target is local or
+    /// remote never changes between attempts, so one caller reaches one
+    /// target under one identity every time.
+    #[tokio::test]
+    async fn one_caller_reaches_one_target_under_one_identity_on_every_attempt() {
+        let node = guarded_node(true).await;
+        node.router.invoke(keyed_request("k1")).await.unwrap();
+        let first_identity = node.service.last_caller_did.lock().unwrap().clone();
+
+        // A second, differently-keyed call from the same caller to the
+        // same target arrives under the same identity.
+        node.router.invoke(keyed_request("k2")).await.unwrap();
+        assert_eq!(*node.service.last_caller_did.lock().unwrap(), first_identity);
+        assert_eq!(first_identity.as_deref(), Some("system:svc-caller"));
+    }
+
     #[derive(Debug, Default)]
     struct RecordingNativeService {
         invoked: AtomicUsize,
         last_caller_did: Mutex<Option<String>>,
+        /// Makes the target answer definitively rather than being absent,
+        /// so the queued path's callee-error classification can be driven.
+        fail_with: std::sync::atomic::AtomicBool,
+        /// When set, `dispatch` blocks until this is notified -- a
+        /// delivery that genuinely never resolves, which is the only way
+        /// to test that shutdown interrupts one.
+        hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
+        /// When set, `dispatch` answers with this exact error, so a test
+        /// can drive a specific reserved code the receiver would produce.
+        answer_with: Mutex<Option<ProxyError>>,
     }
 
     #[async_trait::async_trait]
@@ -604,6 +2134,20 @@ mod tests {
         async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
             self.invoked.fetch_add(1, Ordering::SeqCst);
             *self.last_caller_did.lock().unwrap() = Some(invocation.caller.caller_did.clone());
+            let hold = self.hold.lock().unwrap().clone();
+            if let Some(hold) = hold {
+                hold.notified().await;
+            }
+            if let Some(answer) = self.answer_with.lock().unwrap().as_ref() {
+                let (code, message) = match answer {
+                    ProxyError::Callee { code, message, .. } => (*code, message.clone()),
+                    other => (-32603, other.to_string()),
+                };
+                return Err(RpcError::Custom(code, message, None));
+            }
+            if self.fail_with.load(Ordering::SeqCst) {
+                return Err(RpcError::InternalError("the target says no".to_string()));
+            }
             Ok(NativeResponse { payload: Value::String("ok".to_string()) })
         }
     }

@@ -7353,9 +7353,12 @@ name = "syneroym-async-queue"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hex",
+ "rand 0.9.5",
  "rusqlite",
  "syneroym-core",
  "tempfile",
+ "zeroize",
 ]
 
 [[package]]
@@ -7747,6 +7750,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "chrono",
  "criterion",
  "dashmap",
  "ed25519-dalek 2.2.0",
@@ -7764,6 +7768,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syneroym-app-orchestration",
+ "syneroym-async-queue",
  "syneroym-control-plane",
  "syneroym-core",
  "syneroym-data-blob",
@@ -7957,6 +7962,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",
+ "tokio-util",
  "toml 1.1.4+spec-1.1.0",
  "tracing",
  "tracing-subscriber",

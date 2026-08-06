@@ -50,6 +50,7 @@ fn base_request(target_service: &str, interface: &str, method: &str) -> ProxyReq
         caller: CallerContext::service_system("bench-caller"),
         origin: CallOrigin::Native { service_id: None },
         protocol: ProxyProtocol::JsonRpcV1,
+        idempotency_key: None,
         idempotent: false,
         timeout: None,
     }

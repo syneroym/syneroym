@@ -117,6 +117,29 @@ pub enum SvcCommands {
         #[arg(long)]
         svc_id: String,
     },
+    /// Show the calls waiting in a service's durable proxy outbox.
+    ///
+    /// Prefixed `proxy-` because `supervisor outbox`/`dead-letters`/
+    /// `replay` already exist and are keyed by app instance. These three
+    /// are per-service and node-local.
+    ProxyOutbox {
+        #[arg(long)]
+        svc_id: String,
+    },
+    /// Show the queued calls a service gave up on delivering.
+    ProxyDeadLetters {
+        #[arg(long)]
+        svc_id: String,
+    },
+    /// Re-enqueue one dead letter for another delivery attempt. It is
+    /// never executed inline, and the receiver deduplicates it against the
+    /// original if that one did land.
+    ProxyReplay {
+        #[arg(long)]
+        svc_id: String,
+        #[arg(long)]
+        dead_letter_id: u64,
+    },
 }
 
 /// Handle `SynSvc` management subcommands
@@ -320,6 +343,45 @@ pub async fn handle(
                     svc.interfaces.join(", ")
                 );
             }
+        }
+        SvcCommands::ProxyOutbox { svc_id } => {
+            let items = client.proxy_outbox(svc_id.clone()).await?;
+            if items.is_empty() {
+                println!("No queued proxy calls for {svc_id}");
+            } else {
+                println!("{:<8} {:<10} {:<50}", "ID", "ATTEMPTS", "IDEMPOTENCY KEY");
+                println!("{:-<70}", "");
+                for item in items {
+                    println!("{:<8} {:<10} {:<50}", item.id, item.attempts, item.idempotency_key);
+                }
+            }
+        }
+        SvcCommands::ProxyDeadLetters { svc_id } => {
+            let items = client.proxy_dead_letters(svc_id.clone()).await?;
+            if items.is_empty() {
+                println!("No proxy dead letters for {svc_id}");
+            } else {
+                println!(
+                    "{:<8} {:<10} {:<30} {:<40} {:<40}",
+                    "ID", "ATTEMPTS", "CREATED", "IDEMPOTENCY KEY", "LAST ERROR"
+                );
+                println!("{:-<130}", "");
+                for item in items {
+                    println!(
+                        "{:<8} {:<10} {:<30} {:<40} {:<40}",
+                        item.id,
+                        item.attempts,
+                        DateTime::from_timestamp_millis(item.created_at)
+                            .map_or_else(|| "-".to_string(), |dt| dt.to_rfc3339()),
+                        item.idempotency_key,
+                        item.last_error
+                    );
+                }
+            }
+        }
+        SvcCommands::ProxyReplay { svc_id, dead_letter_id } => {
+            client.proxy_replay(svc_id.clone(), *dead_letter_id).await?;
+            println!("Re-enqueued dead letter {dead_letter_id} for {svc_id}");
         }
         SvcCommands::Restart { svc_id } => {
             // Unmanaged (M05A A5a): an operator-driven `svc restart`

@@ -325,6 +325,7 @@ async fn main() -> Result<()> {
         method: "loop-forever".to_string(),
         params: Value::Array(vec![]),
         id: None,
+        idempotency_key: None,
     };
     let res_loop = app_engine.execute_wasm("smoke_service", "test-interface", &request_loop).await;
     let Err(err) = res_loop else {
@@ -339,6 +340,7 @@ async fn main() -> Result<()> {
         method: "allocate-too-much".to_string(),
         params: Value::Array(vec![Value::Number(Number::from(100))]),
         id: None,
+        idempotency_key: None,
     };
     let res_mem = app_engine.execute_wasm("smoke_service", "test-interface", &request_mem).await;
     let Err(err) = res_mem else {

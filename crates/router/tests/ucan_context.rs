@@ -107,6 +107,7 @@ async fn test_route_handler(service_id: &str) -> RouteHandler {
     ));
 
     let deps = RouteHandlerDeps {
+        logical_resolver: syneroym_app_orchestration::empty_resolver(),
         key_store,
         storage_provider,
         app_sandbox_engine,

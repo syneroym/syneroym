@@ -19,6 +19,8 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler as IrohProtocolHandler},
 };
+use syneroym_app_orchestration::LogicalResolver;
+use syneroym_async_queue::{DedupConfig, QueueConfig};
 use syneroym_control_plane::ControlPlaneService;
 use syneroym_core::{
     config::{RetryPolicy, SubstrateConfig},
@@ -31,14 +33,19 @@ use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_identity::{Identity, substrate};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
-use syneroym_rpc::{NativeDispatchRegistry, NativeService, RowAuthorizer, ServiceProxy};
+use syneroym_rpc::{
+    DEFAULT_PROXY_CALL_TIMEOUT, NativeDispatchRegistry, NativeService, ProxyQueueInspector,
+    RowAuthorizer, ServiceProxy,
+};
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, error};
 
 use crate::{
+    call_dedup::CallDedupGuard,
     net_iroh::IrohStream,
     proxy::{IrohHop, ProxyRouter},
+    proxy_outbox::ProxyOutbox,
 };
 
 pub mod dispatch;
@@ -138,6 +145,11 @@ pub struct RouteHandlerInner {
     /// for as long as this `RouteHandler` is (mirrors `_parent_relay_url`'s
     /// established underscore convention for a stored-but-unread field).
     pub _proxy: Option<Arc<ProxyRouter>>,
+    /// The receiver-side idempotency fence, shared with `ProxyRouter` so a
+    /// call arriving over the wire and one dispatched on this node meet the
+    /// same guard and the same records. `None` in coordinator mode, where
+    /// there is no per-service storage to remember a key in.
+    pub dedup_guard: Option<Arc<CallDedupGuard>>,
 }
 
 impl Debug for RouteHandler {
@@ -158,6 +170,12 @@ impl Debug for RouteHandler {
 pub struct RouteHandlerDeps {
     pub key_store: Arc<KeyStore>,
     pub storage_provider: Arc<dyn StorageProvider>,
+    /// Resolves a declared dependency name to the member currently bound
+    /// to it. Held here (not only inside the sandbox engine) because the
+    /// durable outbox re-resolves a queued call's dependency at every
+    /// delivery attempt, long after the component instance that wrote it
+    /// is gone.
+    pub logical_resolver: Arc<LogicalResolver>,
     pub app_sandbox_engine: Arc<AppSandboxEngine>,
     pub messaging_broker: Arc<MqttBroker>,
     pub native_dispatch: NativeDispatchRegistry,
@@ -217,15 +235,46 @@ impl RouteHandler {
         // never a second strong ref, matching the `RouteHandlerInner ->
         // ProxyRouter -> AppSandboxEngine -> ProxyRouter` cycle avoidance
         // documented on `RouteHandlerInner::proxy`.
-        let proxy = Arc::new(ProxyRouter::new(
+        // The fence a keyed call meets, whichever entry point it arrives
+        // through. Its windows are derived from the outbox's own retry
+        // budget rather than separately configured: a TTL shorter than the
+        // sender's retry window silently converts dedup into no dedup.
+        let queue_config = QueueConfig::from(&config.roles.app_sandbox.clone().unwrap_or_default());
+        let dedup_guard = Arc::new(CallDedupGuard::new(
+            deps.storage_provider.clone(),
+            deps.key_store.clone(),
             registry.clone(),
-            registry_client.clone(),
-            Arc::downgrade(&deps.native_dispatch),
-            Arc::downgrade(&deps.app_sandbox_engine),
-            Arc::new(IrohHop::new(iroh_endpoint.clone(), config.retry.clone())),
-            identity.clone(),
-            config.retry.clone(),
+            DedupConfig::derive(
+                queue_config.total_retry_window_ms(),
+                queue_config.visibility_timeout_ms,
+                DEFAULT_PROXY_CALL_TIMEOUT.as_millis() as u64,
+            ),
         ));
+
+        // One queue per calling service, in that service's own encrypted
+        // database. The resolver is handed over so a queued dependency is
+        // re-resolved at every delivery attempt rather than snapshotted
+        // when the item was written (ADR-0021 §2).
+        let outbox = Arc::new(ProxyOutbox::new(
+            deps.storage_provider.clone(),
+            deps.key_store.clone(),
+            deps.logical_resolver.clone(),
+            queue_config.clone(),
+        ));
+
+        let proxy = Arc::new(
+            ProxyRouter::new(
+                registry.clone(),
+                registry_client.clone(),
+                Arc::downgrade(&deps.native_dispatch),
+                Arc::downgrade(&deps.app_sandbox_engine),
+                Arc::new(IrohHop::new(iroh_endpoint.clone(), config.retry.clone())),
+                identity.clone(),
+                config.retry.clone(),
+            )
+            .with_dedup_guard(dedup_guard.clone())
+            .with_outbox(outbox.clone()),
+        );
         deps.app_sandbox_engine
             .service_proxy
             .set(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>)
@@ -260,6 +309,14 @@ impl RouteHandler {
                 .map_err(|_| {
                     anyhow::anyhow!("ControlPlaneService::service_proxy set more than once")
                 })?;
+            // The `proxy-*` operator verbs read the queues the router owns,
+            // so they need the outbox itself rather than the proxy.
+            control_plane
+                .proxy_queues
+                .set(Arc::downgrade(&outbox) as Weak<dyn ProxyQueueInspector>)
+                .map_err(|_| {
+                    anyhow::anyhow!("ControlPlaneService::proxy_queues set more than once")
+                })?;
         }
 
         let inner = Arc::new(RouteHandlerInner {
@@ -280,6 +337,7 @@ impl RouteHandler {
             admin_ucan_root: config.iam.admin_ucan_root.clone(),
             node_did: service_id.clone(),
             _proxy: Some(proxy),
+            dedup_guard: Some(dedup_guard),
         });
 
         let s = Self { inner };
@@ -318,10 +376,19 @@ impl RouteHandler {
             admin_ucan_root: None,
             node_did,
             // Coordinators have no native capabilities or sandbox to proxy
-            // to.
+            // to, and no per-service storage to fence a keyed call with.
             _proxy: None,
+            dedup_guard: None,
         });
         Self { inner }
+    }
+
+    /// The Universal Proxy this handler dispatches through, when it has
+    /// one. Published for the substrate's composition root, which drives
+    /// the durable outbox worker off the same router live calls use.
+    #[must_use]
+    pub fn proxy(&self) -> Option<Arc<ProxyRouter>> {
+        self.inner._proxy.clone()
     }
 
     pub fn register_native_service(&self, service_id: String, service: Arc<dyn NativeService>) {

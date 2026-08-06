@@ -35,9 +35,17 @@ use std::{
 use anyhow::{Result, anyhow};
 use rusqlite::{Connection, OptionalExtension, params};
 use syneroym_core::{
-    config::{RetryPolicy, SupervisorRole},
+    config::{AppSandboxRole, RetryPolicy, SupervisorRole},
     retry::calculate_jittered_backoff,
 };
+use zeroize::Zeroizing;
+
+pub use crate::dedup::{
+    CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, ClaimToken, DedupConfig,
+    DedupDecision, DedupStore, FirstOutcome,
+};
+
+mod dedup;
 
 /// The retry curve ([`RetryPolicy`], reused per M05B D-B1-13 -- its struct
 /// and `calculate_jittered_backoff`, not `retry_with_backoff`, which sleeps
@@ -53,6 +61,11 @@ pub struct QueueConfig {
     /// every write past this count (D-B1-9) -- a bound and a trigger, not
     /// an adjective.
     pub dlq_max_rows: u32,
+    /// Ceiling on items waiting for delivery. Unlike the dead-letter cap
+    /// this one **refuses** rather than evicting: a pending item is work
+    /// somebody is still expecting to happen, so dropping the oldest
+    /// silently would be exactly the loss the queue exists to prevent.
+    pub max_pending_rows: u32,
 }
 
 /// The supervisor's five `queue_*` fields, converted (M05B D-B1-13):
@@ -78,9 +91,50 @@ impl From<&SupervisorRole> for QueueConfig {
             },
             visibility_timeout_ms: role.queue_visibility_timeout_secs.saturating_mul(1000),
             dlq_max_rows: role.queue_dlq_max_rows,
+            max_pending_rows: DEFAULT_MAX_PENDING_ROWS,
         }
     }
 }
+
+/// The sandbox role's five `queue_*` fields, converted -- the guest proxy
+/// outbox's own budget. Same shape and same clamp as the supervisor's:
+/// initial backoff and multiplier stay `RetryPolicy`'s defaults, since the
+/// role configures the attempt budget and the ceiling, not the shape of the
+/// early curve.
+impl From<&AppSandboxRole> for QueueConfig {
+    fn from(role: &AppSandboxRole) -> Self {
+        let defaults = RetryPolicy::default();
+        Self {
+            retry: RetryPolicy {
+                max_attempts: role.queue_max_attempts.max(1),
+                initial_backoff_ms: defaults.initial_backoff_ms,
+                backoff_multiplier: defaults.backoff_multiplier,
+                max_backoff_ms: role.queue_max_backoff_secs.saturating_mul(1000),
+            },
+            visibility_timeout_ms: role.queue_visibility_timeout_secs.saturating_mul(1000),
+            dlq_max_rows: role.queue_dlq_max_rows,
+            max_pending_rows: DEFAULT_MAX_PENDING_ROWS,
+        }
+    }
+}
+
+impl QueueConfig {
+    /// The nominal, unjittered time this budget spends retrying one item
+    /// before it dead-letters: the sum of every wait the backoff curve
+    /// produces over the attempt budget.
+    #[must_use]
+    pub fn total_retry_window_ms(&self) -> u64 {
+        (1..u32::from(self.retry.max_attempts))
+            .map(|wait| backoff_before_wait(&self.retry, wait))
+            .sum()
+    }
+}
+
+/// How many items one queue may hold waiting for delivery before it
+/// refuses more. Derived beside the other budgets rather than configured,
+/// for the same reason the dedup bounds are: the only interesting setting
+/// is one that breaks the guarantee.
+pub const DEFAULT_MAX_PENDING_ROWS: u32 = 10_000;
 
 /// One item due for delivery, as [`Queue::claim_due`] hands it to a worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,13 +221,23 @@ pub struct Queue {
 #[allow(clippy::expect_used)]
 impl Queue {
     pub fn open<P: AsRef<Path>>(dir: P, db_name: &str, config: QueueConfig) -> Result<Self> {
-        if db_name.contains('/') || db_name.contains('\\') || db_name.contains("..") {
-            return Err(anyhow!("Invalid database name: {}", db_name));
-        }
-        let path = dir.as_ref().join(db_name);
-        let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-        Self::from_connection(Arc::new(Mutex::new(conn)), config)
+        Self::from_connection(Arc::new(Mutex::new(open_connection(dir, db_name, None)?)), config)
+    }
+
+    /// Opens a queue in a SQLCipher-encrypted file, keyed with `dek`.
+    ///
+    /// A queued payload is the caller's own data, so it must not sit in a
+    /// store weaker than the database that data came from. `dek: None`
+    /// means encryption is disabled for the whole deployment, in which case
+    /// the file is plain SQLite -- matching, not exceeding, the protection
+    /// the surrounding data has.
+    pub fn open_encrypted<P: AsRef<Path>>(
+        dir: P,
+        db_name: &str,
+        dek: Option<&[u8; 32]>,
+        config: QueueConfig,
+    ) -> Result<Self> {
+        Self::from_connection(Arc::new(Mutex::new(open_connection(dir, db_name, dek)?)), config)
     }
 
     pub fn open_in_memory(config: QueueConfig) -> Result<Self> {
@@ -255,6 +319,37 @@ impl Queue {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Writes a dead letter directly, for an item that never waited in
+    /// the outbox.
+    ///
+    /// One transaction, and deliberately *not* enqueue-then-fail. Routing
+    /// it through the outbox to reuse the capping logic leaves a row for
+    /// that key visible between the two writes, and a concurrent
+    /// [`Self::enqueue_if_absent`] from a real sender would see it, report
+    /// the key already pending, and back off -- then this call would move
+    /// that same row into `dead_letters`, and the enqueue the sender
+    /// believed had succeeded would be gone.
+    pub fn record_dead_letter(
+        &self,
+        group_key: &str,
+        queue_key: &str,
+        payload: &[u8],
+        error: &str,
+        now: i64,
+    ) -> Result<Vec<String>> {
+        let mut conn = self.conn.lock().expect("queue connection lock poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT INTO dead_letters (group_key, queue_key, payload, attempts, last_error, \
+             created_at)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5)",
+            params![group_key, queue_key, payload, error, now],
+        )?;
+        let pruned = Self::prune_dead_letters(&tx, self.config.dlq_max_rows, group_key)?;
+        tx.commit()?;
+        Ok(pruned)
+    }
+
     /// This queue's configured attempt budget -- the same value
     /// [`Queue::fail`] checks internally, exposed so a caller can apply the
     /// identical ceiling to a case this crate cannot see on its own: an
@@ -284,6 +379,51 @@ impl Queue {
             )
             .optional()?
             .is_some())
+    }
+
+    /// How many items are waiting or in flight. The bound a caller
+    /// applies before accepting more work.
+    pub fn pending_count(&self) -> Result<u32> {
+        let conn = self.conn.lock().expect("queue connection lock poisoned");
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))?;
+        Ok(count as u32)
+    }
+
+    /// Writes one item unless `queue_key` already has a pending row, and
+    /// reports whether it wrote. The check and the insert run in one
+    /// immediate transaction, so two callers racing a cold cache -- or two
+    /// handles to the same file -- cannot both decide the key is free and
+    /// both write. The one-row-per-key invariant every dedup-on-key caller
+    /// depends on (including [`Self::replay`]) is the database's here, not
+    /// the caller's.
+    pub fn enqueue_if_absent(
+        &self,
+        group_key: &str,
+        queue_key: &str,
+        payload: &[u8],
+        now: i64,
+    ) -> Result<bool> {
+        let mut conn = self.conn.lock().expect("queue connection lock poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let already: bool = tx
+            .query_row(
+                "SELECT 1 FROM outbox WHERE queue_key = ?1 LIMIT 1",
+                params![queue_key],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if already {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO outbox (group_key, queue_key, payload, attempts, claim_count, \
+             visible_at, created_at)
+             VALUES (?1, ?2, ?3, 0, 0, ?4, ?4)",
+            params![group_key, queue_key, payload, now],
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Claims up to `limit` items due at or before `now` -- either freshly
@@ -587,6 +727,29 @@ impl Queue {
     }
 }
 
+/// Opens (creating on first use) a WAL-mode SQLite connection at
+/// `dir/db_name`, applying `PRAGMA key` before anything else touches the
+/// file when `dek` is present. The key pragma must be the first statement
+/// on the connection: SQLCipher decides the page cipher from it, so running
+/// schema DDL first would create an unencrypted file that later opens
+/// refuse.
+fn open_connection<P: AsRef<Path>>(
+    dir: P,
+    db_name: &str,
+    dek: Option<&[u8; 32]>,
+) -> Result<Connection> {
+    if db_name.contains('/') || db_name.contains('\\') || db_name.contains("..") {
+        return Err(anyhow!("Invalid database name: {}", db_name));
+    }
+    let conn = Connection::open(dir.as_ref().join(db_name))?;
+    if let Some(dek) = dek {
+        let pragma = Zeroizing::new(format!("x'{}'", hex::encode(dek)));
+        conn.pragma_update(None, "key", &*pragma)?;
+    }
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    Ok(conn)
+}
+
 /// The un-jittered backoff before the wait that follows a `wait_number`'th
 /// failed attempt (1-indexed), capped at `policy.max_backoff_ms` --
 /// `RetryPolicy`'s own curve. [`Queue::fail`] applies
@@ -616,6 +779,7 @@ mod tests {
             },
             visibility_timeout_ms: 120_000,
             dlq_max_rows: 1000,
+            max_pending_rows: DEFAULT_MAX_PENDING_ROWS,
         }
     }
 
@@ -632,6 +796,48 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].payload, b"payload-a");
         assert_eq!(items[0].queue_key, "inst-1/backend@did:key:zB");
+    }
+
+    /// Durability and the SQLCipher key in one assertion: an item written
+    /// to an encrypted queue file is still there after the process that
+    /// wrote it is gone, and still readable with the same key.
+    #[test]
+    fn a_queued_item_survives_reopening_the_encrypted_queue_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dek = [7u8; 32];
+        {
+            let queue =
+                Queue::open_encrypted(dir.path(), "async.db", Some(&dek), config()).unwrap();
+            queue.enqueue("did:key:zTarget", "msg-7", b"payload-a", 1_000).unwrap();
+        }
+        let queue = Queue::open_encrypted(dir.path(), "async.db", Some(&dek), config()).unwrap();
+        let items = queue.all().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].payload, b"payload-a");
+        assert_eq!(items[0].queue_key, "msg-7");
+    }
+
+    /// A queued payload is the calling service's own data, so the file it
+    /// waits in must be no weaker than the database that data came from.
+    /// Scoped to an encryption-enabled deployment: with encryption
+    /// disabled the queue is plain SQLite, exactly as `state.db` is then,
+    /// and this property is not claimed.
+    #[test]
+    fn the_queue_file_is_unreadable_without_the_services_dek() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let queue =
+                Queue::open_encrypted(dir.path(), "async.db", Some(&[7u8; 32]), config()).unwrap();
+            queue.enqueue("did:key:zTarget", "msg-7", b"secret-payload", 1_000).unwrap();
+        }
+        assert!(
+            Queue::open(dir.path(), "async.db", config()).is_err(),
+            "an unkeyed open of an encrypted queue file must fail"
+        );
+        assert!(
+            Queue::open_encrypted(dir.path(), "async.db", Some(&[8u8; 32]), config()).is_err(),
+            "the wrong key must fail exactly like no key"
+        );
     }
 
     /// Test 3: failure-matrix row 6.
@@ -780,6 +986,29 @@ mod tests {
             (36_737_000.0..=36_739_000.0).contains(&(total_ms as f64)),
             "expected ~36,738,000 ms, got {total_ms} ms"
         );
+    }
+
+    /// The guest proxy outbox's own defaults must give the same overnight
+    /// window the supervisor's do -- a message queued at 22:00 has to be
+    /// deliverable at 07:00.
+    #[test]
+    fn the_sandbox_role_defaults_give_the_same_ten_hour_window() {
+        let cfg = QueueConfig::from(&AppSandboxRole::default());
+        assert_eq!(cfg.retry.max_attempts, 54);
+        assert_eq!(cfg.retry.max_backoff_ms, 900_000);
+        assert_eq!(cfg.visibility_timeout_ms, 120_000);
+        assert_eq!(cfg.dlq_max_rows, 1000);
+        let total = cfg.total_retry_window_ms() as f64;
+        assert!(
+            (36_737_000.0..=36_739_000.0).contains(&total),
+            "expected ~36,738,000 ms, got {total} ms"
+        );
+    }
+
+    #[test]
+    fn a_configured_zero_sandbox_max_attempts_is_clamped_to_one() {
+        let role = AppSandboxRole { queue_max_attempts: 0, ..AppSandboxRole::default() };
+        assert_eq!(QueueConfig::from(&role).retry.max_attempts, 1);
     }
 
     /// M05B B1 review finding 9: a configured `queue_max_attempts` of 0
@@ -955,6 +1184,33 @@ mod tests {
         assert!(err.to_string().contains("pending"), "unexpected error: {err}");
         assert_eq!(queue.dead_letters().unwrap().len(), 1, "the dead letter must be left in place");
         assert_eq!(queue.all().unwrap().len(), 1, "no second row must have been created");
+    }
+
+    /// Recording a dead letter must never make a key look pending, even
+    /// for an instant: a concurrent sender would see that row, decide the
+    /// key was already queued, and drop the call it believed it had
+    /// enqueued.
+    #[test]
+    fn recording_a_dead_letter_never_makes_the_key_look_pending() {
+        let queue = Queue::open_in_memory(config()).unwrap();
+        queue.record_dead_letter("g", "k", b"p", "gave up", 1_000).unwrap();
+
+        assert!(
+            queue.all().unwrap().is_empty(),
+            "the outbox must never hold a row for a directly-recorded dead letter"
+        );
+        assert!(
+            !queue.has_pending("k").unwrap(),
+            "and a concurrent sender must still be free to enqueue that key"
+        );
+        let dead = queue.dead_letters().unwrap();
+        assert_eq!(dead.len(), 1);
+        assert_eq!(dead[0].queue_key, "k");
+        assert_eq!(dead[0].last_error, "gave up");
+
+        // The sender's own enqueue for the same key still lands.
+        assert!(queue.enqueue_if_absent("g", "k", b"p2", 1_100).unwrap());
+        assert_eq!(queue.all().unwrap().len(), 1);
     }
 
     /// Failure-matrix row 5: a replayed item that fails again returns to

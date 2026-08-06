@@ -1273,6 +1273,7 @@ impl AppSandboxEngine {
             method: "run".to_string(), // Default method for test
             params: Value::Null,
             id: None,
+            idempotency_key: None,
         };
         self.execute_wasm(service_id, component_id, &request).await
     }
@@ -2415,6 +2416,7 @@ mod tests {
             method: "loop-forever".to_string(),
             params: Value::Array(vec![]),
             id: None,
+            idempotency_key: None,
         };
         let res_loop =
             app_engine.execute_wasm("test_service", "test-interface", &request_loop).await;
@@ -2430,6 +2432,7 @@ mod tests {
             method: "allocate-too-much".to_string(),
             params: Value::Array(vec![Value::Number(serde_json::Number::from(100))]),
             id: None,
+            idempotency_key: None,
         };
         let res_mem = app_engine.execute_wasm("test_service", "test-interface", &request_mem).await;
         assert!(res_mem.is_err());

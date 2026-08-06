@@ -29,6 +29,7 @@ use syneroym_rpc::{
     CapabilityToken, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse,
     MESSAGING_MESSAGE_METHOD, MessagingNotification, framing,
 };
+pub use syneroym_rpc::{DeadLetterInfo, QueuedCallInfo};
 pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, BindingWrite, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
     DependencyBinding, DeployManifest, DeploymentPlan, HealthCheck, HttpProbe, InstanceIdentity,
@@ -458,6 +459,7 @@ impl SyneroymClient {
             method: method.to_string(),
             params,
             id: Some(Value::Number(1.into())),
+            idempotency_key: None,
         };
         self.request_raw(interface, request).await
     }
@@ -543,6 +545,7 @@ impl SyneroymClient {
             method: "subscribe".to_string(),
             params: serde_json::json!({"topic": topic}),
             id: Some(Value::Number(1.into())),
+            idempotency_key: None,
         };
         let (send, mut recv) = self.open_request_stream(interface, &request).await?;
 
@@ -804,6 +807,33 @@ impl SyneroymClient {
             Ok(())
         } else {
             Err(anyhow::anyhow!("Releasing the app instance failed: {:?}", res.result))
+        }
+    }
+
+    /// Every call waiting in `service_id`'s durable proxy outbox.
+    pub async fn proxy_outbox(&self, service_id: String) -> Result<Vec<QueuedCallInfo>> {
+        let res = self
+            .request("orchestrator", "proxy-outbox", serde_json::to_value((service_id,))?)
+            .await?;
+        Ok(serde_json::from_value(res.result)?)
+    }
+
+    /// Every dead letter `service_id`'s durable proxy outbox holds.
+    pub async fn proxy_dead_letters(&self, service_id: String) -> Result<Vec<DeadLetterInfo>> {
+        let res = self
+            .request("orchestrator", "proxy-dead-letters", serde_json::to_value((service_id,))?)
+            .await?;
+        Ok(serde_json::from_value(res.result)?)
+    }
+
+    /// Re-enqueues one dead letter. It never executes inline.
+    pub async fn proxy_replay(&self, service_id: String, dead_letter_id: u64) -> Result<()> {
+        let params = serde_json::to_value((service_id, dead_letter_id))?;
+        let res = self.request("orchestrator", "proxy-replay", params).await?;
+        if res.result == serde_json::json!({"status": "replayed"}) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Replay failed: {:?}", res.result))
         }
     }
 
