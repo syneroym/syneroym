@@ -387,9 +387,20 @@ impl ProxyRouter {
             }
             return self.invoke_local(req, endpoint, canonical_iface).await;
         };
+        // Keyed on the *resolved* endpoint's service id, not the id the
+        // caller addressed. The wire entry point keys on the resolved one
+        // too, and for a native channel registered under a different id
+        // than it is addressed by the two disagree -- which would make
+        // "one guard, both entry points" one guard reading two different
+        // keys.
+        let store_owner = match &endpoint {
+            SubstrateEndpoint::NativeHostChannel { service_id }
+            | SubstrateEndpoint::WasmChannel { service_id } => service_id.clone(),
+            _ => req.target_service.clone(),
+        };
         match guard
             .begin(
-                &req.target_service,
+                &store_owner,
                 &req.interface,
                 Some(&req.caller.caller_did),
                 req.idempotency_key.as_deref(),
@@ -1632,11 +1643,19 @@ mod tests {
     /// queue exists for, so shutdown must not wait for it.
     #[tokio::test]
     async fn shutdown_abandons_an_in_flight_delivery_rather_than_draining() {
-        let node = outbox_node(false, 50).await;
+        // The target genuinely blocks. A target that fails immediately
+        // would make this test pass whether or not cancellation is raced
+        // into the delivery at all -- nothing would ever be in flight to
+        // abandon, which is the exact way this test was vacuous before.
+        let node = outbox_node(true, 50).await;
+        let release = Arc::new(tokio::sync::Notify::new());
+        *node.target.hold.lock().unwrap() = Some(release.clone());
+
         node.router
             .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
             .await
             .unwrap();
+        assert_eq!(node.queued().await.len(), 1, "the blocked probe must have queued the item");
 
         let cancel = CancellationToken::new();
         let worker = {
@@ -1646,15 +1665,37 @@ mod tests {
                 router.run_outbox_worker(Duration::from_millis(5), cancel).await;
             })
         };
-        // Let the worker get into its loop, then cancel.
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        cancel.cancel();
 
+        // Wait until the worker is genuinely inside a delivery that will
+        // not return on its own.
+        let entered =
+            wait_for(Duration::from_secs(5), || node.target.invoked.load(Ordering::SeqCst) >= 1)
+                .await;
+        assert!(entered, "the worker never entered the delivery, so there is nothing to abandon");
+
+        cancel.cancel();
         let stopped = tokio::time::timeout(Duration::from_secs(2), worker).await;
         assert!(
             stopped.is_ok(),
-            "the worker must stop promptly on cancellation rather than draining its queue"
+            "shutdown must interrupt a delivery that never resolves, not wait it out"
         );
+
+        // The abandoned item is still there: nothing was lost by not
+        // draining, which is what makes abandoning it safe.
+        release.notify_waiters();
+        assert_eq!(node.queued().await.len(), 1, "the abandoned item must still be on the outbox");
+    }
+
+    /// Polls until `check` holds or the budget runs out.
+    async fn wait_for<F: FnMut() -> bool>(budget: Duration, mut check: F) -> bool {
+        let deadline = std::time::Instant::now() + budget;
+        while std::time::Instant::now() < deadline {
+            if check() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
     }
 
     // -- the dead-letter tier ----------------------------------------------
@@ -1937,6 +1978,10 @@ mod tests {
         /// Makes the target answer definitively rather than being absent,
         /// so the queued path's callee-error classification can be driven.
         fail_with: std::sync::atomic::AtomicBool,
+        /// When set, `dispatch` blocks until this is notified -- a
+        /// delivery that genuinely never resolves, which is the only way
+        /// to test that shutdown interrupts one.
+        hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     }
 
     #[async_trait::async_trait]
@@ -1944,6 +1989,10 @@ mod tests {
         async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
             self.invoked.fetch_add(1, Ordering::SeqCst);
             *self.last_caller_did.lock().unwrap() = Some(invocation.caller.caller_did.clone());
+            let hold = self.hold.lock().unwrap().clone();
+            if let Some(hold) = hold {
+                hold.notified().await;
+            }
             if self.fail_with.load(Ordering::SeqCst) {
                 return Err(RpcError::InternalError("the target says no".to_string()));
             }
