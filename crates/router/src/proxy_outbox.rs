@@ -32,7 +32,9 @@ use std::{
 use syneroym_app_orchestration::{
     AppInstanceId, LogicalResolver, LogicalServiceName, LogicalServiceRef,
 };
-use syneroym_async_queue::{CALL_ALREADY_RUNNING_RPC_CODE, Queue, QueueConfig};
+use syneroym_async_queue::{
+    CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, Queue, QueueConfig,
+};
 use syneroym_core::local_registry::EndpointRegistry;
 use syneroym_data_db::StorageProvider;
 use syneroym_data_keystore::KeyStore;
@@ -50,9 +52,13 @@ use crate::call_dedup::ASYNC_DB_NAME;
 /// whole node's tick budget on its own backlog.
 pub(crate) const CLAIM_LIMIT_PER_TICK: u32 = 16;
 
-/// Whether a delivery failure should be retried, or is settled for good.
+/// What a delivery attempt's error actually means for the item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Disposition {
+    /// Not a failure at all: the receiver is telling us this exact item
+    /// already ran there. The item is done and must be completed, not
+    /// retried and not recorded as lost.
+    Delivered,
     Retry,
     Terminal,
 }
@@ -93,6 +99,14 @@ pub enum Disposition {
 #[must_use]
 pub fn disposition_of(error: &ProxyError) -> Disposition {
     match error {
+        // "I already ran this, but its result was too large to keep."
+        // That is a delivery, reported through the error channel because
+        // there is no value to hand back. Treating it as a failure would
+        // dead-letter an item that landed -- and because a replay produces
+        // the very same answer, the row could never be cleared.
+        ProxyError::Callee { code, .. } if *code == CALL_RESULT_NOT_RETAINED_RPC_CODE => {
+            Disposition::Delivered
+        }
         ProxyError::Callee { code, .. }
             if *code == CALL_ALREADY_RUNNING_RPC_CODE || *code == SERVICE_NOT_FOUND_RPC_CODE =>
         {
@@ -116,6 +130,10 @@ pub struct ProxyOutbox {
     resolver: Arc<LogicalResolver>,
     config: QueueConfig,
     queues: Mutex<HashMap<String, Queue>>,
+    /// Serialises opening a queue, for the same reason the dedup guard
+    /// does: two handles to one file are two connections, and the
+    /// one-row-per-key invariant would then rest on nothing.
+    open_lock: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for ProxyOutbox {
@@ -132,7 +150,14 @@ impl ProxyOutbox {
         resolver: Arc<LogicalResolver>,
         config: QueueConfig,
     ) -> Self {
-        Self { storage_provider, key_store, resolver, config, queues: Mutex::new(HashMap::new()) }
+        Self {
+            storage_provider,
+            key_store,
+            resolver,
+            config,
+            queues: Mutex::new(HashMap::new()),
+            open_lock: tokio::sync::Mutex::new(()),
+        }
     }
 
     #[must_use]
@@ -153,13 +178,11 @@ impl ProxyOutbox {
     /// really buying. The operator verbs, which take an id from a human,
     /// go through [`Self::existing_queue_for`] instead.
     pub async fn queue_for(&self, service_id: &str) -> Result<Queue, ProxyError> {
-        if let Some(queue) = self
-            .queues
-            .lock()
-            .map_err(|_| ProxyError::Internal("outbox cache poisoned".to_string()))?
-            .get(service_id)
-            .cloned()
-        {
+        if let Some(queue) = self.cached_queue(service_id)? {
+            return Ok(queue);
+        }
+        let _opening = self.open_lock.lock().await;
+        if let Some(queue) = self.cached_queue(service_id)? {
             return Ok(queue);
         }
         let dek = self
@@ -185,6 +208,15 @@ impl ProxyOutbox {
             .map_err(|_| ProxyError::Internal("outbox cache poisoned".to_string()))?
             .insert(service_id.to_string(), queue.clone());
         Ok(queue)
+    }
+
+    fn cached_queue(&self, service_id: &str) -> Result<Option<Queue>, ProxyError> {
+        Ok(self
+            .queues
+            .lock()
+            .map_err(|_| ProxyError::Internal("outbox cache poisoned".to_string()))?
+            .get(service_id)
+            .cloned())
     }
 
     /// Resolves a queued item's stored intent into the DID to deliver to,
@@ -235,10 +267,7 @@ impl ProxyOutbox {
         let (group, key) = (group_key_of(call), call.idempotency_key.clone());
         let now = now_ms();
         task::spawn_blocking(move || -> anyhow::Result<()> {
-            if queue.has_pending(&key)? {
-                return Ok(());
-            }
-            queue.enqueue(&group, &key, &payload, now)?;
+            queue.enqueue_if_absent(&group, &key, &payload, now)?;
             Ok(())
         })
         .await
@@ -434,6 +463,20 @@ mod tests {
     fn a_callee_error_on_a_queued_item_is_terminal_rather_than_completing() {
         let error = ProxyError::Callee { code: -32010, message: "no".into(), data: None };
         assert_eq!(disposition_of(&error), Disposition::Terminal);
+    }
+
+    /// "I already ran this, its result was too large to keep" is a
+    /// delivery reported through the error channel. Classifying it as a
+    /// failure dead-letters an item that landed -- and because a replay
+    /// produces the very same answer, that row could never be cleared.
+    #[test]
+    fn a_result_too_large_to_retain_is_a_delivery_not_a_failure() {
+        let error = ProxyError::Callee {
+            code: CALL_RESULT_NOT_RETAINED_RPC_CODE,
+            message: "already ran here".into(),
+            data: None,
+        };
+        assert_eq!(disposition_of(&error), Disposition::Delivered);
     }
 
     /// The one documented exception, and the reason it exists: the

@@ -69,28 +69,53 @@ impl DedupClaim {
     /// Records what the call answered, so a duplicate is served from the
     /// record instead of re-executed.
     ///
-    /// A failure that never reached the target -- an unknown service, a
-    /// denied permission, a transport fault on the way in -- releases the
+    /// A failure that **provably** never reached the target releases the
     /// claim instead: nothing ran, so nothing should be remembered, and
-    /// holding it would block a corrected retry for the whole claim window.
+    /// holding it would block a corrected retry for a whole claim window.
+    ///
+    /// "Provably" is the load-bearing word, and the set is deliberately
+    /// narrow. A timeout is *not* in it: the dispatch is wrapped in a
+    /// timeout, so the deadline fires around a call that may still be
+    /// running inside the target. Neither is an unreadable response frame,
+    /// which the target produced by definition. Releasing on either would
+    /// let the retry run the target a second time -- on the failure mode
+    /// most likely to cause a retry in the first place.
+    ///
+    /// So anything ambiguous keeps its claim and lets the window expire on
+    /// its own. The cost of holding a claim wrongly is one window of
+    /// "already running here" answers, which a sender retries; the cost of
+    /// releasing one wrongly is a double execution, which is the single
+    /// thing this fence exists to prevent.
     pub async fn settle(self, outcome: &Result<serde_json::Value, ProxyError>) {
-        let stored = match outcome {
+        enum Settlement {
+            Record(FirstOutcome),
+            Release,
+            LeaveInFlight,
+        }
+        let settlement = match outcome {
             Ok(value) => match serde_json::to_vec(value) {
-                Ok(bytes) => Some(FirstOutcome::Success(bytes)),
+                Ok(bytes) => Settlement::Record(FirstOutcome::Success(bytes)),
                 // The target answered, but its own value will not
                 // round-trip. Recording it as done-without-body keeps
                 // "not re-executed" true, which is the half that matters.
-                Err(_) => Some(FirstOutcome::SuccessNotRetained),
+                Err(_) => Settlement::Record(FirstOutcome::SuccessNotRetained),
             },
             Err(ProxyError::Callee { code, message, .. }) => {
-                Some(FirstOutcome::CalleeError { code: *code, message: message.clone() })
+                Settlement::Record(FirstOutcome::CalleeError {
+                    code: *code,
+                    message: message.clone(),
+                })
             }
-            Err(_) => None,
+            Err(e) if precedes_execution(e) => Settlement::Release,
+            Err(_) => Settlement::LeaveInFlight,
         };
         let now = now_ms();
-        let recorded = task::spawn_blocking(move || match stored {
-            Some(outcome) => self.store.finish(&self.caller, &self.key, &outcome, now),
-            None => self.store.release(&self.caller, &self.key),
+        let recorded = task::spawn_blocking(move || match settlement {
+            Settlement::Record(outcome) => {
+                self.store.finish(&self.caller, &self.key, &outcome, now)
+            }
+            Settlement::Release => self.store.release(&self.caller, &self.key),
+            Settlement::LeaveInFlight => Ok(()),
         })
         .await
         .map_err(anyhow::Error::from)
@@ -99,6 +124,24 @@ impl DedupClaim {
             warn!(error = %e, "failed to record a call's dedup outcome");
         }
     }
+}
+
+/// Whether `error` is one this node raised *before* the target could have
+/// started running.
+///
+/// Everything here is decided by the router or the route handler on the
+/// way in -- a lookup miss, a gate, an unusable target kind, a store that
+/// would not open. Deliberately excludes `Transport` and `Timeout`: both
+/// can be reported around a call that is already executing.
+fn precedes_execution(error: &ProxyError) -> bool {
+    matches!(
+        error,
+        ProxyError::ServiceNotFound(_)
+            | ProxyError::PermissionDenied(_)
+            | ProxyError::UnsupportedTarget(_)
+            | ProxyError::UnsupportedProtocol(_)
+            | ProxyError::Internal(_)
+    )
 }
 
 /// Turns a stored first outcome back into the answer the duplicate gets.
@@ -145,6 +188,12 @@ pub struct CallDedupGuard {
     /// hot path and one no structural test notices unless it asks.
     /// Bounded by the number of services on the node.
     stores: Mutex<HashMap<String, DedupStore>>,
+    /// Serialises the *opening* of a store, so two callers that miss the
+    /// cache at the same moment cannot each build an independent handle to
+    /// the same file. Two handles are two connections, and the claim's
+    /// atomicity would then rest on nothing. Opens are once-per-service,
+    /// so a single node-wide lock costs nothing worth optimising.
+    open_lock: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for CallDedupGuard {
@@ -161,7 +210,23 @@ impl CallDedupGuard {
         registry: EndpointRegistry,
         config: DedupConfig,
     ) -> Self {
-        Self { storage_provider, key_store, registry, config, stores: Mutex::new(HashMap::new()) }
+        Self {
+            storage_provider,
+            key_store,
+            registry,
+            config,
+            stores: Mutex::new(HashMap::new()),
+            open_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    fn cached_store(&self, service_id: &str) -> Result<Option<DedupStore>, ProxyError> {
+        Ok(self
+            .stores
+            .lock()
+            .map_err(|_| ProxyError::Internal("dedup store cache poisoned".to_string()))?
+            .get(service_id)
+            .cloned())
     }
 
     /// How many per-service connections this guard currently holds --
@@ -190,13 +255,16 @@ impl CallDedupGuard {
     /// Opens (once) the dedup store for `service_id`, on that service's own
     /// database with that service's own key.
     async fn store_for(&self, service_id: &str) -> Result<DedupStore, ProxyError> {
-        if let Some(store) = self
-            .stores
-            .lock()
-            .map_err(|_| ProxyError::Internal("dedup store cache poisoned".to_string()))?
-            .get(service_id)
-            .cloned()
-        {
+        if let Some(store) = self.cached_store(service_id)? {
+            return Ok(store);
+        }
+
+        // Missed the cache. Serialise from here, and look again once the
+        // lock is held: whoever went first has already published theirs,
+        // and a second handle to the same file would undo the claim's
+        // atomicity.
+        let _opening = self.open_lock.lock().await;
+        if let Some(store) = self.cached_store(service_id)? {
             return Ok(store);
         }
 
@@ -518,6 +586,98 @@ mod tests {
             node.guard.cached_store_count(),
             1,
             "the second keyed call to one target must reuse the first call's connection"
+        );
+    }
+
+    /// Two duplicates arriving at once through a *cold* cache. The
+    /// dangerous shape: both miss the store cache, and without
+    /// single-flighting they each build an independent handle to the same
+    /// file, so both read "no row" before either writes and both are told
+    /// to execute. Exactly one may win.
+    #[tokio::test]
+    async fn two_concurrent_duplicates_through_a_cold_cache_produce_one_claim() {
+        let node = node(false, &["svc-a"]).await;
+        assert_eq!(node.guard.cached_store_count(), 0, "the cache must start cold");
+
+        let (first, second) = tokio::join!(
+            node.guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")),
+            node.guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")),
+        );
+
+        let executing = [&first, &second]
+            .iter()
+            .filter(|o| matches!(o, GuardOutcome::Execute(Some(_))))
+            .count();
+        assert_eq!(
+            executing, 1,
+            "exactly one of two concurrent duplicates may execute, got {first:?} and {second:?}"
+        );
+        assert_eq!(node.guard.cached_store_count(), 1, "and only one store may have been opened");
+    }
+
+    /// A timeout fires *around* a dispatch that may still be running
+    /// inside the target, so it must not release the claim -- releasing it
+    /// lets the retry run the target a second time, on the failure mode
+    /// most likely to cause a retry.
+    #[tokio::test]
+    async fn a_timed_out_call_keeps_its_claim_so_a_retry_does_not_re_execute() {
+        let node = node(false, &["svc-a"]).await;
+        let GuardOutcome::Execute(Some(claim)) =
+            node.guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await
+        else {
+            panic!("expected a claim");
+        };
+        claim.settle(&Err(ProxyError::Timeout(std::time::Duration::from_secs(30)))).await;
+
+        assert!(
+            matches!(
+                node.guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await,
+                GuardOutcome::Refuse(ProxyError::Callee { code, .. })
+                    if code == syneroym_async_queue::CALL_ALREADY_RUNNING_RPC_CODE
+            ),
+            "a retry after a timeout must be told the call is still running, not handed the key"
+        );
+    }
+
+    /// The target definitely ran -- it produced a frame we could not read
+    /// -- so this is the same rule as the timeout.
+    #[tokio::test]
+    async fn an_unreadable_response_keeps_its_claim() {
+        let node = node(false, &["svc-a"]).await;
+        let GuardOutcome::Execute(Some(claim)) =
+            node.guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await
+        else {
+            panic!("expected a claim");
+        };
+        claim.settle(&Err(ProxyError::Transport("unreadable response frame".to_string()))).await;
+
+        assert!(
+            matches!(
+                node.guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await,
+                GuardOutcome::Refuse(_)
+            ),
+            "an unreadable response must not free the key for a second execution"
+        );
+    }
+
+    /// The boundary: a refusal raised before anything was dispatched must
+    /// still release, or a corrected retry is blocked for a whole window.
+    #[tokio::test]
+    async fn a_pre_dispatch_refusal_still_releases_its_claim() {
+        let node = node(false, &["svc-a"]).await;
+        let GuardOutcome::Execute(Some(claim)) =
+            node.guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await
+        else {
+            panic!("expected a claim");
+        };
+        claim.settle(&Err(ProxyError::PermissionDenied("denied".to_string()))).await;
+
+        assert!(
+            matches!(
+                node.guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await,
+                GuardOutcome::Execute(Some(_))
+            ),
+            "a corrected retry must not be blocked by a claim nothing executed under"
         );
     }
 

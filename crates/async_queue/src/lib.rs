@@ -337,6 +337,43 @@ impl Queue {
             .is_some())
     }
 
+    /// Writes one item unless `queue_key` already has a pending row, and
+    /// reports whether it wrote. The check and the insert run in one
+    /// immediate transaction, so two callers racing a cold cache -- or two
+    /// handles to the same file -- cannot both decide the key is free and
+    /// both write. The one-row-per-key invariant every dedup-on-key caller
+    /// depends on (including [`Self::replay`]) is the database's here, not
+    /// the caller's.
+    pub fn enqueue_if_absent(
+        &self,
+        group_key: &str,
+        queue_key: &str,
+        payload: &[u8],
+        now: i64,
+    ) -> Result<bool> {
+        let mut conn = self.conn.lock().expect("queue connection lock poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let already: bool = tx
+            .query_row(
+                "SELECT 1 FROM outbox WHERE queue_key = ?1 LIMIT 1",
+                params![queue_key],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if already {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO outbox (group_key, queue_key, payload, attempts, claim_count, \
+             visible_at, created_at)
+             VALUES (?1, ?2, ?3, 0, 0, ?4, ?4)",
+            params![group_key, queue_key, payload, now],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Claims up to `limit` items due at or before `now` -- either freshly
     /// due, or in flight past a crashed worker's visibility timeout
     /// (failure-matrix row 1) -- and marks them invisible until `now +

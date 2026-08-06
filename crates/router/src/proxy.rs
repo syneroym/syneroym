@@ -14,7 +14,9 @@ use std::{
 
 use iroh::{Endpoint, EndpointAddr};
 use serde_json::Value;
-use syneroym_async_queue::{FailOutcome, Queue};
+use syneroym_async_queue::{
+    CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, FailOutcome, Queue,
+};
 use syneroym_core::{
     config::RetryPolicy,
     dht_registry::RegistryClient,
@@ -40,6 +42,29 @@ use crate::{
     preamble::RoutePreamble,
     proxy_outbox::{self, Disposition, ProxyOutbox},
 };
+
+/// Whether `error` came from the call actually reaching its target, as
+/// opposed to being the receiver-side fence's own answer or a refusal
+/// raised before anything was attempted.
+///
+/// Only the former is worth a dead letter: a dead letter exists to be
+/// replayed, and replaying a refusal just re-earns the refusal.
+fn target_produced(error: &ProxyError) -> bool {
+    match error {
+        ProxyError::Callee { code, .. } => {
+            *code != CALL_ALREADY_RUNNING_RPC_CODE && *code != CALL_RESULT_NOT_RETAINED_RPC_CODE
+        }
+        ProxyError::Transport(_) | ProxyError::Timeout(_) => true,
+        // Raised before or instead of a dispatch: an unknown service, a
+        // denied gate, an unusable target kind, a store this node could
+        // not open.
+        ProxyError::ServiceNotFound(_)
+        | ProxyError::PermissionDenied(_)
+        | ProxyError::UnsupportedTarget(_)
+        | ProxyError::UnsupportedProtocol(_)
+        | ProxyError::Internal(_) => false,
+    }
+}
 
 /// How long `enqueue`'s immediate try-then-queue attempt may take before
 /// the item is simply queued instead.
@@ -282,6 +307,21 @@ impl ProxyRouter {
             return;
         };
         let CallOrigin::Guest { service_id } = &req.origin else { return };
+
+        // Only a failure the *target* produced earns a row. The fence's
+        // own answers are not delivery failures at all:
+        //
+        // - "already running here" means the call is succeeding on another task right
+        //   now, so a dead letter for it would be indistinguishable from a genuine
+        //   exhausted delivery and would never be cleared when the real call finished;
+        // - "already ran, result too large to retain" is a delivery;
+        // - a fail-closed refusal (no store, anonymous caller, node-level target) means
+        //   nothing was attempted, so there is nothing to replay -- and replaying would
+        //   hit the same refusal.
+        if !target_produced(error) {
+            return;
+        }
+
         // A queued item that failed is dead-lettered by the worker, which
         // owns its own retry history; this path is only for the caller
         // that is still holding the error.
@@ -923,6 +963,13 @@ impl ProxyRouter {
             };
             match self.deliver_queued(&call, target).await {
                 Ok(_) => {
+                    metrics::counter!("substrate.proxy.outbox.delivered").increment(1);
+                    let _ = tokio::task::spawn_blocking(move || queue.complete(item.id)).await;
+                }
+                // The receiver already ran this item and could not hand
+                // back its result. That is a delivery reported through the
+                // error channel, so the item is done.
+                Err(e) if proxy_outbox::disposition_of(&e) == Disposition::Delivered => {
                     metrics::counter!("substrate.proxy.outbox.delivered").increment(1);
                     let _ = tokio::task::spawn_blocking(move || queue.complete(item.id)).await;
                 }
@@ -1610,7 +1657,9 @@ mod tests {
     // -- the dead-letter tier ----------------------------------------------
 
     /// A guest-origin call that failed for good, as the synchronous tier
-    /// produces it: unreachable target, so the retry budget is exhausted.
+    /// produces it. The target is registered and *answers* -- a refusal it
+    /// produced itself -- because only a failure the target produced earns
+    /// a dead letter: this node's own refusals have nothing to replay.
     fn failing_guest_request(key: Option<&str>) -> ProxyRequest {
         let mut req = base_request("did:key:zTarget", "greeter");
         req.origin = CallOrigin::Guest { service_id: CALLER.to_string() };
@@ -1625,7 +1674,8 @@ mod tests {
     /// silent loss.
     #[tokio::test]
     async fn an_unkeyed_call_that_exhausts_its_retries_writes_no_dead_letter() {
-        let node = outbox_node(false, 50).await;
+        let node = outbox_node(true, 50).await;
+        node.target.fail_with.store(true, Ordering::SeqCst);
         let result = node.router.invoke(failing_guest_request(None)).await;
         assert!(result.is_err(), "the call must still fail to its caller");
         assert!(
@@ -1639,7 +1689,8 @@ mod tests {
     #[tokio::test]
     async fn a_keyed_call_that_exhausts_its_retries_writes_a_dead_letter_and_still_returns_its_error()
      {
-        let node = outbox_node(false, 50).await;
+        let node = outbox_node(true, 50).await;
+        node.target.fail_with.store(true, Ordering::SeqCst);
         let result = node.router.invoke(failing_guest_request(Some("k1"))).await;
         assert!(result.is_err(), "the caller must still get its error");
 
@@ -1647,6 +1698,35 @@ mod tests {
         assert_eq!(dead.len(), 1, "a keyed failure must also be recorded for an operator");
         assert_eq!(dead[0].queue_key, "k1");
         assert!(node.queued().await.is_empty(), "and must not linger in the outbox");
+    }
+
+    /// The fence's own answers are not delivery failures, so none of them
+    /// may leave an operator-visible dead letter. "Already running here"
+    /// is the sharp case: the call is succeeding on another task right
+    /// now, and a row for it would be indistinguishable from a genuine
+    /// exhausted delivery and never cleared.
+    #[test]
+    fn the_fences_own_answers_never_earn_a_dead_letter() {
+        for code in [
+            syneroym_async_queue::CALL_ALREADY_RUNNING_RPC_CODE,
+            syneroym_async_queue::CALL_RESULT_NOT_RETAINED_RPC_CODE,
+        ] {
+            let error = ProxyError::Callee { code, message: "fence".to_string(), data: None };
+            assert!(!target_produced(&error), "code {code} must not earn a dead letter");
+        }
+        // Nor may a refusal raised before anything was attempted:
+        // replaying it just re-earns the refusal.
+        assert!(!target_produced(&ProxyError::PermissionDenied("no store".to_string())));
+        assert!(!target_produced(&ProxyError::Internal("no storage provider".to_string())));
+        assert!(!target_produced(&ProxyError::ServiceNotFound("gone".to_string())));
+
+        // But a real answer from the target does.
+        assert!(target_produced(&ProxyError::Callee {
+            code: -32010,
+            message: "denied by the target".to_string(),
+            data: None,
+        }));
+        assert!(target_produced(&ProxyError::Transport("peer went away".to_string())));
     }
 
     /// One permanently broken recipient must not be able to evict every

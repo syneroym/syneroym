@@ -199,8 +199,17 @@ impl DedupStore {
     /// path only -- a lookup that finds a live record does no maintenance
     /// work at all.
     pub fn begin(&self, caller: &str, key: &str, now: i64) -> Result<DedupDecision> {
-        let conn = self.conn.lock().expect("dedup connection lock poisoned");
-        let existing: Option<Record> = conn
+        let mut conn = self.conn.lock().expect("dedup connection lock poisoned");
+        // One immediate transaction around the read *and* the claiming
+        // write. Holding this struct's own mutex is not enough on its own:
+        // two handles to the same file are two connections, and nothing
+        // stops both reading "no row" before either writes. Taking the
+        // write lock up front makes the guarantee the database's, so it
+        // holds however many handles exist -- including across processes.
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| anyhow::anyhow!("could not begin a dedup transaction: {e}"))?;
+        let existing: Option<Record> = tx
             .query_row(
                 "SELECT state, claim_expires_at, expires_at, result, result_retained, error_code, \
                  error_message
@@ -238,7 +247,7 @@ impl DedupStore {
             }
         }
 
-        conn.execute(
+        tx.execute(
             "INSERT INTO call_dedup
                 (caller, idem_key, state, claim_expires_at, expires_at, result, result_retained,
                  error_code, error_message)
@@ -262,7 +271,8 @@ impl DedupStore {
         // After the insert, not before: the count the cap is measured
         // against has to include the row just written, and the new row --
         // holding the furthest expiry -- is never the one evicted.
-        Self::prune(&conn, self.config.max_rows, now)?;
+        Self::prune(&tx, self.config.max_rows, now)?;
+        tx.commit().map_err(|e| anyhow::anyhow!("could not commit a dedup claim: {e}"))?;
         Ok(DedupDecision::Execute)
     }
 
