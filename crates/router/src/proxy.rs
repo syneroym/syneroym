@@ -55,11 +55,22 @@ fn target_produced(error: &ProxyError) -> bool {
             *code != CALL_ALREADY_RUNNING_RPC_CODE && *code != CALL_RESULT_NOT_RETAINED_RPC_CODE
         }
         ProxyError::Transport(_) | ProxyError::Timeout(_) => true,
-        // Raised before or instead of a dispatch: an unknown service, a
-        // denied gate, an unusable target kind, a store this node could
-        // not open.
-        ProxyError::ServiceNotFound(_)
-        | ProxyError::PermissionDenied(_)
+        // A target that is not found *is* worth a row, and this is the
+        // one place the two classifiers have to be read together. The
+        // queued path treats not-found as retryable, because a node
+        // republishes its endpoint record before its services finish
+        // coming up, so the answer is often "not yet" rather than "no".
+        // The same reasoning applies here: the synchronous caller has
+        // exhausted its own budget against a target that may simply have
+        // been mid-restart, which is exactly a call worth being able to
+        // replay later. Excluding it would silently drop the second tier
+        // of the dead-letter rule for the most transient failure there is.
+        ProxyError::ServiceNotFound(_) => true,
+        // Raised instead of a dispatch, and settled: a denied gate, an
+        // unusable target kind, a protocol this node does not speak, or a
+        // store it could not open. Replaying any of these re-earns the
+        // same refusal.
+        ProxyError::PermissionDenied(_)
         | ProxyError::UnsupportedTarget(_)
         | ProxyError::UnsupportedProtocol(_)
         | ProxyError::Internal(_) => false,
@@ -845,14 +856,26 @@ impl ProxyRouter {
                 warn!("proxy enqueue probe timed out; queueing");
                 outbox.store(&call).await
             }
-            Ok(Err(e)) if proxy_outbox::disposition_of(&e) == Disposition::Retry => {
-                warn!(error = %e, "proxy enqueue could not deliver now; queueing");
-                outbox.store(&call).await
-            }
-            // Terminal on the very first attempt: the caller is still here
-            // to be told, which is a better answer than a dead letter it
-            // cannot read.
-            Ok(Err(e)) => Err(e),
+            // Matched on the enum rather than compared against one
+            // variant, so a future third disposition is a compile error
+            // here instead of silently falling through to "terminal" --
+            // which is exactly how `Delivered` slipped past this arm when
+            // it was added for the worker.
+            Ok(Err(e)) => match proxy_outbox::disposition_of(&e) {
+                // The receiver already ran this call and could not hand
+                // its result back. Reporting that to the guest as a
+                // failure would be the same confusion the queued path was
+                // fixed for, one layer up: the call succeeded.
+                Disposition::Delivered => Ok(()),
+                Disposition::Retry => {
+                    warn!(error = %e, "proxy enqueue could not deliver now; queueing");
+                    outbox.store(&call).await
+                }
+                // Terminal on the very first attempt: the caller is still
+                // here to be told, which is a better answer than a dead
+                // letter it cannot read.
+                Disposition::Terminal => Err(e),
+            },
         }
     }
 }
@@ -977,25 +1000,27 @@ impl ProxyRouter {
                     metrics::counter!("substrate.proxy.outbox.delivered").increment(1);
                     let _ = tokio::task::spawn_blocking(move || queue.complete(item.id)).await;
                 }
-                // The receiver already ran this item and could not hand
-                // back its result. That is a delivery reported through the
-                // error channel, so the item is done.
-                Err(e) if proxy_outbox::disposition_of(&e) == Disposition::Delivered => {
-                    metrics::counter!("substrate.proxy.outbox.delivered").increment(1);
-                    let _ = tokio::task::spawn_blocking(move || queue.complete(item.id)).await;
-                }
-                Err(e) => {
-                    proxy_outbox::log_delivery_failure(&call.idempotency_key, &e);
-                    let terminal = proxy_outbox::disposition_of(&e) == Disposition::Terminal;
-                    let message = e.to_string();
-                    let outcome = tokio::task::spawn_blocking(move || {
-                        queue.fail(item.id, now, &message, terminal)
-                    })
-                    .await;
-                    if let Ok(Ok(FailOutcome::DeadLettered { .. })) = outcome {
-                        metrics::counter!("substrate.proxy.outbox.dead_lettered").increment(1);
+                Err(e) => match proxy_outbox::disposition_of(&e) {
+                    // The receiver already ran this item and could not
+                    // hand back its result. That is a delivery reported
+                    // through the error channel, so the item is done.
+                    Disposition::Delivered => {
+                        metrics::counter!("substrate.proxy.outbox.delivered").increment(1);
+                        let _ = tokio::task::spawn_blocking(move || queue.complete(item.id)).await;
                     }
-                }
+                    disposition => {
+                        proxy_outbox::log_delivery_failure(&call.idempotency_key, &e);
+                        let terminal = disposition == Disposition::Terminal;
+                        let message = e.to_string();
+                        let outcome = tokio::task::spawn_blocking(move || {
+                            queue.fail(item.id, now, &message, terminal)
+                        })
+                        .await;
+                        if let Ok(Ok(FailOutcome::DeadLettered { .. })) = outcome {
+                            metrics::counter!("substrate.proxy.outbox.dead_lettered").increment(1);
+                        }
+                    }
+                },
             }
         }
         settled
@@ -1354,6 +1379,40 @@ mod tests {
         }
     }
 
+    /// A guest re-enqueueing a key the receiver already ran -- and whose
+    /// result was too large to retain -- must be told the call succeeded,
+    /// not handed an error. The fence answers through the error channel
+    /// because there is no value to return; that is a delivery, and the
+    /// synchronous probe has to read it the same way the worker does.
+    #[tokio::test]
+    async fn an_enqueue_whose_target_already_ran_it_reports_success() {
+        let node = outbox_node(true, 50).await;
+
+        // Stand in for the receiver's answer: the fence reports "already
+        // ran here, result not retained" through a callee error.
+        let already_ran = ProxyError::Callee {
+            code: syneroym_async_queue::CALL_RESULT_NOT_RETAINED_RPC_CODE,
+            message: "this call already ran here".to_string(),
+            data: None,
+        };
+        assert_eq!(
+            proxy_outbox::disposition_of(&already_ran),
+            Disposition::Delivered,
+            "precondition: this is the code the receiver answers a duplicate with"
+        );
+
+        node.target.answer_with.lock().unwrap().replace(already_ran);
+        let outcome = node
+            .router
+            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
+            .await;
+        assert!(
+            outcome.is_ok(),
+            "a call the receiver already ran must report success to the guest, got {outcome:?}"
+        );
+        assert!(!node.queue_file_exists(), "and must not be queued for another delivery attempt");
+    }
+
     /// The happy path: a reachable target costs one call and zero queue
     /// writes. Asserted as "untouched" -- no queue file is created at all.
     #[tokio::test]
@@ -1643,19 +1702,36 @@ mod tests {
     /// queue exists for, so shutdown must not wait for it.
     #[tokio::test]
     async fn shutdown_abandons_an_in_flight_delivery_rather_than_draining() {
-        // The target genuinely blocks. A target that fails immediately
-        // would make this test pass whether or not cancellation is raced
-        // into the delivery at all -- nothing would ever be in flight to
-        // abandon, which is the exact way this test was vacuous before.
         let node = outbox_node(true, 50).await;
+
+        // Written *straight into the queue*, not through `enqueue`. The
+        // probe would claim this key on the way past, and a claim left in
+        // flight makes the worker's own delivery hit the fence's
+        // "already running here" before it ever reaches the target -- so
+        // there would be no in-flight delivery to abandon, structurally,
+        // however the timing fell. Bypassing the probe also leaves the
+        // target's invocation count at zero, so the wait below can only be
+        // satisfied by the worker.
+        // A long per-call budget on purpose. With the fixture's usual
+        // 500 ms the "blocked" dispatch resolves on its own via the call
+        // timeout, the drain returns, and the test passes whether or not
+        // cancellation is raced into the delivery -- which is precisely
+        // how this test was vacuous twice. At 30 s the only way the worker
+        // returns inside the assertion below is by being interrupted.
+        let mut item = queued_call(QueuedTarget::Dependency("backend".into()), "worker-only");
+        item.timeout_ms = Some(30_000);
+        node.outbox.store(&item).await.unwrap();
+        assert_eq!(node.queued().await.len(), 1);
+        assert_eq!(
+            node.target.invoked.load(Ordering::SeqCst),
+            0,
+            "nothing may have reached the target before the worker starts"
+        );
+
+        // The target blocks and is never released during the test, so any
+        // delivery the worker starts genuinely never resolves on its own.
         let release = Arc::new(tokio::sync::Notify::new());
         *node.target.hold.lock().unwrap() = Some(release.clone());
-
-        node.router
-            .enqueue(queued_call(QueuedTarget::Dependency("backend".into()), "k1"))
-            .await
-            .unwrap();
-        assert_eq!(node.queued().await.len(), 1, "the blocked probe must have queued the item");
 
         let cancel = CancellationToken::new();
         let worker = {
@@ -1666,13 +1742,21 @@ mod tests {
             })
         };
 
-        // Wait until the worker is genuinely inside a delivery that will
-        // not return on its own.
         let entered =
             wait_for(Duration::from_secs(5), || node.target.invoked.load(Ordering::SeqCst) >= 1)
                 .await;
-        assert!(entered, "the worker never entered the delivery, so there is nothing to abandon");
+        assert!(
+            entered,
+            "the worker never reached the target, so this test would prove nothing about \
+             abandoning a delivery"
+        );
 
+        // The load-bearing assertion. The delivery in flight right now
+        // cannot finish -- nothing will notify `release` before the
+        // assertion below. So the worker can only return if cancellation
+        // is raced *into* the delivery; a worker that merely checks
+        // cancellation between ticks stays inside `drain_outboxes_once`
+        // forever and this times out.
         cancel.cancel();
         let stopped = tokio::time::timeout(Duration::from_secs(2), worker).await;
         assert!(
@@ -1680,8 +1764,9 @@ mod tests {
             "shutdown must interrupt a delivery that never resolves, not wait it out"
         );
 
-        // The abandoned item is still there: nothing was lost by not
-        // draining, which is what makes abandoning it safe.
+        // Nothing was lost by not draining: the abandoned item is still
+        // on the outbox, and its visibility timeout returns it to a later
+        // worker.
         release.notify_waiters();
         assert_eq!(node.queued().await.len(), 1, "the abandoned item must still be on the outbox");
     }
@@ -1704,6 +1789,25 @@ mod tests {
     /// produces it. The target is registered and *answers* -- a refusal it
     /// produced itself -- because only a failure the target produced earns
     /// a dead letter: this node's own refusals have nothing to replay.
+    /// A call that runs out of its own deadline against a target that
+    /// never answers -- a transport-class failure, not a callee one.
+    ///
+    /// This is the closest a unit fixture gets to "the budget ran out":
+    /// the retry *loop* itself lives on the remote path, which needs a
+    /// resolvable address this harness has no registry client for. What
+    /// matters for the tier rule below is that the failure is one the
+    /// caller is left holding and that a retry could plausibly have
+    /// fixed, which a definitive callee refusal is not.
+    fn timing_out_guest_request(key: Option<&str>) -> ProxyRequest {
+        let mut req = base_request("did:key:zTarget", "greeter");
+        req.origin = CallOrigin::Guest { service_id: CALLER.to_string() };
+        req.caller = CallerContext::service_system(CALLER);
+        req.idempotency_key = key.map(str::to_string);
+        req.idempotent = true;
+        req.timeout = Some(Duration::from_millis(100));
+        req
+    }
+
     fn failing_guest_request(key: Option<&str>) -> ProxyRequest {
         let mut req = base_request("did:key:zTarget", "greeter");
         req.origin = CallOrigin::Guest { service_id: CALLER.to_string() };
@@ -1716,27 +1820,42 @@ mod tests {
     /// coherent: with no fence there is nothing safe to replay, so there
     /// is no row. The caller is alive and holding the error -- this is not
     /// silent loss.
+    ///
+    /// Driven through a real transport-class failure (the call runs out
+    /// of its deadline against a target that never answers), not a callee
+    /// refusal -- a callee error is never retried, so a pair built on one
+    /// would be testing something other than what these names say.
     #[tokio::test]
-    async fn an_unkeyed_call_that_exhausts_its_retries_writes_no_dead_letter() {
+    async fn an_unkeyed_call_that_fails_at_the_transport_writes_no_dead_letter() {
         let node = outbox_node(true, 50).await;
-        node.target.fail_with.store(true, Ordering::SeqCst);
-        let result = node.router.invoke(failing_guest_request(None)).await;
-        assert!(result.is_err(), "the call must still fail to its caller");
+        let release = Arc::new(tokio::sync::Notify::new());
+        *node.target.hold.lock().unwrap() = Some(release.clone());
+        let result = node.router.invoke(timing_out_guest_request(None)).await;
+        assert!(
+            matches!(result, Err(ProxyError::Transport(_)) | Err(ProxyError::Timeout(_))),
+            "the call must have failed at the transport, got {result:?}"
+        );
         assert!(
             !node.queue_file_exists(),
             "an unfenced failure must leave no replayable record behind"
         );
+        release.notify_waiters();
     }
 
     /// The second tier: the row is *additional*, never a substitute for
-    /// the caller's own error.
+    /// the caller's own error. Same real transport failure as its twin.
     #[tokio::test]
-    async fn a_keyed_call_that_exhausts_its_retries_writes_a_dead_letter_and_still_returns_its_error()
+    async fn a_keyed_call_that_fails_at_the_transport_writes_a_dead_letter_and_still_returns_its_error()
      {
         let node = outbox_node(true, 50).await;
-        node.target.fail_with.store(true, Ordering::SeqCst);
-        let result = node.router.invoke(failing_guest_request(Some("k1"))).await;
-        assert!(result.is_err(), "the caller must still get its error");
+        let release = Arc::new(tokio::sync::Notify::new());
+        *node.target.hold.lock().unwrap() = Some(release.clone());
+        let result = node.router.invoke(timing_out_guest_request(Some("k1"))).await;
+        assert!(
+            matches!(result, Err(ProxyError::Transport(_)) | Err(ProxyError::Timeout(_))),
+            "the caller must still get its own transport error, got {result:?}"
+        );
+        release.notify_waiters();
 
         let dead = node.dead_letters().await;
         assert_eq!(dead.len(), 1, "a keyed failure must also be recorded for an operator");
@@ -1744,47 +1863,22 @@ mod tests {
         assert!(node.queued().await.is_empty(), "and must not linger in the outbox");
     }
 
-    /// Failure-matrix row 12 says queue growth is bounded. The
-    /// dead-letter table was; the *pending* outbox was not, so a guest
-    /// aimed at an unreachable target could hold unbounded rows for the
-    /// whole attempt budget. It refuses rather than evicting: a pending
-    /// item is work somebody still expects to happen.
+    /// A keyed call the *target itself* refused. Distinct from exhaustion
+    /// above: a callee error is never retried, so nothing is exhausted --
+    /// but it is still an answer the target produced, so it still earns a
+    /// row an operator can see.
     #[tokio::test]
-    async fn a_full_outbox_refuses_further_enqueues_rather_than_evicting() {
-        let node = outbox_node(false, 50).await;
-        {
-            let mut cfg = node.outbox.config().clone();
-            cfg.max_pending_rows = 2;
-            // Rebuild with the tighter bound; the queue file is already
-            // there, so this exercises the same store.
-            let tight = Arc::new(ProxyOutbox::new(
-                node.provider.clone(),
-                Arc::new(syneroym_data_keystore::KeyStore::new()),
-                node.resolver.clone(),
-                cfg,
-            ));
-            for i in 0..2 {
-                tight
-                    .store(&queued_call(
-                        QueuedTarget::Service("did:key:zTarget".into()),
-                        &format!("k{i}"),
-                    ))
-                    .await
-                    .unwrap();
-            }
-            let refused = tight
-                .store(&queued_call(QueuedTarget::Service("did:key:zTarget".into()), "k2"))
-                .await;
-            assert!(
-                matches!(refused, Err(ProxyError::UnsupportedTarget(_))),
-                "a full outbox must refuse, got {refused:?}"
-            );
-            assert_eq!(
-                tight.queue_for(CALLER).await.unwrap().all().unwrap().len(),
-                2,
-                "and must not have evicted anything to make room"
-            );
-        }
+    async fn a_keyed_call_a_target_refuses_writes_a_dead_letter_without_retrying() {
+        let node = outbox_node(true, 50).await;
+        node.target.fail_with.store(true, Ordering::SeqCst);
+        let result = node.router.invoke(failing_guest_request(Some("k1"))).await;
+        assert!(matches!(result, Err(ProxyError::Callee { .. })), "got {result:?}");
+        assert_eq!(
+            node.target.invoked.load(Ordering::SeqCst),
+            1,
+            "a callee error is definitive and must not be retried"
+        );
+        assert_eq!(node.dead_letters().await.len(), 1);
     }
 
     /// The fence's own answers are not delivery failures, so none of them
@@ -1805,15 +1899,63 @@ mod tests {
         // replaying it just re-earns the refusal.
         assert!(!target_produced(&ProxyError::PermissionDenied("no store".to_string())));
         assert!(!target_produced(&ProxyError::Internal("no storage provider".to_string())));
-        assert!(!target_produced(&ProxyError::ServiceNotFound("gone".to_string())));
 
-        // But a real answer from the target does.
+        // A not-found target is worth a row, and the two classifiers must
+        // agree about that: the queued path retries it as "not yet", so
+        // the synchronous path must not silently drop it.
+        let not_found = ProxyError::ServiceNotFound("mid-restart".to_string());
+        assert!(target_produced(&not_found));
+        assert_eq!(
+            proxy_outbox::disposition_of(&not_found),
+            Disposition::Retry,
+            "the two classifiers must not disagree about one error"
+        );
+
+        // And a real answer from the target does.
         assert!(target_produced(&ProxyError::Callee {
             code: -32010,
             message: "denied by the target".to_string(),
             data: None,
         }));
         assert!(target_produced(&ProxyError::Transport("peer went away".to_string())));
+    }
+
+    /// Failure-matrix row 12 says queue growth is bounded. The
+    /// dead-letter table was; the *pending* outbox was not, so a guest
+    /// aimed at an unreachable target could hold unbounded rows for the
+    /// whole attempt budget. It refuses rather than evicting: a pending
+    /// item is work somebody still expects to happen.
+    #[tokio::test]
+    async fn a_full_outbox_refuses_further_enqueues_rather_than_evicting() {
+        let node = outbox_node(false, 50).await;
+        let mut cfg = node.outbox.config().clone();
+        cfg.max_pending_rows = 2;
+        let tight = Arc::new(ProxyOutbox::new(
+            node.provider.clone(),
+            Arc::new(syneroym_data_keystore::KeyStore::new()),
+            node.resolver.clone(),
+            cfg,
+        ));
+        for i in 0..2 {
+            tight
+                .store(&queued_call(
+                    QueuedTarget::Service("did:key:zTarget".into()),
+                    &format!("k{i}"),
+                ))
+                .await
+                .unwrap();
+        }
+        let refused =
+            tight.store(&queued_call(QueuedTarget::Service("did:key:zTarget".into()), "k2")).await;
+        assert!(
+            matches!(refused, Err(ProxyError::UnsupportedTarget(_))),
+            "a full outbox must refuse, got {refused:?}"
+        );
+        assert_eq!(
+            tight.queue_for(CALLER).await.unwrap().all().unwrap().len(),
+            2,
+            "and must not have evicted anything to make room"
+        );
     }
 
     /// One permanently broken recipient must not be able to evict every
@@ -1982,6 +2124,9 @@ mod tests {
         /// delivery that genuinely never resolves, which is the only way
         /// to test that shutdown interrupts one.
         hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
+        /// When set, `dispatch` answers with this exact error, so a test
+        /// can drive a specific reserved code the receiver would produce.
+        answer_with: Mutex<Option<ProxyError>>,
     }
 
     #[async_trait::async_trait]
@@ -1992,6 +2137,13 @@ mod tests {
             let hold = self.hold.lock().unwrap().clone();
             if let Some(hold) = hold {
                 hold.notified().await;
+            }
+            if let Some(answer) = self.answer_with.lock().unwrap().as_ref() {
+                let (code, message) = match answer {
+                    ProxyError::Callee { code, message, .. } => (*code, message.clone()),
+                    other => (-32603, other.to_string()),
+                };
+                return Err(RpcError::Custom(code, message, None));
             }
             if self.fail_with.load(Ordering::SeqCst) {
                 return Err(RpcError::InternalError("the target says no".to_string()));

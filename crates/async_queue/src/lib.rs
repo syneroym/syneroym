@@ -319,6 +319,37 @@ impl Queue {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Writes a dead letter directly, for an item that never waited in
+    /// the outbox.
+    ///
+    /// One transaction, and deliberately *not* enqueue-then-fail. Routing
+    /// it through the outbox to reuse the capping logic leaves a row for
+    /// that key visible between the two writes, and a concurrent
+    /// [`Self::enqueue_if_absent`] from a real sender would see it, report
+    /// the key already pending, and back off -- then this call would move
+    /// that same row into `dead_letters`, and the enqueue the sender
+    /// believed had succeeded would be gone.
+    pub fn record_dead_letter(
+        &self,
+        group_key: &str,
+        queue_key: &str,
+        payload: &[u8],
+        error: &str,
+        now: i64,
+    ) -> Result<Vec<String>> {
+        let mut conn = self.conn.lock().expect("queue connection lock poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT INTO dead_letters (group_key, queue_key, payload, attempts, last_error, \
+             created_at)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5)",
+            params![group_key, queue_key, payload, error, now],
+        )?;
+        let pruned = Self::prune_dead_letters(&tx, self.config.dlq_max_rows, group_key)?;
+        tx.commit()?;
+        Ok(pruned)
+    }
+
     /// This queue's configured attempt budget -- the same value
     /// [`Queue::fail`] checks internally, exposed so a caller can apply the
     /// identical ceiling to a case this crate cannot see on its own: an
@@ -1153,6 +1184,33 @@ mod tests {
         assert!(err.to_string().contains("pending"), "unexpected error: {err}");
         assert_eq!(queue.dead_letters().unwrap().len(), 1, "the dead letter must be left in place");
         assert_eq!(queue.all().unwrap().len(), 1, "no second row must have been created");
+    }
+
+    /// Recording a dead letter must never make a key look pending, even
+    /// for an instant: a concurrent sender would see that row, decide the
+    /// key was already queued, and drop the call it believed it had
+    /// enqueued.
+    #[test]
+    fn recording_a_dead_letter_never_makes_the_key_look_pending() {
+        let queue = Queue::open_in_memory(config()).unwrap();
+        queue.record_dead_letter("g", "k", b"p", "gave up", 1_000).unwrap();
+
+        assert!(
+            queue.all().unwrap().is_empty(),
+            "the outbox must never hold a row for a directly-recorded dead letter"
+        );
+        assert!(
+            !queue.has_pending("k").unwrap(),
+            "and a concurrent sender must still be free to enqueue that key"
+        );
+        let dead = queue.dead_letters().unwrap();
+        assert_eq!(dead.len(), 1);
+        assert_eq!(dead[0].queue_key, "k");
+        assert_eq!(dead[0].last_error, "gave up");
+
+        // The sender's own enqueue for the same key still lands.
+        assert!(queue.enqueue_if_absent("g", "k", b"p2", 1_100).unwrap());
+        assert_eq!(queue.all().unwrap().len(), 1);
     }
 
     /// Failure-matrix row 5: a replayed item that fails again returns to

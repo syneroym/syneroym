@@ -688,10 +688,19 @@ mod tests {
             )
             .unwrap();
 
-        // A noisy caller pushes well past the cap.
-        for i in 0..20 {
-            store.begin("did:key:zNoisy", &format!("n{i}"), 1_100 + i).unwrap();
+        // Far past the cap *and* past several cap-check intervals. Twenty
+        // claims would not do it: the check is amortised, so the eviction
+        // branch would never run and this would pass against a global cap
+        // too -- proving nothing about the per-caller scoping it exists to
+        // pin.
+        let noisy = CAP_CHECK_INTERVAL * 5;
+        for i in 0..noisy {
+            store.begin("did:key:zNoisy", &format!("n{i}"), 1_100 + i64::from(i)).unwrap();
         }
+        assert!(
+            store.len().unwrap() < u32::from(u16::try_from(noisy).unwrap()),
+            "precondition: the noisy caller must actually have triggered eviction"
+        );
 
         assert!(
             matches!(

@@ -316,9 +316,11 @@ impl ProxyOutbox {
     /// unfenced call would be a second delivery of something with no
     /// fence, which is exactly what the key exists to prevent.
     ///
-    /// Written through the ordinary enqueue-then-fail path so the row is
-    /// shaped and capped identically to one that got there by exhausting a
-    /// real retry schedule.
+    /// Written in one transaction straight into the dead-letter table.
+    /// Going through the outbox to reuse its capping would leave a row for
+    /// this key briefly visible, and a concurrent enqueue from a real
+    /// sender would see it, decide the key was already pending, and back
+    /// off -- losing the call it believed it had queued.
     pub async fn record_dead_letter(
         &self,
         call: &QueuedCall,
@@ -331,8 +333,7 @@ impl ProxyOutbox {
             (group_key_of(call), call.idempotency_key.clone(), error.to_string());
         let now = now_ms();
         task::spawn_blocking(move || -> anyhow::Result<()> {
-            let id = queue.enqueue(&group, &key, &payload, now)?;
-            queue.fail(id, now, &error, true)?;
+            queue.record_dead_letter(&group, &key, &payload, &error, now)?;
             Ok(())
         })
         .await

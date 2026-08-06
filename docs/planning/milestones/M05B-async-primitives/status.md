@@ -635,3 +635,39 @@ pre-existing sandbox-bind set only (`syneroym-core --lib` and `router
 --test native_dispatch_identity` both join it under the sandboxed
 parallel run and pass in isolation, twice each); `mise run test:e2e`
 12/12; `proxy_outbox_e2e` 2/2 in ~155 s.
+
+---
+
+## B2 — verification pass response (2026-08-06)
+
+A follow-up pass re-checked the 22-finding response against source and by
+re-running targeted tests. It confirmed 14 fixed and upheld all four
+push-backs, and found **six still open** -- including F18, vacuous for a
+*second* time. All six are now fixed. **Every fix in this round was proved
+by reverting the fix and confirming its test fails**, rather than by
+observing that it passes; two of the six only became real fixes because of
+that check.
+
+| # | Finding | Disposition |
+|---|---|---|
+| N1 | `Disposition::Delivered` unhandled on the enqueue path | **Fixed.** Real and user-visible: `drain_one_outbox` learned to complete on `Delivered`, but the synchronous probe still matched only `Retry`, so a guest re-enqueueing a key the receiver had already run was handed an *error* for a call that succeeded -- exactly the confusion the queued-path fix removed, one layer up. Both sites now `match` on the enum rather than comparing against one variant, so a future third disposition is a compile error instead of a silent fall-through. That is how this one slipped through. Test: `an_enqueue_whose_target_already_ran_it_reports_success`, confirmed failing against the old arm (`got Err(Callee { code: -32095 })`). |
+| F18 | The shutdown test is still vacuous | **Fixed, and this time verified.** Both diagnoses were right: `target.invoked` was already 1 from the enqueue probe so the wait returned without yielding, and -- structurally -- the probe's own claim meant the worker met `AlreadyRunning` before ever reaching the target. The item is now written straight into the queue, bypassing the probe entirely, so no claim exists and the invocation count starts at zero. **A third cause the pass did not name also had to be fixed:** the fixture's 500 ms per-call timeout meant the "blocked" dispatch resolved on its own, so the test still passed against a worker that never raced cancellation into the delivery. With a 30 s budget it does not. Proved by reverting `run_outbox_worker` to check cancellation only between ticks: the test fails on the 2 s assertion. |
+| N2 | F16's amortisation made F6's own test vacuous | **Fixed.** Correct: 21 claims never crossed a cap-check boundary, so the eviction branch never ran and the test would have passed against the old global cap. The noisy caller now makes `CAP_CHECK_INTERVAL * 5` claims, mirroring its sibling, plus a precondition asserting eviction actually happened. Proved by reverting the cap to global: the test fails on "the victim's fence must survive another caller's overflow". |
+| N3 | `record_dead_letter` writes a transient row outside a transaction | **Fixed.** Real: enqueue-then-fail as two transactions leaves a row for that key briefly visible, and a concurrent sender's `enqueue_if_absent` would see it, report the key already pending, and back off -- then this call would move that same row into `dead_letters`, losing the enqueue the sender believed had succeeded. Adds `Queue::record_dead_letter`, one immediate transaction straight into `dead_letters`. Test: `recording_a_dead_letter_never_makes_the_key_look_pending`. |
+| N4 | The two classifiers disagree about `ServiceNotFound` | **Fixed, in the direction the pass suggested.** They genuinely contradicted each other: the queued path treats not-found as transient (a node republishes its endpoint record before its services finish coming up), while `target_produced` called it a settled pre-dispatch refusal -- so a keyed synchronous call to a momentarily-absent target left *no record at all*, silently narrowing the second dead-letter tier. If it is transient enough to retry when queued, it is transient enough to be worth a replayable row when synchronous. The test now asserts both classifiers agree about that one error, so they cannot drift apart again. |
+| N5 | The DLQ-tier tests no longer exercise retry exhaustion | **Fixed by making the failure real and the names true.** The pass was right that both had been switched to a callee error, which is never retried. They now run against a target that never answers, so the failure is transport-class -- the kind a retry budget is spent on. One honest correction to the pass's framing: genuine *loop* exhaustion is not reachable in this fixture at all, because the retry loop lives on the remote path and the harness has no registry client to resolve an address with. Rather than fake it, the two are renamed to `..._fails_at_the_transport_...` and the callee-error case gets its own test that says what it covers. |
+
+**One self-inflicted error caught by a clippy warning, not by a test.**
+The range replacement that rewrote the two DLQ-tier tests also deleted
+`the_fences_own_answers_never_earn_a_dead_letter` and
+`a_full_outbox_refuses_further_enqueues_rather_than_evicting` -- F4's and
+F9's regression tests from the previous round. A `field 'provider' is
+never read` warning was the only signal. Both restored; the router suite
+went 137 → 139. Worth recording because the tests were silently gone while
+everything still passed.
+
+**Gates:** `cargo +nightly fmt --all` clean; `cargo clippy --workspace
+--all-targets --all-features` clean, zero warnings; `cargo test
+--workspace --no-fail-fast` the documented pre-existing sandbox-bind set
+only, no additions; `mise run test:e2e` 12/12; `proxy_outbox_e2e` 2/2 in
+~178 s; `router --lib` 139, `async-queue` 40, `rpc` 44, `sandbox-wasm` 60.
