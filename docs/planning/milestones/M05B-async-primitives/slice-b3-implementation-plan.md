@@ -937,9 +937,12 @@ for (l_ref, members) in groups:                       // BTreeMap order: determi
     }
     let Some(state) = states.get(l_ref) else { push Watermark; continue }   // first sight
     let window_start = max(state.evaluated_at as u64, now.saturating_sub(grace_secs))
-    // No `?`: this function returns a plain Vec. An unreadable cron is
-    // treated exactly as the parse failure above -- watermark and move on.
-    if has_occurrence_in(&cron, window_start, now) != Ok(true) { push Watermark; continue }
+    // No `?`: this function returns a plain Vec. Anything other than a
+    // definite yes -- including an evaluation error -- is treated exactly
+    // as the parse failure above: watermark and move on.
+    if !matches!(has_occurrence_in(&cron, window_start, now), Ok(true)) {
+        push Watermark; continue
+    }
 
     // The report is the single source for "which members are runnable and
     // where they are": a Healthy signal carries the substrate that answered.
