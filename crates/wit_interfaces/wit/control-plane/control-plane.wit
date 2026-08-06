@@ -217,6 +217,27 @@ interface orchestrator {
     /// ungated; send 0.
     restart: func(service-id: string, generation: u64) -> result<_, string>;
 
+    /// Run one scheduled tick against a deployed service: dispatch
+    /// `method` on `interface` locally, as the service itself. The
+    /// caller decides *when*; this node only executes. Never queued
+    /// (ADR-0023 §3) -- a tick whose window has passed is not worth
+    /// delivering late, and the caller's next tick is the retry.
+    ///
+    /// `generation` follows `restart`'s rule: gated only where an app
+    /// instance exists, so a superseded supervisor cannot keep firing
+    /// ticks at an instance another one now manages.
+    ///
+    /// The dispatched method's own return value is discarded. There is
+    /// nobody to return it to, and a scheduled run that produces a value
+    /// nothing reads is a design mistake in the app, not a wire shape.
+    run-scheduled: func(
+        service-id: string,
+        generation: u64,
+        %interface: string,
+        method: string,
+        params-json: option<string>,
+    ) -> result<_, string>;
+
     /// Install a freshly-issued instance certificate on an already-deployed
     /// service, without reinstalling it -- the certificate-only counterpart
     /// to `restart`. Deliberately not `deploy`: a renewal changes nothing

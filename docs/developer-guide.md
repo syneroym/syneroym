@@ -977,6 +977,85 @@ number: it reflects what the last health poll observed, so it lags a real
 push by up to `poll_interval_secs` even after that push has already landed
 -- the operator-facing confirmation, not the write's own latency.
 
+##### Scheduling a service (`schedule`)
+
+```toml
+[services.reports]
+service_type = "wasm"
+source = "reports.wasm"
+interfaces = ["scheduled-driver"]
+
+[services.reports.schedule]
+cron = "0 3 * * *"
+interface = "scheduled-driver"
+method = "generate-nightly-report"
+# params = "[\"optional\", \"json\", \"args\"]"   # absent sends []
+# timeout_ms = 10000                              # default; ceiling is 30000
+```
+
+`schedule` tells the supervisor to fire `method` on `interface` on exactly
+one member of that logical service, on `cron`'s own cadence — there is no
+lease and no cluster scheduler anywhere in this design (ADR-0023 §6); the
+supervisor that already owns the instance is the one that decides "when"
+and dispatches locally on the substrate that hosts the picked member.
+`cron` is a standard five-field crontab expression (`min hour dom mon dow`),
+**evaluated in UTC** — there is no per-schedule or per-manifest time zone
+setting, so a nightly job written as `"0 3 * * *"` fires at 03:00 UTC
+regardless of where the substrate or the operator sits. `interface` must be
+one the service's own `interfaces` list already declares; `method` is not
+otherwise checked against the deployed component, since the manifest names
+an artifact, not a parsed WIT world. Up to 16 services may declare a
+schedule per app instance, the same shape and the same reason as
+`replicas`'s own cap.
+
+Absent `params` sends an empty positional array to `method`, not `null` —
+the same shape the substrate's own `rpc` readiness probe sends a
+no-argument guest method. `timeout_ms` (default 10s) is this run's own
+budget; the supervisor clamps it to a 30s ceiling regardless of what the
+manifest asks for, because the call is awaited inline inside a reconcile
+pass that runs app instances one at a time — every second here is a second
+every *other* instance this supervisor manages waits its turn. A budget
+above the guest's own execution limit (5s, `dispatch_epoch_timeout_secs`)
+buys no extra work, only a longer wait on a substrate that is not
+answering.
+
+**A missed tick is skipped, never run late.** If this supervisor was down,
+paused, or its substrate was unreachable when a tick was due, that
+occurrence is gone — the next tick is the retry, not a burst of catch-up
+runs on the pass after recovery. A tick still fires if the pass that would
+have caught it lands up to two poll intervals late (ordinary jitter, not an
+outage); anything further back is treated as missed. A schedule finer than
+`poll_interval_secs` (default 30s) collapses to at most one run per pass,
+silently — a `cron` firing every 10 seconds still runs at most once every
+30.
+
+**A scheduled run is never queued and never dead-letters.** Unlike a
+binding push, a failed or timed-out run does not go through the durable
+outbox (ADR-0023 §3): a tick for 03:00 delivered late at 06:00 is work
+whose window has already passed, and the next night's tick is a better
+retry than a delayed delivery. A failure instead raises a standing
+`SCHEDULED_RUN_FAILED` alert (one row per logical service, regardless of
+which member's substrate actually ran the failing tick), cleared by the
+next successful run.
+
+```bash
+roymctl --substrate this-node supervisor schedules guild-instance-1
+```
+
+lists every schedule this instance declares, alongside `evaluated-at` (this
+pass's own watermark), `last-run-at` and `last-member-index` (the most
+recent actual run, if any), and `last-error`. `last-run-at` that has
+stopped advancing while `evaluated-at` keeps moving is the visible form of
+a substrate this supervisor cannot reach — the honest cost of running with
+no lease (ADR-0023 §6), rather than something worked around.
+
+`roymctl app deploy` has no supervisor behind it, and the supervisor is the
+one thing that runs a schedule — deploying a manifest that declares one
+this way **warns and still deploys**, the same posture already taken for a
+registry that cannot resolve every member: the deploy itself is valid, one
+declared behavior just never happens. Use `roymctl supervisor submit` for
+any manifest that carries a schedule you actually want to fire.
+
 ##### Alerts over MQTT
 
 Every alert a pass newly opens is published as it happens, in addition to

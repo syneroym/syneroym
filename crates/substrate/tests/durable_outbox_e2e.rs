@@ -277,6 +277,7 @@ fn manifest(backend_replicas: u32) -> SynAppManifest {
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_A_ALIAS))),
             replicas: backend_replicas,
+            schedule: None,
         },
     );
     services.insert(
@@ -299,6 +300,7 @@ fn manifest(backend_replicas: u32) -> SynAppManifest {
             depends_on: vec![LogicalServiceName::new("backend")],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_B_ALIAS))),
             replicas: 1,
+            schedule: None,
         },
     );
     SynAppManifest {

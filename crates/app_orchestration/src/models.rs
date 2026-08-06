@@ -3,6 +3,10 @@ use std::{collections::BTreeMap, error, fmt, ops::Deref, str::FromStr};
 use anyhow::{Result, anyhow};
 use semver::Version;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::schedule::MAX_SCHEDULED_SERVICES;
+pub use crate::schedule::ScheduleSpec;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParseError(pub String);
@@ -534,6 +538,15 @@ pub struct ServiceSpec {
     /// is byte-for-byte unchanged.
     #[serde(default = "default_replicas", skip_serializing_if = "is_one_u32")]
     pub replicas: u32,
+    /// When and what to run on exactly one member of this logical service
+    /// (ADR-0023 §6). Absent means unscheduled, which is
+    /// every manifest that exists before this field. Lives here and on
+    /// `PlannedService`, never inside `ServiceConfig`: `ServiceConfig` maps
+    /// onto the substrate-side deploy manifest, and the substrate dedups an
+    /// `apply_plan` by content hash over it -- a schedule the substrate has
+    /// no use for would make editing a cron string restart the service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<ScheduleSpec>,
 }
 
 /// Defines a dependency on another application.
@@ -667,6 +680,44 @@ impl SynAppManifest {
             }
         }
 
+        // 4. `schedule`: the cron must parse, the named
+        // interface must be one the service actually declares, `method`
+        // must be non-empty, `params` (if present) must be JSON, and the
+        // count of scheduled services must not exceed the cap -- re-checked
+        // at `submit` since that path takes an already-compiled plan
+        // (`refuse_schedules_above_cap`, `syneroym-app-supervisor`).
+        let mut scheduled = 0usize;
+        for (name, spec) in &self.services {
+            let Some(sched) = &spec.schedule else { continue };
+            scheduled += 1;
+            sched
+                .parsed()
+                .map_err(|e| anyhow!("Service '{}' declares an invalid schedule: {e}", name))?;
+            if !spec.config.interfaces.contains(&sched.interface) {
+                return Err(anyhow!(
+                    "Service '{}' schedules '{}/{}' but does not declare interface '{}'",
+                    name,
+                    sched.interface,
+                    sched.method,
+                    sched.interface
+                ));
+            }
+            if sched.method.trim().is_empty() {
+                return Err(anyhow!("Service '{}' declares a schedule with an empty method", name));
+            }
+            if let Some(params) = &sched.params {
+                serde_json::from_str::<Value>(params).map_err(|e| {
+                    anyhow!("Service '{}' declares a schedule whose params are not JSON: {e}", name)
+                })?;
+            }
+        }
+        if scheduled > MAX_SCHEDULED_SERVICES {
+            return Err(anyhow!(
+                "{scheduled} services declare a schedule, above the cap of \
+                 {MAX_SCHEDULED_SERVICES}"
+            ));
+        }
+
         Ok(())
     }
 }
@@ -704,6 +755,12 @@ pub struct PlannedService {
     /// plan's JSON is byte-for-byte unchanged.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub member_index: u32,
+    /// Cloned from `ServiceSpec.schedule` -- every member of
+    /// a scaled scheduled service carries the identical spec, exactly as
+    /// `resolved_dependencies` and `topology_mode` already do. Never mapped
+    /// onto the wire; see `ServiceSpec.schedule`'s own doc.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<ScheduleSpec>,
 }
 
 impl PlannedService {
@@ -750,6 +807,7 @@ impl DeploymentPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schedule::DEFAULT_SCHEDULE_TIMEOUT_MS;
 
     #[test]
     fn test_manifest_parsing_toml() {
@@ -945,6 +1003,7 @@ mod tests {
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
                 member_index: 0,
+                schedule: None,
             }],
         };
 
@@ -1072,6 +1131,7 @@ mod tests {
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
             member_index: 3,
+            schedule: None,
         };
         assert_eq!(svc.member_ref().to_string(), "inst-1/backend#3");
     }
@@ -1105,6 +1165,7 @@ mod tests {
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
+            schedule: None,
         };
         let toml = toml::to_string(&svc).unwrap();
         assert!(!toml.contains("member_index"));
@@ -1184,6 +1245,7 @@ mod tests {
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
                 member_index: 0,
+                schedule: None,
             }],
         };
 
@@ -1301,6 +1363,7 @@ mod tests {
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
+            schedule: None,
         };
 
         let toml_round = toml::to_string(&svc).unwrap();
@@ -1435,5 +1498,154 @@ mod tests {
             timeout_ms: DEFAULT_PROBE_TIMEOUT_MS,
         });
         assert_eq!(rpc.valid_for(), &[ServiceType::Wasm]);
+    }
+
+    // ── `ScheduleSpec` on the manifest surface ──────────────────────────
+
+    fn scheduled_manifest_toml(schedule_block: &str) -> String {
+        format!(
+            r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [services.worker]
+            service_type = "wasm"
+            source = "unused"
+            interfaces = ["scheduled-driver"]
+
+            {schedule_block}
+        "#
+        )
+    }
+
+    #[test]
+    fn a_manifest_with_no_schedule_serializes_byte_for_byte_as_before() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [services.worker]
+            service_type = "wasm"
+            source = "unused"
+        "#;
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        let worker = manifest.services.get(&LogicalServiceName::new("worker")).unwrap();
+        assert_eq!(worker.schedule, None);
+        let serialized = manifest.to_toml().unwrap();
+        assert!(!serialized.contains("schedule"));
+    }
+
+    #[test]
+    fn a_scheduled_service_round_trips_through_toml_and_json() {
+        let toml_str = scheduled_manifest_toml(
+            r#"
+            [services.worker.schedule]
+            cron = "* * * * *"
+            interface = "scheduled-driver"
+            method = "tick"
+        "#,
+        );
+        let manifest = SynAppManifest::from_toml(&toml_str).unwrap();
+        let worker = manifest.services.get(&LogicalServiceName::new("worker")).unwrap();
+        let sched = worker.schedule.as_ref().unwrap();
+        assert_eq!(sched.cron, "* * * * *");
+        assert_eq!(sched.interface, InterfaceName::new("scheduled-driver"));
+        assert_eq!(sched.method, "tick");
+        assert_eq!(sched.params, None);
+        assert_eq!(sched.timeout_ms, DEFAULT_SCHEDULE_TIMEOUT_MS);
+
+        let toml_round = manifest.to_toml().unwrap();
+        assert_eq!(SynAppManifest::from_toml(&toml_round).unwrap(), manifest);
+        let json_round = manifest.to_json().unwrap();
+        assert_eq!(SynAppManifest::from_json(&json_round).unwrap(), manifest);
+    }
+
+    #[test]
+    fn a_schedule_naming_an_undeclared_interface_is_refused_at_validation() {
+        let toml_str = scheduled_manifest_toml(
+            r#"
+            [services.worker.schedule]
+            cron = "* * * * *"
+            interface = "not-declared"
+            method = "tick"
+        "#,
+        );
+        let err = SynAppManifest::from_toml(&toml_str).unwrap_err();
+        assert!(err.to_string().contains("does not declare interface"), "{err}");
+    }
+
+    #[test]
+    fn a_schedule_with_an_unparseable_cron_is_refused_at_validation() {
+        let toml_str = scheduled_manifest_toml(
+            r#"
+            [services.worker.schedule]
+            cron = "not a cron"
+            interface = "scheduled-driver"
+            method = "tick"
+        "#,
+        );
+        let err = SynAppManifest::from_toml(&toml_str).unwrap_err();
+        assert!(err.to_string().contains("does not parse"), "{err}");
+    }
+
+    #[test]
+    fn a_schedule_whose_params_are_not_json_is_refused_at_validation() {
+        let toml_str = scheduled_manifest_toml(
+            r#"
+            [services.worker.schedule]
+            cron = "* * * * *"
+            interface = "scheduled-driver"
+            method = "tick"
+            params = "not json"
+        "#,
+        );
+        let err = SynAppManifest::from_toml(&toml_str).unwrap_err();
+        assert!(err.to_string().contains("not JSON"), "{err}");
+    }
+
+    #[test]
+    fn more_than_the_cap_of_scheduled_services_is_refused_at_validation() {
+        let mut manifest = SynAppManifest {
+            id: AppBlueprintId::new("syneroym:guild-app"),
+            version: Version::parse("0.1.0").unwrap(),
+            description: None,
+            placement: None,
+            services: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+        };
+        for i in 0..=MAX_SCHEDULED_SERVICES {
+            let name = LogicalServiceName::new(format!("worker-{i}"));
+            manifest.services.insert(
+                name,
+                ServiceSpec {
+                    config: ServiceConfig {
+                        service_type: ServiceType::Wasm,
+                        source: "unused".to_string(),
+                        hash: None,
+                        interfaces: vec![InterfaceName::new("scheduled-driver")],
+                        env: BTreeMap::new(),
+                        args: vec![],
+                        custom_config: None,
+                        quota: None,
+                        schema: None,
+                        rotation_policy: RotationPolicy::RestartOnRotation,
+                        fdae: None,
+                        health_check: None,
+                    },
+                    depends_on: vec![],
+                    placement: None,
+                    replicas: 1,
+                    schedule: Some(ScheduleSpec {
+                        cron: "* * * * *".to_string(),
+                        interface: InterfaceName::new("scheduled-driver"),
+                        method: "tick".to_string(),
+                        params: None,
+                        timeout_ms: DEFAULT_SCHEDULE_TIMEOUT_MS,
+                    }),
+                },
+            );
+        }
+        let err = manifest.validate().unwrap_err();
+        assert!(err.to_string().contains("above the cap"), "{err}");
     }
 }

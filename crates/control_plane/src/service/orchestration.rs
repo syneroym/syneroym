@@ -35,8 +35,8 @@ use syneroym_identity::{
     DelegationCertificate, delegation::SCOPE_SERVICE_INSTANCE, substrate::derive_did_key,
 };
 use syneroym_rpc::{
-    Ability, CallerContext, DeadLetterInfo, JsonRpcRequest, NativeService, ProxyQueueInspector,
-    QueuedCallInfo, ResourceUri,
+    Ability, CallOrigin, CallerContext, DeadLetterInfo, JsonRpcRequest, NativeService,
+    ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCallInfo, ResourceUri,
 };
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     AppContext, AppInstanceManagement as AppInstanceManagementWire, ArtifactSource, BindingWrite,
@@ -121,6 +121,20 @@ pub trait OrchestratorInterface {
         &self,
         service_id: String,
         generation: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String>;
+    /// Run one scheduled tick against a deployed service: dispatch `method`
+    /// on `interface` locally, as the service itself (ADR-0023 §3/§6).
+    /// Never queued -- a tick whose window has passed is
+    /// not worth delivering late; the caller's next tick is the retry.
+    /// `generation` follows `restart`'s rule.
+    async fn run_scheduled(
+        &self,
+        service_id: String,
+        generation: u64,
+        interface: String,
+        method: String,
+        params_json: Option<String>,
         caller: &CallerContext,
     ) -> Result<(), String>;
     /// Install a freshly-issued instance certificate on an already-deployed
@@ -1037,6 +1051,19 @@ impl OrchestratorInterface for ControlPlaneService {
         caller: &CallerContext,
     ) -> Result<(), String> {
         self.restart_impl(service_id, generation, caller).await
+    }
+
+    async fn run_scheduled(
+        &self,
+        service_id: String,
+        generation: u64,
+        interface: String,
+        method: String,
+        params_json: Option<String>,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        self.run_scheduled_impl(service_id, generation, interface, method, params_json, caller)
+            .await
     }
 
     async fn renew_cert(
@@ -2306,6 +2333,91 @@ impl ControlPlaneService {
         }
     }
 
+    /// Run one scheduled tick (ADR-0023 §3/§6): dispatch
+    /// `interface`/`method` on `service_id` through the local `ServiceProxy`,
+    /// as `CallerContext::service_system(service_id)` -- the service acting
+    /// as itself, not the supervisor calling it directly. Gated
+    /// exactly as `restart_impl`: this is a lifecycle write, not a service
+    /// call, so `orchestrator/deploy` decides it, not the target interface's
+    /// own authorization.
+    async fn run_scheduled_impl(
+        &self,
+        service_id: String,
+        generation: u64,
+        interface: String,
+        method: String,
+        params_json: Option<String>,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        // Same gate as `restart`: a scheduled run is a lifecycle write.
+        let deploy_resource = ResourceUri(format!("substrate:{}/app/{service_id}", self.node_did));
+        if !caller
+            .has_capability(&deploy_resource, &Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()))
+        {
+            return Err(format!(
+                "caller {} holds no orchestrator/deploy grant for '{service_id}' on this substrate",
+                caller.caller_did
+            ));
+        }
+
+        // Same owner check `restart_impl` carries, and for the same reason.
+        if let Some(owner) = self.registry.owner_of(&service_id)
+            && owner != caller.caller_did
+            && !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_DEPLOY)
+        {
+            return Err(format!(
+                "service '{service_id}' is owned by {owner}; only its owner or a substrate owner \
+                 may run a scheduled task on it"
+            ));
+        }
+
+        // Generation gate, only where an app instance exists -- the same
+        // rule `restart_impl` follows, so a superseded supervisor cannot
+        // keep firing ticks at an instance another one now manages.
+        if let Some((instance, _)) = self.registry.app_context_of(&service_id) {
+            let management = self.check_generation(&instance, caller, generation)?;
+            self.registry
+                .set_app_instance_management(instance, management)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        let params = match params_json {
+            Some(text) => {
+                serde_json::from_str(&text).map_err(|e| format!("params-json is not JSON: {e}"))?
+            }
+            // An empty positional array, not `Value::Null` -- the shape the
+            // one existing in-tree caller of a no-argument guest method
+            // sends (the `rpc` readiness probe).
+            None => Value::Array(vec![]),
+        };
+        let proxy = self
+            .current_service_proxy()
+            .upgrade()
+            .ok_or_else(|| "service proxy unavailable for a scheduled run".to_string())?;
+        proxy
+            .invoke(ProxyRequest {
+                target_service: service_id.clone(),
+                interface,
+                method,
+                params,
+                caller: CallerContext::service_system(&service_id),
+                origin: CallOrigin::Native { service_id: Some(service_id) },
+                protocol: ProxyProtocol::JsonRpcV1,
+                // A tick is not safe to repeat by default, and therefore
+                // never fenced or replayed -- and never queued (ADR-0023
+                // §3): the caller's next tick is the retry.
+                idempotent: false,
+                idempotency_key: None,
+                // The proxy's own default; the guest's epoch budget is the
+                // real ceiling on how long this can run.
+                timeout: None,
+            })
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     /// ADR-0020 §1's install-time verification of an instance certificate,
     /// shared by every path that installs one. Extracted so `deploy` and
     /// `renew-cert` cannot drift apart on it: two copies of DID and
@@ -3050,7 +3162,7 @@ const MAX_STATUS_SERVICE_IDS: usize = 500;
 mod tests {
     use std::{
         fs,
-        sync::{Arc, Mutex},
+        sync::{Arc, Mutex, Weak},
     };
 
     use dashmap::DashMap;
@@ -3069,7 +3181,7 @@ mod tests {
     use syneroym_data_db::{SqliteStorageProvider, traits::StorageProvider};
     use syneroym_data_keystore::KeyStore;
     use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
-    use syneroym_rpc::NativeDispatchRegistry;
+    use syneroym_rpc::{NativeDispatchRegistry, ProxyError, ServiceProxy};
     use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
         HttpProbe as WitHttpProbe, NetworkEndpoint, PlannedService, RpcProbe as WitRpcProbe,
         ServiceConfig, TcpProbe as WitTcpProbe,
@@ -3077,6 +3189,34 @@ mod tests {
 
     use super::*;
     use crate::dummy_sandbox::{AppSandboxEngine, ContainerEngine};
+
+    /// A fake `ServiceProxy` that records the last request it
+    /// received and answers with whatever `response` was primed with, so
+    /// `run_scheduled`'s dispatch is assertable without a real deployed
+    /// target on the other end.
+    #[derive(Debug, Default)]
+    struct RecordingProxy {
+        last_request: Mutex<Option<ProxyRequest>>,
+        response: Mutex<Option<Result<Value, ProxyError>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ServiceProxy for RecordingProxy {
+        async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError> {
+            *self.last_request.lock().unwrap() = Some(request);
+            self.response.lock().unwrap().take().expect("response not set for test")
+        }
+    }
+
+    /// Wires `proxy` into `service.service_proxy` the way `RouteHandler::init`
+    /// does post-construction -- `service_proxy` is a `Weak`,
+    /// so the caller must keep `proxy` alive for as long as the service is
+    /// used.
+    fn wire_service_proxy(service: &ControlPlaneService, proxy: &Arc<RecordingProxy>) {
+        let dynamic: Arc<dyn ServiceProxy> = proxy.clone();
+        let weak: Weak<dyn ServiceProxy> = Arc::downgrade(&dynamic);
+        service.service_proxy.set(weak).expect("service_proxy already set");
+    }
 
     /// M04A Slice B7b: a caller holding node-wide orchestrator authority on
     /// `"did:key:zTestNode"` (every test in this module inits
@@ -5266,6 +5406,213 @@ mod tests {
 
         let bob = node_wide_caller("did:key:zBob");
         service.restart("owned-wasm-svc".to_string(), 0, &bob).await.unwrap();
+    }
+
+    // ── run-scheduled ─────────────────────────────────────────────────────
+
+    /// `run-scheduled` takes exactly `restart`'s gate -- a caller
+    /// with no `orchestrator/deploy` grant is refused before the proxy is
+    /// ever touched.
+    #[tokio::test]
+    async fn run_scheduled_is_refused_without_an_orchestrator_deploy_grant() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let no_grant = CallerContext::service_system("no-grant-caller");
+
+        let err = service
+            .run_scheduled(
+                "unscheduled-svc".to_string(),
+                0,
+                "scheduled-driver".to_string(),
+                "tick".to_string(),
+                None,
+                &no_grant,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("orchestrator/deploy"), "{err}");
+    }
+
+    /// The owner check `restart_impl` carries, applied identically here:
+    /// a scoped grantee for `service_id`
+    /// must not run a scheduled task on a service a *different* caller
+    /// owns.
+    #[tokio::test]
+    async fn run_scheduled_is_refused_for_a_service_another_caller_owns() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let alice = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy("owned-svc".to_string(), inline_manifest(None, None, None), &alice)
+            .await
+            .unwrap();
+
+        let bob = scoped_deploy_caller("did:key:zBob", "owned-svc");
+        let err = service
+            .run_scheduled(
+                "owned-svc".to_string(),
+                0,
+                "scheduled-driver".to_string(),
+                "tick".to_string(),
+                None,
+                &bob,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("owned-svc") && err.contains("owned by"), "{err}");
+    }
+
+    /// `generation` follows `restart`'s rule: gated only where an
+    /// app instance exists, so a superseded supervisor cannot keep firing
+    /// ticks at an instance another one now manages.
+    #[tokio::test]
+    async fn run_scheduled_is_refused_at_a_stale_generation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(AppContext { generation: 5, ..app_context("app-1", "frontend", vec![]) }),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let err = service
+            .run_scheduled(
+                "frontend-svc".to_string(),
+                3,
+                "scheduled-driver".to_string(),
+                "tick".to_string(),
+                None,
+                &caller,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("at generation 5"), "{err}");
+    }
+
+    /// The whole of §0.1's authorization argument: the target observes
+    /// `CallerContext::service_system(service_id)` -- the service acting as
+    /// itself -- not the supervisor's own identity, and the call travels as
+    /// `CallOrigin::Native` with the dispatching service named.
+    #[tokio::test]
+    async fn run_scheduled_dispatches_the_named_method_as_the_service_itself() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+        let proxy = Arc::new(RecordingProxy::default());
+        wire_service_proxy(&service, &proxy);
+        *proxy.response.lock().unwrap() = Some(Ok(Value::Null));
+
+        service
+            .run_scheduled(
+                "worker-svc".to_string(),
+                0,
+                "scheduled-driver".to_string(),
+                "tick".to_string(),
+                Some(r#"["arg"]"#.to_string()),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let req = proxy.last_request.lock().unwrap().take().expect("proxy was not invoked");
+        assert_eq!(req.target_service, "worker-svc");
+        assert_eq!(req.interface, "scheduled-driver");
+        assert_eq!(req.method, "tick");
+        assert_eq!(req.params, serde_json::json!(["arg"]));
+        assert_eq!(req.caller.caller_did, "system:worker-svc");
+        assert_eq!(req.origin, CallOrigin::Native { service_id: Some("worker-svc".to_string()) });
+        assert!(!req.idempotent);
+        assert_eq!(req.idempotency_key, None);
+    }
+
+    /// §0.10 bullet 2: absent `params-json` sends an empty positional array,
+    /// not `Value::Null` -- the shape the one existing in-tree caller of a
+    /// no-argument guest method (the `rpc` readiness probe) sends.
+    #[tokio::test]
+    async fn run_scheduled_passes_absent_params_as_an_empty_positional_array() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+        let proxy = Arc::new(RecordingProxy::default());
+        wire_service_proxy(&service, &proxy);
+        *proxy.response.lock().unwrap() = Some(Ok(Value::Null));
+
+        service
+            .run_scheduled(
+                "worker-svc".to_string(),
+                0,
+                "scheduled-driver".to_string(),
+                "tick".to_string(),
+                None,
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let req = proxy.last_request.lock().unwrap().take().expect("proxy was not invoked");
+        assert_eq!(req.params, Value::Array(vec![]));
+    }
+
+    /// A hand-edited or malformed `params-json` is refused before ever
+    /// reaching the proxy, with a message naming the field.
+    #[tokio::test]
+    async fn run_scheduled_refuses_params_json_that_is_not_json() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+        let proxy = Arc::new(RecordingProxy::default());
+        wire_service_proxy(&service, &proxy);
+
+        let err = service
+            .run_scheduled(
+                "worker-svc".to_string(),
+                0,
+                "scheduled-driver".to_string(),
+                "tick".to_string(),
+                Some("not json".to_string()),
+                &caller,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("params-json is not JSON"), "{err}");
+        assert!(proxy.last_request.lock().unwrap().is_none(), "the proxy must not be reached");
+    }
+
+    /// The callee's own error surfaces to the caller rather than being
+    /// swallowed -- the direct statement that a scheduled run's failure is
+    /// visible, which the alert this slice raises depends on.
+    #[tokio::test]
+    async fn run_scheduled_reports_a_callee_error_rather_than_swallowing_it() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+        let proxy = Arc::new(RecordingProxy::default());
+        wire_service_proxy(&service, &proxy);
+        *proxy.response.lock().unwrap() = Some(Err(ProxyError::Callee {
+            code: -32010,
+            message: "guest refused".to_string(),
+            data: None,
+        }));
+
+        let err = service
+            .run_scheduled(
+                "worker-svc".to_string(),
+                0,
+                "scheduled-driver".to_string(),
+                "tick".to_string(),
+                None,
+                &caller,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("guest refused"), "{err}");
     }
 
     /// §0.23 / matrix row 14's blast-radius half at the substrate level: a

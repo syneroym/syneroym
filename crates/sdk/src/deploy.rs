@@ -60,6 +60,23 @@ pub trait SubstrateActor: fmt::Debug + Send + Sync {
     /// restart means, and a queue behind it would be a second policy
     /// disagreeing with the first.
     async fn restart(&self, service_id: String, generation: u64) -> Result<(), String>;
+    /// Run one scheduled tick on a deployed member. Never
+    /// queued: the intent expires (ADR-0023 §3), and the schedule's next
+    /// tick is a better retry than a delivery hours later.
+    ///
+    /// Defaulted because most implementations of this trait are fakes for
+    /// control flow that has nothing to do with scheduling; an
+    /// implementation that means to run ticks overrides it.
+    async fn run_scheduled(
+        &self,
+        _service_id: String,
+        _generation: u64,
+        _interface: String,
+        _method: String,
+        _params_json: Option<String>,
+    ) -> Result<(), String> {
+        Err("this actor does not run scheduled tasks".to_string())
+    }
     /// Install a freshly-issued instance certificate in place, without a
     /// reinstall (M05A A5's unattended renewal). On the trait for the same
     /// reason `restart` is: the supervisor's renewal work-list is a control
@@ -135,6 +152,27 @@ impl SubstrateActor for SyneroymClient {
             Ok(())
         } else {
             Err(format!("Certificate renewal failed: {:?}", res.result))
+        }
+    }
+
+    async fn run_scheduled(
+        &self,
+        service_id: String,
+        generation: u64,
+        interface: String,
+        method: String,
+        params_json: Option<String>,
+    ) -> Result<(), String> {
+        let params = serde_json::to_value((service_id, generation, interface, method, params_json))
+            .map_err(|e| e.to_string())?;
+        let res = self
+            .request("orchestrator", "run-scheduled", params)
+            .await
+            .map_err(|e| e.to_string())?;
+        if res.result == serde_json::json!({"status": "ran"}) {
+            Ok(())
+        } else {
+            Err(format!("Scheduled run failed: {:?}", res.result))
         }
     }
 
@@ -297,6 +335,28 @@ impl<T: SubstrateActor + WriteBindingsAttempt + 'static> SubstrateActor for Dura
 
     async fn restart(&self, service_id: String, generation: u64) -> Result<(), String> {
         <T as SubstrateActor>::restart(&self.inner, service_id, generation).await
+    }
+
+    // Forwarded with no outbox involvement, for the same reason `restart`
+    // isn't queued: the intent expires (ADR-0023 §3), and a scheduled run
+    // delivered late is not a delivery worth making at all.
+    async fn run_scheduled(
+        &self,
+        service_id: String,
+        generation: u64,
+        interface: String,
+        method: String,
+        params_json: Option<String>,
+    ) -> Result<(), String> {
+        <T as SubstrateActor>::run_scheduled(
+            &self.inner,
+            service_id,
+            generation,
+            interface,
+            method,
+            params_json,
+        )
+        .await
     }
 
     async fn renew_cert(
@@ -778,6 +838,7 @@ mod tests {
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
+            schedule: None,
         }
     }
 
@@ -1174,6 +1235,7 @@ mod tests {
         apply_plan_should_fail: bool,
         restart_should_fail: bool,
         renew_cert_should_fail: bool,
+        run_scheduled_should_fail: bool,
     }
 
     #[async_trait::async_trait]
@@ -1210,6 +1272,21 @@ mod tests {
             _instance_certificate: String,
         ) -> Result<(), String> {
             if self.renew_cert_should_fail { Err("renew_cert failed".to_string()) } else { Ok(()) }
+        }
+
+        async fn run_scheduled(
+            &self,
+            _service_id: String,
+            _generation: u64,
+            _interface: String,
+            _method: String,
+            _params_json: Option<String>,
+        ) -> Result<(), String> {
+            if self.run_scheduled_should_fail {
+                Err("run_scheduled failed".to_string())
+            } else {
+                Ok(())
+            }
         }
 
         async fn instance_identity(&self, _service_id: &str) -> Result<InstanceIdentity, String> {
@@ -1332,6 +1409,36 @@ mod tests {
 
         let err = actor.restart("svc".to_string(), 0).await.unwrap_err();
         assert_eq!(err, "restart failed");
+        assert!(outbox.enqueued.lock().unwrap().is_empty());
+    }
+
+    /// A scheduled run is never queued, the same
+    /// shape `restart` already proved: `DurableActor` forwards the call
+    /// straight through and touches the outbox not at all, whatever the
+    /// inner actor returns.
+    #[tokio::test]
+    async fn a_durable_actor_runs_a_scheduled_tick_without_touching_the_queue() {
+        let inner =
+            Arc::new(DurableTestActor { run_scheduled_should_fail: true, ..Default::default() });
+        let outbox = Arc::new(RecordingOutbox::default());
+        let actor = build_durable_actor(
+            inner,
+            "did:key:zB".to_string(),
+            "inst-1/backend@did:key:zB".to_string(),
+            outbox.clone(),
+        );
+
+        let err = actor
+            .run_scheduled(
+                "svc".to_string(),
+                0,
+                "scheduled-driver".to_string(),
+                "tick".to_string(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err, "run_scheduled failed");
         assert!(outbox.enqueued.lock().unwrap().is_empty());
     }
 

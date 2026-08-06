@@ -172,6 +172,7 @@ fn compile_recursive<'a>(
                     resolved_dependencies: resolved_dependencies.clone(),
                     topology_mode,
                     member_index,
+                    schedule: spec.schedule.clone(),
                 });
             }
         }
@@ -603,6 +604,37 @@ mod tests {
         // the fabricated id distinguish them.
         for svc in &compiled.plans[0].services {
             assert_eq!(svc.logical_ref.service_name.as_str(), "backend");
+        }
+    }
+
+    /// A schedule belongs to the logical service, not to a member --
+    /// every compiled member carries an identical clone, exactly as
+    /// `resolved_dependencies` and `topology_mode` do.
+    #[tokio::test]
+    async fn every_member_of_a_scaled_scheduled_service_carries_the_same_schedule() {
+        let manifest_toml = r#"
+            id = "syneroym:scaled-app"
+            version = "1.0.0"
+            [services.backend]
+            service_type = "wasm"
+            source = "backend.wasm"
+            interfaces = ["scheduled-driver"]
+            replicas = 3
+
+            [services.backend.schedule]
+            cron = "* * * * *"
+            interface = "scheduled-driver"
+            method = "tick"
+        "#;
+        let manifest = SynAppManifest::from_toml(manifest_toml).unwrap();
+        let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
+        let compiled = compile(AppInstanceId::new("inst"), &manifest, &catalog).await.unwrap();
+
+        assert_eq!(compiled.plans[0].services.len(), 3);
+        for svc in &compiled.plans[0].services {
+            let sched = svc.schedule.as_ref().expect("every member must carry the schedule");
+            assert_eq!(sched.cron, "* * * * *");
+            assert_eq!(sched.method, "tick");
         }
     }
 

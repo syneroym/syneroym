@@ -79,3 +79,19 @@ pub fn abac_test_wasm_path() -> PathBuf {
         "../../test-components/abac-test/target/wasm32-wasip2/release/syneroym_test_abac.wasm",
     )
 }
+
+/// The `scheduled-driver` interface name for the scheduled-test component.
+pub const SCHEDULED_TEST_DRIVER_INTERFACE: &str =
+    "syneroym-test:scheduled-test/scheduled-driver@0.1.0";
+
+/// Returns the workspace-relative path to the scheduled-test component WASM
+/// module (imports `syneroym:data-layer/store`, exports `init` and a
+/// `scheduled-driver` interface -- `tick`/`tick-count` -- backed by its own
+/// persisted counter, so a scheduled-task e2e test can assert "ran exactly
+/// once" from the test process. See `test-components/scheduled-test`).
+pub fn scheduled_test_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../test-components/scheduled-test/target/wasm32-wasip2/release/\
+         syneroym_test_scheduled.wasm",
+    )
+}

@@ -405,6 +405,7 @@ mod tests {
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
                 member_index: 0,
+                schedule: None,
             }],
         }
     }
@@ -695,6 +696,7 @@ mod tests {
                     resolved_dependencies: BTreeMap::new(),
                     topology_mode: TopologyMode::Redundant,
                     member_index: 0,
+                    schedule: None,
                 },
                 PlannedService {
                     service_id: ServiceId::new("did:key:hFrontend"),
@@ -710,6 +712,7 @@ mod tests {
                     )]),
                     topology_mode: TopologyMode::Singleton,
                     member_index: 0,
+                    schedule: None,
                 },
             ],
         }

@@ -319,6 +319,7 @@ fn two_service_manifest() -> SynAppManifest {
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(BACKEND_ALIAS))),
             replicas: 1,
+            schedule: None,
         },
     );
     services.insert(
@@ -341,6 +342,7 @@ fn two_service_manifest() -> SynAppManifest {
             depends_on: vec![LogicalServiceName::new("backend")],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(FRONTEND_ALIAS))),
             replicas: 1,
+            schedule: None,
         },
     );
     SynAppManifest {

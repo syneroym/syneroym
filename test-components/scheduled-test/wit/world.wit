@@ -1,0 +1,19 @@
+package syneroym-test:scheduled-test@0.1.0;
+
+interface scheduled-driver {
+    /// Increments a persisted counter. What a scheduled tick calls.
+    tick: func() -> result<_, string>;
+    /// Reads it back, so a test process can assert "ran exactly once"
+    /// without holding the service's DEK.
+    tick-count: func() -> result<u32, string>;
+}
+
+world scheduled-test {
+    import syneroym:data-layer/store@0.1.0;
+
+    /// Called by the host on first deploy only (fresh database). Creates
+    /// the `ticks` collection the counter lives in.
+    export init: func() -> result<_, string>;
+
+    export scheduled-driver;
+}

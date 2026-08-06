@@ -4,7 +4,7 @@
 //! file, four concerns.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -42,6 +42,20 @@ pub struct RemediationState {
     pub attempts: u32,
     pub last_attempt_at: Option<i64>,
     pub terminal: bool,
+}
+
+/// One logical service's scheduled-task bookkeeping (ADR-0023 §6).
+/// `evaluated_at` is the watermark that makes a missed tick a
+/// skip rather than a backlog: it advances on every pass that looks at the
+/// schedule, whether or not a run happens. `last_run_at` and
+/// `last_member_index` describe only the most recent *run*, which is why
+/// they can lag `evaluated_at` on a pass that looked and found nothing due.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScheduleState {
+    pub evaluated_at: i64,
+    pub last_run_at: Option<i64>,
+    pub last_member_index: u32,
+    pub last_error: Option<String>,
 }
 
 /// One SQLite file holding desired state, the deployment journal, alerts,
@@ -188,6 +202,22 @@ impl SupervisorStore {
                 app_instance_id TEXT NOT NULL,
                 logical_ref     TEXT NOT NULL,
                 marked_at       INTEGER NOT NULL,
+                PRIMARY KEY (app_instance_id, logical_ref)
+             );
+             -- A schedule belongs to the logical service, not to a member,
+             -- and is never queued (ADR-0023 §3) -- this table, not the
+             -- outbox, is its whole
+             -- durable state. `evaluated_at` is the watermark; `last_run_at`
+             -- is written before the call, not after, so a supervisor that
+             -- dies mid-run skips the tick on restart rather than repeating
+             -- it.
+             CREATE TABLE IF NOT EXISTS scheduled_runs (
+                app_instance_id   TEXT    NOT NULL,
+                logical_ref       TEXT    NOT NULL,
+                evaluated_at      INTEGER NOT NULL,
+                last_run_at       INTEGER,
+                last_member_index INTEGER NOT NULL DEFAULT 0,
+                last_error        TEXT,
                 PRIMARY KEY (app_instance_id, logical_ref)
              );",
         )?;
@@ -491,6 +521,113 @@ impl SupervisorStore {
         Ok(())
     }
 
+    /// Every schedule state this instance has, keyed by logical ref -- the
+    /// pass's own read before computing `schedule_decisions`.
+    pub fn schedule_states(
+        &self,
+        app_instance_id: &str,
+    ) -> Result<BTreeMap<String, ScheduleState>> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT logical_ref, evaluated_at, last_run_at, last_member_index, last_error
+             FROM scheduled_runs WHERE app_instance_id = ?1",
+        )?;
+        let mut rows = stmt.query(params![app_instance_id])?;
+        let mut out = BTreeMap::new();
+        while let Some(row) = rows.next()? {
+            let logical_ref: String = row.get(0)?;
+            out.insert(
+                logical_ref,
+                ScheduleState {
+                    evaluated_at: row.get(1)?,
+                    last_run_at: row.get(2)?,
+                    last_member_index: row.get::<_, i64>(3)? as u32,
+                    last_error: row.get(4)?,
+                },
+            );
+        }
+        Ok(out)
+    }
+
+    /// Advances the watermark and nothing else -- a pass that looked and
+    /// found nothing due (no occurrence in the window, no healthy member,
+    /// an unresolvable target). This is what makes a missed tick a skip
+    /// rather than a backlog.
+    pub fn record_schedule_evaluated(
+        &self,
+        app_instance_id: &str,
+        logical_ref: &str,
+        at: i64,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "INSERT INTO scheduled_runs (app_instance_id, logical_ref, evaluated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(app_instance_id, logical_ref) DO UPDATE SET
+                evaluated_at = excluded.evaluated_at",
+            params![app_instance_id, logical_ref, at],
+        )?;
+        Ok(())
+    }
+
+    /// Watermark, run time, and selected member, in one statement -- written
+    /// **before** the call, not after, so a supervisor that dies inside the
+    /// call skips this tick on restart rather than repeating it.
+    pub fn record_schedule_started(
+        &self,
+        app_instance_id: &str,
+        logical_ref: &str,
+        at: i64,
+        member_index: u32,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "INSERT INTO scheduled_runs
+                (app_instance_id, logical_ref, evaluated_at, last_run_at, last_member_index)
+             VALUES (?1, ?2, ?3, ?3, ?4)
+             ON CONFLICT(app_instance_id, logical_ref) DO UPDATE SET
+                evaluated_at = excluded.evaluated_at,
+                last_run_at = excluded.last_run_at,
+                last_member_index = excluded.last_member_index",
+            params![app_instance_id, logical_ref, at, member_index],
+        )?;
+        Ok(())
+    }
+
+    /// Sets or clears `last_error` after the call returns -- `None` on
+    /// success, `Some(detail)` on failure or timeout. Never touches
+    /// `evaluated_at`/`last_run_at`/`last_member_index`, which
+    /// `record_schedule_started` already wrote for this tick.
+    pub fn record_schedule_outcome(
+        &self,
+        app_instance_id: &str,
+        logical_ref: &str,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "UPDATE scheduled_runs SET last_error = ?3
+             WHERE app_instance_id = ?1 AND logical_ref = ?2",
+            params![app_instance_id, logical_ref, error],
+        )?;
+        Ok(())
+    }
+
+    /// Clears every schedule state row for an instance -- `adopt` and
+    /// `force-reconcile`'s own fresh-start path, the same shape
+    /// `clear_remediation_for_instance` already takes and called from the
+    /// same two sites. Safe rather than a backlog risk: a deleted row reads
+    /// back as "first sight" (§0.5), which fires no run on the pass that
+    /// follows, only a fresh watermark.
+    pub fn clear_schedule_state_for_instance(&self, app_instance_id: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "DELETE FROM scheduled_runs WHERE app_instance_id = ?1",
+            params![app_instance_id],
+        )?;
+        Ok(())
+    }
+
     /// Replaces desired state for `app_instance_id`, keeping exactly one
     /// row per instance -- a re-submit is a full replacement, not an
     /// additional version. Refused once the instance is retired: retiring
@@ -736,15 +873,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
         store.queue.enqueue("g", "k", b"payload", 1_000).unwrap();
+        // A schedule's durable state is a table in this same file, not a
+        // store of its own.
+        store.record_schedule_evaluated("inst-1", "inst-1/worker", 1_000).unwrap();
 
         assert!(
             !dir.path().join("supervisor.db-outbox").exists()
-                && !dir.path().join("queue.db").exists(),
-            "the queue must not open a database file of its own"
+                && !dir.path().join("queue.db").exists()
+                && !dir.path().join("supervisor.db-schedules").exists(),
+            "the queue and the schedule store must not open a database file of their own"
         );
         let conn = store.conn.lock().unwrap();
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 1, "the outbox table must live in supervisor.db's own connection");
+        let scheduled: i64 =
+            conn.query_row("SELECT COUNT(*) FROM scheduled_runs", [], |r| r.get(0)).unwrap();
+        assert_eq!(
+            scheduled, 1,
+            "the scheduled_runs table must live in supervisor.db's own connection"
+        );
     }
 
     /// H3 (Slice A5b review): before the generation check, `submit` wrote
@@ -1048,5 +1195,69 @@ mod tests {
         let store = SupervisorStore::open_in_memory().unwrap();
         let err = store.record_adopt("never-submitted", 1, "did:key:zAppMaster").unwrap_err();
         assert!(err.to_string().contains("no desired state"), "{err}");
+    }
+
+    // ── `scheduled_runs` ─────────────────────────────────────────────────
+
+    #[test]
+    fn a_schedule_with_no_state_row_reads_as_absent() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        assert!(store.schedule_states("inst-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn record_schedule_evaluated_advances_only_the_watermark() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.record_schedule_evaluated("inst-1", "inst-1/worker", 100).unwrap();
+        let states = store.schedule_states("inst-1").unwrap();
+        let state = states.get("inst-1/worker").unwrap();
+        assert_eq!(state.evaluated_at, 100);
+        assert_eq!(state.last_run_at, None);
+        assert_eq!(state.last_member_index, 0);
+
+        store.record_schedule_evaluated("inst-1", "inst-1/worker", 200).unwrap();
+        let states = store.schedule_states("inst-1").unwrap();
+        let state = states.get("inst-1/worker").unwrap();
+        assert_eq!(state.evaluated_at, 200, "a later evaluation must advance the watermark");
+        assert_eq!(state.last_run_at, None, "a watermark-only pass must not fabricate a run");
+    }
+
+    #[test]
+    fn record_schedule_started_writes_the_watermark_run_time_and_member_together() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.record_schedule_started("inst-1", "inst-1/worker", 100, 2).unwrap();
+        let states = store.schedule_states("inst-1").unwrap();
+        let state = states.get("inst-1/worker").unwrap();
+        assert_eq!(state.evaluated_at, 100);
+        assert_eq!(state.last_run_at, Some(100));
+        assert_eq!(state.last_member_index, 2);
+    }
+
+    #[test]
+    fn record_schedule_outcome_sets_and_clears_the_last_error_only() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.record_schedule_started("inst-1", "inst-1/worker", 100, 0).unwrap();
+
+        store.record_schedule_outcome("inst-1", "inst-1/worker", Some("boom")).unwrap();
+        let states = store.schedule_states("inst-1").unwrap();
+        let state = states.get("inst-1/worker").unwrap();
+        assert_eq!(state.last_error.as_deref(), Some("boom"));
+        assert_eq!(state.last_run_at, Some(100), "the outcome must not touch the run time");
+
+        store.record_schedule_outcome("inst-1", "inst-1/worker", None).unwrap();
+        let states = store.schedule_states("inst-1").unwrap();
+        assert_eq!(states.get("inst-1/worker").unwrap().last_error, None);
+    }
+
+    #[test]
+    fn clear_schedule_state_for_instance_removes_only_that_instances_rows() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.record_schedule_evaluated("inst-1", "inst-1/worker", 100).unwrap();
+        store.record_schedule_evaluated("inst-2", "inst-2/worker", 100).unwrap();
+
+        store.clear_schedule_state_for_instance("inst-1").unwrap();
+
+        assert!(store.schedule_states("inst-1").unwrap().is_empty());
+        assert!(!store.schedule_states("inst-2").unwrap().is_empty());
     }
 }

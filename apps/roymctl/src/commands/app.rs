@@ -351,6 +351,13 @@ fn refuse_unmastered_dependencies(plan: &DeploymentPlan, mint_masters: bool) -> 
     );
 }
 
+/// Whether `plan` declares a schedule on any service -- `app deploy`'s own
+/// check, since it has no supervisor behind it to ever run one
+/// (ADR-0023 §6).
+fn plan_declares_a_schedule(plan: &DeploymentPlan) -> bool {
+    plan.services.iter().any(|s| s.schedule.is_some())
+}
+
 pub async fn handle(
     command: &AppCommands,
     api_url: &str,
@@ -392,6 +399,7 @@ pub async fn handle(
                         depends_on: vec![],
                         placement: None,
                         replicas: 1,
+                        schedule: None,
                     },
                 );
                 SynAppManifest {
@@ -416,6 +424,21 @@ pub async fn handle(
                 .plans
                 .last()
                 .ok_or_else(|| anyhow::anyhow!("Compiled deployment contains no plans"))?;
+
+            // `app deploy` has no supervisor behind it, and
+            // the supervisor is the scheduler (ADR-0023 §6) -- a schedule
+            // deployed this way validates and deploys, and then nothing
+            // ever runs it. A warning rather than a refusal, matching the
+            // posture already taken for a registry that does not resolve
+            // every member: the deploy is valid, one declared behaviour
+            // just will not happen.
+            if plan_declares_a_schedule(target_plan) {
+                eprintln!(
+                    "warning: this plan declares a schedule, but `app deploy` has no supervisor \
+                     behind it to run one. Use `roymctl supervisor submit` if the schedule should \
+                     actually fire."
+                );
+            }
 
             let parent_dir = journal_path.parent().unwrap_or(Path::new("."));
             let db_name = journal_path
@@ -1077,7 +1100,10 @@ fn print_health_table(report: &health::HealthReport) {
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
-    use syneroym_app_orchestration::models::{ServiceId, TopologyMode};
+    use syneroym_app_orchestration::{
+        DEFAULT_SCHEDULE_TIMEOUT_MS,
+        models::{InterfaceName, ScheduleSpec, ServiceId, TopologyMode},
+    };
     use syneroym_identity::substrate;
     use syneroym_sdk::{
         BindingWrite, BindingWriteOutcome, DeploymentPlan as WitDeploymentPlan,
@@ -1376,6 +1402,7 @@ mod tests {
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
+            schedule: None,
         }
     }
 
@@ -1740,5 +1767,29 @@ mod tests {
         let plan = dummy_deployment_plan(&instance_id, svc);
 
         assert!(refuse_unmastered_dependencies(&plan, false).is_ok());
+    }
+
+    /// The check behind `app deploy`'s own warning: a
+    /// schedule declared without a supervisor behind it never runs, and
+    /// this is the logic that decides whether to say so.
+    #[test]
+    fn plan_declares_a_schedule_is_true_only_when_a_service_carries_one() {
+        let instance_id = AppInstanceId::new("inst-1");
+        let logical_ref = LogicalServiceRef {
+            app_instance_id: instance_id.clone(),
+            service_name: LogicalServiceName::new("worker"),
+        };
+        let unscheduled = planned_service(logical_ref.clone(), "did:key:hFabricated", "edge-1");
+        assert!(!plan_declares_a_schedule(&dummy_deployment_plan(&instance_id, unscheduled)));
+
+        let mut scheduled = planned_service(logical_ref, "did:key:hFabricated", "edge-1");
+        scheduled.schedule = Some(ScheduleSpec {
+            cron: "* * * * *".to_string(),
+            interface: InterfaceName::new("scheduled-driver"),
+            method: "tick".to_string(),
+            params: None,
+            timeout_ms: DEFAULT_SCHEDULE_TIMEOUT_MS,
+        });
+        assert!(plan_declares_a_schedule(&dummy_deployment_plan(&instance_id, scheduled)));
     }
 }
