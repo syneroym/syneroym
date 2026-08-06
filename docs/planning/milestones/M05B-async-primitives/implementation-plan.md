@@ -236,7 +236,7 @@ M05B unblocks A6 and M6, where the overlay unblocks nothing yet.
 |---|---|---|
 | B1 | [slice-b1-implementation-plan.md](slice-b1-implementation-plan.md) | 📋 Planned, full detail |
 | B2 | *(not written)* | Sketch in [task.md](task.md); owes its own `§0` |
-| B3 | *(not written)* | Sketch in [task.md](task.md); owes its own `§0` |
+| B3 | [slice-b3-implementation-plan.md](slice-b3-implementation-plan.md) | 📋 Planned, full detail (2026-08-06). Not started |
 | B4 | *(not written)* | Sketch in [task.md](task.md); owes its own `§0` |
 | ~~B5~~ | — | **Deferred** (D-B-2); backlog row, target M5 final phase |
 
@@ -385,11 +385,12 @@ in `[PLT-RED]`.
 
 ## §5 — Questions for the requester
 
-1. **B3's missed tick.** If the supervisor was down when a scheduled run was
-   due, should the run happen late or be skipped? Skip is safer and matches the
-   spec's own overlap posture; run-late is what an operator expecting a nightly
-   job probably wants. B3's `§0` can settle it, but it is a product question
-   more than a technical one.
+1. ~~**B3's missed tick.**~~ **Answered 2026-08-06: skipped, not run late.**
+   Implemented as a watermark plus a grace window of `2 *
+   poll_interval_secs`, not as a next-due timestamp — the naive
+   `cron.after(last_run)` form is silently run-late
+   ([B3 plan](slice-b3-implementation-plan.md) §0.5, D-B3-6). Run-late gets a
+   backlog row.
 2. **B2's dedup TTL.** How long a receiver remembers an idempotency key bounds
    how long a queued call stays safe to deliver. It should probably match or
    exceed the outbox's own total retry window, which makes it a derived number
