@@ -108,3 +108,74 @@ interface proxy {
         options: option<call-options>,
     ) -> result<_, proxy-error>;
 }
+
+/// Saga compensations (ADR-0023 §7, as amended). A service that drives a
+/// multi-service workflow records each step as it takes it, so that a
+/// terminal failure -- or this substrate dying mid-workflow -- can be
+/// walked backwards, calling `saga-undo-<method>` on each step's own
+/// target.
+///
+/// The platform never chooses a forward step and never decides the
+/// workflow failed. It orders the backward walk, delivers each undo under
+/// an idempotency key it mints itself, retries on a backoff, and shows an
+/// operator what it could not undo.
+interface saga {
+    use proxy.{call-target, call-options, proxy-error};
+
+    enum saga-state {
+        open,
+        compensating,
+        compensated,
+        failed,
+    }
+
+    record saga-status {
+        saga-id: string,
+        name: string,
+        state: saga-state,
+        steps: u32,
+        compensated-steps: u32,
+        created-at: s64,
+        deadline-at: s64,
+        last-error: option<string>,
+    }
+
+    /// Opens a saga and returns its id. `deadline-secs` bounds how long the
+    /// workflow may stay open: past it, the substrate compensates the saga
+    /// on its own, which is the only way a workflow interrupted by a crash
+    /// is ever unwound (a component does not exist between calls). Absent
+    /// takes the node's default; above the node's ceiling is refused.
+    begin: func(name: string, deadline-secs: option<u64>) -> result<string, proxy-error>;
+
+    /// Takes one forward step and records it. Identical to `proxy.call` in
+    /// what it sends and what it returns; additionally, the intent is
+    /// written to this service's durable log *before* the call and the
+    /// outcome after it.
+    ///
+    /// Because the intent is written first, a step whose result never came
+    /// back is compensated too -- so `saga-undo-<method>` must tolerate
+    /// being called for an operation that never happened.
+    step: func(
+        saga: string,
+        target: call-target,
+        %interface: string,
+        method: string,
+        params: string,
+        options: option<call-options>,
+    ) -> result<string, proxy-error>;
+
+    /// The workflow reached its goal. The log is dropped and the saga can
+    /// never be compensated afterwards.
+    commit: func(saga: string) -> result<_, proxy-error>;
+
+    /// Give up: walk the recorded steps backwards. Returns as soon as the
+    /// saga is marked -- success here means "accepted", not "undone". Poll
+    /// `status` for the outcome.
+    ///
+    /// Each undo is sent to the step's own target and interface as
+    /// `saga-undo-<method>`, with the forward call's parameters and, when
+    /// there was one, its result as a trailing `forward-result`.
+    compensate: func(saga: string) -> result<_, proxy-error>;
+
+    status: func(saga: string) -> result<saga-status, proxy-error>;
+}

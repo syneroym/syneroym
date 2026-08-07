@@ -24,7 +24,6 @@
 
 use std::{
     collections::HashMap,
-    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
@@ -39,6 +38,8 @@ use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::ProxyError;
 use tokio::task;
 use tracing::warn;
+
+use crate::service_async_db::async_db_location;
 
 /// The database a service's outbox, dead letters, and dedup records all
 /// live in, beside its own `state.db` and protected by the same key.
@@ -293,14 +294,9 @@ impl CallDedupGuard {
             return Err(ProxyError::ServiceNotFound(service_id.to_string()));
         }
 
-        let dek =
-            self.storage_provider.load_service_dek(service_id, &self.key_store).await.map_err(
-                |e| ProxyError::PermissionDenied(format!("dedup store unavailable: {e}")),
-            )?;
-        let dir: PathBuf = self
-            .storage_provider
-            .service_db_dir(service_id)
-            .map_err(|e| ProxyError::Internal(format!("dedup store unavailable: {e}")))?;
+        let (dir, dek) = async_db_location(&self.storage_provider, &self.key_store, service_id)
+            .await
+            .map_err(|e| ProxyError::PermissionDenied(format!("dedup store unavailable: {e}")))?;
 
         let config = self.config.clone();
         let store = task::spawn_blocking(move || -> anyhow::Result<DedupStore> {

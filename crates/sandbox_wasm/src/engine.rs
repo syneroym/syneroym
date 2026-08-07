@@ -35,8 +35,13 @@ use syneroym_wit_interfaces::{
         ArtifactSource, DeployManifest, ServiceType,
     },
     host::syneroym::{
-        app_config::app_config, blob_store::blob_store, data_layer::store, host::context,
-        messaging::host_api, proxy::proxy, vault::vault,
+        app_config::app_config,
+        blob_store::blob_store,
+        data_layer::store,
+        host::context,
+        messaging::host_api,
+        proxy::{proxy, saga},
+        vault::vault,
     },
 };
 use tokio::{
@@ -486,6 +491,7 @@ impl AppSandboxEngine {
         blob_store::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         host_api::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         proxy::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
+        saga::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         Ok(linker)
     }
 

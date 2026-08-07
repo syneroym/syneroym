@@ -14,6 +14,8 @@ mod proxy;
 mod proxy_outbox;
 mod route_handler;
 mod routing;
+mod saga;
+mod service_async_db;
 mod stop_signal;
 
 pub use call_dedup::{ASYNC_DB_NAME, CallDedupGuard, DedupClaim, GuardOutcome, replay_as_result};
@@ -24,3 +26,4 @@ pub use proxy::{IrohHop, ProxyRouter, RemoteHop};
 pub use proxy_outbox::{Disposition, ProxyOutbox, disposition_of, group_key_of};
 pub use route_handler::{RouteHandler, RouteHandlerDeps};
 pub use routing::{AdaptationStage, EncryptionStage, RoutePipeline, ServiceStage, TransportStage};
+pub use saga::SagaStore;

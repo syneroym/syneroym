@@ -45,7 +45,7 @@ use syneroym_rpc::{
 use tokio::task;
 use tracing::warn;
 
-use crate::call_dedup::ASYNC_DB_NAME;
+use crate::{call_dedup::ASYNC_DB_NAME, service_async_db::async_db_location};
 
 /// Ceiling on one queued call's stored payload. The params are the
 /// guest's own data and travel on every attempt.
@@ -189,14 +189,8 @@ impl ProxyOutbox {
         if let Some(queue) = self.cached_queue(service_id)? {
             return Ok(queue);
         }
-        let dek = self
-            .storage_provider
-            .load_service_dek(service_id, &self.key_store)
+        let (dir, dek) = async_db_location(&self.storage_provider, &self.key_store, service_id)
             .await
-            .map_err(|e| ProxyError::Internal(format!("outbox unavailable: {e}")))?;
-        let dir = self
-            .storage_provider
-            .service_db_dir(service_id)
             .map_err(|e| ProxyError::Internal(format!("outbox unavailable: {e}")))?;
         let config = self.config.clone();
         let queue = task::spawn_blocking(move || -> anyhow::Result<Queue> {
