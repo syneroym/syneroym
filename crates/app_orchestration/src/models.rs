@@ -5,8 +5,8 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::schedule::MAX_SCHEDULED_SERVICES;
 pub use crate::schedule::ScheduleSpec;
+use crate::schedule::{MAX_SCHEDULE_TIMEOUT_MS, MAX_SCHEDULED_SERVICES};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParseError(pub String);
@@ -680,12 +680,14 @@ impl SynAppManifest {
             }
         }
 
-        // 4. `schedule`: the cron must parse, the named
-        // interface must be one the service actually declares, `method`
-        // must be non-empty, `params` (if present) must be JSON, and the
-        // count of scheduled services must not exceed the cap -- re-checked
-        // at `submit` since that path takes an already-compiled plan
-        // (`refuse_schedules_above_cap`, `syneroym-app-supervisor`).
+        // 4. `schedule`: the cron must parse, the named interface must be
+        // one the service actually declares, `method` must be non-empty,
+        // `params` (if present) must be JSON, `timeout_ms` must be a
+        // budget a run can actually finish inside, and the count of
+        // scheduled services must not exceed the cap. The last two are
+        // re-checked at `submit`, since that path takes an already-compiled
+        // plan and would otherwise apply neither
+        // (`refuse_unrunnable_schedules`, `syneroym-app-supervisor`).
         let mut scheduled = 0usize;
         for (name, spec) in &self.services {
             let Some(sched) = &spec.schedule else { continue };
@@ -704,6 +706,21 @@ impl SynAppManifest {
             }
             if sched.method.trim().is_empty() {
                 return Err(anyhow!("Service '{}' declares a schedule with an empty method", name));
+            }
+            // A zero budget is not "no limit": the supervisor's
+            // `tokio::time::timeout` elapses before the call is even made,
+            // and the watermark is already written by then -- so the tick
+            // is consumed, an alert is raised, and every later tick repeats
+            // the cycle. Above the ceiling is refused rather than silently
+            // clamped, so a manifest never runs under a budget different
+            // from the one it asks for.
+            if sched.timeout_ms == 0 || sched.timeout_ms > MAX_SCHEDULE_TIMEOUT_MS {
+                return Err(anyhow!(
+                    "Service '{}' declares a schedule timeout of {}ms; it must be between 1 and \
+                     {MAX_SCHEDULE_TIMEOUT_MS}ms",
+                    name,
+                    sched.timeout_ms
+                ));
             }
             if let Some(params) = &sched.params {
                 serde_json::from_str::<Value>(params).map_err(|e| {
@@ -1601,6 +1618,59 @@ mod tests {
         );
         let err = SynAppManifest::from_toml(&toml_str).unwrap_err();
         assert!(err.to_string().contains("not JSON"), "{err}");
+    }
+
+    /// A zero budget is not "no limit": the supervisor's timeout elapses
+    /// before the call is made, and the watermark is already written by
+    /// then -- so the tick is consumed, an alert is raised, and every later
+    /// tick repeats the cycle. A schedule that can never run and never says
+    /// why must be refused where the author can still read the refusal.
+    #[test]
+    fn a_schedule_with_a_zero_timeout_is_refused_at_validation() {
+        let toml_str = scheduled_manifest_toml(
+            r#"
+            [services.worker.schedule]
+            cron = "* * * * *"
+            interface = "scheduled-driver"
+            method = "tick"
+            timeout_ms = 0
+        "#,
+        );
+        let err = SynAppManifest::from_toml(&toml_str).unwrap_err();
+        assert!(err.to_string().contains("must be between 1"), "{err}");
+    }
+
+    /// Above the ceiling is refused rather than silently clamped: a
+    /// manifest must never run under a budget different from the one it
+    /// asks for.
+    #[test]
+    fn a_schedule_timeout_above_the_ceiling_is_refused_rather_than_clamped() {
+        let toml_str = scheduled_manifest_toml(&format!(
+            r#"
+            [services.worker.schedule]
+            cron = "* * * * *"
+            interface = "scheduled-driver"
+            method = "tick"
+            timeout_ms = {}
+        "#,
+            MAX_SCHEDULE_TIMEOUT_MS + 1
+        ));
+        let err = SynAppManifest::from_toml(&toml_str).unwrap_err();
+        assert!(err.to_string().contains(&format!("{MAX_SCHEDULE_TIMEOUT_MS}ms")), "{err}");
+    }
+
+    #[test]
+    fn a_schedule_exactly_at_the_timeout_ceiling_is_accepted() {
+        let toml_str = scheduled_manifest_toml(&format!(
+            r#"
+            [services.worker.schedule]
+            cron = "* * * * *"
+            interface = "scheduled-driver"
+            method = "tick"
+            timeout_ms = {MAX_SCHEDULE_TIMEOUT_MS}
+        "#
+        ));
+        assert!(SynAppManifest::from_toml(&toml_str).is_ok());
     }
 
     #[test]

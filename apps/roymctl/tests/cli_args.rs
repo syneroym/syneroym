@@ -175,6 +175,52 @@ fn app_deploy_help_lists_inventory() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// The supervisor is the scheduler, and `app deploy` has no supervisor
+/// behind it -- so a schedule deployed this way validates, deploys, and
+/// then never runs. The warning is the only thing standing between an
+/// operator and a silently dead schedule, which is why it is pinned here
+/// and not just its predicate: the run must keep going past it (the error
+/// below is the *next* step failing for want of a substrate, not this
+/// check refusing), so a warning quietly turned into a refusal fails too.
+#[test]
+fn app_deploy_warns_when_the_plan_carries_a_schedule_and_still_deploys()
+-> Result<(), Box<dyn Error>> {
+    let temp_dir = tempfile::tempdir()?;
+    let manifest_path = temp_dir.path().join("app.toml");
+    std::fs::write(
+        &manifest_path,
+        r#"
+id = "syneroym:guild-app"
+version = "0.1.0"
+
+[services.worker]
+service_type = "wasm"
+source = "unused"
+interfaces = ["scheduled-driver"]
+
+[services.worker.schedule]
+cron = "* * * * *"
+interface = "scheduled-driver"
+method = "tick"
+"#,
+    )?;
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("--dir")
+        .arg(temp_dir.path())
+        .arg("app")
+        .arg("deploy")
+        .arg("inst-1")
+        .arg(&manifest_path)
+        .arg("--journal-path")
+        .arg(temp_dir.path().join("deployments.db"))
+        .assert()
+        .stderr(contains("declares a schedule"))
+        .stderr(contains("supervisor submit"))
+        .stderr(contains("Substrate DID not provided"));
+    Ok(())
+}
+
 /// A manifest with `[placement]` naming an alias the inventory does not
 /// define fails naming both the inventory file and the missing alias --
 /// before any deploy call, since `check_placement` runs ahead of the

@@ -1004,30 +1004,40 @@ setting, so a nightly job written as `"0 3 * * *"` fires at 03:00 UTC
 regardless of where the substrate or the operator sits. `interface` must be
 one the service's own `interfaces` list already declares; `method` is not
 otherwise checked against the deployed component, since the manifest names
-an artifact, not a parsed WIT world. Up to 16 services may declare a
-schedule per app instance, the same shape and the same reason as
-`replicas`'s own cap.
+an artifact, not a parsed WIT world. At run time the hosting substrate
+refuses a tick whose `(service, interface)` pair it has no local endpoint
+for, so a schedule naming an interface the component does not actually
+export fails fast on that substrate and shows up in `last-error`, instead
+of being resolved as if the service lived on some other node. Up to 16
+services may declare a schedule per app instance, the same shape and the
+same reason as `replicas`'s own cap.
 
 Absent `params` sends an empty positional array to `method`, not `null` —
 the same shape the substrate's own `rpc` readiness probe sends a
 no-argument guest method. `timeout_ms` (default 10s) is this run's own
-budget; the supervisor clamps it to a 30s ceiling regardless of what the
-manifest asks for, because the call is awaited inline inside a reconcile
-pass that runs app instances one at a time — every second here is a second
-every *other* instance this supervisor manages waits its turn. A budget
-above the guest's own execution limit (5s, `dispatch_epoch_timeout_secs`)
-buys no extra work, only a longer wait on a substrate that is not
-answering.
+budget, and must be between 1ms and the 30s ceiling — a manifest asking
+for anything outside that range is refused at validation, rather than
+silently clamped. The ceiling exists because the call is awaited inline
+inside a reconcile pass that runs app instances one at a time — every
+second here is a second every *other* instance this supervisor manages
+waits its turn. A budget above the guest's own execution limit (5s,
+`dispatch_epoch_timeout_secs`) buys no extra work, only a longer wait on a
+substrate that is not answering.
 
 **A missed tick is skipped, never run late.** If this supervisor was down,
 paused, or its substrate was unreachable when a tick was due, that
 occurrence is gone — the next tick is the retry, not a burst of catch-up
 runs on the pass after recovery. A tick still fires if the pass that would
-have caught it lands up to two poll intervals late (ordinary jitter, not an
-outage); anything further back is treated as missed. A schedule finer than
-`poll_interval_secs` (default 30s) collapses to at most one run per pass,
-silently — a `cron` firing every 10 seconds still runs at most once every
-30.
+have caught it lands late by no more than the *grace window*: two poll
+intervals, or the real gap between this supervisor's last two sweeps if
+that is longer. The second half matters in practice — a sweep reconnects
+to every managed substrate and routinely takes longer than its nominal
+interval, and a window sized only from the configured interval would drop
+ticks while the supervisor was awake the whole time. The gap is measured
+inside one process, so a restart resets it and downtime never widens the
+window. A schedule finer than `poll_interval_secs` (default 30s) collapses
+to at most one run per pass, silently — a `cron` firing every 10 seconds
+still runs at most once every 30.
 
 **A scheduled run is never queued and never dead-letters.** Unlike a
 binding push, a failed or timed-out run does not go through the durable
@@ -1044,10 +1054,11 @@ roymctl --substrate this-node supervisor schedules guild-instance-1
 
 lists every schedule this instance declares, alongside `evaluated-at` (this
 pass's own watermark), `last-run-at` and `last-member-index` (the most
-recent actual run, if any), and `last-error`. `last-run-at` that has
-stopped advancing while `evaluated-at` keeps moving is the visible form of
-a substrate this supervisor cannot reach — the honest cost of running with
-no lease (ADR-0023 §6), rather than something worked around.
+recent actual run — both absent until one has happened), and `last-error`.
+`last-run-at` that has stopped advancing while `evaluated-at` keeps moving
+is the visible form of a substrate this supervisor cannot reach — the
+honest cost of running with no lease (ADR-0023 §6), rather than something
+worked around.
 
 `roymctl app deploy` has no supervisor behind it, and the supervisor is the
 one thing that runs a schedule — deploying a manifest that declares one

@@ -150,7 +150,9 @@ interface supervisor {
         method: string,
         evaluated-at: s64,
         last-run-at: option<s64>,
-        last-member-index: u32,
+        /// Absent until a run has actually happened. Reporting 0 instead
+        /// would be indistinguishable from "member 0 ran last".
+        last-member-index: option<u32>,
         last-error: option<string>,
     }
 

@@ -24,6 +24,15 @@ pub const MAX_SCHEDULED_SERVICES: usize = 16;
 /// a round trip.
 pub const DEFAULT_SCHEDULE_TIMEOUT_MS: u32 = 10_000;
 
+/// The largest budget a schedule may ask for. A scheduled run is awaited
+/// inline inside a reconcile pass, and every other app instance this
+/// supervisor manages waits behind it, so the bound belongs to the
+/// supervisor -- but it is enforced at manifest validation, where the
+/// author can still read the refusal. The supervisor clamps to the same
+/// value as a second line of defence for a hand-edited plan that never
+/// passed through `validate`.
+pub const MAX_SCHEDULE_TIMEOUT_MS: u32 = 30_000;
+
 const fn default_schedule_timeout_ms() -> u32 {
     DEFAULT_SCHEDULE_TIMEOUT_MS
 }

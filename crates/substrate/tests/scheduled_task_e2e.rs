@@ -189,17 +189,17 @@ impl Node {
     }
 }
 
-/// `poll_interval_secs` of 10 makes the watermark's grace window
-/// (`2 * poll_interval_secs`) 20s. Measured against this tree's own
-/// resident loop: a real pass reconnects a fresh iroh endpoint to the
-/// managed substrate every time (`connect_best_effort` builds and tears
-/// down its clients per pass), which alone costs several seconds even
-/// locally -- an earlier draft of this file used `poll_interval_secs = 2`
-/// (grace 4s) on the theory that the nominal interval bounds the real one,
-/// and that grace was narrower than the actual gap between passes, so the
-/// schedule never fired at all. 20s comfortably covers the pass latency
-/// actually observed while staying well under the whole-occurrence gap
-/// test 2's downtime creates.
+/// `poll_interval_secs` of 10 sets the *floor* of the watermark's grace
+/// window (`2 * poll_interval_secs`) at 20s; a sweep that runs longer than
+/// that widens the window to the real gap on its own, so a slow pass can no
+/// longer drop a tick. 10s is still chosen deliberately, for the case the
+/// floor is all there is: the first pass after a restart has no previous
+/// sweep to measure, and test 2 depends on that pass *not* running the tick
+/// it missed. Measured against this tree's own resident loop, where a pass
+/// reconnects a fresh iroh endpoint to the managed substrate every time
+/// (`connect_best_effort` builds and tears down its clients per pass) and
+/// costs several seconds even locally: 20s covers that comfortably while
+/// staying well under the whole-occurrence gap test 2's downtime creates.
 fn supervisor_role(poll_interval_secs: u64) -> SupervisorRole {
     SupervisorRole {
         poll_interval_secs,
@@ -451,7 +451,15 @@ async fn a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick() {
 
     // ---- Step 1: deploy + adopt (a plain `submit` at generation 0 needs
     // no separate `adopt` -- see `reference_scenario_e2e.rs`). ----
+    //
+    // Submitted just after a minute boundary, so step 2's "nothing has run
+    // yet" has a full cron minute to hold in. Without the anchor, a
+    // boundary falling inside the convergence loop below (up to 30s, three
+    // passes) fires a legitimate tick and the exact-zero assertion fails --
+    // the same wall-clock assumption test 2's fixed sleep already had to
+    // shed.
     let plan_json = compiled_plan_json().await;
+    sleep_until_unix_secs(next_minute_boundary(now_unix_secs())).await;
     supervisor_node
         .substrate_client
         .request("supervisor", "submit", submission(plan_json, inventory_json, 0))
@@ -601,9 +609,17 @@ async fn a_supervisor_restart_skips_the_ticks_it_missed() {
     worker_client.connect().await.expect("failed to connect to the deployed worker");
 
     // ---- First tick: prove the schedule runs normally before the
-    // restart. ----
+    // restart, at the receiver. ----
     let deadline = Instant::now() + Duration::from_secs(100);
     wait_for_tick_count(&worker_client, 1, deadline).await;
+
+    // The same run as the supervisor recorded it. This, not the worker's
+    // counter, is what the post-restart assertion compares against -- see
+    // the comment on that assertion for why the counter cannot be read
+    // through the reboot.
+    let before = supervisor_schedules(&supervisor_node).await;
+    let run_before = u64_field(&before[0], "last_run_at")
+        .expect("the pre-restart run must have recorded a last-run-at");
 
     // ---- The supervisor process goes down; the managed substrate (and
     // the worker's own persisted counter) does not. ----
@@ -646,10 +662,9 @@ async fn a_supervisor_restart_skips_the_ticks_it_missed() {
         supervisor_did,
         "the rebooted supervisor must keep its identity"
     );
-
     // Settle, then check strictly before `following_boundary` -- the next
-    // legitimate tick must not have had a chance to fire yet, so a `2`
-    // here can only mean the missed one ran late.
+    // legitimate tick must not have had a chance to fire yet, so any
+    // advance observed here can only be the missed one running late.
     let settle_until = (following_boundary.saturating_sub(8)).max(now_unix_secs() + 5);
     assert!(
         settle_until < following_boundary,
@@ -657,14 +672,36 @@ async fn a_supervisor_restart_skips_the_ticks_it_missed() {
          tick; widen the grace window or the boundary spacing"
     );
     sleep_until_unix_secs(settle_until).await;
-    assert_eq!(
-        tick_count(&worker_client).await,
-        1,
-        "a supervisor restart across a missed cron occurrence must skip it, not run it late"
-    );
 
+    // The witness is the supervisor's own durable record, read over the
+    // client the reboot just created -- deliberately *not* the worker's
+    // counter. `worker_client` reaches the worker through the registry and
+    // the relay this test just took down and brought back, and a
+    // connection opened before that does not reliably survive it: reading
+    // the counter here failed with `tick-count failed: timed out` on one
+    // run in three, reporting a dead transport as a scheduling result, and
+    // re-dialling does not fit inside the window either (the managed
+    // node's own endpoint takes its time re-attaching to the restarted
+    // relay). The counter *is* still the witness for the pre-restart tick
+    // above, and for "only once per tick" in the first test; what this
+    // assertion needs is narrower and the supervisor records it exactly:
+    // `last_run_at` unmoved says the missed occurrence did not run, and
+    // `evaluated_at` moved past it says the rebooted supervisor really did
+    // look at the schedule and choose to skip -- a stronger statement than
+    // an unchanged counter, which an idle supervisor would also produce.
     let schedules = supervisor_schedules(&supervisor_node).await;
     assert_eq!(schedules.len(), 1, "{schedules:?}");
+    assert_eq!(
+        u64_field(&schedules[0], "last_run_at"),
+        Some(run_before),
+        "a supervisor restart across a missed cron occurrence must skip it, not run it late: \
+         {schedules:?}"
+    );
+    assert!(
+        u64_field(&schedules[0], "evaluated_at").is_some_and(|e| e > run_before),
+        "the rebooted supervisor must have evaluated the schedule and skipped it, not merely have \
+         been idle: {schedules:?}"
+    );
     assert_eq!(
         u64_field(&schedules[0], "last_member_index"),
         Some(0),

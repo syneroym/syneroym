@@ -49,12 +49,13 @@ pub struct RemediationState {
 /// skip rather than a backlog: it advances on every pass that looks at the
 /// schedule, whether or not a run happens. `last_run_at` and
 /// `last_member_index` describe only the most recent *run*, which is why
-/// they can lag `evaluated_at` on a pass that looked and found nothing due.
+/// they can lag `evaluated_at` on a pass that looked and found nothing due,
+/// and why both are `None` until a run has actually happened.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScheduleState {
     pub evaluated_at: i64,
     pub last_run_at: Option<i64>,
-    pub last_member_index: u32,
+    pub last_member_index: Option<u32>,
     pub last_error: Option<String>,
 }
 
@@ -210,13 +211,15 @@ impl SupervisorStore {
              -- durable state. `evaluated_at` is the watermark; `last_run_at`
              -- is written before the call, not after, so a supervisor that
              -- dies mid-run skips the tick on restart rather than repeating
-             -- it.
+             -- it. `last_member_index` is NULL until a run has actually
+             -- happened: 0 would read as member 0 having already run, and
+             -- send a multi-member service's very first tick to member 1.
              CREATE TABLE IF NOT EXISTS scheduled_runs (
                 app_instance_id   TEXT    NOT NULL,
                 logical_ref       TEXT    NOT NULL,
                 evaluated_at      INTEGER NOT NULL,
                 last_run_at       INTEGER,
-                last_member_index INTEGER NOT NULL DEFAULT 0,
+                last_member_index INTEGER,
                 last_error        TEXT,
                 PRIMARY KEY (app_instance_id, logical_ref)
              );",
@@ -541,7 +544,7 @@ impl SupervisorStore {
                 ScheduleState {
                     evaluated_at: row.get(1)?,
                     last_run_at: row.get(2)?,
-                    last_member_index: row.get::<_, i64>(3)? as u32,
+                    last_member_index: row.get::<_, Option<i64>>(3)?.map(|i| i as u32),
                     last_error: row.get(4)?,
                 },
             );
@@ -613,16 +616,54 @@ impl SupervisorStore {
         Ok(())
     }
 
-    /// Clears every schedule state row for an instance -- `adopt` and
+    /// Drops the rows of an instance's schedules that its plan no longer
+    /// declares. A `schedule` block removed from a manifest and resubmitted
+    /// otherwise leaves its row behind forever: nothing else deletes one
+    /// short of retiring the whole instance, and `schedules` reads from the
+    /// plan, so the row is invisible as well as unreachable. Called from
+    /// the reconcile pass, which is the one place that already holds the
+    /// full declared set.
+    pub fn prune_schedule_states(
+        &self,
+        app_instance_id: &str,
+        declared: &BTreeSet<String>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        let mut stmt =
+            conn.prepare("SELECT logical_ref FROM scheduled_runs WHERE app_instance_id = ?1")?;
+        let stored: Vec<String> = stmt
+            .query_map(params![app_instance_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        for logical_ref in stored.iter().filter(|r| !declared.contains(*r)) {
+            conn.execute(
+                "DELETE FROM scheduled_runs WHERE app_instance_id = ?1 AND logical_ref = ?2",
+                params![app_instance_id, logical_ref],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Clears an instance's per-run schedule bookkeeping -- `adopt` and
     /// `force-reconcile`'s own fresh-start path, the same shape
     /// `clear_remediation_for_instance` already takes and called from the
-    /// same two sites. Safe rather than a backlog risk: a deleted row reads
-    /// back as "first sight" (§0.5), which fires no run on the pass that
-    /// follows, only a fresh watermark.
+    /// same two sites.
+    ///
+    /// `evaluated_at` is deliberately kept. It is not per-run state: it
+    /// records how far this instance's schedules have already been looked
+    /// at, and a supervisor that is running and reachable enough to be
+    /// force-reconciled has genuinely looked that far. Deleting the row
+    /// would make the next pass treat the schedule as first-sight, which
+    /// fires nothing -- so a `force-reconcile` at 03:00:30 would swallow
+    /// the 03:00 tick even though nothing was ever down. Keeping the
+    /// watermark cannot produce a backlog either: the grace window still
+    /// bounds how far back the next pass may look.
     pub fn clear_schedule_state_for_instance(&self, app_instance_id: &str) -> Result<()> {
         let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
         conn.execute(
-            "DELETE FROM scheduled_runs WHERE app_instance_id = ?1",
+            "UPDATE scheduled_runs
+                SET last_run_at = NULL, last_member_index = NULL, last_error = NULL
+             WHERE app_instance_id = ?1",
             params![app_instance_id],
         )?;
         Ok(())
@@ -1213,7 +1254,10 @@ mod tests {
         let state = states.get("inst-1/worker").unwrap();
         assert_eq!(state.evaluated_at, 100);
         assert_eq!(state.last_run_at, None);
-        assert_eq!(state.last_member_index, 0);
+        assert_eq!(
+            state.last_member_index, None,
+            "a watermark-only pass has picked no member, which is not the same as member 0"
+        );
 
         store.record_schedule_evaluated("inst-1", "inst-1/worker", 200).unwrap();
         let states = store.schedule_states("inst-1").unwrap();
@@ -1230,7 +1274,7 @@ mod tests {
         let state = states.get("inst-1/worker").unwrap();
         assert_eq!(state.evaluated_at, 100);
         assert_eq!(state.last_run_at, Some(100));
-        assert_eq!(state.last_member_index, 2);
+        assert_eq!(state.last_member_index, Some(2));
     }
 
     #[test]
@@ -1249,15 +1293,50 @@ mod tests {
         assert_eq!(states.get("inst-1/worker").unwrap().last_error, None);
     }
 
+    /// A `force-reconcile` or `adopt` clears what this supervisor has
+    /// *done* about a schedule and keeps how far it has *looked*. Dropping
+    /// the watermark too would make the next pass treat the schedule as
+    /// first-sight and fire nothing, so a `force-reconcile` seconds after
+    /// an occurrence would silently swallow that tick.
     #[test]
-    fn clear_schedule_state_for_instance_removes_only_that_instances_rows() {
+    fn clear_schedule_state_keeps_the_watermark_and_drops_only_the_run_record() {
         let store = SupervisorStore::open_in_memory().unwrap();
-        store.record_schedule_evaluated("inst-1", "inst-1/worker", 100).unwrap();
-        store.record_schedule_evaluated("inst-2", "inst-2/worker", 100).unwrap();
+        store.record_schedule_started("inst-1", "inst-1/worker", 100, 2).unwrap();
+        store.record_schedule_outcome("inst-1", "inst-1/worker", Some("boom")).unwrap();
+        store.record_schedule_started("inst-2", "inst-2/worker", 100, 1).unwrap();
 
         store.clear_schedule_state_for_instance("inst-1").unwrap();
 
-        assert!(store.schedule_states("inst-1").unwrap().is_empty());
-        assert!(!store.schedule_states("inst-2").unwrap().is_empty());
+        let states = store.schedule_states("inst-1").unwrap();
+        let state = states.get("inst-1/worker").unwrap();
+        assert_eq!(state.evaluated_at, 100, "the watermark is not per-run state");
+        assert_eq!(state.last_run_at, None);
+        assert_eq!(state.last_member_index, None);
+        assert_eq!(state.last_error, None);
+
+        let untouched = store.schedule_states("inst-2").unwrap();
+        assert_eq!(untouched.get("inst-2/worker").unwrap().last_member_index, Some(1));
+    }
+
+    /// A `schedule` block dropped from a manifest leaves a row nothing else
+    /// ever deletes -- invisible, since `schedules` reads the plan, and
+    /// stale if the same logical service is given a schedule again later.
+    #[test]
+    fn prune_schedule_states_drops_only_the_schedules_the_plan_no_longer_declares() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.record_schedule_evaluated("inst-1", "inst-1/kept", 100).unwrap();
+        store.record_schedule_evaluated("inst-1", "inst-1/dropped", 100).unwrap();
+        store.record_schedule_evaluated("inst-2", "inst-2/kept", 100).unwrap();
+
+        let declared = BTreeSet::from(["inst-1/kept".to_string()]);
+        store.prune_schedule_states("inst-1", &declared).unwrap();
+
+        let states = store.schedule_states("inst-1").unwrap();
+        assert!(states.contains_key("inst-1/kept"));
+        assert!(!states.contains_key("inst-1/dropped"));
+        assert!(
+            store.schedule_states("inst-2").unwrap().contains_key("inst-2/kept"),
+            "pruning is scoped to the instance whose plan was read"
+        );
     }
 }

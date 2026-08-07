@@ -227,6 +227,11 @@ interface orchestrator {
     /// instance exists, so a superseded supervisor cannot keep firing
     /// ticks at an instance another one now manages.
     ///
+    /// "This node only executes" is enforced, not merely stated: a
+    /// `(service-id, interface)` pair this node has no local endpoint for
+    /// is refused, rather than resolved through the community registry
+    /// and dispatched somewhere else under this node's own key.
+    ///
     /// The dispatched method's own return value is discarded. There is
     /// nobody to return it to, and a scheduled run that produces a value
     /// nothing reads is a design mistake in the app, not a wire shape.

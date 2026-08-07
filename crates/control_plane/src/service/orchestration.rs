@@ -2391,6 +2391,30 @@ impl ControlPlaneService {
             // sends (the `rpc` readiness probe).
             None => Value::Array(vec![]),
         };
+
+        // The fourth gate, the counterpart of `restart_impl`'s "no service
+        // type recorded" refusal, and for a sharper reason.
+        // `ProxyRouter::invoke_inner` reads a miss in the local endpoint
+        // registry as "the target lives somewhere else" and resolves it
+        // through the community registry instead -- so without this, a
+        // schedule naming a service this node does not host, or an
+        // interface the deployed component does not export, turns into an
+        // outbound call. That call carries this node's own key (the proxy
+        // has no instance certificate to present for a service with no
+        // local instance), and neither the owner check nor the generation
+        // check above can see a service this node knows nothing about:
+        // both are `if let Some`. The WIT contract for this verb says this
+        // node only executes, so refusing here enforces what is already
+        // written. The condition is exactly `invoke_inner`'s own
+        // local-or-remote test, so this refuses when, and only when, the
+        // call would otherwise leave the node.
+        if self.registry.lookup(&service_id, &interface).is_none() {
+            return Err(format!(
+                "'{service_id}' has no local endpoint for interface '{interface}'; a scheduled \
+                 run executes on the node that hosts the service and is never forwarded"
+            ));
+        }
+
         let proxy = self
             .current_service_proxy()
             .upgrade()
@@ -5410,6 +5434,84 @@ mod tests {
 
     // ── run-scheduled ─────────────────────────────────────────────────────
 
+    /// Registers a local endpoint for `service_id`/`interface` -- the fact
+    /// `run_scheduled` requires before it dispatches, since a target the
+    /// endpoint registry does not know would be resolved through the
+    /// community registry and called on another node.
+    async fn register_local_endpoint(
+        service: &ControlPlaneService,
+        service_id: &str,
+        interface: &str,
+    ) {
+        service
+            .registry
+            .register(
+                service_id.to_string(),
+                interface.to_string(),
+                SubstrateEndpoint::TcpHostPort { host: "127.0.0.1".to_string(), port: 9 },
+            )
+            .await
+            .unwrap();
+    }
+
+    /// A schedule naming a service this node does not host must be refused
+    /// outright, never handed to the proxy: `invoke_inner` would read the
+    /// empty local lookup as "remote", resolve the name through the
+    /// community registry, and dispatch under this node's own key -- with
+    /// the owner and generation checks both skipped, since neither can see
+    /// a service the node knows nothing about.
+    #[tokio::test]
+    async fn run_scheduled_refuses_a_target_with_no_local_endpoint() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+        let proxy = Arc::new(RecordingProxy::default());
+        wire_service_proxy(&service, &proxy);
+
+        let err = service
+            .run_scheduled(
+                "elsewhere-svc".to_string(),
+                0,
+                "scheduled-driver".to_string(),
+                "tick".to_string(),
+                None,
+                &caller,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("no local endpoint"), "{err}");
+        assert!(
+            proxy.last_request.lock().unwrap().is_none(),
+            "the proxy must not be reached for a target this node does not host"
+        );
+    }
+
+    /// The same refusal for the everyday mistake: the service is deployed
+    /// here, but the schedule names an interface it does not export.
+    #[tokio::test]
+    async fn run_scheduled_refuses_an_interface_the_local_service_does_not_export() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+        let proxy = Arc::new(RecordingProxy::default());
+        wire_service_proxy(&service, &proxy);
+        register_local_endpoint(&service, "worker-svc", "some-other-interface").await;
+
+        let err = service
+            .run_scheduled(
+                "worker-svc".to_string(),
+                0,
+                "scheduled-driver".to_string(),
+                "tick".to_string(),
+                None,
+                &caller,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("scheduled-driver"), "{err}");
+        assert!(proxy.last_request.lock().unwrap().is_none());
+    }
+
     /// `run-scheduled` takes exactly `restart`'s gate -- a caller
     /// with no `orchestrator/deploy` grant is refused before the proxy is
     /// ever touched.
@@ -5507,6 +5609,7 @@ mod tests {
         let caller = node_wide_caller("did:key:zAlice");
         let proxy = Arc::new(RecordingProxy::default());
         wire_service_proxy(&service, &proxy);
+        register_local_endpoint(&service, "worker-svc", "scheduled-driver").await;
         *proxy.response.lock().unwrap() = Some(Ok(Value::Null));
 
         service
@@ -5542,6 +5645,7 @@ mod tests {
         let caller = node_wide_caller("did:key:zAlice");
         let proxy = Arc::new(RecordingProxy::default());
         wire_service_proxy(&service, &proxy);
+        register_local_endpoint(&service, "worker-svc", "scheduled-driver").await;
         *proxy.response.lock().unwrap() = Some(Ok(Value::Null));
 
         service
@@ -5595,6 +5699,7 @@ mod tests {
         let caller = node_wide_caller("did:key:zAlice");
         let proxy = Arc::new(RecordingProxy::default());
         wire_service_proxy(&service, &proxy);
+        register_local_endpoint(&service, "worker-svc", "scheduled-driver").await;
         *proxy.response.lock().unwrap() = Some(Err(ProxyError::Callee {
             code: -32010,
             message: "guest refused".to_string(),

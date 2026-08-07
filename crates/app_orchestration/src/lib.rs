@@ -30,7 +30,9 @@ pub use resolver::{
     ResolvedTopology, ShardingStrategy, StaticInventory, TopologyEntry, TopologyEpoch,
     classify_binding_write, empty_resolver, rendezvous_select,
 };
-pub use schedule::{DEFAULT_SCHEDULE_TIMEOUT_MS, MAX_SCHEDULED_SERVICES, has_occurrence_in};
+pub use schedule::{
+    DEFAULT_SCHEDULE_TIMEOUT_MS, MAX_SCHEDULE_TIMEOUT_MS, MAX_SCHEDULED_SERVICES, has_occurrence_in,
+};
 pub use substrate_inventory::{
     SubstrateEntry, SubstrateInventory, check_placement, placement_demand,
 };
