@@ -406,6 +406,20 @@ async fn client_for(
     Arc::new(client)
 }
 
+/// Closes each client's iroh endpoint explicitly instead of leaving it to
+/// `Drop`'s fire-and-forget safety net -- a client dropped that way races
+/// this test's own tokio runtime shutdown and can trip iroh's "Endpoint
+/// dropped without calling `Endpoint::close`" warning. Only closes a client
+/// this call holds the sole `Arc` to; if something else still references
+/// it, leaving it open is correct, not a leak.
+async fn shutdown_clients(clients: impl IntoIterator<Item = Arc<SyneroymClient>>) {
+    for mut client in clients {
+        if let Some(c) = Arc::get_mut(&mut client) {
+            let _ = c.shutdown().await;
+        }
+    }
+}
+
 /// Boots both nodes (B sharing A's registry/relay, D-A3-17's own
 /// precondition), grants `operator` an app-scoped deploy grant on each,
 /// injects a KEK on each (native-capability endpoints need one), and returns
@@ -554,6 +568,11 @@ async fn a_two_substrate_app_deploys_each_service_to_its_placed_node() {
     )
     .await
     .unwrap();
+    // `targets` holds a clone of each `Arc<SyneroymClient>` (via
+    // `deploy::build_actor`) -- drop it now, not used again, so
+    // `shutdown_clients` below sees each client at its sole `Arc` and can
+    // actually close its endpoint instead of silently skipping it.
+    drop(targets);
     assert!(report.is_complete(), "{:?}", report.failures);
 
     let client_a = &clients[&SubstrateAlias::new(FRONTEND_ALIAS)];
@@ -578,6 +597,7 @@ async fn a_two_substrate_app_deploys_each_service_to_its_placed_node() {
     assert_eq!(list_b.len(), 1, "{list_b:?}");
     assert_eq!(list_b[0].service_id, backend_svc.service_id.to_string());
 
+    shutdown_clients(clients.into_values()).await;
     node_a.teardown().await;
     node_b.teardown().await;
 }
@@ -612,6 +632,11 @@ async fn a_placed_members_endpoint_record_resolves_to_its_own_substrate() {
     )
     .await
     .unwrap();
+    // `targets` holds a clone of each `Arc<SyneroymClient>` (via
+    // `deploy::build_actor`) -- drop it now, not used again, so
+    // `shutdown_clients` below sees each client at its sole `Arc` and can
+    // actually close its endpoint instead of silently skipping it.
+    drop(targets);
     assert!(report.is_complete(), "{:?}", report.failures);
 
     let backend_svc = new_plan
@@ -633,6 +658,7 @@ async fn a_placed_members_endpoint_record_resolves_to_its_own_substrate() {
          §0.1's substrate_id bug would break silently"
     );
 
+    shutdown_clients(clients.into_values()).await;
     node_a.teardown().await;
     node_b.teardown().await;
 }
@@ -701,6 +727,7 @@ async fn a_certificate_minted_against_one_substrate_is_rejected_by_another() {
     let err = client_b.request("orchestrator", "deploy", params).await.unwrap_err();
     assert!(err.to_string().contains("not the key this substrate would derive"), "{err}");
 
+    shutdown_clients(clients.into_values()).await;
     node_a.teardown().await;
     node_b.teardown().await;
 }
@@ -741,6 +768,10 @@ async fn an_unreachable_substrate_leaves_the_deployment_degraded_and_retryable()
     )
     .await
     .unwrap();
+    // See the other tests' `drop(targets)`: not used again, and holding it
+    // open keeps this attempt's dead-node-B client alive past its sole
+    // `Arc`, which would make `shutdown_clients` below silently skip it.
+    drop(targets);
 
     assert_eq!(report.deployed.len(), 1, "{report:?}");
     assert_eq!(report.failures.len(), 1, "{report:?}");
@@ -773,7 +804,11 @@ async fn an_unreachable_substrate_leaves_the_deployment_degraded_and_retryable()
     let client_b_again =
         client_for(&node_b, &operator, app_deploy_grant(&owner, &operator_did, node_b.did())).await;
     let mut clients_again = clients;
-    clients_again.insert(SubstrateAlias::new(BACKEND_ALIAS), client_b_again);
+    if let Some(dead_client_b) =
+        clients_again.insert(SubstrateAlias::new(BACKEND_ALIAS), client_b_again)
+    {
+        shutdown_clients([dead_client_b]).await;
+    }
     let targets_again = deploy_targets(&clients_again);
 
     let report_again = apply_plan(
@@ -792,6 +827,7 @@ async fn an_unreachable_substrate_leaves_the_deployment_degraded_and_retryable()
     )
     .await
     .unwrap();
+    drop(targets_again);
 
     assert_eq!(report_again.deployed.len(), 1, "{report_again:?}");
     assert_eq!(
@@ -802,6 +838,7 @@ async fn an_unreachable_substrate_leaves_the_deployment_degraded_and_retryable()
     assert!(report_again.is_complete());
     journal.update_state(deployment_id, DeploymentState::Active).unwrap();
 
+    shutdown_clients(clients_again.into_values()).await;
     node_a.teardown().await;
     node_b.teardown().await;
 }
@@ -836,6 +873,11 @@ async fn a_dependencys_record_resolves_through_the_dependents_own_registry() {
     )
     .await
     .unwrap();
+    // `targets` holds a clone of each `Arc<SyneroymClient>` (via
+    // `deploy::build_actor`) -- drop it now, not used again, so
+    // `shutdown_clients` below sees each client at its sole `Arc` and can
+    // actually close its endpoint instead of silently skipping it.
+    drop(targets);
     assert!(report.is_complete(), "{:?}", report.failures);
 
     let backend_svc = new_plan
@@ -860,6 +902,7 @@ async fn a_dependencys_record_resolves_through_the_dependents_own_registry() {
         "the record found through node A's registry must name node B as the hosting substrate"
     );
 
+    shutdown_clients(clients.into_values()).await;
     node_a.teardown().await;
     node_b.teardown().await;
 }

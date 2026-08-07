@@ -319,6 +319,20 @@ async fn client_for(
     Arc::new(client)
 }
 
+/// Closes each client's iroh endpoint explicitly instead of leaving it to
+/// `Drop`'s fire-and-forget safety net -- a client dropped that way races
+/// this test's own tokio runtime shutdown and can trip iroh's "Endpoint
+/// dropped without calling `Endpoint::close`" warning. Only closes a client
+/// this call holds the sole `Arc` to; if something else still references
+/// it, leaving it open is correct, not a leak.
+async fn shutdown_clients(clients: impl IntoIterator<Item = Arc<SyneroymClient>>) {
+    for mut client in clients {
+        if let Some(c) = Arc::get_mut(&mut client) {
+            let _ = c.shutdown().await;
+        }
+    }
+}
+
 /// Boots both nodes (B sharing A's registry/relay), grants `operator` an
 /// app-scoped deploy grant on each, and injects a KEK on each. Copied from
 /// `multi_substrate_placement_e2e.rs`'s own `boot_pair`.
@@ -515,6 +529,7 @@ async fn a_membership_change_pushed_to_a_dependent_takes_effect_without_a_redepl
         "the pushed epoch must be visible without a second deploy"
     );
 
+    shutdown_clients(clients.into_values()).await;
     node_a.teardown().await;
     node_b.teardown().await;
 }
@@ -583,6 +598,7 @@ async fn a_stale_epoch_push_does_not_regress_the_mapping() {
         "the stale push must not regress the mapping below the epoch already held"
     );
 
+    shutdown_clients(clients.into_values()).await;
     node_a.teardown().await;
     node_b.teardown().await;
 }
