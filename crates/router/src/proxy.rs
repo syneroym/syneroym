@@ -8,7 +8,7 @@
 use std::{
     collections::BTreeSet,
     fmt::{self, Debug, Formatter},
-    sync::{Arc, Weak},
+    sync::{Arc, Mutex, Weak},
     time::{Duration, Instant},
 };
 
@@ -16,9 +16,9 @@ use iroh::{Endpoint, EndpointAddr};
 use serde_json::Value;
 use syneroym_app_orchestration::saga_undo_name;
 use syneroym_async_queue::{
-    CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, FailOutcome,
-    MAX_SAGA_PAYLOAD_BYTES, MIN_STEP_CALL_BUDGET_MS, Queue, SagaHead, SagaInfo as QueueSagaInfo,
-    SagaLog, StepIntent, StepRow,
+    CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, CompensationOutcome,
+    FailOutcome, MAX_SAGA_PAYLOAD_BYTES, MIN_STEP_CALL_BUDGET_MS, Queue, SagaHead,
+    SagaInfo as QueueSagaInfo, SagaLog, StepIntent, StepRow,
 };
 use syneroym_core::{
     config::RetryPolicy,
@@ -92,6 +92,16 @@ fn target_produced(error: &ProxyError) -> bool {
 /// would have waited longer to learn is something the outbox worker will
 /// find out on its own schedule.
 const ENQUEUE_PROBE_BUDGET: Duration = Duration::from_secs(2);
+
+/// Bounds one saga undo's own call attempt. `compensate_next_step` sends up
+/// to `SAGA_SWEEP_LIMIT` undos per service, sequentially, from
+/// `run_async_worker` -- the same task that drains every service's outbox.
+/// Left to `DEFAULT_PROXY_CALL_TIMEOUT`'s 30s default, one saga stuck on an
+/// unreachable provider could hold that shared loop, and therefore every
+/// other service's delivery, for minutes. A saga is not a probe -- it is a
+/// real delivery attempt on its own retry schedule -- so this is longer
+/// than `ENQUEUE_PROBE_BUDGET`, just not unbounded.
+const SAGA_UNDO_CALL_BUDGET: Duration = Duration::from_secs(5);
 
 /// One wire's worth of "send this JSON-RPC request to that node and read the
 /// response". The transport-agnostic seam a future wRPC wire (A.5) slots
@@ -236,8 +246,18 @@ pub struct ProxyRouter {
     /// The durable saga step log behind `syneroym:proxy/saga`, one log per
     /// driving service. Same `None` reasoning as `outbox`.
     sagas: Option<Arc<SagaStore>>,
+    /// Services the saga sweep saw absent from the registry on the
+    /// *previous* tick -- one tick's grace before their saga log is
+    /// dropped. Undeploy removes a service's endpoints one interface at a
+    /// time, so a service with real open sagas can be transiently absent
+    /// from `get_all_endpoints()` for a single tick during a clean
+    /// redeploy. Unlike the outbox's undeployed-service branch, which only
+    /// completes not-yet-delivered intent, dropping a saga log destroys
+    /// the only record a compensation would ever need -- one miss must
+    /// not be enough to do that.
+    saga_undeploy_candidates: Mutex<BTreeSet<String>>,
     /// `outbox` and `sagas` bundled behind one [`ProxyQueueInspector`]
-    /// handle, rebuilt whenever either changes (D-B4-19). `ProxyRouter`
+    /// handle, rebuilt whenever either changes. `ProxyRouter`
     /// itself is this bundle's one strong owner -- the control plane's
     /// `proxy_queues: OnceLock<Weak<dyn ProxyQueueInspector>>` downgrades
     /// from it, the same way it already downgrades from `outbox` alone
@@ -335,6 +355,7 @@ impl ProxyRouter {
             dedup_guard: None,
             outbox: None,
             sagas: None,
+            saga_undeploy_candidates: Mutex::new(BTreeSet::new()),
             proxy_state: None,
         }
     }
@@ -1051,12 +1072,11 @@ fn request_from_step(
 }
 
 impl ProxyRouter {
-    /// Opens a saga and returns its host-minted id (D-B4-3: never
-    /// guest-chosen). Refuses up front on the same two grounds `enqueue`
-    /// does, for the identical reason: every undo this saga may later send
-    /// travels under the caller's own identity, so a caller with no
-    /// unexpired instance certificate would have every one of them refused
-    /// as anonymous (§0.13c).
+    /// Opens a saga and returns its host-minted id (never guest-chosen).
+    /// Refuses up front on the same two grounds `enqueue` does, for the
+    /// identical reason: every undo this saga may later send travels under
+    /// the caller's own identity, so a caller with no unexpired instance
+    /// certificate would have every one of them refused as anonymous.
     async fn saga_begin_impl(&self, req: SagaBegin) -> Result<String, ProxyError> {
         let Some(store) = &self.sagas else { return Err(no_saga_store_error()) };
 
@@ -1092,10 +1112,10 @@ impl ProxyRouter {
         // absolute instant `SagaLog::abandoned` compares against `now`.
         let deadline_at = now.saturating_add(deadline_ms);
 
-        // Not a refusal (§0.13c): a *managed* instance's certificate is
-        // renewed on every supervisor pass, so its own current expiry
-        // cannot decide whether a long deadline is sound. An unmanaged
-        // instance's can, and this is the only signal the host has for it.
+        // Not a refusal: a *managed* instance's certificate is renewed on
+        // every supervisor pass, so its own current expiry cannot decide
+        // whether a long deadline is sound. An unmanaged instance's can,
+        // and this is the only signal the host has for it.
         let cert_expires_ms =
             i64::try_from(cert.expires_at_secs.saturating_mul(1000)).unwrap_or(i64::MAX);
         if deadline_at > cert_expires_ms {
@@ -1125,9 +1145,9 @@ impl ProxyRouter {
 
     /// Takes one forward step: records its intent, dispatches the call, and
     /// records the outcome. Refuses the same two node/self targets
-    /// `enqueue` refuses, and for the same reason (§0.13a/b): a node-level
-    /// target's undo can never be fenced, and a self-target's undo cannot
-    /// be rebuilt under the right caller identity.
+    /// `enqueue` refuses, and for the same reason: a node-level target's
+    /// undo can never be fenced, and a self-target's undo cannot be
+    /// rebuilt under the right caller identity.
     async fn saga_step_impl(&self, req: SagaStepRequest) -> Result<Value, ProxyError> {
         let started = Instant::now();
         let Some(store) = &self.sagas else { return Err(no_saga_store_error()) };
@@ -1157,13 +1177,13 @@ impl ProxyRouter {
 
         let target_json = serde_json::to_string(&req.target)
             .map_err(|e| ProxyError::Internal(format!("saga step target unencodable: {e}")))?;
-        if req.params.to_string().len() > MAX_SAGA_PAYLOAD_BYTES {
+        let params_bytes = serde_json::to_vec(&req.params)
+            .map_err(|e| ProxyError::Internal(format!("saga step params unencodable: {e}")))?;
+        if params_bytes.len() > MAX_SAGA_PAYLOAD_BYTES {
             return Err(ProxyError::Internal(format!(
                 "saga step params exceed the {MAX_SAGA_PAYLOAD_BYTES} byte limit"
             )));
         }
-        let params_bytes = serde_json::to_vec(&req.params)
-            .map_err(|e| ProxyError::Internal(format!("saga step params unencodable: {e}")))?;
         let intent = StepIntent {
             target: target_json,
             routing_key: req.routing_key.clone(),
@@ -1185,18 +1205,14 @@ impl ProxyRouter {
         // what is *left* of this node's step budget after this function's
         // own bookkeeping so far (the log open plus the intent write) --
         // one second inside the guest's epoch, not the proxy's 30s default,
-        // and minus the bookkeeping rather than ignoring it (§0.14).
+        // and minus the bookkeeping rather than ignoring it.
         let budget_ms = req.timeout_ms.unwrap_or_else(|| {
-            store
-                .config()
-                .step_timeout_ms
-                .saturating_sub(started.elapsed().as_millis() as u64)
-                .max(MIN_STEP_CALL_BUDGET_MS)
+            step_call_budget_ms(store.config().step_timeout_ms, started.elapsed())
         });
 
-        // `invoke`, not `invoke_inner`: a keyed step still earns B2's own
-        // proxy dead letter on failure (§0.8), an operator surface this
-        // slice deliberately reuses rather than duplicates.
+        // `invoke`, not `invoke_inner`: a keyed step still earns the
+        // guest proxy outbox's own dead letter on failure, an operator
+        // surface this reuses rather than duplicates.
         let outcome = self.invoke(request_from_step(&req, target, budget_ms)).await;
 
         let saga_id = req.saga_id.clone();
@@ -1235,7 +1251,7 @@ impl ProxyRouter {
     }
 
     /// Marks the saga for compensation. Returns immediately -- the walk
-    /// runs on the async worker's next tick, never inline (D-B4-2). Idempotent:
+    /// runs on the async worker's next tick, never inline. Idempotent:
     /// asking an already-compensating saga to compensate again is a no-op,
     /// not an error.
     async fn saga_compensate_impl(
@@ -1488,11 +1504,23 @@ impl ProxyRouter {
         }
     }
 
+    /// Locks `saga_undeploy_candidates`, recovering rather than panicking
+    /// if a prior panic poisoned it: the set holds nothing but service ids
+    /// pending a second absent tick, so an inconsistent view after a panic
+    /// costs at most one extra tick of delay before a real undeploy is
+    /// confirmed, never a lost or duplicated drop.
+    fn saga_undeploy_candidates_lock(&self) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
+        self.saga_undeploy_candidates.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// One pass over every saga log this node has open, plus every deployed
     /// service whose log file already exists -- the second half is what
     /// lets a restart pick up a saga written before it. Mirrors
-    /// `drain_outboxes_once` exactly, including the undeployed-service
-    /// rule.
+    /// `drain_outboxes_once`'s shape, but not its undeployed-service rule
+    /// verbatim: the outbox only completes not-yet-delivered intent on one
+    /// absent tick, which is recoverable; dropping a saga log is not, so
+    /// this sweep requires the service to be absent on two consecutive
+    /// ticks before it drops anything (`saga_undeploy_candidates`).
     ///
     /// Returns how many sagas it settled (a step undone, or a saga finished
     /// or failed), for tests and metrics.
@@ -1515,7 +1543,7 @@ impl ProxyRouter {
         let now = proxy_outbox::now_ms();
         let mut settled = 0;
         for service_id in services {
-            // Not `else { continue }` silently (§0.15): a locked vault
+            // Not `else { continue }` silently: a locked vault
             // makes every open fail with `KekRequired`, which is the state
             // of every substrate after a restart until an operator injects
             // the KEK -- silence there means a node that compensates
@@ -1529,6 +1557,20 @@ impl ProxyRouter {
             };
 
             if !deployed.contains(&service_id) {
+                // A single absent tick is not enough: undeploy removes a
+                // service's endpoints one interface at a time, so a
+                // redeploy can leave a service transiently missing from
+                // `get_all_endpoints()` for exactly one tick. Only a
+                // *second* consecutive absence drops the log.
+                let confirmed = !self.saga_undeploy_candidates_lock().insert(service_id.clone());
+                if !confirmed {
+                    debug!(
+                        service_id = %service_id,
+                        "service absent from the registry this tick; sagas kept pending a second consecutive absence"
+                    );
+                    continue;
+                }
+
                 // Nothing removes a service's data directory on undeploy.
                 // Its sagas are dropped rather than compensated: the
                 // operator withdrew the whole service, and sending undos on
@@ -1539,6 +1581,7 @@ impl ProxyRouter {
                     let log = log.clone();
                     task::spawn_blocking(move || log.drop_all_for_undeployed()).await
                 };
+                self.saga_undeploy_candidates_lock().remove(&service_id);
                 match dropped {
                     Ok(Ok(())) => {
                         info!(service_id = %service_id, "dropped sagas for an undeployed service");
@@ -1552,6 +1595,12 @@ impl ProxyRouter {
                 }
                 continue;
             }
+
+            // Deployed again (or still): clear any stale absence marker so
+            // a later real undeploy needs its own two consecutive ticks
+            // rather than firing on the first one because of a mark left
+            // over from an earlier redeploy.
+            self.saga_undeploy_candidates_lock().remove(&service_id);
 
             // The crash case: an open saga past its deadline starts
             // walking back. Nothing else can notice, because a guest does
@@ -1616,10 +1665,10 @@ impl ProxyRouter {
             return 1;
         };
 
-        // Before dispatch, not after (§0.11): a crash inside the call must
-        // cost an attempt, or a poison step is retried forever. Safe only
-        // because the idempotency key below lets the receiver answer a
-        // duplicate from its own record.
+        // Before dispatch, not after: a crash inside the call must cost an
+        // attempt, or a poison step is retried forever. Safe only because
+        // the idempotency key below lets the receiver answer a duplicate
+        // from its own record.
         let idx = step.idx;
         let saga_id = head.saga_id.clone();
         let attempts = {
@@ -1648,7 +1697,7 @@ impl ProxyRouter {
         let target_value: QueuedTarget = match serde_json::from_str(&step.target) {
             Ok(t) => t,
             Err(e) => {
-                self.fail_saga_step(
+                self.fail_terminal_saga_step(
                     log,
                     &head.saga_id,
                     idx,
@@ -1669,7 +1718,7 @@ impl ProxyRouter {
         ) {
             Ok(t) => t,
             Err(e) => {
-                self.fail_saga_step(log, &head.saga_id, idx, now, &e.to_string()).await;
+                self.fail_terminal_saga_step(log, &head.saga_id, idx, now, &e.to_string()).await;
                 return 1;
             }
         };
@@ -1689,7 +1738,7 @@ impl ProxyRouter {
             protocol: ProxyProtocol::JsonRpcV1,
             idempotent: true,
             idempotency_key: Some(format!("saga:{}:{}", head.saga_id, idx)),
-            timeout: None,
+            timeout: Some(SAGA_UNDO_CALL_BUDGET),
         };
 
         // `invoke_inner`, not `invoke`: an undo has no live caller holding
@@ -1733,24 +1782,32 @@ impl ProxyRouter {
                         &explain_undo_error(&e, &step),
                     )
                     .await;
-                    metrics::counter!("substrate.proxy.saga.failed").increment(1);
                 }
             },
         }
         1
     }
 
-    /// Records a retryable undo failure.
+    /// Records a retryable undo failure. `Disposition::Retry` does not mean
+    /// the saga stays `compensating`: this attempt may have been the one
+    /// that exhausted the budget, and that case must count toward
+    /// `substrate.proxy.saga.failed` exactly as a terminal disposition does
+    /// -- an operator watching that counter cannot see the difference.
     async fn fail_saga_step(&self, log: &SagaLog, saga_id: &str, idx: u32, now: i64, error: &str) {
         let log = log.clone();
         let saga_id = saga_id.to_string();
         let error = error.to_string();
-        let _ =
+        let outcome =
             task::spawn_blocking(move || log.fail_compensation(&saga_id, idx, now, &error, false))
                 .await;
+        if matches!(outcome, Ok(Ok(CompensationOutcome::Failed))) {
+            metrics::counter!("substrate.proxy.saga.failed").increment(1);
+        }
     }
 
-    /// Records an undo failure that can never succeed.
+    /// Records an undo failure that can never succeed. `terminal = true`
+    /// always exhausts the saga regardless of attempts remaining, so this
+    /// always counts toward `substrate.proxy.saga.failed`.
     async fn fail_terminal_saga_step(
         &self,
         log: &SagaLog,
@@ -1765,6 +1822,7 @@ impl ProxyRouter {
         let _ =
             task::spawn_blocking(move || log.fail_compensation(&saga_id, idx, now, &error, true))
                 .await;
+        metrics::counter!("substrate.proxy.saga.failed").increment(1);
     }
 }
 
@@ -1774,7 +1832,18 @@ impl ProxyRouter {
 /// backlog.
 const SAGA_SWEEP_LIMIT: u32 = 16;
 
-/// §0.7's three-case rule for merging a forward call's own result into its
+/// The step budget's margin rule, as a pure function so the subtraction
+/// itself is unit-testable without a real clock: a step's own call budget
+/// is what is
+/// *left* of `step_timeout_ms` after `bookkeeping` (the log open plus the
+/// intent write) was spent, never `step_timeout_ms` plus that time. A slow
+/// cold open shortens the call the guest's epoch has room for; it does not
+/// borrow against the epoch.
+fn step_call_budget_ms(step_timeout_ms: u64, bookkeeping: Duration) -> u64 {
+    step_timeout_ms.saturating_sub(bookkeeping.as_millis() as u64).max(MIN_STEP_CALL_BUDGET_MS)
+}
+
+/// The three-case rule for merging a forward call's own result into its
 /// undo's parameters: an object gains a `forward-result` member, an array
 /// gains a trailing element, and `null`/absent (or any other scalar) is
 /// wrapped into `{"forward-result": ...}`. A forward call that produced no
@@ -1803,7 +1872,7 @@ fn merge_forward_result(params: &Value, result: Option<&Value>) -> Value {
     }
 }
 
-/// What §0.4a's deploy gate deliberately does not catch surfaces here
+/// What the deploy gate deliberately does not catch surfaces here
 /// instead: a callee error carrying the shared "not found" wire code
 /// (`SERVICE_NOT_FOUND_RPC_CODE`, reused for both "no such service" and "no
 /// such method on a service that exists") is rewritten to name the
@@ -3741,6 +3810,7 @@ mod tests {
         registry: EndpointRegistry,
         target: Arc<RecordingNativeService>,
         sagas: Arc<SagaStore>,
+        dedup_guard: Arc<crate::CallDedupGuard>,
         _native_dispatch: NativeDispatchRegistry,
         _dir: tempfile::TempDir,
     }
@@ -3808,8 +3878,8 @@ mod tests {
             resolver,
             saga_config(dispatch_epoch_timeout_secs),
         ));
-        // Every undo the walk sends is keyed (D-B4-3), so the receiver
-        // needs a real fence behind it -- with no dedup guard configured,
+        // Every undo the walk sends is keyed, so the receiver needs a real
+        // fence behind it -- with no dedup guard configured,
         // `invoke_local_guarded` refuses any keyed call outright.
         let dedup_guard = Arc::new(crate::CallDedupGuard::new(
             provider,
@@ -3832,10 +3902,18 @@ mod tests {
                 node_identity,
                 RetryPolicy { max_attempts: 1, ..RetryPolicy::default() },
             )
-            .with_dedup_guard(dedup_guard)
+            .with_dedup_guard(dedup_guard.clone())
             .with_sagas(sagas.clone()),
         );
-        SagaNode { router, registry, target, sagas, _native_dispatch: native_dispatch, _dir: dir }
+        SagaNode {
+            router,
+            registry,
+            target,
+            sagas,
+            dedup_guard,
+            _native_dispatch: native_dispatch,
+            _dir: dir,
+        }
     }
 
     fn saga_step_request(saga_id: &str, target: &str) -> SagaStepRequest {
@@ -3985,9 +4063,9 @@ mod tests {
         );
     }
 
-    /// §0.13c: a managed instance's certificate is renewed on every
-    /// supervisor pass, so its own current expiry cannot decide whether a
-    /// long deadline is sound -- `begin` warns rather than refusing.
+    /// A managed instance's certificate is renewed on every supervisor
+    /// pass, so its own current expiry cannot decide whether a long
+    /// deadline is sound -- `begin` warns rather than refusing.
     #[tokio::test]
     async fn begin_warns_but_proceeds_when_the_deadline_outlives_the_certificate() {
         let node = saga_node(5).await;
@@ -4091,7 +4169,7 @@ mod tests {
         assert!(node.router.saga_status(SAGA_CALLER, &b).await.is_ok());
     }
 
-    // -- §0.7: merging the forward result into an undo's parameters -----
+    // -- merging the forward result into an undo's parameters -----------
 
     #[test]
     fn merge_forward_result_adds_a_member_to_an_object_and_an_element_to_an_array() {
@@ -4117,6 +4195,35 @@ mod tests {
         assert_eq!(merged, object);
     }
 
+    // -- bookkeeping shortens the step budget ----------------------------
+
+    #[test]
+    fn bookkeeping_before_the_call_shortens_the_step_budget_rather_than_extending_the_epoch() {
+        // The whole rule in one number: a slower bookkeeping phase (the log
+        // open plus the intent write) must leave the call *less* time, not
+        // the same amount tacked on top of it -- otherwise a guest's own
+        // epoch could be overrun by exactly the bookkeeping cost this
+        // subtraction exists to protect against.
+        let fast = step_call_budget_ms(4_000, Duration::from_millis(10));
+        let slow = step_call_budget_ms(4_000, Duration::from_millis(1_500));
+        assert_eq!(fast, 3_990);
+        assert_eq!(slow, 2_500);
+        assert!(
+            slow < fast,
+            "more bookkeeping time must leave a smaller call budget, not a larger one"
+        );
+    }
+
+    #[test]
+    fn the_step_budget_floors_at_the_minimum_rather_than_going_negative() {
+        // Bookkeeping that ate the whole epoch (a very cold open, or a tiny
+        // configured epoch) must not produce a zero or negative budget --
+        // `saturating_sub` alone would floor at zero, which is not a call
+        // budget, it is an instant refusal.
+        let budget = step_call_budget_ms(4_000, Duration::from_secs(10));
+        assert_eq!(budget, syneroym_async_queue::MIN_STEP_CALL_BUDGET_MS);
+    }
+
     // -- the reverse walk -------------------------------------------------
 
     async fn add_step(node: &SagaNode, saga_id: &str, item: &str) {
@@ -4137,7 +4244,7 @@ mod tests {
         let (_, method, params) = node.target.last_invocation.lock().unwrap().clone().unwrap();
         assert_eq!(method, "saga-undo-reserve");
         // The forward call's own result ("ok") is merged in as
-        // `forward-result` (§0.7).
+        // `forward-result`.
         assert_eq!(params, serde_json::json!({"item": "b", "forward-result": "ok"}));
 
         node.router.sweep_sagas_once().await;
@@ -4158,7 +4265,7 @@ mod tests {
     #[tokio::test]
     async fn the_walk_undoes_a_pending_step_too() {
         // Never records an outcome for the step -- the crash-mid-call case
-        // §0.5 requires the walk to compensate anyway.
+        // the walk must compensate anyway.
         let node = saga_node(5).await;
         let saga_id = begun_saga(&node).await;
         let log = node.sagas.log_for(SAGA_CALLER).await.unwrap();
@@ -4182,6 +4289,258 @@ mod tests {
             node.target.invoked.load(Ordering::SeqCst),
             1,
             "the pending step was undone too"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_late_arriving_forward_result_does_not_revert_an_already_compensated_step() {
+        // SAGA-02: intent-before-call means a step row can sit `pending`
+        // for the whole forward call. If a deadline (or a concurrent
+        // `compensate`) starts the walk before that call returns, and the
+        // walk reaches and compensates the step first, the forward call's
+        // own late-arriving result must not overwrite `compensated` back
+        // to `done` -- that would cost a spurious second undo and make
+        // `compensated_steps` count backwards. Reproduced directly against
+        // the log rather than by racing two real tasks: the intent is
+        // recorded exactly as if the forward call were still in flight
+        // (no outcome recorded), which is the same state a real in-flight
+        // call leaves it in.
+        let node = saga_node(5).await;
+        let saga_id = begun_saga(&node).await;
+        let log = node.sagas.log_for(SAGA_CALLER).await.unwrap();
+        log.record_step_intent(
+            &saga_id,
+            &syneroym_async_queue::StepIntent {
+                target: serde_json::to_string(&QueuedTarget::Service(SAGA_TARGET.to_string()))
+                    .unwrap(),
+                routing_key: None,
+                interface: "saga-participant".to_string(),
+                method: "reserve".to_string(),
+                params: b"{}".to_vec(),
+            },
+            proxy_outbox::now_ms(),
+        )
+        .unwrap();
+        node.router.saga_compensate(SAGA_CALLER, &saga_id).await.unwrap();
+
+        // One sweep: the pending step is undone and marked `compensated`,
+        // but the saga itself is not yet finished (that needs a sweep that
+        // finds nothing left).
+        node.router.sweep_sagas_once().await;
+        assert_eq!(
+            node.target.invoked.load(Ordering::SeqCst),
+            1,
+            "the pending step's undo must have run"
+        );
+
+        // The forward call's own result finally arrives, after the walk
+        // already decided this step's fate.
+        log.record_step_outcome(&saga_id, 0, Some(b"late-result"), None, proxy_outbox::now_ms())
+            .unwrap();
+
+        // If the guard above did nothing, this write just reset the step
+        // back to `done`, and this second sweep would find it again and
+        // send a second undo.
+        node.router.sweep_sagas_once().await;
+        assert_eq!(
+            node.target.invoked.load(Ordering::SeqCst),
+            1,
+            "a late-arriving forward result must not cause a second undo to be sent"
+        );
+        let status = node.router.saga_status(SAGA_CALLER, &saga_id).await.unwrap();
+        assert_eq!(status.state, RpcSagaState::Compensated);
+    }
+
+    #[tokio::test]
+    async fn an_undo_carries_the_saga_and_step_as_its_idempotency_key() {
+        // Every undo's idempotency key is host-minted as
+        // `saga:<saga-id>:<idx>`, never guest-set -- this is what makes
+        // incrementing attempts before dispatch safe, since a re-dispatch
+        // after a crash mid-undo is fenced by the receiver's own record
+        // under exactly this key.
+        let node = saga_node(5).await;
+        let saga_id = begun_saga(&node).await;
+        add_step(&node, &saga_id, "a").await;
+        node.router.saga_compensate(SAGA_CALLER, &saga_id).await.unwrap();
+
+        node.router.sweep_sagas_once().await;
+        // 2, not 1: `add_step`'s own forward call already reached the
+        // target once, and the undo is the second.
+        assert_eq!(node.target.invoked.load(Ordering::SeqCst), 2);
+
+        let caller = format!("system:{SAGA_CALLER}");
+        let key = format!("saga:{saga_id}:0");
+        assert!(
+            node.dedup_guard.debug_has_settled_key(SAGA_TARGET, &caller, &key).await,
+            "the undo must have fenced under exactly 'saga:<saga-id>:<idx>', got no settled \
+             record for that key"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dependency_bound_to_nobody_fails_the_compensation_without_retrying() {
+        // Row 9's saga counterpart, and the regression test for the
+        // bug this review round found: a target that no longer resolves
+        // to anybody is "nothing to deliver to", not a failed delivery --
+        // it must fail the saga on the very first sweep, never spend the
+        // retry budget (`fail_terminal_saga_step`, not `fail_saga_step`).
+        let node = saga_node(5).await;
+        let saga_id = begun_saga(&node).await;
+        let log = node.sagas.log_for(SAGA_CALLER).await.unwrap();
+        log.record_step_intent(
+            &saga_id,
+            &syneroym_async_queue::StepIntent {
+                target: serde_json::to_string(&QueuedTarget::Dependency("gone".to_string()))
+                    .unwrap(),
+                routing_key: None,
+                interface: "saga-participant".to_string(),
+                method: "reserve".to_string(),
+                params: b"{}".to_vec(),
+            },
+            proxy_outbox::now_ms(),
+        )
+        .unwrap();
+        node.router.saga_compensate(SAGA_CALLER, &saga_id).await.unwrap();
+
+        node.router.sweep_sagas_once().await;
+        let status = node.router.saga_status(SAGA_CALLER, &saga_id).await.unwrap();
+        assert_eq!(
+            status.state,
+            RpcSagaState::Failed,
+            "a target bound to nobody must fail the saga at once, not stay compensating"
+        );
+        assert_eq!(
+            node.target.invoked.load(Ordering::SeqCst),
+            0,
+            "there was nowhere to deliver to, so nothing should ever have been dispatched"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unopenable_saga_log_settles_nothing_and_loses_nothing() {
+        // A locked vault (`KekRequired`, the state of every substrate
+        // after a restart until an operator injects the KEK) must not
+        // make the sweep act as if the service had no sagas at all.
+        // Proven behaviourally: the saga survives the locked sweep
+        // untouched, and a fresh sweep against the same file picks it
+        // straight back up once the KEK is injected.
+        use syneroym_data_db::SqliteStorageProvider;
+        use syneroym_data_keystore::KeyStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let key_store = Arc::new(KeyStore::new());
+        key_store.inject_kek([7u8; 32]).unwrap();
+        // Real encryption, unlike every other saga test in this module --
+        // the locked-vault condition only exists in that mode.
+        let provider = Arc::new(SqliteStorageProvider::new(dir.path(), true).unwrap());
+        let resolver = syneroym_app_orchestration::empty_resolver();
+
+        let sagas1 = Arc::new(SagaStore::new(
+            provider.clone(),
+            key_store.clone(),
+            resolver.clone(),
+            saga_config(5),
+        ));
+        let log1 = sagas1.log_for(SAGA_CALLER).await.unwrap();
+        let now = proxy_outbox::now_ms();
+        log1.begin("locked-saga", "wf", None, now + 60_000, now).unwrap();
+
+        key_store.clear_kek();
+
+        // A fresh `SagaStore` over the same file with a cold cache --
+        // exactly what a restart looks like.
+        let sagas2 = Arc::new(SagaStore::new(
+            provider.clone(),
+            key_store.clone(),
+            resolver.clone(),
+            saga_config(5),
+        ));
+        let registry = empty_registry();
+        registry
+            .register(
+                SAGA_CALLER.to_string(),
+                "saga-driver".to_string(),
+                SubstrateEndpoint::WasmChannel { service_id: SAGA_CALLER.to_string() },
+            )
+            .await
+            .unwrap();
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let router = Arc::new(
+            ProxyRouter::new(
+                registry,
+                empty_registry_client(),
+                Arc::downgrade(&native_dispatch),
+                Weak::new(),
+                Arc::new(MockHop::default()),
+                Arc::new(Identity::generate().unwrap()),
+                RetryPolicy { max_attempts: 1, ..RetryPolicy::default() },
+            )
+            .with_sagas(sagas2.clone()),
+        );
+
+        let settled = router.sweep_sagas_once().await;
+        assert_eq!(settled, 0, "a locked vault must settle nothing, not error out or panic");
+
+        key_store.inject_kek([7u8; 32]).unwrap();
+        let log_after_unlock = sagas2.log_for(SAGA_CALLER).await.unwrap();
+        assert!(
+            log_after_unlock.status("locked-saga").unwrap().is_some(),
+            "the saga written before the lock must still be there once it is unlocked"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_an_in_flight_undo_and_leaves_the_saga_compensating() {
+        // The same property
+        // `shutdown_abandons_an_in_flight_delivery_rather_than_draining` proves
+        // for the outbox, for the saga sweep: worker shutdown must interrupt an
+        // undo that never resolves, not wait out its own
+        // budget (`SAGA_UNDO_CALL_BUDGET`). Left otherwise, one
+        // unreachable participant could hold node shutdown hostage.
+        let node = saga_node(5).await;
+        let saga_id = begun_saga(&node).await;
+        add_step(&node, &saga_id, "a").await;
+        node.router.saga_compensate(SAGA_CALLER, &saga_id).await.unwrap();
+
+        // The target blocks and is never released during the test, so any
+        // undo the worker starts genuinely never resolves on its own.
+        let release = Arc::new(tokio::sync::Notify::new());
+        *node.target.hold.lock().unwrap() = Some(release.clone());
+
+        let cancel = CancellationToken::new();
+        let worker = {
+            let router = node.router.clone();
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                router.run_async_worker(Duration::from_millis(5), cancel).await;
+            })
+        };
+
+        let entered =
+            wait_for(Duration::from_secs(5), || node.target.invoked.load(Ordering::SeqCst) >= 1)
+                .await;
+        assert!(
+            entered,
+            "the worker never reached the target, so this test would prove nothing about \
+             interrupting an in-flight undo"
+        );
+
+        // The load-bearing assertion: the undo in flight right now cannot
+        // finish on its own, so the worker can only return if cancellation
+        // is raced *into* the delivery.
+        cancel.cancel();
+        let stopped = tokio::time::timeout(Duration::from_secs(2), worker).await;
+        assert!(
+            stopped.is_ok(),
+            "shutdown must interrupt an undo that never resolves, not wait it out"
+        );
+
+        release.notify_waiters();
+        let status = node.router.saga_status(SAGA_CALLER, &saga_id).await.unwrap();
+        assert_eq!(
+            status.state,
+            RpcSagaState::Compensating,
+            "an abandoned undo must leave the saga compensating, not silently finished or failed"
         );
     }
 
@@ -4322,6 +4681,16 @@ mod tests {
         node.registry.remove_instance_cert(SAGA_CALLER).await.unwrap();
         node.registry.remove(SAGA_CALLER, "saga-driver").await.unwrap();
 
+        // Two consecutive absent ticks, not one: a redeploy can leave a
+        // service briefly missing from the registry for a single tick, and
+        // one miss must not be enough to destroy its saga log (SAGA-03).
+        node.router.sweep_sagas_once().await;
+        let log = node.sagas.existing_log_for(SAGA_CALLER).await.unwrap().unwrap();
+        assert!(
+            !log.list().unwrap().is_empty(),
+            "one absent tick alone must not drop the saga -- it could be a redeploy in flight"
+        );
+
         node.router.sweep_sagas_once().await;
         assert_eq!(
             node.target.invoked.load(Ordering::SeqCst),
@@ -4332,7 +4701,37 @@ mod tests {
         assert!(log.list().unwrap().is_empty(), "its sagas must be dropped, not left compensating");
     }
 
-    /// D-B4-19: the control plane downgrades `ProxyState` into a
+    #[tokio::test]
+    async fn a_service_that_reappears_between_ticks_keeps_its_sagas() {
+        let node = saga_node(5).await;
+        let saga_id = begun_saga(&node).await;
+        add_step(&node, &saga_id, "a").await;
+        node.router.saga_compensate(SAGA_CALLER, &saga_id).await.unwrap();
+
+        let endpoint = node.registry.lookup_by_service(SAGA_CALLER)[0].1.clone();
+        node.registry.remove_instance_cert(SAGA_CALLER).await.unwrap();
+        node.registry.remove(SAGA_CALLER, "saga-driver").await.unwrap();
+        node.router.sweep_sagas_once().await;
+
+        // The service comes back before a second consecutive absent tick.
+        node.registry
+            .register(SAGA_CALLER.to_string(), "saga-driver".to_string(), endpoint)
+            .await
+            .unwrap();
+        node.router.sweep_sagas_once().await;
+
+        // A later real undeploy must still need its own two consecutive
+        // ticks, not fire immediately off a stale mark from the first one.
+        node.registry.remove(SAGA_CALLER, "saga-driver").await.unwrap();
+        node.router.sweep_sagas_once().await;
+        let log = node.sagas.existing_log_for(SAGA_CALLER).await.unwrap().unwrap();
+        assert!(
+            !log.list().unwrap().is_empty(),
+            "the absence mark must have been cleared when the service reappeared"
+        );
+    }
+
+    /// The control plane downgrades `ProxyState` into a
     /// `Weak<dyn ProxyQueueInspector>` it holds in a `OnceLock`. That
     /// `Weak` must stay valid for as long as the router does -- which only
     /// holds if `ProxyRouter` itself is the bundle's one strong owner. A

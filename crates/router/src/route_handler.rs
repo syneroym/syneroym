@@ -262,9 +262,9 @@ impl RouteHandler {
             deps.logical_resolver.clone(),
             queue_config.clone(),
         ));
-        // The saga step log behind `syneroym:proxy/saga` (M05B Slice B4),
-        // one log per driving service -- the same per-service encrypted
-        // store shape as the outbox above, in the same `async.db` file.
+        // The saga step log behind `syneroym:proxy/saga`, one log per
+        // driving service -- the same per-service encrypted store shape
+        // as the outbox above, in the same `async.db` file.
         let sagas = Arc::new(SagaStore::new(
             deps.storage_provider.clone(),
             deps.key_store.clone(),
@@ -322,9 +322,15 @@ impl RouteHandler {
                 })?;
             // The `proxy-*`/`sagas`/`saga-compensate` operator verbs read
             // the outbox and saga store the router owns, bundled behind
-            // one `ProxyState` (D-B4-19) -- downgraded from the `Arc`
-            // `proxy` itself now holds, which is what keeps this `Weak`
-            // valid for as long as the router is.
+            // one `ProxyState` -- downgraded from the `Arc` `proxy` itself
+            // now holds, which is what keeps this `Weak` valid for as long
+            // as the router is. `proxy_state()` is `Some` only once both
+            // `with_outbox` and `with_sagas` have been called; this path
+            // calls both a few lines above, in that order, so the `ok_or`
+            // below can never actually fire on the production wiring --
+            // it exists because a future caller of this function that
+            // constructs `proxy` with only one of the two would otherwise
+            // fail confusingly deep inside `proxy_queues.set`.
             let proxy_state = proxy
                 .proxy_state()
                 .cloned()

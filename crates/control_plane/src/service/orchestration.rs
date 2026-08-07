@@ -83,8 +83,7 @@ pub trait OrchestratorInterface {
         dead_letter_id: u64,
         caller: &CallerContext,
     ) -> Result<(), String>;
-    /// Every saga `service_id`'s own log holds, oldest first (M05B Slice
-    /// B4).
+    /// Every saga `service_id`'s own log holds, oldest first.
     async fn sagas(
         &self,
         service_id: String,
@@ -6481,7 +6480,7 @@ mod tests {
 
     /// The false-refusal the reserved `saga-undo-` prefix exists to
     /// prevent: `undo-last-update` is a legal business verb with no
-    /// `last-update` beside it, and must not be refused (§0.4b).
+    /// `last-update` beside it, and must not be refused.
     #[tokio::test]
     async fn deploy_accepts_a_component_exporting_a_plain_undo_prefixed_function() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -6494,8 +6493,8 @@ mod tests {
         assert!(result.is_ok(), "a plain undo- business verb must not be refused: {result:?}");
     }
 
-    /// The common case (§0.4a): a service with no compensations at all
-    /// deploys cleanly, with no declaration required anywhere.
+    /// The common case: a service with no compensations at all deploys
+    /// cleanly, with no declaration required anywhere.
     #[tokio::test]
     async fn deploy_accepts_a_component_with_no_compensations_at_all() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -6530,7 +6529,7 @@ mod tests {
         );
     }
 
-    /// §0.4's limit 1, pinned so the behavior is a choice and not an
+    /// A known limit, pinned so the behavior is a choice and not an
     /// accident: `exported_functions` returns `None` for an interface the
     /// manifest never declared, which turns a declared-but-absent
     /// compensation pairing into a silent pass rather than a refusal.

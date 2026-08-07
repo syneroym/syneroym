@@ -1,11 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Saga compensation test guest component (M05B Slice B4).
+//! Saga compensation test guest component.
 //!
 //! One component, deployed twice under two service ids: once as the
 //! orchestrating driver (`saga-driver`) and once as the participant that
 //! records what was reserved and what was undone, in that order
 //! (`saga-participant`). Nothing is declared anywhere -- the participant's
-//! `saga-undo-reserve` export is the whole of its participation (§0.4a).
+//! `saga-undo-reserve` export is the whole of its participation.
 
 use bindings::{
     Guest,
@@ -96,8 +96,8 @@ impl SagaParticipantGuest for SagaTestComponent {
         Ok(format!("reserved-{item}"))
     }
 
-    /// May be called for an operation that never happened (§0.5): the
-    /// intent is written before the forward call, so a crashed substrate
+    /// May be called for an operation that never happened: the intent is
+    /// written before the forward call, so a crashed substrate
     /// can compensate a `reserve` whose result never came back. Recording
     /// `undo:<item>` regardless is what makes the ledger's *order* the
     /// assertion, not just its final membership.

@@ -1,5 +1,5 @@
-//! The durable step log a saga's reverse walk reads (M05B Slice B4, ADR-0023
-//! §7 as amended). One more table pair beside `outbox`/`dead_letters`/
+//! The durable step log a saga's reverse walk reads (ADR-0023 §7, as
+//! amended). One more table pair beside `outbox`/`dead_letters`/
 //! `call_dedup` in a service's own `async.db`, under the same DEK.
 //!
 //! **Intent is written before the call, outcome after** -- a step row is
@@ -31,9 +31,9 @@ use crate::backoff_before_wait;
 pub const MAX_SAGA_PAYLOAD_BYTES: usize = 256 * 1024;
 
 /// The retry curve plus this log's own bounds. Compensation delivery reuses
-/// the sandbox role's `queue_*` retry budget (D-B-5: no second retry
-/// policy) -- an undo is a delivery, and a second budget would only
-/// disagree with the first.
+/// the sandbox role's `queue_*` retry budget rather than a second policy --
+/// an undo is a delivery, and a second budget would only disagree with the
+/// first.
 #[derive(Debug, Clone)]
 pub struct SagaConfig {
     pub retry: RetryPolicy,
@@ -260,8 +260,8 @@ impl SagaLog {
     }
 
     /// Opens a saga. Refuses when the caller already has `max_open` sagas
-    /// open (§0.10): an open saga is work somebody expects to finish, so
-    /// the bound refuses rather than evicts. One immediate transaction, so
+    /// open: an open saga is work somebody expects to finish, so the bound
+    /// refuses rather than evicts. One immediate transaction, so
     /// the open-count check and the insert cannot race a concurrent
     /// `begin`.
     pub fn begin(
@@ -293,10 +293,10 @@ impl SagaLog {
         Ok(())
     }
 
-    /// Records one step's intent *before* its forward call is dispatched
-    /// (§0.5), returning its index. The state check and the index
-    /// allocation share one transaction, so a `compensate` landing between
-    /// them cannot add a step to a saga already walking backwards (§B4-b).
+    /// Records one step's intent *before* its forward call is dispatched,
+    /// returning its index. The state check and the index allocation share
+    /// one transaction, so a `compensate` landing between them cannot add
+    /// a step to a saga already walking backwards.
     pub fn record_step_intent(&self, saga_id: &str, intent: &StepIntent, now: i64) -> Result<u32> {
         if intent.params.len() > MAX_SAGA_PAYLOAD_BYTES {
             return Err(anyhow!("step params exceed the {MAX_SAGA_PAYLOAD_BYTES} byte limit"));
@@ -347,6 +347,15 @@ impl SagaLog {
     /// must be `Some`. An oversized result is dropped (`NULL`) with a note
     /// in `last_error` rather than refused: the call already happened, and
     /// refusing here would lose the step entirely.
+    ///
+    /// Guarded to `WHERE state = 'pending'`: the intent-before-call rule
+    /// means this row can sit in `pending` for the whole forward call, long
+    /// enough for a deadline-triggered walk to reach and compensate it
+    /// first. Without the guard, this call's late-arriving result would
+    /// overwrite `compensated` back to `done`, costing the next tick a
+    /// duplicate undo and making `compensated_steps` count backwards. A
+    /// no-op here (0 rows affected) means the walk already decided this
+    /// step's fate, which is a fine outcome, not an error.
     pub fn record_step_outcome(
         &self,
         saga_id: &str,
@@ -369,12 +378,17 @@ impl SagaLog {
                     ));
                 }
             };
-        conn.execute(
+        let updated = conn.execute(
             "UPDATE saga_steps SET state = ?1, result = ?2, last_error = ?3 WHERE saga_id = ?4 \
-             AND idx = ?5",
+             AND idx = ?5 AND state = 'pending'",
             params![state, stored_result, stored_error, saga_id, idx],
         )?;
-        conn.execute("UPDATE sagas SET updated_at = ?1 WHERE saga_id = ?2", params![now, saga_id])?;
+        if updated > 0 {
+            conn.execute(
+                "UPDATE sagas SET updated_at = ?1 WHERE saga_id = ?2",
+                params![now, saga_id],
+            )?;
+        }
         Ok(())
     }
 
@@ -424,8 +438,8 @@ impl SagaLog {
     }
 
     /// Every still-`open` saga past its declared deadline -- the crash
-    /// case (§0.3): nothing else can notice, because a guest does not
-    /// exist between calls.
+    /// case: nothing else can notice, because a guest does not exist
+    /// between calls.
     pub fn abandoned(&self, now: i64, limit: u32) -> Result<Vec<SagaHead>> {
         let conn = self.conn.lock().expect("saga log connection lock poisoned");
         let mut stmt = conn.prepare(
@@ -449,8 +463,8 @@ impl SagaLog {
     }
 
     /// The step the walk should undo next: the highest index still `done`
-    /// or `pending` (§0.5 -- a `pending` step counts, since its intent was
-    /// written before the call whose result may never have come back).
+    /// or `pending` -- a `pending` step counts, since its intent was
+    /// written before the call whose result may never have come back.
     /// `None` means nothing left to compensate.
     pub fn next_uncompensated_step(&self, saga_id: &str) -> Result<Option<StepRow>> {
         let conn = self.conn.lock().expect("saga log connection lock poisoned");
@@ -477,9 +491,9 @@ impl SagaLog {
         .map_err(Into::into)
     }
 
-    /// Increments a step's attempt count *before* its undo is dispatched
-    /// (§0.11): a crash mid-undo therefore costs an attempt, bounding a
-    /// poison undo, and a re-dispatch after that crash is safe because
+    /// Increments a step's attempt count *before* its undo is dispatched:
+    /// a crash mid-undo therefore costs an attempt, bounding a poison
+    /// undo, and a re-dispatch after that crash is safe because
     /// every undo carries an idempotency key the receiver's own fence
     /// answers a duplicate from. Returns the new attempt count.
     pub fn begin_undo_attempt(&self, saga_id: &str, idx: u32, now: i64) -> Result<u32> {
@@ -513,7 +527,7 @@ impl SagaLog {
     /// nobody), so the saga fails regardless of budget remaining.
     /// Otherwise: still under budget schedules a backoff and stays
     /// `compensating`; exhausted fails the saga, keeping its step history
-    /// and pruning terminal rows past the configured cap (§0.10).
+    /// and pruning terminal rows past the configured cap.
     pub fn fail_compensation(
         &self,
         saga_id: &str,
@@ -557,8 +571,8 @@ impl SagaLog {
     }
 
     /// Everything is compensated: drops the step log and marks the saga
-    /// `compensated` (D-B1-9's rule -- a committed/compensated saga can
-    /// never be walked again, so nothing reads the row).
+    /// `compensated` -- a committed/compensated saga can never be walked
+    /// again, so nothing reads the row.
     pub fn finish_compensation(&self, saga_id: &str, now: i64) -> Result<()> {
         let mut conn = self.conn.lock().expect("saga log connection lock poisoned");
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -780,6 +794,52 @@ mod tests {
             method: method.to_string(),
             params: params.to_vec(),
         }
+    }
+
+    /// Durability and the SQLCipher key in one assertion, mirroring
+    /// `Queue`'s `a_queued_item_survives_reopening_the_encrypted_queue_file`:
+    /// a step written to an encrypted saga log is still there after the
+    /// process that wrote it is gone, and still readable with the same key.
+    #[test]
+    fn a_saga_step_survives_reopening_the_encrypted_log_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dek = [7u8; 32];
+        {
+            let log =
+                SagaLog::open_encrypted(dir.path(), "async.db", Some(&dek), config()).unwrap();
+            log.begin("s1", "wf", None, 3_600_000, 1_000).unwrap();
+            log.record_step_intent("s1", &intent("iface", "reserve", b"secret-params"), 1_000)
+                .unwrap();
+        }
+        let log = SagaLog::open_encrypted(dir.path(), "async.db", Some(&dek), config()).unwrap();
+        let step = log.next_uncompensated_step("s1").unwrap().unwrap();
+        assert_eq!(step.params, b"secret-params");
+    }
+
+    /// A saga step's params and result are the calling service's own data,
+    /// so the file they wait in must be no weaker than the database that
+    /// data came from -- same property `Queue`'s
+    /// `the_queue_file_is_unreadable_without_the_services_dek` establishes
+    /// for the outbox. Scoped to an encryption-enabled deployment, same as
+    /// that test.
+    #[test]
+    fn the_saga_log_file_is_unreadable_without_the_services_dek() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let log = SagaLog::open_encrypted(dir.path(), "async.db", Some(&[7u8; 32]), config())
+                .unwrap();
+            log.begin("s1", "wf", None, 3_600_000, 1_000).unwrap();
+            log.record_step_intent("s1", &intent("iface", "reserve", b"secret-params"), 1_000)
+                .unwrap();
+        }
+        assert!(
+            SagaLog::open_encrypted(dir.path(), "async.db", None, config()).is_err(),
+            "an unkeyed open of an encrypted saga log file must fail"
+        );
+        assert!(
+            SagaLog::open_encrypted(dir.path(), "async.db", Some(&[8u8; 32]), config()).is_err(),
+            "the wrong key must fail exactly like no key"
+        );
     }
 
     #[test]

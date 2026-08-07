@@ -390,8 +390,8 @@ impl ProxyOutbox {
 ///
 /// Plain inherent methods, not a `ProxyQueueInspector` impl: that impl now
 /// lives on `ProxyState`, which bundles this outbox with the saga store
-/// behind one handle (D-B4-19) -- a service's durable proxy state is one
-/// question to an operator, not two.
+/// behind one handle -- a service's durable proxy state is one question to
+/// an operator, not two.
 impl ProxyOutbox {
     pub async fn queued_calls(&self, service_id: &str) -> Result<Vec<QueuedCallInfo>, String> {
         let Some(queue) = self.existing_queue_for(service_id).await.map_err(|e| e.to_string())?

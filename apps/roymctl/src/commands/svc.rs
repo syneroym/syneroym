@@ -140,7 +140,7 @@ pub enum SvcCommands {
         #[arg(long)]
         dead_letter_id: u64,
     },
-    /// Show the sagas a service's own log holds (M05B Slice B4).
+    /// Show the sagas a service's own log holds.
     Sagas {
         #[arg(long)]
         svc_id: String,

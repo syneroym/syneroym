@@ -1,5 +1,5 @@
-//! One node's saga logs (M05B Slice B4, ADR-0023 §7 as amended): one
-//! [`SagaLog`] per driving service, opened once, in that service's own
+//! One node's saga logs (ADR-0023 §7, as amended): one [`SagaLog`] per
+//! driving service, opened once, in that service's own
 //! encrypted database beside its outbox and its fence records. Shape
 //! mirrors [`crate::ProxyOutbox`] closely -- same cache, same single-flight
 //! open, same "operator verbs never create a file" rule -- because both are

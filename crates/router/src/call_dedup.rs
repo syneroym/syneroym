@@ -39,7 +39,7 @@ use syneroym_rpc::ProxyError;
 use tokio::task;
 use tracing::warn;
 
-use crate::service_async_db::async_db_location;
+use crate::service_async_db::{AsyncDbLocationError, async_db_location};
 
 /// The database a service's outbox, dead letters, and dedup records all
 /// live in, beside its own `state.db` and protected by the same key.
@@ -296,7 +296,22 @@ impl CallDedupGuard {
 
         let (dir, dek) = async_db_location(&self.storage_provider, &self.key_store, service_id)
             .await
-            .map_err(|e| ProxyError::PermissionDenied(format!("dedup store unavailable: {e}")))?;
+            .map_err(|e| match e {
+                // The DEK is unavailable (typically a locked vault): fail
+                // closed by design, per this module's own doc comment --
+                // a keyed call answered without being able to check the
+                // fence is worse than one refused.
+                AsyncDbLocationError::Dek(e) => {
+                    ProxyError::PermissionDenied(format!("dedup store unavailable: {e}"))
+                }
+                // A path/IO problem resolving the directory has no
+                // security meaning and is not a settled answer -- terminal
+                // here would dead-letter a transient failure at the
+                // sender's outbox instead of retrying it.
+                AsyncDbLocationError::Dir(e) => {
+                    ProxyError::Internal(format!("dedup store unavailable: {e}"))
+                }
+            })?;
 
         let config = self.config.clone();
         let store = task::spawn_blocking(move || -> anyhow::Result<DedupStore> {
@@ -312,6 +327,24 @@ impl CallDedupGuard {
             .map_err(|_| ProxyError::Internal("dedup store cache poisoned".to_string()))?
             .insert(service_id.to_string(), store.clone());
         Ok(store)
+    }
+
+    /// Whether `target_service`'s fence already holds a settled record for
+    /// `(caller, key)`. Test-only: reuses the same cached store handle
+    /// `begin`/`store_for` do rather than opening a second connection to
+    /// the file (two handles to one file is the exact hazard this module's
+    /// own docs warn about), and a hit on an already-`Done` record returns
+    /// before `begin`'s own claiming write, so the probe has no side
+    /// effect.
+    #[cfg(test)]
+    pub(crate) async fn debug_has_settled_key(
+        &self,
+        target_service: &str,
+        caller: &str,
+        key: &str,
+    ) -> bool {
+        let Ok(store) = self.store_for(target_service).await else { return false };
+        matches!(store.begin(caller, key, now_ms()), Ok(DedupDecision::Replay(_)))
     }
 
     /// The one entry point both dispatch sites call.

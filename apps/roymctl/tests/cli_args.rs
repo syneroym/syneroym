@@ -320,8 +320,8 @@ fn app_deploy_fully_placed_does_not_require_a_substrate_key() -> Result<(), Box<
     Ok(())
 }
 
-/// M05B Slice B4: `svc sagas --help` parses (the subcommand and its flag
-/// are wired into clap).
+/// `svc sagas --help` parses (the subcommand and its flag are wired into
+/// clap).
 #[test]
 fn test_svc_sagas_help() -> Result<(), Box<dyn Error>> {
     let mut cmd = Command::cargo_bin("roymctl")?;
@@ -329,7 +329,7 @@ fn test_svc_sagas_help() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// M05B Slice B4: `svc saga-compensate --help` parses.
+/// `svc saga-compensate --help` parses.
 #[test]
 fn test_svc_saga_compensate_help() -> Result<(), Box<dyn Error>> {
     let mut cmd = Command::cargo_bin("roymctl")?;

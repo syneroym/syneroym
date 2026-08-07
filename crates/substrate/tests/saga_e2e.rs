@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Saga compensations, end to end across two real substrates (M05B Slice
-//! B4, ADR-0023 §7 as amended).
+//! Saga compensations, end to end across two real substrates (ADR-0023
+//! §7, as amended).
 //!
 //! Every *property* the walk touches already has an in-process test in
 //! `syneroym-router`. What only an e2e can prove is the **sequence**: a
@@ -10,9 +10,10 @@
 //! restart and is still compensated by its own deadline once the vault is
 //! unlocked again.
 //!
-//! Skips when the `saga-test` wasm artifact is absent (`cargo component
-//! build --release --target wasm32-wasip2` in `test-components/saga-test`),
-//! matching every other guest-driven test in this tree.
+//! Fails, rather than skips, when the `saga-test` wasm artifact is absent
+//! (`cargo component build --release --target wasm32-wasip2` in
+//! `test-components/saga-test`) -- a passing run against a missing
+//! component is exactly the false confidence this test exists to prevent.
 
 use std::{
     fs,
@@ -66,8 +67,8 @@ fn fast_saga_role() -> AppSandboxRole {
 /// A full substrate booted from a caller-owned directory, so the same
 /// identity can be torn down and rebooted later in the same test. Copied in
 /// shape from `proxy_outbox_e2e.rs`'s own `Node`, split into
-/// `boot_locked`/`unlock` (this file's own addition, §0.15): a restart must
-/// be observable *before* the KEK is injected, which `boot`'s own
+/// `boot_locked`/`unlock` (this file's own addition): a restart must be
+/// observable *before* the KEK is injected, which `boot`'s own
 /// unconditional injection never let a test see.
 struct Node {
     substrate_client: SyneroymClient,
@@ -387,8 +388,21 @@ where
     false
 }
 
-fn artifact() -> Option<Vec<u8>> {
-    fs::read(test_constants::saga_test_wasm_path()).ok()
+/// This e2e must fail, not skip, on a missing artifact -- a passing run
+/// against a missing component is the exact failure the operator surface
+/// exists to prevent.
+fn fail_if_fixture_missing() {
+    assert!(
+        test_constants::saga_test_wasm_path().exists(),
+        "test-components/saga-test's wasm artifact is not built. Run, from that directory: `cargo \
+         component build --release --target wasm32-wasip2`"
+    );
+}
+
+fn artifact() -> Vec<u8> {
+    fs::read(test_constants::saga_test_wasm_path()).expect(
+        "saga-test wasm artifact must exist; fail_if_fixture_missing should have caught this",
+    )
 }
 
 /// The order the reverse walk undoes steps in, and the whole thing running
@@ -396,11 +410,9 @@ fn artifact() -> Option<Vec<u8>> {
 /// in-process test proves.
 #[tokio::test]
 async fn a_failed_workflow_is_undone_in_reverse_order() {
+    fail_if_fixture_missing();
     let _ = ring::default_provider().install_default();
-    let Some(wasm) = artifact() else {
-        eprintln!("skipping: saga-test wasm artifact not built");
-        return;
-    };
+    let wasm = artifact();
     let (a_iroh, a_reg, a_gw, b_iroh, b_reg, b_gw) = REVERSE_WALK_PORTS;
 
     let driver_dir = tempfile::tempdir().unwrap();
@@ -442,8 +454,8 @@ async fn a_failed_workflow_is_undone_in_reverse_order() {
     assert_eq!(read_ledger(&node_b, &participant_did).await, "reserve:a, reserve:b");
     finish_workflow(&node_a, &driver_did, &saga_id, "compensate").await;
 
-    // `compensate` itself returns before the walk runs (D-B4-2) -- proved
-    // directly, with mocked timing, by the in-process router test
+    // `compensate` itself returns before the walk runs -- proved directly,
+    // with mocked timing, by the in-process router test
     // `the_walk_undoes_the_newest_step_first`. With a 1s sweep tick this
     // window is too narrow for a real two-node e2e to observe reliably, so
     // this asserts only the property unique to a real restart-free run: the
@@ -490,16 +502,14 @@ async fn a_failed_workflow_is_undone_in_reverse_order() {
 
 /// The crash case: nothing but the deadline can ever unwind a saga whose
 /// driver died mid-workflow, because a guest does not exist between calls.
-/// Also the locked-vault property in both directions (§0.15): nothing is
+/// Also the locked-vault property in both directions: nothing is
 /// compensated before the KEK is injected, and the sweep says so rather
 /// than silently skipping.
 #[tokio::test]
 async fn a_workflow_abandoned_across_a_restart_is_compensated_by_its_deadline() {
+    fail_if_fixture_missing();
     let _ = ring::default_provider().install_default();
-    let Some(wasm) = artifact() else {
-        eprintln!("skipping: saga-test wasm artifact not built");
-        return;
-    };
+    let wasm = artifact();
     let (a_iroh, a_reg, a_gw, b_iroh, b_reg, b_gw) = DEADLINE_PORTS;
 
     let driver_dir = tempfile::tempdir().unwrap();

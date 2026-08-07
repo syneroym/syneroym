@@ -1,10 +1,9 @@
 package syneroym-test:saga-test@0.1.0;
 
-/// One export per guest dispatch, deliberately (§0.14 of the slice B4
-/// plan): a driver that did `begin` plus two cross-node steps plus
-/// `commit` in one call would be three round trips inside a 5-second
-/// epoch, and the trap that follows would be the fixture's fault rather
-/// than the platform's.
+/// One export per guest dispatch, deliberately: a driver that did `begin`
+/// plus two cross-node steps plus `commit` in one call would be three
+/// round trips inside a 5-second epoch, and the trap that follows would be
+/// the fixture's fault rather than the platform's.
 interface saga-driver {
     /// Opens a saga and returns its id.
     begin-workflow: func(deadline-secs: u64) -> result<string, string>;

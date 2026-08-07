@@ -200,6 +200,13 @@ Without it, that mistake is still not silent — only later: the walk calls a
 compensation the target does not export, the target answers "method not
 found", the saga reaches `failed`, and `roymctl svc sagas` shows it with an
 error message that names the convention (§0.16's error-text requirement).
+*(Corrected after a post-landing review: "later" understates it.
+`disposition_of` classifies that answer `Retry`, for the same restart-window
+reason it does for the outbox, so "reaches `failed`" takes the full
+`queue_max_attempts`/`queue_max_backoff_secs` window — about ten hours by
+default, not the next attempt. `explain_undo_error`'s diagnosis is correct
+from the first attempt; only its visibility in `sagas`/the failed-counter is
+delayed. See [deferred-backlog.md](../../deferred-backlog.md) §8.)*
 
 Adding the declaration later costs the same ~90 edits and, pre-release, no
 compatibility work at all. Recorded as a backlog row with a pickup trigger
@@ -775,7 +782,11 @@ block in `deploy_wasm_service`.
 service that means to be compensable and exports no compensation at all
 deploys cleanly. The mistake appears when a saga tries to unwind: the walk
 calls `saga-undo-<method>`, the target answers "method not found", the saga
-reaches `failed` and is listed by `roymctl svc sagas`. **The error text is
+reaches `failed` and is listed by `roymctl svc sagas` -- **after the full
+attempt budget, not the first undo attempt**, because that answer is
+classified `Retry` for the same restart-window reason the outbox's own
+"service not found" is (post-landing correction; see
+[deferred-backlog.md](../../deferred-backlog.md) §8). **The error text is
 therefore part of the contract, not a nicety** — when an undo fails with a
 not-found-shaped callee error, the recorded `last_error` must name the
 convention: *"target does not export `saga-undo-<m>` on `<i>`; a saga

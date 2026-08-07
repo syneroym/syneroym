@@ -853,8 +853,7 @@ impl SyneroymClient {
         }
     }
 
-    /// Every saga `service_id`'s own log holds, oldest first (M05B Slice
-    /// B4).
+    /// Every saga `service_id`'s own log holds, oldest first.
     pub async fn sagas(&self, service_id: String) -> Result<Vec<SagaInfo>> {
         let res =
             self.request("orchestrator", "sagas", serde_json::to_value((service_id,))?).await?;

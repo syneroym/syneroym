@@ -1340,8 +1340,8 @@ fn rpc_saga_state_to_wit(state: RpcSagaState) -> WitSagaState {
 }
 
 impl saga::Host for HostState {
-    /// Opens a saga (M05B Slice B4, ADR-0023 §7 as amended). Each of this
-    /// interface's five functions follows `proxy::Host::call`'s own shape:
+    /// Opens a saga (ADR-0023 §7, as amended). Each of this interface's
+    /// five functions follows `proxy::Host::call`'s own shape:
     /// the `read_only` refusal first, then `service_proxy.upgrade()`, then
     /// params parsing, then the call.
     async fn begin(
@@ -3247,7 +3247,7 @@ pub(crate) mod tests {
         assert!(matches!(err, DataLayerError::PermissionDenied));
     }
 
-    // -- sagas (M05B Slice B4) ------------------------------------------
+    // -- sagas -----------------------------------------------------------
 
     fn saga_host(
         read_only: bool,
