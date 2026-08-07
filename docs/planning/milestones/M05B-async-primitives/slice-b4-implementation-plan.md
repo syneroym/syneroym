@@ -199,7 +199,7 @@ handle a failed compensation regardless.
 Without it, that mistake is still not silent — only later: the walk calls a
 compensation the target does not export, the target answers "method not
 found", the saga reaches `failed`, and `roymctl svc sagas` shows it with an
-error message that names the convention (§0.13's error-text requirement).
+error message that names the convention (§0.16's error-text requirement).
 
 Adding the declaration later costs the same ~90 edits and, pre-release, no
 compatibility work at all. Recorded as a backlog row with a pickup trigger
@@ -238,6 +238,31 @@ and the deploy gate is one rule, sound because the prefix is reserved:
 
 Confirmed against the tree: no WIT file and no test component today exports
 any function beginning `undo-`, so nothing existing breaks either way.
+
+**Two limits of that check, named because §0.4a's argument rests on it.**
+Neither is a reason to reinstate the declaration, but a reader is entitled
+to know how far "the deploy refuses" reaches:
+
+1. **It sees only what the manifest's `interfaces` name, matched exactly.**
+   `component_type().get_export` is an exact string match, and real
+   deployments do use the fully-qualified versioned names (for example
+   `syneroym-test:scheduled-test/scheduled-driver@0.1.0`), so this is right
+   for every service that can actually be dispatched to — a declared
+   interface that is not an export cannot receive a call at all today. But
+   a component that exports a compensation on an interface it never
+   declared is not examined, and `exported_functions` returning `None`
+   turns a declared-but-absent interface into a silent pass rather than a
+   refusal. Pinned by a test so the behavior is chosen rather than
+   inherited; the stronger check ("every declared interface must be an
+   export") is a backlog row, since it can refuse manifests that deploy
+   today.
+2. **It runs only for wasm services** — `deploy_wasm_service` is its only
+   site. That costs nothing: a container or TCP endpoint is
+   `UnsupportedTarget` over the proxy
+   ([proxy.rs:590](../../../../crates/router/src/proxy.rs#L590)), so such a
+   service can never be a saga step's target and therefore never needs a
+   compensation. The gate covers exactly the population that can
+   participate.
 
 ### 0.5 (Correctness) A step recorded only after its call returns is a step that can be lost exactly when it matters
 
@@ -379,7 +404,7 @@ had to make between refusing and evicting:
 | Open sagas per service | `saga_max_open` (64) | **Refuse** `begin`. An open saga is work somebody expects to finish |
 | Steps per saga | `saga_max_steps` (64) | **Refuse** `step`. Same reason, and a 65-step workflow is a design question |
 | Terminal (`compensated`/`failed`) rows | `saga_max_terminal_rows` (1000) | **Evict** oldest-first, exactly as `dead_letters` does |
-| One step's stored params + result | `MAX_SAGA_PAYLOAD_BYTES` (256 KiB, the same constant B2 chose for a queued call) | **Refuse** the step |
+| One step's stored params + result | `MAX_SAGA_PAYLOAD_BYTES` (256 KiB) -- a crate constant in `async_queue::saga`, not a config field, matching B2's private `MAX_QUEUED_PAYLOAD_BYTES` in shape and in value | **Refuse** the step |
 
 Committed sagas are **deleted**, rows and steps, not tombstoned — D-B1-9's
 rule, for the same reason (a committed saga can never be walked again, so
@@ -420,7 +445,175 @@ Three things B1/B2 needed that B4 does not:
   node has no per-service storage. Adding a second `tokio::spawn` in
   `runtime.rs` would duplicate all four for no benefit.
 
-### 0.13 Documents that are ambiguous or stale against the current code
+### 0.13 (Correctness, review finding) `step` inherits only one of `enqueue`'s three refusals, and it needs all three plus a fourth
+
+The "read first" list names `enqueue_call`'s three up-front refusals
+([proxy.rs:789-833](../../../../crates/router/src/proxy.rs#L789)), and the
+first draft applied only the certificate one, at `begin`. All three belong
+on a saga, for the identical reason `enqueue` gives them: **each names a
+condition every later undo would hit too, so failing now is the same answer
+given to a caller that is still alive to read it.**
+
+**(a) A node-level target.** `enqueue` refuses a target whose interface is
+`orchestrator`, `security`, or the supervisor's own dispatch id. A saga
+step to one is allowed by the first draft, and its undo cannot work.
+
+The mechanism is worth stating exactly, because the obvious guess is wrong
+in a way that changes the fix. The danger is **not** an undo delivered
+without a fence: `CallDedupGuard::begin` refuses a keyed call to a
+node-level interface outright
+([call_dedup.rs:349](../../../../crates/router/src/call_dedup.rs#L349)) —
+"it is not a deployed service and has no store to remember one in" — so the
+undo is fail-closed, never unfenced. What actually happens is worse for the
+saga and better for safety: the refusal is `PermissionDenied`, which
+`disposition_of` classifies **Terminal**, so the first undo attempt fails
+the whole saga. Every step below it stays uncompensated.
+
+(Half of this is unreachable already — `check_native_capability_gate` denies
+`orchestrator` and `security` outright to any guest-origin call. The
+supervisor's id is the reachable half: it is registered under the node's own
+id and is *not* in `NODE_NATIVE_INTERFACES`, which is precisely what B2's
+review finding F11 had to name explicitly in `is_node_level_interface`.)
+
+So `step` refuses a node-level target up front, reusing
+`call_dedup::is_node_level_interface`, which is already `pub(crate)` for
+`enqueue_call`'s sake.
+
+**(b) A step to the caller's own service.** `enqueue` refuses it because
+"the one caller identity that cannot be rebuilt at delivery is a guest's own
+forwarded caller, which is exactly what a self-call uses" — a live
+self-proxy forwards `HostState.caller`, where the worker can only rebuild
+`service_system(caller)`. An undo to self would therefore run under a
+different identity than its forward step did, which under FDAE can mean a
+different answer, not merely a different name. Refused, with a backlog row
+for a service that genuinely wants its own local step compensated.
+
+**(c) The certificate is checked at `begin` and needed at the walk, and the
+two are 20 hours apart.** `begin` borrows `enqueue`'s certificate refusal,
+whose own comment sizes its risk at "ten hours of retries". B4 allows a
+`saga_max_deadline_secs` of 86,400 with a retry window on top, while
+`renewed_cert_expires_hours` defaults to **4**
+([config.rs:615](../../../../crates/core/src/config.rs#L615)). A check at
+`begin` says nothing about validity at walk time.
+
+The outcome, stated rather than left to be discovered: an undo from a
+service holding an expired certificate presents as anonymous, the receiver
+refuses the keyed call, the disposition is terminal, the saga reaches
+`failed`, and an operator's `saga-compensate` re-arm fails exactly the same
+way. This is D-B1-12's class of problem (a payload whose validity expires
+before delivery) reaching a second slice.
+
+**It is not fixed by refusing a long deadline, and that is the point.** A
+*managed* instance has its certificate renewed on every supervisor pass, so
+its 24-hour saga is fine; an unmanaged one does not, so its 6-hour saga is
+not. The current expiry therefore cannot decide whether a deadline is
+sound. What `begin` does instead: when the requested deadline outlives the
+caller's current certificate, it **warns** (`tracing::warn!`, naming both
+times) and proceeds. The developer guide states the rule plainly: *a service
+whose instance certificate is not being renewed cannot compensate past that
+certificate's expiry.*
+
+### 0.14 (Correctness, review finding) `step` runs inside the 5-second epoch too, and it must not inherit `call`'s 30-second default
+
+§0.1 applies the `dispatch_epoch_timeout_secs` finding to the walk and stops
+there. It applies to `step` as well: `step` is `call` plus two writes, so it
+inherits `DEFAULT_PROXY_CALL_TIMEOUT` — **30 s**
+([rpc/proxy.rs:149](../../../../crates/rpc/src/proxy.rs#L149)) — inside a
+guest dispatch bounded at **5 s**. B2 hit this with a *single* probe and the
+guest **trapped** ([status.md](status.md)); the plan's own phase-5 fixture
+made it worse by doing `begin` + two cross-node steps + `commit` in one
+dispatch.
+
+Two corrections, and one deliberate non-correction:
+
+- **`step` defaults its own budget to one second below the guest's epoch**,
+  not to 30 s: `SagaConfig::from(&AppSandboxRole)` already reads that
+  struct, so the value is derived —
+  `step_timeout_ms = (dispatch_epoch_timeout_secs * 1000).saturating_sub(1000).max(1000)`
+  — rather than being a magic number that drifts from the epoch it is
+  protecting. A guest that passes `call-options.timeout-ms` still gets
+  exactly what it asked for. The reason a step differs from a plain `call`
+  here: a trapped guest cannot react to a failed step, and reacting is the
+  entire job saga logic has.
+- **The margin is spent by `step` itself, so the call budget is what is
+  left of it, not the whole of it.** Before the call, `step` may open the
+  saga log — a cold SQLCipher open, which B2's own cache comment calls "a
+  real cost on the hot path" — and writes the intent row. A flat
+  epoch-minus-one-second budget would let a cold first step overrun the
+  epoch by exactly that opening cost. So the host measures its own
+  bookkeeping and subtracts it:
+
+  ```rust
+  let started = Instant::now();          // top of saga_step_impl
+  // ... log_for (possibly a cold open) ... record_step_intent ...
+  let budget = req.timeout_ms.unwrap_or_else(|| {
+      config.step_timeout_ms
+          .saturating_sub(started.elapsed().as_millis() as u64)
+          .max(MIN_STEP_CALL_BUDGET_MS)   // 500: a floor, so a slow open
+  });                                     // shortens the call rather than
+                                          // failing it before it starts
+  ```
+
+  **Two things the host still cannot see, and the margin is a guess about
+  both.** It does not know when the guest's epoch actually started, and it
+  does not know how much of it the guest spent before calling `step`. So
+  one second is a starting number, not a measurement, and it is recorded as
+  such: a backlog row asks for the host-side per-step overhead to be
+  measured (the cold open is the term that matters) and the margin set from
+  that. Two mitigations reduce how often the cold case is even reached:
+  `begin` opens the same log first, so on the ordinary path `step`'s open
+  is warm and the cold one lands in `begin`'s own dispatch; and the
+  developer guide states that a guest doing its own work before a step owns
+  that part of its epoch itself.
+- **A fixture does one step per guest call.** Phase 5's driver is
+  restructured: `begin-workflow`, `add-step`, `finish-workflow` as separate
+  exports the test drives in sequence, so no single dispatch holds more than
+  one cross-node call.
+
+The non-correction: **`call`'s own 30-s-inside-5-s hazard is pre-existing
+and B4 does not fix it.** It is not recorded in the deferred backlog either
+(only B5's row names the 5-second bound, and for a different reason), so
+§5 adds a row for it. Fixing it means deciding what a guest-facing default
+call budget should be, which is a change to every existing caller, not to
+this slice.
+
+### 0.15 (Correctness, review finding) The sweep's failure mode is a silent skip, and a locked substrate compensates nothing
+
+The sweep mirrors `drain_outboxes_once`, whose per-service open is
+`let Ok(queue) = outbox.queue_for(&service_id).await else { continue }`
+([proxy.rs:925](../../../../crates/router/src/proxy.rs#L925)). That silence
+is load-bearing in a way the first draft did not notice: `load_service_dek`
+→ `KeyStore::get_kek` returns `KekRequired` whenever the node's KEK is not
+in memory
+([key_store.rs:106](../../../../crates/data_keystore/src/key_store.rs#L106)),
+which is the state of **every substrate after a restart until an operator
+injects it**. A locked node therefore sweeps nothing, forever, and says
+nothing about it.
+
+Two consequences, one design and one test:
+
+- **Design, stated as a consequence rather than worked around** (the same
+  discipline ADR-0023 §6 applies to a partitioned substrate): *a substrate
+  whose vault is locked compensates nothing.* The sagas are intact on disk
+  and resume when the KEK is injected. The sweep **logs** rather than
+  skipping silently: one `warn!` per service per sweep when the log cannot
+  be opened, distinguishing a locked vault from an I/O error. The outbox's
+  own identical silence gets a backlog row rather than a change here.
+- **Test, and this is where the review's own framing needs one correction.**
+  The claim that B4's restart e2e is "the first test in the tree to restart
+  a substrate and expect per-service encrypted async state to resume" is not
+  right: `proxy_outbox_e2e`'s delivery case already restarts the *calling*
+  substrate and requires its DEK-encrypted outbox to resume. The way it
+  works is the answer for B4 too, and it is one line the first draft did not
+  name — the harness calls `substrate_client.inject_kek(...)` after
+  `wait_for_ready`
+  ([proxy_outbox_e2e.rs:184](../../../../crates/substrate/tests/proxy_outbox_e2e.rs#L184)),
+  and a restart goes back through the same helper. Phase 5's test 2 does the
+  same, and asserts the sweep is idle *before* the injection and active
+  after it — which turns the locked-node consequence above into a tested
+  property instead of a sentence.
+
+### 0.16 Documents that are ambiguous or stale against the current code
 
 | Document | Problem | This plan's answer |
 |---|---|---|
@@ -431,7 +624,9 @@ Three things B1/B2 needed that B4 does not:
 | task.md *Migration impact* | Lists B2's WIT change and B3's manifest change; says nothing about B4 | §5 records the correction, in the shape exit criteria 13 already uses for B2. After §0.4, B4's only migration cost is one additive WIT interface — no manifest change and no wire change |
 | task.md *Failure and security matrix* | Has no saga-specific row. B4 inherits rows 2, 12, 13, 14 for its own tables and owns nothing uniquely | §3 states the four inherited rows and adds three B4-local ones **to this document**, not to the milestone matrix |
 | system-architecture.md `[PLT-ASY]`, system-requirements-spec.md `[PLT-ASY]` | `undo_<operation>` (underscore); "the generated resource ID"; compensations firing from a queued task | ADR-0023 §7 already corrects the spelling. §0.7 answers the resource id; §0.6 scopes out the queued-task trigger. All three land in the closeout doc note this slice owes anyway |
+| task.md's slice table, B4 row | "reverse walk **on terminal failure**" | Q2's answer narrows the trigger: a failed step does nothing on its own, and only a guest-requested `compensate` or an expired deadline starts a walk. §5 amends the row |
 | task.md exit criterion 6 | "⬜ **Milestone closeout (needs B4)**" | This slice does the closeout doc work (§5), so criterion 6 flips here or not at all |
+| traceability-matrix.md `[PRD-OFF]` | Says both its clauses "land with `[PLT-ASY]`", and task.md lists it as an M05B row still Pending | §5 flips it alongside `[PLT-ASY]`; the first draft flipped only the latter |
 
 ---
 
@@ -449,11 +644,15 @@ Three things B1/B2 needed that B4 does not:
 | **D-B4-8** | **No manifest declaration; the deploy gate is derived from the component's own exports** (§0.4a): every `saga-undo-<x>` export must have an `<x>` on the same interface. Sound only because of D-B4-7. One generalisation of `exports_authorize_rows` and one new block in `deploy_wasm_service` (§0.2), rolling back exactly as the stage-4 gate does. **No `ServiceConfig` field, no wire change, no ~90-site sweep** — the declaration is a backlog row with a pickup trigger, not a silent omission |
 | **D-B4-9** | **The step log lives in `syneroym-async-queue` (`saga.rs`), in the service's own `async.db`**, beside `outbox`/`dead_letters`/`call_dedup` — one more table pair in the file that already holds this service's async state, under the same DEK (ADR-0023 §4, failure-matrix row 13) |
 | **D-B4-10** | **No claim, no visibility timeout, no second worker task** (§0.12). The sweep runs inside `run_outbox_worker`, which is renamed `run_async_worker` |
-| **D-B4-11** | **Five new `AppSandboxRole` fields**, and no new retry policy (D-B-5): `saga_max_open`, `saga_max_steps`, `saga_max_terminal_rows`, `saga_default_deadline_secs`, `saga_max_deadline_secs`. The compensation backoff and attempt budget are the existing `queue_max_attempts`/`queue_max_backoff_secs` — an undo is a delivery, and a second budget would only disagree with the first |
+| **D-B4-11** | **Five new `AppSandboxRole` fields**, and no new retry policy (D-B-5): `saga_max_open`, `saga_max_steps`, `saga_max_terminal_rows`, `saga_default_deadline_secs`, `saga_max_deadline_secs`. `step_timeout_ms` is **derived**, not configured (D-B4-17), and the stored-payload ceiling is a crate constant, not a field. The compensation backoff and attempt budget are the existing `queue_max_attempts`/`queue_max_backoff_secs` — an undo is a delivery, and a second budget would only disagree with the first |
 | **D-B4-12** | **`ServiceProxy` gains five methods, each with a refusing default body** — the shape B2 used for `enqueue` and B3 for `SubstrateActor::run_scheduled`, so no existing fake grows a method it never calls |
 | **D-B4-13** | **An operator surface ships in this slice**: `sagas` (read gate) and `saga-compensate` (write gate) on the `orchestrator` interface, `roymctl svc sagas|saga-compensate`, and the e2e asserts through them. B1's review finding 13 and B3's D-B3-11 both say why |
 | **D-B4-14** | **The e2e drives a countable participant.** One new fixture component, `test-components/saga-test`, deployed twice: once as the orchestrating driver and once as the participant that records what was reserved and what was undone, in that order |
 | **D-B4-15** | **`saga-compensate` (operator) re-arms; it never walks inline.** A `failed` saga returns to `compensating` with the current step's attempts reset. Same rule and same reason as `replay` (ADR-0023 §5) |
+| **D-B4-16** | **`step` carries all three of `enqueue`'s refusals, not one** (§0.13): no node-level target, no self-target, and a certificate check — the last at `begin`, plus a warning when the requested deadline outlives the caller's current certificate. Each refuses at the only moment a caller is alive to read it |
+| **D-B4-17** | **`step` derives its default budget from the guest's own epoch, minus its own bookkeeping**, not from `DEFAULT_PROXY_CALL_TIMEOUT` (§0.14): one second below `dispatch_epoch_timeout_secs` (read from the same `AppSandboxRole` `SagaConfig` already reads), less the time this host call spent opening the log and writing the intent, floored at `MIN_STEP_CALL_BUDGET_MS`. An explicit `call-options.timeout-ms` still wins. **The one-second margin is a guess** — the host cannot see when the guest's epoch started — and carries a backlog row asking for it to be measured. A fixture does one step per guest dispatch |
+| **D-B4-18** | **The sweep logs what it cannot open, and a locked substrate compensating nothing is a documented consequence** (§0.15), tested by asserting the sweep idle before the e2e's `inject_kek` and active after it |
+| **D-B4-19** | **The `ProxyQueueInspector` impl moves to an `Arc<ProxyState>` that `ProxyRouter` itself holds**, so the `OnceLock`'s `Weak` has a live owner (phase 4). Without it every operator verb answers "this node keeps no durable proxy queues" -- a failure that reads as a misconfiguration. Saga counters mirror B2's outbox counters one for one — `substrate.proxy.saga.{opened,committed,compensated,undo_delivered,failed}` — because an operator watching one queue's health should not find the other one unmeasured |
 
 ---
 
@@ -461,6 +660,15 @@ Three things B1/B2 needed that B4 does not:
 
 Merge order is phase order. Each phase compiles and its own tests pass on
 its own. Branch: `feat/m05b-b4-saga-compensations`.
+
+**Branch off B3, not off `main`.** B3 is shipped but still on
+`feat/m05b-b3-scheduled-tasks` with its review-round edits uncommitted, and
+it touches three files this slice also edits —
+`crates/wit_interfaces/wit/control-plane/control-plane.wit`,
+`crates/app_orchestration/src/`, and `crates/app_supervisor/src/service.rs`.
+The conflict is textual, not a design one, and branching after B3 lands (or
+off its branch) removes it entirely. Same reasoning the milestone plan
+applies to M05C's file overlap, at a smaller scale.
 
 Phase 1 is small and touches no existing struct (§0.4). It is independent
 of phases 2-4, so it can land first or last; first is better, because it
@@ -588,6 +796,9 @@ calls"*. Phase 4 owns that message and tests it.
 - `deploy_accepts_a_component_with_no_compensations_at_all` (the common
   case, §0.4a)
 - `a_refused_compensation_pairing_rolls_back_the_config_generation`
+- `a_compensation_on_an_interface_the_manifest_does_not_declare_is_not_examined`
+  — §0.4's limit 1, pinned so the behavior is a choice and not an accident.
+  Its doc comment names the backlog row that would change it
 
 ### Phase 2 — the durable step log (`syneroym-async-queue`)
 
@@ -643,11 +854,31 @@ pub struct SagaConfig {
     pub max_open: u32,
     pub max_steps: u32,
     pub max_terminal_rows: u32,
-    pub max_payload_bytes: usize,
     pub default_deadline_ms: i64,
     pub max_deadline_ms: i64,
+    /// One step's own call budget when the guest names none. Derived from
+    /// `dispatch_epoch_timeout_secs`, never from `DEFAULT_PROXY_CALL_TIMEOUT`
+    /// (§0.14) -- a step that outlives the guest's epoch traps the guest
+    /// instead of returning an error its workflow logic can act on.
+    pub step_timeout_ms: u64,
 }
-impl From<&AppSandboxRole> for SagaConfig { /* clamps each field to >= 1 */ }
+
+/// Ceiling on one step's stored params, and on the stored forward result.
+/// A crate constant rather than a config field: B2's equivalent
+/// (`MAX_QUEUED_PAYLOAD_BYTES`) is a private const in the router for the
+/// same reason -- it bounds a row this crate writes, and no deployment has
+/// a reason to tune it. Same number, so the two async surfaces do not
+/// disagree about how large a stored call may be.
+pub const MAX_SAGA_PAYLOAD_BYTES: usize = 256 * 1024;
+
+impl From<&AppSandboxRole> for SagaConfig {
+    // Each numeric field clamps to >= 1, the same way `QueueConfig::from`
+    // clamps `queue_max_attempts` (B1 review finding 9 -- a configured 0
+    // silently disabled retry).
+    //
+    //   step_timeout_ms = (dispatch_epoch_timeout_secs * 1000)
+    //                        .saturating_sub(1000).max(1000)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum SagaState { Open, Compensating, Compensated, Failed }
@@ -1024,19 +1255,60 @@ async fn saga_begin_impl(&self, req: SagaBegin) -> Result<String, ProxyError> {
     // no unexpired instance certificate would have every one of them
     // refused as anonymous. Failing at `begin` is that answer, given at the
     // only moment a caller can read it.
-    require_instance_certificate(&req.caller_service_id)?;
+    let cert = self.registry.instance_cert(&req.caller_service_id)
+        .filter(|c| !c.is_expired())
+        .ok_or_else(|| PermissionDenied("... would be refused as anonymous at every undo"))?;
     let deadline = clamp_or_refuse(req.deadline_secs, config)?;   // refuses above the ceiling
+    // Not a refusal (§0.13c): a managed instance's certificate is renewed
+    // every supervisor pass, so its expiry cannot decide whether a long
+    // deadline is sound -- but an unmanaged one's cannot compensate past it.
+    if deadline_at > cert.expires_at { warn!(deadline_at, cert_expires_at, "..."); }
     let saga_id = uuid::Uuid::new_v4().to_string();               // host-minted, never guest-chosen
     let log = store.log_for(&req.caller_service_id).await?;
     spawn_blocking(move || log.begin(&saga_id, &name, app_instance_id, deadline, now_ms()))?;
+    metrics::counter!("substrate.proxy.saga.opened").increment(1);
     Ok(saga_id)
 }
 
 async fn saga_step_impl(&self, req: SagaStepRequest) -> Result<Value, ProxyError> {
+    // The two refusals `enqueue` makes and a step needs for the same reason
+    // (§0.13). Both are decided before anything is written or attempted.
+    //
+    // A node-level target: its undo would be refused by the receiver's own
+    // fence as unfenceable, and that refusal is `PermissionDenied`, which
+    // the disposition rule reads as terminal -- so one such step would fail
+    // the entire saga at its first undo, leaving every step below it
+    // uncompensated.
+    if call_dedup::is_node_level_interface(&req.interface) {
+        return Err(ProxyError::PermissionDenied(
+            "node-level interface '<i>' cannot take part in a saga: its \
+             compensation could never be fenced, so the first undo would \
+             fail the whole saga"));
+    }
     let log = store.log_for(&req.caller_service_id).await?;
     let target = store.resolve_step_target(&req)?;            // terminal: a name bound to nobody
+    // A self-target: a live self-proxy forwards the guest's *own* caller,
+    // which the worker cannot rebuild -- so the undo would run under a
+    // different identity than the step it is undoing.
+    if target == req.caller_service_id {
+        return Err(ProxyError::UnsupportedTarget(
+            "a service cannot make a saga step against itself: its own \
+             compensation would run under a different caller identity than \
+             the step did"));
+    }
     let idx = spawn_blocking(|| log.record_step_intent(&saga_id, &intent, now))?;
-    let outcome = self.invoke(request_from_step(&req, target)).await;   // note: `invoke`, so a
+    // Budget: the guest's own `timeout_ms` when it named one, otherwise what
+    // is *left* of `config.step_timeout_ms` after this function's own open
+    // and intent write -- one second inside the guest's epoch, not the
+    // proxy's 30 s default, and minus the bookkeeping rather than ignoring
+    // it (§0.14).
+    let budget = req.timeout_ms.unwrap_or_else(|| {
+        config.step_timeout_ms
+            .saturating_sub(started.elapsed().as_millis() as u64)
+            .max(MIN_STEP_CALL_BUDGET_MS)
+    });
+    let outcome = self.invoke(request_from_step(&req, target, budget)).await;
+                                                                       // `invoke`, so a
                                                                        // keyed step still gets
                                                                        // B2's dead-letter row
                                                                        // (§0.8)
@@ -1069,7 +1341,17 @@ never resolve it here) and `map_proxy_error` is reused unchanged.
 - `a_step_records_its_intent_before_the_call_lands`
 - `a_step_whose_call_fails_is_recorded_as_failed_and_still_returns_its_error`
 - `a_step_on_an_unknown_saga_is_refused`
+- `a_step_against_a_node_level_interface_is_refused` — covering all three
+  ids, the supervisor's included, which is the one B2's F21 showed behaves
+  differently
+- `a_step_against_the_callers_own_service_is_refused`
+- `a_step_with_no_timeout_takes_a_budget_inside_the_guests_epoch_not_the_proxys_default`
+- `a_step_with_an_explicit_timeout_keeps_it`
+- `bookkeeping_before_the_call_shortens_the_step_budget_rather_than_extending_the_epoch`
+  — driven with a deliberately slow log open, asserting the call's own
+  deadline moved and never went below `MIN_STEP_CALL_BUDGET_MS`
 - `begin_is_refused_for_a_service_with_no_unexpired_instance_certificate`
+- `begin_warns_but_proceeds_when_the_deadline_outlives_the_certificate`
 - `begin_is_refused_above_the_deadline_ceiling`
 - `a_deadline_of_none_takes_the_node_default`
 - `commit_drops_the_log_so_a_later_compensate_is_refused`
@@ -1095,7 +1377,14 @@ with the fields the WIT carried, plus
 pub async fn sweep_sagas_once(&self) -> usize {
     let Some(store) = &self.sagas else { return 0 };
     for service_id in open_logs ∪ deployed_with_a_log_file {
-        let log = store.log_for(&service_id).await?;
+        // Not `else { continue }` (§0.15). A locked vault makes every open
+        // fail with `KekRequired`, which is the state of every substrate
+        // after a restart until an operator injects the KEK -- silence
+        // there means a node that compensates nothing and says nothing.
+        let log = match store.log_for(&service_id).await {
+            Ok(log) => log,
+            Err(e) => { warn!(service_id, error = %e, "cannot open saga log this sweep"); continue }
+        };
         if !deployed.contains(&service_id) {
             // Nothing removes a service's data directory on undeploy. Its
             // sagas are dropped rather than compensated: the operator
@@ -1155,11 +1444,18 @@ async fn compensate_next_step(&self, service_id, log, head) -> usize {
         timeout: None,
     };
     match self.invoke_inner(&req).await {          // `invoke_inner`, not `invoke`: an undo has no
-        Ok(_) => { log.mark_step_compensated(..)?; }   // caller holding the error, so a proxy dead
+        Ok(_) => {                                     // caller holding the error, so a proxy dead
+            metrics::counter!("substrate.proxy.saga.undo_delivered").increment(1);
+            log.mark_step_compensated(..)?;
+        }
         Err(e) => match proxy_outbox::disposition_of(&e) {
             Disposition::Delivered => log.mark_step_compensated(..)?,   // the receiver already ran it
             Disposition::Retry     => { log.fail_compensation(.., false)?; }
-            Disposition::Terminal  => { log.fail_compensation(.., true)?; }
+            // A "method not found" here is the missing-compensation case
+            // §0.4a deliberately does not catch at deploy, so the recorded
+            // error must name the convention rather than pass the wire
+            // message through (phase 1's error-text contract).
+            Disposition::Terminal  => { log.fail_compensation(.., explain(&e, &step), true)?; }
         },
     }
     1
@@ -1226,11 +1522,31 @@ and `async fn rearm_saga(&self, service_id: &str, saga_id: &str) -> Result<(), S
 with its doc comment widened from "durable proxy queues" to "durable proxy
 state". Two impls to update: `ProxyOutbox`
 ([proxy_outbox.rs:397](../../../../crates/router/src/proxy_outbox.rs#L397))
-— which now needs the `SagaStore` handle, so the impl moves to a small
-`ProxyState` wrapper holding both, wired through the same `OnceLock`
-`ControlPlaneService::proxy_queue_inspector` already uses — and
-`FakeProxyQueues` in
+— which now needs the `SagaStore` handle too — and `FakeProxyQueues` in
 [orchestration.rs:9140](../../../../crates/control_plane/src/service/orchestration.rs#L9140).
+
+**Who owns the impl's `Arc`, which is not a detail.** The control plane
+stores a `Weak<dyn ProxyQueueInspector>`, and it works today only because
+`Arc::downgrade(&outbox)` points at an `Arc` `ProxyRouter` itself holds
+([route_handler.rs:315](../../../../crates/router/src/route_handler.rs#L315)).
+A new wrapper `Arc` built in `route_handler` and downgraded with no
+long-lived owner would drop the moment the function returns, and every
+operator verb would answer "this node keeps no durable proxy queues" — a
+failure that looks like a configuration problem and is not. So:
+
+```rust
+/// The two durable per-service stores the operator verbs read, behind one
+/// handle. Owned by `ProxyRouter` (the strong reference), downgraded into
+/// `ControlPlaneService::proxy_queues` exactly as the bare outbox was.
+pub struct ProxyState { outbox: Arc<ProxyOutbox>, sagas: Arc<SagaStore> }
+```
+
+`ProxyRouter::with_outbox(outbox)` becomes
+`ProxyRouter::with_proxy_state(Arc<ProxyState>)`, the router reads
+`state.outbox` where it read `self.outbox`, and the `OnceLock` gets
+`Arc::downgrade(&state)`. One strong owner, unchanged lifetime, and the
+existing `Option` gating ("this node keeps no per-service storage") still
+reads as one question rather than two.
 
 Gating, following B2's F7 exactly: `sagas` takes
 `authorize_proxy_queue_access` (read, `orchestrator/status`);
@@ -1267,6 +1583,13 @@ slice, not at closeout, exactly as B3's did.
   `Delivered` disposition — the arm B2's N1 found missing one layer up)
 - `a_saga_past_its_deadline_starts_compensating_without_the_guest`
 - `an_undeployed_services_sagas_are_dropped_rather_than_compensated`
+- `a_missing_compensation_is_recorded_with_an_error_that_names_the_convention`
+  — the compensating half of §0.4a's trade: nothing catches this at deploy,
+  so the message an operator reads has to say what is wrong
+- `an_unopenable_saga_log_is_logged_rather_than_skipped_silently` (§0.15)
+- `the_operator_verbs_still_answer_after_the_router_is_the_only_owner_left`
+  — the `ProxyState` `Weak` upgrade, which a wrapper with no strong owner
+  fails
 - `cancellation_interrupts_an_in_flight_undo_and_leaves_the_saga_compensating`
   — with a fixture that genuinely blocks until released, and asserted by
   reverting the `select!` to a between-ticks check (the B2 F18 discipline:
@@ -1279,25 +1602,43 @@ slice, not at closeout, exactly as B3's did.
 
 ### Phase 5 — the fixture and the end-to-end proof
 
-**New fixture** `test-components/saga-test` (excluded from the workspace in
-the root `Cargo.toml`, path constants in
-`crates/core/src/test_constants.rs`, both alongside `scheduled-test`'s
-entries). One component, deployed **twice** under two service ids — as the
-driver and as the participant — which is how `proxy-test` already serves as
-both caller and target.
+**New fixture** `test-components/saga-test`, wired into **three** places,
+not the two the first draft named:
+
+1. the root `Cargo.toml` exclude list,
+2. `crates/core/src/test_constants.rs` (path plus the two interface-name
+   constants), and
+3. **`.github/actions/ci-build-and-test/action.yml:13`**, which enumerates
+   the components to build by hand
+   (`greeter data-layer-test proxy-test stream-test messaging-pubsub-test
+   abac-test`) because no `mise` task builds them — the gap the backlog
+   already records. A fixture missing from that list plus an e2e that
+   **fails loudly rather than skipping** is a red CI, so this is not
+   optional. **`scheduled-test` is already missing from it**: B3 added a
+   loud-failing e2e and did not extend the list. Verify what CI currently
+   does with `scheduled_task_e2e` before assuming it is green, and fix that
+   omission in the same commit — it is one word, and leaving a known-broken
+   neighbour beside a new entry is worse than either.
+
+**One component, deployed twice** under two service ids — as the driver and
+as the participant — which is how `proxy-test` already serves as both caller
+and target.
 
 ```wit
 package syneroym-test:saga-test@0.1.0;
 
+/// One export per guest dispatch, deliberately (§0.14): a driver that did
+/// `begin` plus two cross-node steps plus `commit` in one call would be
+/// three round trips inside a 5-second epoch, and the trap that follows
+/// would be the fixture's fault rather than the platform's.
 interface saga-driver {
-    /// begin -> step(reserve, a) -> step(reserve, b) -> commit|compensate.
-    /// Returns the saga id so the test can poll `sagas` for it.
-    run-workflow: func(peer: string, items: string, outcome: string)
+    /// Opens a saga and returns its id.
+    begin-workflow: func(deadline-secs: u64) -> result<string, string>;
+    /// Exactly one step. The test calls it once per step.
+    add-step: func(saga: string, peer: string, item: string)
         -> result<string, string>;
-    /// begin -> one step -> return, leaving the saga open. For the
-    /// deadline/restart case.
-    start-and-abandon: func(peer: string, item: string, deadline-secs: u64)
-        -> result<string, string>;
+    /// `outcome` is "commit" or "compensate".
+    finish-workflow: func(saga: string, outcome: string) -> result<_, string>;
 }
 
 interface saga-participant {
@@ -1326,10 +1667,12 @@ artifact is not built:
    1. Deploy the driver on A and the participant on B. Adopt. (Nothing is
       declared anywhere — the participant's `saga-undo-reserve` export is
       the whole of its participation, §0.4a.)
-   2. Call `run-workflow(peer, "a,b", "compensate")` through the gateway.
+   2. `begin-workflow`, then `add-step(a)`, then `add-step(b)`, then
+      `finish-workflow("compensate")` — four gateway calls, one guest
+      dispatch each.
    3. Assert the participant's `ledger` is `reserve:a, reserve:b`
-      immediately after the call (the walk has not run yet — `compensate`
-      returns before it).
+      immediately after `finish-workflow` returns (the walk has not run yet
+      — `compensate` returns before it).
    4. Assert `roymctl svc sagas` on A shows the saga `compensating`.
    5. Within a few worker ticks, assert the ledger is
       `reserve:a, reserve:b, undo:b, undo:a` — **the order is the
@@ -1338,16 +1681,38 @@ artifact is not built:
    6. Assert the saga is `compensated` and that a second sweep changes
       nothing (the walk is not re-run).
 2. `a_workflow_abandoned_across_a_restart_is_compensated_by_its_deadline`
-   1. `start-and-abandon(peer, "a", deadline-secs = 60)`; assert the ledger
-      is `reserve:a` and the saga is `open`.
+   1. `begin-workflow(deadline-secs = 60)` then one `add-step(a)`; assert
+      the ledger is `reserve:a` and the saga is `open`.
    2. **Tear down substrate A and restart it**, the step no in-process test
       can express and the reason the log is durable.
-   3. Assert through `sagas` that the saga survived the restart as the same
-      id, still `open`.
-   4. Past the deadline, assert the ledger gains `undo:a` and the saga
-      reaches `compensated` — with the witness being the supervisor-side
-      record as well as the ledger, since B3-07 showed a post-restart
-      transport can be the thing that actually failed.
+   3. **Before injecting the KEK**, assert past the deadline that the ledger
+      has *not* gained `undo:a`, **and** that `sagas` on A answers with an
+      error naming the locked vault. The second half is what makes the
+      first non-vacuous: at that instant nothing is compensated whether the
+      node is locked or merely idle, so "no `undo:a`" alone passes against
+      a harness that quietly unlocked. The operator verb goes through
+      `existing_log_for` → `load_service_dek`, so a locked node fails it —
+      a positive signal that the node is locked, not an absence.
+
+      **This needs a harness variant the tree does not have.**
+      `proxy_outbox_e2e`'s `Node::boot` injects the KEK unconditionally as
+      its last step ([line 184](../../../../crates/substrate/tests/proxy_outbox_e2e.rs#L184)),
+      so every boot returns already unlocked. B4's own copy of that harness
+      splits it: `Node::boot_locked(..)` stops before the injection,
+      `Node::unlock()` performs it, and `Node::boot(..)` is
+      `boot_locked` + `unlock` so there is still one code path and every
+      other call site is unchanged. Test 2's restart uses `boot_locked`,
+      then `unlock` after step 3's assertions.
+   4. Assert through `sagas` that the saga survived the restart as the same
+      id.
+   5. After `unlock()`, assert `sagas` now answers, and that the ledger gains `undo:a` and the saga
+      reaches `compensated` — with the witness being the node's own durable
+      record (`sagas`) as well as the ledger, since B3-07 showed a
+      post-restart transport can itself be the thing that failed while
+      looking like a missing result.
+
+   Steps 3 and 5 together are the locked-vault property in both directions:
+   nothing before the injection, everything after it.
 
 Both tests anchor waits to observed state with a deadline loop, never to a
 fixed sleep (B3's second deviation). Run **at least three times** before the
@@ -1359,7 +1724,7 @@ real and the requirement was not ceremonial.
 ## §3 — Failure and security rows this slice owns
 
 Four inherited from [task.md](task.md)'s matrix, applied to B4's own tables,
-and three that are B4-local (§0.13 explains why they live here and not in
+and three that are B4-local (§0.16 explains why they live here and not in
 the milestone doc).
 
 | # | Case | Required behavior | Test |
@@ -1370,7 +1735,21 @@ the milestone doc).
 | 14 | Re-arm authorization | `saga-compensate` causes calls to leave the node, so it takes the write gate, not the listing's read gate (B2's F7) | `saga_compensate_is_not_reachable_with_only_the_read_grant` |
 | B4-a | The substrate dies mid-workflow | The saga survives, and its declared deadline is what eventually unwinds it — no guest is involved, because a component does not exist between calls | e2e test 2 |
 | B4-b | A step is added while the saga is walking backwards | Refused inside the same transaction that reads the state, so a `compensate` landing between the check and the insert cannot be overtaken | `a_step_added_to_a_compensating_saga_is_refused` |
+| 9 | A step names a service that no longer exists | Terminal on its own terms, with a distinguishable reason: a dependency name bound to nobody is a failure to have a target, not a failed delivery, so `resolve_step_target`'s error fails the compensation without spending the retry budget | `a_dependency_bound_to_nobody_fails_the_compensation_without_retrying` |
 | B4-c | An undo can never be delivered | The saga reaches `failed`, keeps its step history and its last error, is listed by `sagas`, and is re-armable by an operator. Never silently dropped, never retried inline (ADR-0023 §5) | `an_exhausted_attempt_budget_fails_the_saga`, `rearm_returns_a_failed_saga_to_compensating_with_attempts_reset` |
+| B4-d | The caller's instance certificate expires before the walk runs | Every undo presents as anonymous and is refused; the saga reaches `failed` and an operator re-arm fails identically. **Not prevented** — a managed instance is renewed every supervisor pass, so a current expiry cannot judge a future deadline (§0.13c). `begin` warns when the deadline outlives the certificate, and the developer guide states the rule | `begin_warns_but_proceeds_when_the_deadline_outlives_the_certificate` |
+| B4-e | The substrate's vault is locked | Nothing is compensated and the sweep says so in the log, per warning per service per sweep. The sagas resume untouched once the KEK is injected (§0.15) | `an_unopenable_saga_log_is_logged_rather_than_skipped_silently`, plus e2e test 2's pre-injection assertion |
+
+**One row this slice deliberately does not satisfy the way B1 does.**
+Milestone failure-matrix row 4 makes an *alert* the expectation when
+attempts are exhausted. A `failed` saga raises none, for the same reason
+B2's proxy dead letters raise none: `AlertStore` lives in `supervisor.db`
+and belongs to the supervisor's app-instance view, and nothing on the
+substrate side of this slice can reach it without inverting a crate
+dependency. The visibility a `failed` saga has is the `sagas` verb plus the
+`substrate.proxy.saga.failed` counter. Stated rather than left implicit,
+because "row 4 says alert" is the obvious review question and B2 answered it
+the same way without writing it down.
 
 **One security note that is not a row.** A saga's undo travels as
 `CallerContext::service_system(driver)` with `CallOrigin::Guest`, byte-identical
@@ -1427,6 +1806,12 @@ design to reopen.
   Complete**, scoped to the four mechanisms (the row already carries that
   scoping). This is what fires M05A slice A6's pickup trigger, which A6's
   own row already recorded as discharged by B1.
+- **`[PRD-OFF]` in the same matrix: Pending → Complete.** Its own row says
+  both clauses "land with `[PLT-ASY]`" — convergence from B1/B2's delivery,
+  explicit failure from D-B-9's refusal of an unkeyed queued call — and
+  task.md lists it as an M05B row still Pending. Both clauses shipped in
+  B1/B2; nothing in B4 changes them, so this is the slice that closes the
+  row rather than the slice that earns it.
 - `system-architecture.md` and `system-requirements-spec.md` `[PLT-ASY]`:
   a dated implementation-status note in the Universal Proxy note's shape,
   covering all six supersessions now (client-side outbox placement, the
@@ -1434,20 +1819,43 @@ design to reopen.
   itself**, the "generated resource ID", and compensations firing from a
   queued task — §0.4b, §0.6, §0.7).
 - **ADR-0023 §7 amendment, dated, in the shape its own earlier corrections
-  take.** Two sentences: the marker is `saga-undo-` because `undo-` is an
-  ordinary business verb (§0.4b), and there is no manifest declaration
-  because "not declared" is the ordinary case rather than an author error,
-  so the deploy check is derived from the component's exports (§0.4a).
-  The milestone plan's §0.6 gets a pointer to the same amendment. This is
-  the one place a *decision* changed rather than an implementation detail,
-  so it lands in the ADR, not only here.
+  take.** Four points, not the two the first draft listed — the second and
+  fourth change what a *participant author* must do, so leaving them in a
+  slice plan would leave the ADR describing a contract nobody implements:
+  1. the marker is `saga-undo-`, because `undo-` is an ordinary business
+     verb (§0.4b);
+  2. **an undo may be called for an operation that never happened**, because
+     the step's intent is written before its call and the walk compensates
+     ambiguous steps (§0.5). §7's own wording is "a durable log of
+     *completed* steps", which is the design this slice rejected as losing
+     the case sagas exist for. This is the most consequential of the four
+     for anyone writing a participant;
+  3. the reverse walk is a worker with its own retry and terminal state, not
+     "a helper in the queue crate" — a guest cannot wait for N remote undos
+     inside a 5-second epoch (§0.1);
+  4. there is no manifest declaration: "not declared" is the ordinary case
+     rather than an author error, so the check is derived from the
+     component's own exports (§0.4a).
+
+  The milestone plan's §0.6 gets a pointer to the same amendment.
+- **[task.md](task.md)'s slice table, B4 row**: "reverse walk on terminal
+  failure" → the walk's two triggers, a guest-requested `compensate` and an
+  expired deadline. A failed step alone does nothing (§4's Q2), and the row
+  as written promises otherwise.
 - `developer-guide.md`: the saga subsection (phase 4) plus the
   partitioned-substrate consequence of ADR-0023 §6 stated plainly, which
   B3 left to closeout.
-- [task.md](task.md) exit criteria 6 (✅) and a new criterion recording B4's
-  own migration cost — **one additive WIT interface, no manifest change and
-  no wire change** — since the *Migration impact* section names none
-  (§0.13).
+- [task.md](task.md) exit criteria. Criterion 6 flips to ✅, and B4 owes the
+  same *three* evidence criteria B2 and B3 each recorded (criteria 13-16),
+  which the first draft reduced to one:
+  - **the e2e**, naming both cases and the three-run requirement;
+  - **the failure-matrix rows this slice owns** — the four inherited (2, 12,
+    13, 14), row 9, and B4-a…e — in the shape criterion 15 uses for B3;
+  - **the WIT change**: one new `saga` interface on the `syneroym:proxy`
+    package plus two `orchestrator` verbs, and the migration cost stated as
+    what it is — **additive only, no manifest change and no wire change**,
+    verified by `proxy_dispatch` passing without rebuilding a single
+    fixture (§6).
 - [status.md](status.md): the B4 delivery section, in B3's shape.
 
 **Backlog rows this slice's own choices create** (all §8, per the
@@ -1464,6 +1872,12 @@ design to reopen.
 | No partial or per-step re-arm | `saga-compensate` re-arms the whole saga from its current step; there is no "skip this step" verb. Same shape as B1's "`replay` is all-or-nothing per item" |
 | A third copy of the per-service `async.db` open was avoided but not removed | §0.9 extracts `async_db_location`; the caching and single-flight logic still exists three times |
 | Deadlines cannot be extended | A guest that legitimately needs longer must ask for it at `begin`. An `extend` verb is the obvious follow-up and is not built |
+| A saga step cannot target the driver's own service | §0.13b. Refused because the worker cannot rebuild a self-proxy's forwarded caller. A service that wants its own local step compensated has no way to ask for it; closing this means deciding what identity a delayed self-call travels under, which is the same question B2's F10/F12 turn on |
+| **`proxy.call`'s 30-second default sits inside a 5-second guest epoch** | §0.14. Pre-existing and not B4's to fix: `DEFAULT_PROXY_CALL_TIMEOUT` is 30 s while `dispatch_epoch_timeout_secs` is 5, so any guest calling a slow target traps instead of receiving an error. B2 worked around it for `enqueue` (a 2 s probe) and B4 does for `step` (a budget derived from the epoch), each locally. **Nothing records the general case** — B5's row names the same 5 seconds for a different reason. Fixing it means choosing a guest-facing default call budget, which changes every existing caller |
+| **The step budget's one-second margin is a guess, not a measurement** | §0.14. The host subtracts its own measured bookkeeping from the budget, but it cannot see when the guest's epoch started or what the guest spent before calling `step`, so the margin covers an unmeasured cold SQLCipher open plus whatever the guest did first. **Pickup trigger: measure the host-side per-step overhead (the cold open is the term that matters) and set the margin from it** — a bench or a debug histogram, not a guess replaced by another guess |
+| A declared interface that is not a component export is not refused at deploy | §0.4 limit 1. `exported_functions` returns `None` and the compensation gate passes silently. The stronger rule — every declared interface must be an export — is probably right and can refuse manifests that deploy today, so it needs its own pass |
+| The outbox's per-service open is a silent skip too | §0.15 fixes the saga sweep's; `drain_outboxes_once`'s identical `let Ok(queue) = … else { continue }` still hides a locked vault, so a restarted, un-injected node delivers nothing and logs nothing |
+| **`test-components` are enumerated by hand in CI** | `.github/actions/ci-build-and-test/action.yml` lists them literally, and `scheduled-test` is already missing (B3). B4 adds `saga-test` *and* the missing `scheduled-test`, but the list stays hand-maintained — the same root cause as the existing "no `mise` task builds the WASM test components" row, which should absorb this once a build task exists |
 
 **Rows this slice must *not* touch:** the two compare-and-set rows and the
 supervisor-HA row stay open with their existing "this milestone passed over
@@ -1487,5 +1901,6 @@ concern.
 - [ ] Each phase-4 fix proved by reverting it and watching its own test fail (the B2 N-round discipline)
 - [ ] No planning-doc ids (`D-B4-N`, "slice B4", milestone ids) in any added code, doc comment or test name
 - [ ] Import cleanup pass over every edited file
-- [ ] Backlog rows in §5 added; `[PLT-ASY]` marked Complete; the three doc amendments landed
+- [ ] `test-components/saga-test` added to the CI component list, **and `scheduled-test`'s existing omission fixed in the same commit**
+- [ ] Backlog rows in §5 added; `[PLT-ASY]` **and `[PRD-OFF]`** marked Complete; the ADR-0023 §7 amendment's four points landed, plus task.md's B4 row and its three new evidence criteria
 - [ ] `status.md` B4 section written, including anything that shipped differently from this plan and why
