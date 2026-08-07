@@ -36,7 +36,7 @@ use syneroym_identity::{
 };
 use syneroym_rpc::{
     Ability, CallOrigin, CallerContext, DeadLetterInfo, JsonRpcRequest, NativeService,
-    ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCallInfo, ResourceUri,
+    ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCallInfo, ResourceUri, SagaInfo,
 };
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     AppContext, AppInstanceManagement as AppInstanceManagementWire, ArtifactSource, BindingWrite,
@@ -81,6 +81,21 @@ pub trait OrchestratorInterface {
         &self,
         service_id: String,
         dead_letter_id: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String>;
+    /// Every saga `service_id`'s own log holds, oldest first (M05B Slice
+    /// B4).
+    async fn sagas(
+        &self,
+        service_id: String,
+        caller: &CallerContext,
+    ) -> Result<Vec<SagaInfo>, String>;
+    /// Re-arms a `failed` saga back to `compensating`; it never walks
+    /// inline.
+    async fn saga_compensate(
+        &self,
+        service_id: String,
+        saga_id: String,
         caller: &CallerContext,
     ) -> Result<(), String>;
     /// The instance signing key this substrate would derive for `service_id`
@@ -967,6 +982,25 @@ impl OrchestratorInterface for ControlPlaneService {
     ) -> Result<(), String> {
         self.authorize_proxy_queue_write(&service_id, caller)?;
         self.proxy_queue_inspector()?.replay_dead_letter(&service_id, dead_letter_id).await
+    }
+
+    async fn sagas(
+        &self,
+        service_id: String,
+        caller: &CallerContext,
+    ) -> Result<Vec<SagaInfo>, String> {
+        self.authorize_proxy_queue_access(&service_id, caller)?;
+        self.proxy_queue_inspector()?.sagas(&service_id).await
+    }
+
+    async fn saga_compensate(
+        &self,
+        service_id: String,
+        saga_id: String,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        self.authorize_proxy_queue_write(&service_id, caller)?;
+        self.proxy_queue_inspector()?.rearm_saga(&service_id, &saga_id).await
     }
 
     async fn readyz(&self, service_id: String, caller: &CallerContext) -> Result<(), String> {
@@ -9375,6 +9409,8 @@ mod tests {
         dead: std::sync::Mutex<Vec<DeadLetterInfo>>,
         replayed: std::sync::Mutex<Vec<(String, u64)>>,
         delivered: std::sync::atomic::AtomicUsize,
+        sagas: std::sync::Mutex<Vec<SagaInfo>>,
+        rearmed: std::sync::Mutex<Vec<(String, String)>>,
     }
 
     #[async_trait::async_trait]
@@ -9401,6 +9437,17 @@ mod tests {
                 idempotency_key: letter.idempotency_key,
                 attempts: letter.attempts,
             });
+            Ok(())
+        }
+
+        async fn sagas(&self, _service_id: &str) -> Result<Vec<SagaInfo>, String> {
+            Ok(self.sagas.lock().unwrap().clone())
+        }
+
+        async fn rearm_saga(&self, service_id: &str, saga_id: &str) -> Result<(), String> {
+            // Re-arm only: walking the saga here would be doing the
+            // delivery itself, which is exactly what must not happen.
+            self.rearmed.lock().unwrap().push((service_id.to_string(), saga_id.to_string()));
             Ok(())
         }
     }
@@ -9562,6 +9609,105 @@ mod tests {
             "a read grant must not let a caller make a service emit calls"
         );
         assert_eq!(queues.dead.lock().unwrap().len(), 1);
+    }
+
+    fn a_saga(saga_id: &str, state: &str) -> SagaInfo {
+        SagaInfo {
+            saga_id: saga_id.to_string(),
+            name: "checkout".to_string(),
+            state: syneroym_rpc::SagaState::Compensating,
+            steps: 2,
+            compensated_steps: 1,
+            created_at: 1_700_000_000_000,
+            deadline_at: 1_700_003_600_000,
+            last_error: Some(state.to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn sagas_lists_what_the_services_log_holds() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let queues = Arc::new(FakeProxyQueues::default());
+        queues.sagas.lock().unwrap().push(a_saga("saga-1", "unreachable"));
+        let service = service_with_proxy_queues(temp_dir.path(), &queues).await;
+
+        let listed =
+            service.sagas("svc-a".to_string(), &status_capable_caller("owner")).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].saga_id, "saga-1");
+        assert_eq!(listed[0].name, "checkout");
+    }
+
+    #[tokio::test]
+    async fn sagas_is_refused_without_a_status_grant() {
+        use syneroym_rpc::{AuthLevel, SessionContext};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let queues = Arc::new(FakeProxyQueues::default());
+        queues.sagas.lock().unwrap().push(a_saga("saga-1", "unreachable"));
+        let service = service_with_proxy_queues(temp_dir.path(), &queues).await;
+
+        let ungranted = CallerContext {
+            caller_did: "did:key:zStranger".to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: "did:key:zStranger".to_string(),
+                ..Default::default()
+            },
+            auth: AuthLevel::Delegated,
+            proof: None,
+        };
+
+        assert!(service.sagas("svc-a".to_string(), &ungranted).await.is_err());
+    }
+
+    /// `saga-compensate` causes calls to leave the node, so it takes the
+    /// write gate, not the listing's read gate -- the same rule
+    /// `proxy-replay` follows (B2's F7).
+    #[tokio::test]
+    async fn saga_compensate_is_not_reachable_with_only_the_read_grant() {
+        use syneroym_rpc::{AuthLevel, Capability, SessionContext};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let queues = Arc::new(FakeProxyQueues::default());
+        queues.sagas.lock().unwrap().push(a_saga("saga-1", "unreachable"));
+        let service = service_with_proxy_queues(temp_dir.path(), &queues).await;
+
+        let read_only = CallerContext {
+            caller_did: "did:key:zReader".to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: "did:key:zReader".to_string(),
+                capabilities: vec![Capability {
+                    with: ResourceUri::substrate("did:key:zTestNode"),
+                    can: Ability(Ability::ORCHESTRATOR_STATUS.to_string()),
+                    caveats: None,
+                }],
+                ..Default::default()
+            },
+            auth: AuthLevel::Delegated,
+            proof: None,
+        };
+
+        assert!(service.sagas("svc-a".to_string(), &read_only).await.is_ok());
+        assert!(
+            service
+                .saga_compensate("svc-a".to_string(), "saga-1".to_string(), &read_only)
+                .await
+                .is_err(),
+            "a read grant must not let a caller make a service emit undos"
+        );
+        assert!(queues.rearmed.lock().unwrap().is_empty());
+
+        service
+            .saga_compensate(
+                "svc-a".to_string(),
+                "saga-1".to_string(),
+                &status_capable_caller("owner"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(queues.rearmed.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

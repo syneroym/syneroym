@@ -619,6 +619,31 @@ impl NativeService for ControlPlaneService {
                     .map_err(RpcError::InternalError)?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "replayed"}) })
             }
+            "sagas" => {
+                let service_id = parse_service_id_param(invocation.params);
+                let items = self
+                    .sagas(service_id, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::to_value(items).unwrap_or(Value::Null) })
+            }
+            "saga-compensate" => {
+                #[derive(serde::Deserialize)]
+                struct SagaCompensateParams {
+                    #[serde(alias = "service-id")]
+                    service_id: String,
+                    #[serde(alias = "saga-id")]
+                    saga_id: String,
+                }
+                let params = serde_json::from_value::<(String, String)>(invocation.params.clone())
+                    .map(|(service_id, saga_id)| SagaCompensateParams { service_id, saga_id })
+                    .or_else(|_| serde_json::from_value::<SagaCompensateParams>(invocation.params))
+                    .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                self.saga_compensate(params.service_id, params.saga_id, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::json!({"status": "compensating"}) })
+            }
             "list" => {
                 let services =
                     self.list(&invocation.caller).await.map_err(RpcError::InternalError)?;

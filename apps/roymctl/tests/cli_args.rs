@@ -319,3 +319,26 @@ fn app_deploy_fully_placed_does_not_require_a_substrate_key() -> Result<(), Box<
     assert!(!stderr.contains("substrate.key not found"), "{stderr}");
     Ok(())
 }
+
+/// M05B Slice B4: `svc sagas --help` parses (the subcommand and its flag
+/// are wired into clap).
+#[test]
+fn test_svc_sagas_help() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("svc").arg("sagas").arg("--help").assert().success().stdout(contains("--svc-id"));
+    Ok(())
+}
+
+/// M05B Slice B4: `svc saga-compensate --help` parses.
+#[test]
+fn test_svc_saga_compensate_help() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("svc")
+        .arg("saga-compensate")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--svc-id"))
+        .stdout(contains("--saga-id"));
+    Ok(())
+}

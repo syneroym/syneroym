@@ -14,9 +14,11 @@ use std::{
 
 use iroh::{Endpoint, EndpointAddr};
 use serde_json::Value;
+use syneroym_app_orchestration::saga_undo_name;
 use syneroym_async_queue::{
     CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, FailOutcome,
-    MAX_SAGA_PAYLOAD_BYTES, MIN_STEP_CALL_BUDGET_MS, Queue, SagaInfo as QueueSagaInfo, StepIntent,
+    MAX_SAGA_PAYLOAD_BYTES, MIN_STEP_CALL_BUDGET_MS, Queue, SagaHead, SagaInfo as QueueSagaInfo,
+    SagaLog, StepIntent, StepRow,
 };
 use syneroym_core::{
     config::RetryPolicy,
@@ -30,13 +32,13 @@ use syneroym_identity::{DelegationCertificate, Identity};
 use syneroym_rpc::{
     CallOrigin, CallerContext, DEFAULT_PROXY_CALL_TIMEOUT, JsonRpcErrorResponse, JsonRpcRequest,
     JsonRpcResponse, NativeInvocation, ProxyError, ProxyProtocol, ProxyRequest, QueuedCall,
-    QueuedTarget, RpcError, SagaBegin, SagaInfo, SagaState as RpcSagaState, SagaStepRequest,
-    ServiceProxy, WeakNativeDispatchRegistry, framing,
+    QueuedTarget, RpcError, SERVICE_NOT_FOUND_RPC_CODE, SagaBegin, SagaInfo,
+    SagaState as RpcSagaState, SagaStepRequest, ServiceProxy, WeakNativeDispatchRegistry, framing,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::{task, time};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     call_dedup::{self, CallDedupGuard, GuardOutcome},
@@ -233,6 +235,81 @@ pub struct ProxyRouter {
     /// The durable saga step log behind `syneroym:proxy/saga`, one log per
     /// driving service. Same `None` reasoning as `outbox`.
     sagas: Option<Arc<SagaStore>>,
+    /// `outbox` and `sagas` bundled behind one [`ProxyQueueInspector`]
+    /// handle, rebuilt whenever either changes (D-B4-19). `ProxyRouter`
+    /// itself is this bundle's one strong owner -- the control plane's
+    /// `proxy_queues: OnceLock<Weak<dyn ProxyQueueInspector>>` downgrades
+    /// from it, the same way it already downgrades from `outbox` alone
+    /// today, so the `Weak` stays valid for as long as this router does.
+    proxy_state: Option<Arc<ProxyState>>,
+}
+
+/// The two durable per-service stores the operator verbs read, behind one
+/// handle: a service's durable proxy state is one question to an operator,
+/// not two.
+pub struct ProxyState {
+    outbox: Arc<ProxyOutbox>,
+    sagas: Arc<SagaStore>,
+}
+
+impl std::fmt::Debug for ProxyState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyState").finish_non_exhaustive()
+    }
+}
+
+#[async_trait::async_trait]
+impl syneroym_rpc::ProxyQueueInspector for ProxyState {
+    async fn queued_calls(
+        &self,
+        service_id: &str,
+    ) -> Result<Vec<syneroym_rpc::QueuedCallInfo>, String> {
+        self.outbox.queued_calls(service_id).await
+    }
+
+    async fn dead_letters(
+        &self,
+        service_id: &str,
+    ) -> Result<Vec<syneroym_rpc::DeadLetterInfo>, String> {
+        self.outbox.dead_letters(service_id).await
+    }
+
+    async fn replay_dead_letter(&self, service_id: &str, id: u64) -> Result<(), String> {
+        self.outbox.replay_dead_letter(service_id, id).await
+    }
+
+    async fn sagas(&self, service_id: &str) -> Result<Vec<SagaInfo>, String> {
+        let Some(log) = self.sagas.existing_log_for(service_id).await.map_err(|e| e.to_string())?
+        else {
+            return Ok(Vec::new());
+        };
+        let items = task::spawn_blocking(move || log.list())
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        Ok(items.into_iter().map(rpc_saga_info_from).collect())
+    }
+
+    async fn rearm_saga(&self, service_id: &str, saga_id: &str) -> Result<(), String> {
+        let Some(log) = self.sagas.existing_log_for(service_id).await.map_err(|e| e.to_string())?
+        else {
+            return Err(format!("service '{service_id}' has no durable saga log"));
+        };
+        let now = proxy_outbox::now_ms();
+        let id = saga_id.to_string();
+        let rearmed = task::spawn_blocking(move || log.rearm(&id, now))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        if rearmed {
+            Ok(())
+        } else {
+            Err(format!(
+                "saga '{saga_id}' is not failed -- only a failed saga can be re-armed to \
+                 compensate"
+            ))
+        }
+    }
 }
 
 impl Debug for ProxyRouter {
@@ -263,6 +340,7 @@ impl ProxyRouter {
             dedup_guard: None,
             outbox: None,
             sagas: None,
+            proxy_state: None,
         }
     }
 
@@ -278,6 +356,7 @@ impl ProxyRouter {
     #[must_use]
     pub fn with_outbox(mut self, outbox: Arc<ProxyOutbox>) -> Self {
         self.outbox = Some(outbox);
+        self.rebuild_proxy_state();
         self
     }
 
@@ -291,12 +370,32 @@ impl ProxyRouter {
     #[must_use]
     pub fn with_sagas(mut self, sagas: Arc<SagaStore>) -> Self {
         self.sagas = Some(sagas);
+        self.rebuild_proxy_state();
         self
     }
 
     #[must_use]
     pub fn sagas(&self) -> Option<&Arc<SagaStore>> {
         self.sagas.as_ref()
+    }
+
+    /// Rebuilds the `outbox`+`sagas` bundle once both are present, so
+    /// [`Self::proxy_state`] always reflects the router's own current
+    /// handles.
+    fn rebuild_proxy_state(&mut self) {
+        if let (Some(outbox), Some(sagas)) = (&self.outbox, &self.sagas) {
+            self.proxy_state =
+                Some(Arc::new(ProxyState { outbox: outbox.clone(), sagas: sagas.clone() }));
+        }
+    }
+
+    /// The `outbox`+`sagas` bundle the control plane's operator verbs read
+    /// through, once this router has both. `None` until then -- a node
+    /// with only one of the two (a test harness, most often) has no
+    /// combined view to offer.
+    #[must_use]
+    pub fn proxy_state(&self) -> Option<&Arc<ProxyState>> {
+        self.proxy_state.as_ref()
     }
 
     /// Rebuilds the live cross-service call a stored item describes.
@@ -1361,15 +1460,11 @@ impl ProxyRouter {
         settled
     }
 
-    /// The outbox worker's resident loop.
-    ///
-    /// Cancellation is raced *into* a delivery, not merely against the
-    /// next tick: a shutdown that had to wait out an in-flight call to an
-    /// unreachable peer would wait the full call budget. The abandoned
-    /// item stays on disk, still claimed, and returns after its visibility
-    /// timeout -- nothing is lost by not draining.
-    pub async fn run_outbox_worker(self: Arc<Self>, tick: Duration, cancel: CancellationToken) {
-        if self.outbox.is_none() {
+    /// The resident loop: drains outboxes and sweeps saga logs, then races
+    /// cancellation into both -- see `run_async_worker`'s own doc for why
+    /// it carries a name that says both, not just the first.
+    pub async fn run_async_worker(self: Arc<Self>, tick: Duration, cancel: CancellationToken) {
+        if self.outbox.is_none() && self.sagas.is_none() {
             return;
         }
         let mut ticker = time::interval(tick);
@@ -1381,13 +1476,357 @@ impl ProxyRouter {
             }
             tokio::select! {
                 () = cancel.cancelled() => return,
-                settled = self.drain_outboxes_once() => {
-                    if settled > 0 {
-                        debug!(settled, "proxy outbox worker settled queued calls");
+                (outbox_settled, saga_settled) = async {
+                    let a = self.drain_outboxes_once().await;
+                    let b = self.sweep_sagas_once().await;
+                    (a, b)
+                } => {
+                    if outbox_settled > 0 || saga_settled > 0 {
+                        debug!(
+                            outbox_settled,
+                            saga_settled,
+                            "async worker settled queued calls and saga undos"
+                        );
                     }
                 }
             }
         }
+    }
+
+    /// One pass over every saga log this node has open, plus every deployed
+    /// service whose log file already exists -- the second half is what
+    /// lets a restart pick up a saga written before it. Mirrors
+    /// `drain_outboxes_once` exactly, including the undeployed-service
+    /// rule.
+    ///
+    /// Returns how many sagas it settled (a step undone, or a saga finished
+    /// or failed), for tests and metrics.
+    pub async fn sweep_sagas_once(&self) -> usize {
+        let Some(store) = &self.sagas else { return 0 };
+        let deployed: BTreeSet<String> = self
+            .registry
+            .get_all_endpoints()
+            .into_iter()
+            .map(|(service_id, _, _)| service_id)
+            .collect();
+
+        let mut services: BTreeSet<String> = store.open_services().into_iter().collect();
+        for service_id in &deployed {
+            if store.log_file_exists(service_id) {
+                services.insert(service_id.clone());
+            }
+        }
+
+        let now = proxy_outbox::now_ms();
+        let mut settled = 0;
+        for service_id in services {
+            // Not `else { continue }` silently (§0.15): a locked vault
+            // makes every open fail with `KekRequired`, which is the state
+            // of every substrate after a restart until an operator injects
+            // the KEK -- silence there means a node that compensates
+            // nothing and says nothing about it.
+            let log = match store.log_for(&service_id).await {
+                Ok(log) => log,
+                Err(e) => {
+                    warn!(service_id = %service_id, error = %e, "cannot open saga log this sweep");
+                    continue;
+                }
+            };
+
+            if !deployed.contains(&service_id) {
+                // Nothing removes a service's data directory on undeploy.
+                // Its sagas are dropped rather than compensated: the
+                // operator withdrew the whole service, and sending undos on
+                // behalf of something that no longer exists is the mirror
+                // of the outbox's own "delivering would resurrect intent an
+                // operator withdrew".
+                let dropped = {
+                    let log = log.clone();
+                    task::spawn_blocking(move || log.drop_all_for_undeployed()).await
+                };
+                match dropped {
+                    Ok(Ok(())) => {
+                        info!(service_id = %service_id, "dropped sagas for an undeployed service");
+                    }
+                    Ok(Err(e)) => {
+                        warn!(service_id = %service_id, error = %e, "could not drop sagas for an undeployed service");
+                    }
+                    Err(e) => {
+                        warn!(service_id = %service_id, error = %e, "saga drop task failed");
+                    }
+                }
+                continue;
+            }
+
+            // The crash case: an open saga past its deadline starts
+            // walking back. Nothing else can notice, because a guest does
+            // not exist between calls.
+            let abandoned = {
+                let log = log.clone();
+                task::spawn_blocking(move || log.abandoned(now, SAGA_SWEEP_LIMIT)).await
+            };
+            if let Ok(Ok(heads)) = abandoned {
+                for head in heads {
+                    let saga_id = head.saga_id.clone();
+                    let started = {
+                        let log = log.clone();
+                        task::spawn_blocking(move || log.mark_compensating(&saga_id, now)).await
+                    };
+                    if matches!(started, Ok(Ok(true))) {
+                        warn!(
+                            saga = %head.saga_id,
+                            service_id = %service_id,
+                            "saga passed its deadline; compensating"
+                        );
+                    }
+                }
+            }
+
+            let due = {
+                let log = log.clone();
+                task::spawn_blocking(move || log.due_compensations(now, SAGA_SWEEP_LIMIT)).await
+            };
+            if let Ok(Ok(heads)) = due {
+                for head in heads {
+                    settled += self.compensate_next_step(&service_id, &log, &head).await;
+                }
+            }
+        }
+        settled
+    }
+
+    /// One undo. Deliberately one per saga per tick: the walk is ordered,
+    /// so a step that fails must not be overtaken by the step below it,
+    /// and a saga with a slow provider must not hold the tick against
+    /// every other saga.
+    async fn compensate_next_step(
+        &self,
+        service_id: &str,
+        log: &SagaLog,
+        head: &SagaHead,
+    ) -> usize {
+        let now = proxy_outbox::now_ms();
+        let saga_id = head.saga_id.clone();
+        let step = {
+            let log = log.clone();
+            task::spawn_blocking(move || log.next_uncompensated_step(&saga_id)).await
+        };
+        let Ok(Ok(step)) = step else { return 0 };
+        let Some(step) = step else {
+            // Nothing left to compensate: done.
+            let saga_id = head.saga_id.clone();
+            let log = log.clone();
+            let _ = task::spawn_blocking(move || log.finish_compensation(&saga_id, now)).await;
+            metrics::counter!("substrate.proxy.saga.compensated").increment(1);
+            return 1;
+        };
+
+        // Before dispatch, not after (§0.11): a crash inside the call must
+        // cost an attempt, or a poison step is retried forever. Safe only
+        // because the idempotency key below lets the receiver answer a
+        // duplicate from its own record.
+        let idx = step.idx;
+        let saga_id = head.saga_id.clone();
+        let attempts = {
+            let log = log.clone();
+            task::spawn_blocking(move || log.begin_undo_attempt(&saga_id, idx, now)).await
+        };
+        let Ok(Ok(attempts)) = attempts else { return 0 };
+        if attempts > u32::from(log.max_attempts()) {
+            let saga_id = head.saga_id.clone();
+            let log = log.clone();
+            let _ = task::spawn_blocking(move || {
+                log.fail_compensation(
+                    &saga_id,
+                    idx,
+                    now,
+                    "undo attempted repeatedly without ever completing",
+                    true,
+                )
+            })
+            .await;
+            metrics::counter!("substrate.proxy.saga.failed").increment(1);
+            return 1;
+        }
+
+        let Some(sagas) = &self.sagas else { return 0 };
+        let target_value: QueuedTarget = match serde_json::from_str(&step.target) {
+            Ok(t) => t,
+            Err(e) => {
+                self.fail_saga_step(
+                    log,
+                    &head.saga_id,
+                    idx,
+                    now,
+                    &format!("stored saga step target is unreadable: {e}"),
+                )
+                .await;
+                return 1;
+            }
+        };
+        // A dependency name bound to nobody is not a failed delivery, it is
+        // having nothing to deliver to -- terminal on its own terms, the
+        // same split `resolve_queued_target` makes for the outbox.
+        let target = match sagas.resolve_step_target(
+            head.app_instance_id.as_deref(),
+            &target_value,
+            step.routing_key.as_deref(),
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                self.fail_saga_step(log, &head.saga_id, idx, now, &e.to_string()).await;
+                return 1;
+            }
+        };
+
+        let params_value: Value = serde_json::from_slice(&step.params).unwrap_or(Value::Null);
+        let result_value: Option<Value> =
+            step.result.as_deref().and_then(|bytes| serde_json::from_slice(bytes).ok());
+        let params = merge_forward_result(&params_value, result_value.as_ref());
+
+        let req = ProxyRequest {
+            target_service: target,
+            interface: step.interface.clone(),
+            method: saga_undo_name(&step.method),
+            params,
+            caller: CallerContext::service_system(service_id),
+            origin: CallOrigin::Guest { service_id: service_id.to_string() },
+            protocol: ProxyProtocol::JsonRpcV1,
+            idempotent: true,
+            idempotency_key: Some(format!("saga:{}:{}", head.saga_id, idx)),
+            timeout: None,
+        };
+
+        // `invoke_inner`, not `invoke`: an undo has no live caller holding
+        // the error, so writing a second, un-repliable proxy dead letter
+        // for it would only add noise -- the saga's own `fail_compensation`
+        // is this failure's operator surface.
+        match self.invoke_inner(&req).await {
+            Ok(_) => {
+                metrics::counter!("substrate.proxy.saga.undo_delivered").increment(1);
+                let saga_id = head.saga_id.clone();
+                let log = log.clone();
+                let _ = task::spawn_blocking(move || log.mark_step_compensated(&saga_id, idx, now))
+                    .await;
+            }
+            Err(e) => match proxy_outbox::disposition_of(&e) {
+                // The receiver already ran this undo and could not hand
+                // back a result. That is a delivery, not a failure.
+                Disposition::Delivered => {
+                    let saga_id = head.saga_id.clone();
+                    let log = log.clone();
+                    let _ =
+                        task::spawn_blocking(move || log.mark_step_compensated(&saga_id, idx, now))
+                            .await;
+                }
+                Disposition::Retry => {
+                    self.fail_saga_step(
+                        log,
+                        &head.saga_id,
+                        idx,
+                        now,
+                        &explain_undo_error(&e, &step),
+                    )
+                    .await;
+                }
+                Disposition::Terminal => {
+                    self.fail_terminal_saga_step(
+                        log,
+                        &head.saga_id,
+                        idx,
+                        now,
+                        &explain_undo_error(&e, &step),
+                    )
+                    .await;
+                    metrics::counter!("substrate.proxy.saga.failed").increment(1);
+                }
+            },
+        }
+        1
+    }
+
+    /// Records a retryable undo failure.
+    async fn fail_saga_step(&self, log: &SagaLog, saga_id: &str, idx: u32, now: i64, error: &str) {
+        let log = log.clone();
+        let saga_id = saga_id.to_string();
+        let error = error.to_string();
+        let _ =
+            task::spawn_blocking(move || log.fail_compensation(&saga_id, idx, now, &error, false))
+                .await;
+    }
+
+    /// Records an undo failure that can never succeed.
+    async fn fail_terminal_saga_step(
+        &self,
+        log: &SagaLog,
+        saga_id: &str,
+        idx: u32,
+        now: i64,
+        error: &str,
+    ) {
+        let log = log.clone();
+        let saga_id = saga_id.to_string();
+        let error = error.to_string();
+        let _ =
+            task::spawn_blocking(move || log.fail_compensation(&saga_id, idx, now, &error, true))
+                .await;
+    }
+}
+
+/// How many sagas one sweep tick may act on for one service -- mirrors
+/// `proxy_outbox::CLAIM_LIMIT_PER_TICK`'s reasoning: one service with many
+/// due sagas must not spend the whole node's tick budget on its own
+/// backlog.
+const SAGA_SWEEP_LIMIT: u32 = 16;
+
+/// §0.7's three-case rule for merging a forward call's own result into its
+/// undo's parameters: an object gains a `forward-result` member, an array
+/// gains a trailing element, and `null`/absent (or any other scalar) is
+/// wrapped into `{"forward-result": ...}`. A forward call that produced no
+/// result (`result` is `None`) sends no `forward-result` at all, which
+/// binds to `none` for an `option<string>` parameter -- so an undo written
+/// as "ensure this is not in effect" works even for a step whose own
+/// result was never recorded.
+fn merge_forward_result(params: &Value, result: Option<&Value>) -> Value {
+    let Some(result) = result else { return params.clone() };
+    match params {
+        Value::Object(map) => {
+            let mut map = map.clone();
+            map.insert("forward-result".to_string(), result.clone());
+            Value::Object(map)
+        }
+        Value::Array(items) => {
+            let mut items = items.clone();
+            items.push(result.clone());
+            Value::Array(items)
+        }
+        _ => {
+            let mut map = serde_json::Map::new();
+            map.insert("forward-result".to_string(), result.clone());
+            Value::Object(map)
+        }
+    }
+}
+
+/// What §0.4a's deploy gate deliberately does not catch surfaces here
+/// instead: a callee error carrying the shared "not found" wire code
+/// (`SERVICE_NOT_FOUND_RPC_CODE`, reused for both "no such service" and "no
+/// such method on a service that exists") is rewritten to name the
+/// convention explicitly, so an operator reading `sagas`' `last-error`
+/// learns what to fix rather than staring at a bare JSON-RPC code.
+fn explain_undo_error(error: &ProxyError, step: &StepRow) -> String {
+    let base = error.to_string();
+    let looks_like_a_missing_export =
+        matches!(error, ProxyError::Callee { code, .. } if *code == SERVICE_NOT_FOUND_RPC_CODE);
+    if looks_like_a_missing_export {
+        format!(
+            "{base}; target does not export '{}' on '{}': a saga participant must export \
+             saga-undo-<method> for every operation a step calls",
+            saga_undo_name(&step.method),
+            step.interface
+        )
+    } else {
+        base
     }
 }
 
@@ -2073,7 +2512,7 @@ mod tests {
             let router = node.router.clone();
             let cancel = cancel.clone();
             tokio::spawn(async move {
-                router.run_outbox_worker(Duration::from_millis(5), cancel).await;
+                router.run_async_worker(Duration::from_millis(5), cancel).await;
             })
         };
 
@@ -2324,8 +2763,6 @@ mod tests {
     /// already executed the original.
     #[tokio::test]
     async fn a_replayed_call_is_deduplicated_at_the_receiver_if_the_first_one_landed() {
-        use syneroym_rpc::ProxyQueueInspector;
-
         let node = outbox_node(true, 50).await;
 
         // The original lands.
@@ -2462,6 +2899,10 @@ mod tests {
         /// When set, `dispatch` answers with this exact error, so a test
         /// can drive a specific reserved code the receiver would produce.
         answer_with: Mutex<Option<ProxyError>>,
+        /// The `(interface, method, params)` of the most recent dispatch --
+        /// lets a saga test confirm the walk actually called
+        /// `saga-undo-<method>`, not the forward method again.
+        last_invocation: Mutex<Option<(String, String, Value)>>,
     }
 
     #[async_trait::async_trait]
@@ -2469,6 +2910,11 @@ mod tests {
         async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
             self.invoked.fetch_add(1, Ordering::SeqCst);
             *self.last_caller_did.lock().unwrap() = Some(invocation.caller.caller_did.clone());
+            *self.last_invocation.lock().unwrap() = Some((
+                invocation.interface.clone(),
+                invocation.method.clone(),
+                invocation.params.clone(),
+            ));
             let hold = self.hold.lock().unwrap().clone();
             if let Some(hold) = hold {
                 hold.notified().await;
@@ -3362,10 +3808,24 @@ mod tests {
         let provider = Arc::new(SqliteStorageProvider::new(dir.path(), false).unwrap());
         let resolver = syneroym_app_orchestration::empty_resolver();
         let sagas = Arc::new(SagaStore::new(
-            provider,
+            provider.clone(),
             Arc::new(KeyStore::new()),
             resolver,
             saga_config(dispatch_epoch_timeout_secs),
+        ));
+        // Every undo the walk sends is keyed (D-B4-3), so the receiver
+        // needs a real fence behind it -- with no dedup guard configured,
+        // `invoke_local_guarded` refuses any keyed call outright.
+        let dedup_guard = Arc::new(crate::CallDedupGuard::new(
+            provider,
+            Arc::new(KeyStore::new()),
+            registry.clone(),
+            syneroym_async_queue::DedupConfig {
+                ttl_ms: 600_000,
+                claim_window_ms: 60_000,
+                max_rows: 100,
+                max_result_bytes: 64 * 1024,
+            },
         ));
         let router = Arc::new(
             ProxyRouter::new(
@@ -3377,6 +3837,7 @@ mod tests {
                 node_identity,
                 RetryPolicy { max_attempts: 1, ..RetryPolicy::default() },
             )
+            .with_dedup_guard(dedup_guard)
             .with_sagas(sagas.clone()),
         );
         SagaNode { router, registry, target, sagas, _native_dispatch: native_dispatch, _dir: dir }
@@ -3633,5 +4094,299 @@ mod tests {
         // read through the other handle.
         assert!(node.router.saga_status(SAGA_CALLER, &a).await.is_ok());
         assert!(node.router.saga_status(SAGA_CALLER, &b).await.is_ok());
+    }
+
+    // -- §0.7: merging the forward result into an undo's parameters -----
+
+    #[test]
+    fn merge_forward_result_adds_a_member_to_an_object_and_an_element_to_an_array() {
+        let object = serde_json::json!({"item": "a"});
+        let merged = merge_forward_result(&object, Some(&Value::String("id-1".to_string())));
+        assert_eq!(merged, serde_json::json!({"item": "a", "forward-result": "id-1"}));
+
+        let array = serde_json::json!(["a", 1]);
+        let merged = merge_forward_result(&array, Some(&Value::String("id-1".to_string())));
+        assert_eq!(merged, serde_json::json!(["a", 1, "id-1"]));
+    }
+
+    #[test]
+    fn merge_forward_result_makes_an_object_when_the_forward_params_were_null() {
+        let merged = merge_forward_result(&Value::Null, Some(&Value::String("id-1".to_string())));
+        assert_eq!(merged, serde_json::json!({"forward-result": "id-1"}));
+    }
+
+    #[test]
+    fn a_forward_call_that_returned_nothing_sends_no_forward_result() {
+        let object = serde_json::json!({"item": "a"});
+        let merged = merge_forward_result(&object, None);
+        assert_eq!(merged, object);
+    }
+
+    // -- the reverse walk -------------------------------------------------
+
+    async fn add_step(node: &SagaNode, saga_id: &str, item: &str) {
+        let mut req = saga_step_request(saga_id, SAGA_TARGET);
+        req.params = serde_json::json!({"item": item});
+        node.router.saga_step(req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_walk_undoes_the_newest_step_first() {
+        let node = saga_node(5).await;
+        let saga_id = begun_saga(&node).await;
+        add_step(&node, &saga_id, "a").await;
+        add_step(&node, &saga_id, "b").await;
+        node.router.saga_compensate(SAGA_CALLER, &saga_id).await.unwrap();
+
+        node.router.sweep_sagas_once().await;
+        let (_, method, params) = node.target.last_invocation.lock().unwrap().clone().unwrap();
+        assert_eq!(method, "saga-undo-reserve");
+        // The forward call's own result ("ok") is merged in as
+        // `forward-result` (§0.7).
+        assert_eq!(params, serde_json::json!({"item": "b", "forward-result": "ok"}));
+
+        node.router.sweep_sagas_once().await;
+        let (_, method, params) = node.target.last_invocation.lock().unwrap().clone().unwrap();
+        assert_eq!(method, "saga-undo-reserve");
+        assert_eq!(params, serde_json::json!({"item": "a", "forward-result": "ok"}));
+
+        node.router.sweep_sagas_once().await;
+        let status = node.router.saga_status(SAGA_CALLER, &saga_id).await.unwrap();
+        assert_eq!(
+            status.state,
+            RpcSagaState::Compensated,
+            "a finished compensation drops the step log but keeps a terminal row an operator can \
+             still see"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_walk_undoes_a_pending_step_too() {
+        // Never records an outcome for the step -- the crash-mid-call case
+        // §0.5 requires the walk to compensate anyway.
+        let node = saga_node(5).await;
+        let saga_id = begun_saga(&node).await;
+        let log = node.sagas.log_for(SAGA_CALLER).await.unwrap();
+        log.record_step_intent(
+            &saga_id,
+            &syneroym_async_queue::StepIntent {
+                target: serde_json::to_string(&QueuedTarget::Service(SAGA_TARGET.to_string()))
+                    .unwrap(),
+                routing_key: None,
+                interface: "saga-participant".to_string(),
+                method: "reserve".to_string(),
+                params: b"{}".to_vec(),
+            },
+            proxy_outbox::now_ms(),
+        )
+        .unwrap();
+        node.router.saga_compensate(SAGA_CALLER, &saga_id).await.unwrap();
+
+        node.router.sweep_sagas_once().await;
+        assert_eq!(
+            node.target.invoked.load(Ordering::SeqCst),
+            1,
+            "the pending step was undone too"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retryable_undo_failure_schedules_a_backoff_and_keeps_the_saga_compensating() {
+        let node = saga_node(5).await;
+        let saga_id = begun_saga(&node).await;
+        add_step(&node, &saga_id, "a").await;
+        node.router.saga_compensate(SAGA_CALLER, &saga_id).await.unwrap();
+
+        // Re-register the target as a WASM channel with no sandbox engine
+        // behind this router (`Weak::new()`) -- "sandbox engine
+        // unavailable" is a `ProxyError::Internal`, which `disposition_of`
+        // classifies `Retry` (a shutdown-window state, not a settled
+        // refusal). A definitive `Callee` error -- what `fail_with` would
+        // produce -- is terminal by default and does not exercise this
+        // path.
+        node.registry
+            .register(
+                SAGA_TARGET.to_string(),
+                "saga-participant".to_string(),
+                SubstrateEndpoint::WasmChannel { service_id: SAGA_TARGET.to_string() },
+            )
+            .await
+            .unwrap();
+
+        node.router.sweep_sagas_once().await;
+        let status = node.router.saga_status(SAGA_CALLER, &saga_id).await.unwrap();
+        assert_eq!(
+            status.state,
+            RpcSagaState::Compensating,
+            "a retryable failure keeps compensating"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_terminal_undo_failure_fails_the_saga_immediately() {
+        let node = saga_node(5).await;
+        let saga_id = begun_saga(&node).await;
+        add_step(&node, &saga_id, "a").await;
+        *node.target.answer_with.lock().unwrap() =
+            Some(ProxyError::Callee { code: -32010, message: "denied".to_string(), data: None });
+        node.router.saga_compensate(SAGA_CALLER, &saga_id).await.unwrap();
+
+        node.router.sweep_sagas_once().await;
+        let status = node.router.saga_status(SAGA_CALLER, &saga_id).await.unwrap();
+        assert_eq!(status.state, RpcSagaState::Failed, "a terminal failure fails the saga at once");
+    }
+
+    #[tokio::test]
+    async fn an_undo_the_receiver_had_already_run_counts_as_compensated() {
+        let node = saga_node(5).await;
+        let saga_id = begun_saga(&node).await;
+        add_step(&node, &saga_id, "a").await;
+        // "Already ran, result too large to retain" -- a delivery reported
+        // through the error channel, per `disposition_of`'s `Delivered`
+        // case (B2's N1). `CALL_ALREADY_RUNNING_RPC_CODE` is a *different*
+        // code (still in flight right now) and classifies `Retry`, not
+        // `Delivered`.
+        *node.target.answer_with.lock().unwrap() = Some(ProxyError::Callee {
+            code: syneroym_async_queue::CALL_RESULT_NOT_RETAINED_RPC_CODE,
+            message: "already ran; result too large to retain".to_string(),
+            data: None,
+        });
+        node.router.saga_compensate(SAGA_CALLER, &saga_id).await.unwrap();
+
+        node.router.sweep_sagas_once().await;
+        node.router.sweep_sagas_once().await;
+        let status = node.router.saga_status(SAGA_CALLER, &saga_id).await.unwrap();
+        assert_eq!(
+            status.state,
+            RpcSagaState::Compensated,
+            "the receiver's already-ran answer must count as compensated, not retried forever"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_compensation_is_recorded_with_an_error_that_names_the_convention() {
+        let node = saga_node(5).await;
+        let saga_id = begun_saga(&node).await;
+        add_step(&node, &saga_id, "a").await;
+        *node.target.answer_with.lock().unwrap() = Some(ProxyError::Callee {
+            code: syneroym_rpc::SERVICE_NOT_FOUND_RPC_CODE,
+            message: "Method not found: saga-undo-reserve".to_string(),
+            data: None,
+        });
+        node.router.saga_compensate(SAGA_CALLER, &saga_id).await.unwrap();
+
+        // `SERVICE_NOT_FOUND_RPC_CODE` classifies as retryable, so this is
+        // recorded as a `Retry` outcome, not `Failed` -- but the rewritten
+        // message must already name the convention on this very first
+        // attempt, not only once the saga eventually fails.
+        node.router.sweep_sagas_once().await;
+        let status = node.router.saga_status(SAGA_CALLER, &saga_id).await.unwrap();
+        assert!(
+            status.last_error.as_deref().is_some_and(|e| e.contains("saga-undo-reserve")),
+            "expected the recorded error to name the convention, got {:?}",
+            status.last_error
+        );
+    }
+
+    #[tokio::test]
+    async fn a_saga_past_its_deadline_starts_compensating_without_the_guest() {
+        let node = saga_node(5).await;
+        let saga_id = node
+            .router
+            .saga_begin(SagaBegin {
+                caller_service_id: SAGA_CALLER.to_string(),
+                app_instance_id: None,
+                name: "wf".to_string(),
+                deadline_secs: Some(1),
+            })
+            .await
+            .unwrap();
+        add_step(&node, &saga_id, "a").await;
+
+        // No guest-driven `compensate` call at all -- the deadline alone
+        // must start the walk.
+        let past_deadline = proxy_outbox::now_ms() + 2_000;
+        let log = node.sagas.log_for(SAGA_CALLER).await.unwrap();
+        for head in log.abandoned(past_deadline, 10).unwrap() {
+            log.mark_compensating(&head.saga_id, past_deadline).unwrap();
+        }
+
+        node.router.sweep_sagas_once().await;
+        assert_eq!(node.target.invoked.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_undeployed_services_sagas_are_dropped_rather_than_compensated() {
+        let node = saga_node(5).await;
+        let saga_id = begun_saga(&node).await;
+        add_step(&node, &saga_id, "a").await;
+        // `add_step`'s own forward call already reached the target once.
+        let invoked_before = node.target.invoked.load(Ordering::SeqCst);
+        node.router.saga_compensate(SAGA_CALLER, &saga_id).await.unwrap();
+
+        node.registry.remove_instance_cert(SAGA_CALLER).await.unwrap();
+        node.registry.remove(SAGA_CALLER, "saga-driver").await.unwrap();
+
+        node.router.sweep_sagas_once().await;
+        assert_eq!(
+            node.target.invoked.load(Ordering::SeqCst),
+            invoked_before,
+            "an undeployed service's saga must never send an undo"
+        );
+        let log = node.sagas.existing_log_for(SAGA_CALLER).await.unwrap().unwrap();
+        assert!(log.list().unwrap().is_empty(), "its sagas must be dropped, not left compensating");
+    }
+
+    /// D-B4-19: the control plane downgrades `ProxyState` into a
+    /// `Weak<dyn ProxyQueueInspector>` it holds in a `OnceLock`. That
+    /// `Weak` must stay valid for as long as the router does -- which only
+    /// holds if `ProxyRouter` itself is the bundle's one strong owner. A
+    /// wrapper built and downgraded with no long-lived owner would drop the
+    /// moment the constructing function returned, and every operator verb
+    /// would then answer "this node keeps no durable proxy state".
+    #[tokio::test]
+    async fn the_operator_verbs_still_answer_after_the_router_is_the_only_owner_left() {
+        use syneroym_data_db::SqliteStorageProvider;
+        use syneroym_data_keystore::KeyStore;
+
+        let node = saga_node(5).await;
+        let dir = tempfile::tempdir().unwrap();
+        let provider = Arc::new(SqliteStorageProvider::new(dir.path(), false).unwrap());
+        let outbox = Arc::new(ProxyOutbox::new(
+            provider,
+            Arc::new(KeyStore::new()),
+            syneroym_app_orchestration::empty_resolver(),
+            QueueConfig {
+                retry: RetryPolicy::default(),
+                visibility_timeout_ms: 60_000,
+                dlq_max_rows: 100,
+                max_pending_rows: syneroym_async_queue::DEFAULT_MAX_PENDING_ROWS,
+            },
+        ));
+
+        let router = ProxyRouter::new(
+            node.registry.clone(),
+            empty_registry_client(),
+            Weak::new(),
+            Weak::new(),
+            Arc::new(MockHop::default()),
+            Arc::new(Identity::generate().unwrap()),
+            RetryPolicy::default(),
+        )
+        .with_outbox(outbox)
+        .with_sagas(node.sagas.clone());
+        let router = Arc::new(router);
+
+        // Mirrors `route_handler.rs`'s own wiring exactly: downgrade from a
+        // local binding, then let that binding go out of scope.
+        let weak: Weak<dyn syneroym_rpc::ProxyQueueInspector> = {
+            let state = router.proxy_state().expect("both outbox and sagas are wired").clone();
+            Arc::downgrade(&state) as Weak<dyn syneroym_rpc::ProxyQueueInspector>
+        };
+
+        assert!(
+            weak.upgrade().is_some(),
+            "the router's own Arc<ProxyState> must be what keeps this Weak alive"
+        );
     }
 }

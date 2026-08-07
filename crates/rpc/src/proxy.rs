@@ -273,6 +273,11 @@ pub trait ProxyQueueInspector: Send + Sync + Debug {
     async fn dead_letters(&self, service_id: &str) -> Result<Vec<DeadLetterInfo>, String>;
     /// Re-enqueues a dead letter. Never executes inline.
     async fn replay_dead_letter(&self, service_id: &str, id: u64) -> Result<(), String>;
+    /// Every saga `service_id`'s own log holds, oldest first.
+    async fn sagas(&self, service_id: &str) -> Result<Vec<SagaInfo>, String>;
+    /// Re-arms a `failed` saga back to `compensating`, with the current
+    /// step's attempts reset. Never walks inline.
+    async fn rearm_saga(&self, service_id: &str, saga_id: &str) -> Result<(), String>;
 }
 
 #[async_trait::async_trait]

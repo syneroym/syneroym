@@ -22,7 +22,7 @@ pub use call_dedup::{ASYNC_DB_NAME, CallDedupGuard, DedupClaim, GuardOutcome, re
 pub use connection_router::{ConnectionRouter, SYNEROYM_ALPN};
 pub use handshake::{HandshakeVerifier, MasterAnchorResolver, VerifiedIdentity};
 pub use preamble::{RoutePreamble, RouteProtocol, RouteTransport};
-pub use proxy::{IrohHop, ProxyRouter, RemoteHop};
+pub use proxy::{IrohHop, ProxyRouter, ProxyState, RemoteHop};
 pub use proxy_outbox::{Disposition, ProxyOutbox, disposition_of, group_key_of};
 pub use route_handler::{RouteHandler, RouteHandlerDeps};
 pub use routing::{AdaptationStage, EncryptionStage, RoutePipeline, ServiceStage, TransportStage};

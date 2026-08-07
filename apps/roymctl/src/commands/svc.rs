@@ -140,6 +140,19 @@ pub enum SvcCommands {
         #[arg(long)]
         dead_letter_id: u64,
     },
+    /// Show the sagas a service's own log holds (M05B Slice B4).
+    Sagas {
+        #[arg(long)]
+        svc_id: String,
+    },
+    /// Re-arm a `failed` saga back to `compensating`. It never walks
+    /// inline; the worker picks it up on its next tick.
+    SagaCompensate {
+        #[arg(long)]
+        svc_id: String,
+        #[arg(long)]
+        saga_id: String,
+    },
 }
 
 /// Handle `SynSvc` management subcommands
@@ -382,6 +395,32 @@ pub async fn handle(
         SvcCommands::ProxyReplay { svc_id, dead_letter_id } => {
             client.proxy_replay(svc_id.clone(), *dead_letter_id).await?;
             println!("Re-enqueued dead letter {dead_letter_id} for {svc_id}");
+        }
+        SvcCommands::Sagas { svc_id } => {
+            let items = client.sagas(svc_id.clone()).await?;
+            if items.is_empty() {
+                println!("No sagas for {svc_id}");
+            } else {
+                println!(
+                    "{:<38} {:<20} {:<13} {:<10} {:<40}",
+                    "SAGA ID", "NAME", "STATE", "STEPS", "LAST ERROR"
+                );
+                println!("{:-<125}", "");
+                for item in items {
+                    println!(
+                        "{:<38} {:<20} {:<13?} {:<10} {:<40}",
+                        item.saga_id,
+                        item.name,
+                        item.state,
+                        format!("{}/{}", item.compensated_steps, item.steps),
+                        item.last_error.as_deref().unwrap_or("-")
+                    );
+                }
+            }
+        }
+        SvcCommands::SagaCompensate { svc_id, saga_id } => {
+            client.saga_compensate(svc_id.clone(), saga_id.clone()).await?;
+            println!("Re-armed saga {saga_id} for {svc_id}");
         }
         SvcCommands::Restart { svc_id } => {
             // Unmanaged (M05A A5a): an operator-driven `svc restart`

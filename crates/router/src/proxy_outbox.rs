@@ -39,7 +39,7 @@ use syneroym_core::local_registry::EndpointRegistry;
 use syneroym_data_db::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::{
-    DeadLetterInfo, ProxyError, ProxyQueueInspector, QueuedCall, QueuedCallInfo, QueuedTarget,
+    DeadLetterInfo, ProxyError, QueuedCall, QueuedCallInfo, QueuedTarget,
     SERVICE_NOT_FOUND_RPC_CODE,
 };
 use tokio::task;
@@ -387,9 +387,13 @@ impl ProxyOutbox {
 /// `status`. These verbs deliberately do not scan the filesystem for queue
 /// files, so an undeployed service's leftover `async.db` is not listable --
 /// and does not need to be, since nothing will ever drain it.
-#[async_trait::async_trait]
-impl ProxyQueueInspector for ProxyOutbox {
-    async fn queued_calls(&self, service_id: &str) -> Result<Vec<QueuedCallInfo>, String> {
+///
+/// Plain inherent methods, not a `ProxyQueueInspector` impl: that impl now
+/// lives on `ProxyState`, which bundles this outbox with the saga store
+/// behind one handle (D-B4-19) -- a service's durable proxy state is one
+/// question to an operator, not two.
+impl ProxyOutbox {
+    pub async fn queued_calls(&self, service_id: &str) -> Result<Vec<QueuedCallInfo>, String> {
         let Some(queue) = self.existing_queue_for(service_id).await.map_err(|e| e.to_string())?
         else {
             return Ok(Vec::new());
@@ -408,7 +412,7 @@ impl ProxyQueueInspector for ProxyOutbox {
             .collect())
     }
 
-    async fn dead_letters(&self, service_id: &str) -> Result<Vec<DeadLetterInfo>, String> {
+    pub async fn dead_letters(&self, service_id: &str) -> Result<Vec<DeadLetterInfo>, String> {
         let Some(queue) = self.existing_queue_for(service_id).await.map_err(|e| e.to_string())?
         else {
             return Ok(Vec::new());
@@ -429,7 +433,7 @@ impl ProxyQueueInspector for ProxyOutbox {
             .collect())
     }
 
-    async fn replay_dead_letter(&self, service_id: &str, id: u64) -> Result<(), String> {
+    pub async fn replay_dead_letter(&self, service_id: &str, id: u64) -> Result<(), String> {
         let Some(queue) = self.existing_queue_for(service_id).await.map_err(|e| e.to_string())?
         else {
             return Err(format!("service '{service_id}' has no durable proxy queue"));

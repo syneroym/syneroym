@@ -29,7 +29,7 @@ use syneroym_rpc::{
     CapabilityToken, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse,
     MESSAGING_MESSAGE_METHOD, MessagingNotification, framing,
 };
-pub use syneroym_rpc::{DeadLetterInfo, QueuedCallInfo};
+pub use syneroym_rpc::{DeadLetterInfo, QueuedCallInfo, SagaInfo, SagaState};
 pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, BindingWrite, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
     DependencyBinding, DeployManifest, DeploymentPlan, HealthCheck, HttpProbe, InstanceIdentity,
@@ -850,6 +850,26 @@ impl SyneroymClient {
             Ok(())
         } else {
             Err(anyhow::anyhow!("Replay failed: {:?}", res.result))
+        }
+    }
+
+    /// Every saga `service_id`'s own log holds, oldest first (M05B Slice
+    /// B4).
+    pub async fn sagas(&self, service_id: String) -> Result<Vec<SagaInfo>> {
+        let res =
+            self.request("orchestrator", "sagas", serde_json::to_value((service_id,))?).await?;
+        Ok(serde_json::from_value(res.result)?)
+    }
+
+    /// Re-arms a `failed` saga back to `compensating`. It never walks
+    /// inline.
+    pub async fn saga_compensate(&self, service_id: String, saga_id: String) -> Result<()> {
+        let params = serde_json::to_value((service_id, saga_id))?;
+        let res = self.request("orchestrator", "saga-compensate", params).await?;
+        if res.result == serde_json::json!({"status": "compensating"}) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Saga compensate failed: {:?}", res.result))
         }
     }
 
