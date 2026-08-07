@@ -590,6 +590,32 @@ impl AppSandboxEngine {
     /// implement it when a deployed policy opts in.
     const AUTHORIZER_INTERFACE: &str = "syneroym:data-layer/authorizer@0.1.0";
 
+    /// Whether `service_id`'s compiled component exports `function` on
+    /// `interface`. Cheap: reads the cached `InstancePre`'s static component
+    /// type, no instantiation. `interface` is matched exactly, which is what
+    /// dispatch itself does (`get_wasm_func`), so a name that passes here is
+    /// a name a call can reach.
+    #[must_use]
+    pub fn exports_function(&self, service_id: &str, interface: &str, function: &str) -> bool {
+        let Some(entry) = self.components.get(service_id) else { return false };
+        let ct = entry.value().0.component().component_type();
+        let Some(export) = ct.get_export(&self.engine, interface) else { return false };
+        let ComponentItem::ComponentInstance(instance) = export.ty else { return false };
+        instance.get_export(&self.engine, function).is_some()
+    }
+
+    /// Every function `interface` exports, or `None` when the component does
+    /// not export that interface at all. Backs the deploy-time saga
+    /// compensation gate: a `saga-undo-x` with no `x` beside it.
+    #[must_use]
+    pub fn exported_functions(&self, service_id: &str, interface: &str) -> Option<Vec<String>> {
+        let entry = self.components.get(service_id)?;
+        let ct = entry.value().0.component().component_type();
+        let export = ct.get_export(&self.engine, interface)?;
+        let ComponentItem::ComponentInstance(instance) = export.ty else { return None };
+        Some(instance.exports(&self.engine).map(|(name, _)| name.to_string()).collect())
+    }
+
     /// Whether `service_id`'s compiled component exports the stage-4
     /// after-step. Cheap: inspects the cached `InstancePre`'s static
     /// component type, no instantiation -- used by the deploy-time gate
@@ -598,13 +624,7 @@ impl AppSandboxEngine {
     /// satisfy it.
     #[must_use]
     pub fn exports_authorize_rows(&self, service_id: &str) -> bool {
-        let Some(entry) = self.components.get(service_id) else { return false };
-        let ct = entry.value().0.component().component_type();
-        let Some(export) = ct.get_export(&self.engine, Self::AUTHORIZER_INTERFACE) else {
-            return false;
-        };
-        let ComponentItem::ComponentInstance(interface) = export.ty else { return false };
-        interface.get_export(&self.engine, "authorize-rows").is_some()
+        self.exports_function(service_id, Self::AUTHORIZER_INTERFACE, "authorize-rows")
     }
 
     /// Whether a compiled component is loaded for `service_id` -- the only
