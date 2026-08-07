@@ -284,8 +284,8 @@ it. B1 status below reflects [status.md](status.md)'s B1 evidence
    `a_keyed_call_that_exhausts_its_retries_writes_a_dead_letter_and_still_returns_its_error`,
    `a_callee_error_on_a_queued_item_dead_letters_rather_than_completing`,
    `the_dlq_cap_is_scoped_per_target`, plus the three operator verbs.
-6. ⬜ **Milestone closeout (needs B2-B4).** `[PLT-ASY]` stays **Pending** in
-   the traceability matrix; B1 alone does not close it.
+6. ⬜ **Milestone closeout (needs B4).** `[PLT-ASY]` stays **Pending** in
+   the traceability matrix; B1-B3 alone do not close it.
 7. ✅ **B1.** M05A slice A6 recorded Complete in
    [M05A status.md](../M05A-app-supervisor/status.md) (2026-08-05); its
    [deferred-backlog.md](../../deferred-backlog.md) §8 row moved to
@@ -298,11 +298,15 @@ it. B1 status below reflects [status.md](status.md)'s B1 evidence
    `syneroym-sdk` from `syneroym-smoke-tests`, `chromiumoxide`), not six —
    [deferred-backlog.md](../../deferred-backlog.md)'s matching row corrected
    to match.
-9. ✅ `cargo +nightly fmt --all` clean.
-10. ✅ `cargo clippy --workspace --all-targets --all-features` clean.
-11. ✅ `cargo test --workspace` passes — every failure is the pre-existing
-    sandbox-bind category (see [status.md](status.md)); every crate this
-    slice touches is fully green.
+9. ✅ `cargo +nightly fmt --all` clean, re-confirmed with B3 landed
+    (2026-08-06).
+10. ✅ `cargo clippy --workspace --all-targets --all-features` clean,
+    re-confirmed with B3 landed (2026-08-06).
+11. ✅ `cargo test --workspace --no-fail-fast` passes — every failure is the
+    pre-existing sandbox-bind category (see [status.md](status.md)); every
+    crate B3 touches (`syneroym-app-orchestration`, `syneroym-app-supervisor`,
+    `syneroym-sdk`, `roymctl`) is fully green, and `syneroym-control-plane`'s
+    seven failures are the same pre-existing set B1/B2 already documented.
 12. ✅ `mise run test:e2e` passes — 12/12, unchanged from before this slice.
 13. ✅ **B2.** Two WIT changes, both guest-visible:
     `call-options.idempotency-key` and a new `enqueue` verb
@@ -322,3 +326,33 @@ it. B1 status below reflects [status.md](status.md)'s B1 evidence
     here. Also corrected: "`AppSandboxRole` is untouched" -- B2 adds five
     `queue_*` fields there, for the same reason B1 added five to
     `SupervisorRole`.
+14. ✅ **B3.** The reference scenario passes end to end against one real
+    substrate and one real supervisor —
+    [scheduled_task_e2e.rs](../../../../crates/substrate/tests/scheduled_task_e2e.rs).
+    `a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick` covers
+    deploy/adopt, a schedule firing on its own cron minute, and the
+    watermark holding it to one run inside that minute.
+    `a_supervisor_restart_skips_the_ticks_it_missed` covers a supervisor
+    process restart across a whole missed cron occurrence, asserting the
+    counter does not move. Both assert the outbox and DLQ stay empty
+    throughout. Both run against real minute boundaries and take ~2-5
+    minutes each; run at least three times before trusting a green result.
+15. ✅ **B3**, for the rows B3 owns (10, 11, 13, 14 -- a run outliving its
+    interval, a partitioned substrate, schedule state at rest, run
+    authorization). Row 10 is structural within one live process (the
+    instance lock plus an inline await) and the watermark covers the crash
+    case, tested by `a_schedule_evaluated_twice_inside_one_cron_minute_runs_once`
+    and the e2e's own step 4. Row 11 is the documented cost of no lease
+    (ADR-0023 §6): no run happens and it is visible via `schedules`'
+    `last-run-at` no longer advancing.
+16. ✅ **B3.** One WIT change on each interface: `run-scheduled` on
+    `orchestrator`
+    ([control-plane.wit](../../../../crates/wit_interfaces/wit/control-plane/control-plane.wit)),
+    dispatching locally through the control plane's existing `ServiceProxy`
+    handle, and `schedules` on `supervisor`
+    ([supervisor.wit](../../../../crates/wit_interfaces/wit/supervisor/supervisor.wit)),
+    an operator listing verb. Both are covered by the existing
+    `test_wit_adherence`-style dynamic checks (`the_supervisor_wit_dispatch_table_covers_every_declared_function`,
+    `no_supervisor_verb_accepts_or_returns_key_material`), which fail
+    without a matching dispatch arm -- the same mechanism B1/B2 relied on,
+    not a new test written for this.

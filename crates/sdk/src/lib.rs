@@ -36,7 +36,7 @@ pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane
     NetworkEndpoint, PlannedService, RpcProbe, ServiceConfig, ServiceType, TcpManifest, TcpProbe,
     TopologyMode, WasmManifest,
 };
-use tokio::{io, net::TcpStream, sync::mpsc, time};
+use tokio::{io, net::TcpStream, sync::mpsc, task::JoinHandle, time};
 use tracing::debug;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -155,6 +155,14 @@ pub struct SyneroymClient {
     /// default -- callers that don't hold one still get the B0 self-
     /// asserted-identity admission.
     caller_ucan: Option<CapabilityToken>,
+    /// Handles for endpoints from failed/timed-out connect attempts (see
+    /// `spawn_background_close`), reaped by [`Self::shutdown`]. Unlike the
+    /// `Drop` safety net, a retry loop such as `wait_for_ready` can spawn
+    /// many of these against a single client; leaving them untracked lets
+    /// the runtime abort them mid-close on teardown instead of letting them
+    /// finish, which is what was producing iroh's "Endpoint dropped without
+    /// calling `Endpoint::close`" warning.
+    pending_closes: Vec<JoinHandle<()>>,
 }
 
 impl Debug for SyneroymClient {
@@ -167,6 +175,7 @@ impl Debug for SyneroymClient {
             .field("connect_timeout", &self.connect_timeout)
             .field("identity", &self.identity)
             .field("caller_ucan", &self.caller_ucan)
+            .field("pending_closes", &self.pending_closes.len())
             .finish()
     }
 }
@@ -223,7 +232,8 @@ impl MessageStream {
     }
 }
 
-/// Closes an iroh endpoint without making the caller wait for it.
+/// Closes an iroh endpoint without making the caller wait for it, returning
+/// the task's handle so it can be reaped later.
 ///
 /// `Endpoint::close` is a graceful QUIC shutdown that, per its own docs, can
 /// take up to ~3s to resolve against a peer with bad connectivity — it
@@ -232,10 +242,10 @@ impl MessageStream {
 /// would silently add ~3s on top of whatever deadline the caller configured.
 /// Closing is still worth doing for the peer's sake, just not on the
 /// caller's clock.
-fn close_in_background(endpoint: Endpoint) {
+fn spawn_background_close(endpoint: Endpoint) -> JoinHandle<()> {
     tokio::spawn(async move {
         endpoint.close().await;
-    });
+    })
 }
 
 /// Only fails if the system's random number generator is unavailable (e.g.
@@ -259,6 +269,7 @@ impl SyneroymClient {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
             caller_ucan: None,
+            pending_closes: Vec::new(),
         }
     }
 
@@ -272,6 +283,7 @@ impl SyneroymClient {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
             caller_ucan: None,
+            pending_closes: Vec::new(),
         }
     }
 
@@ -293,6 +305,7 @@ impl SyneroymClient {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity,
             caller_ucan: None,
+            pending_closes: Vec::new(),
         }
     }
 
@@ -363,11 +376,11 @@ impl SyneroymClient {
                             return Ok(());
                         }
                         Ok(Err(e)) => {
-                            close_in_background(endpoint);
+                            self.pending_closes.push(spawn_background_close(endpoint));
                             return Err(e.into());
                         }
                         Err(_) => {
-                            close_in_background(endpoint);
+                            self.pending_closes.push(spawn_background_close(endpoint));
                             return Err(anyhow::anyhow!(
                                 "connect to {} timed out after {:?}",
                                 self.service_id,
@@ -434,6 +447,9 @@ impl SyneroymClient {
     pub async fn shutdown(&mut self) -> Result<()> {
         if let Some(TransportConnection::Iroh { endpoint, .. }) = self.connection.take() {
             endpoint.close().await;
+        }
+        for handle in self.pending_closes.drain(..) {
+            let _ = handle.await;
         }
         Ok(())
     }
@@ -972,7 +988,7 @@ impl Drop for SyneroymClient {
         if let Some(TransportConnection::Iroh { endpoint, .. }) = self.connection.take()
             && tokio::runtime::Handle::try_current().is_ok()
         {
-            close_in_background(endpoint);
+            drop(spawn_background_close(endpoint));
         }
     }
 }

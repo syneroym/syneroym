@@ -9,6 +9,7 @@ pub mod journal;
 pub mod models;
 pub mod reconcile;
 pub mod resolver;
+pub mod schedule;
 pub mod substrate_inventory;
 
 pub use alerts::{AlertKind, AlertRecord, AlertStore};
@@ -20,14 +21,17 @@ pub use journal::{
 pub use models::{
     AppBlueprintId, AppDependencySpec, AppInstanceId, DependencyName, DeploymentPlan, HealthCheck,
     HttpProbe, InterfaceName, LogicalServiceName, LogicalServiceRef, ParseError, PlacementSelector,
-    PlannedService, RpcProbe, ServiceConfig, ServiceId, ServiceSpec, ServiceType, SubstrateAlias,
-    SynAppManifest, TcpProbe, TopologyMode,
+    PlannedService, RpcProbe, ScheduleSpec, ServiceConfig, ServiceId, ServiceSpec, ServiceType,
+    SubstrateAlias, SynAppManifest, TcpProbe, TopologyMode,
 };
 pub use reconcile::{ReconcileAction, ReconcilePlan, Reconciler};
 pub use resolver::{
     AllMembers, AppRegistry, BindingWriteOutcome, DEFAULT_BINDING_CACHE_TTL_MS, LogicalResolver,
     ResolvedTopology, ShardingStrategy, StaticInventory, TopologyEntry, TopologyEpoch,
     classify_binding_write, empty_resolver, rendezvous_select,
+};
+pub use schedule::{
+    DEFAULT_SCHEDULE_TIMEOUT_MS, MAX_SCHEDULE_TIMEOUT_MS, MAX_SCHEDULED_SERVICES, has_occurrence_in,
 };
 pub use substrate_inventory::{
     SubstrateEntry, SubstrateInventory, check_placement, placement_demand,

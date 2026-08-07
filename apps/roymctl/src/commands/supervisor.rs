@@ -124,6 +124,11 @@ pub enum SupervisorCommands {
         instance_id: String,
         dead_letter_id: u64,
     },
+    /// List this instance's declared schedules and what the supervisor has
+    /// most recently done about each.
+    Schedules {
+        instance_id: String,
+    },
 }
 
 fn resolve_under(dir: &Path, path: &Path) -> PathBuf {
@@ -416,6 +421,12 @@ pub async fn handle(
                 )
                 .await?;
             println!("Replayed dead letter {dead_letter_id} for '{instance_id}'.");
+        }
+        SupervisorCommands::Schedules { instance_id } => {
+            let res = client
+                .request("supervisor", "schedules", serde_json::to_value([instance_id.clone()])?)
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&res.result)?);
         }
     }
     Ok(())

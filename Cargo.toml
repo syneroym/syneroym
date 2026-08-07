@@ -8,6 +8,7 @@ exclude = [
     "test-components/stream-test",
     "test-components/proxy-test",
     "test-components/abac-test",
+    "test-components/scheduled-test",
 ]
 
 [profile.dev]
@@ -104,6 +105,7 @@ blake3 = "1.8"
 ed25519-dalek = { version = "2.2", features = ["zeroize"] }
 hex = { version = "0.4", features = ["serde"] }
 chrono = "0.4"
+croner = "3.0.1"
 pkarr = "6.0"
 dirs = "6.0"
 rusqlite = { version = "0.38", features = ["bundled-sqlcipher", "hooks"] }

@@ -499,6 +499,44 @@ impl NativeService for ControlPlaneService {
                     .map_err(RpcError::InternalError)?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "restarted"}) })
             }
+            "run-scheduled" => {
+                #[derive(serde::Deserialize)]
+                struct RunScheduledParams {
+                    #[serde(alias = "service-id")]
+                    service_id: String,
+                    generation: u64,
+                    interface: String,
+                    method: String,
+                    #[serde(alias = "params-json")]
+                    params_json: Option<String>,
+                }
+                let params =
+                    serde_json::from_value::<(String, u64, String, String, Option<String>)>(
+                        invocation.params.clone(),
+                    )
+                    .map(|(service_id, generation, interface, method, params_json)| {
+                        RunScheduledParams {
+                            service_id,
+                            generation,
+                            interface,
+                            method,
+                            params_json,
+                        }
+                    })
+                    .or_else(|_| serde_json::from_value::<RunScheduledParams>(invocation.params))
+                    .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                self.run_scheduled(
+                    params.service_id,
+                    params.generation,
+                    params.interface,
+                    params.method,
+                    params.params_json,
+                    &invocation.caller,
+                )
+                .await
+                .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::json!({"status": "ran"}) })
+            }
             "renew-cert" => {
                 let (service_id, generation, instance_certificate): (String, u64, String) =
                     serde_json::from_value(invocation.params).map_err(|e| {

@@ -138,6 +138,24 @@ interface supervisor {
         attempts: u32,
     }
 
+    /// One schedule this instance declares, with what the supervisor has
+    /// most recently done about it. `last-run-at` that has
+    /// stopped advancing while `evaluated-at` keeps moving is the visible
+    /// form of a substrate the supervisor cannot reach (ADR-0023 §6's
+    /// stated cost).
+    record scheduled-task {
+        logical-ref: string,
+        cron: string,
+        %interface: string,
+        method: string,
+        evaluated-at: s64,
+        last-run-at: option<s64>,
+        /// Absent until a run has actually happened. Reporting 0 instead
+        /// would be indistinguishable from "member 0 ran last".
+        last-member-index: option<u32>,
+        last-error: option<string>,
+    }
+
     submit:          func(s: submission)          -> result<submit-result, string>;
 
     /// `adopt`'s result: the claimed generation, plus the app instance's
@@ -235,6 +253,9 @@ interface supervisor {
     /// Re-enqueues a dead letter -- it never executes inline (D-B1-7). A
     /// second failure returns it here with its attempt history intact.
     replay: func(app-instance-id: string, dead-letter-id: u64) -> result<_, string>;
+
+    /// Every schedule this instance declares, in logical-ref order.
+    schedules: func(app-instance-id: string) -> result<list<scheduled-task>, string>;
 }
 
 world supervisor-service {

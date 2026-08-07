@@ -1,0 +1,13 @@
+[package]
+name = "syneroym-test-scheduled"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wit-bindgen = "0.55.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.component.target.dependencies]
+"syneroym:data-layer" = { path = "wit/deps/data-layer" }

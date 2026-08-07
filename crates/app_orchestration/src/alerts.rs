@@ -99,6 +99,15 @@ pub enum AlertKind {
     /// rows anyway. Cleared when that key's last dead letter is gone, by
     /// replay or by prune.
     DeliveryExhausted,
+    /// A scheduled tick failed or timed out (ADR-0023 §3). Keyed under a
+    /// constant sentinel rather than the substrate that
+    /// happened to run the tick -- a schedule belongs to the logical
+    /// service, and its target rotates across members that may sit on
+    /// different substrates, so keying under whichever one ran the failing
+    /// tick would mean the next tick's success clears a different row and
+    /// this one stands forever. Never queued or dead-lettered; the next
+    /// tick is the retry, and its success clears this alert.
+    ScheduledRunFailed,
 }
 
 impl fmt::Display for AlertKind {
@@ -118,6 +127,7 @@ impl fmt::Display for AlertKind {
             Self::InstanceRevoked => "INSTANCE_REVOKED",
             Self::RotationRestartPending => "ROTATION_RESTART_PENDING",
             Self::DeliveryExhausted => "DELIVERY_EXHAUSTED",
+            Self::ScheduledRunFailed => "SCHEDULED_RUN_FAILED",
         };
         write!(f, "{}", s)
     }
@@ -142,6 +152,7 @@ impl FromStr for AlertKind {
             "INSTANCE_REVOKED" => Ok(Self::InstanceRevoked),
             "ROTATION_RESTART_PENDING" => Ok(Self::RotationRestartPending),
             "DELIVERY_EXHAUSTED" => Ok(Self::DeliveryExhausted),
+            "SCHEDULED_RUN_FAILED" => Ok(Self::ScheduledRunFailed),
             _ => Err(anyhow!("Unknown alert kind: {}", s)),
         }
     }

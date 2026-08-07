@@ -671,3 +671,250 @@ everything still passed.
 --workspace --no-fail-fast` the documented pre-existing sandbox-bind set
 only, no additions; `mise run test:e2e` 12/12; `proxy_outbox_e2e` 2/2 in
 ~178 s; `router --lib` 139, `async-queue` 40, `rpc` 44, `sandbox-wasm` 60.
+
+## B3 — delivery (2026-08-06), complete
+
+**All five phases of the slice plan are complete and verified against
+every gate.** No design decision was reversed; the wall-clock timing of
+the new e2e test's second case was corrected after a first run exposed the
+actual assumption error (see "Deviations" below) -- not a design change.
+
+**What shipped.**
+
+- **Phase 1 — the manifest and plan surface.** `ScheduleSpec` and
+  `has_occurrence_in`
+  ([app_orchestration/schedule.rs](../../../../crates/app_orchestration/src/schedule.rs)),
+  backed by `croner` (added to `[workspace.dependencies]` after reading its
+  source directly, per the plan's own §0.7 caution -- its default parser is
+  five-field with seconds optional, so a bare crontab line parses as an
+  operator would read it). `schedule: Option<ScheduleSpec>` on both
+  `ServiceSpec` and `PlannedService`
+  ([app_orchestration/models.rs](../../../../crates/app_orchestration/src/models.rs)),
+  never on `ServiceConfig` and never mapped onto the wire.
+  `SynAppManifest::validate()`'s fourth check (cron parses, the declared
+  interface exists, `method` is non-empty, `params` is JSON if present, the
+  cap). `compile_recursive` clones the schedule onto every member of a
+  scaled service
+  ([app_orchestration/compiler.rs](../../../../crates/app_orchestration/src/compiler.rs)).
+  The struct-literal sweep the plan predicted landed across every
+  `PlannedService`/`ServiceSpec` construction site the compiler pointed at
+  (models.rs, compiler.rs, journal.rs, reconcile.rs, substrate_inventory.rs,
+  app_supervisor's keys.rs/service.rs, control_plane's orchestration.rs --
+  the WIT-generated `PlannedService` there is a distinct wire type and is
+  untouched --, sdk's deploy.rs/mapper.rs, roymctl's app.rs/member_identity.rs,
+  and every `crates/substrate/tests/*_e2e.rs` file that builds a manifest).
+- **Phase 2 — the invocation path.** `run-scheduled` on the `orchestrator`
+  WIT interface
+  ([control-plane.wit](../../../../crates/wit_interfaces/wit/control-plane/control-plane.wit)),
+  dispatching locally through `ControlPlaneService`'s existing
+  `ServiceProxy` handle as `CallerContext::service_system(service_id)`, not
+  as the supervisor's own identity -- the same gate `restart` takes (owner
+  check, generation check), so this is a use of the `orchestrator/deploy`
+  grant, not a widening of it.
+  `SubstrateActor::run_scheduled`, a seventh trait method with a refusing
+  default body so the seven existing test fakes did not have to grow one
+  ([sdk/deploy.rs](../../../../crates/sdk/src/deploy.rs)); `SyneroymClient`
+  implements it for real, `DurableActor` forwards it with no outbox
+  involvement (a scheduled run is never queued -- the intent expires,
+  ADR-0023 §3).
+- **Phase 3 — evaluation, selection, and the fifth work-list.**
+  `scheduled_runs`, a seventh table in `supervisor.db`
+  ([app_supervisor/store.rs](../../../../crates/app_supervisor/src/store.rs)),
+  and `ScheduleState`/`record_schedule_evaluated`/`record_schedule_started`/
+  `record_schedule_outcome`/`clear_schedule_state_for_instance`.
+  `AlertKind::ScheduledRunFailed`, keyed under the `supervisor:schedule`
+  sentinel rather than a member's own substrate, so a failure on one member
+  and a success on another (under `replicas > 1`) touch the same row
+  ([app_orchestration/alerts.rs](../../../../crates/app_orchestration/src/alerts.rs)).
+  `schedule_decisions`, a pure selection function beside `renewal_candidates`
+  (watermark plus grace-window clamp, round-robin over healthy members),
+  and `run_due_schedules`, wired into `reconcile_instance_pass`/
+  `apply_write_phase` as the fifth work-list
+  ([app_supervisor/service.rs](../../../../crates/app_supervisor/src/service.rs)).
+  `membership_only_push_candidates` renamed to `classify_update_actions`
+  (its first return value renamed `redeploy_exclusions`), with
+  `only_schedule_changed` added beside `only_resolved_dependencies_changed`
+  so a schedule-only edit is excluded from redeploy but never becomes a
+  push candidate, and `only_resolved_dependencies_changed` itself now
+  requires `schedule` unchanged so a simultaneous schedule-and-membership
+  edit does not silently drop the schedule change.
+  `refuse_schedules_above_cap`, `refuse_replicas_above_cap`'s sibling,
+  called from the same two sites (`handle_submit`, `handle_force_reconcile`)
+  -- widened to `refuse_unrunnable_schedules` in the review round below.
+- **Phase 4 — the operator surface.** `scheduled-task` record and
+  `schedules` verb on `supervisor.wit`
+  ([supervisor.wit](../../../../crates/wit_interfaces/wit/supervisor/supervisor.wit)),
+  `handle_schedules` (left-joins the stored plan's declarations against
+  `schedule_states`), `roymctl supervisor schedules`. `roymctl app deploy`
+  warns (does not refuse) when the compiled plan carries a schedule, since
+  `app deploy` has no supervisor behind it to ever run one. A "Scheduling a
+  service" subsection in
+  [developer-guide.md](../../../../docs/developer-guide.md), matching
+  "Scaling a service"'s own shape, landing with this slice rather than at
+  closeout.
+- **Phase 5 — the fixture and the e2e.** `test-components/scheduled-test`,
+  a WASM component importing only `syneroym:data-layer/store` and
+  exporting `scheduled-driver.{tick,tick-count}` backed by its own
+  persisted counter, wired into the root `Cargo.toml` exclude list and
+  `core/test_constants.rs`. `crates/substrate/tests/scheduled_task_e2e.rs`,
+  two tests against one real substrate and one real supervisor, both
+  failing loudly (not skipping) when the fixture artifact is not built by
+  hand first.
+
+**Deviations from the plan, and why.**
+
+- **The fixture's counter payload could not be a bare JSON number.** A
+  first version of `scheduled-test`'s `tick()` stored the counter as a bare
+  `"1"`/`"2"`/... payload -- valid JSON on its own. The data layer's
+  `payload` column is declared `JSON`, which SQLite gives *NUMERIC*
+  affinity (its declared-type rules only special-case
+  `INT`/`CHAR`/`CLOB`/`TEXT`/`BLOB`/`REAL`), so a bare-number payload is
+  silently stored as an actual `INTEGER`, and the host's own text read path
+  then fails with "Invalid column type Integer". Every other data-layer
+  fixture in this tree stores a JSON *object* payload, which never
+  triggers this coercion; `scheduled-test` now stores `{"count": N}` and
+  parses it by hand (matching `data-layer-test`'s own no-`serde_json`
+  convention), not discovered until the first real e2e run against a real
+  SQLite file -- the sandbox-run unit-level tests never touch real
+  payload-column storage.
+- **`poll_interval_secs = 2` (the plan's own suggestion) does not hold in
+  this environment.** The grace window is `2 * poll_interval_secs`; the
+  plan's own wall-clock arithmetic assumed the resident loop's actual pass
+  cadence tracks its *configured* interval closely. Measured here, a real
+  pass reconnects a fresh iroh endpoint to the managed substrate every
+  time, which alone costs several seconds even locally -- `poll_interval_secs
+  = 2` (grace 4s) meant the schedule never fired at all in three consecutive
+  attempts, because the real gap between passes exceeded the grace window
+  built to tolerate one dropped pass. Corrected to `poll_interval_secs = 10`
+  (grace 20s), comfortably above the observed per-pass latency; the e2e's
+  own module doc records the reasoning so it is not silently rediscovered.
+- **Test 2's downtime could not be a fixed-duration sleep.** A first
+  version slept a fixed 70s down + 30s settle after the restart. On an
+  unlucky alignment that ~100s window crosses *two* cron boundaries, not
+  one -- the second occurrence fires legitimately (the schedule doing
+  exactly what it should), and a fixed-duration test misreads that second,
+  real tick as evidence the first, missed one ran late (`tick-count` read
+  `2`, and the assertion for `1` failed). Rewritten to anchor to real
+  minute boundaries (`next_minute_boundary`, `sleep_until_unix_secs`)
+  instead of accumulated relative sleeps, with an explicit assertion that
+  the computed safety margin before the next legitimate tick is still
+  positive, so a future timing regression fails loudly with a diagnostic
+  rather than silently narrowing to a coin flip.
+
+**Verification evidence.**
+
+- Test attributes added, diffed against `main`: 6 in the new
+  `app_orchestration/schedule.rs`, 6 in `app_orchestration/models.rs`, 1 in
+  `app_orchestration/compiler.rs`, 5 in `app_supervisor/store.rs`, 18 in
+  `app_supervisor/service.rs`, 7 in `control_plane/service/orchestration.rs`,
+  1 in `sdk/deploy.rs`, 1 in `roymctl/commands/app.rs`, 2 in the new
+  `crates/substrate/tests/scheduled_task_e2e.rs` — **47 net new tests**.
+- `cargo +nightly fmt --all`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace --no-fail-fast` (sandboxed): 1548 passed, 68
+  failed, every failure in the documented pre-existing sandbox-bind
+  category (spot-checked several: `Failed to bind registry listener`,
+  `mainline` DHT actor `SendError`, real HTTP probe calls) -- the same
+  category B1/B2 already recorded, extended in the expected way to include
+  this slice's own `scheduled_task_e2e` (needs two real port-bound nodes,
+  same as every other `crates/substrate/tests/*_e2e.rs` file). Every crate
+  this slice touches is fully green in isolation:
+  `syneroym-app-orchestration` 125/125, `syneroym-app-supervisor` 210/210,
+  `syneroym-sdk` 45/45, `roymctl` 64/64;
+  `syneroym-control-plane` 157/164, with the 7 failures being the same
+  pre-existing sandbox-bind set (`a_probe_*`, `an_http_probe_*`,
+  `status_*`) unchanged by this slice.
+- `mise run test:e2e` (Playwright, sandbox disabled for real port binds):
+  12/12 -- 8 in the default config, 4 in `playwright-multihop.config.ts`,
+  unchanged from before this slice, as expected (B3 adds no browser-visible
+  surface).
+- `scheduled_task_e2e` (sandbox disabled, real port binds): both tests
+  green individually after the two fixes above --
+  `a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick` in
+  ~111s, `a_supervisor_restart_skips_the_ticks_it_missed` in ~281s.
+  Confirmed **fails, not skips**, with the fixture artifact deliberately
+  removed (D-B3-11's own requirement): both tests panic with "wasm
+  artifact is not built" naming the exact `cargo component build` command,
+  rather than reporting a false pass.
+- No planning-doc ids (`D-B3-N`, `M05B slice B3`, `slice B3`) in any new
+  code, doc comment, or test name -- swept and confirmed against every
+  added line in every touched/new file, per the project's own rule (which
+  this slice's neighbours, written before the rule existed, do not follow
+  and were left untouched).
+
+**Backlog rows added** (this slice's own choices, per §5 of the slice
+plan): a missed tick is skipped and run-late is not offered; a
+schedule-only edit re-diffs every pass with no journaled baseline;
+`run-scheduled` is not verified against the service's own declaration; a
+scheduled run's return value is discarded; cron granularity is bounded
+below by `poll_interval_secs`; a scheduled run is awaited inline in a
+sequential pass (bounded, ~8 minutes worst case); substrate-side
+concurrency for scheduled runs is unbounded across instances; no `mise`
+task builds the test components; a schedule deployed by `roymctl app
+deploy` never runs (mitigated by the warning, not fixed). See
+[deferred-backlog.md](../../deferred-backlog.md) §8 for the rows
+themselves.
+
+---
+
+## B3 — review response (2026-08-07)
+
+An independent review of the shipped commit raised 11 findings: 2 blocking,
+4 should-fix, 5 minor. Each was checked against the source. **10 fixed, 1
+pushed back in part** — the mechanism one blocking finding proposed was
+itself wrong, and one test the review asked for is still not reachable and
+is now a backlog row instead. Every fix carries a test that fails without
+it.
+
+### Blocking
+
+| # | Finding | Disposition |
+|---|---|---|
+| B3-01 | The grace window comes from the *configured* poll interval, so a slow sweep silently drops ticks | **Fixed, by a different mechanism than proposed.** The defect is real and the review's diagnosis is exact: `window_start = max(evaluated_at, now - 2 * poll_interval_secs)` lets the clamp win over an honest watermark whenever a sweep outruns two nominal intervals, which it routinely does — this slice's own e2e had to widen its interval for exactly this reason, and that fixed the test, not the rule. The proposed fix reads the gap from `self.last_reconciled`, and that would be wrong: `last_reconciled` is deliberately *not* stamped for a paused instance (it is what `status` reports), so a three-day pause would read as a three-day gap and fire a catch-up tick the moment the instance resumed — the exact behaviour the clamp exists to prevent. The gap is now measured between the resident loop's own *sweeps* (`previous_pass_started_at`, one process-wide stamp written at the end of `run_pass`), which keeps ticking while an instance is paused and resets to nothing on restart, so a slow sweep widens the window and neither a pause nor downtime can. `2 * poll_interval_secs` remains the floor. Tests: `a_sweep_slower_than_two_poll_intervals_widens_the_grace_window_to_match`, `a_sweep_slower_than_two_poll_intervals_still_fires_the_tick_it_covered`, `the_grace_window_is_two_poll_intervals_until_a_sweep_has_been_timed`, `a_paused_instance_fires_no_backlog_when_it_resumes`. |
+| B3-02 | `run-scheduled` never checks the service is deployed here, so it falls through to a remote call under the node's own key | **Fixed.** Real, and the security half is the sharpest point in the review. `ProxyRouter::invoke_inner` reads a miss in the local endpoint registry as "the target is elsewhere" and resolves it through the community registry, so a schedule naming a service this node does not host — or an interface the component does not export — became an outbound call, with the owner and generation checks both silently skipped (`if let Some`) and the node's own key on the wire. `run_scheduled_impl` now refuses when `registry.lookup(service_id, interface)` is `None`, which is exactly `invoke_inner`'s own local-or-remote test, so it refuses when and only when the call would leave the node. Tests: `run_scheduled_refuses_a_target_with_no_local_endpoint`, `run_scheduled_refuses_an_interface_the_local_service_does_not_export`. |
+
+### Should fix
+
+| # | Finding | Disposition |
+|---|---|---|
+| B3-03 | `timeout_ms = 0` passes validation and permanently kills the schedule | **Fixed.** Real: a zero budget elapses before the call starts, after the watermark is already written, so the tick is consumed and every later tick repeats the cycle. `validate()` now refuses anything outside `1..=MAX_SCHEDULE_TIMEOUT_MS`. The review's optional half is taken too — above the ceiling is refused rather than clamped, so a manifest never runs under a budget different from the one it asked for, and the supervisor's `SCHEDULED_RUN_CEILING` now derives from that one constant instead of restating it. **Follow-up (same round):** the manifest bound alone left the hole §0.8 exists for — `submit`/`force-reconcile` take an already-compiled plan and re-check nothing, and the runtime clamp is a `min`, which a zero survives — so a hand-edited plan reproduced the defect exactly. The bound is now also enforced on both submit paths, folded into the predicate already running there: `refuse_schedules_above_cap` becomes `refuse_unrunnable_schedules`. An unparseable cron is deliberately still *not* a submission-level refusal, and that asymmetry now has its own test — a bad cron degrades to the watermark branch and costs one schedule, while a budget no run can finish in has nothing to degrade to. Tests: `a_schedule_with_a_zero_timeout_is_refused_at_validation`, `a_schedule_timeout_above_the_ceiling_is_refused_rather_than_clamped`, `a_schedule_exactly_at_the_timeout_ceiling_is_accepted`, `refuse_unrunnable_schedules_refuses_a_submitted_plan_with_a_zero_timeout`, `refuse_unrunnable_schedules_refuses_a_submitted_plan_above_the_timeout_ceiling`, `refuse_unrunnable_schedules_allows_a_plan_whose_cron_does_not_parse`. |
+| B3-04 | `force-reconcile`/`adopt` wipe the schedule state and can swallow a due tick | **Fixed, taking the first of the two options offered.** `clear_schedule_state_for_instance` now keeps `evaluated_at` and clears only `last_run_at`/`last_member_index`/`last_error`. The watermark is not per-run state — it records how far the schedules have been looked at, and a supervisor healthy enough to be force-reconciled has genuinely looked that far. Keeping it cannot produce a backlog, since the grace window still bounds the next pass. Test: `clear_schedule_state_keeps_the_watermark_and_drops_only_the_run_record`. |
+| B3-05 | The two call-site tests the plan asks for are missing; only the classifier is tested | **Fixed, with the loop half reached differently.** The submit half is now a real integration test against the journal: a schedule-only resubmit with no clients succeeds and journals `Active` with the new schedule and no second placement action, where a member that actually reached `apply_plan` would have failed for want of a target and journaled `Degraded`. The loop half could not be reached the same way — with no reachable substrate, an *excluded* member and an *unreachable* one both produce zero writes, so the test would have passed without the fix. The loop's own application of the exclusion set is instead extracted into `redeploy_work_list` (which also lifts the `Remove`-alert loop out of the same `match`) and tested against the real classifier's output. Tests: `a_schedule_only_edit_on_submit_does_not_redeploy_the_service`, `a_schedule_only_edit_does_not_redeploy_the_service`. |
+| B3-06 | Neither early-return out of the schedule work-list is tested | **Half fixed, half a backlog row.** The paused/retired return inside the write phase is now tested directly, against a real schedule decision: `a_pause_landing_mid_pass_stops_that_passs_scheduled_run` asserts a paused instance does not even advance a watermark. The paused-resume property the review is really worried about is covered by `a_paused_instance_fires_no_backlog_when_it_resumes` under B3-01. The superseded return is still untested and now has its own backlog row: driving a real higher held-generation through a full pass needs a live substrate reporting one, which is why the existing `the_loop_skips_every_write_for_a_superseded_instance_but_still_polls_it` tests the decision rather than the pass. |
+
+### Minor
+
+| # | Finding | Disposition |
+|---|---|---|
+| B3-07 | The e2e was required to run three times; the evidence records one | **Fixed, and it found a real flake — the requirement was not ceremonial.** Three runs of the pair: run 1 green, run 2 **failed** in `a_supervisor_restart_skips_the_ticks_it_missed` with `tick-count failed: timed out`, run 3 green. Not a scheduling failure: the node this test reboots is also the registry the worker's endpoint record lives in *and* the relay the test's own client reaches the worker through, so the connection opened before the teardown does not reliably survive it — a dead transport was being reported as a scheduling result. Re-dialling does not fit in the window either (the managed node's endpoint takes its own time re-attaching to the restarted relay, and the assertion has ~30s before the next legitimate tick), and a first attempt at it was a no-op besides: `SyneroymClient::connect` returns `Ok(())` on sight of an existing connection. The post-restart witness is now the supervisor's own durable record, read over the client the reboot just created: `last_run_at` unmoved (the missed occurrence did not run) **and** `evaluated_at` past it (the rebooted supervisor really did look and skip). That is stronger than the counter it replaces, which an idle supervisor would also satisfy. The counter still witnesses the pre-restart tick in this test, and "only once per tick" in the first one. |
+| B3-08 | Test 1's `tick-count == 0` assertion carries a wall-clock assumption | **Fixed.** Real, and the same class as the assumption already corrected in test 2: a cron boundary falling inside the up-to-30s convergence loop fires a legitimate tick and the exact-zero check fails. The submit is now anchored to a minute boundary (the plan compiles first, so the sleep is the last thing before the call), giving the assertion a full cron minute to hold in. |
+| B3-09 | The `app deploy` warning itself is untested | **Fixed.** The predicate was tested; the branch was not. Reached through the CLI harness this tree already has (`assert_cmd`): the run asserts both the warning text *and* the unrelated later failure, so a warning quietly turned into a refusal fails the test too. Test: `app_deploy_warns_when_the_plan_carries_a_schedule_and_still_deploys`. |
+| B3-10 | The first tick after a fresh or cleared row skips member 0 | **Fixed.** `last_member_index` is now `Option<u32>` end to end — column, `ScheduleState`, the `scheduled-task` WIT record — so "never run" is no longer spelled the same way as "member 0 ran last". `None` sorts below every index, so the round-robin's own rule needs no special case. Test: `the_first_tick_of_a_multi_member_service_runs_member_zero`. |
+| B3-11 | A `scheduled_runs` row outlives the schedule that created it | **Fixed.** `prune_schedule_states`, called from the pass that already builds the declared set (now shared with the `schedules` listing as `declared_schedules`). Tests: `prune_schedule_states_drops_only_the_schedules_the_plan_no_longer_declares`, `a_schedule_the_plan_no_longer_declares_loses_its_state_row`. |
+
+**Verification evidence.**
+
+- `cargo +nightly fmt --all`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- Crates this round touches, in isolation: `syneroym-app-orchestration`
+  128/128, `syneroym-app-supervisor` 223/223, `roymctl` 12/12 on
+  `cli_args`. `syneroym-control-plane` green apart from the same
+  pre-existing sandbox-bind set (`a_probe_*`, `an_http_probe_*`,
+  `status_*`); all nine `run_scheduled_*` tests pass.
+- `cargo test --workspace --no-fail-fast` (sandboxed): every failure in the
+  documented pre-existing sandbox-bind category, spot-checked again
+  (`Failed to bind registry listener`, real HTTP probe calls, every
+  `crates/substrate/tests/*_e2e.rs`).
+- `scheduled_task_e2e` (sandbox disabled, real port binds), run three times
+  as exit criterion 14 asks: 1 green / 1 failed / 1 green, the failure being
+  the transport flake B3-07 records above. After moving the post-restart
+  witness onto the supervisor's own record, three further consecutive runs:
+  **3/3 green**, both tests each time (429.8s, 383.7s, 397.0s).
+
+**Backlog changes.** One row added (a superseded instance skipping its
+scheduled work is argued, not tested). Two amended: the missed-tick row now
+states the grace window's real rule, and the `run-scheduled`-is-not-verified
+row records that the arbitrary `(interface, method)` pair a grantee can name
+is now bounded to interfaces a locally hosted service actually exports.

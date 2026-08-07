@@ -12,17 +12,21 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use dashmap::DashMap;
 use serde_json::Value;
 use syneroym_app_orchestration::{
-    ActionRecord, AlertKind, DeploymentState, ReconcileAction, Reconciler,
+    ActionRecord, AlertKind, DeploymentState, MAX_SCHEDULE_TIMEOUT_MS, MAX_SCHEDULED_SERVICES,
+    ReconcileAction, Reconciler, has_occurrence_in,
     models::{
         AppInstanceId, DeploymentPlan, LogicalServiceRef, MAX_REPLICAS, MemberRef, PlannedService,
-        RotationPolicy, ServiceId, SubstrateAlias,
+        RotationPolicy, ScheduleSpec, ServiceId, SubstrateAlias,
     },
 };
 use syneroym_async_queue::{FailOutcome, QueueItem};
@@ -46,7 +50,8 @@ use syneroym_sdk::{
 };
 use syneroym_wit_interfaces::supervisor::exports::syneroym::supervisor::supervisor::{
     AdoptResult, Alert, BindingConvergence, DeadLetter, InstanceStatus, ManagedService,
-    ManagedState, MintedMaster as WitMintedMaster, OutboxItem, Submission, SubmitResult,
+    ManagedState, MintedMaster as WitMintedMaster, OutboxItem, ScheduledTask, Submission,
+    SubmitResult,
 };
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
@@ -56,7 +61,7 @@ use crate::{
     inventory::{SupervisorInventory, SupervisorInventoryEntry},
     keys, outbox,
     outbox::{QueueKey, SupervisorOutbox},
-    store::{RemediationState, SupervisorStore},
+    store::{RemediationState, ScheduleState, SupervisorStore},
 };
 
 const SUPERVISOR_INTERFACE: &str = "supervisor";
@@ -72,6 +77,26 @@ const MANAGED_SUBSTRATE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// alert on every pass right before it gets re-raised (see the call
 /// site's own comment).
 const NEVER_LANDED_SUBSTRATE_DID: &str = "supervisor:never-landed";
+/// The `substrate_did` a `ScheduledRunFailed` alert is keyed under.
+/// A schedule belongs to a logical service, and its target
+/// rotates across members that may be on different substrates -- keying the
+/// alert under whichever one ran the failing tick would mean the next
+/// tick's success clears a different row and the failure stands forever.
+/// The substrate that actually ran the tick goes in the alert's `detail`,
+/// where it is information rather than identity.
+const SCHEDULE_SUBSTRATE_DID: &str = "supervisor:schedule";
+/// A manifest's own `ScheduleSpec.timeout_ms` decides one run's budget;
+/// this is the ceiling it cannot exceed. 30s rather
+/// than something generous, because this call is awaited inline inside a
+/// reconcile pass that holds the instance lock and runs instances one at a
+/// time -- every second here is a second every *other* app instance waits.
+/// A budget above the guest's own `dispatch_epoch_timeout_secs` (5s) buys
+/// no extra work, only a longer wait on a substrate that is not answering.
+///
+/// `SynAppManifest::validate` refuses anything above this outright, so the
+/// clamp at the call site only ever fires for a hand-edited plan that never
+/// passed through validation -- which is why both read the same constant.
+const SCHEDULED_RUN_CEILING: Duration = Duration::from_millis(MAX_SCHEDULE_TIMEOUT_MS as u64);
 /// This supervisor's own `record_report` calls -- the resident loop's
 /// pass and `handle_status`'s on-demand sweep alike -- are the sole
 /// producer of `CertificateNearExpiry`/`CertificateExpired` for their own
@@ -102,9 +127,33 @@ struct WritePhase<'a> {
     /// instead of a full redeploy. `(member's own planned service, the
     /// substrate DID it is already landed on)`.
     push_candidates: &'a [(PlannedService, String)],
+    /// The fifth work-list: this pass's decision for every
+    /// schedule the plan declares, computed once by the pure
+    /// `schedule_decisions` and carried through unchanged -- see
+    /// `ScheduleDecision`'s own doc.
+    schedule_decisions: &'a [ScheduleDecision],
     did_to_alias: &'a BTreeMap<String, String>,
     clients: &'a BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
     now: u64,
+}
+
+/// What this pass owes one schedule (ADR-0023 §6). Computed
+/// once per pass by the pure [`SupervisorService::schedule_decisions`],
+/// then acted on by [`SupervisorService::run_due_schedules`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ScheduleDecision {
+    /// Looked, nothing due (or nothing runnable: a bad cron, no healthy
+    /// member, no known alias for the picked member's substrate). Advance
+    /// the watermark only -- this is what makes a missed tick a skip
+    /// rather than a backlog.
+    Watermark { logical_ref: String },
+    Run {
+        logical_ref: String,
+        service_id: String,
+        substrate_did: String,
+        member_index: u32,
+        schedule: ScheduleSpec,
+    },
 }
 
 /// One placed member due for certificate renewal this pass, resolved from
@@ -294,6 +343,20 @@ pub struct SupervisorService {
     /// supervisor restart correctly reports "no pass since restart"
     /// rather than replaying a stale wall-clock time.
     last_reconciled: DashMap<String, i64>,
+    /// Unix-seconds timestamp at which the resident loop *began* its
+    /// previous sweep, or 0 before the second one starts. Written once per
+    /// `run_pass`, after the sweep it timed, so every instance reconciled
+    /// inside a sweep reads the start of the one before it -- which is how
+    /// far back this supervisor can prove it was awake and looking.
+    /// `schedule_grace_secs` is the only reader.
+    ///
+    /// Process-wide rather than per-instance on purpose. A per-instance gap
+    /// (`last_reconciled`) is not stamped while an instance is paused, so it
+    /// would report a three-day pause as a three-day gap and fire a
+    /// catch-up tick the moment the instance resumed. The loop keeps
+    /// sweeping throughout that pause, so the sweep-to-sweep gap stays one
+    /// poll interval and a resume fires nothing.
+    previous_pass_started_at: AtomicU64,
     /// Cancelled by `shutdown` -- the resident loop (`run`, spawned by
     /// `RuntimeServices::run_until_shutdown`, not pinned in its own
     /// `select!`) watches this to stop between passes rather than being
@@ -375,6 +438,7 @@ impl SupervisorService {
             }),
             instance_locks: DashMap::new(),
             last_reconciled: DashMap::new(),
+            previous_pass_started_at: AtomicU64::new(0),
             cancellation_token: CancellationToken::new(),
             #[cfg(test)]
             _fixture_tempdir: None,
@@ -782,6 +846,8 @@ impl SupervisorService {
     /// property rather than a correctness one (§19.14's `all_active`
     /// entry).
     async fn run_pass(&self) {
+        let started =
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let instances = match self.store.all_active() {
             Ok(v) => v,
             Err(e) => {
@@ -793,6 +859,36 @@ impl SupervisorService {
             let lock = self.instance_lock(&state.app_instance_id);
             let _guard = lock.lock().await;
             self.reconcile_instance_pass(&state.app_instance_id).await;
+        }
+        // After the sweep, not before: every instance reconciled above must
+        // read the *previous* sweep's start, which is the window
+        // `schedule_grace_secs` sizes itself from.
+        self.previous_pass_started_at.store(started, Ordering::Relaxed);
+    }
+
+    /// How far back a schedule may look for an occurrence it has not run
+    /// yet (ADR-0023 §6). The floor is two poll intervals, which tolerates
+    /// one dropped sweep; above that it is the real sweep-to-sweep gap,
+    /// because a sweep that outruns its own interval is the ordinary case,
+    /// not the exception -- every pass rebuilds an iroh client per
+    /// substrate, so one unreachable substrate alone can push a sweep past
+    /// two nominal intervals. Sizing the window from the *configured*
+    /// interval instead would cut a hole between the last evaluation and
+    /// the start of the window, and every occurrence landing in that hole
+    /// would be dropped while the supervisor was awake the whole time --
+    /// visible to an operator only as a watermark that keeps advancing
+    /// while `last_run_at` never moves.
+    ///
+    /// A clamp is still needed above the honest watermark, since nothing
+    /// runs while the process is down: without it, a supervisor started
+    /// after a day off would fire one tick per schedule immediately. The
+    /// gap this reads is measured inside one process and reset to zero by a
+    /// restart, so downtime never widens the window.
+    fn schedule_grace_secs(&self, now: u64) -> u64 {
+        let floor = 2 * self.poll_interval_secs;
+        match self.previous_pass_started_at.load(Ordering::Relaxed) {
+            0 => floor,
+            previous => floor.max(now.saturating_sub(previous)),
         }
     }
 
@@ -994,61 +1090,45 @@ impl SupervisorService {
                 );
             }
         }
-        // D-A5c-2/D-A5c-3/D-A5c-21: the work list is `compute_diff`'s
-        // Add/Update actions (a plan-level change) plus `missing_
-        // placement` (a service the current sweep finds with no landed
-        // placement at all, which a content-unchanged diff against an
-        // older Active snapshot cannot see on its own -- D-A5c-10's own
-        // gap). `Remove` actions are deliberately excluded from the work
-        // list -- a plan-level removal is never undeployed here, and is
-        // instead raised as `OrphanedService`, folded into this same
-        // `opened`/publish pass since it is a local read, not a write to
-        // any substrate.
         let diff = Reconciler::new(&self.store.journal).compute_diff(&plan);
-        let mut needs_work: BTreeSet<String> = missing_placement.clone();
         // M05A A5e (D-A5e-7): a dependent member whose diff against the
         // last active plan changed *only* `resolved_dependencies` is a
         // membership change in one of its dependencies -- pushed via
         // `push_bindings`, not redeployed. Every other kind of change
-        // (config, placement, ...) still takes the redeploy path below.
-        // `membership_only_push_candidates` is the same classifier an
+        // (config, placement, ...) still takes the redeploy path.
+        // A member whose diff changed *only* its
+        // `schedule` is excluded the same way, but pushes nothing.
+        // `classify_update_actions` is the same classifier an
         // operator-triggered apply uses (`apply_with_membership_pushes`),
         // so a loop pass and a `submit`/`force-reconcile` make the
-        // identical push-vs-redeploy call for the identical diff.
-        let (push_member_refs, push_candidates) = diff
+        // identical redeploy-vs-push-vs-exclude call for the identical
+        // diff.
+        let (redeploy_exclusions, push_candidates) = diff
             .as_ref()
-            .map(|d| Self::membership_only_push_candidates(&landed, &d.actions))
+            .map(|d| Self::classify_update_actions(&landed, &d.actions))
             .unwrap_or_default();
-        if let Ok(diff) = &diff {
-            for action in &diff.actions {
-                match action {
-                    ReconcileAction::Add(svc) => {
-                        needs_work.insert(svc.member_ref().to_string());
-                    }
-                    ReconcileAction::Update { new, .. } => {
-                        let member_ref = new.member_ref().to_string();
-                        if !push_member_refs.contains(&member_ref) {
-                            needs_work.insert(member_ref);
-                        }
-                    }
-                    ReconcileAction::Remove(l_ref) => {
-                        let l_ref_str = l_ref.to_string();
-                        if let Some(row) = deploy::current_placement(&landed, &l_ref_str)
-                            && let Ok(true) = self.store.alerts.raise(
-                                &instance_id,
-                                Some(&l_ref_str),
-                                row.substrate_alias.as_deref(),
-                                &row.substrate_did,
-                                AlertKind::OrphanedService,
-                                "dropped from the plan but still running on its substrate; not \
-                                 undeployed -- remove it by hand (`svc remove`) if that is \
-                                 intended",
-                            )
-                        {
-                            opened.push((AlertKind::OrphanedService, l_ref_str));
-                        }
-                    }
-                }
+        let needs_work = Self::redeploy_work_list(
+            &missing_placement,
+            diff.as_ref().map(|d| d.actions.as_slice()).unwrap_or_default(),
+            &redeploy_exclusions,
+        );
+        // `Remove` is the one action the work list above ignores: a
+        // plan-level removal is never undeployed here, only alerted on.
+        for action in diff.iter().flat_map(|d| &d.actions) {
+            let ReconcileAction::Remove(l_ref) = action else { continue };
+            let l_ref_str = l_ref.to_string();
+            if let Some(row) = deploy::current_placement(&landed, &l_ref_str)
+                && let Ok(true) = self.store.alerts.raise(
+                    &instance_id,
+                    Some(&l_ref_str),
+                    row.substrate_alias.as_deref(),
+                    &row.substrate_did,
+                    AlertKind::OrphanedService,
+                    "dropped from the plan but still running on its substrate; not undeployed -- \
+                     remove it by hand (`svc remove`) if that is intended",
+                )
+            {
+                opened.push((AlertKind::OrphanedService, l_ref_str));
             }
         }
         // A member back in the current plan cannot be orphaned this
@@ -1093,6 +1173,27 @@ impl SupervisorService {
             now,
             self.max_renewals_per_pass,
         );
+        // The fifth work-list (ADR-0023 §6): every schedule
+        // this instance's plan declares, evaluated against this pass's own
+        // health report, over the grace window `schedule_grace_secs`
+        // sizes from this supervisor's own sweep cadence.
+        let declared_schedules: BTreeSet<String> =
+            Self::declared_schedules(&plan).into_keys().collect();
+        if let Err(e) = self.store.prune_schedule_states(app_instance_id, &declared_schedules) {
+            tracing::warn!(
+                app_instance_id,
+                error = %e,
+                "failed to drop the state of a schedule the plan no longer declares"
+            );
+        }
+        let schedule_states = self.store.schedule_states(app_instance_id).unwrap_or_default();
+        let schedule_decisions = Self::schedule_decisions(
+            &plan,
+            &schedule_states,
+            &report,
+            now,
+            self.schedule_grace_secs(now),
+        );
         // Members whose certificate renewed but whose
         // `restart-on-rotation` restart then failed. Independent of the
         // renewal work-list above -- these are no longer near-expiry, so
@@ -1133,6 +1234,7 @@ impl SupervisorService {
             || !renewal_candidates.is_empty()
             || !pending_rotation_restarts.is_empty()
             || !push_candidates.is_empty()
+            || !schedule_decisions.is_empty()
             || self.anchor_writer.is_some()
         {
             self.apply_write_phase(WritePhase {
@@ -1144,6 +1246,7 @@ impl SupervisorService {
                 renewal_candidates: &renewal_candidates,
                 pending_rotation_restarts: &pending_rotation_restarts,
                 push_candidates: &push_candidates,
+                schedule_decisions: &schedule_decisions,
                 did_to_alias: &did_to_alias,
                 clients: &clients,
                 now,
@@ -1176,6 +1279,7 @@ impl SupervisorService {
             renewal_candidates,
             pending_rotation_restarts,
             push_candidates,
+            schedule_decisions,
             did_to_alias,
             clients,
             now,
@@ -1422,6 +1526,17 @@ impl SupervisorService {
             .await;
         }
         self.refresh_due_master_anchors(plan, now).await;
+        self.run_due_schedules(
+            instance_id,
+            app_instance_id,
+            schedule_decisions,
+            did_to_alias,
+            &Self::actors_from_clients(clients),
+            fresh_state.generation,
+            now,
+            &mut opened,
+        )
+        .await;
         self.publish_opened_alerts(app_instance_id, &opened).await;
     }
 
@@ -1933,45 +2048,367 @@ impl SupervisorService {
     /// -- a membership change in one of `new`'s dependencies, and nothing
     /// else about this member itself (M05A A5e, D-A5e-7). `logical_ref` is
     /// already guaranteed equal: `Reconciler::diff_plans` matches `old` and
-    /// `new` by `MemberRef`, which includes it.
+    /// `new` by `MemberRef`, which includes it. Also requires `schedule` to
+    /// be unchanged: a simultaneous schedule edit must not
+    /// classify as membership-only, or the schedule change is silently
+    /// dropped from the plan this pass records.
     fn only_resolved_dependencies_changed(old: &PlannedService, new: &PlannedService) -> bool {
         old.service_id == new.service_id
             && old.substrate == new.substrate
             && old.config == new.config
             && old.topology_mode == new.topology_mode
             && old.member_index == new.member_index
+            && old.schedule == new.schedule
             && old.resolved_dependencies != new.resolved_dependencies
     }
 
-    /// The `Update` half of a diff whose *only* change is
-    /// `resolved_dependencies` (M05A A5e, D-A5e-7), paired with the
-    /// substrate DID each such member is already landed on. Returns the
-    /// pushed members' own refs alongside them so a caller can exclude them
-    /// from whatever it is about to apply. Shared by the loop's write phase
-    /// (`reconcile_instance_pass`) and an operator-triggered apply
-    /// (`apply_with_membership_pushes`, under `handle_submit`/
-    /// `deploy_submission`) so both make the identical push-vs-redeploy call
-    /// for the identical diff -- fixing findings §33.7/D-A5e-7 for one path
-    /// and not the other is exactly the gap the second review round found.
-    fn membership_only_push_candidates(
+    /// Whether `old` and `new` differ only in `schedule`.
+    /// A schedule-only edit must not redeploy the service -- the
+    /// substrate has no use for the change at all (`ServiceSpec.schedule`'s
+    /// own doc) -- and has nothing to push either, since it names no
+    /// substrate-visible fact.
+    fn only_schedule_changed(old: &PlannedService, new: &PlannedService) -> bool {
+        old.service_id == new.service_id
+            && old.substrate == new.substrate
+            && old.config == new.config
+            && old.topology_mode == new.topology_mode
+            && old.member_index == new.member_index
+            && old.resolved_dependencies == new.resolved_dependencies
+            && old.schedule != new.schedule
+    }
+
+    /// Splits a diff's `Update` actions into (a) members no caller should
+    /// redeploy this pass and (b) the subset of those that need a binding
+    /// push. The two are not the same set: a member
+    /// whose only change is its schedule must not be redeployed (the
+    /// substrate has no use for the change) and has nothing to push
+    /// either -- so it joins the exclusion set but never the push list.
+    ///
+    /// The asymmetry in the landed-placement check below is deliberate: a
+    /// membership push needs a substrate to push *to*, so a never-landed
+    /// member falls through to the redeploy path. A schedule exclusion
+    /// needs no substrate, so it applies whether or not the member has
+    /// landed.
+    ///
+    /// Shared by the loop's write phase (`reconcile_instance_pass`) and an
+    /// operator-triggered apply (`apply_with_membership_pushes`, under
+    /// `handle_submit`/`deploy_submission`) so both make the identical
+    /// redeploy-vs-push-vs-exclude call for the identical diff -- fixing
+    /// findings §33.7/D-A5e-7 for one path and not the other is exactly the
+    /// gap the M05A review round found.
+    fn classify_update_actions(
         landed: &[ActionRecord],
         actions: &[ReconcileAction],
     ) -> (BTreeSet<String>, Vec<(PlannedService, String)>) {
-        let mut push_member_refs = BTreeSet::new();
+        let mut redeploy_exclusions = BTreeSet::new();
         let mut push_candidates = Vec::new();
         for action in actions {
             if let ReconcileAction::Update { old, new } = action {
                 let member_ref = new.member_ref().to_string();
+                if Self::only_schedule_changed(old, new) {
+                    redeploy_exclusions.insert(member_ref);
+                    continue;
+                }
                 let landed_row = Self::only_resolved_dependencies_changed(old, new)
                     .then(|| deploy::current_placement(landed, &member_ref))
                     .flatten();
                 if let Some(row) = landed_row {
-                    push_member_refs.insert(member_ref);
+                    redeploy_exclusions.insert(member_ref);
                     push_candidates.push(((**new).clone(), row.substrate_did.clone()));
                 }
             }
         }
-        (push_member_refs, push_candidates)
+        (redeploy_exclusions, push_candidates)
+    }
+
+    /// The loop's redeploy work list (D-A5c-2/D-A5c-3/D-A5c-21): the diff's
+    /// `Add` and `Update` actions -- a plan-level change -- plus
+    /// `missing_placement`, a service the current sweep finds with no
+    /// landed placement at all, which a content-unchanged diff against an
+    /// older `Active` snapshot cannot see on its own (D-A5c-10's gap).
+    /// `Remove` is not work: a plan-level removal is never undeployed here,
+    /// only raised as `OrphanedService` by the caller.
+    ///
+    /// `redeploy_exclusions` comes from `classify_update_actions`, and this
+    /// is the loop's half of applying it -- the half a test can reach
+    /// without a substrate to deploy at. Its counterpart on the operator
+    /// path is the `retain` in `apply_with_membership_pushes`.
+    fn redeploy_work_list(
+        missing_placement: &BTreeSet<String>,
+        actions: &[ReconcileAction],
+        redeploy_exclusions: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        let mut needs_work = missing_placement.clone();
+        for action in actions {
+            let member_ref = match action {
+                ReconcileAction::Add(svc) => svc.member_ref().to_string(),
+                ReconcileAction::Update { new, .. } => new.member_ref().to_string(),
+                ReconcileAction::Remove(_) => continue,
+            };
+            if !redeploy_exclusions.contains(&member_ref) {
+                needs_work.insert(member_ref);
+            }
+        }
+        needs_work
+    }
+
+    /// Every schedule a plan declares, keyed by logical ref. A schedule is
+    /// identical across a logical service's members, so the first member
+    /// carrying one decides it for the whole group; `BTreeMap` keeps both
+    /// the pass and the `schedules` listing in a deterministic order.
+    /// Shared by the two so a schedule the pass acts on and a schedule the
+    /// operator is shown can never be different sets.
+    fn declared_schedules(plan: &DeploymentPlan) -> BTreeMap<String, &ScheduleSpec> {
+        let mut groups: BTreeMap<String, &ScheduleSpec> = BTreeMap::new();
+        for svc in &plan.services {
+            if let Some(sched) = &svc.schedule {
+                groups.entry(svc.logical_ref.to_string()).or_insert(sched);
+            }
+        }
+        groups
+    }
+
+    /// The selection rule for one schedule this pass, pure over the pass's
+    /// own inputs -- testable with a fixed
+    /// `now`, no vault, no client, no store, the same reason
+    /// `renewal_candidates` is pure.
+    ///
+    /// No `landed` argument: `health::ServiceHealth` already carries
+    /// `substrate_did` and `member_index` from this pass's own report, and
+    /// a member with `Signal::Healthy` is by definition one the sweep
+    /// reached on a real substrate. Reading the placement from the report
+    /// keeps this a pure fold over one input rather than a join across two
+    /// that could disagree.
+    fn schedule_decisions(
+        plan: &DeploymentPlan,
+        states: &BTreeMap<String, ScheduleState>,
+        report: &health::HealthReport,
+        now: u64,
+        grace_secs: u64,
+    ) -> Vec<ScheduleDecision> {
+        let groups = Self::declared_schedules(plan);
+        let mut decisions = Vec::with_capacity(groups.len());
+        for (l_ref, sched) in groups {
+            let Ok(cron) = sched.parsed() else {
+                // A plan that got past validation with a bad cron can only
+                // come from a hand-edited submission. Watermark and move
+                // on; the failure is reported by the alert the run would
+                // have raised.
+                decisions.push(ScheduleDecision::Watermark { logical_ref: l_ref });
+                continue;
+            };
+            let Some(state) = states.get(&l_ref) else {
+                // First sight: created with `evaluated_at = now` and no
+                // run, so a schedule never fires for the past.
+                decisions.push(ScheduleDecision::Watermark { logical_ref: l_ref });
+                continue;
+            };
+            let window_start =
+                u64::try_from(state.evaluated_at).unwrap_or(0).max(now.saturating_sub(grace_secs));
+            // Anything other than a definite yes -- including an
+            // evaluation error -- is treated exactly as the parse failure
+            // above: watermark and move on.
+            if !matches!(has_occurrence_in(&cron, window_start, now), Ok(true)) {
+                decisions.push(ScheduleDecision::Watermark { logical_ref: l_ref });
+                continue;
+            }
+
+            // The report is the single source for "which members are
+            // runnable and where they are": a `Healthy` signal carries the
+            // substrate that answered.
+            let mut healthy: Vec<&health::ServiceHealth> = report
+                .services
+                .iter()
+                .filter(|h| h.logical_ref.to_string() == l_ref && h.signal == Signal::Healthy)
+                .collect();
+            healthy.sort_by_key(|h| h.member_index);
+            if healthy.is_empty() {
+                // A skipped tick, not a late one -- failure-matrix row 11.
+                decisions.push(ScheduleDecision::Watermark { logical_ref: l_ref });
+                continue;
+            }
+
+            // Round-robin: the first member strictly after the last one
+            // used, wrapping. A member that has gone away simply drops out
+            // of the ring. `None` -- never run -- sorts below every index,
+            // so the first tick starts at the lowest healthy member rather
+            // than skipping it.
+            let pick = healthy
+                .iter()
+                .find(|h| Some(h.member_index) > state.last_member_index)
+                .copied()
+                .unwrap_or(healthy[0]);
+            decisions.push(ScheduleDecision::Run {
+                logical_ref: l_ref,
+                service_id: pick.service_id.clone(),
+                substrate_did: pick.substrate_did.clone(),
+                member_index: pick.member_index,
+                schedule: sched.clone(),
+            });
+        }
+        decisions
+    }
+
+    /// Runs every due schedule and advances every watermark, in the order
+    /// `schedule_decisions` produced. Never touches the
+    /// outbox: a scheduled run is never queued (ADR-0023 §3) --
+    /// the intent expires, and the next tick is a better retry than a
+    /// delivery hours later. `actors` is built with `actors_from_clients`,
+    /// not `durable_actor`, for exactly that reason -- the same call
+    /// `renew_due_members` already makes.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_due_schedules(
+        &self,
+        instance_id: &AppInstanceId,
+        app_instance_id: &str,
+        decisions: &[ScheduleDecision],
+        did_to_alias: &BTreeMap<String, String>,
+        actors: &BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>>,
+        generation: u64,
+        now: u64,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) {
+        let now_i64 = now as i64;
+        for decision in decisions {
+            match decision {
+                ScheduleDecision::Watermark { logical_ref } => {
+                    if let Err(e) =
+                        self.store.record_schedule_evaluated(app_instance_id, logical_ref, now_i64)
+                    {
+                        tracing::warn!(
+                            app_instance_id,
+                            logical_ref,
+                            error = %e,
+                            "failed to advance a schedule's watermark"
+                        );
+                    }
+                }
+                ScheduleDecision::Run {
+                    logical_ref,
+                    service_id,
+                    substrate_did,
+                    member_index,
+                    schedule,
+                } => {
+                    // The two early `continue` branches deliberately
+                    // advance the watermark rather than leaving it: the
+                    // tick's window has passed and the target was not
+                    // reachable, which is failure-matrix row 11's
+                    // documented cost, not a delivery to retry.
+                    let Some(alias) = did_to_alias.get(substrate_did) else {
+                        let _ = self.store.record_schedule_evaluated(
+                            app_instance_id,
+                            logical_ref,
+                            now_i64,
+                        );
+                        continue;
+                    };
+                    let Some(actor) = actors.get(&SubstrateAlias::new(alias.clone())) else {
+                        let _ = self.store.record_schedule_evaluated(
+                            app_instance_id,
+                            logical_ref,
+                            now_i64,
+                        );
+                        continue;
+                    };
+
+                    // Before the call, not after: a supervisor that dies
+                    // inside the call must skip this tick on restart, not
+                    // repeat it.
+                    if let Err(e) = self.store.record_schedule_started(
+                        app_instance_id,
+                        logical_ref,
+                        now_i64,
+                        *member_index,
+                    ) {
+                        tracing::warn!(
+                            app_instance_id,
+                            logical_ref,
+                            error = %e,
+                            "failed to record a scheduled run's start; skipping this tick"
+                        );
+                        continue;
+                    }
+
+                    let budget = Duration::from_millis(u64::from(schedule.timeout_ms))
+                        .min(SCHEDULED_RUN_CEILING);
+                    let outcome = tokio::time::timeout(
+                        budget,
+                        actor.run_scheduled(
+                            service_id.clone(),
+                            generation,
+                            schedule.interface.to_string(),
+                            schedule.method.clone(),
+                            schedule.params.clone(),
+                        ),
+                    )
+                    .await;
+
+                    match outcome {
+                        Ok(Ok(())) => {
+                            let _ = self.store.record_schedule_outcome(
+                                app_instance_id,
+                                logical_ref,
+                                None,
+                            );
+                            // The sentinel, never `substrate_did` -- §0.9.
+                            let _ = self.store.alerts.clear(
+                                instance_id,
+                                Some(logical_ref),
+                                SCHEDULE_SUBSTRATE_DID,
+                                AlertKind::ScheduledRunFailed,
+                            );
+                        }
+                        Ok(Err(e)) => {
+                            let detail = format!(
+                                "scheduled run of '{}/{}' failed on substrate '{substrate_did}': \
+                                 {e}",
+                                schedule.interface, schedule.method
+                            );
+                            let _ = self.store.record_schedule_outcome(
+                                app_instance_id,
+                                logical_ref,
+                                Some(&detail),
+                            );
+                            if let Ok(true) = self.store.alerts.raise(
+                                instance_id,
+                                Some(logical_ref),
+                                None,
+                                SCHEDULE_SUBSTRATE_DID,
+                                AlertKind::ScheduledRunFailed,
+                                &detail,
+                            ) {
+                                opened.push((AlertKind::ScheduledRunFailed, logical_ref.clone()));
+                            }
+                        }
+                        Err(_elapsed) => {
+                            let detail = format!(
+                                "scheduled run of '{}/{}' on substrate '{substrate_did}' timed \
+                                 out after {}ms",
+                                schedule.interface,
+                                schedule.method,
+                                budget.as_millis()
+                            );
+                            let _ = self.store.record_schedule_outcome(
+                                app_instance_id,
+                                logical_ref,
+                                Some(&detail),
+                            );
+                            if let Ok(true) = self.store.alerts.raise(
+                                instance_id,
+                                Some(logical_ref),
+                                None,
+                                SCHEDULE_SUBSTRATE_DID,
+                                AlertKind::ScheduledRunFailed,
+                                &detail,
+                            ) {
+                                opened.push((AlertKind::ScheduledRunFailed, logical_ref.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// One bounded restart attempt for a landed-but-`InstanceNotRunning`
@@ -2208,6 +2645,54 @@ impl SupervisorService {
             return Err(format!(
                 "'{l_ref}' names {count} members in this plan, above the cap of {MAX_REPLICAS}"
             ));
+        }
+        Ok(())
+    }
+
+    /// `refuse_replicas_above_cap`'s sibling, same reason
+    /// and same two call sites: `SynAppManifest::validate()` enforces both
+    /// of these rules at compile time, but `submit`/`force-reconcile` take
+    /// an already-compiled plan, which nothing between the compiler and
+    /// here re-checks -- so a hand-edited plan reaches the supervisor with
+    /// neither rule applied.
+    ///
+    /// The cap counts distinct `logical_ref`s carrying a schedule, not
+    /// members -- a schedule belongs to the logical service, so a scaled
+    /// service with one schedule counts once, not once per member.
+    ///
+    /// The budget is checked at both ends, and the zero end is the reason
+    /// this rule is here rather than left to the runtime clamp: the clamp
+    /// is a `min`, so a zero survives it, and
+    /// `tokio::time::timeout(Duration::ZERO, ..)` elapses before the call
+    /// starts -- after `record_schedule_started` has already written the
+    /// watermark. The tick is consumed, an alert is raised, and every
+    /// later tick repeats the cycle, forever.
+    ///
+    /// Refusing the whole submission is right for these two and wrong for
+    /// an unparseable cron, which is why the cron is deliberately not
+    /// re-validated here: a bad cron degrades to `schedule_decisions`'
+    /// watermark branch, which skips that one schedule and leaves the rest
+    /// of the instance reconciling. A budget no run can finish in has no
+    /// such graceful form -- there is nothing to degrade to.
+    fn refuse_unrunnable_schedules(plan: &DeploymentPlan) -> Result<(), String> {
+        let scheduled: BTreeSet<&LogicalServiceRef> =
+            plan.services.iter().filter(|s| s.schedule.is_some()).map(|s| &s.logical_ref).collect();
+        if scheduled.len() > MAX_SCHEDULED_SERVICES {
+            return Err(format!(
+                "{} services declare a schedule in this plan, above the cap of \
+                 {MAX_SCHEDULED_SERVICES}",
+                scheduled.len()
+            ));
+        }
+        for svc in &plan.services {
+            let Some(sched) = &svc.schedule else { continue };
+            if sched.timeout_ms == 0 || sched.timeout_ms > MAX_SCHEDULE_TIMEOUT_MS {
+                return Err(format!(
+                    "'{}' declares a schedule timeout of {}ms in this plan; it must be between 1 \
+                     and {MAX_SCHEDULE_TIMEOUT_MS}ms",
+                    svc.logical_ref, sched.timeout_ms
+                ));
+            }
         }
         Ok(())
     }
@@ -2468,10 +2953,10 @@ impl SupervisorService {
 
     /// Mints, certifies, and applies `plan`, except for whatever member the
     /// same classifier `reconcile_instance_pass` uses
-    /// (`membership_only_push_candidates`) would route to a binding push
-    /// instead -- those get `push_bindings` after the redeploy of the rest,
-    /// rather than a full `deploy_with_context` reinstall (M05A A5e,
-    /// D-A5e-7). Shared by `deploy_submission` (`force-reconcile`) and
+    /// (`classify_update_actions`) would route to a binding push or
+    /// exclude outright -- those get `push_bindings` after the redeploy of
+    /// the rest, rather than a full `deploy_with_context` reinstall (M05A
+    /// A5e, D-A5e-7). Shared by `deploy_submission` (`force-reconcile`) and
     /// `handle_submit`, which each used to call `apply_with_clients`
     /// directly over the whole plan: an operator resubmit that only scales
     /// a dependency now takes the exact same push path the loop's own write
@@ -2495,14 +2980,14 @@ impl SupervisorService {
             .journal
             .get_completed_actions_for_instance(&plan.app_instance_id)
             .unwrap_or_default();
-        let (push_member_refs, push_candidates) =
+        let (redeploy_exclusions, push_candidates) =
             match Reconciler::new(&self.store.journal).compute_diff(plan) {
-                Ok(diff) => Self::membership_only_push_candidates(&landed, &diff.actions),
+                Ok(diff) => Self::classify_update_actions(&landed, &diff.actions),
                 Err(_) => (BTreeSet::new(), Vec::new()),
             };
 
         let mut apply_plan = plan.clone();
-        apply_plan.services.retain(|s| !push_member_refs.contains(&s.member_ref().to_string()));
+        apply_plan.services.retain(|s| !redeploy_exclusions.contains(&s.member_ref().to_string()));
 
         let apply_result =
             self.apply_with_clients(&apply_plan, plan, masters, clients, generation, minted).await;
@@ -3189,6 +3674,7 @@ impl SupervisorService {
         // D-A5e-14: the manifest-time cap re-checked at the interface that
         // actually accepts a compiled plan.
         Self::refuse_replicas_above_cap(&plan).map_err(RpcError::InternalError)?;
+        Self::refuse_unrunnable_schedules(&plan).map_err(RpcError::InternalError)?;
 
         // Mint before connecting anywhere -- a locked vault or a bad plan
         // must fail before anything is persisted or a network round trip
@@ -3372,6 +3858,11 @@ impl SupervisorService {
         // separate, best-effort call (unlike the combined write above):
         // its own failure has never blocked `adopt` from succeeding.
         let _ = self.store.clear_remediation_for_instance(&app_instance_id);
+        // Same fresh-start reasoning, applied to what this supervisor has
+        // *done* about each schedule. The watermark is kept, not cleared:
+        // see `clear_schedule_state_for_instance` for why dropping it
+        // would swallow a tick that was legitimately due.
+        let _ = self.store.clear_schedule_state_for_instance(&app_instance_id);
 
         let result = AdoptResult {
             generation: next_generation,
@@ -3576,12 +4067,14 @@ impl SupervisorService {
         // D-A5e-14: the same re-check `submit` runs -- a desired-state row
         // written before this check existed must not get a permanent pass.
         Self::refuse_replicas_above_cap(&plan).map_err(RpcError::InternalError)?;
+        Self::refuse_unrunnable_schedules(&plan).map_err(RpcError::InternalError)?;
         // D-A5c-20 (§19.20/F5): a directed reconcile is a fresh start,
         // regardless of what this call's own outcome turns out to be --
         // a terminal `InstanceNotRunning` service is otherwise never
         // restarted again, so the loop's own healthy-sweep clearing path
         // never fires for it.
         let _ = self.store.clear_remediation_for_instance(&app_instance_id);
+        let _ = self.store.clear_schedule_state_for_instance(&app_instance_id);
         self.deploy_submission(plan, &inventory, state.generation)
             .await
             .map_err(RpcError::InternalError)?;
@@ -4358,6 +4851,54 @@ impl SupervisorService {
         self.clear_delivery_exhausted_if_empty(&instance_id, &key);
         Ok(NativeResponse { payload: serde_json::json!({"status": "replayed"}) })
     }
+
+    /// Every schedule this instance declares, in logical-ref order:
+    /// `roymctl supervisor schedules`'s own listing.
+    /// Left-joins the stored plan's declarations against `schedule_states`
+    /// -- a declared schedule with no state row yet (never evaluated)
+    /// appears with `evaluated-at: 0`.
+    async fn handle_schedules(
+        &self,
+        caller: &CallerContext,
+        params: Value,
+    ) -> RpcResult<NativeResponse> {
+        self.require_admin(caller)?;
+        let (app_instance_id,): (String,) = serde_json::from_value(params).map_err(|e| {
+            RpcError::InvalidParams(format!("failed to parse schedules params: {e}"))
+        })?;
+
+        let Some(state) =
+            self.store.get(&app_instance_id).map_err(|e| RpcError::InternalError(e.to_string()))?
+        else {
+            return Ok(NativeResponse {
+                payload: serde_json::to_value(Vec::<ScheduledTask>::new()).unwrap_or(Value::Null),
+            });
+        };
+        let plan = DeploymentPlan::from_json(&state.plan_json)
+            .map_err(|e| RpcError::InternalError(e.to_string()))?;
+        let schedule_states = self
+            .store
+            .schedule_states(&app_instance_id)
+            .map_err(|e| RpcError::InternalError(e.to_string()))?;
+
+        let tasks: Vec<ScheduledTask> = Self::declared_schedules(&plan)
+            .into_iter()
+            .map(|(logical_ref, sched)| {
+                let recorded = schedule_states.get(&logical_ref);
+                ScheduledTask {
+                    logical_ref: logical_ref.clone(),
+                    cron: sched.cron.clone(),
+                    interface: sched.interface.to_string(),
+                    method: sched.method.clone(),
+                    evaluated_at: recorded.map_or(0, |s| s.evaluated_at),
+                    last_run_at: recorded.and_then(|s| s.last_run_at),
+                    last_member_index: recorded.and_then(|s| s.last_member_index),
+                    last_error: recorded.and_then(|s| s.last_error.clone()),
+                }
+            })
+            .collect();
+        Ok(NativeResponse { payload: serde_json::to_value(tasks).unwrap_or(Value::Null) })
+    }
 }
 
 /// A `StatusQuery` that always fails, for a substrate this supervisor
@@ -4410,6 +4951,7 @@ impl NativeService for SupervisorService {
             "outbox" => self.handle_outbox(&invocation.caller, invocation.params).await,
             "dead-letters" => self.handle_dead_letters(&invocation.caller, invocation.params).await,
             "replay" => self.handle_replay(&invocation.caller, invocation.params).await,
+            "schedules" => self.handle_schedules(&invocation.caller, invocation.params).await,
             method => Err(RpcError::MethodNotFound(method.to_string())),
         }
     }
@@ -4426,10 +4968,10 @@ mod tests {
     };
 
     use syneroym_app_orchestration::{
-        ActionState, DeploymentJournal,
+        ActionState, DEFAULT_SCHEDULE_TIMEOUT_MS, DeploymentJournal,
         models::{
-            AppBlueprintId, LogicalServiceName, LogicalServiceRef, ServiceConfig, ServiceType,
-            TopologyMode,
+            AppBlueprintId, InterfaceName, LogicalServiceName, LogicalServiceRef, ServiceConfig,
+            ServiceType, TopologyMode,
         },
     };
     use syneroym_async_queue::{Queue, QueueConfig};
@@ -4640,6 +5182,8 @@ mod tests {
             ("outbox", serde_json::json!(["i"])),
             ("dead-letters", serde_json::json!(["i"])),
             ("replay", serde_json::json!(["i", 1])),
+            // No new resource namespace here either.
+            ("schedules", serde_json::json!(["i"])),
         ] {
             let err = dispatch(&s, unauthenticated_caller(), method, params).await.unwrap_err();
             assert_eq!(err.code(), PERMISSION_DENIED_CODE, "{method} must deny without admin");
@@ -5691,6 +6235,7 @@ mod tests {
             renewal_candidates: &[],
             pending_rotation_restarts: &BTreeSet::new(),
             push_candidates: &[],
+            schedule_decisions: &[],
             did_to_alias: &BTreeMap::new(),
             clients: &BTreeMap::new(),
             now: 0,
@@ -6491,6 +7036,7 @@ mod tests {
             renewal_candidates: &[],
             pending_rotation_restarts: &BTreeSet::new(),
             push_candidates: &[],
+            schedule_decisions: &[],
             did_to_alias: &did_to_alias,
             clients: &clients,
             now: 0,
@@ -6678,6 +7224,7 @@ mod tests {
             )]),
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
+            schedule: None,
         }
     }
 
@@ -6718,7 +7265,7 @@ mod tests {
     ///
     /// M05A A5e review, second round: the clock starts at
     /// `Reconciler::compute_diff` and runs through
-    /// `membership_only_push_candidates`, the same classifier
+    /// `classify_update_actions`, the same classifier
     /// `apply_with_membership_pushes`/`apply_write_phase` call -- not just
     /// the `push_bindings` call after it has already decided -- so a
     /// regression that makes the routing decision itself slow (e.g. an
@@ -6761,7 +7308,7 @@ mod tests {
         let landed = s.store.journal.get_completed_actions_for_instance(&instance_id).unwrap();
         let diff = Reconciler::new(&s.store.journal).compute_diff(&plan).unwrap();
         let (_, push_candidates) =
-            SupervisorService::membership_only_push_candidates(&landed, &diff.actions);
+            SupervisorService::classify_update_actions(&landed, &diff.actions);
         let (svc, substrate_did) =
             push_candidates.into_iter().next().expect("frontend must classify as a push candidate");
         let outcomes = s
@@ -7094,10 +7641,10 @@ mod tests {
         // converged.
         let diff = Reconciler::new(&s.store.journal).compute_diff(&new_plan).unwrap();
         let landed = s.store.journal.get_completed_actions_for_instance(&instance_id).unwrap();
-        let (push_member_refs, _) =
-            SupervisorService::membership_only_push_candidates(&landed, &diff.actions);
+        let (redeploy_exclusions, _) =
+            SupervisorService::classify_update_actions(&landed, &diff.actions);
         assert!(
-            push_member_refs.contains("inst-1/frontend#0"),
+            redeploy_exclusions.contains("inst-1/frontend#0"),
             "the next pass must reclassify frontend as a push candidate, not read it as landed: \
              {diff:?}"
         );
@@ -7217,6 +7764,7 @@ mod tests {
             renewal_candidates: &[],
             pending_rotation_restarts: &BTreeSet::new(),
             push_candidates: &[(svc, "did:key:zEdge1".to_string())],
+            schedule_decisions: &[],
             did_to_alias: &BTreeMap::new(),
             clients: &BTreeMap::new(),
             now: 0,
@@ -7258,6 +7806,7 @@ mod tests {
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
+            schedule: None,
         };
         let old_plan = DeploymentPlan {
             app_instance_id: AppInstanceId::new("inst-1"),
@@ -7313,6 +7862,7 @@ mod tests {
             pending_rotation_restarts: &BTreeSet::new(),
             // No alias for frontend's DID this pass -- the push fails.
             push_candidates: &[(new_frontend, "did:key:zEdge1".to_string())],
+            schedule_decisions: &[],
             did_to_alias: &BTreeMap::new(),
             clients: &clients,
             now: 0,
@@ -7329,10 +7879,10 @@ mod tests {
 
         let diff = Reconciler::new(&s.store.journal).compute_diff(&plan).unwrap();
         let landed = s.store.journal.get_completed_actions_for_instance(&instance_id).unwrap();
-        let (push_member_refs, _) =
-            SupervisorService::membership_only_push_candidates(&landed, &diff.actions);
+        let (redeploy_exclusions, _) =
+            SupervisorService::classify_update_actions(&landed, &diff.actions);
         assert!(
-            push_member_refs.contains("inst-1/frontend#0"),
+            redeploy_exclusions.contains("inst-1/frontend#0"),
             "the next pass must still classify frontend as a push candidate: {diff:?}"
         );
     }
@@ -7361,6 +7911,7 @@ mod tests {
             renewal_candidates: &[],
             pending_rotation_restarts: &BTreeSet::new(),
             push_candidates: &[(svc, "did:key:zEdge1".to_string())],
+            schedule_decisions: &[],
             did_to_alias: &BTreeMap::new(),
             clients: &BTreeMap::new(),
             now: 0,
@@ -10794,5 +11345,1049 @@ mod tests {
         let dead = s.store.queue.dead_letters().unwrap();
         assert_eq!(dead.len(), 1, "the replayed item must be back in the DLQ after failing again");
         assert_eq!(dead[0].attempts, 2, "the attempt count must carry over, not reset");
+    }
+
+    // ── Scheduled tasks ──────────────────────────────────────────────────
+
+    fn scheduled_service(name: &str, member_index: u32, cron: &str) -> PlannedService {
+        PlannedService {
+            service_id: ServiceId::new(format!("did:key:h{name}{member_index}")),
+            logical_ref: LogicalServiceRef {
+                app_instance_id: AppInstanceId::new("inst-1"),
+                service_name: LogicalServiceName::new(name),
+            },
+            substrate: Some(SubstrateAlias::new("edge-1")),
+            config: dummy_config(),
+            resolved_dependencies: BTreeMap::new(),
+            topology_mode: if member_index > 0 {
+                TopologyMode::Redundant
+            } else {
+                TopologyMode::Singleton
+            },
+            member_index,
+            schedule: Some(ScheduleSpec {
+                cron: cron.to_string(),
+                interface: InterfaceName::new("scheduled-driver"),
+                method: "tick".to_string(),
+                params: None,
+                timeout_ms: DEFAULT_SCHEDULE_TIMEOUT_MS,
+            }),
+        }
+    }
+
+    fn plan_with_schedule(members: Vec<PlannedService>) -> DeploymentPlan {
+        DeploymentPlan {
+            app_instance_id: AppInstanceId::new("inst-1"),
+            blueprint_id: AppBlueprintId::new("syneroym:test"),
+            version: semver::Version::new(1, 0, 0),
+            services: members,
+        }
+    }
+
+    fn scheduled_health(
+        name: &str,
+        member_index: u32,
+        substrate_did: &str,
+        signal: Signal,
+    ) -> health::ServiceHealth {
+        health::ServiceHealth {
+            logical_ref: LogicalServiceRef {
+                app_instance_id: AppInstanceId::new("inst-1"),
+                service_name: LogicalServiceName::new(name),
+            },
+            service_id: format!("did:key:h{name}{member_index}"),
+            alias: Some(SubstrateAlias::new("edge-1")),
+            substrate_did: substrate_did.to_string(),
+            signal,
+            instance_certificate_issued_at: None,
+            instance_certificate_expires_at: None,
+            binding_epochs: Vec::new(),
+            member_index,
+        }
+    }
+
+    /// A timestamp exactly on a cron minute boundary, offset by
+    /// `offset_secs` -- lets the watermark/grace tests reason about
+    /// `"* * * * *"` occurrences in exact whole seconds rather than
+    /// hoping `NOW` happens to align.
+    fn minute(offset_secs: i64) -> u64 {
+        use chrono::{TimeZone, Utc};
+        let base = Utc.with_ymd_and_hms(2026, 1, 1, 0, 5, 0).unwrap().timestamp();
+        u64::try_from(base + offset_secs).unwrap()
+    }
+
+    #[test]
+    fn a_schedule_seen_for_the_first_time_does_not_fire_for_the_past() {
+        let plan = plan_with_schedule(vec![scheduled_service("worker", 0, "* * * * *")]);
+        let report =
+            report_of(vec![scheduled_health("worker", 0, "did:key:zEdge1", Signal::Healthy)]);
+        let decisions =
+            SupervisorService::schedule_decisions(&plan, &BTreeMap::new(), &report, NOW, 60);
+        assert_eq!(
+            decisions,
+            vec![ScheduleDecision::Watermark { logical_ref: "inst-1/worker".to_string() }],
+            "a schedule with no state row must not fire on the pass that first sees it"
+        );
+    }
+
+    #[test]
+    fn a_due_schedule_runs_exactly_one_member() {
+        let plan = plan_with_schedule(vec![scheduled_service("worker", 0, "* * * * * *")]);
+        let report =
+            report_of(vec![scheduled_health("worker", 0, "did:key:zEdge1", Signal::Healthy)]);
+        let mut states = BTreeMap::new();
+        states.insert(
+            "inst-1/worker".to_string(),
+            ScheduleState { evaluated_at: (NOW - 3600) as i64, ..Default::default() },
+        );
+        let decisions = SupervisorService::schedule_decisions(&plan, &states, &report, NOW, 3600);
+        assert_eq!(decisions.len(), 1);
+        match &decisions[0] {
+            ScheduleDecision::Run {
+                logical_ref, member_index, service_id, substrate_did, ..
+            } => {
+                assert_eq!(logical_ref, "inst-1/worker");
+                assert_eq!(*member_index, 0);
+                assert_eq!(service_id, "did:key:hworker0");
+                assert_eq!(substrate_did, "did:key:zEdge1");
+            }
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_schedule_evaluated_twice_inside_one_cron_minute_runs_once() {
+        let plan = plan_with_schedule(vec![scheduled_service("worker", 0, "* * * * *")]);
+        let report =
+            report_of(vec![scheduled_health("worker", 0, "did:key:zEdge1", Signal::Healthy)]);
+
+        // First pass, exactly on the minute boundary: due.
+        let mut states = BTreeMap::new();
+        states.insert(
+            "inst-1/worker".to_string(),
+            ScheduleState { evaluated_at: (minute(0) - 30) as i64, ..Default::default() },
+        );
+        let first = SupervisorService::schedule_decisions(&plan, &states, &report, minute(0), 60);
+        assert!(matches!(first[0], ScheduleDecision::Run { .. }));
+
+        // A second pass ten seconds later, inside the same cron minute,
+        // with the state a real `record_schedule_started` would have left.
+        states.insert(
+            "inst-1/worker".to_string(),
+            ScheduleState {
+                evaluated_at: minute(0) as i64,
+                last_run_at: Some(minute(0) as i64),
+                last_member_index: Some(0),
+                last_error: None,
+            },
+        );
+        let second =
+            SupervisorService::schedule_decisions(&plan, &states, &report, minute(0) + 10, 60);
+        assert_eq!(
+            second,
+            vec![ScheduleDecision::Watermark { logical_ref: "inst-1/worker".to_string() }],
+            "a second look inside the same cron minute must not run again"
+        );
+    }
+
+    #[test]
+    fn a_tick_missed_while_the_supervisor_was_down_is_skipped_not_run_late() {
+        let plan = plan_with_schedule(vec![scheduled_service("worker", 0, "* * * * *")]);
+        let report =
+            report_of(vec![scheduled_health("worker", 0, "did:key:zEdge1", Signal::Healthy)]);
+        let mut states = BTreeMap::new();
+        // Down for an hour before minute(0)'s own occurrence.
+        states.insert(
+            "inst-1/worker".to_string(),
+            ScheduleState { evaluated_at: (minute(0) - 3600) as i64, ..Default::default() },
+        );
+        // Comes back 40s after the boundary, with a grace window smaller
+        // than the gap -- the boundary itself has already fallen outside
+        // the window this pass computes.
+        let now = minute(0) + 40;
+        let decisions = SupervisorService::schedule_decisions(&plan, &states, &report, now, 30);
+        assert_eq!(
+            decisions,
+            vec![ScheduleDecision::Watermark { logical_ref: "inst-1/worker".to_string() }],
+            "an hour-long gap must not fire a burst of catch-up runs"
+        );
+    }
+
+    #[test]
+    fn a_pass_delayed_by_less_than_the_grace_window_still_runs_its_tick() {
+        let plan = plan_with_schedule(vec![scheduled_service("worker", 0, "* * * * *")]);
+        let report =
+            report_of(vec![scheduled_health("worker", 0, "did:key:zEdge1", Signal::Healthy)]);
+        let mut states = BTreeMap::new();
+        states.insert(
+            "inst-1/worker".to_string(),
+            ScheduleState { evaluated_at: (minute(0) - 3600) as i64, ..Default::default() },
+        );
+        // 40s late, but the grace window (60s) still covers minute(0)'s
+        // own occurrence.
+        let now = minute(0) + 40;
+        let decisions = SupervisorService::schedule_decisions(&plan, &states, &report, now, 60);
+        assert!(
+            matches!(&decisions[0], ScheduleDecision::Run { .. }),
+            "ordinary jitter under the grace window must not silently drop the tick: {decisions:?}"
+        );
+    }
+
+    /// Before the loop has completed a second sweep there is no observed
+    /// gap to read, so the window is the configured floor -- which is also
+    /// what a fresh process gets, so downtime can never widen it.
+    #[test]
+    fn the_grace_window_is_two_poll_intervals_until_a_sweep_has_been_timed() {
+        let s = Fixture { poll_interval_secs: Some(30), ..Fixture::default() }.build();
+        assert_eq!(s.schedule_grace_secs(NOW), 60);
+    }
+
+    /// The defect this rule exists for: a sweep that takes longer than two
+    /// poll intervals -- routine, since every pass rebuilds an iroh client
+    /// per substrate -- used to leave a hole between the last evaluation
+    /// and the start of the window, and every occurrence inside that hole
+    /// was dropped while the supervisor was awake the whole time.
+    #[test]
+    fn a_sweep_slower_than_two_poll_intervals_widens_the_grace_window_to_match() {
+        let s = Fixture { poll_interval_secs: Some(30), ..Fixture::default() }.build();
+        s.previous_pass_started_at.store(NOW - 300, Ordering::Relaxed);
+        assert_eq!(s.schedule_grace_secs(NOW), 300);
+    }
+
+    /// The same defect, end to end through the decision it feeds: the
+    /// watermark is 100s old because the previous sweep was 100s ago, and
+    /// the tick in between must still fire even though the *configured*
+    /// interval says a pass should have happened four times over.
+    #[test]
+    fn a_sweep_slower_than_two_poll_intervals_still_fires_the_tick_it_covered() {
+        let s = Fixture { poll_interval_secs: Some(10), ..Fixture::default() }.build();
+        let now = minute(0) + 40;
+        s.previous_pass_started_at.store(now - 100, Ordering::Relaxed);
+
+        let plan = plan_with_schedule(vec![scheduled_service("worker", 0, "* * * * *")]);
+        let report =
+            report_of(vec![scheduled_health("worker", 0, "did:key:zEdge1", Signal::Healthy)]);
+        let states = BTreeMap::from([(
+            "inst-1/worker".to_string(),
+            ScheduleState { evaluated_at: (now - 100) as i64, ..Default::default() },
+        )]);
+
+        let decisions = SupervisorService::schedule_decisions(
+            &plan,
+            &states,
+            &report,
+            now,
+            s.schedule_grace_secs(now),
+        );
+        assert!(
+            matches!(&decisions[0], ScheduleDecision::Run { .. }),
+            "a tick inside the real gap between two sweeps must not be dropped: {decisions:?}"
+        );
+    }
+
+    /// The other side of the same rule. A paused instance is skipped before
+    /// the health sweep, so its watermark goes stale -- but the loop keeps
+    /// sweeping the whole time, so the observed gap stays one poll interval
+    /// and the window on resume is still the floor. Nothing catches up.
+    #[tokio::test]
+    async fn a_paused_instance_fires_no_backlog_when_it_resumes() {
+        let s = Fixture { poll_interval_secs: Some(10), ..Fixture::default() }.build();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+        s.store.pause("inst-1").unwrap();
+
+        // A sweep over nothing but paused instances still times itself:
+        // the liveness signal belongs to the loop, not to any instance.
+        s.run_pass().await;
+        assert_ne!(s.previous_pass_started_at.load(Ordering::Relaxed), 0);
+        s.store.resume("inst-1").unwrap();
+
+        // So on resume the observed gap is one sweep, however long the
+        // pause was.
+        let now = minute(0) + 40;
+        s.previous_pass_started_at.store(now - 10, Ordering::Relaxed);
+        assert_eq!(s.schedule_grace_secs(now), 20, "a pause must not widen the window");
+
+        let plan = plan_with_schedule(vec![scheduled_service("worker", 0, "* * * * *")]);
+        let report =
+            report_of(vec![scheduled_health("worker", 0, "did:key:zEdge1", Signal::Healthy)]);
+        // The watermark an hour-long pause leaves behind.
+        let states = BTreeMap::from([(
+            "inst-1/worker".to_string(),
+            ScheduleState { evaluated_at: (now - 3600) as i64, ..Default::default() },
+        )]);
+
+        let decisions = SupervisorService::schedule_decisions(
+            &plan,
+            &states,
+            &report,
+            now,
+            s.schedule_grace_secs(now),
+        );
+        assert_eq!(
+            decisions,
+            vec![ScheduleDecision::Watermark { logical_ref: "inst-1/worker".to_string() }],
+            "resuming must not fire the ticks that fell inside the pause: {decisions:?}"
+        );
+    }
+
+    /// The write phase's own re-read (D-A5c-14) covers scheduled work too:
+    /// a `pause` that lands between the health sweep and the write phase
+    /// must stop the tick, not merely the deploys -- the run is dispatched
+    /// from inside that phase, after the re-read.
+    #[tokio::test]
+    async fn a_pause_landing_mid_pass_stops_that_passs_scheduled_run() {
+        let s = service();
+        let plan_json = plan_json_one_service("inst-1", "worker", None);
+        s.store.submit("inst-1", &plan_json, "{}", "did:key:owner", 0).unwrap();
+        let plan = DeploymentPlan::from_json(&plan_json).unwrap();
+        s.store.pause("inst-1").unwrap();
+
+        s.apply_write_phase(WritePhase {
+            instance_id: &AppInstanceId::new("inst-1"),
+            app_instance_id: "inst-1",
+            plan: &plan,
+            needs_work: &BTreeSet::new(),
+            restart_candidates: &[],
+            renewal_candidates: &[],
+            pending_rotation_restarts: &BTreeSet::new(),
+            push_candidates: &[],
+            schedule_decisions: &[ScheduleDecision::Watermark {
+                logical_ref: "inst-1/worker".to_string(),
+            }],
+            did_to_alias: &BTreeMap::new(),
+            clients: &BTreeMap::new(),
+            now: 100,
+        })
+        .await;
+
+        assert!(
+            s.store.schedule_states("inst-1").unwrap().is_empty(),
+            "a paused instance must not even advance a watermark"
+        );
+    }
+
+    /// A schedule dropped from a resubmitted manifest leaves a row behind
+    /// that nothing short of retiring the instance would ever delete, and
+    /// that `schedules` cannot show, since it reads the plan. The pass that
+    /// knows the declared set reclaims it.
+    #[tokio::test]
+    async fn a_schedule_the_plan_no_longer_declares_loses_its_state_row() {
+        let s = service();
+        let plan_json = plan_json_one_service("inst-1", "worker", None);
+        s.store.submit("inst-1", &plan_json, "{}", "did:key:owner", 0).unwrap();
+        s.store.record_schedule_started("inst-1", "inst-1/worker", 100, 0).unwrap();
+
+        s.reconcile_instance_pass("inst-1").await;
+
+        assert!(
+            s.store.schedule_states("inst-1").unwrap().is_empty(),
+            "the plan declares no schedule, so no schedule state may survive the pass"
+        );
+    }
+
+    /// `last_member_index` is absent, not 0, until a run has happened --
+    /// otherwise the round-robin reads a fresh row as "member 0 already
+    /// ran" and sends the very first tick of a multi-member service to
+    /// member 1.
+    #[test]
+    fn the_first_tick_of_a_multi_member_service_runs_member_zero() {
+        let plan = plan_with_schedule(vec![
+            scheduled_service("worker", 0, "* * * * * *"),
+            scheduled_service("worker", 1, "* * * * * *"),
+        ]);
+        let report = report_of(vec![
+            scheduled_health("worker", 0, "did:key:zEdgeA", Signal::Healthy),
+            scheduled_health("worker", 1, "did:key:zEdgeB", Signal::Healthy),
+        ]);
+        let states = BTreeMap::from([(
+            "inst-1/worker".to_string(),
+            ScheduleState { evaluated_at: 0, ..Default::default() },
+        )]);
+
+        let decisions = SupervisorService::schedule_decisions(&plan, &states, &report, NOW, 3600);
+        match &decisions[0] {
+            ScheduleDecision::Run { member_index, .. } => assert_eq!(*member_index, 0),
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn selection_rotates_across_healthy_members_on_consecutive_ticks() {
+        let plan = plan_with_schedule(vec![
+            scheduled_service("worker", 0, "* * * * * *"),
+            scheduled_service("worker", 1, "* * * * * *"),
+            scheduled_service("worker", 2, "* * * * * *"),
+        ]);
+        let report = report_of(vec![
+            scheduled_health("worker", 0, "did:key:zEdgeA", Signal::Healthy),
+            scheduled_health("worker", 1, "did:key:zEdgeB", Signal::Healthy),
+            scheduled_health("worker", 2, "did:key:zEdgeC", Signal::Healthy),
+        ]);
+        for (last_index, expected_index) in [(0u32, 1u32), (1, 2), (2, 0)] {
+            let mut states = BTreeMap::new();
+            states.insert(
+                "inst-1/worker".to_string(),
+                ScheduleState {
+                    evaluated_at: 0,
+                    last_member_index: Some(last_index),
+                    ..Default::default()
+                },
+            );
+            let decisions =
+                SupervisorService::schedule_decisions(&plan, &states, &report, NOW, 3600);
+            match &decisions[0] {
+                ScheduleDecision::Run { member_index, .. } => {
+                    assert_eq!(*member_index, expected_index, "after member {last_index}");
+                }
+                other => panic!("expected Run, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_unhealthy_member_is_never_selected_and_does_not_block_the_schedule() {
+        let plan = plan_with_schedule(vec![
+            scheduled_service("worker", 0, "* * * * * *"),
+            scheduled_service("worker", 1, "* * * * * *"),
+        ]);
+        let report = report_of(vec![
+            scheduled_health("worker", 0, "did:key:zEdgeA", Signal::Healthy),
+            scheduled_health(
+                "worker",
+                1,
+                "did:key:zEdgeB",
+                Signal::ProbeFailing("down".to_string()),
+            ),
+        ]);
+        let mut states = BTreeMap::new();
+        states.insert(
+            "inst-1/worker".to_string(),
+            ScheduleState { evaluated_at: 0, ..Default::default() },
+        );
+        let decisions = SupervisorService::schedule_decisions(&plan, &states, &report, NOW, 3600);
+        match &decisions[0] {
+            ScheduleDecision::Run { member_index, substrate_did, .. } => {
+                assert_eq!(*member_index, 0);
+                assert_eq!(substrate_did, "did:key:zEdgeA");
+            }
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_schedule_with_no_healthy_member_advances_its_watermark_and_skips() {
+        let plan = plan_with_schedule(vec![scheduled_service("worker", 0, "* * * * * *")]);
+        let report = report_of(vec![scheduled_health(
+            "worker",
+            0,
+            "did:key:zEdgeA",
+            Signal::SubstrateUnreachable("down".to_string()),
+        )]);
+        let mut states = BTreeMap::new();
+        states.insert(
+            "inst-1/worker".to_string(),
+            ScheduleState { evaluated_at: 0, ..Default::default() },
+        );
+        let decisions = SupervisorService::schedule_decisions(&plan, &states, &report, NOW, 3600);
+        assert_eq!(
+            decisions,
+            vec![ScheduleDecision::Watermark { logical_ref: "inst-1/worker".to_string() }]
+        );
+    }
+
+    #[test]
+    fn a_schedule_only_update_is_excluded_from_redeploy_but_is_not_a_push_candidate() {
+        let old = scheduled_service("worker", 0, "* * * * *");
+        let mut new = old.clone();
+        new.schedule.as_mut().unwrap().cron = "0 3 * * *".to_string();
+        let actions = vec![ReconcileAction::Update { old: Box::new(old), new: Box::new(new) }];
+        let (redeploy_exclusions, push_candidates) =
+            SupervisorService::classify_update_actions(&[], &actions);
+        assert!(redeploy_exclusions.contains("inst-1/worker#0"));
+        assert!(push_candidates.is_empty());
+    }
+
+    /// The classifier's first call site: the loop's own work list. Testing
+    /// the classifier alone says nothing about whether either caller
+    /// honours it -- fixing one path and not the other is the exact gap an
+    /// earlier review round found.
+    #[test]
+    fn a_schedule_only_edit_does_not_redeploy_the_service() {
+        let old = scheduled_service("worker", 0, "* * * * *");
+        let mut new = old.clone();
+        new.schedule.as_mut().unwrap().cron = "0 3 * * *".to_string();
+        let actions = vec![ReconcileAction::Update { old: Box::new(old), new: Box::new(new) }];
+        let (redeploy_exclusions, _) = SupervisorService::classify_update_actions(&[], &actions);
+
+        let needs_work =
+            SupervisorService::redeploy_work_list(&BTreeSet::new(), &actions, &redeploy_exclusions);
+        assert!(needs_work.is_empty(), "a schedule-only edit is not redeploy work: {needs_work:?}");
+    }
+
+    /// Same edit, the other call site: `submit`/`force-reconcile`. The plan
+    /// applied must exclude the member, while the plan *journaled* still
+    /// carries the whole thing -- a baseline narrowed to this call's own
+    /// subset is what makes later passes redeploy everything it left out.
+    #[tokio::test]
+    async fn a_schedule_only_edit_on_submit_does_not_redeploy_the_service() {
+        let s = service();
+        let old = scheduled_service("worker", 0, "* * * * *");
+        let old_plan = plan_with_schedule(vec![old.clone()]);
+        let deployment_id = s.store.journal.append(&old_plan, DeploymentState::Active).unwrap();
+        s.store
+            .journal
+            .append_action(
+                deployment_id,
+                "ADD",
+                "inst-1/worker#0",
+                Some("edge-1"),
+                "did:key:zEdge1",
+                ActionState::Completed,
+            )
+            .unwrap();
+
+        let mut new = old.clone();
+        new.schedule.as_mut().unwrap().cron = "0 3 * * *".to_string();
+        let plan = plan_with_schedule(vec![new]);
+
+        // No clients: a member that reached `apply_plan` would fail for
+        // want of a target and journal `Degraded`, so an `Active` record
+        // with no new action row is the direct evidence it was excluded.
+        s.apply_with_membership_pushes(&plan, &BTreeMap::new(), &BTreeMap::new(), 0, Vec::new())
+            .await
+            .expect("a schedule-only resubmit must not fail for want of a substrate");
+
+        let latest = s.store.journal.get_latest(&AppInstanceId::new("inst-1")).unwrap().unwrap();
+        assert_eq!(latest.state, DeploymentState::Active);
+        assert_eq!(
+            latest.plan.services[0].schedule.as_ref().unwrap().cron,
+            "0 3 * * *",
+            "the journaled baseline must still carry the whole plan, new schedule included"
+        );
+        let actions = s
+            .store
+            .journal
+            .get_completed_actions_for_instance(&AppInstanceId::new("inst-1"))
+            .unwrap();
+        assert_eq!(actions.len(), 1, "no second placement action: {actions:?}");
+    }
+
+    #[test]
+    fn a_simultaneous_schedule_and_membership_edit_is_not_classified_as_membership_only() {
+        let old = dependent_service("frontend", "backend");
+        let mut new = old.clone();
+        new.resolved_dependencies = BTreeMap::from([(
+            LogicalServiceName::new("backend"),
+            vec![ServiceId::new("did:key:hDepMember2")],
+        )]);
+        new.schedule = Some(ScheduleSpec {
+            cron: "* * * * *".to_string(),
+            interface: InterfaceName::new("scheduled-driver"),
+            method: "tick".to_string(),
+            params: None,
+            timeout_ms: DEFAULT_SCHEDULE_TIMEOUT_MS,
+        });
+        assert!(!SupervisorService::only_resolved_dependencies_changed(&old, &new));
+        assert!(!SupervisorService::only_schedule_changed(&old, &new));
+
+        let actions = vec![ReconcileAction::Update { old: Box::new(old), new: Box::new(new) }];
+        let (redeploy_exclusions, push_candidates) =
+            SupervisorService::classify_update_actions(&[], &actions);
+        assert!(
+            redeploy_exclusions.is_empty(),
+            "a schedule change alongside a membership change must not be excluded from redeploy"
+        );
+        assert!(push_candidates.is_empty());
+    }
+
+    #[test]
+    fn refuse_unrunnable_schedules_refuses_a_plan_naming_more_scheduled_services_than_the_cap() {
+        let services: Vec<PlannedService> = (0..=MAX_SCHEDULED_SERVICES)
+            .map(|i| scheduled_service(&format!("worker-{i}"), 0, "* * * * *"))
+            .collect();
+        let plan = plan_with_schedule(services);
+        let err = SupervisorService::refuse_unrunnable_schedules(&plan).unwrap_err();
+        assert!(err.contains(&format!("above the cap of {MAX_SCHEDULED_SERVICES}")), "{err}");
+    }
+
+    #[test]
+    fn refuse_unrunnable_schedules_allows_a_plan_exactly_at_the_cap() {
+        let services: Vec<PlannedService> = (0..MAX_SCHEDULED_SERVICES)
+            .map(|i| scheduled_service(&format!("worker-{i}"), 0, "* * * * *"))
+            .collect();
+        let plan = plan_with_schedule(services);
+        assert!(SupervisorService::refuse_unrunnable_schedules(&plan).is_ok());
+    }
+
+    /// The manifest's own bound is compile-time only, and `submit` takes an
+    /// already-compiled plan -- so without this check a hand-edited plan
+    /// reproduces the original defect exactly: the runtime clamp is a
+    /// `min`, which a zero survives, and the tick is then consumed by a
+    /// timeout that elapses before the call starts.
+    #[test]
+    fn refuse_unrunnable_schedules_refuses_a_submitted_plan_with_a_zero_timeout() {
+        let mut svc = scheduled_service("worker", 0, "* * * * *");
+        svc.schedule.as_mut().unwrap().timeout_ms = 0;
+        let plan = plan_with_schedule(vec![svc]);
+        let err = SupervisorService::refuse_unrunnable_schedules(&plan).unwrap_err();
+        assert!(err.contains("must be between 1"), "{err}");
+    }
+
+    #[test]
+    fn refuse_unrunnable_schedules_refuses_a_submitted_plan_above_the_timeout_ceiling() {
+        let mut svc = scheduled_service("worker", 0, "* * * * *");
+        svc.schedule.as_mut().unwrap().timeout_ms = MAX_SCHEDULE_TIMEOUT_MS + 1;
+        let plan = plan_with_schedule(vec![svc]);
+        let err = SupervisorService::refuse_unrunnable_schedules(&plan).unwrap_err();
+        assert!(err.contains(&format!("{MAX_SCHEDULE_TIMEOUT_MS}ms")), "{err}");
+    }
+
+    /// An unparseable cron is deliberately *not* a submission-level
+    /// refusal: it degrades to the watermark branch, which skips that one
+    /// schedule and leaves the rest of the instance reconciling. Pinned so
+    /// the asymmetry with the budget above is a decision, not a gap.
+    #[test]
+    fn refuse_unrunnable_schedules_allows_a_plan_whose_cron_does_not_parse() {
+        let plan = plan_with_schedule(vec![scheduled_service("worker", 0, "not a cron")]);
+        assert!(SupervisorService::refuse_unrunnable_schedules(&plan).is_ok());
+    }
+
+    /// A fake `SubstrateActor` exercising only `run_scheduled`, for
+    /// `run_due_schedules`'s own tests. `error`/`delay` are behind a
+    /// `Mutex` so a test can flip the outcome between two calls in the
+    /// same actor, the same shape `DurableTestActor` uses.
+    #[derive(Debug, Default)]
+    struct ScheduledActor {
+        error: Mutex<Option<String>>,
+        delay: Option<Duration>,
+    }
+
+    #[async_trait::async_trait]
+    impl SubstrateActor for ScheduledActor {
+        async fn apply_plan(&self, _plan: syneroym_sdk::DeploymentPlan) -> Result<(), String> {
+            unimplemented!("not exercised by schedule tests")
+        }
+        async fn write_bindings(
+            &self,
+            _write: BindingWrite,
+        ) -> Result<Vec<BindingWriteOutcome>, String> {
+            unimplemented!("not exercised by schedule tests")
+        }
+        async fn restart(&self, _service_id: String, _generation: u64) -> Result<(), String> {
+            unimplemented!("not exercised by schedule tests")
+        }
+        async fn renew_cert(
+            &self,
+            _service_id: String,
+            _generation: u64,
+            _instance_certificate: String,
+        ) -> Result<(), String> {
+            unimplemented!("not exercised by schedule tests")
+        }
+        async fn instance_identity(
+            &self,
+            _service_id: &str,
+        ) -> Result<syneroym_sdk::InstanceIdentity, String> {
+            unimplemented!("not exercised by schedule tests")
+        }
+        async fn held_generation(&self, _app_instance_id: &str) -> Result<Option<u64>, String> {
+            unimplemented!("not exercised by schedule tests")
+        }
+        async fn run_scheduled(
+            &self,
+            _service_id: String,
+            _generation: u64,
+            _interface: String,
+            _method: String,
+            _params_json: Option<String>,
+        ) -> Result<(), String> {
+            if let Some(delay) = self.delay {
+                tokio::time::sleep(delay).await;
+            }
+            if let Some(e) = self.error.lock().unwrap().clone() {
+                return Err(e);
+            }
+            Ok(())
+        }
+    }
+
+    fn run_decision(logical_ref: &str, service_id: &str, substrate_did: &str) -> ScheduleDecision {
+        ScheduleDecision::Run {
+            logical_ref: logical_ref.to_string(),
+            service_id: service_id.to_string(),
+            substrate_did: substrate_did.to_string(),
+            member_index: 0,
+            schedule: ScheduleSpec {
+                cron: "* * * * *".to_string(),
+                interface: InterfaceName::new("scheduled-driver"),
+                method: "tick".to_string(),
+                params: None,
+                timeout_ms: DEFAULT_SCHEDULE_TIMEOUT_MS,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_run_raises_scheduled_run_failed_and_the_next_success_clears_it() {
+        let s = service();
+        let instance_id = AppInstanceId::new("inst-1");
+        let actor = Arc::new(ScheduledActor::default());
+        *actor.error.lock().unwrap() = Some("boom".to_string());
+        let actors: BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>> =
+            BTreeMap::from([(SubstrateAlias::new("edge-1"), deploy::build_actor(actor.clone()))]);
+        let did_to_alias = edge_1_alias();
+        let decisions = vec![run_decision("inst-1/worker", "did:key:hworker0", "did:key:zEdge1")];
+        let mut opened = Vec::new();
+
+        s.run_due_schedules(
+            &instance_id,
+            "inst-1",
+            &decisions,
+            &did_to_alias,
+            &actors,
+            0,
+            NOW,
+            &mut opened,
+        )
+        .await;
+
+        let active = s.store.alerts.active(&instance_id).unwrap();
+        assert!(
+            active.iter().any(|a| a.kind == AlertKind::ScheduledRunFailed
+                && a.substrate_did == SCHEDULE_SUBSTRATE_DID),
+            "a failed run must raise ScheduledRunFailed under the sentinel, not the member's own \
+             substrate: {active:?}"
+        );
+        assert_eq!(opened, vec![(AlertKind::ScheduledRunFailed, "inst-1/worker".to_string())]);
+
+        *actor.error.lock().unwrap() = None;
+        let mut opened2 = Vec::new();
+        s.run_due_schedules(
+            &instance_id,
+            "inst-1",
+            &decisions,
+            &did_to_alias,
+            &actors,
+            0,
+            NOW + 60,
+            &mut opened2,
+        )
+        .await;
+        let active = s.store.alerts.active(&instance_id).unwrap();
+        assert!(
+            !active.iter().any(|a| a.kind == AlertKind::ScheduledRunFailed),
+            "the next successful run must clear the alert: {active:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_run_is_never_enqueued_onto_the_outbox() {
+        let s = service();
+        let instance_id = AppInstanceId::new("inst-1");
+        let actor = Arc::new(ScheduledActor::default());
+        *actor.error.lock().unwrap() = Some("boom".to_string());
+        let actors: BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>> =
+            BTreeMap::from([(SubstrateAlias::new("edge-1"), deploy::build_actor(actor))]);
+        let did_to_alias = edge_1_alias();
+        let decisions = vec![run_decision("inst-1/worker", "did:key:hworker0", "did:key:zEdge1")];
+        let mut opened = Vec::new();
+
+        s.run_due_schedules(
+            &instance_id,
+            "inst-1",
+            &decisions,
+            &did_to_alias,
+            &actors,
+            0,
+            NOW,
+            &mut opened,
+        )
+        .await;
+
+        assert_eq!(s.store.queue.pending_count().unwrap(), 0);
+        assert!(s.store.queue.dead_letters().unwrap().is_empty());
+    }
+
+    /// A direct proof of the watermark's ordering: `record_schedule_started`
+    /// must have already landed by the time the target is called, not after --
+    /// checked from *inside* the call itself, before its own outcome is
+    /// known.
+    #[derive(Debug)]
+    struct AssertsStartedBeforeCallActor {
+        store: SupervisorStore,
+        expected_run_at: i64,
+    }
+
+    #[async_trait::async_trait]
+    impl SubstrateActor for AssertsStartedBeforeCallActor {
+        async fn apply_plan(&self, _plan: syneroym_sdk::DeploymentPlan) -> Result<(), String> {
+            unimplemented!("not exercised by this test")
+        }
+        async fn write_bindings(
+            &self,
+            _write: BindingWrite,
+        ) -> Result<Vec<BindingWriteOutcome>, String> {
+            unimplemented!("not exercised by this test")
+        }
+        async fn restart(&self, _service_id: String, _generation: u64) -> Result<(), String> {
+            unimplemented!("not exercised by this test")
+        }
+        async fn renew_cert(
+            &self,
+            _service_id: String,
+            _generation: u64,
+            _instance_certificate: String,
+        ) -> Result<(), String> {
+            unimplemented!("not exercised by this test")
+        }
+        async fn instance_identity(
+            &self,
+            _service_id: &str,
+        ) -> Result<syneroym_sdk::InstanceIdentity, String> {
+            unimplemented!("not exercised by this test")
+        }
+        async fn held_generation(&self, _app_instance_id: &str) -> Result<Option<u64>, String> {
+            unimplemented!("not exercised by this test")
+        }
+        async fn run_scheduled(
+            &self,
+            _service_id: String,
+            _generation: u64,
+            _interface: String,
+            _method: String,
+            _params_json: Option<String>,
+        ) -> Result<(), String> {
+            let states = self.store.schedule_states("inst-1").unwrap();
+            let state = states
+                .get("inst-1/worker")
+                .expect("record_schedule_started must have written before the call");
+            assert_eq!(state.last_run_at, Some(self.expected_run_at));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_run_is_recorded_before_the_call_so_a_crash_mid_run_skips_the_tick() {
+        let s = service();
+        let instance_id = AppInstanceId::new("inst-1");
+        let actor = Arc::new(AssertsStartedBeforeCallActor {
+            store: s.store.clone(),
+            expected_run_at: NOW as i64,
+        });
+        let actors: BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>> =
+            BTreeMap::from([(SubstrateAlias::new("edge-1"), deploy::build_actor(actor))]);
+        let did_to_alias = edge_1_alias();
+        let decisions = vec![run_decision("inst-1/worker", "did:key:hworker0", "did:key:zEdge1")];
+        let mut opened = Vec::new();
+
+        s.run_due_schedules(
+            &instance_id,
+            "inst-1",
+            &decisions,
+            &did_to_alias,
+            &actors,
+            0,
+            NOW,
+            &mut opened,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_failure_on_one_member_is_cleared_by_a_success_on_another_members_substrate() {
+        let s = service();
+        let instance_id = AppInstanceId::new("inst-1");
+        let failing_actor = Arc::new(ScheduledActor::default());
+        *failing_actor.error.lock().unwrap() = Some("boom".to_string());
+        let succeeding_actor = Arc::new(ScheduledActor::default());
+        let actors: BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>> = BTreeMap::from([
+            (SubstrateAlias::new("edge-a"), deploy::build_actor(failing_actor)),
+            (SubstrateAlias::new("edge-b"), deploy::build_actor(succeeding_actor)),
+        ]);
+        let did_to_alias = BTreeMap::from([
+            ("did:key:zEdgeA".to_string(), "edge-a".to_string()),
+            ("did:key:zEdgeB".to_string(), "edge-b".to_string()),
+        ]);
+        let mut opened = Vec::new();
+
+        let decisions_a = vec![run_decision("inst-1/worker", "did:key:hworkerA", "did:key:zEdgeA")];
+        s.run_due_schedules(
+            &instance_id,
+            "inst-1",
+            &decisions_a,
+            &did_to_alias,
+            &actors,
+            0,
+            NOW,
+            &mut opened,
+        )
+        .await;
+        let active = s.store.alerts.active(&instance_id).unwrap();
+        assert!(active.iter().any(|a| a.kind == AlertKind::ScheduledRunFailed));
+
+        let decisions_b = vec![run_decision("inst-1/worker", "did:key:hworkerB", "did:key:zEdgeB")];
+        s.run_due_schedules(
+            &instance_id,
+            "inst-1",
+            &decisions_b,
+            &did_to_alias,
+            &actors,
+            0,
+            NOW + 60,
+            &mut opened,
+        )
+        .await;
+        let active = s.store.alerts.active(&instance_id).unwrap();
+        assert!(
+            !active.iter().any(|a| a.kind == AlertKind::ScheduledRunFailed),
+            "a success on a different member's substrate must clear the sentinel-keyed alert: \
+             {active:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_schedule_timeout_is_clamped_to_the_ceiling() {
+        let s = service();
+        let instance_id = AppInstanceId::new("inst-1");
+        let actor =
+            Arc::new(ScheduledActor { delay: Some(Duration::from_secs(60)), ..Default::default() });
+        let actors: BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>> =
+            BTreeMap::from([(SubstrateAlias::new("edge-1"), deploy::build_actor(actor))]);
+        let did_to_alias = edge_1_alias();
+        let decisions = vec![ScheduleDecision::Run {
+            logical_ref: "inst-1/worker".to_string(),
+            service_id: "did:key:hworker0".to_string(),
+            substrate_did: "did:key:zEdge1".to_string(),
+            member_index: 0,
+            schedule: ScheduleSpec {
+                cron: "* * * * *".to_string(),
+                interface: InterfaceName::new("scheduled-driver"),
+                method: "tick".to_string(),
+                params: None,
+                // Above the ceiling on purpose -- the ceiling must win.
+                timeout_ms: 100_000,
+            },
+        }];
+        let mut opened = Vec::new();
+
+        let start = tokio::time::Instant::now();
+        s.run_due_schedules(
+            &instance_id,
+            "inst-1",
+            &decisions,
+            &did_to_alias,
+            &actors,
+            0,
+            NOW,
+            &mut opened,
+        )
+        .await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed >= SCHEDULED_RUN_CEILING && elapsed < Duration::from_secs(60),
+            "the run must time out at the 30s ceiling, not the configured 100s or the actor's own \
+             60s delay: {elapsed:?}"
+        );
+        let states = s.store.schedule_states("inst-1").unwrap();
+        assert!(
+            states
+                .get("inst-1/worker")
+                .unwrap()
+                .last_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("timed out"),
+            "{:?}",
+            states.get("inst-1/worker")
+        );
+    }
+
+    // ── The `schedules` operator verb ────────────────────────────────────
+
+    fn plan_json_with_schedule(service_name: &str, master_did: &str) -> String {
+        serde_json::json!({
+            "app_instance_id": "inst-1",
+            "blueprint_id": "syneroym:test",
+            "version": "1.0.0",
+            "services": [{
+                "service_id": master_did,
+                "logical_ref": format!("inst-1/{service_name}"),
+                "substrate": "edge-1",
+                "service_type": "tcp", "source": "127.0.0.1:9000",
+                "resolved_dependencies": {},
+                "topology_mode": "singleton",
+                "schedule": {
+                    "cron": "* * * * *",
+                    "interface": "scheduled-driver",
+                    "method": "tick"
+                }
+            }]
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn schedules_lists_a_declared_schedule_that_has_never_run() {
+        let s = service();
+        s.store
+            .submit(
+                "inst-1",
+                &plan_json_with_schedule("worker", "did:key:hworker0"),
+                "{}",
+                "did:key:owner",
+                0,
+            )
+            .unwrap();
+
+        let res = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "schedules",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        let tasks: Vec<ScheduledTask> = serde_json::from_value(res.payload).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].logical_ref, "inst-1/worker");
+        assert_eq!(tasks[0].cron, "* * * * *");
+        assert_eq!(tasks[0].interface, "scheduled-driver");
+        assert_eq!(tasks[0].method, "tick");
+        assert_eq!(tasks[0].evaluated_at, 0, "a schedule never evaluated must read as 0");
+        assert_eq!(tasks[0].last_run_at, None);
+        assert_eq!(tasks[0].last_member_index, None);
+        assert_eq!(tasks[0].last_error, None);
+    }
+
+    #[tokio::test]
+    async fn schedules_reports_the_member_and_time_of_the_last_run() {
+        let s = service();
+        s.store
+            .submit(
+                "inst-1",
+                &plan_json_with_schedule("worker", "did:key:hworker0"),
+                "{}",
+                "did:key:owner",
+                0,
+            )
+            .unwrap();
+        s.store.record_schedule_started("inst-1", "inst-1/worker", 12_345, 2).unwrap();
+
+        let res = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "schedules",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        let tasks: Vec<ScheduledTask> = serde_json::from_value(res.payload).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].evaluated_at, 12_345);
+        assert_eq!(tasks[0].last_run_at, Some(12_345));
+        assert_eq!(tasks[0].last_member_index, Some(2));
     }
 }
