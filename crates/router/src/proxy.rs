@@ -30,10 +30,11 @@ use syneroym_core::{
 };
 use syneroym_identity::{DelegationCertificate, Identity};
 use syneroym_rpc::{
-    CallOrigin, CallerContext, DEFAULT_PROXY_CALL_TIMEOUT, JsonRpcErrorResponse, JsonRpcRequest,
-    JsonRpcResponse, NativeInvocation, ProxyError, ProxyProtocol, ProxyRequest, QueuedCall,
-    QueuedTarget, RpcError, SERVICE_NOT_FOUND_RPC_CODE, SagaBegin, SagaInfo,
-    SagaState as RpcSagaState, SagaStepRequest, ServiceProxy, WeakNativeDispatchRegistry, framing,
+    CallOrigin, CallerContext, DEFAULT_PROXY_CALL_TIMEOUT, DeadLetterInfo, JsonRpcErrorResponse,
+    JsonRpcRequest, JsonRpcResponse, NativeInvocation, ProxyError, ProxyProtocol,
+    ProxyQueueInspector, ProxyRequest, QueuedCall, QueuedCallInfo, QueuedTarget, RpcError,
+    SERVICE_NOT_FOUND_RPC_CODE, SagaBegin, SagaInfo, SagaState as RpcSagaState, SagaStepRequest,
+    ServiceProxy, WeakNativeDispatchRegistry, framing,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::{task, time};
@@ -259,18 +260,12 @@ impl std::fmt::Debug for ProxyState {
 }
 
 #[async_trait::async_trait]
-impl syneroym_rpc::ProxyQueueInspector for ProxyState {
-    async fn queued_calls(
-        &self,
-        service_id: &str,
-    ) -> Result<Vec<syneroym_rpc::QueuedCallInfo>, String> {
+impl ProxyQueueInspector for ProxyState {
+    async fn queued_calls(&self, service_id: &str) -> Result<Vec<QueuedCallInfo>, String> {
         self.outbox.queued_calls(service_id).await
     }
 
-    async fn dead_letters(
-        &self,
-        service_id: &str,
-    ) -> Result<Vec<syneroym_rpc::DeadLetterInfo>, String> {
+    async fn dead_letters(&self, service_id: &str) -> Result<Vec<DeadLetterInfo>, String> {
         self.outbox.dead_letters(service_id).await
     }
 
@@ -4379,9 +4374,9 @@ mod tests {
 
         // Mirrors `route_handler.rs`'s own wiring exactly: downgrade from a
         // local binding, then let that binding go out of scope.
-        let weak: Weak<dyn syneroym_rpc::ProxyQueueInspector> = {
+        let weak: Weak<dyn ProxyQueueInspector> = {
             let state = router.proxy_state().expect("both outbox and sagas are wired").clone();
-            Arc::downgrade(&state) as Weak<dyn syneroym_rpc::ProxyQueueInspector>
+            Arc::downgrade(&state) as Weak<dyn ProxyQueueInspector>
         };
 
         assert!(

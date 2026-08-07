@@ -172,6 +172,22 @@ counterpart exists on the registered interface — the same class of check
 `test_wit_adherence` already performs over a parsed interface's function list.
 Cheap, and it converts "the developer should" into "the deploy refuses".
 
+> **Superseded 2026-08-07 by [B4's own `§0`](slice-b4-implementation-plan.md#0--what-the-input-documents-leave-open-understate-or-state-wrongly),
+> decided with the requester before that slice's phases were drafted.** Both
+> paragraphs above describe the plan as first drafted, not what shipped:
+> the marker is `saga-undo-`, not a bare `undo-` (a bare prefix is an
+> ordinary business verb and would make the deploy check ambiguous in both
+> directions); there is no manifest declaration at all (absence already
+> means "no saga", which is the ordinary case, not an author's mistake);
+> the deploy check reads the component's own compiled exports rather than a
+> declaration, the same mechanism `exports_authorize_rows` already uses for
+> the stage-4 gate, not `test_wit_adherence`'s parsed-`.wit`-file class of
+> check (that test parses a *source* `.wit` file, which a deployed `.wasm`
+> artifact does not ship); and the backward walk is a worker, not a queue-
+> crate helper. Full reasoning and the ADR-0023 §7 amendment it also
+> produced are in the slice plan and this document's own `§1` entries for
+> D-B4-7/8/17.
+
 ### 0.7 (Sets B3's boundary) Nothing in a manifest can express a schedule
 
 Neither `SynAppManifest` nor `ServiceSpec`

@@ -16,7 +16,10 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use rusqlite::{Connection, OptionalExtension, params};
-use syneroym_core::{config::AppSandboxRole, retry::calculate_jittered_backoff};
+use syneroym_core::{
+    config::{AppSandboxRole, RetryPolicy},
+    retry::calculate_jittered_backoff,
+};
 use zeroize::Zeroizing;
 
 use crate::backoff_before_wait;
@@ -33,7 +36,7 @@ pub const MAX_SAGA_PAYLOAD_BYTES: usize = 256 * 1024;
 /// disagree with the first.
 #[derive(Debug, Clone)]
 pub struct SagaConfig {
-    pub retry: syneroym_core::config::RetryPolicy,
+    pub retry: RetryPolicy,
     pub max_open: u32,
     pub max_steps: u32,
     pub max_terminal_rows: u32,
@@ -54,14 +57,14 @@ pub const MIN_STEP_CALL_BUDGET_MS: u64 = 500;
 
 impl From<&AppSandboxRole> for SagaConfig {
     fn from(role: &AppSandboxRole) -> Self {
-        let defaults = syneroym_core::config::RetryPolicy::default();
+        let defaults = RetryPolicy::default();
         let step_timeout_ms = role
             .dispatch_epoch_timeout_secs
             .saturating_mul(1000)
             .saturating_sub(1000)
             .max(MIN_STEP_CALL_BUDGET_MS);
         Self {
-            retry: syneroym_core::config::RetryPolicy {
+            retry: RetryPolicy {
                 max_attempts: role.queue_max_attempts.max(1),
                 initial_backoff_ms: defaults.initial_backoff_ms,
                 backoff_multiplier: defaults.backoff_multiplier,
@@ -754,7 +757,7 @@ mod tests {
 
     fn config() -> SagaConfig {
         SagaConfig {
-            retry: syneroym_core::config::RetryPolicy {
+            retry: RetryPolicy {
                 max_attempts: 3,
                 initial_backoff_ms: 100,
                 backoff_multiplier: 2.0,

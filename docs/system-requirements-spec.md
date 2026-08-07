@@ -1029,6 +1029,23 @@ The Data Layer provides a complete foundation for distributed application state 
 
 The Asynchronous Operations component ensures reliable execution of offline interactions, long-running workflows, and periodic tasks, even in the presence of network partitions or transient service failures.
 
+> **Implementation status (M05B, 2026-08-07, [ADR-0023](decisions/0023-durable-async-primitives.md)).**
+> Resilient RPC/retries, the outbox, and scheduled tasks shipped; long-running
+> tasks are deferred (target: M5's final phase). Six corrections to the text
+> below, matching [system-architecture.md](system-architecture.md#plt-asy-asynchronous-operations--scheduling)'s
+> own note: the outbox is substrate-side, not client-side; scheduling has no
+> lease and no Registry dependency (target selection plus a local overlap
+> guard on the App Supervisor's own pass); the saga marker is
+> `saga-undo-<operation>`, not `undo_<operation>` (kebab-case, *and* a
+> reserved fuller prefix — a bare `undo-` is an ordinary business verb); a
+> compensation's arguments are the forward call's own parameters plus its
+> own return value, not a "generated resource ID" (no such concept exists
+> in this tree); an undo may be called for an operation that never
+> happened, since the step log is written before the forward call runs;
+> and compensations fire only from a guest's own request or an expired
+> saga deadline, never from a queued task (a queued call's own outcome is
+> unknown to its caller by construction, so it cannot be a saga step).
+
 - **Resilient RPC & Retries:**
   - **Configurable Policies:** Retry policies (e.g., exponential backoff, maximum attempts) are defined at the service level by default, but can be overridden per-request.
   - **Dead Letter Queue (DLQ):** When the maximum retry limit is reached, retryable or outbox-backed messages are routed to a Dead Letter Queue for auditing, manual intervention, or later replay, preventing silent data loss. Non-idempotent synchronous calls fail directly unless the caller supplied an idempotency key and opted into queuing.

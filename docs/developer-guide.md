@@ -1067,6 +1067,106 @@ registry that cannot resolve every member: the deploy itself is valid, one
 declared behavior just never happens. Use `roymctl supervisor submit` for
 any manifest that carries a schedule you actually want to fire.
 
+##### Compensating a workflow (sagas)
+
+A service that drives a multi-service workflow records each step as it
+takes it, so a failure -- or this substrate dying mid-workflow -- can walk
+the record backwards, undoing what already ran. The platform never chooses
+the forward path and never decides a workflow failed on its own; it only
+orders the backward walk, delivers each undo under a fence it mints itself,
+retries on a backoff, and shows an operator what it could not undo
+([ADR-0023](decisions/0023-durable-async-primitives.md) §7, as amended
+2026-08-07).
+
+```wit
+// The forward operation, on whatever interface the service already exports.
+reserve: func(item: string) -> result<string, string>;
+
+// Its compensation: same parameters, plus one optional trailing member
+// carrying the forward call's own return value.
+saga-undo-reserve: func(item: string, forward-result: option<string>)
+    -> result<_, string>;
+```
+
+`saga-undo-<method>` is the whole convention. **Nothing is declared in the
+manifest** -- a service with no compensation is the ordinary case (an
+idempotent or read-only operation has nothing to undo), not an author who
+forgot, so absence already means "takes no part in any saga". The deploy
+path checks the compiled component's own exports instead: every
+`saga-undo-<x>` it exports must have an `<x>` beside it on the same
+interface, or the deploy is refused. `saga-` is a reserved prefix precisely
+so this check is sound -- a bare `undo-` would be an ordinary business verb
+(`undo-last-update` is a legal, unrelated export) and could not be checked
+this way without either refusing legal names or letting the walk call a
+business function by mistake.
+
+The driving side calls a second WIT interface to record steps as it takes
+them:
+
+```wit
+let saga = saga::begin("checkout", /* deadline-secs */ some(3600))?;
+let result = saga::step(saga, target, "reserve", "reserve", params, none)?;
+// ... more steps ...
+saga::commit(saga)?;      // the workflow reached its goal
+// or, on failure:
+saga::compensate(saga)?;  // give up -- the walk starts on the next tick
+```
+
+`step` is `call` plus a durable write: the intent is recorded *before* the
+call is dispatched, and the outcome after. **This means a `saga-undo-<op>`
+may be called for an operation that never happened** -- if the substrate
+died between the call leaving and its answer arriving, the step is still
+compensated, because the host cannot tell "never ran" from "ran but the
+answer never came back". Write every undo as "ensure this is not in
+effect" rather than "reverse this", and it handles both cases for free.
+
+`compensate` returns as soon as the saga is marked -- **not** once the walk
+finishes. A workflow of N steps is N remote undos, comfortably longer than
+a guest's own dispatch budget, so nothing waits for it inline. Poll
+`status`, or the operator verb below, for the outcome. The walk itself
+undoes the newest step first, one at a time, on the async worker's own
+tick -- the same worker that drains the guest outbox.
+
+**The other way a saga starts compensating: its own deadline.** `begin`'s
+`deadline-secs` (absent takes the node's default; the node also enforces a
+ceiling) is the *only* way a workflow interrupted by a crash is ever
+unwound, because a WASM component does not exist between calls -- nothing
+else can notice it died mid-workflow. A service whose instance certificate
+is not being renewed cannot compensate past that certificate's own expiry;
+`begin` warns when the requested deadline outlives the caller's current
+certificate, but does not refuse the call.
+
+```bash
+roymctl svc sagas --svc-id <SERVICE-DID>
+```
+
+lists every saga the service's own log holds: state (`open` /
+`compensating` / `compensated` / `failed`), how many of its steps are
+compensated so far, and its last error. A saga that reaches `failed` --
+its undo attempt budget exhausted, or a step's target answered in a way
+that settles the question rather than one worth retrying -- keeps its
+step history and stays visible here; nothing is silently dropped.
+
+```bash
+roymctl svc saga-compensate --svc-id <SERVICE-DID> --saga-id <SAGA-ID>
+```
+
+re-arms a `failed` saga: it returns to `compensating` with its current
+step's attempt count reset, and the worker picks it up on its next tick.
+Like `proxy-replay`, this never walks inline -- it only re-queues the
+attempt.
+
+**A substrate whose vault is locked compensates nothing**, and says so: the
+sweep logs a warning per service per tick rather than silently skipping,
+distinguishing a locked node from one that is merely idle. Every saga is
+intact on disk and resumes exactly where it left off once an operator
+injects the KEK.
+
+**A queued (`enqueue`d) call can never be a saga step.** `enqueue` returns
+"accepted for delivery", never "delivered" -- its own outcome is unknown to
+the caller by construction, so it cannot be recorded as a completed or
+failed step. A saga step is always a synchronous `saga::step` call.
+
 ##### Alerts over MQTT
 
 Every alert a pass newly opens is published as it happens, in addition to

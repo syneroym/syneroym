@@ -4,9 +4,13 @@
 [ADR-0023](../../../decisions/0023-durable-async-primitives.md) · **Plan:**
 [implementation-plan.md](implementation-plan.md)
 
-**Overall:** 🚧 **B1 complete 2026-08-05**, all gates green (evidence below).
-ADR-0023 accepted 2026-08-04. **B2 complete 2026-08-05.** **B3 has a full
-plan as of 2026-08-06** (not started); B4 remains sketch only.
+**Overall:** ✅ **Milestone complete 2026-08-07.** B1 complete 2026-08-05, B2
+complete 2026-08-05, B3 complete 2026-08-06, **B4 complete 2026-08-07** — all
+gates green (evidence below). ADR-0023 accepted 2026-08-04. `[PLT-ASY]` and
+`[PRD-OFF]` both move Pending → Complete in the traceability matrix (scoped
+to the four mechanisms this milestone builds; long-running tasks stay
+deferred to M5's final phase, per B5's own row in
+[deferred-backlog.md](../../deferred-backlog.md) §8).
 
 **Plan layout.** [implementation-plan.md](implementation-plan.md) is milestone
 level: the split call, cross-cutting findings and decisions, slice sequence,
@@ -23,8 +27,8 @@ where every single-slice plan in that milestone sits between 990 and 2,143.
 |---|---|---|---|
 | B1 | Queue crate, supervisor delivery outbox, DLQ with alert and operator surface. **Closes [M05A slice A6](../M05A-app-supervisor/task.md)** | ✅ **Complete (2026-08-05)** — evidence below | ADR-0023 accepted |
 | B2 | Guest outbox and proxy DLQ: idempotency key, `enqueue`, receiver-side dedup | ✅ **Complete (2026-08-05)** — all five phases — see "B2 — delivery" below. Plan: [slice-b2-implementation-plan.md](slice-b2-implementation-plan.md) (2026-08-05, revised same day after review). Its `§0` narrows the slice in four places and its `§5` carries six document corrections | B1 |
-| B3 | Scheduled tasks: manifest surface, evaluation on the supervisor's pass tick, member selection, overlap prevention | 📋 **Planned (2026-08-06), not started.** Plan: [slice-b3-implementation-plan.md](slice-b3-implementation-plan.md). Its `§0.1` adds a hop the milestone plan assumed already existed (nothing in the tree can invoke a method on a deployed service); its `§0.5` turns the requester's "skip a missed tick" answer into a rule the naive implementation does not produce | B1 |
-| B4 | Saga compensations: the `undo-<operation>` convention, deploy-time check, step log, reverse walk | 📋 Planned (sketch only; owes its own `§0`) | B1 |
+| B3 | Scheduled tasks: manifest surface, evaluation on the supervisor's pass tick, member selection, overlap prevention | ✅ **Complete (2026-08-06)**, review response 2026-08-07 — see "B3 — delivery" and "B3 — review response" below. Plan: [slice-b3-implementation-plan.md](slice-b3-implementation-plan.md). Its `§0.1` adds a hop the milestone plan assumed already existed (nothing in the tree can invoke a method on a deployed service); its `§0.5` turns the requester's "skip a missed tick" answer into a rule the naive implementation does not produce | B1 |
+| B4 | Saga compensations: the `saga-undo-<operation>` convention (a reserved prefix), a deploy-time export check with no manifest declaration, a durable step log, and a reverse walk triggered only by a guest's own `compensate` or an expired deadline | ✅ **Complete (2026-08-07)** — all five phases — see "B4 — saga compensations" below. Plan: [slice-b4-implementation-plan.md](slice-b4-implementation-plan.md). Its `§0` finds the milestone plan and ADR-0023 §7 both describe a manifest-declared convention with a bare `undo-` marker; both are wrong in ways that change the shape of the slice, recorded there and amended in the ADR | B1 |
 | ~~B5~~ | ~~Long-running tasks~~ | **Deferred out of this milestone (2026-08-04)** — [deferred-backlog.md](../../deferred-backlog.md) §8, target M5 final phase | — |
 
 **B5 deferred, decided with the requester before any code was written.** It is
@@ -918,3 +922,235 @@ scheduled work is argued, not tested). Two amended: the missed-tick row now
 states the grace window's real rule, and the `run-scheduled`-is-not-verified
 row records that the arbitrary `(interface, method)` pair a grantee can name
 is now bounded to interfaces a locally hosted service actually exports.
+
+---
+
+## B4 — saga compensations (2026-08-07), complete
+
+**All five phases of the slice plan are complete and verified against every
+gate.** Two decisions were taken with the requester before drafting the
+phases (§4 of the slice plan) and both landed exactly as decided: no
+manifest declaration of saga participation, and the marker is
+`saga-undo-<method>`, not a bare `undo-<method>`. Everything else shipped as
+planned; no design decision was reversed during implementation, though one
+real bug was caught and fixed before it reached a test run (below).
+
+**What shipped, by phase.**
+
+- **Phase 1 — the convention and its deploy-time gate.**
+  `SAGA_UNDO_PREFIX`/`saga_undo_name`/`compensated_operation`
+  ([app_orchestration/saga.rs](../../../../crates/app_orchestration/src/saga.rs)).
+  `AppSandboxEngine::exports_function`/`exported_functions`
+  ([sandbox_wasm/engine.rs](../../../../crates/sandbox_wasm/src/engine.rs)),
+  generalising `exports_authorize_rows` into a one-line caller so its two
+  existing call sites and the `dummy_sandbox` mirror did not move. One new
+  block in `deploy_wasm_service`
+  ([control_plane/orchestration.rs](../../../../crates/control_plane/src/service/orchestration.rs)):
+  every `saga-undo-<x>` a manifest's declared interfaces export must have an
+  `<x>` beside it, or the deploy is rolled back exactly as the stage-4 gate
+  rolls back. No manifest type, no wire change, no `ServiceConfig`/
+  `WasmManifest` struct-literal sweep.
+- **Phase 2 — the durable step log.**
+  [async_queue/saga.rs](../../../../crates/async_queue/src/saga.rs):
+  `sagas`/`saga_steps` tables, `SagaLog` with `begin`/`record_step_intent`/
+  `record_step_outcome`/`commit`/`mark_compensating`/`due_compensations`/
+  `abandoned`/`next_uncompensated_step`/`begin_undo_attempt`/
+  `mark_step_compensated`/`fail_compensation`/`finish_compensation`/
+  `status`/`list`/`rearm`/`open_count`/`drop_all_for_undeployed`. Intent is
+  written before the forward call, outcome after (§0.5) — the walk
+  compensates `done` **and** `pending` steps. Four bounds (§0.10): open
+  sagas and steps-per-saga refuse past their cap, terminal rows and the
+  per-step payload evict/refuse the same way B1's dead letters do. Five new
+  `AppSandboxRole` fields (`saga_max_open`, `saga_max_steps`,
+  `saga_max_terminal_rows`, `saga_default_deadline_secs`,
+  `saga_max_deadline_secs`); `step_timeout_ms` is derived from
+  `dispatch_epoch_timeout_secs`, not configured.
+- **Phase 3 — the guest surface.** One new WIT interface,
+  `syneroym:proxy/saga`
+  ([proxy.wit](../../../../crates/wit_interfaces/wit/proxy/proxy.wit)):
+  `begin`/`step`/`commit`/`compensate`/`status`, imported into
+  `host-environment`. `SagaBegin`/`SagaStepRequest`/`SagaState`/`SagaInfo`
+  and five new `ServiceProxy` methods, each with the same refusing default
+  body `enqueue` already has
+  ([rpc/proxy.rs](../../../../crates/rpc/src/proxy.rs)).
+  `service_async_db::async_db_location`
+  ([router/service_async_db.rs](../../../../crates/router/src/service_async_db.rs))
+  extracts the four genuinely identical lines `ProxyOutbox::queue_for` and
+  `CallDedupGuard::store_for` already duplicated — resolving `(directory,
+  dek)` for one service's async database — returning `anyhow::Result`
+  rather than a `ProxyError` so each owner keeps its own refusal semantics
+  (`CallDedupGuard` fails closed with `PermissionDenied`; `ProxyOutbox`/
+  `SagaStore` use `Internal`). **Deviation from the plan's own pseudocode**:
+  the plan's sketch signature returned `ProxyError` directly, which would
+  have silently unified `CallDedupGuard`'s fail-closed semantics with the
+  other two owners' — not attempted, and noted here rather than left to be
+  discovered by whoever reads the diff next. `SagaStore`
+  ([router/saga.rs](../../../../crates/router/src/saga.rs)) mirrors
+  `ProxyOutbox`'s cache/single-flight/`existing_log_for` shape exactly.
+  `saga_begin_impl`/`saga_step_impl`/`saga_commit_impl`/
+  `saga_compensate_impl`/`saga_status_impl`
+  ([router/proxy.rs](../../../../crates/router/src/proxy.rs)) — `step`
+  carries all three of `enqueue`'s refusals (node-level target, self-target,
+  no unexpired instance certificate at `begin`) plus a certificate-outlives-
+  deadline warning. `step`'s own call budget derives from the guest's epoch
+  minus this function's own measured bookkeeping, floored at
+  `MIN_STEP_CALL_BUDGET_MS` (500ms), never the proxy's 30s default.
+  `syneroym:proxy/saga::Host` impl in
+  [sandbox_wasm/host_capabilities.rs](../../../../crates/sandbox_wasm/src/host_capabilities.rs),
+  wired into the linker in `engine.rs`.
+- **Phase 4 — the reverse walk and the operator surface.**
+  `sweep_sagas_once`/`compensate_next_step`
+  ([router/proxy.rs](../../../../crates/router/src/proxy.rs)): one undo per
+  saga per tick, newest step first, an idempotency key of
+  `saga:<saga-id>:<idx>` the host mints itself, `merge_forward_result`
+  implementing §0.7's three-case rule (object gains a member, array gains an
+  element, null/scalar is wrapped) with no `forward-result` sent at all when
+  the forward call produced none. `run_outbox_worker` renamed
+  `run_async_worker`, now draining outboxes and sweeping sagas in the same
+  tick, still racing cancellation into the work rather than merely against
+  it. `ProxyState`
+  (`outbox`+`sagas` behind one `ProxyQueueInspector`, D-B4-19) is a field
+  `ProxyRouter` itself owns and rebuilds whenever either half changes, so
+  the control plane's `OnceLock<Weak<dyn ProxyQueueInspector>>` downgrades
+  from an `Arc` with a real long-lived strong owner — the same property
+  `outbox` alone already had, extended rather than re-derived. **Landed
+  narrower than the plan's own sketch**: rather than replacing
+  `ProxyRouter`'s existing `outbox`/`sagas` `Option` fields with a single
+  `Option<Arc<ProxyState>>` (touching ~18 internal call sites for no
+  behavioral difference), `ProxyState` is a third, derived field that
+  bundles clones of the same two `Arc`s purely as the `Weak`'s anchor.
+  `ProxyOutbox`'s own `ProxyQueueInspector` impl was converted to plain
+  inherent methods (`queued_calls`/`dead_letters`/`replay_dead_letter`),
+  since the trait impl now lives on `ProxyState` only. Two new
+  `orchestrator` verbs, `sagas`/`saga-compensate`
+  ([control-plane.wit](../../../../crates/wit_interfaces/wit/control-plane/control-plane.wit)),
+  gated exactly like `proxy-outbox`/`proxy-replay` (read on
+  `orchestrator/status`, write on `orchestrator/deploy` since a re-arm
+  causes calls to leave the node). `SyneroymClient::sagas`/
+  `saga_compensate` ([sdk/lib.rs](../../../../crates/sdk/src/lib.rs));
+  `roymctl svc sagas|saga-compensate`
+  ([roymctl/commands/svc.rs](../../../../apps/roymctl/src/commands/svc.rs)).
+  A "Compensating a workflow (sagas)" subsection in
+  [developer-guide.md](../../../../docs/developer-guide.md), after
+  "Scheduling a service", matching its shape.
+- **Phase 5 — the fixture and the e2e.** `test-components/saga-test`, one
+  component exporting both `saga-driver` (`begin-workflow`/`add-step`/
+  `finish-workflow`) and `saga-participant` (`reserve`/`saga-undo-reserve`/
+  `ledger`), deployed twice under two service ids — the same "one component,
+  two roles" shape `proxy-test` already established. The participant's
+  ledger is a JSON *object* payload (`{"log": "a,b,c"}`), never a bare
+  scalar, for the reason B3's own fixture already found (SQLite's NUMERIC
+  affinity on a `JSON`-declared column). Wired into the root `Cargo.toml`
+  exclude list, `core/test_constants.rs`, and
+  `.github/actions/ci-build-and-test/action.yml` — which also picks up
+  `scheduled-test`'s own pre-existing omission from that list (B3 built the
+  fixture but never added it to the CI loop) in the same commit.
+  [saga_e2e.rs](../../../../crates/substrate/tests/saga_e2e.rs), two tests
+  against two real substrates, both failing loudly (not skipping) when the
+  fixture artifact is not built, `Node::boot_locked`/`Node::unlock`
+  splitting `proxy_outbox_e2e.rs`'s own unconditional-KEK-injection `boot`
+  so a restart is observable *before* the vault unlocks.
+
+**A real bug found and fixed while writing phase 3's own router tests, not
+by the plan's own review.** `saga_begin_impl` passed `deadline_ms` (a
+*duration*) directly as `SagaLog::begin`'s `deadline_at` parameter, which the
+schema stores as an absolute timestamp `SagaLog::abandoned` later compares
+against `now`. A duration of ~3.6M (ms) stored as an absolute instant reads
+as a moment in 1970, so `deadline_at - created_at` came out as a large
+negative number instead of the requested window — caught immediately by
+`a_deadline_of_none_takes_the_node_default` asserting the exact difference
+rather than merely "no error", before any e2e ever ran. Fixed by computing
+`deadline_at = now.saturating_add(deadline_ms)` once and using that same
+absolute value both for the stored row and for the certificate-outlives-
+deadline warning check.
+
+**Three test-design corrections found while writing the phase-4 walk
+tests, each caught by a failing assertion rather than assumed correct.**
+
+- `disposition_of` (B2's own classifier, unmodified) treats a definitive
+  `Callee` error as **terminal** by default; only specific reserved codes
+  (`CALL_ALREADY_RUNNING_RPC_CODE`, `CALL_RESULT_NOT_RETAINED_RPC_CODE`,
+  and the shared "not found" code) are retryable. A retryable-undo-failure
+  test that simply configured the fixture target to answer with a generic
+  callee error was exercising the terminal path instead; fixed by
+  re-registering the target as a `WasmChannel` with no sandbox engine
+  behind this test's router, which produces `ProxyError::Internal`
+  ("sandbox engine unavailable") — a genuine `Disposition::Retry` case, the
+  same one B2's own outbox worker treats as a shutdown-window state rather
+  than a settled refusal.
+- `CALL_ALREADY_RUNNING_RPC_CODE` and `CALL_RESULT_NOT_RETAINED_RPC_CODE`
+  are not interchangeable: only the latter classifies `Delivered`. A test
+  meant to prove "the receiver already ran this and it counts as
+  compensated" had used the former, which is `Retry`, not `Delivered`.
+- `SagaLog::finish_compensation` marks a saga `compensated` and drops only
+  its **step** rows — the saga row itself survives as a terminal listing,
+  the same shape `dead_letters` survives a completed delivery, until pruned
+  past `saga_max_terminal_rows`. Two tests asserted `saga_status` returns
+  `Err` once compensation finished; both now assert `Ok` with
+  `SagaState::Compensated`.
+
+None of the three would have been caught without actually running the
+tests and reading why they failed — each is recorded here per the
+project's "reversal is worth recording" norm, not because any was
+surprising in hindsight.
+
+**Verification evidence.**
+
+- Test attributes added, diffed against `main`: 3 in the new
+  `app_orchestration/saga.rs`, 22 in the new `async_queue/saga.rs`, 9 in
+  `control_plane/service/orchestration.rs`, 25 in `router/proxy.rs`
+  (saga-specific; router's own suite went 139 → 165), 6 in
+  `sandbox_wasm/host_capabilities.rs`, 2 in `roymctl/tests/cli_args.rs`, 2
+  e2e in the new `crates/substrate/tests/saga_e2e.rs` — **67 net new unit
+  tests plus 2 e2e**.
+- `cargo +nightly fmt --all`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace --no-fail-fast` (sandboxed): the documented
+  pre-existing sandbox-bind category only (`syneroym-core --lib`'s HTTP
+  probe tests, `router --test native_dispatch_identity`, every
+  `crates/substrate/tests/*_e2e.rs` target, `sdk --test connect_timeout`,
+  `community-registry`, `coordinator-iroh` ×3, `mqtt-broker`), extended in
+  the expected way to include this slice's own `saga_e2e` (needs two real
+  port-bound substrates, same as every other `crates/substrate/tests/
+  *_e2e.rs` file). Every crate this slice touches is fully green in
+  isolation: `syneroym-app-orchestration`, `syneroym-async-queue`,
+  `syneroym-router` (165/165), `syneroym-rpc`, `syneroym-sandbox-wasm`,
+  `syneroym-sdk`, `roymctl` — `syneroym-control-plane` green apart from the
+  same 7 pre-existing HTTP-probe/`status_*` failures B1-B3 already
+  documented.
+- `cargo test -p syneroym-router --test proxy_dispatch`: 8/8 green
+  **without rebuilding the `proxy-test` fixture**, confirming the
+  additive-WIT claim (a component whose own world does not import `saga`
+  links exactly as it did before this slice, since the linker may provide
+  more than a component imports).
+- `mise run test:e2e` (Playwright, sandbox disabled for real port binds):
+  12/12, unchanged from before this slice — B4 adds no browser-visible
+  surface.
+- `saga_e2e` (sandbox disabled, real port binds): both tests green
+  individually after the two fixes above, then **3/3 consecutive runs**
+  green for the pair (~77-79s combined each run).
+
+**Backlog rows added** (this slice's own choices, per §5 of the slice plan,
+all in [deferred-backlog.md](../../deferred-backlog.md) §8): a
+dead-lettered queued call cannot trigger a compensation; a saga step's own
+proxy dead letter is replayable outside its saga; the deploy gate checks
+existence, not shape; a service cannot declare that it intends to be
+compensable; a saga step's target is not checked for a compensation at call
+time; a guest cannot read why a compensation failed beyond `last-error`; no
+partial or per-step re-arm; a third copy of the per-service `async.db` open
+was avoided but not removed; a saga's deadline cannot be extended; a saga
+step cannot target the driver's own service; `proxy.call`'s 30-second
+default sits inside a 5-second guest epoch (pre-existing, not fixed here);
+the step budget's one-second margin is a guess, not a measurement; a
+declared interface that is not a component export is not refused at
+deploy; the outbox's own per-service open is a silent skip, same as the
+saga sweep's was before this slice fixed its own copy; `test-components`
+are still enumerated by hand in CI. `[PLT-ASY]` and `[PRD-OFF]` marked
+Complete in the traceability matrix; ADR-0023 §7 amended with the four
+corrections a participant author needs to know; `system-architecture.md`
+and `system-requirements-spec.md` `[PLT-ASY]` sections each carry a dated
+implementation-status note, matching the Universal Proxy note's own shape.
+EOF_MARKER_UNUSED
+EOF_MARKER_UNUSED
+echo done

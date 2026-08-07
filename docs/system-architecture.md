@@ -1976,6 +1976,49 @@ The Substrate provides strictly typed networking between services. Static compos
 
 The Substrate handles offline behavior, long-running execution, and periodic scheduling uniformly by delegating explicit workflow management to the business logic, rather than attempting to build complex infrastructure-level "durable execution".
 
+> **Implementation status (M05B, 2026-08-07, [ADR-0023](decisions/0023-durable-async-primitives.md)).**
+> What's below this note is still the target vision for two of its five
+> sub-sections (long-running tasks, lease-based scheduling); the other
+> three shipped with six supersessions the sections below do not draw.
+>
+> 1. **The outbox lives substrate-side, not client-side.** "Fire-and-forget
+>    Semantics" below describes a client-held queue; the shipped
+>    `syneroym:proxy/proxy::enqueue` outbox belongs to the *calling
+>    service*, in its own DEK-encrypted database on whichever substrate
+>    hosts it (ADR-0023 §2, §4).
+> 2. **Periodic scheduling has no lease and no Registry involvement.**
+>    "Lease-Based Delegation" below is unbuilt; the shipped mechanism
+>    (M05B slice B3) is target selection plus a local overlap guard on the
+>    App Supervisor's own reconcile pass — registry writes are already
+>    partitioned by key ownership, so no lease was needed (ADR-0023 §6).
+> 3. **The saga marker is `saga-undo-<operation>`, not `undo_<operation>`.**
+>    Two corrections, not one: WIT identifiers are kebab-case (`undo-`, not
+>    `undo_`), *and* a bare `undo-` prefix is an ordinary business verb
+>    (`undo-last-update` is a legal, unrelated export) — reserving the
+>    fuller `saga-` prefix is what lets the platform tell a compensation
+>    apart from a business function at all (ADR-0023 §7's 2026-08-07
+>    amendment).
+> 4. **A compensation's arguments are the forward call's own parameters
+>    plus its own return value, not a "generated resource ID".** No such
+>    concept exists in this tree; the nearest real thing is the forward
+>    call's result, appended as a trailing `forward-result` (object member,
+>    array element, or wrapped, depending on the forward params' shape).
+> 5. **An undo may be called for an operation that never happened.** The
+>    step log is written *before* the forward call, not after, so a step
+>    whose result never came back (the substrate died mid-call) is
+>    compensated too. A `saga-undo-<op>` must tolerate this.
+> 6. **Compensations fire from a guest's own request or an expired
+>    deadline, never from a queued task.** `enqueue` returns "accepted for
+>    delivery", not "delivered" — a queued call's own outcome is unknown to
+>    the caller by construction, so it cannot be a saga step (ADR-0023 §7).
+>    Only a `syneroym:proxy/saga::compensate` call or a saga's own declared
+>    deadline expiring starts the backward walk.
+>
+> Long-running tasks (in-memory execution, restart-then-compensate) and
+> lease-based periodic scheduling remain as described below — the former is
+> deferred out of M05B entirely (target: M5's final phase); the latter was
+> replaced outright by point 2 above, not merely narrowed.
+
 *   **Resilient RPC & Dead Letter Queues (DLQ):**
     *   **Design:** The Universal Proxy automatically handles connection-establishment retries and idempotent call retries with exponential backoff for transient failures. Retry limits are configurable per service and per request. If the maximum limit is reached, retryable or outbox-backed messages are routed into a local SQLite-backed DLQ for later analysis or replay. Non-idempotent calls fail directly unless the caller supplied an idempotency key and opted into queuing.
 *   **The Outbox & Fire-and-Forget Semantics:**
