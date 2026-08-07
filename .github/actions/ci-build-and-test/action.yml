@@ -10,7 +10,7 @@ runs:
   steps:
     - name: Build WASM Test Components
       run: |
-        for component in greeter data-layer-test proxy-test stream-test messaging-pubsub-test abac-test; do
+        for component in greeter data-layer-test proxy-test stream-test messaging-pubsub-test abac-test scheduled-test saga-test; do
           (cd "test-components/$component" && cargo component build --release --target wasm32-wasip2)
         done
       shell: bash

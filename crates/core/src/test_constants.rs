@@ -95,3 +95,21 @@ pub fn scheduled_test_wasm_path() -> PathBuf {
          syneroym_test_scheduled.wasm",
     )
 }
+
+/// The `saga-driver` interface name for the saga-test component.
+pub const SAGA_TEST_DRIVER_INTERFACE: &str = "syneroym-test:saga-test/saga-driver@0.1.0";
+
+/// The `saga-participant` interface name for the saga-test component.
+pub const SAGA_TEST_PARTICIPANT_INTERFACE: &str = "syneroym-test:saga-test/saga-participant@0.1.0";
+
+/// Returns the workspace-relative path to the saga-test component WASM
+/// module (imports `syneroym:data-layer/store` and `syneroym:proxy/saga`,
+/// exports `init` plus `saga-driver` (`begin-workflow`/`add-step`/
+/// `finish-workflow`) and `saga-participant` (`reserve`/`saga-undo-reserve`/
+/// `ledger`) -- the same binary deployed twice, once under each role. See
+/// `test-components/saga-test`).
+pub fn saga_test_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../test-components/saga-test/target/wasm32-wasip2/release/syneroym_test_saga.wasm",
+    )
+}

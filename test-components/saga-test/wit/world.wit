@@ -1,0 +1,36 @@
+package syneroym-test:saga-test@0.1.0;
+
+/// One export per guest dispatch, deliberately (§0.14 of the slice B4
+/// plan): a driver that did `begin` plus two cross-node steps plus
+/// `commit` in one call would be three round trips inside a 5-second
+/// epoch, and the trap that follows would be the fixture's fault rather
+/// than the platform's.
+interface saga-driver {
+    /// Opens a saga and returns its id.
+    begin-workflow: func(deadline-secs: u64) -> result<string, string>;
+    /// Exactly one step. The test calls it once per step.
+    add-step: func(saga: string, peer: string, item: string) -> result<string, string>;
+    /// `outcome` is "commit" or "compensate".
+    finish-workflow: func(saga: string, outcome: string) -> result<_, string>;
+}
+
+interface saga-participant {
+    reserve: func(item: string) -> result<string, string>;
+    saga-undo-reserve: func(item: string, forward-result: option<string>) -> result<_, string>;
+    /// The audit log, newest last: "reserve:a", "undo:a", ... Backed by the
+    /// component's own data layer, so it survives the instance and the test
+    /// can read the *order* the undos ran in, not only the final state.
+    ledger: func() -> result<string, string>;
+}
+
+world saga-test {
+    import syneroym:data-layer/store@0.1.0;
+    import syneroym:proxy/saga@0.1.0;
+
+    /// Called by the host on first deploy only (fresh database). Creates
+    /// the `ledger` collection the participant's log lives in.
+    export init: func() -> result<_, string>;
+
+    export saga-driver;
+    export saga-participant;
+}

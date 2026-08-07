@@ -1,0 +1,181 @@
+package syneroym:proxy@0.1.0;
+
+/// The Universal Proxy. A component calls another service -- local or on
+/// another node -- without knowing where it lives. `params` and the success
+/// value are JSON text; the **callee** binds them against its real WIT
+/// signature (records/variants/lists/options -- see `conversions.rs`), so
+/// the call is typed at the dispatch boundary even though the wire is
+/// JSON-RPC. A binary wRPC wire is reserved but not implemented; when it
+/// lands, `call-options.protocol` selects it and this interface does not
+/// change.
+interface proxy {
+    record callee-error {
+        code: s32,
+        message: string,
+        data: option<string>,
+    }
+
+    /// What a call is addressed to. Raw-DID targeting stays for the callers
+    /// that are not dependency resolution: a guest's self-proxy into its own
+    /// native capabilities, native dispatch, and external/`roymctl` callers
+    /// that legitimately address a specific DID. A declared dependency is
+    /// resolved by the host against *this* component's own app instance --
+    /// a guest cannot name another app's instance, and cannot snapshot the
+    /// resolved DID, so a re-pushed binding takes effect on the next call.
+    variant call-target {
+        service(string),
+        dependency(string),
+    }
+
+    variant proxy-error {
+        service-not-found(string),
+        /// The named dependency resolves to nothing: never declared, or its
+        /// binding has not arrived yet. Distinct from `service-not-found`,
+        /// which is a DID that does not resolve to an address.
+        dependency-not-bound(string),
+        unsupported-protocol(string),
+        unsupported-target(string),
+        permission-denied(string),
+        transport(string),
+        timed-out,
+        callee(callee-error),
+        internal(string),
+    }
+
+    record call-options {
+        /// Reserved wire tag. `none` or "json-rpc/v1" today; any other
+        /// value returns `unsupported-protocol` -- protocol negotiation
+        /// does not exist yet.
+        protocol: option<string>,
+        /// Retry transport failures with exponential backoff. Only set this
+        /// for calls that are safe to repeat; a callee-returned error is
+        /// never retried. Defaults to false.
+        idempotent: bool,
+        /// Per-call deadline; defaults to the host's 30s budget.
+        timeout-ms: option<u32>,
+        /// Selection key for a multi-member dependency: rendezvous hashing
+        /// for `redundant`, required for `sharded`, ignored for
+        /// `singleton` and for a raw-DID target.
+        routing-key: option<string>,
+        /// Fence for at-least-once delivery (ADR-0023 §4). The receiving
+        /// node remembers this key and answers a duplicate from the first
+        /// call's stored outcome instead of running the target twice, so a
+        /// call carrying one is always safe to retry -- whatever
+        /// `idempotent` says. Choose a value that identifies the *logical*
+        /// operation, not the attempt: two attempts at the same operation
+        /// must carry the same key, and two different operations must not.
+        /// Required by `enqueue`; optional here.
+        idempotency-key: option<string>,
+    }
+
+    /// `target` is the target's DID (or a registry alias), or a declared
+    /// dependency name resolved host-side. `interface` is a WIT interface
+    /// name the target registered at deploy time. Native capabilities
+    /// (`data-layer`, `vault`, ...) of *another* service are refused with
+    /// `permission-denied` -- a component reaches its own through its host
+    /// imports.
+    call: func(
+        target: call-target,
+        %interface: string,
+        method: string,
+        params: string,
+        options: option<call-options>,
+    ) -> result<string, proxy-error>;
+
+    /// Fire-and-forget delivery that survives an unreachable target and a
+    /// restart of this substrate. The call is attempted immediately; only
+    /// a transport failure puts it in this service's own durable outbox,
+    /// where it is retried on a backoff schedule for hours before it is
+    /// given up on. The caller never sees the result -- success here means
+    /// "accepted for delivery", not "delivered".
+    ///
+    /// `options.idempotency-key` is **required**: a queued call is
+    /// delivered at least once, so without a fence a retry would run the
+    /// target twice. An `enqueue` without one is refused rather than
+    /// quietly made unsafe.
+    ///
+    /// Also refused: a target that is this component's own service (local
+    /// and already running, so durability buys it nothing), a node-level
+    /// interface (which keeps no record to fence a key with), and a call
+    /// from a service holding no unexpired instance certificate (every
+    /// delivery attempt would be refused as anonymous, so failing now is
+    /// the same answer given sooner and louder).
+    enqueue: func(
+        target: call-target,
+        %interface: string,
+        method: string,
+        params: string,
+        options: option<call-options>,
+    ) -> result<_, proxy-error>;
+}
+
+/// Saga compensations (ADR-0023 §7, as amended). A service that drives a
+/// multi-service workflow records each step as it takes it, so that a
+/// terminal failure -- or this substrate dying mid-workflow -- can be
+/// walked backwards, calling `saga-undo-<method>` on each step's own
+/// target.
+///
+/// The platform never chooses a forward step and never decides the
+/// workflow failed. It orders the backward walk, delivers each undo under
+/// an idempotency key it mints itself, retries on a backoff, and shows an
+/// operator what it could not undo.
+interface saga {
+    use proxy.{call-target, call-options, proxy-error};
+
+    enum saga-state {
+        open,
+        compensating,
+        compensated,
+        failed,
+    }
+
+    record saga-status {
+        saga-id: string,
+        name: string,
+        state: saga-state,
+        steps: u32,
+        compensated-steps: u32,
+        created-at: s64,
+        deadline-at: s64,
+        last-error: option<string>,
+    }
+
+    /// Opens a saga and returns its id. `deadline-secs` bounds how long the
+    /// workflow may stay open: past it, the substrate compensates the saga
+    /// on its own, which is the only way a workflow interrupted by a crash
+    /// is ever unwound (a component does not exist between calls). Absent
+    /// takes the node's default; above the node's ceiling is refused.
+    begin: func(name: string, deadline-secs: option<u64>) -> result<string, proxy-error>;
+
+    /// Takes one forward step and records it. Identical to `proxy.call` in
+    /// what it sends and what it returns; additionally, the intent is
+    /// written to this service's durable log *before* the call and the
+    /// outcome after it.
+    ///
+    /// Because the intent is written first, a step whose result never came
+    /// back is compensated too -- so `saga-undo-<method>` must tolerate
+    /// being called for an operation that never happened.
+    step: func(
+        saga: string,
+        target: call-target,
+        %interface: string,
+        method: string,
+        params: string,
+        options: option<call-options>,
+    ) -> result<string, proxy-error>;
+
+    /// The workflow reached its goal. The log is dropped and the saga can
+    /// never be compensated afterwards.
+    commit: func(saga: string) -> result<_, proxy-error>;
+
+    /// Give up: walk the recorded steps backwards. Returns as soon as the
+    /// saga is marked -- success here means "accepted", not "undone". Poll
+    /// `status` for the outcome.
+    ///
+    /// Each undo is sent to the step's own target and interface as
+    /// `saga-undo-<method>`, with the forward call's parameters and, when
+    /// there was one, its result as a trailing `forward-result`.
+    compensate: func(saga: string) -> result<_, proxy-error>;
+
+    status: func(saga: string) -> result<saga-status, proxy-error>;
+}

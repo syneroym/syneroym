@@ -1,0 +1,192 @@
+package syneroym:data-layer@0.1.0;
+
+interface store {
+    enum index-type {
+        %string,
+        numeric,
+        boolean,
+    }
+
+    record index-definition {
+        field-name: string,
+        %type: index-type,
+    }
+
+    record collection-schema {
+        name: string,
+        indexes: list<index-definition>,
+    }
+
+    record record-write-value {
+        id: string,
+        payload: list<u8>,
+    }
+
+    record record-read-value {
+        id: string,
+        payload: list<u8>,
+        creator-id: string,
+        created-at: u64,
+        updated-at: u64,
+    }
+
+    record query-options {
+        filter: option<string>,
+        limit: option<u32>,
+        cursor: option<string>,
+    }
+
+    record query-result {
+        records: list<record-read-value>,
+        next-cursor: option<string>,
+    }
+
+    /// A single bound parameter for `query-raw`. Values are always bound via
+    /// `?` placeholders -- never interpolated into the SQL text.
+    variant sql-value {
+        text(string),
+        integer(s64),
+        real(f64),
+        boolean(bool),
+        null,
+    }
+
+    /// Result of `query-raw`. Unlike `query-result`, this carries an
+    /// arbitrary projection (any columns a SELECT/CTE/aggregation produces),
+    /// not the fixed record shape. `rows` cells are positionally aligned
+    /// with `columns`.
+    record raw-query-result {
+        columns: list<string>,
+        rows: list<list<sql-value>>,
+    }
+
+    record patch-mutation {
+        id: string,
+        patch-json: list<u8>,
+    }
+
+    variant mutation {
+        put(record-write-value),
+        patch(patch-mutation),
+        delete(string),
+    }
+
+    variant data-layer-error {
+        permission-denied,
+        collection-not-found,
+        schema-violation(string),
+        quota-exceeded,
+        internal(string),
+    }
+
+    create-collection: func(schema: collection-schema) -> result<_, data-layer-error>;
+
+    drop-collection: func(name: string) -> result<_, data-layer-error>;
+
+    /// Under a deployed FDAE policy (ADR-0017 §4), may return
+    /// `permission-denied`: the caller must reach the row both as it stands
+    /// today (an update) and as it will read after the write (a create or
+    /// an update), plus CLS -- a field the caller cannot read may not be
+    /// authored either. `check-access` answers about an *existing* row and
+    /// is not a create pre-check: for an id that does not exist yet it
+    /// returns `false`, while `put` will *allow* the create if the
+    /// post-image is reachable -- a guest that pre-checks before creating
+    /// would see "no" and then succeed anyway.
+    ///
+    /// **Under a CLS-active policy (a non-empty masked-field set), `put`
+    /// cannot update a row that carries a masked value.** `put` replaces the
+    /// whole payload, and any payload the caller read back first already
+    /// had its masked fields stripped -- so the ordinary read-modify-write
+    /// loop always produces a post-image missing those fields, which counts
+    /// as a change and is denied. Use `patch` instead: it merges into the
+    /// existing payload, so a masked field the caller never touches simply
+    /// isn't part of the merge.
+    put: func(collection: string, value: record-write-value) -> result<_, data-layer-error>;
+
+    /// See `put`'s FDAE doc note. `patch` of a row that does not exist
+    /// returns `permission-denied` rather than `schema-violation` under a
+    /// policy -- the pre-image reachability check cannot distinguish
+    /// "absent" from "present but unreachable" without becoming an
+    /// existence oracle, which CLS-masking already refuses to provide.
+    patch: func(collection: string, id: string, patch-json: list<u8>) -> result<_, data-layer-error>;
+
+    get: func(collection: string, id: string) -> result<option<record-read-value>, data-layer-error>;
+
+    /// Queries records in a collection.
+    ///
+    /// NOTE: The host implementation must enforce a hard upper bound on the number
+    /// of returned records (e.g. max 1000 per page) to prevent memory exhaustion,
+    /// regardless of the limit specified in query options.
+    ///
+    /// NOTE: a stage-4 ABAC after-step (ADR-0017 §7, `syneroym:data-layer/
+    /// authorizer`) can deny or redact rows *after* the SQL sieve already
+    /// picked a full page. A post-hoc denial can make the returned page
+    /// shorter than the requested `limit` while `next-cursor` is still
+    /// `some` -- a caller must page until `next-cursor` is `none`, never
+    /// stop at a short page.
+    query: func(collection: string, opts: query-options) -> result<query-result, data-layer-error>;
+
+    /// Runs an aggregation over a collection (ADR-0007). `pipeline` is a
+    /// JSON *aggregation document* -- a single object with optional keys
+    /// `$match`, `$group`, `$having`, `$project`, `$sort`, `$limit`, `$skip`
+    /// -- compiled to a parameterized SQLite `GROUP BY`/`HAVING` query. Like
+    /// `query`'s filter DSL it is safe-by-construction (whitelisted
+    /// operators, all values bound as `?`) and requires no capability gate.
+    /// Unlike `query` it returns an arbitrary projection (`raw-query-result`,
+    /// not the fixed record shape), because grouped/projected columns cannot
+    /// fit `record-read-value`. Targets physical collections only;
+    /// aggregating over init-defined views is deferred. `raw-query-result.rows`
+    /// are capped at the same per-page ceiling as `query`; exceeding it
+    /// returns `quota-exceeded`. `$skip` pages a grouped result past that
+    /// cap: page *k* is `{"$skip": k*pagesize, "$limit": pagesize}`.
+    aggregate: func(collection: string, pipeline: string) -> result<raw-query-result, data-layer-error>;
+
+    /// See `put`'s FDAE doc note -- `delete` of a row that does not exist
+    /// under a policy also returns `permission-denied`, no longer
+    /// unconditionally idempotent (idempotent only on the policy-absent
+    /// path).
+    delete: func(collection: string, id: string) -> result<_, data-layer-error>;
+
+    delete-many: func(collection: string, filter: string) -> result<u64, data-layer-error>;
+
+    /// Mutates multiple records in a single transaction.
+    ///
+    /// NOTE: The host must enforce a strict MAX_BATCH_SIZE limit on the number of
+    /// mutations to prevent starvation of the single-writer SQLite database.
+    ///
+    /// Under a deployed FDAE policy (ADR-0017 §4), each mutation is
+    /// authorized individually, in the same transaction as the batch; the
+    /// first unauthorized mutation returns `permission-denied` and rolls
+    /// back every mutation in the batch, not just the offending one.
+    batch-mutate: func(collection: string, mutations: list<mutation>) -> result<_, data-layer-error>;
+
+    /// Executes arbitrary DDL statements.
+    ///
+    /// SECURITY: The host must strictly validate that the caller holds the
+    /// `data-layer/admin` capability (ADR-0015/0016) on this service's own
+    /// resource and reject execution otherwise.
+    execute-ddl: func(sql: string) -> result<_, data-layer-error>;
+
+    /// Privileged raw-SQL escape hatch (ADR-0011). Gated by the
+    /// `data-layer/admin` capability (same trust boundary as `execute-ddl`);
+    /// returns `permission-denied` otherwise. Read-only: a statement that
+    /// would mutate the DB is rejected. `params` are bound via `?`
+    /// placeholders in order.
+    query-raw: func(sql: string, params: list<sql-value>) -> result<raw-query-result, data-layer-error>;
+
+    /// Mode A point-in-time authorization check (ADR-0017 §4). Whether the
+    /// caller's compiled FDAE policy authorizes `operation` on record `id` in
+    /// `collection`. Fail-closed: any evaluation error/timeout returns false,
+    /// never an error a caller could read as allow. `operation` is a platform
+    /// ability string ("data-layer/read"/"data-layer/write") or an app-permission
+    /// ref.
+    check-access: func(collection: string, id: string, operation: string)
+        -> result<bool, data-layer-error>;
+}
+
+world data-layer-guest {
+    import store;
+
+    export init: func() -> result<_, string>;
+    export migrate: func() -> result<_, string>;
+}
