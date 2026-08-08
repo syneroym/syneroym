@@ -1536,7 +1536,7 @@ impl SupervisorService {
             .await;
         }
         self.refresh_due_master_anchors(plan, now).await;
-        self.refresh_due_app_tier1_record(&fresh_state, now).await;
+        self.refresh_due_app_tier1_record(instance_id, &fresh_state, now, &mut opened).await;
         self.run_due_schedules(
             instance_id,
             app_instance_id,
@@ -1996,7 +1996,10 @@ impl SupervisorService {
                 continue;
             }
             let last = self.store.last_master_anchor_refresh(&master_did).unwrap_or(None);
-            if last.is_some_and(|at| now.saturating_sub(at) < interval) {
+            // `at > now` (a backwards clock step, or a restored database)
+            // must count as due immediately, not be suppressed until the
+            // wall clock catches back up to it.
+            if last.is_some_and(|at| at <= now && now.saturating_sub(at) < interval) {
                 continue;
             }
             let master = match keys::master_for_member(
@@ -2035,36 +2038,96 @@ impl SupervisorService {
     /// persisted fact, the same shape `refresh_due_master_anchors` uses,
     /// reusing its interval rather than a second config field.
     ///
+    /// Keyed by `state.app_master_did`, not `app_instance_id`: the fact
+    /// belongs to the DID being published, not to the human name, so a
+    /// handover that changes which DID this instance publishes under
+    /// (`import-master` under a new key, then `adopt`) starts that new
+    /// DID's own refresh history at "never refreshed" rather than
+    /// inheriting the old DID's recent stamp.
+    ///
     /// Skipped, never minted, when this instance has no app master DID on
     /// its row yet: an instance adopted before that column existed gains
     /// one at its next `adopt`, and nowhere else -- minting here would
     /// create an app identity outside `adopt`, the one place that owns it.
     ///
-    /// A locked vault is logged, not alerted, for the same reason
-    /// `refresh_due_master_anchors` gives: a vault shut long enough for
-    /// this to matter has already raised `VaultLocked` from a member's own
-    /// certificate renewal, on a four-hour clock against this refresh's
-    /// twelve-hour one.
-    async fn refresh_due_app_tier1_record(&self, state: &DesiredState, now: u64) {
+    /// A locked vault raises `AlertKind::VaultLocked` (app-level,
+    /// `logical_ref: None`) rather than only logging: the per-member raise
+    /// from certificate renewal only fires for an instance with a member
+    /// inside its near-expiry window, so an instance with none would
+    /// otherwise get no signal at all while this record decays. Cleared
+    /// once a refresh succeeds again.
+    async fn refresh_due_app_tier1_record(
+        &self,
+        instance_id: &AppInstanceId,
+        state: &DesiredState,
+        now: u64,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) {
         let Some(writer) = &self.tier1_writer else { return };
         if state.app_master_did.is_empty() {
             return;
         }
         let now_i = now as i64;
         let interval = self.master_anchor_refresh_interval_secs as i64;
-        let last = self.store.last_tier1_refresh(&state.app_instance_id).unwrap_or(None);
-        if last.is_some_and(|at| now_i.saturating_sub(at) < interval) {
+        let last = self.store.last_tier1_refresh(&state.app_master_did).unwrap_or(None);
+        // `at > now_i` (a backwards clock step, or a restored database)
+        // must count as due immediately, not be suppressed until the wall
+        // clock catches back up to it.
+        if last.is_some_and(|at| at <= now_i && now_i.saturating_sub(at) < interval) {
+            return;
+        }
+        if !self.vault.kek_is_loaded() {
+            tracing::warn!(
+                app_instance_id = %state.app_instance_id,
+                "vault locked; skipping this instance's Tier-1 record refresh this pass"
+            );
+            if let Ok(true) = self.store.alerts.raise(
+                instance_id,
+                None,
+                None,
+                &self.node_did,
+                AlertKind::VaultLocked,
+                &format!(
+                    "'{}' cannot refresh its Tier-1 registry record because this supervisor's \
+                     vault is locked; callers outside the app will lose the ability to discover \
+                     its supervisor once the currently-published record lapses. Run: roymctl \
+                     --substrate {} security inject-kek --kek-hex <...>",
+                    state.app_instance_id, self.node_did
+                ),
+            ) {
+                opened.push((AlertKind::VaultLocked, state.app_instance_id.clone()));
+            }
             return;
         }
         let signed = match tier1::sign_tier1_record(
             &self.vault,
             &state.app_instance_id,
+            &state.app_master_did,
             &self.node_did,
             state.generation,
+            self.master_anchor_refresh_interval_secs,
         )
         .await
         {
             Ok(s) => s,
+            Err(e @ tier1::Tier1SignError::IdentityMismatch { .. }) => {
+                tracing::warn!(
+                    app_instance_id = %state.app_instance_id,
+                    error = %e,
+                    "refusing to publish this instance's Tier-1 record under the wrong identity"
+                );
+                if let Ok(true) = self.store.alerts.raise(
+                    instance_id,
+                    None,
+                    None,
+                    &self.node_did,
+                    AlertKind::AppIdentityMismatch,
+                    &e.to_string(),
+                ) {
+                    opened.push((AlertKind::AppIdentityMismatch, state.app_instance_id.clone()));
+                }
+                return;
+            }
             Err(e) => {
                 tracing::warn!(
                     app_instance_id = %state.app_instance_id,
@@ -2074,9 +2137,16 @@ impl SupervisorService {
                 return;
             }
         };
+        let _ = self.store.alerts.clear(instance_id, None, &self.node_did, AlertKind::VaultLocked);
+        let _ = self.store.alerts.clear(
+            instance_id,
+            None,
+            &self.node_did,
+            AlertKind::AppIdentityMismatch,
+        );
         match writer.publish(&signed).await {
             Ok(()) => {
-                if let Err(e) = self.store.record_tier1_refresh(&state.app_instance_id, now_i) {
+                if let Err(e) = self.store.record_tier1_refresh(&state.app_master_did, now_i) {
                     tracing::warn!(
                         app_instance_id = %state.app_instance_id,
                         error = %e,
@@ -4057,6 +4127,12 @@ impl SupervisorService {
         Ok(NativeResponse { payload: Self::release_payload("released", failed) })
     }
 
+    /// `retire` withdraws nothing from the registry: a retired instance
+    /// drops out of `all_active`, so its Tier-1 record (if any) simply
+    /// stops refreshing and lapses on the registry's own TTL/`not_after`,
+    /// the same self-limiting decay a pause causes. Left implicit rather
+    /// than an explicit withdraw, since nothing else in this slice
+    /// withdraws a record early either.
     async fn handle_retire(
         &self,
         caller: &CallerContext,
@@ -4094,9 +4170,15 @@ impl SupervisorService {
         // nothing else") does not cover this, since the record decays
         // toward `not_after` on the clock, not on a reconcile. Rather than
         // reopen that promise, the cost is made visible here, at the
-        // moment an operator chooses it. `None` (never published, or no
-        // registry configured) has nothing to warn about.
-        if let Ok(Some(last)) = self.store.last_tier1_refresh(&app_instance_id) {
+        // moment an operator chooses it. The refresh fact is keyed by the
+        // app master DID, not the instance id (a handover must not inherit
+        // a stale stamp) -- an instance with no DID on its row yet, or one
+        // never published, has nothing to warn about.
+        let app_master_did =
+            self.store.get(&app_instance_id).ok().flatten().map(|s| s.app_master_did);
+        if let Some(app_master_did) = app_master_did.filter(|did| !did.is_empty())
+            && let Ok(Some(last)) = self.store.last_tier1_refresh(&app_master_did)
+        {
             let expires_at = (last as u64).saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
             tracing::warn!(
                 app_instance_id,
@@ -4764,6 +4846,15 @@ impl SupervisorService {
             ManagedState::Degraded
         };
 
+        // Computed before `state.app_master_did` is moved into the
+        // literal below -- keyed by the app master DID, not the instance
+        // id, so a handover's new DID starts at "never refreshed" rather
+        // than inheriting the old DID's stamp.
+        let app_record_expires_at = (!state.app_master_did.is_empty())
+            .then(|| self.store.last_tier1_refresh(&state.app_master_did).unwrap_or(None))
+            .flatten()
+            .map(|at| (at as u64).saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS));
+
         let status = InstanceStatus {
             app_instance_id: app_instance_id.clone(),
             state: overall_state,
@@ -4808,11 +4899,7 @@ impl SupervisorService {
             // registry -- the deadline an operator has before a locked
             // vault (or a pause) costs this instance's cross-app
             // discoverability, made visible here alongside `VaultLocked`.
-            app_record_expires_at: self
-                .store
-                .last_tier1_refresh(&app_instance_id)
-                .unwrap_or(None)
-                .map(|at| (at as u64).saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS)),
+            app_record_expires_at,
         };
         Ok(NativeResponse { payload: serde_json::to_value(status).unwrap_or(Value::Null) })
     }
@@ -9662,8 +9749,10 @@ mod tests {
         let writer = Arc::new(RecordingTier1Writer::default());
         let s = Fixture { tier1_writer: Some(writer.clone()), ..Fixture::default() }.build();
         let state = desired_state_with_app_master("inst-1", "");
+        let mut opened = Vec::new();
 
-        s.refresh_due_app_tier1_record(&state, NOW).await;
+        s.refresh_due_app_tier1_record(&AppInstanceId::new("inst-1"), &state, NOW, &mut opened)
+            .await;
 
         assert!(
             writer.published.lock().unwrap().is_empty(),
@@ -9673,27 +9762,33 @@ mod tests {
             s.vault.get("app-inst-1").await.unwrap().is_none(),
             "the skip must never mint an app master"
         );
-        assert_eq!(s.store.last_tier1_refresh("inst-1").unwrap(), None);
+        assert!(opened.is_empty());
     }
 
     /// D-S1-8: a supervisor with no registry configured holds no writer at
-    /// all (mirroring `RegistryAnchorWriter::from_registry_url`), and a
-    /// pass with none configured is a quiet no-op, never a panic.
+    /// all (mirroring `RegistryAnchorWriter::from_registry_client`), and a
+    /// pass with none configured is a quiet no-op, never a panic. The
+    /// `RegistryTier1Writer::from_registry_client` half of D-S1-8's own
+    /// warning is asserted directly here; the log line itself is written
+    /// once at supervisor init (`runtime.rs`), outside what a
+    /// `SupervisorService` unit test can reach.
     #[tokio::test]
-    async fn no_configured_registry_warns_and_the_supervisor_keeps_running() {
+    async fn no_configured_registry_holds_no_writer_and_the_supervisor_keeps_running() {
         assert!(
-            RegistryTier1Writer::from_registry_url(false, None).is_none(),
+            RegistryTier1Writer::from_registry_client(None).is_none(),
             "no substrate.registry_url must mean no writer, not one that quietly does nothing"
         );
 
         let s = Fixture::default().build();
         let (app_did, _) = keys::app_master(&s.vault, "inst-1").await.unwrap();
         let state = desired_state_with_app_master("inst-1", &app_did);
+        let mut opened = Vec::new();
 
-        s.refresh_due_app_tier1_record(&state, NOW).await;
+        s.refresh_due_app_tier1_record(&AppInstanceId::new("inst-1"), &state, NOW, &mut opened)
+            .await;
 
         assert_eq!(
-            s.store.last_tier1_refresh("inst-1").unwrap(),
+            s.store.last_tier1_refresh(&app_did).unwrap(),
             None,
             "with no writer configured there is nothing to stamp"
         );
@@ -9717,9 +9812,12 @@ mod tests {
         .build();
         let (app_did, _) = keys::app_master(&s.vault, "inst-1").await.unwrap();
         let state = desired_state_with_app_master("inst-1", &app_did);
+        let instance_id = AppInstanceId::new("inst-1");
 
         for tick in 0..3u64 {
-            s.refresh_due_app_tier1_record(&state, NOW + tick * 43_200).await;
+            let mut opened = Vec::new();
+            s.refresh_due_app_tier1_record(&instance_id, &state, NOW + tick * 43_200, &mut opened)
+                .await;
         }
 
         assert_eq!(
@@ -9728,9 +9826,45 @@ mod tests {
             "every interval-elapsed pass must retry -- nothing here counts attempts and stops"
         );
         assert_eq!(
-            s.store.last_tier1_refresh("inst-1").unwrap(),
+            s.store.last_tier1_refresh(&app_did).unwrap(),
             None,
             "a failed publish is never stamped as a success"
+        );
+    }
+
+    /// The gate itself, exercised across a real success: the failure-only
+    /// test above cannot regress this property, since a stamp that never
+    /// advances reads as "due" on every single tick regardless of what
+    /// the interval comparison does.
+    #[tokio::test]
+    async fn the_interval_gate_holds_after_a_successful_publish() {
+        let writer = Arc::new(RecordingTier1Writer::default());
+        let s = Fixture {
+            tier1_writer: Some(writer.clone()),
+            master_anchor_refresh_interval_secs: Some(43_200),
+            ..Fixture::default()
+        }
+        .build();
+        let (app_did, _) = keys::app_master(&s.vault, "inst-1").await.unwrap();
+        let state = desired_state_with_app_master("inst-1", &app_did);
+        let instance_id = AppInstanceId::new("inst-1");
+
+        let mut opened = Vec::new();
+        s.refresh_due_app_tier1_record(&instance_id, &state, NOW, &mut opened).await;
+        assert_eq!(writer.published.lock().unwrap().len(), 1);
+
+        s.refresh_due_app_tier1_record(&instance_id, &state, NOW + 100, &mut opened).await;
+        assert_eq!(
+            writer.published.lock().unwrap().len(),
+            1,
+            "a tick inside the interval must not re-publish"
+        );
+
+        s.refresh_due_app_tier1_record(&instance_id, &state, NOW + 43_200, &mut opened).await;
+        assert_eq!(
+            writer.published.lock().unwrap().len(),
+            2,
+            "a tick past the interval must publish again"
         );
     }
 
@@ -9738,27 +9872,85 @@ mod tests {
     /// persisted fact -- not on a timer of its own -- so a pass with
     /// otherwise nothing to do still reaches it purely because a
     /// `tier1_writer` is configured (the same gate `anchor_writer` uses).
+    /// The published record also carries this pass's real generation, not
+    /// a hardcoded one -- `generation` is the entire mechanism behind
+    /// failure-matrix row 2 (two supervisors, one app DID).
     #[tokio::test]
-    async fn a_refresh_runs_on_the_ordinary_pass_tick_and_starts_no_second_timer() {
+    async fn a_refresh_runs_on_the_ordinary_pass_tick_and_carries_the_instances_generation() {
         let writer = Arc::new(RecordingTier1Writer::default());
         let s = Fixture { tier1_writer: Some(writer.clone()), ..Fixture::default() }.build();
         s.store
             .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:zOwner", 0)
             .unwrap();
         let (app_did, _) = keys::app_master(&s.vault, "inst-1").await.unwrap();
-        s.store.record_adopt("inst-1", 0, &app_did).unwrap();
+        s.store.record_adopt("inst-1", 7, &app_did).unwrap();
 
         s.reconcile_instance_pass("inst-1").await;
 
+        let published = writer.published.lock().unwrap();
         assert_eq!(
-            writer.published.lock().unwrap().len(),
+            published.len(),
             1,
             "a configured writer must be exercised even when every other work list is empty"
         );
+        assert_eq!(
+            published[0].info.generation, 7,
+            "the published record must carry this instance's real generation"
+        );
+        drop(published);
         assert!(
-            s.store.last_tier1_refresh("inst-1").unwrap().is_some(),
+            s.store.last_tier1_refresh(&app_did).unwrap().is_some(),
             "a successful publish through the ordinary pass must stamp the fact"
         );
+    }
+
+    /// S1-8: the property that matters is one level up from the signer
+    /// (`tier1::tests::a_locked_vault_fails_the_refresh_without_touching_
+    /// the_registry`, which takes no writer at all and so is true by
+    /// construction) -- with a writer actually configured, a locked vault
+    /// must stop before that writer is ever reached, and must raise
+    /// `VaultLocked` rather than only logging.
+    #[tokio::test]
+    async fn a_locked_vault_never_reaches_a_configured_tier1_writer() {
+        let writer = Arc::new(RecordingTier1Writer::default());
+        let s = Fixture {
+            locked_vault: true,
+            tier1_writer: Some(writer.clone()),
+            ..Fixture::default()
+        }
+        .build();
+        let state = desired_state_with_app_master("inst-1", "did:key:zPlaceholderApp");
+        let instance_id = AppInstanceId::new("inst-1");
+        let mut opened = Vec::new();
+
+        s.refresh_due_app_tier1_record(&instance_id, &state, NOW, &mut opened).await;
+
+        assert_eq!(*writer.calls.lock().unwrap(), 0, "a locked vault must never reach the writer");
+        assert_eq!(opened, vec![(AlertKind::VaultLocked, "inst-1".to_string())]);
+    }
+
+    /// S1-3: the vault's own key must match the DID the row recorded at
+    /// the last `adopt` -- a mismatch (an `import-master` not yet
+    /// followed by an `adopt`, A7 §0.5) must refuse and raise, never
+    /// publish under whichever key the vault happens to hold.
+    #[tokio::test]
+    async fn a_mismatched_vault_key_raises_an_alert_and_never_publishes() {
+        let writer = Arc::new(RecordingTier1Writer::default());
+        let s = Fixture { tier1_writer: Some(writer.clone()), ..Fixture::default() }.build();
+        // The vault genuinely holds an app master for "inst-1"...
+        keys::app_master(&s.vault, "inst-1").await.unwrap();
+        // ...but the row claims a different DID, the stale-handover case.
+        let state = desired_state_with_app_master("inst-1", "did:key:zStaleRowClaim");
+        let instance_id = AppInstanceId::new("inst-1");
+        let mut opened = Vec::new();
+
+        s.refresh_due_app_tier1_record(&instance_id, &state, NOW, &mut opened).await;
+
+        assert!(
+            writer.published.lock().unwrap().is_empty(),
+            "a mismatched identity must never be published"
+        );
+        assert_eq!(opened, vec![(AlertKind::AppIdentityMismatch, "inst-1".to_string())]);
     }
 
     /// Companion to A5c's own two paused-instance tests: `pause` excludes
@@ -10305,7 +10497,8 @@ mod tests {
         s.store
             .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
             .unwrap();
-        s.store.record_tier1_refresh("inst-1", 1_000).unwrap();
+        s.store.record_adopt("inst-1", 0, "did:key:zAppMaster").unwrap();
+        s.store.record_tier1_refresh("did:key:zAppMaster", 1_000).unwrap();
 
         let status = dispatch(
             &s,
@@ -10353,7 +10546,8 @@ mod tests {
         s.store
             .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
             .unwrap();
-        s.store.record_tier1_refresh("inst-1", 1_000).unwrap();
+        s.store.record_adopt("inst-1", 0, "did:key:zAppMaster").unwrap();
+        s.store.record_tier1_refresh("did:key:zAppMaster", 1_000).unwrap();
 
         let res = dispatch(
             &s,

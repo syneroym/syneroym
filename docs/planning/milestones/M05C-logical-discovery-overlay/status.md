@@ -199,3 +199,60 @@ published yet).
   exhaustive re-run would catch is low.
 - `mise run test:e2e` (Playwright WebRTC suite): **4 passed**. Unaffected by
   this slice, as expected (no client-gateway or WebRTC surface touched).
+
+### Post-review pass (2026-08-08), 13 findings, all incorporated
+
+An independent review against `task.md`/`slice-s1-implementation-plan.md`
+found three defects that would have stopped the slice delivering the
+milestone goal in production, all confirmed against the shipped code before
+fixing:
+
+- **The record was absent from the registry for most of every refresh
+  cycle.** `EndpointInfo.ttl: None` inherited the community registry's
+  2-hour sweep default, while the refresh reused `master_anchor_refresh_
+  interval_secs` (12h default) -- the record was evicted roughly two hours
+  after each publish and stayed unresolvable until the next one. Master
+  anchors are safe at that cadence only because the sweep never touches
+  `master_anchors`, a fact this slice's own reasoning missed by analogy.
+  Fixed: `sign_tier1_record` now takes the refresh interval and sets an
+  explicit `ttl` at 3x it, pinned by
+  `tier1::tests::the_records_ttl_leaves_multiple_refresh_cycles_of_margin`.
+- **The refresh fact was keyed by `app_instance_id`, not the app DID**
+  D-S1-5 specified. Self-consistent until a handover: a new app master DID
+  (`import-master` under a different key, then `adopt`) would inherit the
+  old DID's "recently refreshed" stamp under the shared instance-id key,
+  leaving the new DID unpublished for up to a full interval with no
+  indication. Fixed at all call sites (`refresh_due_app_tier1_record`,
+  `handle_status`, `handle_pause`) to key on `state.app_master_did`.
+- **The record was signed under whatever the vault held, never checked
+  against `state.app_master_did`.** Plan §0.6 requires reading the DID from
+  the row; the shipped code only checked it was non-empty, then re-derived
+  the actual signing key independently from the vault. A mismatch (an
+  `import-master` not yet followed by `adopt`, the exact hazard A7 §0.5 and
+  `task.md`'s S1 note name) would have published under a DID nobody looks
+  up. Fixed: `sign_tier1_record` now takes the expected DID and refuses
+  (`Tier1SignError::IdentityMismatch`) rather than matching on error text,
+  and the caller raises a new `AlertKind::AppIdentityMismatch`.
+
+Two "should fix" findings and four test-coverage gaps were also
+incorporated: a locked vault now raises (and clears) `AlertKind::VaultLocked`
+from this path too, not only from certificate renewal, since an instance
+with no member near cert expiry got no signal at all; a backlog row records
+the hardcoded `is_private: false`; the interval gate is now tested across a
+real success (not only failures, which cannot regress it); the published
+record's `generation` is pinned in the pass-tick test; a service-level
+locked-vault-with-a-configured-writer test asserts the writer is never
+reached; and the no-registry test is renamed to what it actually asserts.
+Four minor items: one `RegistryClient` (and one DHT socket) is now shared
+between the anchor and Tier-1 writers rather than each building its own; a
+backwards clock step is now treated as due immediately in both this
+refresh and `refresh_due_master_anchors`; `retire`'s doc now states the
+record decays rather than being withdrawn; and the no-registry warning
+reads as node-wide rather than naming one app. New tests:
+`a_vault_key_that_does_not_match_the_rows_recorded_did_is_refused`,
+`the_records_ttl_leaves_multiple_refresh_cycles_of_margin`,
+`the_interval_gate_holds_after_a_successful_publish`,
+`a_locked_vault_never_reaches_a_configured_tier1_writer`,
+`a_mismatched_vault_key_raises_an_alert_and_never_publishes`. Full
+`cargo test --workspace` and the two `tier1_endpoint_record_e2e.rs` e2e
+tests re-verified clean after every fix.

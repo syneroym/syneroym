@@ -34,30 +34,33 @@ pub trait AnchorWriter: fmt::Debug + Send + Sync {
 
 /// The production writer: this node's configured HTTP registry (and, when
 /// enabled, the DHT), reached through the same client `roymctl identity
-/// publish-anchor` uses.
+/// publish-anchor` uses. Takes an already-built `Arc<RegistryClient>`
+/// rather than building its own -- `init_supervisor` builds exactly one and
+/// hands a clone of the `Arc` to this writer and to `RegistryTier1Writer`
+/// alike, so a supervisor with the DHT enabled opens one pkarr client and
+/// socket, not two.
 #[derive(Debug)]
 pub struct RegistryAnchorWriter {
-    client: RegistryClient,
+    client: Arc<RegistryClient>,
 }
 
 impl RegistryAnchorWriter {
     #[must_use]
-    pub fn new(enable_dht: bool, registry_url: String) -> Self {
-        Self { client: RegistryClient::new(enable_dht, Some(registry_url)) }
+    pub fn new(client: Arc<RegistryClient>) -> Self {
+        Self { client }
     }
 
-    /// `None` when this node has no `substrate.registry_url` configured.
-    /// An anchor published nowhere is worse than no anchor at all -- every
-    /// consumer resolving it would fail closed on a missing record it
-    /// cannot distinguish from a revoked one -- so the supervisor holds no
-    /// writer rather than a writer that quietly does nothing.
+    /// `None` when this node has no `substrate.registry_url` configured
+    /// (`client` is `None`). An anchor published nowhere is worse than no
+    /// anchor at all -- every consumer resolving it would fail closed on a
+    /// missing record it cannot distinguish from a revoked one -- so the
+    /// supervisor holds no writer rather than a writer that quietly does
+    /// nothing.
     #[must_use]
-    pub fn from_registry_url(
-        enable_dht: bool,
-        registry_url: Option<&str>,
+    pub fn from_registry_client(
+        client: Option<Arc<RegistryClient>>,
     ) -> Option<Arc<dyn AnchorWriter>> {
-        registry_url
-            .map(|url| Arc::new(Self::new(enable_dht, url.to_string())) as Arc<dyn AnchorWriter>)
+        client.map(|c| Arc::new(Self::new(c)) as Arc<dyn AnchorWriter>)
     }
 }
 

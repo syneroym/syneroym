@@ -108,6 +108,14 @@ pub enum AlertKind {
     /// this one stands forever. Never queued or dead-lettered; the next
     /// tick is the retry, and its success clears this alert.
     ScheduledRunFailed,
+    /// The vault's app-instance master key does not derive the DID
+    /// `desired_state.app_master_did` recorded at the last `adopt`
+    /// (ADR-0022 §2) -- reachable when an `import-master` lands without a
+    /// following `adopt`. Publishing the app's Tier-1 registry record
+    /// under whichever key the vault happens to hold, instead of refusing,
+    /// would name a DID nobody looks up while `status` reports a
+    /// different one. Substrate-level: `logical_ref` is always `None`.
+    AppIdentityMismatch,
 }
 
 impl fmt::Display for AlertKind {
@@ -128,6 +136,7 @@ impl fmt::Display for AlertKind {
             Self::RotationRestartPending => "ROTATION_RESTART_PENDING",
             Self::DeliveryExhausted => "DELIVERY_EXHAUSTED",
             Self::ScheduledRunFailed => "SCHEDULED_RUN_FAILED",
+            Self::AppIdentityMismatch => "APP_IDENTITY_MISMATCH",
         };
         write!(f, "{}", s)
     }
@@ -153,6 +162,7 @@ impl FromStr for AlertKind {
             "ROTATION_RESTART_PENDING" => Ok(Self::RotationRestartPending),
             "DELIVERY_EXHAUSTED" => Ok(Self::DeliveryExhausted),
             "SCHEDULED_RUN_FAILED" => Ok(Self::ScheduledRunFailed),
+            "APP_IDENTITY_MISMATCH" => Ok(Self::AppIdentityMismatch),
             _ => Err(anyhow!("Unknown alert kind: {}", s)),
         }
     }
@@ -455,6 +465,8 @@ mod tests {
             AlertKind::InstanceRevoked,
             AlertKind::RotationRestartPending,
             AlertKind::DeliveryExhausted,
+            AlertKind::ScheduledRunFailed,
+            AlertKind::AppIdentityMismatch,
         ];
         for kind in all {
             let round_tripped: AlertKind = kind.to_string().parse().unwrap();
