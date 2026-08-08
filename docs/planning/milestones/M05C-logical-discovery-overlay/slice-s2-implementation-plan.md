@@ -1,10 +1,11 @@
 # Slice S2 Implementation Plan — Tier 2: the Signed Topology Document
 
-**Status:** 📋 Planned (2026-08-08). Not started. Milestone:
+**Status:** ✅ Complete (2026-08-08). Milestone:
 [task.md](task.md) slice **S2**; milestone-level plan:
 [implementation-plan.md](implementation-plan.md). Design of record:
 [ADR-0022](../../../decisions/0022-two-tier-logical-service-discovery.md) §3,
-§4, §5, §6. Depends on **S1 — Complete 2026-08-08**. Gates S3 and S4.
+§4, §5, §6. Depended on **S1 — Complete 2026-08-08**. Gates S3 and S4.
+Verification evidence lives in [status.md](status.md).
 
 **The one-sentence summary.** S2 makes "who are the members of this app's
 logical service" an answerable question for a caller *outside* the app, by

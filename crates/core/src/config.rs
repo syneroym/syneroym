@@ -694,6 +694,22 @@ const fn default_supervisor_queue_visibility_timeout_secs() -> u64 {
 const fn default_supervisor_queue_dlq_max_rows() -> u32 {
     1000
 }
+/// One hour balances two things a signed topology document (ADR-0022 §3)
+/// trades off: comfortably longer than any ordinary restart (the window a
+/// caller with a cached document keeps routing while this supervisor is
+/// down -- the availability property the document form exists for), and
+/// far shorter than the Tier-1 record's own 30-day backstop, which answers
+/// a slower question.
+const fn default_supervisor_topology_document_not_after_secs() -> u64 {
+    3_600
+}
+/// Five minutes: twelve re-asks inside one document's life, each a no-op
+/// if nothing changed. Advice carried inside the signed document as
+/// `cache_ttl_ms`, not authority -- the signer owns `not_after`, and a
+/// reader may substitute its own TTL.
+const fn default_supervisor_topology_document_cache_ttl_secs() -> u64 {
+    300
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -765,6 +781,23 @@ pub struct SupervisorRole {
     pub queue_visibility_timeout_secs: u64,
     /// Dead letters are pruned oldest-first past this row count.
     pub queue_dlq_max_rows: u32,
+    /// How long a signed topology document (ADR-0022 §3) stays usable
+    /// after it is signed. This is the window a caller with a cached
+    /// document keeps routing while this supervisor is down -- the
+    /// availability property the document form exists for -- and equally
+    /// the window a caller may act on a member set this supervisor has
+    /// already changed. One hour balances the two: comfortably longer than
+    /// any restart, far shorter than the Tier-1 record's own 30-day
+    /// backstop, which answers a slower question.
+    pub topology_document_not_after_secs: u64,
+    /// What a fetching caller is told to re-ask on, carried inside the
+    /// signed document as `cache_ttl_ms`. Advice, not authority -- the
+    /// signer owns `not_after`, and a reader may substitute its own TTL --
+    /// but the supervisor is the only party that knows how often this
+    /// app's topology actually moves, so it is the right party to advise.
+    /// Five minutes: twelve re-asks inside one document's life, each of
+    /// which is a no-op if nothing changed.
+    pub topology_document_cache_ttl_secs: u64,
 }
 
 impl Default for SupervisorRole {
@@ -785,6 +818,8 @@ impl Default for SupervisorRole {
             queue_max_backoff_secs: default_supervisor_queue_max_backoff_secs(),
             queue_visibility_timeout_secs: default_supervisor_queue_visibility_timeout_secs(),
             queue_dlq_max_rows: default_supervisor_queue_dlq_max_rows(),
+            topology_document_not_after_secs: default_supervisor_topology_document_not_after_secs(),
+            topology_document_cache_ttl_secs: default_supervisor_topology_document_cache_ttl_secs(),
         }
     }
 }

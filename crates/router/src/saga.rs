@@ -11,9 +11,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use syneroym_app_orchestration::{
-    AppInstanceId, LogicalResolver, LogicalServiceName, LogicalServiceRef,
-};
+use syneroym_app_orchestration::{AppInstanceId, LogicalResolver, LogicalServiceName, TopologyKey};
 use syneroym_async_queue::{SagaConfig, SagaLog};
 use syneroym_data_db::StorageProvider;
 use syneroym_data_keystore::KeyStore;
@@ -153,16 +151,16 @@ impl SagaStore {
                         "saga step dependency '{name}' has no app instance to resolve against"
                     ))
                 })?;
-                let logical_ref = LogicalServiceRef {
-                    app_instance_id: AppInstanceId::try_new(app_instance_id).map_err(|e| {
+                let topology_key = TopologyKey::local(
+                    AppInstanceId::try_new(app_instance_id).map_err(|e| {
                         ProxyError::Internal(format!("stored app context is unreadable: {e}"))
                     })?,
-                    service_name: LogicalServiceName::try_new(name).map_err(|e| {
+                    LogicalServiceName::try_new(name).map_err(|e| {
                         ProxyError::ServiceNotFound(format!("invalid dependency name: {e}"))
                     })?,
-                };
+                );
                 self.resolver
-                    .resolve(&logical_ref, routing_key.map(str::as_bytes))
+                    .resolve(&topology_key, routing_key.map(str::as_bytes))
                     .map(|id| id.to_string())
                     .map_err(|e| {
                         ProxyError::ServiceNotFound(format!(

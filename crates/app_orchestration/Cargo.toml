@@ -23,6 +23,7 @@ tokio.workspace = true
 rusqlite.workspace = true
 chrono.workspace = true
 croner.workspace = true
+syneroym-identity.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

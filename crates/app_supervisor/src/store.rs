@@ -194,6 +194,21 @@ impl SupervisorStore {
                 app_did           TEXT PRIMARY KEY,
                 last_refreshed_at INTEGER NOT NULL
              );
+             -- ADR-0022 §3/§6: the per-logical-service topology epoch a
+             -- Tier-2 document carries and shard rebalancing will fence the
+             -- data path on. Distinct from `binding_epochs`, which counts
+             -- writes pushed to one *dependent* and moves for reasons
+             -- unrelated to a member set changing. `fingerprint` is what
+             -- decides whether a submit is a change at all. Rows are never
+             -- deleted: a service removed from a plan and re-added later
+             -- must not reuse a lower epoch.
+             CREATE TABLE IF NOT EXISTS topology_epochs (
+                app_instance_id TEXT NOT NULL,
+                service_name    TEXT NOT NULL,
+                epoch           INTEGER NOT NULL,
+                fingerprint     TEXT NOT NULL,
+                PRIMARY KEY (app_instance_id, service_name)
+             );
              -- M05A A5d: placements whose instance key an operator has
              -- revoked. Read by *every* path that can mint a certificate
              -- -- the renewal work-list, `submit`, and `force-reconcile`
@@ -478,6 +493,118 @@ impl SupervisorStore {
             params![app_did, at],
         )?;
         Ok(())
+    }
+
+    /// `0` when nothing has ever been recorded -- "no epoch claimed", the
+    /// same reading `EndpointInfo.generation`'s own default carries.
+    pub fn topology_epoch(&self, app_instance_id: &str, service_name: &str) -> Result<u64> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.query_row(
+            "SELECT epoch FROM topology_epochs WHERE app_instance_id = ?1 AND service_name = ?2",
+            params![app_instance_id, service_name],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map(|epoch| epoch.unwrap_or(0) as u64)
+        .map_err(Into::into)
+    }
+
+    /// Records `fingerprint`, returning the epoch that now applies:
+    /// unchanged when the fingerprint matches what is stored, `stored + 1`
+    /// otherwise, `1` when nothing is stored. One statement, read back
+    /// under the same store mutex, so two callers cannot interleave a read
+    /// and a write around it.
+    ///
+    /// **`handle_submit` only.** This form advances the epoch, and
+    /// advancing is only safe while the instance lock is held: the caller
+    /// must have read the plan it is fingerprinting and written it durably
+    /// with no other writer in between. `handle_resolve` holds no lock and
+    /// uses `initialise_topology_epoch` instead.
+    pub fn record_topology_fingerprint(
+        &self,
+        app_instance_id: &str,
+        service_name: &str,
+        fingerprint: &str,
+    ) -> Result<u64> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "INSERT INTO topology_epochs (app_instance_id, service_name, epoch, fingerprint)
+             VALUES (?1, ?2, 1, ?3)
+             ON CONFLICT(app_instance_id, service_name) DO UPDATE SET
+                epoch = epoch + 1,
+                fingerprint = excluded.fingerprint
+             WHERE fingerprint != excluded.fingerprint",
+            params![app_instance_id, service_name, fingerprint],
+        )?;
+        conn.query_row(
+            "SELECT epoch FROM topology_epochs WHERE app_instance_id = ?1 AND service_name = ?2",
+            params![app_instance_id, service_name],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|epoch| epoch as u64)
+        .map_err(Into::into)
+    }
+
+    /// The insert-only counterpart, for a caller holding no instance lock:
+    /// inserts at epoch `1` when no row exists -- the backfill an instance
+    /// with no prior fingerprint record needs -- and otherwise changes
+    /// nothing at all.
+    ///
+    /// Returns `(epoch, stored_fingerprint)`. The caller **must** compare
+    /// the returned fingerprint with the one it passed: they differ exactly
+    /// when a `submit` landed between the caller's plan read and this call,
+    /// meaning the plan in hand is already stale. Signing then would pair
+    /// the previous plan's members with the new plan's epoch, inside a
+    /// signature, where it cannot be corrected afterwards.
+    pub fn initialise_topology_epoch(
+        &self,
+        app_instance_id: &str,
+        service_name: &str,
+        fingerprint: &str,
+    ) -> Result<(u64, String)> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "INSERT INTO topology_epochs (app_instance_id, service_name, epoch, fingerprint)
+             VALUES (?1, ?2, 1, ?3)
+             ON CONFLICT(app_instance_id, service_name) DO NOTHING",
+            params![app_instance_id, service_name, fingerprint],
+        )?;
+        conn.query_row(
+            "SELECT epoch, fingerprint FROM topology_epochs
+             WHERE app_instance_id = ?1 AND service_name = ?2",
+            params![app_instance_id, service_name],
+            |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, String>(1)?)),
+        )
+        .map_err(Into::into)
+    }
+
+    /// The instance this app master DID belongs to. `None` for a DID no
+    /// instance on this supervisor has ever recorded -- which `resolve`
+    /// deliberately reports identically to "not authorized".
+    pub fn instance_by_app_master_did(&self, app_master_did: &str) -> Result<Option<DesiredState>> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.query_row(
+            "SELECT app_instance_id, plan_json, inventory_json, owner_did, generation, paused, \
+             retired, submitted_at, updated_at, app_master_did
+             FROM desired_state WHERE app_master_did = ?1 AND app_master_did != ''",
+            params![app_master_did],
+            |row| {
+                Ok(DesiredState {
+                    app_instance_id: row.get(0)?,
+                    plan_json: row.get(1)?,
+                    inventory_json: row.get(2)?,
+                    owner_did: row.get(3)?,
+                    generation: row.get::<_, i64>(4)? as u64,
+                    paused: row.get::<_, i64>(5)? != 0,
+                    retired: row.get::<_, i64>(6)? != 0,
+                    submitted_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                    app_master_did: row.get(9)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
     }
 
     /// Records that this placement's instance key has been revoked. From
@@ -1416,5 +1543,117 @@ mod tests {
     fn an_app_did_with_no_refresh_fact_is_due_immediately() {
         let store = SupervisorStore::open_in_memory().unwrap();
         assert_eq!(store.last_tier1_refresh("did:key:zNeverPublished").unwrap(), None);
+    }
+
+    // ── topology_epochs ────────────────────────────────────────
+
+    /// Test 34: a first submit starts every service's topology epoch at 1.
+    #[test]
+    fn a_first_submit_starts_every_services_topology_epoch_at_one() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        assert_eq!(store.topology_epoch("inst-1", "backend").unwrap(), 0);
+        let epoch = store.record_topology_fingerprint("inst-1", "backend", "fp-a").unwrap();
+        assert_eq!(epoch, 1);
+        assert_eq!(store.topology_epoch("inst-1", "backend").unwrap(), 1);
+    }
+
+    /// Test 35: a resubmit whose fingerprint is unchanged leaves the epoch
+    /// alone.
+    #[test]
+    fn a_resubmit_that_does_not_change_membership_leaves_the_epoch_alone() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.record_topology_fingerprint("inst-1", "backend", "fp-a").unwrap();
+        let epoch = store.record_topology_fingerprint("inst-1", "backend", "fp-a").unwrap();
+        assert_eq!(epoch, 1, "an unchanged fingerprint must not advance the epoch");
+    }
+
+    /// Test 36: a resubmit that scales one service out advances only that
+    /// service's epoch.
+    #[test]
+    fn a_resubmit_that_scales_a_service_out_increments_only_that_services_epoch() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.record_topology_fingerprint("inst-1", "backend", "fp-a").unwrap();
+        store.record_topology_fingerprint("inst-1", "frontend", "fp-b").unwrap();
+
+        let epoch = store.record_topology_fingerprint("inst-1", "backend", "fp-a-scaled").unwrap();
+        assert_eq!(epoch, 2);
+        assert_eq!(
+            store.topology_epoch("inst-1", "frontend").unwrap(),
+            1,
+            "an unrelated service's epoch must not move"
+        );
+    }
+
+    /// A service removed and re-added later must not reuse a lower epoch.
+    /// There is no delete path, so this pins that re-recording the same
+    /// fingerprint after several changes still only reflects forward
+    /// movement.
+    #[test]
+    fn a_topology_epoch_never_goes_backwards_when_a_service_is_removed_and_re_added() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.record_topology_fingerprint("inst-1", "backend", "fp-a").unwrap();
+        store.record_topology_fingerprint("inst-1", "backend", "fp-b").unwrap();
+        let epoch_before_removal = store.topology_epoch("inst-1", "backend").unwrap();
+        assert_eq!(epoch_before_removal, 2);
+
+        // "Re-added" means a later submit that fingerprints this service
+        // again -- there is no row-delete path at all, so the epoch can
+        // only ever advance from here, never reset.
+        let epoch = store.record_topology_fingerprint("inst-1", "backend", "fp-a").unwrap();
+        assert_eq!(epoch, 3, "a re-added service must not reuse a lower epoch");
+    }
+
+    /// `resolve`'s backfill -- a store row with no `topology_epochs` entry
+    /// yet resolves at epoch 1, not 0, and a second call does not advance
+    /// it again.
+    #[test]
+    fn resolve_backfills_a_topology_epoch_for_an_instance_with_no_prior_record() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        let (epoch, fp) = store.initialise_topology_epoch("inst-1", "backend", "fp-a").unwrap();
+        assert_eq!(epoch, 1, "an instance with no prior record must backfill at epoch 1, not 0");
+        assert_eq!(fp, "fp-a");
+
+        let (epoch2, fp2) = store.initialise_topology_epoch("inst-1", "backend", "fp-a").unwrap();
+        assert_eq!(epoch2, 1, "a second insert-only call must not advance the epoch");
+        assert_eq!(fp2, "fp-a");
+    }
+
+    /// The insert-only rule's whole safety property: a `submit` landing
+    /// between a lock-free reader's plan read and its fingerprint write
+    /// must not let that reader advance the epoch. Recording fingerprint A
+    /// through the advancing form (epoch 1), then calling the insert-only
+    /// form with a *different* fingerprint B (the stale-plan case) must
+    /// leave the epoch at 1 and the stored fingerprint at A -- and must
+    /// return A, so the caller can see it lost the race.
+    #[test]
+    fn a_resolve_never_advances_a_topology_epoch() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.record_topology_fingerprint("inst-1", "backend", "fp-a").unwrap();
+
+        let (epoch, stored_fp) =
+            store.initialise_topology_epoch("inst-1", "backend", "fp-b").unwrap();
+        assert_eq!(epoch, 1, "the insert-only form must never advance an existing row's epoch");
+        assert_eq!(stored_fp, "fp-a", "the caller must see the fingerprint it lost the race to");
+    }
+
+    #[test]
+    fn instance_by_app_master_did_finds_the_adopted_instance() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.submit("inst-1", "{}", "{}", "did:key:owner", 0).unwrap();
+        store.record_adopt("inst-1", 1, "did:key:zAppMaster").unwrap();
+
+        let found = store.instance_by_app_master_did("did:key:zAppMaster").unwrap().unwrap();
+        assert_eq!(found.app_instance_id, "inst-1");
+    }
+
+    #[test]
+    fn instance_by_app_master_did_reports_none_for_an_unknown_did() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.submit("inst-1", "{}", "{}", "did:key:owner", 0).unwrap();
+        assert_eq!(
+            store.instance_by_app_master_did("did:key:zNeverAdopted").unwrap(),
+            None,
+            "an instance with no app master recorded must not match an empty-string lookup"
+        );
     }
 }
