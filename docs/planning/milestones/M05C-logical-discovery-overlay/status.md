@@ -256,3 +256,45 @@ reads as node-wide rather than naming one app. New tests:
 `a_mismatched_vault_key_raises_an_alert_and_never_publishes`. Full
 `cargo test --workspace` and the two `tier1_endpoint_record_e2e.rs` e2e
 tests re-verified clean after every fix.
+
+### Post-review pass, round 2 (2026-08-08), 3 residuals
+
+A follow-up read of the same review found three items round 1 left open:
+
+- **S1-1's DHT half was still open.** Fixing the record's `EndpointInfo.ttl`
+  only closed the community registry's own in-memory sweep; the DHT copy's
+  freshness is governed by `PKARR_TTL` (1h), baked into every signed
+  record's pkarr packet by `EndpointInfo::sign` and shared system-wide --
+  `sign_tier1_record`'s `ttl_secs` parameter never reaches it. On an
+  `enable_bep0044_dht` deployment the record still lapses from the DHT
+  between 12h-cadence refreshes. Not new to this record -- master anchors
+  already have the identical property at their own slower-than-heartbeat
+  cadence, accepted on D-A1-2's reasoning (HTTP registry is the resolution
+  path; DHT is best-effort backup, checked second). Documented rather than
+  fixed, since `PKARR_TTL` is shared by every signed record in the system
+  and lowering it (or moving this record to DHT-heartbeat cadence) is a
+  bigger decision than this one record: a doc note on `sign_tier1_record`
+  and a deferred-backlog row.
+- **`generation` was missing from `stable_registry_certificate_for_hash`'s
+  dedup tuple** (`crates/control_plane/src/service/orchestration.rs`),
+  which lists every other `EndpointInfo` field explicitly. Latent only --
+  every member record today passes `0` -- but the day one publisher's
+  generation is genuinely nonzero, two records differing only in
+  generation would hash identically and silently defeat redeploy dedup.
+  Added, with a new unit test,
+  `stable_registry_certificate_for_hash_distinguishes_by_generation`,
+  pinning that two records differing only in `generation` hash
+  differently.
+- **`pause_warns_with_the_records_expiry_date` still asserted the payload,
+  not the log line its name promised**, the same gap round 1's rename
+  fixed on the sibling no-registry test but missed on this one. Renamed to
+  `pause_reports_the_records_expiry_date`, with a doc note explaining the
+  log line is real (`handle_pause`) but outside what a dispatch-level RPC
+  test can capture without `keys.rs`'s own `run_capturing_logs`-shaped
+  machinery.
+
+Re-verified: `cargo +nightly fmt --all` and
+`cargo clippy --workspace --all-targets --all-features` clean;
+`syneroym-app-supervisor` 244/244 and `syneroym-control-plane` 176/176
+(both sandbox-disabled for the latter's real HTTP-probe tests, a
+pre-existing, unrelated sandbox constraint) passing.

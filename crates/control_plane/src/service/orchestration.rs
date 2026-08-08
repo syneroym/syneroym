@@ -235,8 +235,13 @@ const fn app_service_type(t: &WitServiceType) -> AppServiceType {
 /// regardless of whether anything else did (review finding E-1):
 /// `SignedEndpointInfo.info.not_after` (`SystemTime::now()` plus a fixed
 /// window) and `pkarr_packet_hex` (its own embedded signing timestamp) both
-/// churn on every `certify_placed_members` call. Falls back to hashing the
-/// raw string on a parse failure -- that can only make the dedup *more*
+/// churn on every `certify_placed_members` call. Every other `EndpointInfo`
+/// field belongs here, `generation` (ADR-0022 §2) included: every member
+/// record today passes `0`, so its absence is latent, not yet a wrong
+/// answer -- but a real generation change is a real content change, and
+/// omitting it here would let this dedup treat two different generations
+/// as identical the day one publisher's does. Falls back to hashing the raw
+/// string on a parse failure -- that can only make the dedup *more*
 /// conservative (a parse failure never equals anything, including itself
 /// byte-for-byte reapplied), never less safe.
 fn stable_registry_certificate_for_hash(json: &str) -> String {
@@ -249,6 +254,7 @@ fn stable_registry_certificate_for_hash(json: &str) -> String {
             &signed.info.nickname,
             signed.info.is_private,
             &signed.info.ttl,
+            signed.info.generation,
         ))
         .unwrap_or_else(|_| json.to_string()),
         Err(_) => json.to_string(),
@@ -8402,6 +8408,29 @@ mod tests {
         let err = service.deploy(service_id.clone(), manifest, &caller).await.unwrap_err();
         assert!(err.contains("scope"), "unexpected error: {err}");
         assert_eq!(registry.instance_cert(&service_id), None);
+    }
+
+    /// ADR-0022 §2's `generation` is a real content field, not freshness
+    /// churn like `not_after`/`pkarr_packet_hex` -- omitting it from the
+    /// dedup hash would let two records that differ only in generation
+    /// hash identically, silently defeating redeploy dedup the day a
+    /// publisher's generation is ever nonzero (every one is `0` today).
+    #[test]
+    fn stable_registry_certificate_for_hash_distinguishes_by_generation() {
+        fn record_json(generation: u64) -> String {
+            format!(
+                r#"{{"info":{{"service_id":"did:key:zA","substrate_id":"did:key:zNode",
+                "endpoint_type":"service","mechanisms":[],"is_private":false,
+                "not_after":4102444800,"generation":{generation}}},
+                "pkarr_packet_hex":"aa"}}"#
+            )
+        }
+        let at_zero = stable_registry_certificate_for_hash(&record_json(0));
+        let at_one = stable_registry_certificate_for_hash(&record_json(1));
+        assert_ne!(
+            at_zero, at_one,
+            "two records differing only in generation must hash differently"
+        );
     }
 
     /// A0-02: `deploy-manifest.instance-certificate`'s WIT doc says "absent

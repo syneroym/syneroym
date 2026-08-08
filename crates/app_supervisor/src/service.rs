@@ -10537,11 +10537,15 @@ mod tests {
         assert!(status.payload.get("app_record_expires_at").is_none_or(Value::is_null));
     }
 
-    /// D-S1-4: `pause` names the date its own write-phase skip
+    /// D-S1-4: `pause`'s response reports the date its own write-phase skip
     /// (`a_paused_instance_gets_no_tier1_refresh`, above) will let the
-    /// currently-published record decay to.
+    /// currently-published record decay to. Named for the response field
+    /// this actually asserts, not the `tracing::warn!` alongside it --
+    /// that log line is real (`handle_pause`) but outside what a
+    /// dispatch-level RPC test can capture without the same
+    /// `run_capturing_logs`-shaped machinery `keys.rs` uses.
     #[tokio::test]
-    async fn pause_warns_with_the_records_expiry_date() {
+    async fn pause_reports_the_records_expiry_date() {
         let s = service();
         s.store
             .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)

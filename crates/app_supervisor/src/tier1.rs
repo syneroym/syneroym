@@ -122,6 +122,18 @@ impl From<VaultError> for Tier1SignError {
 /// for: comfortably wider than one refresh cycle, so a single slow or
 /// delayed pass does not cost a resolution failure.
 ///
+/// This only reaches the HTTP registry's own sweep. The DHT copy `sign`
+/// produces has its own, fixed 1-hour packet TTL (`PKARR_TTL`, shared by
+/// every signed record in this system, not something this field
+/// influences), so on an `enable_bep0044_dht` deployment the record still
+/// lapses from the DHT between refreshes at this cadence -- exactly the
+/// same property master anchors already have and already accept, on the
+/// same reasoning (D-A1-2: resolution requires a configured HTTP registry,
+/// the DHT copy is best-effort backup, checked second by `lookup`). Bites
+/// only a resolver with no HTTP registry of its own reachable; recorded as
+/// a backlog row rather than fixed here, since `PKARR_TTL` is shared
+/// system-wide and changing it is a larger question than this record.
+///
 /// The convention for the three fields `EndpointInfo` has no natural
 /// meaning for on an app-identity record: `endpoint_type`/`mechanisms`
 /// name the *supervising node*, not a way to connect to the app itself --
