@@ -63,7 +63,7 @@ use syneroym_sdk::{
 use syneroym_substrate::identity;
 use tempfile::TempDir;
 use tokio::{
-    sync::{mpsc, mpsc::Sender},
+    sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
 };
 
@@ -82,6 +82,16 @@ const NODE_B_GATEWAY_PORT: u16 = 12402;
 const REVOCATION_IROH_PORT: u16 = 12500;
 const REVOCATION_REGISTRY_PORT: u16 = 12501;
 const REVOCATION_GATEWAY_PORT: u16 = 12502;
+
+/// Not sharing a port block keeps the tests here from colliding, but they
+/// still each boot full substrate instances (real iroh QUIC socket,
+/// self-hosted relay, mainline DHT, wasmtime), and running that many
+/// concurrently starves the CI runner's CPU badly enough that iroh's QUIC
+/// path validation times out with "no viable network path exists" even
+/// though nothing is actually broken. Serializing full-substrate-instance
+/// lifetimes within this binary (same fix as `tests/common/mod.rs`'s
+/// `SUBSTRATE_TEST_LOCK`) avoids it.
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 struct Node {
     registry_url: String,
@@ -268,6 +278,7 @@ fn delegated_preamble(
 #[tokio::test]
 async fn renew_cert_installs_over_the_real_wire_and_refuses_a_certificate_for_the_wrong_derived_key()
  {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();
 
     let operator = Identity::generate().unwrap();
@@ -403,6 +414,7 @@ async fn renew_cert_installs_over_the_real_wire_and_refuses_a_certificate_for_th
 /// against a real registry.
 #[tokio::test]
 async fn a_revoked_instance_key_handshake_fails_while_a_fresh_one_verifies() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();
 
     let operator = Identity::generate().unwrap();

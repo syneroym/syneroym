@@ -46,7 +46,7 @@ use syneroym_sdk::{
 use syneroym_substrate::identity;
 use tempfile::TempDir;
 use tokio::{
-    sync::{mpsc, mpsc::Sender},
+    sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
 };
 
@@ -107,6 +107,20 @@ const PORTS_DEPENDENTS_OWN_REGISTRY: PortBlock = PortBlock {
     node_b_registry: 9701,
     node_b_gateway: 9702,
 };
+
+/// Not sharing a port block keeps the five tests here from colliding, but
+/// they still each boot two full substrate instances (real iroh QUIC
+/// socket, self-hosted relay, mainline DHT, wasmtime), and running that
+/// many concurrently starves the CI runner's CPU badly enough that iroh's
+/// QUIC path validation times out with "no viable network path exists"
+/// even though nothing is actually broken. Serializing full-substrate-
+/// instance lifetimes within this binary fixes it (same idea as
+/// `tests/common/mod.rs`'s `SUBSTRATE_TEST_LOCK`) -- but unlike that lock,
+/// which is held per-context and would deadlock a test needing two nodes
+/// alive at once (see the module doc above), this one is acquired exactly
+/// once per test, before either node boots, and held for the test's whole
+/// body.
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 const FRONTEND_ALIAS: &str = "edge-a";
 const BACKEND_ALIAS: &str = "edge-b";
@@ -540,6 +554,7 @@ async fn compiled_plan() -> DeploymentPlan {
 
 #[tokio::test]
 async fn a_two_substrate_app_deploys_each_service_to_its_placed_node() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
     let (node_a, node_b, clients) =
@@ -604,6 +619,7 @@ async fn a_two_substrate_app_deploys_each_service_to_its_placed_node() {
 
 #[tokio::test]
 async fn a_placed_members_endpoint_record_resolves_to_its_own_substrate() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
     let (node_a, node_b, clients) =
@@ -665,6 +681,7 @@ async fn a_placed_members_endpoint_record_resolves_to_its_own_substrate() {
 
 #[tokio::test]
 async fn a_certificate_minted_against_one_substrate_is_rejected_by_another() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
     let (node_a, node_b, clients) =
@@ -734,6 +751,7 @@ async fn a_certificate_minted_against_one_substrate_is_rejected_by_another() {
 
 #[tokio::test]
 async fn an_unreachable_substrate_leaves_the_deployment_degraded_and_retryable() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
     let (node_a, node_b, clients) =
@@ -845,6 +863,7 @@ async fn an_unreachable_substrate_leaves_the_deployment_degraded_and_retryable()
 
 #[tokio::test]
 async fn a_dependencys_record_resolves_through_the_dependents_own_registry() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
     let (node_a, node_b, clients) =

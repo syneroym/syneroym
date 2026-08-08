@@ -40,7 +40,7 @@ use syneroym_rpc::SagaState;
 use syneroym_sdk::SyneroymClient;
 use syneroym_substrate::identity;
 use tokio::{
-    sync::{mpsc, mpsc::Sender},
+    sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
     time,
 };
@@ -52,6 +52,16 @@ const REVERSE_WALK_PORTS: (u16, u16, u16, u16, u16, u16) =
     (14_000, 14_001, 14_002, 14_100, 14_101, 14_102);
 const DEADLINE_PORTS: (u16, u16, u16, u16, u16, u16) =
     (14_200, 14_201, 14_202, 14_300, 14_301, 14_302);
+
+/// Each test in this binary boots two full substrate instances (real iroh
+/// QUIC socket, self-hosted relay, mainline DHT, wasmtime). The default
+/// test harness runs `#[tokio::test]` functions in one binary concurrently,
+/// and enough full substrates competing for the CI runner's CPU at once
+/// starves it badly enough that iroh's QUIC path validation times out with
+/// "no viable network path exists" even though nothing is actually broken.
+/// Serializing full-substrate-instance lifetimes within this binary (same
+/// fix as `tests/common/mod.rs`'s `SUBSTRATE_TEST_LOCK`) avoids it.
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// A saga must not have to wait out the production retry window for a test
 /// to see its undos land, and the sweep tick must be fast enough that a
@@ -410,6 +420,7 @@ fn artifact() -> Vec<u8> {
 /// in-process test proves.
 #[tokio::test]
 async fn a_failed_workflow_is_undone_in_reverse_order() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     fail_if_fixture_missing();
     let _ = ring::default_provider().install_default();
     let wasm = artifact();
@@ -507,6 +518,7 @@ async fn a_failed_workflow_is_undone_in_reverse_order() {
 /// than silently skipping.
 #[tokio::test]
 async fn a_workflow_abandoned_across_a_restart_is_compensated_by_its_deadline() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     fail_if_fixture_missing();
     let _ = ring::default_provider().install_default();
     let wasm = artifact();

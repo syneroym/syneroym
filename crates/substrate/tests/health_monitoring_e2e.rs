@@ -31,7 +31,7 @@ use syneroym_sdk::{
 use syneroym_substrate::identity;
 use tempfile::TempDir;
 use tokio::{
-    sync::{mpsc, mpsc::Sender},
+    sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
 };
 
@@ -82,6 +82,16 @@ const PORTS_ALERT_LIFECYCLE: PortBlock = PortBlock {
     node_b_registry: 10501,
     node_b_gateway: 10502,
 };
+
+/// Not sharing a port block keeps the tests here from colliding, but they
+/// still each boot full substrate instances (real iroh QUIC socket,
+/// self-hosted relay, mainline DHT, wasmtime), and running that many
+/// concurrently starves the CI runner's CPU badly enough that iroh's QUIC
+/// path validation times out with "no viable network path exists" even
+/// though nothing is actually broken. Serializing full-substrate-instance
+/// lifetimes within this binary (same fix as `tests/common/mod.rs`'s
+/// `SUBSTRATE_TEST_LOCK`) avoids it.
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// A full, independently-identified `syneroym-substrate` instance. Mirrors
 /// `multi_substrate_placement_e2e.rs`'s own `Node`.
@@ -342,6 +352,7 @@ fn expected(name: &str, service_id: &str, did: &str) -> ExpectedService {
 
 #[tokio::test]
 async fn both_services_report_healthy_and_each_node_reports_its_own_registry() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
     let (node_a, node_b) = boot_pair(&owner, PORTS_BOTH_HEALTHY).await;
@@ -406,6 +417,7 @@ async fn both_services_report_healthy_and_each_node_reports_its_own_registry() {
 
 #[tokio::test]
 async fn a_stopped_substrate_is_reported_unreachable_while_the_other_stays_healthy() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
     let (node_a, node_b) = boot_pair(&owner, PORTS_UNREACHABLE_SUBSTRATE).await;
@@ -478,6 +490,7 @@ impl health::StatusQuery for UnreachableQuery {
 
 #[tokio::test]
 async fn a_failing_readiness_probe_is_distinct_from_a_stopped_instance() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
     let node_a = boot_single(&owner, PORTS_FAILING_PROBE).await;
@@ -513,6 +526,7 @@ async fn a_failing_readiness_probe_is_distinct_from_a_stopped_instance() {
 
 #[tokio::test]
 async fn alerts_are_recorded_deduplicated_and_cleared_across_three_sweeps() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
     let node_a = boot_single(&owner, PORTS_ALERT_LIFECYCLE).await;

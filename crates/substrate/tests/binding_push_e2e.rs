@@ -42,13 +42,19 @@ use syneroym_sdk::{
 use syneroym_substrate::identity;
 use tempfile::TempDir;
 use tokio::{
-    sync::{mpsc, mpsc::Sender},
+    sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
 };
 
 /// Each `#[tokio::test]` in this file runs concurrently, so each of the two
 /// tests needs its own, non-overlapping port block -- the same convention
-/// `multi_substrate_placement_e2e.rs` follows.
+/// `multi_substrate_placement_e2e.rs` follows. They also each take
+/// `SUBSTRATE_TEST_LOCK` below for their whole duration: not sharing a port
+/// block avoids collisions, but two full substrate pairs (real iroh QUIC
+/// socket, self-hosted relay, mainline DHT, wasmtime) running at once still
+/// starves the CI runner's CPU badly enough that iroh's QUIC path
+/// validation times out with "no viable network path exists" even though
+/// nothing is actually broken.
 #[derive(Clone, Copy)]
 struct PortBlock {
     node_a_iroh: u16,
@@ -75,6 +81,10 @@ const PORTS_STALE_PUSH_DOES_NOT_REGRESS: PortBlock = PortBlock {
     node_b_registry: 10901,
     node_b_gateway: 10902,
 };
+
+/// See the doc comment on `PortBlock` above (same fix as
+/// `tests/common/mod.rs`'s `SUBSTRATE_TEST_LOCK`).
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 const FRONTEND_ALIAS: &str = "edge-a";
 const BACKEND_ALIAS: &str = "edge-b";
@@ -485,6 +495,7 @@ async fn deploy_two_service_app(
 /// never a second deploy.
 #[tokio::test]
 async fn a_membership_change_pushed_to_a_dependent_takes_effect_without_a_redeploy() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
     let (node_a, node_b, clients) =
@@ -539,6 +550,7 @@ async fn a_membership_change_pushed_to_a_dependent_takes_effect_without_a_redepl
 /// substrate rather than the pure `classify_binding_write` unit test.
 #[tokio::test]
 async fn a_stale_epoch_push_does_not_regress_the_mapping() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
     let (node_a, node_b, clients) =
