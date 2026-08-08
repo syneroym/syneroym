@@ -585,7 +585,170 @@ mod tests {
         let guard = CallDedupGuard::new(provider, Arc::new(KeyStore::new()), registry, config());
 
         let outcome = guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await;
-        assert!(matches!(outcome, GuardOutcome::Refuse(_)), "got {outcome:?}");
+        assert!(
+            matches!(outcome, GuardOutcome::Refuse(ProxyError::PermissionDenied(_))),
+            "an unresolvable DEK must fail closed, got {outcome:?}"
+        );
+    }
+
+    /// A storage provider whose DEK resolves fine but whose on-disk
+    /// per-service directory cannot be found -- `service_db_dir`'s own
+    /// trait default, which returns `Err`. Every other method is stubbed:
+    /// `store_for` only ever calls `load_service_dek` and `service_db_dir`,
+    /// so nothing else may legitimately be reached by this test.
+    struct DekOnlyStorageProvider {
+        inner: Arc<dyn StorageProvider>,
+    }
+
+    #[async_trait::async_trait]
+    impl StorageProvider for DekOnlyStorageProvider {
+        async fn open_service_db(
+            &self,
+            _service_id: &str,
+            _key_store: &Arc<KeyStore>,
+        ) -> anyhow::Result<Box<dyn syneroym_data_db::ServiceStore>> {
+            unreachable!("store_for never opens a ServiceStore")
+        }
+
+        async fn rotate_kek(
+            &self,
+            _key_store: &Arc<KeyStore>,
+            _new_kek: [u8; 32],
+        ) -> anyhow::Result<()> {
+            unreachable!("store_for never rotates a KEK")
+        }
+
+        async fn load_service_dek(
+            &self,
+            service_id: &str,
+            key_store: &Arc<KeyStore>,
+        ) -> anyhow::Result<Option<zeroize::Zeroizing<[u8; 32]>>> {
+            self.inner.load_service_dek(service_id, key_store).await
+        }
+
+        async fn service_exists(&self, _service_id: &str) -> anyhow::Result<bool> {
+            unreachable!("store_for never checks service_exists")
+        }
+
+        // `service_db_dir` is left at the trait default, which returns
+        // `Err` -- exactly the "no on-disk per-service directory" case
+        // this test needs, with no override required.
+
+        async fn save_config_generation(
+            &self,
+            _service_id: &str,
+            _config_blob: &str,
+        ) -> anyhow::Result<u64> {
+            unreachable!("store_for never saves a config generation")
+        }
+
+        async fn delete_config_generation(
+            &self,
+            _service_id: &str,
+            _generation: u64,
+        ) -> anyhow::Result<()> {
+            unreachable!("store_for never deletes a config generation")
+        }
+
+        async fn get_config_generation(
+            &self,
+            _service_id: &str,
+            _generation: u64,
+        ) -> anyhow::Result<Option<String>> {
+            unreachable!("store_for never reads a config generation")
+        }
+
+        async fn get_latest_config_generation(
+            &self,
+            _service_id: &str,
+        ) -> anyhow::Result<Option<(u64, String)>> {
+            unreachable!("store_for never reads a config generation")
+        }
+
+        async fn save_messaging_subscription(
+            &self,
+            _service_id: &str,
+            _topic: &str,
+        ) -> anyhow::Result<()> {
+            unreachable!("store_for never touches messaging subscriptions")
+        }
+
+        async fn delete_messaging_subscription(
+            &self,
+            _service_id: &str,
+            _topic: &str,
+        ) -> anyhow::Result<()> {
+            unreachable!("store_for never touches messaging subscriptions")
+        }
+
+        async fn delete_all_messaging_subscriptions_for_service(
+            &self,
+            _service_id: &str,
+        ) -> anyhow::Result<()> {
+            unreachable!("store_for never touches messaging subscriptions")
+        }
+
+        async fn list_all_messaging_subscriptions(&self) -> anyhow::Result<Vec<(String, String)>> {
+            unreachable!("store_for never touches messaging subscriptions")
+        }
+
+        async fn save_fdae_policy(
+            &self,
+            _service_id: &str,
+            _policy_json: &str,
+        ) -> anyhow::Result<()> {
+            unreachable!("store_for never touches an FDAE policy")
+        }
+
+        async fn load_fdae_policy(&self, _service_id: &str) -> anyhow::Result<Option<String>> {
+            unreachable!("store_for never touches an FDAE policy")
+        }
+
+        async fn delete_fdae_policy(&self, _service_id: &str) -> anyhow::Result<()> {
+            unreachable!("store_for never touches an FDAE policy")
+        }
+    }
+
+    /// The regression test for the `async_db_location` extraction (2026-08):
+    /// before it existed, `store_for` mapped `load_service_dek` failing to
+    /// `PermissionDenied` (fail-closed, by design) but `service_db_dir`
+    /// failing to `Internal` -- a path/IO problem has no security meaning
+    /// and must stay retryable. The extraction briefly collapsed both into
+    /// one `anyhow::Result` mapped entirely to `PermissionDenied`, which
+    /// would have made a transient directory error dead-letter the
+    /// *sender's* call instead of retrying it (`disposition_of` reads
+    /// `PermissionDenied` as `Terminal`, `Internal` as `Retry`). Pinned here
+    /// so the next refactor of `async_db_location` cannot re-flatten it
+    /// silently.
+    #[tokio::test]
+    async fn a_directory_resolution_failure_is_internal_not_permission_denied() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real_provider =
+            Arc::new(SqliteStorageProvider::new(dir.path(), true).expect("provider"));
+        let key_store = Arc::new(KeyStore::new());
+        key_store.inject_kek([9u8; 32]).expect("kek");
+        let provider: Arc<dyn StorageProvider> =
+            Arc::new(DekOnlyStorageProvider { inner: real_provider });
+        let registry =
+            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        registry
+            .register(
+                "svc-a".to_string(),
+                "greeter".to_string(),
+                syneroym_core::local_registry::SubstrateEndpoint::WasmChannel {
+                    service_id: "svc-a".to_string(),
+                },
+            )
+            .await
+            .expect("register");
+        let guard = CallDedupGuard::new(provider, key_store, registry, config());
+
+        let outcome = guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await;
+        assert!(
+            matches!(outcome, GuardOutcome::Refuse(ProxyError::Internal(_))),
+            "a directory-resolution failure with a resolvable DEK must be `Internal` (retryable), \
+             not `PermissionDenied` (terminal) -- got {outcome:?}"
+        );
     }
 
     /// Not one of the refusing cases: with encryption off for the whole
