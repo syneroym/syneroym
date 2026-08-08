@@ -571,6 +571,12 @@ renewed_cert_expires_hours = 4        # lifetime of EVERY instance certificate t
                                       # mints -- the first one and every renewal; see below
 max_renewals_per_pass = 5             # ceiling on renewals attempted in one pass
 master_anchor_refresh_interval_secs = 43200   # 12h; anchors stop verifying after 24h
+topology_document_not_after_secs = 3600       # 1h; how long a signed Tier-2 topology
+                                               # document stays usable after signing --
+                                               # see "Resolving an app's logical service
+                                               # from outside it" below
+topology_document_cache_ttl_secs = 300        # 5m; advisory re-ask interval carried
+                                               # inside the signed document
 ```
 
 ##### The resident loop
@@ -809,12 +815,16 @@ correct `import-master` repairs it: `adopt` always resolves-and-records
 from whatever the vault currently holds, so the row ends up agreeing with
 the vault either way — just later than necessary if the order was wrong.
 
-**What this DID does not do yet.** Nothing publishes it to a registry,
-nothing resolves it to an address, and no caller outside this supervisor
-can use it for anything — that is the Logical Service Discovery Overlay's
-slice S1, outside this milestone. What lands here is the identity itself:
-where it lives, how it moves, and that it survives a supervisor handover
-unchanged.
+**What this DID is for.** The Logical Service Discovery Overlay
+(ADR-0022) resolves it in two tiers: Tier 1 (the app DID → the supervisor
+holding it) is the resident loop's own periodic publish to
+`substrate.registry_url`, once this instance is adopted; Tier 2 (one
+logical service → its current member set) is the `supervisor resolve`
+verb documented below, and `roymctl app resolve` is the outside caller's
+own path into it. Tier 3 (a member DID → an address) is the ordinary
+registry lookup every other DID in this system already goes through.
+`status`'s `app_record_expires_at` field reports how long the Tier-1
+record has left before it needs another refresh.
 
 ##### The grant a supervisor needs on every substrate it manages
 
@@ -855,6 +865,59 @@ instance is a node-scoped act, because the instance spans services.
 > `orchestrator/deploy` only to the supervisor that actually owns — or
 > will immediately redeploy and thereby take ownership of — every member
 > on that substrate.
+
+##### Resolving an app's logical service from outside it (ADR-0022 §3)
+
+A caller that is not part of an app instance — a different app, an
+operator's own tooling — can still find out who currently answers for one
+of that app's logical services, without ever talking to that app's own
+supervisor node directly first. `roymctl app resolve` walks all three
+tiers:
+
+```bash
+roymctl --api-url http://<registry> --as <caller-identity> --ucan <grant.json> \
+  app resolve did:key:<app-instance-master-did> backend
+# -> app: did:key:...  service: backend
+#    mode: Redundant  epoch: 2
+#    members:
+#      did:key:...
+#      did:key:...
+```
+
+It looks the app DID up in the registry (Tier 1) to find the supervising
+node, fetches that supervisor's signed topology document over `supervisor
+resolve` (Tier 2), and verifies the document's signature against the app
+DID it resolved in Tier 1 — never against whatever the document itself
+claims, and never trusting the connection it arrived over. Turning a
+printed member DID into an address is Tier 3, an ordinary registry lookup
+unaffected by any of this.
+
+**The document is signed once per `(service, epoch)` and cached in the
+supervisor's own memory, not once per request** — a burst of callers
+resolving the same service costs one signature, not one per caller. A
+caller that has already fetched and verified a document keeps routing
+from its own cache — no further network call to the supervisor — until
+`topology_document_not_after_secs` after it was signed; a supervisor that
+is down does not stop an already-resolved caller from continuing to
+route, only from resolving something for the first time.
+
+**`resolve` is gated by a capability, not by `substrate/admin`.** An
+operator who owns the supervisor's node already has it (a bare
+`substrate/admin` grant covers everything on that node), but any other
+caller needs `supervisor/resolve` on `synapp:<app-did>` specifically:
+
+```bash
+roymctl --dir <DIR> --as <supervisor-node-owner> identity issue-grant \
+  --to did:key:<caller-did> \
+  --resource "synapp:did:key:<app-instance-master-did>" \
+  --can supervisor/resolve \
+  --out grants/resolve-guild-instance-1.json
+```
+
+An unknown app DID and a caller holding no grant for a real one are
+refused identically — the error names neither the app's members nor
+whether it exists, so a caller with no grant cannot use `resolve` to
+probe which apps this supervisor manages.
 
 ##### Submitting, adopting, and reading status
 

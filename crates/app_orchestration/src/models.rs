@@ -165,6 +165,18 @@ define_string_wrapper!(
     }
 );
 
+define_string_wrapper!(
+    AppDid,
+    "An app instance's own master DID (ADR-0022 §1) -- its network identity, as distinct from \
+     `AppInstanceId`, its human name.",
+    |s: &str| {
+        if !s.starts_with("did:key:") {
+            return Err(anyhow!("AppDid must start with 'did:key:'"));
+        }
+        Ok(())
+    }
+);
+
 define_string_wrapper!(InterfaceName, "Name of the interface a service implements.");
 define_string_wrapper!(DependencyName, "Name of a dependency within an application.");
 
@@ -806,6 +818,14 @@ pub struct PlannedService {
     /// onto the wire; see `ServiceSpec.schedule`'s own doc.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<ScheduleSpec>,
+    /// Cloned from `ServiceSpec.sharding_strategy` -- every member of a
+    /// scaled sharded service carries the identical value, exactly as
+    /// `topology_mode` and `schedule` already do. Needed on the *plan*, not
+    /// only the manifest: the supervisor holds no manifest, so a Tier-2
+    /// topology document (ADR-0022 §3) built from the stored plan could
+    /// otherwise never name a strategy at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharding_strategy: Option<ShardingStrategy>,
 }
 
 impl PlannedService {
@@ -1049,6 +1069,7 @@ mod tests {
                 topology_mode: TopologyMode::Singleton,
                 member_index: 0,
                 schedule: None,
+                sharding_strategy: None,
             }],
         };
 
@@ -1177,6 +1198,7 @@ mod tests {
             topology_mode: TopologyMode::Singleton,
             member_index: 3,
             schedule: None,
+            sharding_strategy: None,
         };
         assert_eq!(svc.member_ref().to_string(), "inst-1/backend#3");
     }
@@ -1211,6 +1233,7 @@ mod tests {
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
             schedule: None,
+            sharding_strategy: None,
         };
         let toml = toml::to_string(&svc).unwrap();
         assert!(!toml.contains("member_index"));
@@ -1291,6 +1314,7 @@ mod tests {
                 topology_mode: TopologyMode::Singleton,
                 member_index: 0,
                 schedule: None,
+                sharding_strategy: None,
             }],
         };
 
@@ -1409,6 +1433,7 @@ mod tests {
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
             schedule: None,
+            sharding_strategy: None,
         };
 
         let toml_round = toml::to_string(&svc).unwrap();

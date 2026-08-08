@@ -263,6 +263,75 @@ interface supervisor {
 
     /// Every schedule this instance declares, in logical-ref order.
     schedules: func(app-instance-id: string) -> result<list<scheduled-task>, string>;
+
+    /// One logical service's membership, signed by the app instance's own
+    /// master (ADR-0022 §3). A document, not an RPC answer: any party may
+    /// relay it, and a reader trusts the signature against the app DID it
+    /// resolved in Tier 1 rather than the connection it arrived on.
+    record topology-document {
+        app-instance-id: string,
+        app-did: string,
+        service-name: string,
+        mode: topology-mode-name,
+        /// Member master DIDs in member-index order -- never addresses
+        /// (ADR-0022 §4). Turning one into a location is Tier 3, unchanged.
+        members: list<string>,
+        /// The sub-strategy a `sharded` selection uses (ADR-0022 §6):
+        /// `"hash_sharding"` or `"entity_tag_sharding"`. Absent when the
+        /// service declares none.
+        ///
+        /// Named to match the Rust field exactly, with **no `-json`
+        /// suffix**: that suffix means "the Rust side is a `String`" --
+        /// `submission`'s own `plan-json` and `inventory-json` both do,
+        /// as does `params-json` in `control-plane.wit` -- and this one is
+        /// an enum.
+        ///
+        /// `string` is exact for every value that can appear here, but the
+        /// Rust type it mirrors is wider: `ShardingStrategy` has a third
+        /// variant, `range_sharding`, which serializes as an object rather
+        /// than a string. It cannot reach this field -- it is refused at
+        /// manifest validation *and* re-refused against an already-compiled
+        /// plan at `submit`/`force-reconcile` (`refuse_unshardable_plan`),
+        /// which is what makes this declaration true rather than merely
+        /// documented. **If that second refusal is ever lifted, this
+        /// declaration stops being accurate**, and the replacement is a WIT
+        /// `variant` -- which will also need `no_supervisor_verb_accepts_or_
+        /// returns_key_material` reconsidered, since the range table's bound
+        /// fields are named `start-key`/`end-key` and that guard refuses any
+        /// record field whose name contains "key".
+        sharding-strategy: option<string>,
+        epoch: u64,
+        generation: u64,
+        issued-at: u64,
+        not-after: u64,
+        /// How long the signer suggests a reader holds this before
+        /// re-asking. Advice: `not-after` is the authority, and a reader may
+        /// substitute its own. Inside the signature so it survives every
+        /// interface that passes the document alone.
+        cache-ttl-ms: u64,
+    }
+    /// "singleton" | "redundant" | "sharded".
+    type topology-mode-name = string;
+
+    record signed-topology-document {
+        document: topology-document,
+        /// z-base-32 Ed25519 over the RFC-8785 canonicalization of
+        /// `document`.
+        signature: string,
+    }
+
+    /// Tier 2 (ADR-0022 §3). Takes the app's **master DID**, not its human
+    /// name: Tier 1 answers with a DID, so requiring the name would make
+    /// the chain unfollowable.
+    ///
+    /// Answers the full member set and mode, or denies -- never a filtered
+    /// list (§5): rendezvous hashing over a partial set returns a
+    /// confident wrong answer with no error raised.
+    ///
+    /// An unknown app and an unauthorized caller are reported identically,
+    /// so a caller with no grant cannot probe for an app's existence.
+    resolve: func(app-did: string, service-name: string)
+        -> result<signed-topology-document, string>;
 }
 
 world supervisor-service {

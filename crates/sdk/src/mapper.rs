@@ -406,6 +406,7 @@ mod tests {
                 topology_mode: TopologyMode::Singleton,
                 member_index: 0,
                 schedule: None,
+                sharding_strategy: None,
             }],
         }
     }
@@ -697,6 +698,7 @@ mod tests {
                     topology_mode: TopologyMode::Redundant,
                     member_index: 0,
                     schedule: None,
+                    sharding_strategy: None,
                 },
                 PlannedService {
                     service_id: ServiceId::new("did:key:hFrontend"),
@@ -713,6 +715,7 @@ mod tests {
                     topology_mode: TopologyMode::Singleton,
                     member_index: 0,
                     schedule: None,
+                    sharding_strategy: None,
                 },
             ],
         }

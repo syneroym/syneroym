@@ -126,6 +126,10 @@ impl Ability {
     pub const ORCHESTRATOR_STATUS: &'static str = "orchestrator/status";
     pub const ORCHESTRATOR_UNDEPLOY: &'static str = "orchestrator/undeploy";
     pub const SUBSTRATE_ADMIN: &'static str = "substrate/admin";
+    /// ADR-0022 §5: fetch one app instance's Tier-2 topology documents from
+    /// the supervisor that holds it. Flat -- it entails only itself, and is
+    /// entailed by `substrate/admin` like everything else.
+    pub const SUPERVISOR_RESOLVE: &'static str = "supervisor/resolve";
     pub const VAULT_REVEAL: &'static str = "vault/reveal";
 
     /// Whether `self` entails `other`: a parent ability grants everything a
