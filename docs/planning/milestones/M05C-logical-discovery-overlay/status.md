@@ -257,9 +257,11 @@ reads as node-wide rather than naming one app. New tests:
 `cargo test --workspace` and the two `tier1_endpoint_record_e2e.rs` e2e
 tests re-verified clean after every fix.
 
-### Post-review pass, round 2 (2026-08-08), 3 residuals
+### Post-review pass, round 2 (2026-08-08), 4 residuals
 
-A follow-up read of the same review found three items round 1 left open:
+A follow-up read of the same review found four items round 1 left open --
+the fourth was flagged as a regression, not a residual, and undercounted
+in this doc's first pass:
 
 - **S1-1's DHT half was still open.** Fixing the record's `EndpointInfo.ttl`
   only closed the community registry's own in-memory sweep; the DHT copy's
@@ -292,9 +294,35 @@ A follow-up read of the same review found three items round 1 left open:
   log line is real (`handle_pause`) but outside what a dispatch-level RPC
   test can capture without `keys.rs`'s own `run_capturing_logs`-shaped
   machinery.
+- **`refresh_due_app_tier1_record` regressed the vault-locked check from
+  A7's shape to A5d's, and round 1's own `VaultLocked` fix is what
+  introduced it.** The pre-check `!self.vault.kek_is_loaded()` reads the
+  `KeyStore`, not whether the storage provider's own encryption is even
+  on -- on a node with `storage.encryption = false` every vault read
+  succeeds, but `kek_is_loaded()` still answers `false`, since no KEK is
+  ever injected on such a node. That pre-check would have skipped this
+  instance's Tier-1 publish forever, silently, on exactly that node, and
+  raised a `VaultLocked` alert that was never true -- total, silent loss
+  of the feature this slice exists for, on a real and unremarkable
+  deployment shape. No test caught it: every fixture and the e2e both
+  inject a KEK even when unencrypted, by design (`Fixture`'s own doc
+  says so), so nothing exercised the unencrypted-and-no-KEK state.
+  **Fixed by deleting the pre-check** and instead matching
+  `Tier1SignError::Vault(keys::VaultError::Locked)` off the real
+  `sign_tier1_record` attempt (A7's D-A7-1 shape) -- the same alert,
+  the same clear-on-success path, and it additionally now catches the
+  vault locked *between* an earlier check and the call, which the
+  pre-check could not. `Fixture` gained `skip_kek_injection` (default
+  `false`, so no existing test's behavior changes) to build exactly the
+  unencrypted-no-KEK state, and a new test,
+  `an_unencrypted_vault_with_no_kek_still_reaches_the_tier1_writer`,
+  confirmed to fail against the pre-check version and pass against the
+  fix before landing.
 
 Re-verified: `cargo +nightly fmt --all` and
 `cargo clippy --workspace --all-targets --all-features` clean;
-`syneroym-app-supervisor` 244/244 and `syneroym-control-plane` 176/176
+`syneroym-app-supervisor` 245/245 and `syneroym-control-plane` 176/176
 (both sandbox-disabled for the latter's real HTTP-probe tests, a
-pre-existing, unrelated sandbox constraint) passing.
+pre-existing, unrelated sandbox constraint) passing; both
+`tier1_endpoint_record_e2e.rs` e2e tests re-verified against real
+substrates and a real registry.

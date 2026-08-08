@@ -2076,29 +2076,6 @@ impl SupervisorService {
         if last.is_some_and(|at| at <= now_i && now_i.saturating_sub(at) < interval) {
             return;
         }
-        if !self.vault.kek_is_loaded() {
-            tracing::warn!(
-                app_instance_id = %state.app_instance_id,
-                "vault locked; skipping this instance's Tier-1 record refresh this pass"
-            );
-            if let Ok(true) = self.store.alerts.raise(
-                instance_id,
-                None,
-                None,
-                &self.node_did,
-                AlertKind::VaultLocked,
-                &format!(
-                    "'{}' cannot refresh its Tier-1 registry record because this supervisor's \
-                     vault is locked; callers outside the app will lose the ability to discover \
-                     its supervisor once the currently-published record lapses. Run: roymctl \
-                     --substrate {} security inject-kek --kek-hex <...>",
-                    state.app_instance_id, self.node_did
-                ),
-            ) {
-                opened.push((AlertKind::VaultLocked, state.app_instance_id.clone()));
-            }
-            return;
-        }
         let signed = match tier1::sign_tier1_record(
             &self.vault,
             &state.app_instance_id,
@@ -2110,6 +2087,42 @@ impl SupervisorService {
         .await
         {
             Ok(s) => s,
+            // Reached by attempting the read, not by pre-checking
+            // `kek_is_loaded()` first (A7's D-A7-1 shape, not A5d's): that
+            // check reads the `KeyStore`, not whether the storage
+            // provider's own encryption is even on, so on a node with
+            // `storage.encryption = false` it always answers `false` even
+            // though every vault read succeeds -- a pre-check here would
+            // skip this instance's Tier-1 publish forever, silently, on
+            // exactly that node, and raise a `VaultLocked` alert that is
+            // never true. Reading `VaultError::Locked` off the real
+            // attempt is correct on both an encrypted-and-locked vault and
+            // an unencrypted one, and additionally catches the vault
+            // locked *between* an early check and this call, which a
+            // pre-check cannot.
+            Err(tier1::Tier1SignError::Vault(keys::VaultError::Locked)) => {
+                tracing::warn!(
+                    app_instance_id = %state.app_instance_id,
+                    "vault locked; skipping this instance's Tier-1 record refresh this pass"
+                );
+                if let Ok(true) = self.store.alerts.raise(
+                    instance_id,
+                    None,
+                    None,
+                    &self.node_did,
+                    AlertKind::VaultLocked,
+                    &format!(
+                        "'{}' cannot refresh its Tier-1 registry record because this supervisor's \
+                         vault is locked; callers outside the app will lose the ability to \
+                         discover its supervisor once the currently-published record lapses. Run: \
+                         roymctl --substrate {} security inject-kek --kek-hex <...>",
+                        state.app_instance_id, self.node_did
+                    ),
+                ) {
+                    opened.push((AlertKind::VaultLocked, state.app_instance_id.clone()));
+                }
+                return;
+            }
             Err(e @ tier1::Tier1SignError::IdentityMismatch { .. }) => {
                 tracing::warn!(
                     app_instance_id = %state.app_instance_id,
@@ -5194,6 +5207,15 @@ mod tests {
         /// `kek_is_loaded()` cannot describe, where the check has already
         /// passed and the read that follows fails locked.
         inject_kek_anyway: bool,
+        /// Skips the KEK injection this builder otherwise gives an
+        /// unencrypted (`locked_vault: false`) fixture by default -- the
+        /// one way to reach `storage.encryption = false` with no KEK
+        /// ever injected, which `kek_is_loaded()` (a `KeyStore`-only
+        /// check) cannot distinguish from a genuinely locked, encrypted
+        /// vault. Only a test proving a caller reads the vault by
+        /// attempting it rather than pre-checking `kek_is_loaded()` needs
+        /// this -- on this fixture, every vault read still succeeds.
+        skip_kek_injection: bool,
         /// `None` leaves the default (5).
         max_renewals_per_pass: Option<u32>,
         anchor_writer: Option<Arc<dyn AnchorWriter>>,
@@ -5268,8 +5290,11 @@ mod tests {
             // An unlocked fixture must actually report its KEK as loaded:
             // `kek_is_loaded` is what gates the renewal work-list, and it
             // reads the `KeyStore`, not the storage provider's encryption
-            // flag.
-            if !self.locked_vault || self.inject_kek_anyway {
+            // flag. `skip_kek_injection` is the one deliberate exception --
+            // an unencrypted vault whose `KeyStore` never sees a KEK,
+            // needed to tell a real read attempt apart from a
+            // `kek_is_loaded()` pre-check.
+            if (!self.locked_vault || self.inject_kek_anyway) && !self.skip_kek_injection {
                 key_store.inject_kek([7u8; 32]).unwrap();
             }
             let vault = MasterVault::new(
@@ -9927,6 +9952,39 @@ mod tests {
 
         assert_eq!(*writer.calls.lock().unwrap(), 0, "a locked vault must never reach the writer");
         assert_eq!(opened, vec![(AlertKind::VaultLocked, "inst-1".to_string())]);
+    }
+
+    /// The regression `kek_is_loaded()` cannot describe: on a node with
+    /// `storage.encryption = false`, every vault read succeeds, but
+    /// `kek_is_loaded()` -- a `KeyStore`-only check -- still answers
+    /// `false`, since no KEK is ever injected on such a node. A pre-check
+    /// on that answer (A5d's shape, which this refresh briefly copied)
+    /// would skip this instance's Tier-1 publish forever and raise a
+    /// `VaultLocked` alert that is never true. Reading the real attempt's
+    /// own `VaultError::Locked` instead (A7's D-A7-1 shape) must reach the
+    /// writer here, where the vault is merely unencrypted, not locked.
+    #[tokio::test]
+    async fn an_unencrypted_vault_with_no_kek_still_reaches_the_tier1_writer() {
+        let writer = Arc::new(RecordingTier1Writer::default());
+        let s = Fixture {
+            skip_kek_injection: true,
+            tier1_writer: Some(writer.clone()),
+            ..Fixture::default()
+        }
+        .build();
+        let (app_did, _) = keys::app_master(&s.vault, "inst-1").await.unwrap();
+        let state = desired_state_with_app_master("inst-1", &app_did);
+        let instance_id = AppInstanceId::new("inst-1");
+        let mut opened = Vec::new();
+
+        s.refresh_due_app_tier1_record(&instance_id, &state, NOW, &mut opened).await;
+
+        assert_eq!(
+            writer.published.lock().unwrap().len(),
+            1,
+            "an unencrypted vault with no KEK must not be treated as locked"
+        );
+        assert!(opened.is_empty(), "a genuinely reachable vault must raise no VaultLocked alert");
     }
 
     /// S1-3: the vault's own key must match the DID the row recorded at
