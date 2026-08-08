@@ -687,15 +687,29 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     );
     let alice_identity_2 = Identity::generate().unwrap();
     let alice_did_2 = substrate::derive_did_key(&alice_identity_2.public_key());
+    let seed_second_employee = json!({
+        "collection": "employees",
+        "value": {"id": "emp-alice-2", "payload": json!({"did": alice_did_2}).to_string().into_bytes()}
+    });
+    // `hr_data_client` was dialed once, early (line ~449), and has sat idle
+    // through the five-iteration connection-churn benchmark above (`IrohHop`
+    // opens a fresh connection per call against Node A, no reuse yet -- see
+    // `FETCH_LATENCY_SANITY_CEILING`'s own doc comment) -- long enough, under
+    // CI's own scheduling pressure, for Node A to abandon this idle path
+    // before it gets reused ("no viable network path exists: last path
+    // abandoned by peer"). `SyneroymClient::connect` no-ops once a
+    // connection is already `Some(..)`, so recovering means an explicit
+    // `shutdown` (drops the dead one) then `connect` (dials fresh) before
+    // retrying, not just retrying the same request on the same connection.
+    if hr_data_client.request("data-layer", "put", seed_second_employee.clone()).await.is_err() {
+        hr_data_client
+            .shutdown()
+            .await
+            .expect("failed to reset hr_data_client's stale connection to node A");
+        hr_data_client.connect().await.expect("failed to reconnect hr_data_client to node A");
+    }
     hr_data_client
-        .request(
-            "data-layer",
-            "put",
-            json!({
-                "collection": "employees",
-                "value": {"id": "emp-alice-2", "payload": json!({"did": alice_did_2}).to_string().into_bytes()}
-            }),
-        )
+        .request("data-layer", "put", seed_second_employee)
         .await
         .expect("seeding second employee failed");
 
