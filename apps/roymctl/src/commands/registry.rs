@@ -75,6 +75,7 @@ pub async fn handle(command: &RegistryCommands, api_url: &str, dir: &Path) -> an
                 is_private: *private,
                 ttl: None,
                 not_after,
+                generation: 0,
             };
 
             let signed_info = info.sign(&identity)?;

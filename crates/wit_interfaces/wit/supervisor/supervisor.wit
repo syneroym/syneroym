@@ -96,6 +96,13 @@ interface supervisor {
         /// makes. Read from the stored row only, never the vault, so it
         /// stays reportable while the vault is locked.
         app-master-did: option<string>,
+        /// Unix seconds at which the currently-published Tier-1 registry
+        /// record (ADR-0022 §2) lapses if this supervisor stops refreshing
+        /// it -- derived from the last successful refresh, not read back
+        /// from the registry. Absent means no successful publish is on
+        /// record: never adopted under A7, no registry configured, or the
+        /// vault has been locked since before the first one.
+        app-record-expires-at: option<u64>,
     }
 
     record alert {

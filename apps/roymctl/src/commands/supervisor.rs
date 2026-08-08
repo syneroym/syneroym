@@ -331,10 +331,23 @@ pub async fn handle(
             print_unreleased_substrates(&res.result);
         }
         SupervisorCommands::Pause { instance_id } => {
-            client
+            let res = client
                 .request("supervisor", "pause", serde_json::to_value([instance_id.clone()])?)
                 .await?;
             println!("Paused '{instance_id}'.");
+            // ADR-0022 §2: a paused instance gets zero write-phase work,
+            // so its Tier-1 registry record stops refreshing along with
+            // everything else -- surfaced here rather than left to a
+            // follow-up `status` call, the same rule `adopt`'s own
+            // printed line already follows for the app master DID.
+            if let Some(expires_at) =
+                res.result.get("app_record_expires_at").and_then(|v| v.as_u64())
+            {
+                println!(
+                    "  its Tier-1 registry record stops refreshing while paused, and expires at \
+                     Unix time {expires_at} unless resumed before then"
+                );
+            }
         }
         SupervisorCommands::Resume { instance_id } => {
             client

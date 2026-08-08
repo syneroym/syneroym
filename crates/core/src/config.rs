@@ -1189,6 +1189,24 @@ mod tests {
         );
     }
 
+    /// ADR-0022 §2: an app instance's Tier-1 record reuses this same
+    /// interval (no second config field), against `EndpointInfo`'s own
+    /// 30-day `not_after`, not the anchor's 24-hour one -- the number that
+    /// matters there is how many *consecutive failed* refreshes a
+    /// previously published record survives before it lapses, not the
+    /// interval alone. At the default 12h cadence against 30 days, sixty.
+    #[test]
+    fn tier1_refresh_survives_sixty_consecutive_failures_against_the_default_interval() {
+        let role = SupervisorRole::default();
+        let interval = role.master_anchor_refresh_interval_secs;
+        let survivable = crate::dht_registry::DEFAULT_ENDPOINT_NOT_AFTER_SECS / interval;
+        assert_eq!(
+            survivable, 60,
+            "sixty consecutive failed refreshes at the default cadence is the number an operator \
+             is told they have before a locked vault costs discoverability"
+        );
+    }
+
     /// The supervisor's own certificate lifetime is short by design and is
     /// deliberately *not* `roymctl`'s attended-posture default (24h), which
     /// serves an operator with no renewal loop behind them.

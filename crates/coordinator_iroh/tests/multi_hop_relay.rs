@@ -227,6 +227,7 @@ fn create_signed_info_with_full_addr(
         is_private: false,
         ttl: None,
         not_after: u64::MAX / 2,
+        generation: 0,
     };
     info.sign(identity).unwrap()
 }
@@ -248,6 +249,7 @@ fn create_signed_info(
         is_private: false,
         ttl: None,
         not_after: u64::MAX / 2,
+        generation: 0,
     };
 
     info.sign(identity).unwrap()

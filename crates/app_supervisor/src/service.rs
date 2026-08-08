@@ -31,6 +31,7 @@ use syneroym_app_orchestration::{
 };
 use syneroym_async_queue::{FailOutcome, QueueItem};
 use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
+use syneroym_core::dht_registry::DEFAULT_ENDPOINT_NOT_AFTER_SECS;
 use syneroym_identity::{
     Identity,
     delegation::{is_expired_parts, is_near_expiry_parts},
@@ -57,11 +58,12 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    AnchorWriter, MasterVault, MintedMaster,
+    AnchorWriter, MasterVault, MintedMaster, Tier1Writer,
     inventory::{SupervisorInventory, SupervisorInventoryEntry},
     keys, outbox,
     outbox::{QueueKey, SupervisorOutbox},
-    store::{RemediationState, ScheduleState, SupervisorStore},
+    store::{DesiredState, RemediationState, ScheduleState, SupervisorStore},
+    tier1,
 };
 
 const SUPERVISOR_INTERFACE: &str = "supervisor";
@@ -327,6 +329,11 @@ pub struct SupervisorService {
     /// record it cannot distinguish from a revoked one, so the supervisor
     /// holds no writer rather than one that quietly does nothing.
     anchor_writer: Option<Arc<dyn AnchorWriter>>,
+    /// Where each app instance's Tier-1 registry record is published
+    /// (ADR-0022 §2). `None` for the same reason `anchor_writer` above is
+    /// -- a single-node deployment with no registry configured does not
+    /// use cross-app discovery, and must not be broken to enable it.
+    tier1_writer: Option<Arc<dyn Tier1Writer>>,
     /// A per-app-instance async mutex, held for the whole duration of a
     /// loop pass and for the whole duration of `submit`/`force-reconcile`/
     /// `adopt`/`release`/`retire` -- not `pause`/`resume` (single-column
@@ -401,6 +408,7 @@ impl SupervisorService {
         max_renewals_per_pass: u32,
         master_anchor_refresh_interval_secs: u64,
         anchor_writer: Option<Arc<dyn AnchorWriter>>,
+        tier1_writer: Option<Arc<dyn Tier1Writer>>,
         queue_tick_secs: u64,
     ) -> Self {
         // `.take(0)` in `renewal_candidates` silently disables renewal for
@@ -432,6 +440,7 @@ impl SupervisorService {
             max_renewals_per_pass,
             master_anchor_refresh_interval_secs,
             anchor_writer,
+            tier1_writer,
             queue_tick_secs,
             queue_connector: Arc::new(LiveQueueConnector {
                 client_identity_bytes: client_identity.to_bytes(),
@@ -1236,6 +1245,7 @@ impl SupervisorService {
             || !push_candidates.is_empty()
             || !schedule_decisions.is_empty()
             || self.anchor_writer.is_some()
+            || self.tier1_writer.is_some()
         {
             self.apply_write_phase(WritePhase {
                 instance_id: &instance_id,
@@ -1526,6 +1536,7 @@ impl SupervisorService {
             .await;
         }
         self.refresh_due_master_anchors(plan, now).await;
+        self.refresh_due_app_tier1_record(instance_id, &fresh_state, now, &mut opened).await;
         self.run_due_schedules(
             instance_id,
             app_instance_id,
@@ -1985,7 +1996,10 @@ impl SupervisorService {
                 continue;
             }
             let last = self.store.last_master_anchor_refresh(&master_did).unwrap_or(None);
-            if last.is_some_and(|at| now.saturating_sub(at) < interval) {
+            // `at > now` (a backwards clock step, or a restored database)
+            // must count as due immediately, not be suppressed until the
+            // wall clock catches back up to it.
+            if last.is_some_and(|at| at <= now && now.saturating_sub(at) < interval) {
                 continue;
             }
             let master = match keys::master_for_member(
@@ -2014,6 +2028,150 @@ impl SupervisorService {
                     "failed to refresh a master anchor; retrying on a later pass"
                 ),
             }
+        }
+    }
+
+    /// Publishes or refreshes this instance's Tier-1 registry record
+    /// (ADR-0022 §2) -- "which supervisor holds this app" -- once
+    /// `master_anchor_refresh_interval_secs` has elapsed since the last
+    /// successful publish. Evaluated on the ordinary pass tick against a
+    /// persisted fact, the same shape `refresh_due_master_anchors` uses,
+    /// reusing its interval rather than a second config field.
+    ///
+    /// Keyed by `state.app_master_did`, not `app_instance_id`: the fact
+    /// belongs to the DID being published, not to the human name, so a
+    /// handover that changes which DID this instance publishes under
+    /// (`import-master` under a new key, then `adopt`) starts that new
+    /// DID's own refresh history at "never refreshed" rather than
+    /// inheriting the old DID's recent stamp.
+    ///
+    /// Skipped, never minted, when this instance has no app master DID on
+    /// its row yet: an instance adopted before that column existed gains
+    /// one at its next `adopt`, and nowhere else -- minting here would
+    /// create an app identity outside `adopt`, the one place that owns it.
+    ///
+    /// A locked vault raises `AlertKind::VaultLocked` (app-level,
+    /// `logical_ref: None`) rather than only logging: the per-member raise
+    /// from certificate renewal only fires for an instance with a member
+    /// inside its near-expiry window, so an instance with none would
+    /// otherwise get no signal at all while this record decays. Cleared
+    /// once a refresh succeeds again.
+    async fn refresh_due_app_tier1_record(
+        &self,
+        instance_id: &AppInstanceId,
+        state: &DesiredState,
+        now: u64,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) {
+        let Some(writer) = &self.tier1_writer else { return };
+        if state.app_master_did.is_empty() {
+            return;
+        }
+        let now_i = now as i64;
+        let interval = self.master_anchor_refresh_interval_secs as i64;
+        let last = self.store.last_tier1_refresh(&state.app_master_did).unwrap_or(None);
+        // `at > now_i` (a backwards clock step, or a restored database)
+        // must count as due immediately, not be suppressed until the wall
+        // clock catches back up to it.
+        if last.is_some_and(|at| at <= now_i && now_i.saturating_sub(at) < interval) {
+            return;
+        }
+        let signed = match tier1::sign_tier1_record(
+            &self.vault,
+            &state.app_instance_id,
+            &state.app_master_did,
+            &self.node_did,
+            state.generation,
+            self.master_anchor_refresh_interval_secs,
+        )
+        .await
+        {
+            Ok(s) => s,
+            // Reached by attempting the read, not by pre-checking
+            // `kek_is_loaded()` first (A7's D-A7-1 shape, not A5d's): that
+            // check reads the `KeyStore`, not whether the storage
+            // provider's own encryption is even on, so on a node with
+            // `storage.encryption = false` it always answers `false` even
+            // though every vault read succeeds -- a pre-check here would
+            // skip this instance's Tier-1 publish forever, silently, on
+            // exactly that node, and raise a `VaultLocked` alert that is
+            // never true. Reading `VaultError::Locked` off the real
+            // attempt is correct on both an encrypted-and-locked vault and
+            // an unencrypted one, and additionally catches the vault
+            // locked *between* an early check and this call, which a
+            // pre-check cannot.
+            Err(tier1::Tier1SignError::Vault(keys::VaultError::Locked)) => {
+                tracing::warn!(
+                    app_instance_id = %state.app_instance_id,
+                    "vault locked; skipping this instance's Tier-1 record refresh this pass"
+                );
+                if let Ok(true) = self.store.alerts.raise(
+                    instance_id,
+                    None,
+                    None,
+                    &self.node_did,
+                    AlertKind::VaultLocked,
+                    &format!(
+                        "'{}' cannot refresh its Tier-1 registry record because this supervisor's \
+                         vault is locked; callers outside the app will lose the ability to \
+                         discover its supervisor once the currently-published record lapses. Run: \
+                         roymctl --substrate {} security inject-kek --kek-hex <...>",
+                        state.app_instance_id, self.node_did
+                    ),
+                ) {
+                    opened.push((AlertKind::VaultLocked, state.app_instance_id.clone()));
+                }
+                return;
+            }
+            Err(e @ tier1::Tier1SignError::IdentityMismatch { .. }) => {
+                tracing::warn!(
+                    app_instance_id = %state.app_instance_id,
+                    error = %e,
+                    "refusing to publish this instance's Tier-1 record under the wrong identity"
+                );
+                if let Ok(true) = self.store.alerts.raise(
+                    instance_id,
+                    None,
+                    None,
+                    &self.node_did,
+                    AlertKind::AppIdentityMismatch,
+                    &e.to_string(),
+                ) {
+                    opened.push((AlertKind::AppIdentityMismatch, state.app_instance_id.clone()));
+                }
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    app_instance_id = %state.app_instance_id,
+                    error = %e,
+                    "cannot sign this instance's Tier-1 record this pass"
+                );
+                return;
+            }
+        };
+        let _ = self.store.alerts.clear(instance_id, None, &self.node_did, AlertKind::VaultLocked);
+        let _ = self.store.alerts.clear(
+            instance_id,
+            None,
+            &self.node_did,
+            AlertKind::AppIdentityMismatch,
+        );
+        match writer.publish(&signed).await {
+            Ok(()) => {
+                if let Err(e) = self.store.record_tier1_refresh(&state.app_master_did, now_i) {
+                    tracing::warn!(
+                        app_instance_id = %state.app_instance_id,
+                        error = %e,
+                        "failed to stamp a Tier-1 refresh"
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                app_instance_id = %state.app_instance_id,
+                error = %e,
+                "failed to publish this instance's Tier-1 record; retrying on a later pass"
+            ),
         }
     }
 
@@ -3982,6 +4140,12 @@ impl SupervisorService {
         Ok(NativeResponse { payload: Self::release_payload("released", failed) })
     }
 
+    /// `retire` withdraws nothing from the registry: a retired instance
+    /// drops out of `all_active`, so its Tier-1 record (if any) simply
+    /// stops refreshing and lapses on the registry's own TTL/`not_after`,
+    /// the same self-limiting decay a pause causes. Left implicit rather
+    /// than an explicit withdraw, since nothing else in this slice
+    /// withdraws a record early either.
     async fn handle_retire(
         &self,
         caller: &CallerContext,
@@ -4012,7 +4176,33 @@ impl SupervisorService {
         let (app_instance_id,): (String,) = serde_json::from_value(params)
             .map_err(|e| RpcError::InvalidParams(format!("failed to parse pause params: {e}")))?;
         self.store.pause(&app_instance_id).map_err(|e| RpcError::InternalError(e.to_string()))?;
-        Ok(NativeResponse { payload: serde_json::json!({"status": "paused"}) })
+        let mut payload = serde_json::json!({"status": "paused"});
+        // A paused instance gets zero write-phase work (D-A5c-1), so its
+        // Tier-1 registry record stops refreshing along with everything
+        // else -- `pause`'s own promise ("stops reconciliation and
+        // nothing else") does not cover this, since the record decays
+        // toward `not_after` on the clock, not on a reconcile. Rather than
+        // reopen that promise, the cost is made visible here, at the
+        // moment an operator chooses it. The refresh fact is keyed by the
+        // app master DID, not the instance id (a handover must not inherit
+        // a stale stamp) -- an instance with no DID on its row yet, or one
+        // never published, has nothing to warn about.
+        let app_master_did =
+            self.store.get(&app_instance_id).ok().flatten().map(|s| s.app_master_did);
+        if let Some(app_master_did) = app_master_did.filter(|did| !did.is_empty())
+            && let Ok(Some(last)) = self.store.last_tier1_refresh(&app_master_did)
+        {
+            let expires_at = (last as u64).saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
+            tracing::warn!(
+                app_instance_id,
+                expires_at,
+                "pausing this instance stops its Tier-1 registry record from refreshing; callers \
+                 outside it will stop being able to discover its supervisor once it passes this \
+                 Unix time, unless the instance is resumed before then"
+            );
+            payload["app_record_expires_at"] = serde_json::json!(expires_at);
+        }
+        Ok(NativeResponse { payload })
     }
 
     async fn handle_resume(
@@ -4669,6 +4859,15 @@ impl SupervisorService {
             ManagedState::Degraded
         };
 
+        // Computed before `state.app_master_did` is moved into the
+        // literal below -- keyed by the app master DID, not the instance
+        // id, so a handover's new DID starts at "never refreshed" rather
+        // than inheriting the old DID's stamp.
+        let app_record_expires_at = (!state.app_master_did.is_empty())
+            .then(|| self.store.last_tier1_refresh(&state.app_master_did).unwrap_or(None))
+            .flatten()
+            .map(|at| (at as u64).saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS));
+
         let status = InstanceStatus {
             app_instance_id: app_instance_id.clone(),
             state: overall_state,
@@ -4708,6 +4907,12 @@ impl SupervisorService {
             // `None` here so a caller does not have to know `""` is a
             // sentinel.
             app_master_did: (!state.app_master_did.is_empty()).then_some(state.app_master_did),
+            // ADR-0022 §2, D-C-2: derived from the last successful
+            // refresh this supervisor stamped, not read back from the
+            // registry -- the deadline an operator has before a locked
+            // vault (or a pause) costs this instance's cross-app
+            // discoverability, made visible here alongside `VaultLocked`.
+            app_record_expires_at,
         };
         Ok(NativeResponse { payload: serde_json::to_value(status).unwrap_or(Value::Null) })
     }
@@ -4975,11 +5180,12 @@ mod tests {
         },
     };
     use syneroym_async_queue::{Queue, QueueConfig};
-    use syneroym_core::config::SupervisorRole;
+    use syneroym_core::{config::SupervisorRole, dht_registry::SignedEndpointInfo};
     use syneroym_identity::{DelegationCertificate, substrate};
     use syneroym_rpc::AuthLevel;
 
     use super::*;
+    use crate::tier1::RegistryTier1Writer;
 
     fn test_broker() -> Arc<MqttBroker> {
         Arc::new(MqttBroker::new(syneroym_mqtt_broker::MqttBrokerConfig::default()).unwrap())
@@ -5001,9 +5207,19 @@ mod tests {
         /// `kek_is_loaded()` cannot describe, where the check has already
         /// passed and the read that follows fails locked.
         inject_kek_anyway: bool,
+        /// Skips the KEK injection this builder otherwise gives an
+        /// unencrypted (`locked_vault: false`) fixture by default -- the
+        /// one way to reach `storage.encryption = false` with no KEK
+        /// ever injected, which `kek_is_loaded()` (a `KeyStore`-only
+        /// check) cannot distinguish from a genuinely locked, encrypted
+        /// vault. Only a test proving a caller reads the vault by
+        /// attempting it rather than pre-checking `kek_is_loaded()` needs
+        /// this -- on this fixture, every vault read still succeeds.
+        skip_kek_injection: bool,
         /// `None` leaves the default (5).
         max_renewals_per_pass: Option<u32>,
         anchor_writer: Option<Arc<dyn AnchorWriter>>,
+        tier1_writer: Option<Arc<dyn Tier1Writer>>,
         master_anchor_refresh_interval_secs: Option<u64>,
         /// `None` leaves the default -- a private `dir.path().join(
         /// "backups")` on the `TempDir` the built service now keeps alive
@@ -5074,8 +5290,11 @@ mod tests {
             // An unlocked fixture must actually report its KEK as loaded:
             // `kek_is_loaded` is what gates the renewal work-list, and it
             // reads the `KeyStore`, not the storage provider's encryption
-            // flag.
-            if !self.locked_vault || self.inject_kek_anyway {
+            // flag. `skip_kek_injection` is the one deliberate exception --
+            // an unencrypted vault whose `KeyStore` never sees a KEK,
+            // needed to tell a real read attempt apart from a
+            // `kek_is_loaded()` pre-check.
+            if (!self.locked_vault || self.inject_kek_anyway) && !self.skip_kek_injection {
                 key_store.inject_kek([7u8; 32]).unwrap();
             }
             let vault = MasterVault::new(
@@ -5099,6 +5318,7 @@ mod tests {
                 self.max_renewals_per_pass.unwrap_or(5),
                 self.master_anchor_refresh_interval_secs.unwrap_or(12 * 3600),
                 self.anchor_writer,
+                self.tier1_writer,
                 self.queue_tick_secs.unwrap_or(5),
             );
             service._fixture_tempdir = Some(dir);
@@ -8438,6 +8658,30 @@ mod tests {
         }
     }
 
+    /// A `Tier1Writer` that records what it was asked to publish and can be
+    /// made to fail, the same shape `RecordingAnchorWriter` above uses.
+    /// `calls` counts every attempt, successful or not -- `published` only
+    /// grows on success, so a test proving a failing writer is still
+    /// retried needs the former.
+    #[derive(Debug, Default)]
+    struct RecordingTier1Writer {
+        published: Mutex<Vec<SignedEndpointInfo>>,
+        calls: Mutex<u32>,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Tier1Writer for RecordingTier1Writer {
+        async fn publish(&self, record: &SignedEndpointInfo) -> Result<(), String> {
+            *self.calls.lock().unwrap() += 1;
+            if self.fail {
+                return Err("registry unreachable".to_string());
+            }
+            self.published.lock().unwrap().push(record.clone());
+            Ok(())
+        }
+    }
+
     /// A member with a real master in the supervisor's vault, under the
     /// same computable name `mint_and_substitute` would have stored it as
     /// -- so the renewal path finds it exactly the way production does.
@@ -9505,6 +9749,287 @@ mod tests {
         );
     }
 
+    // ── Tier 1: the app-DID registry record (ADR-0022 §2) ────────────────
+
+    fn desired_state_with_app_master(app_instance_id: &str, app_master_did: &str) -> DesiredState {
+        DesiredState {
+            app_instance_id: app_instance_id.to_string(),
+            plan_json: plan_json_no_services(app_instance_id),
+            inventory_json: "{}".to_string(),
+            owner_did: "did:key:zOwner".to_string(),
+            generation: 0,
+            paused: false,
+            retired: false,
+            submitted_at: 0,
+            updated_at: 0,
+            app_master_did: app_master_did.to_string(),
+        }
+    }
+
+    /// D-S1-6, both halves: a row with no app master DID yet (D-A7-7,
+    /// before this instance's first `adopt` under A7) is skipped without
+    /// even opening the vault, and nothing gets minted to fill the gap.
+    #[tokio::test]
+    async fn an_instance_with_no_app_master_did_is_skipped_and_nothing_is_minted() {
+        let writer = Arc::new(RecordingTier1Writer::default());
+        let s = Fixture { tier1_writer: Some(writer.clone()), ..Fixture::default() }.build();
+        let state = desired_state_with_app_master("inst-1", "");
+        let mut opened = Vec::new();
+
+        s.refresh_due_app_tier1_record(&AppInstanceId::new("inst-1"), &state, NOW, &mut opened)
+            .await;
+
+        assert!(
+            writer.published.lock().unwrap().is_empty(),
+            "no app master DID recorded must never reach the writer"
+        );
+        assert!(
+            s.vault.get("app-inst-1").await.unwrap().is_none(),
+            "the skip must never mint an app master"
+        );
+        assert!(opened.is_empty());
+    }
+
+    /// D-S1-8: a supervisor with no registry configured holds no writer at
+    /// all (mirroring `RegistryAnchorWriter::from_registry_client`), and a
+    /// pass with none configured is a quiet no-op, never a panic. The
+    /// `RegistryTier1Writer::from_registry_client` half of D-S1-8's own
+    /// warning is asserted directly here; the log line itself is written
+    /// once at supervisor init (`runtime.rs`), outside what a
+    /// `SupervisorService` unit test can reach.
+    #[tokio::test]
+    async fn no_configured_registry_holds_no_writer_and_the_supervisor_keeps_running() {
+        assert!(
+            RegistryTier1Writer::from_registry_client(None).is_none(),
+            "no substrate.registry_url must mean no writer, not one that quietly does nothing"
+        );
+
+        let s = Fixture::default().build();
+        let (app_did, _) = keys::app_master(&s.vault, "inst-1").await.unwrap();
+        let state = desired_state_with_app_master("inst-1", &app_did);
+        let mut opened = Vec::new();
+
+        s.refresh_due_app_tier1_record(&AppInstanceId::new("inst-1"), &state, NOW, &mut opened)
+            .await;
+
+        assert_eq!(
+            s.store.last_tier1_refresh(&app_did).unwrap(),
+            None,
+            "with no writer configured there is nothing to stamp"
+        );
+    }
+
+    /// D-S1-5's real property is not the interval, it is that a failure
+    /// never gives up: every pass this many seconds after the last
+    /// success retries again, with nothing here counting attempts toward
+    /// a cap. `tier1_refresh_survives_sixty_consecutive_failures_against_
+    /// the_default_interval` (`syneroym-core`) pins the number this
+    /// buys against `EndpointInfo`'s 30-day `not_after`.
+    #[tokio::test]
+    async fn a_failed_tier1_publish_is_retried_every_interval_with_no_internal_cap() {
+        let failing =
+            Arc::new(RecordingTier1Writer { fail: true, ..RecordingTier1Writer::default() });
+        let s = Fixture {
+            tier1_writer: Some(failing.clone()),
+            master_anchor_refresh_interval_secs: Some(43_200),
+            ..Fixture::default()
+        }
+        .build();
+        let (app_did, _) = keys::app_master(&s.vault, "inst-1").await.unwrap();
+        let state = desired_state_with_app_master("inst-1", &app_did);
+        let instance_id = AppInstanceId::new("inst-1");
+
+        for tick in 0..3u64 {
+            let mut opened = Vec::new();
+            s.refresh_due_app_tier1_record(&instance_id, &state, NOW + tick * 43_200, &mut opened)
+                .await;
+        }
+
+        assert_eq!(
+            *failing.calls.lock().unwrap(),
+            3,
+            "every interval-elapsed pass must retry -- nothing here counts attempts and stops"
+        );
+        assert_eq!(
+            s.store.last_tier1_refresh(&app_did).unwrap(),
+            None,
+            "a failed publish is never stamped as a success"
+        );
+    }
+
+    /// The gate itself, exercised across a real success: the failure-only
+    /// test above cannot regress this property, since a stamp that never
+    /// advances reads as "due" on every single tick regardless of what
+    /// the interval comparison does.
+    #[tokio::test]
+    async fn the_interval_gate_holds_after_a_successful_publish() {
+        let writer = Arc::new(RecordingTier1Writer::default());
+        let s = Fixture {
+            tier1_writer: Some(writer.clone()),
+            master_anchor_refresh_interval_secs: Some(43_200),
+            ..Fixture::default()
+        }
+        .build();
+        let (app_did, _) = keys::app_master(&s.vault, "inst-1").await.unwrap();
+        let state = desired_state_with_app_master("inst-1", &app_did);
+        let instance_id = AppInstanceId::new("inst-1");
+
+        let mut opened = Vec::new();
+        s.refresh_due_app_tier1_record(&instance_id, &state, NOW, &mut opened).await;
+        assert_eq!(writer.published.lock().unwrap().len(), 1);
+
+        s.refresh_due_app_tier1_record(&instance_id, &state, NOW + 100, &mut opened).await;
+        assert_eq!(
+            writer.published.lock().unwrap().len(),
+            1,
+            "a tick inside the interval must not re-publish"
+        );
+
+        s.refresh_due_app_tier1_record(&instance_id, &state, NOW + 43_200, &mut opened).await;
+        assert_eq!(
+            writer.published.lock().unwrap().len(),
+            2,
+            "a tick past the interval must publish again"
+        );
+    }
+
+    /// The evaluation happens on the ordinary per-instance pass, against a
+    /// persisted fact -- not on a timer of its own -- so a pass with
+    /// otherwise nothing to do still reaches it purely because a
+    /// `tier1_writer` is configured (the same gate `anchor_writer` uses).
+    /// The published record also carries this pass's real generation, not
+    /// a hardcoded one -- `generation` is the entire mechanism behind
+    /// failure-matrix row 2 (two supervisors, one app DID).
+    #[tokio::test]
+    async fn a_refresh_runs_on_the_ordinary_pass_tick_and_carries_the_instances_generation() {
+        let writer = Arc::new(RecordingTier1Writer::default());
+        let s = Fixture { tier1_writer: Some(writer.clone()), ..Fixture::default() }.build();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:zOwner", 0)
+            .unwrap();
+        let (app_did, _) = keys::app_master(&s.vault, "inst-1").await.unwrap();
+        s.store.record_adopt("inst-1", 7, &app_did).unwrap();
+
+        s.reconcile_instance_pass("inst-1").await;
+
+        let published = writer.published.lock().unwrap();
+        assert_eq!(
+            published.len(),
+            1,
+            "a configured writer must be exercised even when every other work list is empty"
+        );
+        assert_eq!(
+            published[0].info.generation, 7,
+            "the published record must carry this instance's real generation"
+        );
+        drop(published);
+        assert!(
+            s.store.last_tier1_refresh(&app_did).unwrap().is_some(),
+            "a successful publish through the ordinary pass must stamp the fact"
+        );
+    }
+
+    /// S1-8: the property that matters is one level up from the signer
+    /// (`tier1::tests::a_locked_vault_fails_the_refresh_without_touching_
+    /// the_registry`, which takes no writer at all and so is true by
+    /// construction) -- with a writer actually configured, a locked vault
+    /// must stop before that writer is ever reached, and must raise
+    /// `VaultLocked` rather than only logging.
+    #[tokio::test]
+    async fn a_locked_vault_never_reaches_a_configured_tier1_writer() {
+        let writer = Arc::new(RecordingTier1Writer::default());
+        let s = Fixture {
+            locked_vault: true,
+            tier1_writer: Some(writer.clone()),
+            ..Fixture::default()
+        }
+        .build();
+        let state = desired_state_with_app_master("inst-1", "did:key:zPlaceholderApp");
+        let instance_id = AppInstanceId::new("inst-1");
+        let mut opened = Vec::new();
+
+        s.refresh_due_app_tier1_record(&instance_id, &state, NOW, &mut opened).await;
+
+        assert_eq!(*writer.calls.lock().unwrap(), 0, "a locked vault must never reach the writer");
+        assert_eq!(opened, vec![(AlertKind::VaultLocked, "inst-1".to_string())]);
+    }
+
+    /// The regression `kek_is_loaded()` cannot describe: on a node with
+    /// `storage.encryption = false`, every vault read succeeds, but
+    /// `kek_is_loaded()` -- a `KeyStore`-only check -- still answers
+    /// `false`, since no KEK is ever injected on such a node. A pre-check
+    /// on that answer (A5d's shape, which this refresh briefly copied)
+    /// would skip this instance's Tier-1 publish forever and raise a
+    /// `VaultLocked` alert that is never true. Reading the real attempt's
+    /// own `VaultError::Locked` instead (A7's D-A7-1 shape) must reach the
+    /// writer here, where the vault is merely unencrypted, not locked.
+    #[tokio::test]
+    async fn an_unencrypted_vault_with_no_kek_still_reaches_the_tier1_writer() {
+        let writer = Arc::new(RecordingTier1Writer::default());
+        let s = Fixture {
+            skip_kek_injection: true,
+            tier1_writer: Some(writer.clone()),
+            ..Fixture::default()
+        }
+        .build();
+        let (app_did, _) = keys::app_master(&s.vault, "inst-1").await.unwrap();
+        let state = desired_state_with_app_master("inst-1", &app_did);
+        let instance_id = AppInstanceId::new("inst-1");
+        let mut opened = Vec::new();
+
+        s.refresh_due_app_tier1_record(&instance_id, &state, NOW, &mut opened).await;
+
+        assert_eq!(
+            writer.published.lock().unwrap().len(),
+            1,
+            "an unencrypted vault with no KEK must not be treated as locked"
+        );
+        assert!(opened.is_empty(), "a genuinely reachable vault must raise no VaultLocked alert");
+    }
+
+    /// S1-3: the vault's own key must match the DID the row recorded at
+    /// the last `adopt` -- a mismatch (an `import-master` not yet
+    /// followed by an `adopt`, A7 §0.5) must refuse and raise, never
+    /// publish under whichever key the vault happens to hold.
+    #[tokio::test]
+    async fn a_mismatched_vault_key_raises_an_alert_and_never_publishes() {
+        let writer = Arc::new(RecordingTier1Writer::default());
+        let s = Fixture { tier1_writer: Some(writer.clone()), ..Fixture::default() }.build();
+        // The vault genuinely holds an app master for "inst-1"...
+        keys::app_master(&s.vault, "inst-1").await.unwrap();
+        // ...but the row claims a different DID, the stale-handover case.
+        let state = desired_state_with_app_master("inst-1", "did:key:zStaleRowClaim");
+        let instance_id = AppInstanceId::new("inst-1");
+        let mut opened = Vec::new();
+
+        s.refresh_due_app_tier1_record(&instance_id, &state, NOW, &mut opened).await;
+
+        assert!(
+            writer.published.lock().unwrap().is_empty(),
+            "a mismatched identity must never be published"
+        );
+        assert_eq!(opened, vec![(AlertKind::AppIdentityMismatch, "inst-1".to_string())]);
+    }
+
+    /// Companion to A5c's own two paused-instance tests: `pause` excludes
+    /// an instance from the write phase entirely, and the Tier-1 refresh
+    /// is no exception (D-S1-4 keeps that skip rather than reopening it).
+    #[tokio::test]
+    async fn a_paused_instance_gets_no_tier1_refresh() {
+        let writer = Arc::new(RecordingTier1Writer::default());
+        let s = Fixture { tier1_writer: Some(writer.clone()), ..Fixture::default() }.build();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:zOwner", 0)
+            .unwrap();
+        let (app_did, _) = keys::app_master(&s.vault, "inst-1").await.unwrap();
+        s.store.record_adopt("inst-1", 0, &app_did).unwrap();
+        s.store.pause("inst-1").unwrap();
+
+        s.reconcile_instance_pass("inst-1").await;
+
+        assert!(writer.published.lock().unwrap().is_empty(), "a paused instance gets zero work");
+    }
+
     // ── Phase 5: revocation ──────────────────────────────────────────────
 
     /// D-A5d-15: a revoked placement is skipped by `apply_with_clients`
@@ -10019,6 +10544,108 @@ mod tests {
             "absent means null once serialized, not an empty string: {:?}",
             status.payload.get("app_master_did")
         );
+    }
+
+    /// D-C-2: `status` reports the currently-published Tier-1 record's
+    /// expiry, derived from the last successful refresh this supervisor
+    /// stamped -- not from a fresh registry lookup.
+    #[tokio::test]
+    async fn status_reports_the_tier_one_record_expiry() {
+        let s = service();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+        s.store.record_adopt("inst-1", 0, "did:key:zAppMaster").unwrap();
+        s.store.record_tier1_refresh("did:key:zAppMaster", 1_000).unwrap();
+
+        let status = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "status",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            status.payload.get("app_record_expires_at").and_then(Value::as_u64),
+            Some(1_000u64 + DEFAULT_ENDPOINT_NOT_AFTER_SECS)
+        );
+    }
+
+    /// The absent case: no successful publish is on record (never
+    /// adopted, no registry configured, or a vault locked since before
+    /// the first refresh), so there is no expiry to report.
+    #[tokio::test]
+    async fn status_reports_no_tier_one_expiry_when_never_published() {
+        let s = service();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+
+        let status = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "status",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+
+        assert!(status.payload.get("app_record_expires_at").is_none_or(Value::is_null));
+    }
+
+    /// D-S1-4: `pause`'s response reports the date its own write-phase skip
+    /// (`a_paused_instance_gets_no_tier1_refresh`, above) will let the
+    /// currently-published record decay to. Named for the response field
+    /// this actually asserts, not the `tracing::warn!` alongside it --
+    /// that log line is real (`handle_pause`) but outside what a
+    /// dispatch-level RPC test can capture without the same
+    /// `run_capturing_logs`-shaped machinery `keys.rs` uses.
+    #[tokio::test]
+    async fn pause_reports_the_records_expiry_date() {
+        let s = service();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+        s.store.record_adopt("inst-1", 0, "did:key:zAppMaster").unwrap();
+        s.store.record_tier1_refresh("did:key:zAppMaster", 1_000).unwrap();
+
+        let res = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "pause",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            res.payload.get("app_record_expires_at").and_then(Value::as_u64),
+            Some(1_000u64 + DEFAULT_ENDPOINT_NOT_AFTER_SECS)
+        );
+        assert!(s.store.get("inst-1").unwrap().unwrap().paused, "pause must still take effect");
+    }
+
+    /// Nothing published yet means nothing to warn about -- `pause` must
+    /// not invent an expiry for a record that was never signed.
+    #[tokio::test]
+    async fn pause_has_nothing_to_warn_about_when_never_published() {
+        let s = service();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+
+        let res = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "pause",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+
+        assert!(res.payload.get("app_record_expires_at").is_none());
     }
 
     /// D-A7-5/§0.5: the handover-order repair inside one vault -- mint by

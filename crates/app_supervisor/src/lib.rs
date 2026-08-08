@@ -11,9 +11,11 @@ pub mod keys;
 pub mod outbox;
 pub mod service;
 pub mod store;
+pub mod tier1;
 
 pub use anchors::{AnchorWriter, RegistryAnchorWriter};
 pub use keys::{MasterVault, MintedMaster, VaultError};
 pub use outbox::{QueueKey, SupervisorOutbox};
 pub use service::SupervisorService;
 pub use store::{DesiredState, SupervisorStore};
+pub use tier1::{RegistryTier1Writer, Tier1Writer};

@@ -90,8 +90,8 @@ S0 landed as M05A slice A7. S5 is M7 work and is listed for completeness only.
 | # | Scope | Gate |
 |---|---|---|
 | **S0** | App-instance master DID: minted at `adopt`, held in the supervisor vault, surfaced on `status`, exportable for handover | **Landed as M05A slice A7, Complete 2026-08-04** |
-| **S1** | Tier 1: the app-DID registry record, published and refreshed by the supervisor, carrying a generation a reader can compare. Manifest surface for `ShardingStrategy` | S0 — **cleared** |
-| **S2** | Tier 2: the signed topology document, the supervisor `resolve` RPC, and the client-side verify/cache path feeding `LogicalResolver::register`. Ships `epoch` unenforced | S1 |
+| **S1** | Tier 1: the app-DID registry record, published and refreshed by the supervisor, carrying a generation a reader can compare. Manifest surface for `ShardingStrategy` | **Complete 2026-08-08** |
+| **S2** | Tier 2: the signed topology document, the supervisor `resolve` RPC, and the client-side verify/cache path feeding `LogicalResolver::register`. Ships `epoch` unenforced | S1 — **cleared** |
 | **S3** | Gateway hostname scheme (`-a…-s…-i…`) plus the routing-key request header; coordinator relay of the document in the WebRTC bootstrap page | S2 |
 | **S4** | Cross-app `Bind`: manifest surface, UCAN-scoped per-service exposure declared in the submitted plan, and replacing `prepare_binding`'s intra-app refusal with an authorization check | S2 **and** a first real cross-app dependency exists |
 | **S5** | Shard rebalancing, and enforcing the epoch fence on the data path | **M7** `[PLT-RED]`. Executed there, not here |

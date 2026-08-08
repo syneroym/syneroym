@@ -399,6 +399,7 @@ pub async fn handle(
                         depends_on: vec![],
                         placement: None,
                         replicas: 1,
+                        sharding_strategy: None,
                         schedule: None,
                     },
                 );

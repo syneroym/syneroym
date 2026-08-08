@@ -89,6 +89,14 @@ pub struct EndpointInfo {
     /// master-signed blob it cannot re-sign has no other way to let a
     /// record go stale). See `DEFAULT_ENDPOINT_NOT_AFTER_SECS`.
     pub not_after: u64,
+    /// A publisher-supplied counter a *reader* compares to tell two records
+    /// for the same `service_id` apart (ADR-0022 §2) -- never enforced at
+    /// admission, since the registry's compare-and-swap stays
+    /// last-writer-wins. `#[serde(default)]` so a record signed before this
+    /// field existed deserializes as `0`, which is also the correct
+    /// reading: "no generation claimed".
+    #[serde(default)]
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -847,6 +855,7 @@ mod tests {
             is_private: false,
             ttl: None,
             not_after: u64::MAX / 2, // far future -- not what these tests are about
+            generation: 0,
         }
     }
 
@@ -933,6 +942,46 @@ mod tests {
         // The attack this guards against: a relay rewriting substrate_id so
         // a lookup follows it to a host the attacker controls.
         assert!(signed.verify().is_err());
+    }
+
+    /// ADR-0022 §2: a record signed before `generation` existed has no such
+    /// key in its stored JSON at all -- not `null`, absent -- and
+    /// must still deserialize, reading as `0` ("no generation claimed").
+    /// Against a hand-written fixture rather than a round trip, since a
+    /// round trip through the current struct can never omit the field.
+    #[test]
+    fn an_endpoint_record_written_before_generation_existed_reads_as_zero() {
+        let json = r#"{
+            "service_id": "did:key:zApp",
+            "substrate_id": "did:key:zNode",
+            "endpoint_type": "service",
+            "mechanisms": [],
+            "is_private": false,
+            "not_after": 4102444800
+        }"#;
+        let info: EndpointInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.generation, 0);
+    }
+
+    /// `generation` is inside the signed payload, not a header alongside
+    /// it -- a relay that bumps it without the master's
+    /// cooperation must be caught exactly like `substrate_id` tampering
+    /// above.
+    #[test]
+    fn a_generation_survives_the_signature_round_trip() {
+        let identity = Identity::generate().unwrap();
+        let did = substrate::derive_did_key(&identity.public_key());
+
+        let mut info = sample_endpoint_info(&did);
+        info.generation = 1;
+        let mut signed = info.sign(&identity).unwrap();
+        assert!(signed.verify().is_ok(), "an honest generation must verify");
+
+        signed.info.generation = 2;
+        assert!(
+            signed.verify().is_err(),
+            "a generation altered after signing must fail verification"
+        );
     }
 
     #[test]

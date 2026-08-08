@@ -213,6 +213,7 @@ mod tests {
             is_private: false,
             ttl: None,
             not_after,
+            generation: 0,
         }
     }
 

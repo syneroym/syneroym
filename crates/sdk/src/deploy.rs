@@ -744,6 +744,7 @@ pub async fn certify_placed_members(
             is_private: false,
             ttl: None,
             not_after,
+            generation: 0,
         }
         .sign(master)?;
         records.insert(svc.service_id.clone(), serde_json::to_string(&record)?);
