@@ -40,12 +40,19 @@ use syneroym_core::{
 };
 use zeroize::Zeroizing;
 
-pub use crate::dedup::{
-    CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, ClaimToken, DedupConfig,
-    DedupDecision, DedupStore, FirstOutcome,
+pub use crate::{
+    dedup::{
+        CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, ClaimToken, DedupConfig,
+        DedupDecision, DedupStore, FirstOutcome,
+    },
+    saga::{
+        CompensationOutcome, MAX_SAGA_PAYLOAD_BYTES, MIN_STEP_CALL_BUDGET_MS, SagaConfig, SagaHead,
+        SagaInfo, SagaLog, SagaState, StepIntent, StepRow, StepState,
+    },
 };
 
 mod dedup;
+mod saga;
 
 /// The retry curve ([`RetryPolicy`], reused per M05B D-B1-13 -- its struct
 /// and `calculate_jittered_backoff`, not `retry_with_backoff`, which sleeps

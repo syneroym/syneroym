@@ -9,6 +9,7 @@ pub mod journal;
 pub mod models;
 pub mod reconcile;
 pub mod resolver;
+pub mod saga;
 pub mod schedule;
 pub mod substrate_inventory;
 
@@ -30,6 +31,7 @@ pub use resolver::{
     ResolvedTopology, ShardingStrategy, StaticInventory, TopologyEntry, TopologyEpoch,
     classify_binding_write, empty_resolver, rendezvous_select,
 };
+pub use saga::{SAGA_UNDO_PREFIX, compensated_operation, saga_undo_name};
 pub use schedule::{
     DEFAULT_SCHEDULE_TIMEOUT_MS, MAX_SCHEDULE_TIMEOUT_MS, MAX_SCHEDULED_SERVICES, has_occurrence_in,
 };

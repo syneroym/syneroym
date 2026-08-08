@@ -353,6 +353,28 @@ interface orchestrator {
     /// run twice.
     proxy-replay: func(service-id: string, dead-letter-id: u64) -> result<_, string>;
 
+    /// One saga `service-id`'s own log holds, as `sagas` lists it
+    /// (ADR-0023 §7, as amended).
+    record saga-record {
+        saga-id: string,
+        name: string,
+        state: string,
+        steps: u32,
+        compensated-steps: u32,
+        created-at: s64,
+        deadline-at: s64,
+        last-error: option<string>,
+    }
+
+    /// Every saga `service-id`'s own log holds, oldest first.
+    sagas: func(service-id: string) -> result<list<saga-record>, string>;
+
+    /// Re-arms a saga whose compensation gave up: it returns to
+    /// `compensating` with the current step's attempts reset, and the
+    /// worker picks it up on its next tick. Never walks inline, for the
+    /// same reason `proxy-replay` never delivers inline.
+    saga-compensate: func(service-id: string, saga-id: string) -> result<_, string>;
+
     /// How a logical service name maps to physical members. Mirrors
     /// `TopologyMode` in the app model.
     variant topology-mode {

@@ -20,7 +20,7 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler as IrohProtocolHandler},
 };
 use syneroym_app_orchestration::LogicalResolver;
-use syneroym_async_queue::{DedupConfig, QueueConfig};
+use syneroym_async_queue::{DedupConfig, QueueConfig, SagaConfig};
 use syneroym_control_plane::ControlPlaneService;
 use syneroym_core::{
     config::{RetryPolicy, SubstrateConfig},
@@ -46,6 +46,7 @@ use crate::{
     net_iroh::IrohStream,
     proxy::{IrohHop, ProxyRouter},
     proxy_outbox::ProxyOutbox,
+    saga::SagaStore,
 };
 
 pub mod dispatch;
@@ -261,6 +262,15 @@ impl RouteHandler {
             deps.logical_resolver.clone(),
             queue_config.clone(),
         ));
+        // The saga step log behind `syneroym:proxy/saga`, one log per
+        // driving service -- the same per-service encrypted store shape
+        // as the outbox above, in the same `async.db` file.
+        let sagas = Arc::new(SagaStore::new(
+            deps.storage_provider.clone(),
+            deps.key_store.clone(),
+            deps.logical_resolver.clone(),
+            SagaConfig::from(&config.roles.app_sandbox.clone().unwrap_or_default()),
+        ));
 
         let proxy = Arc::new(
             ProxyRouter::new(
@@ -273,7 +283,8 @@ impl RouteHandler {
                 config.retry.clone(),
             )
             .with_dedup_guard(dedup_guard.clone())
-            .with_outbox(outbox.clone()),
+            .with_outbox(outbox.clone())
+            .with_sagas(sagas.clone()),
         );
         deps.app_sandbox_engine
             .service_proxy
@@ -309,11 +320,24 @@ impl RouteHandler {
                 .map_err(|_| {
                     anyhow::anyhow!("ControlPlaneService::service_proxy set more than once")
                 })?;
-            // The `proxy-*` operator verbs read the queues the router owns,
-            // so they need the outbox itself rather than the proxy.
+            // The `proxy-*`/`sagas`/`saga-compensate` operator verbs read
+            // the outbox and saga store the router owns, bundled behind
+            // one `ProxyState` -- downgraded from the `Arc` `proxy` itself
+            // now holds, which is what keeps this `Weak` valid for as long
+            // as the router is. `proxy_state()` is `Some` only once both
+            // `with_outbox` and `with_sagas` have been called; this path
+            // calls both a few lines above, in that order, so the `ok_or`
+            // below can never actually fire on the production wiring --
+            // it exists because a future caller of this function that
+            // constructs `proxy` with only one of the two would otherwise
+            // fail confusingly deep inside `proxy_queues.set`.
+            let proxy_state = proxy
+                .proxy_state()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("ProxyRouter has no combined proxy state"))?;
             control_plane
                 .proxy_queues
-                .set(Arc::downgrade(&outbox) as Weak<dyn ProxyQueueInspector>)
+                .set(Arc::downgrade(&proxy_state) as Weak<dyn ProxyQueueInspector>)
                 .map_err(|_| {
                     anyhow::anyhow!("ControlPlaneService::proxy_queues set more than once")
                 })?;

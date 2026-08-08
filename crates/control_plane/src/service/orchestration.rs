@@ -21,7 +21,7 @@ use serde_json::Value;
 use syneroym_app_orchestration::{
     AppInstanceId, BindingWriteOutcome, HealthCheck, HttpProbe, InterfaceName, LogicalServiceName,
     RpcProbe, ServiceId as AppServiceId, ServiceType as AppServiceType, TcpProbe, TopologyEntry,
-    TopologyEpoch, TopologyMode as AppTopologyMode, classify_binding_write,
+    TopologyEpoch, TopologyMode as AppTopologyMode, classify_binding_write, compensated_operation,
 };
 use syneroym_core::{
     deploy_docs,
@@ -36,7 +36,7 @@ use syneroym_identity::{
 };
 use syneroym_rpc::{
     Ability, CallOrigin, CallerContext, DeadLetterInfo, JsonRpcRequest, NativeService,
-    ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCallInfo, ResourceUri,
+    ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCallInfo, ResourceUri, SagaInfo,
 };
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     AppContext, AppInstanceManagement as AppInstanceManagementWire, ArtifactSource, BindingWrite,
@@ -81,6 +81,20 @@ pub trait OrchestratorInterface {
         &self,
         service_id: String,
         dead_letter_id: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String>;
+    /// Every saga `service_id`'s own log holds, oldest first.
+    async fn sagas(
+        &self,
+        service_id: String,
+        caller: &CallerContext,
+    ) -> Result<Vec<SagaInfo>, String>;
+    /// Re-arms a `failed` saga back to `compensating`; it never walks
+    /// inline.
+    async fn saga_compensate(
+        &self,
+        service_id: String,
+        saga_id: String,
         caller: &CallerContext,
     ) -> Result<(), String>;
     /// The instance signing key this substrate would derive for `service_id`
@@ -732,6 +746,30 @@ impl ControlPlaneService {
             ));
         }
 
+        // One rule, over the interfaces the manifest already declares. Sound
+        // only because `saga-undo-` is reserved (ADR-0023 §7, as amended): a
+        // component that exports it is unambiguously claiming a saga
+        // compensation, so a missing counterpart is a defect and never a
+        // legal business name.
+        for iface in &wasm_manifest.interfaces {
+            let Some(exports) = self.app_sandbox_engine.exported_functions(service_id, iface)
+            else {
+                continue;
+            };
+            for function in &exports {
+                let Some(forward) = compensated_operation(function) else { continue };
+                if !self.app_sandbox_engine.exports_function(service_id, iface, forward) {
+                    self.rollback_config_generation(service_id, new_gen).await;
+                    self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
+                    return Err(format!(
+                        "component exports '{function}' on '{iface}' but no '{forward}' beside \
+                         it: a saga compensation must name an operation this component actually \
+                         has"
+                    ));
+                }
+            }
+        }
+
         if let Err(e) =
             self.register_wasm_endpoints(service_id, wasm_manifest.interfaces.clone()).await
         {
@@ -943,6 +981,25 @@ impl OrchestratorInterface for ControlPlaneService {
     ) -> Result<(), String> {
         self.authorize_proxy_queue_write(&service_id, caller)?;
         self.proxy_queue_inspector()?.replay_dead_letter(&service_id, dead_letter_id).await
+    }
+
+    async fn sagas(
+        &self,
+        service_id: String,
+        caller: &CallerContext,
+    ) -> Result<Vec<SagaInfo>, String> {
+        self.authorize_proxy_queue_access(&service_id, caller)?;
+        self.proxy_queue_inspector()?.sagas(&service_id).await
+    }
+
+    async fn saga_compensate(
+        &self,
+        service_id: String,
+        saga_id: String,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        self.authorize_proxy_queue_write(&service_id, caller)?;
+        self.proxy_queue_inspector()?.rearm_saga(&service_id, &saga_id).await
     }
 
     async fn readyz(&self, service_id: String, caller: &CallerContext) -> Result<(), String> {
@@ -6279,6 +6336,223 @@ mod tests {
         );
     }
 
+    /// Shared harness for the saga compensation deploy-gate tests below --
+    /// the same construction every other test in this module repeats
+    /// inline, factored here only because this group needs it six times in
+    /// a row.
+    async fn saga_gate_test_service(
+        temp_dir: &std::path::Path,
+    ) -> (ControlPlaneService, Arc<SqliteStorageProvider>) {
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir, false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine = Arc::new(ContainerEngine::new("podman".to_string(), temp_dir, None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+        (service, storage_provider)
+    }
+
+    fn saga_gate_manifest(wat: &str, interfaces: Vec<String>) -> DeployManifest {
+        DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(wat.as_bytes().to_vec()),
+                hash: None,
+                interfaces,
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        }
+    }
+
+    /// Exports `saga-undo-reserve` with no `reserve` beside it -- the
+    /// defect the deploy gate exists to catch.
+    const WASM_UNDO_WITH_NO_FORWARD: &str = r#"
+(component
+  (core module $m (func (export "noop")))
+  (core instance $i (instantiate $m))
+  (func $noop (canon lift (core func $i "noop")))
+  (instance $interface (export "saga-undo-reserve" (func $noop)))
+  (export "test-interface" (instance $interface))
+)
+"#;
+
+    /// Exports both `reserve` and its compensation `saga-undo-reserve`.
+    const WASM_UNDO_WITH_FORWARD: &str = r#"
+(component
+  (core module $m
+    (func (export "noop_a"))
+    (func (export "noop_b")))
+  (core instance $i (instantiate $m))
+  (func $a (canon lift (core func $i "noop_a")))
+  (func $b (canon lift (core func $i "noop_b")))
+  (instance $interface
+    (export "reserve" (func $a))
+    (export "saga-undo-reserve" (func $b)))
+  (export "test-interface" (instance $interface))
+)
+"#;
+
+    /// Exports a plain `undo-last-update` -- an ordinary business verb, not
+    /// a saga compensation (`undo-` is not the reserved prefix).
+    const WASM_PLAIN_UNDO_PREFIX: &str = r#"
+(component
+  (core module $m (func (export "noop")))
+  (core instance $i (instantiate $m))
+  (func $noop (canon lift (core func $i "noop")))
+  (instance $interface (export "undo-last-update" (func $noop)))
+  (export "test-interface" (instance $interface))
+)
+"#;
+
+    #[tokio::test]
+    async fn deploy_refuses_a_component_whose_compensation_has_no_forward_operation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (service, _storage) = saga_gate_test_service(temp_dir.path()).await;
+        let manifest =
+            saga_gate_manifest(WASM_UNDO_WITH_NO_FORWARD, vec!["test-interface".to_string()]);
+        let result = service
+            .deploy("saga_missing_forward_svc".to_string(), manifest, &node_wide_caller("test"))
+            .await;
+        assert!(result.is_err(), "a saga-undo- export with no forward operation must fail deploy");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("saga-undo-reserve") && err.contains("no 'reserve' beside it"),
+            "expected the saga compensation gate error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deploy_accepts_a_component_exporting_both_halves() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (service, _storage) = saga_gate_test_service(temp_dir.path()).await;
+        let manifest =
+            saga_gate_manifest(WASM_UNDO_WITH_FORWARD, vec!["test-interface".to_string()]);
+        let result = service
+            .deploy("saga_both_halves_svc".to_string(), manifest, &node_wide_caller("test"))
+            .await;
+        assert!(result.is_ok(), "both halves present must deploy cleanly: {result:?}");
+    }
+
+    /// The false-refusal the reserved `saga-undo-` prefix exists to
+    /// prevent: `undo-last-update` is a legal business verb with no
+    /// `last-update` beside it, and must not be refused.
+    #[tokio::test]
+    async fn deploy_accepts_a_component_exporting_a_plain_undo_prefixed_function() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (service, _storage) = saga_gate_test_service(temp_dir.path()).await;
+        let manifest =
+            saga_gate_manifest(WASM_PLAIN_UNDO_PREFIX, vec!["test-interface".to_string()]);
+        let result = service
+            .deploy("saga_plain_undo_svc".to_string(), manifest, &node_wide_caller("test"))
+            .await;
+        assert!(result.is_ok(), "a plain undo- business verb must not be refused: {result:?}");
+    }
+
+    /// The common case: a service with no compensations at all deploys
+    /// cleanly, with no declaration required anywhere.
+    #[tokio::test]
+    async fn deploy_accepts_a_component_with_no_compensations_at_all() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (service, _storage) = saga_gate_test_service(temp_dir.path()).await;
+        let manifest = saga_gate_manifest(
+            WASM_WITHOUT_AUTHORIZE_ROWS_EXPORT,
+            vec!["test-interface".to_string()],
+        );
+        let result = service
+            .deploy("saga_no_compensations_svc".to_string(), manifest, &node_wide_caller("test"))
+            .await;
+        assert!(
+            result.is_ok(),
+            "a component with no compensations must deploy cleanly: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_compensation_pairing_rolls_back_the_config_generation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (service, storage) = saga_gate_test_service(temp_dir.path()).await;
+        let manifest =
+            saga_gate_manifest(WASM_UNDO_WITH_NO_FORWARD, vec!["test-interface".to_string()]);
+        let result = service
+            .deploy("saga_rollback_svc".to_string(), manifest, &node_wide_caller("test"))
+            .await;
+        assert!(result.is_err());
+        assert!(
+            storage.get_latest_config_generation("saga_rollback_svc").await.unwrap().is_none(),
+            "a refused saga compensation pairing must roll back the config generation it wrote \
+             before validating exports"
+        );
+    }
+
+    /// A known limit, pinned so the behavior is a choice and not an
+    /// accident: `exported_functions` returns `None` for an interface the
+    /// manifest never declared, which turns a declared-but-absent
+    /// compensation pairing into a silent pass rather than a refusal.
+    /// Backlog: "A declared interface that is not a component export is not
+    /// refused at deploy".
+    #[tokio::test]
+    async fn a_compensation_on_an_interface_the_manifest_does_not_declare_is_not_examined() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (service, _storage) = saga_gate_test_service(temp_dir.path()).await;
+        // The component exports `saga-undo-reserve` with no `reserve`, but
+        // the manifest's own `interfaces` list never names `test-interface`
+        // -- so the gate's loop (which walks only declared interfaces)
+        // never looks at it.
+        let manifest = saga_gate_manifest(WASM_UNDO_WITH_NO_FORWARD, vec![]);
+        let result = service
+            .deploy("saga_undeclared_iface_svc".to_string(), manifest, &node_wide_caller("test"))
+            .await;
+        assert!(
+            result.is_ok(),
+            "a compensation on an undeclared interface is not examined by this gate: {result:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_undeploy_removes_fdae_policy() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -9134,6 +9408,8 @@ mod tests {
         dead: std::sync::Mutex<Vec<DeadLetterInfo>>,
         replayed: std::sync::Mutex<Vec<(String, u64)>>,
         delivered: std::sync::atomic::AtomicUsize,
+        sagas: std::sync::Mutex<Vec<SagaInfo>>,
+        rearmed: std::sync::Mutex<Vec<(String, String)>>,
     }
 
     #[async_trait::async_trait]
@@ -9160,6 +9436,17 @@ mod tests {
                 idempotency_key: letter.idempotency_key,
                 attempts: letter.attempts,
             });
+            Ok(())
+        }
+
+        async fn sagas(&self, _service_id: &str) -> Result<Vec<SagaInfo>, String> {
+            Ok(self.sagas.lock().unwrap().clone())
+        }
+
+        async fn rearm_saga(&self, service_id: &str, saga_id: &str) -> Result<(), String> {
+            // Re-arm only: walking the saga here would be doing the
+            // delivery itself, which is exactly what must not happen.
+            self.rearmed.lock().unwrap().push((service_id.to_string(), saga_id.to_string()));
             Ok(())
         }
     }
@@ -9321,6 +9608,105 @@ mod tests {
             "a read grant must not let a caller make a service emit calls"
         );
         assert_eq!(queues.dead.lock().unwrap().len(), 1);
+    }
+
+    fn a_saga(saga_id: &str, state: &str) -> SagaInfo {
+        SagaInfo {
+            saga_id: saga_id.to_string(),
+            name: "checkout".to_string(),
+            state: syneroym_rpc::SagaState::Compensating,
+            steps: 2,
+            compensated_steps: 1,
+            created_at: 1_700_000_000_000,
+            deadline_at: 1_700_003_600_000,
+            last_error: Some(state.to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn sagas_lists_what_the_services_log_holds() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let queues = Arc::new(FakeProxyQueues::default());
+        queues.sagas.lock().unwrap().push(a_saga("saga-1", "unreachable"));
+        let service = service_with_proxy_queues(temp_dir.path(), &queues).await;
+
+        let listed =
+            service.sagas("svc-a".to_string(), &status_capable_caller("owner")).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].saga_id, "saga-1");
+        assert_eq!(listed[0].name, "checkout");
+    }
+
+    #[tokio::test]
+    async fn sagas_is_refused_without_a_status_grant() {
+        use syneroym_rpc::{AuthLevel, SessionContext};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let queues = Arc::new(FakeProxyQueues::default());
+        queues.sagas.lock().unwrap().push(a_saga("saga-1", "unreachable"));
+        let service = service_with_proxy_queues(temp_dir.path(), &queues).await;
+
+        let ungranted = CallerContext {
+            caller_did: "did:key:zStranger".to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: "did:key:zStranger".to_string(),
+                ..Default::default()
+            },
+            auth: AuthLevel::Delegated,
+            proof: None,
+        };
+
+        assert!(service.sagas("svc-a".to_string(), &ungranted).await.is_err());
+    }
+
+    /// `saga-compensate` causes calls to leave the node, so it takes the
+    /// write gate, not the listing's read gate -- the same rule
+    /// `proxy-replay` follows (B2's F7).
+    #[tokio::test]
+    async fn saga_compensate_is_not_reachable_with_only_the_read_grant() {
+        use syneroym_rpc::{AuthLevel, Capability, SessionContext};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let queues = Arc::new(FakeProxyQueues::default());
+        queues.sagas.lock().unwrap().push(a_saga("saga-1", "unreachable"));
+        let service = service_with_proxy_queues(temp_dir.path(), &queues).await;
+
+        let read_only = CallerContext {
+            caller_did: "did:key:zReader".to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: "did:key:zReader".to_string(),
+                capabilities: vec![Capability {
+                    with: ResourceUri::substrate("did:key:zTestNode"),
+                    can: Ability(Ability::ORCHESTRATOR_STATUS.to_string()),
+                    caveats: None,
+                }],
+                ..Default::default()
+            },
+            auth: AuthLevel::Delegated,
+            proof: None,
+        };
+
+        assert!(service.sagas("svc-a".to_string(), &read_only).await.is_ok());
+        assert!(
+            service
+                .saga_compensate("svc-a".to_string(), "saga-1".to_string(), &read_only)
+                .await
+                .is_err(),
+            "a read grant must not let a caller make a service emit undos"
+        );
+        assert!(queues.rearmed.lock().unwrap().is_empty());
+
+        service
+            .saga_compensate(
+                "svc-a".to_string(),
+                "saga-1".to_string(),
+                &status_capable_caller("owner"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(queues.rearmed.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

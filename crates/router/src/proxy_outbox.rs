@@ -39,13 +39,13 @@ use syneroym_core::local_registry::EndpointRegistry;
 use syneroym_data_db::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::{
-    DeadLetterInfo, ProxyError, ProxyQueueInspector, QueuedCall, QueuedCallInfo, QueuedTarget,
+    DeadLetterInfo, ProxyError, QueuedCall, QueuedCallInfo, QueuedTarget,
     SERVICE_NOT_FOUND_RPC_CODE,
 };
 use tokio::task;
 use tracing::warn;
 
-use crate::call_dedup::ASYNC_DB_NAME;
+use crate::{call_dedup::ASYNC_DB_NAME, service_async_db::async_db_location};
 
 /// Ceiling on one queued call's stored payload. The params are the
 /// guest's own data and travel on every attempt.
@@ -189,14 +189,8 @@ impl ProxyOutbox {
         if let Some(queue) = self.cached_queue(service_id)? {
             return Ok(queue);
         }
-        let dek = self
-            .storage_provider
-            .load_service_dek(service_id, &self.key_store)
+        let (dir, dek) = async_db_location(&self.storage_provider, &self.key_store, service_id)
             .await
-            .map_err(|e| ProxyError::Internal(format!("outbox unavailable: {e}")))?;
-        let dir = self
-            .storage_provider
-            .service_db_dir(service_id)
             .map_err(|e| ProxyError::Internal(format!("outbox unavailable: {e}")))?;
         let config = self.config.clone();
         let queue = task::spawn_blocking(move || -> anyhow::Result<Queue> {
@@ -393,9 +387,13 @@ impl ProxyOutbox {
 /// `status`. These verbs deliberately do not scan the filesystem for queue
 /// files, so an undeployed service's leftover `async.db` is not listable --
 /// and does not need to be, since nothing will ever drain it.
-#[async_trait::async_trait]
-impl ProxyQueueInspector for ProxyOutbox {
-    async fn queued_calls(&self, service_id: &str) -> Result<Vec<QueuedCallInfo>, String> {
+///
+/// Plain inherent methods, not a `ProxyQueueInspector` impl: that impl now
+/// lives on `ProxyState`, which bundles this outbox with the saga store
+/// behind one handle -- a service's durable proxy state is one question to
+/// an operator, not two.
+impl ProxyOutbox {
+    pub async fn queued_calls(&self, service_id: &str) -> Result<Vec<QueuedCallInfo>, String> {
         let Some(queue) = self.existing_queue_for(service_id).await.map_err(|e| e.to_string())?
         else {
             return Ok(Vec::new());
@@ -414,7 +412,7 @@ impl ProxyQueueInspector for ProxyOutbox {
             .collect())
     }
 
-    async fn dead_letters(&self, service_id: &str) -> Result<Vec<DeadLetterInfo>, String> {
+    pub async fn dead_letters(&self, service_id: &str) -> Result<Vec<DeadLetterInfo>, String> {
         let Some(queue) = self.existing_queue_for(service_id).await.map_err(|e| e.to_string())?
         else {
             return Ok(Vec::new());
@@ -435,7 +433,7 @@ impl ProxyQueueInspector for ProxyOutbox {
             .collect())
     }
 
-    async fn replay_dead_letter(&self, service_id: &str, id: u64) -> Result<(), String> {
+    pub async fn replay_dead_letter(&self, service_id: &str, id: u64) -> Result<(), String> {
         let Some(queue) = self.existing_queue_for(service_id).await.map_err(|e| e.to_string())?
         else {
             return Err(format!("service '{service_id}' has no durable proxy queue"));

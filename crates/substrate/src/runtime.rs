@@ -283,7 +283,7 @@ impl RuntimeServices {
                 config.roles.app_sandbox.as_ref().map_or(5, |role| role.queue_tick_secs).max(1),
             );
             let cancel = self.proxy_outbox_cancel.clone();
-            tokio::spawn(async move { proxy.run_outbox_worker(tick, cancel).await })
+            tokio::spawn(async move { proxy.run_async_worker(tick, cancel).await })
         });
 
         #[cfg(feature = "community_registry")]

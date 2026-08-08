@@ -498,6 +498,22 @@ pub struct AppSandboxRole {
     /// one target: a permanently broken recipient must not be able to
     /// evict every other conversation's dead letters.
     pub queue_dlq_max_rows: u32,
+    /// How many sagas one service may have open at once. Refuses `begin`
+    /// above it: an open saga is work somebody expects to finish, so the
+    /// bound refuses rather than evicts.
+    pub saga_max_open: u32,
+    /// How many steps one saga may record. Refuses `step` above it, for the
+    /// same reason as `saga_max_open`.
+    pub saga_max_steps: u32,
+    /// Terminal (`compensated`/`failed`) saga rows are pruned oldest-first
+    /// past this count, exactly as `queue_dlq_max_rows` prunes dead letters.
+    pub saga_max_terminal_rows: u32,
+    /// A `begin` with no explicit deadline takes this many seconds.
+    pub saga_default_deadline_secs: u64,
+    /// The ceiling a guest may request at `begin`. Above it, `begin` refuses
+    /// rather than clamping -- a workflow must not silently run under a
+    /// deadline it did not ask for.
+    pub saga_max_deadline_secs: u64,
 }
 
 /// The guest proxy outbox lives wherever a guest does, so its knobs live on
@@ -523,6 +539,29 @@ const fn default_proxy_queue_visibility_timeout_secs() -> u64 {
 }
 const fn default_proxy_queue_dlq_max_rows() -> u32 {
     1000
+}
+/// One workflow per open saga; a service with 64 in flight has a design
+/// problem, not a capacity one.
+const fn default_saga_max_open() -> u32 {
+    64
+}
+const fn default_saga_max_steps() -> u32 {
+    64
+}
+/// The same number `queue_dlq_max_rows` uses, for the same
+/// operator-visibility reason.
+const fn default_saga_max_terminal_rows() -> u32 {
+    1000
+}
+/// An hour: long enough for a human-paced multi-provider workflow, short
+/// enough that a crashed one compensates the same day.
+const fn default_saga_default_deadline_secs() -> u64 {
+    3600
+}
+/// A day. Both are honest first guesses, not measurements -- config fields,
+/// so a deployment that finds them wrong changes them without a rebuild.
+const fn default_saga_max_deadline_secs() -> u64 {
+    86400
 }
 
 impl AppSandboxRole {
@@ -550,6 +589,11 @@ impl Default for AppSandboxRole {
             queue_max_backoff_secs: default_proxy_queue_max_backoff_secs(),
             queue_visibility_timeout_secs: default_proxy_queue_visibility_timeout_secs(),
             queue_dlq_max_rows: default_proxy_queue_dlq_max_rows(),
+            saga_max_open: default_saga_max_open(),
+            saga_max_steps: default_saga_max_steps(),
+            saga_max_terminal_rows: default_saga_max_terminal_rows(),
+            saga_default_deadline_secs: default_saga_default_deadline_secs(),
+            saga_max_deadline_secs: default_saga_max_deadline_secs(),
         }
     }
 }

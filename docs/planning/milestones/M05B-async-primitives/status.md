@@ -4,9 +4,13 @@
 [ADR-0023](../../../decisions/0023-durable-async-primitives.md) · **Plan:**
 [implementation-plan.md](implementation-plan.md)
 
-**Overall:** 🚧 **B1 complete 2026-08-05**, all gates green (evidence below).
-ADR-0023 accepted 2026-08-04. **B2 complete 2026-08-05.** **B3 has a full
-plan as of 2026-08-06** (not started); B4 remains sketch only.
+**Overall:** ✅ **Milestone complete 2026-08-07.** B1 complete 2026-08-05, B2
+complete 2026-08-05, B3 complete 2026-08-06, **B4 complete 2026-08-07** — all
+gates green (evidence below). ADR-0023 accepted 2026-08-04. `[PLT-ASY]` and
+`[PRD-OFF]` both move Pending → Complete in the traceability matrix (scoped
+to the four mechanisms this milestone builds; long-running tasks stay
+deferred to M5's final phase, per B5's own row in
+[deferred-backlog.md](../../deferred-backlog.md) §8).
 
 **Plan layout.** [implementation-plan.md](implementation-plan.md) is milestone
 level: the split call, cross-cutting findings and decisions, slice sequence,
@@ -23,8 +27,8 @@ where every single-slice plan in that milestone sits between 990 and 2,143.
 |---|---|---|---|
 | B1 | Queue crate, supervisor delivery outbox, DLQ with alert and operator surface. **Closes [M05A slice A6](../M05A-app-supervisor/task.md)** | ✅ **Complete (2026-08-05)** — evidence below | ADR-0023 accepted |
 | B2 | Guest outbox and proxy DLQ: idempotency key, `enqueue`, receiver-side dedup | ✅ **Complete (2026-08-05)** — all five phases — see "B2 — delivery" below. Plan: [slice-b2-implementation-plan.md](slice-b2-implementation-plan.md) (2026-08-05, revised same day after review). Its `§0` narrows the slice in four places and its `§5` carries six document corrections | B1 |
-| B3 | Scheduled tasks: manifest surface, evaluation on the supervisor's pass tick, member selection, overlap prevention | 📋 **Planned (2026-08-06), not started.** Plan: [slice-b3-implementation-plan.md](slice-b3-implementation-plan.md). Its `§0.1` adds a hop the milestone plan assumed already existed (nothing in the tree can invoke a method on a deployed service); its `§0.5` turns the requester's "skip a missed tick" answer into a rule the naive implementation does not produce | B1 |
-| B4 | Saga compensations: the `undo-<operation>` convention, deploy-time check, step log, reverse walk | 📋 Planned (sketch only; owes its own `§0`) | B1 |
+| B3 | Scheduled tasks: manifest surface, evaluation on the supervisor's pass tick, member selection, overlap prevention | ✅ **Complete (2026-08-06)**, review response 2026-08-07 — see "B3 — delivery" and "B3 — review response" below. Plan: [slice-b3-implementation-plan.md](slice-b3-implementation-plan.md). Its `§0.1` adds a hop the milestone plan assumed already existed (nothing in the tree can invoke a method on a deployed service); its `§0.5` turns the requester's "skip a missed tick" answer into a rule the naive implementation does not produce | B1 |
+| B4 | Saga compensations: the `saga-undo-<operation>` convention (a reserved prefix), a deploy-time export check with no manifest declaration, a durable step log, and a reverse walk triggered only by a guest's own `compensate` or an expired deadline | ✅ **Complete (2026-08-07)** — all five phases — see "B4 — saga compensations" below. Plan: [slice-b4-implementation-plan.md](slice-b4-implementation-plan.md). Its `§0` finds the milestone plan and ADR-0023 §7 both describe a manifest-declared convention with a bare `undo-` marker; both are wrong in ways that change the shape of the slice, recorded there and amended in the ADR | B1 |
 | ~~B5~~ | ~~Long-running tasks~~ | **Deferred out of this milestone (2026-08-04)** — [deferred-backlog.md](../../deferred-backlog.md) §8, target M5 final phase | — |
 
 **B5 deferred, decided with the requester before any code was written.** It is
@@ -918,3 +922,315 @@ scheduled work is argued, not tested). Two amended: the missed-tick row now
 states the grace window's real rule, and the `run-scheduled`-is-not-verified
 row records that the arbitrary `(interface, method)` pair a grantee can name
 is now bounded to interfaces a locally hosted service actually exports.
+
+---
+
+## B4 — saga compensations (2026-08-07), complete
+
+**All five phases of the slice plan are complete and verified against every
+gate.** Two decisions were taken with the requester before drafting the
+phases (§4 of the slice plan) and both landed exactly as decided: no
+manifest declaration of saga participation, and the marker is
+`saga-undo-<method>`, not a bare `undo-<method>`. Everything else shipped as
+planned; no design decision was reversed during implementation, though one
+real bug was caught and fixed before it reached a test run (below).
+
+**What shipped, by phase.**
+
+- **Phase 1 — the convention and its deploy-time gate.**
+  `SAGA_UNDO_PREFIX`/`saga_undo_name`/`compensated_operation`
+  ([app_orchestration/saga.rs](../../../../crates/app_orchestration/src/saga.rs)).
+  `AppSandboxEngine::exports_function`/`exported_functions`
+  ([sandbox_wasm/engine.rs](../../../../crates/sandbox_wasm/src/engine.rs)),
+  generalising `exports_authorize_rows` into a one-line caller so its two
+  existing call sites and the `dummy_sandbox` mirror did not move. One new
+  block in `deploy_wasm_service`
+  ([control_plane/orchestration.rs](../../../../crates/control_plane/src/service/orchestration.rs)):
+  every `saga-undo-<x>` a manifest's declared interfaces export must have an
+  `<x>` beside it, or the deploy is rolled back exactly as the stage-4 gate
+  rolls back. No manifest type, no wire change, no `ServiceConfig`/
+  `WasmManifest` struct-literal sweep.
+- **Phase 2 — the durable step log.**
+  [async_queue/saga.rs](../../../../crates/async_queue/src/saga.rs):
+  `sagas`/`saga_steps` tables, `SagaLog` with `begin`/`record_step_intent`/
+  `record_step_outcome`/`commit`/`mark_compensating`/`due_compensations`/
+  `abandoned`/`next_uncompensated_step`/`begin_undo_attempt`/
+  `mark_step_compensated`/`fail_compensation`/`finish_compensation`/
+  `status`/`list`/`rearm`/`open_count`/`drop_all_for_undeployed`. Intent is
+  written before the forward call, outcome after (§0.5) — the walk
+  compensates `done` **and** `pending` steps. Four bounds (§0.10): open
+  sagas and steps-per-saga refuse past their cap, terminal rows and the
+  per-step payload evict/refuse the same way B1's dead letters do. Five new
+  `AppSandboxRole` fields (`saga_max_open`, `saga_max_steps`,
+  `saga_max_terminal_rows`, `saga_default_deadline_secs`,
+  `saga_max_deadline_secs`); `step_timeout_ms` is derived from
+  `dispatch_epoch_timeout_secs`, not configured.
+- **Phase 3 — the guest surface.** One new WIT interface,
+  `syneroym:proxy/saga`
+  ([proxy.wit](../../../../crates/wit_interfaces/wit/proxy/proxy.wit)):
+  `begin`/`step`/`commit`/`compensate`/`status`, imported into
+  `host-environment`. `SagaBegin`/`SagaStepRequest`/`SagaState`/`SagaInfo`
+  and five new `ServiceProxy` methods, each with the same refusing default
+  body `enqueue` already has
+  ([rpc/proxy.rs](../../../../crates/rpc/src/proxy.rs)).
+  `service_async_db::async_db_location`
+  ([router/service_async_db.rs](../../../../crates/router/src/service_async_db.rs))
+  extracts the four genuinely identical lines `ProxyOutbox::queue_for` and
+  `CallDedupGuard::store_for` already duplicated — resolving `(directory,
+  dek)` for one service's async database — returning `anyhow::Result`
+  rather than a `ProxyError` so each owner keeps its own refusal semantics
+  (`CallDedupGuard` fails closed with `PermissionDenied`; `ProxyOutbox`/
+  `SagaStore` use `Internal`). **Deviation from the plan's own pseudocode**:
+  the plan's sketch signature returned `ProxyError` directly, which would
+  have silently unified `CallDedupGuard`'s fail-closed semantics with the
+  other two owners' — not attempted, and noted here rather than left to be
+  discovered by whoever reads the diff next. `SagaStore`
+  ([router/saga.rs](../../../../crates/router/src/saga.rs)) mirrors
+  `ProxyOutbox`'s cache/single-flight/`existing_log_for` shape exactly.
+  `saga_begin_impl`/`saga_step_impl`/`saga_commit_impl`/
+  `saga_compensate_impl`/`saga_status_impl`
+  ([router/proxy.rs](../../../../crates/router/src/proxy.rs)) — `step`
+  carries all three of `enqueue`'s refusals (node-level target, self-target,
+  no unexpired instance certificate at `begin`) plus a certificate-outlives-
+  deadline warning. `step`'s own call budget derives from the guest's epoch
+  minus this function's own measured bookkeeping, floored at
+  `MIN_STEP_CALL_BUDGET_MS` (500ms), never the proxy's 30s default.
+  `syneroym:proxy/saga::Host` impl in
+  [sandbox_wasm/host_capabilities.rs](../../../../crates/sandbox_wasm/src/host_capabilities.rs),
+  wired into the linker in `engine.rs`.
+- **Phase 4 — the reverse walk and the operator surface.**
+  `sweep_sagas_once`/`compensate_next_step`
+  ([router/proxy.rs](../../../../crates/router/src/proxy.rs)): one undo per
+  saga per tick, newest step first, an idempotency key of
+  `saga:<saga-id>:<idx>` the host mints itself, `merge_forward_result`
+  implementing §0.7's three-case rule (object gains a member, array gains an
+  element, null/scalar is wrapped) with no `forward-result` sent at all when
+  the forward call produced none. `run_outbox_worker` renamed
+  `run_async_worker`, now draining outboxes and sweeping sagas in the same
+  tick, still racing cancellation into the work rather than merely against
+  it. `ProxyState`
+  (`outbox`+`sagas` behind one `ProxyQueueInspector`, D-B4-19) is a field
+  `ProxyRouter` itself owns and rebuilds whenever either half changes, so
+  the control plane's `OnceLock<Weak<dyn ProxyQueueInspector>>` downgrades
+  from an `Arc` with a real long-lived strong owner — the same property
+  `outbox` alone already had, extended rather than re-derived. **Landed
+  narrower than the plan's own sketch**: rather than replacing
+  `ProxyRouter`'s existing `outbox`/`sagas` `Option` fields with a single
+  `Option<Arc<ProxyState>>` (touching ~18 internal call sites for no
+  behavioral difference), `ProxyState` is a third, derived field that
+  bundles clones of the same two `Arc`s purely as the `Weak`'s anchor.
+  `ProxyOutbox`'s own `ProxyQueueInspector` impl was converted to plain
+  inherent methods (`queued_calls`/`dead_letters`/`replay_dead_letter`),
+  since the trait impl now lives on `ProxyState` only. Two new
+  `orchestrator` verbs, `sagas`/`saga-compensate`
+  ([control-plane.wit](../../../../crates/wit_interfaces/wit/control-plane/control-plane.wit)),
+  gated exactly like `proxy-outbox`/`proxy-replay` (read on
+  `orchestrator/status`, write on `orchestrator/deploy` since a re-arm
+  causes calls to leave the node). `SyneroymClient::sagas`/
+  `saga_compensate` ([sdk/lib.rs](../../../../crates/sdk/src/lib.rs));
+  `roymctl svc sagas|saga-compensate`
+  ([roymctl/commands/svc.rs](../../../../apps/roymctl/src/commands/svc.rs)).
+  A "Compensating a workflow (sagas)" subsection in
+  [developer-guide.md](../../../../docs/developer-guide.md), after
+  "Scheduling a service", matching its shape.
+- **Phase 5 — the fixture and the e2e.** `test-components/saga-test`, one
+  component exporting both `saga-driver` (`begin-workflow`/`add-step`/
+  `finish-workflow`) and `saga-participant` (`reserve`/`saga-undo-reserve`/
+  `ledger`), deployed twice under two service ids — the same "one component,
+  two roles" shape `proxy-test` already established. The participant's
+  ledger is a JSON *object* payload (`{"log": "a,b,c"}`), never a bare
+  scalar, for the reason B3's own fixture already found (SQLite's NUMERIC
+  affinity on a `JSON`-declared column). Wired into the root `Cargo.toml`
+  exclude list, `core/test_constants.rs`, and
+  `.github/actions/ci-build-and-test/action.yml` — which also picks up
+  `scheduled-test`'s own pre-existing omission from that list (B3 built the
+  fixture but never added it to the CI loop) in the same commit.
+  [saga_e2e.rs](../../../../crates/substrate/tests/saga_e2e.rs), two tests
+  against two real substrates, both failing loudly (not skipping) when the
+  fixture artifact is not built, `Node::boot_locked`/`Node::unlock`
+  splitting `proxy_outbox_e2e.rs`'s own unconditional-KEK-injection `boot`
+  so a restart is observable *before* the vault unlocks.
+
+**A real bug found and fixed while writing phase 3's own router tests, not
+by the plan's own review.** `saga_begin_impl` passed `deadline_ms` (a
+*duration*) directly as `SagaLog::begin`'s `deadline_at` parameter, which the
+schema stores as an absolute timestamp `SagaLog::abandoned` later compares
+against `now`. A duration of ~3.6M (ms) stored as an absolute instant reads
+as a moment in 1970, so `deadline_at - created_at` came out as a large
+negative number instead of the requested window — caught immediately by
+`a_deadline_of_none_takes_the_node_default` asserting the exact difference
+rather than merely "no error", before any e2e ever ran. Fixed by computing
+`deadline_at = now.saturating_add(deadline_ms)` once and using that same
+absolute value both for the stored row and for the certificate-outlives-
+deadline warning check.
+
+**Three test-design corrections found while writing the phase-4 walk
+tests, each caught by a failing assertion rather than assumed correct.**
+
+- `disposition_of` (B2's own classifier, unmodified) treats a definitive
+  `Callee` error as **terminal** by default; only specific reserved codes
+  (`CALL_ALREADY_RUNNING_RPC_CODE`, `CALL_RESULT_NOT_RETAINED_RPC_CODE`,
+  and the shared "not found" code) are retryable. A retryable-undo-failure
+  test that simply configured the fixture target to answer with a generic
+  callee error was exercising the terminal path instead; fixed by
+  re-registering the target as a `WasmChannel` with no sandbox engine
+  behind this test's router, which produces `ProxyError::Internal`
+  ("sandbox engine unavailable") — a genuine `Disposition::Retry` case, the
+  same one B2's own outbox worker treats as a shutdown-window state rather
+  than a settled refusal.
+- `CALL_ALREADY_RUNNING_RPC_CODE` and `CALL_RESULT_NOT_RETAINED_RPC_CODE`
+  are not interchangeable: only the latter classifies `Delivered`. A test
+  meant to prove "the receiver already ran this and it counts as
+  compensated" had used the former, which is `Retry`, not `Delivered`.
+- `SagaLog::finish_compensation` marks a saga `compensated` and drops only
+  its **step** rows — the saga row itself survives as a terminal listing,
+  the same shape `dead_letters` survives a completed delivery, until pruned
+  past `saga_max_terminal_rows`. Two tests asserted `saga_status` returns
+  `Err` once compensation finished; both now assert `Ok` with
+  `SagaState::Compensated`.
+
+None of the three would have been caught without actually running the
+tests and reading why they failed — each is recorded here per the
+project's "reversal is worth recording" norm, not because any was
+surprising in hindsight.
+
+**Verification evidence.**
+
+- Test attributes added, diffed against `main`: 3 in the new
+  `app_orchestration/saga.rs`, 22 in the new `async_queue/saga.rs`, 9 in
+  `control_plane/service/orchestration.rs`, 25 in `router/proxy.rs`
+  (saga-specific; router's own suite went 139 → 165), 6 in
+  `sandbox_wasm/host_capabilities.rs`, 2 in `roymctl/tests/cli_args.rs`, 2
+  e2e in the new `crates/substrate/tests/saga_e2e.rs` — **67 net new unit
+  tests plus 2 e2e**.
+- `cargo +nightly fmt --all`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace --no-fail-fast` (sandboxed): the documented
+  pre-existing sandbox-bind category only (`syneroym-core --lib`'s HTTP
+  probe tests, `router --test native_dispatch_identity`, every
+  `crates/substrate/tests/*_e2e.rs` target, `sdk --test connect_timeout`,
+  `community-registry`, `coordinator-iroh` ×3, `mqtt-broker`), extended in
+  the expected way to include this slice's own `saga_e2e` (needs two real
+  port-bound substrates, same as every other `crates/substrate/tests/
+  *_e2e.rs` file). Every crate this slice touches is fully green in
+  isolation: `syneroym-app-orchestration`, `syneroym-async-queue`,
+  `syneroym-router` (165/165), `syneroym-rpc`, `syneroym-sandbox-wasm`,
+  `syneroym-sdk`, `roymctl` — `syneroym-control-plane` green apart from the
+  same 7 pre-existing HTTP-probe/`status_*` failures B1-B3 already
+  documented.
+- `cargo test -p syneroym-router --test proxy_dispatch`: 8/8 green
+  **without rebuilding the `proxy-test` fixture**, confirming the
+  additive-WIT claim (a component whose own world does not import `saga`
+  links exactly as it did before this slice, since the linker may provide
+  more than a component imports).
+- `mise run test:e2e` (Playwright, sandbox disabled for real port binds):
+  12/12, unchanged from before this slice — B4 adds no browser-visible
+  surface.
+- `saga_e2e` (sandbox disabled, real port binds): both tests green
+  individually after the two fixes above, then **3/3 consecutive runs**
+  green for the pair (~77-79s combined each run).
+
+**Backlog rows added** (this slice's own choices, per §5 of the slice plan,
+all in [deferred-backlog.md](../../deferred-backlog.md) §8): a
+dead-lettered queued call cannot trigger a compensation; a saga step's own
+proxy dead letter is replayable outside its saga; the deploy gate checks
+existence, not shape; a service cannot declare that it intends to be
+compensable; a saga step's target is not checked for a compensation at call
+time; a guest cannot read why a compensation failed beyond `last-error`; no
+partial or per-step re-arm; a third copy of the per-service `async.db` open
+was avoided but not removed; a saga's deadline cannot be extended; a saga
+step cannot target the driver's own service; `proxy.call`'s 30-second
+default sits inside a 5-second guest epoch (pre-existing, not fixed here);
+the step budget's one-second margin is a guess, not a measurement; a
+declared interface that is not a component export is not refused at
+deploy; the outbox's own per-service open is a silent skip, same as the
+saga sweep's was before this slice fixed its own copy; `test-components`
+are still enumerated by hand in CI. `[PLT-ASY]` and `[PRD-OFF]` marked
+Complete in the traceability matrix; ADR-0023 §7 amended with the four
+corrections a participant author needs to know; `system-architecture.md`
+and `system-requirements-spec.md` `[PLT-ASY]` sections each carry a dated
+implementation-status note, matching the Universal Proxy note's own shape.
+
+---
+
+## B4 — review response (2026-08-07)
+
+An independent review of the shipped commit raised 13 findings: 4 high, 6
+medium, 3 low. Each was checked against the source. **11 fixed, 2 pushed
+back with reasoning** — one classification change the review implied would
+have weakened a property the outbox already relies on, and one asymmetry
+turned out to be an existing, deliberate B2 convention rather than a defect
+this slice introduced. **Nine of the eleven fixes carry a test that fails
+without them**, verified by reverting each fix in isolation and re-running.
+Two do not, and are named rather than glossed over: SAGA-06 (no metrics
+assertion harness exists anywhere in this crate) and SAGA-07 (the test
+double records what it was called with, not how long the caller was
+willing to wait, so the timeout budget itself is argued from the code, not
+proven by a failing test). SAGA-10 was flagged the same way in an earlier
+pass of this review and has since been closed the same way the other nine
+were — see its row below.
+
+### High
+
+| # | Finding | Disposition |
+|---|---|---|
+| SAGA-01 | An undo whose target resolves to nobody is retried for the full budget, not failed terminally | **Fixed.** Real: both the unreadable-stored-target branch and the unresolvable-dependency branch called `fail_saga_step` (`terminal = false`) despite the adjacent comment already saying the case is "terminal on its own terms," so a dependency bound to nobody spent the full ~10-hour attempt budget instead of failing at once. Both now call `fail_terminal_saga_step`. Test: `a_dependency_bound_to_nobody_fails_the_compensation_without_retrying` (named exactly as the slice plan's own missing evidence named it). |
+| SAGA-02 | A step the walk already compensated can be reset to `done` by its own in-flight forward call | **Fixed.** Real: `record_step_outcome` had no `WHERE state = 'pending'` guard, so a forward call still in flight when a deadline (or a concurrent `compensate`) started the walk could overwrite an already-`compensated` row back to `done` after the walk moved on, costing a spurious re-send and making `compensated_steps` count backwards. The update is now guarded to `AND state = 'pending'`; a late-arriving result on an already-decided step is a no-op, not an overwrite. Test: `a_late_arriving_forward_result_does_not_revert_an_already_compensated_step`, reproduced deterministically against the log rather than by racing two real tasks (an in-flight forward call and an in-flight step-log write on the same row do not need two live tasks to prove — the row's own state is the whole story). Verified to actually fail without the fix: reverting the guard turns the saga's final state from `Compensated` to stuck `Compensating`, the exact defect this finding described. |
+| SAGA-03 | One tick where a service is missing from the endpoint registry deletes every saga it owns | **Fixed, taking the review's first suggested option.** Real and the most serious of the four: `sweep_sagas_once` rebuilds `deployed` fresh from `get_all_endpoints()` every tick, and undeploy removes a service's endpoints one interface at a time, so a service mid-redeploy — or one whose endpoint record has not yet re-propagated — could be observed absent for exactly one tick and have its saga log unconditionally, permanently dropped. The sweep now requires two *consecutive* absent ticks (`saga_undeploy_candidates`, cleared the moment the service is seen deployed again) before it drops anything; the outbox's own weaker one-tick rule is left alone, since it only completes not-yet-delivered intent, which is recoverable, where a dropped saga log is not. Tests: `a_service_that_reappears_between_ticks_keeps_its_sagas` (the regression case), `an_undeployed_services_sagas_are_dropped_rather_than_compensated` (updated to assert the first sweep changes nothing and the second one drops). |
+| SAGA-04 | Both end-to-end cases pass green when the fixture component was never built | **Fixed.** Real, and the sharpest finding: both tests skipped silently (`eprintln!` + `return`) on a missing `saga-test` artifact, the exact opposite of what the slice plan and its own module doc claimed shipped. Rewritten to the `scheduled_task_e2e.rs` pattern: `fail_if_fixture_missing()` asserts the artifact path exists before anything else runs. Both tests now fail loudly, not skip, and both were re-verified green against the real fixture (3/3 consecutive runs, ~79s each — see verification evidence below). |
+
+### Medium
+
+| # | Finding | Disposition |
+|---|---|---|
+| SAGA-05 | A missing compensation is classified retryable, so the deploy gate's known blind spot takes ten hours to surface | **Pushed back on the code change; fixed the documentation.** `disposition_of` classifies the wire code a missing `saga-undo-<x>` export produces the same as "service not found" (`Retry`), and that classification is correct on its own terms — the code is shared with a node mid-restart republishing its endpoint before its services finish coming up, and the comment on `disposition_of` already explains why treating that as terminal would fail a saga during exactly the restart window the queue exists to survive. Reclassifying it would trade a documented-and-tested restart-tolerance property (the outbox's own equivalent case) for faster failure of a narrower one, and there is no way to tell the two apart from the wire code alone without a deeper, cross-crate change to `sandbox_wasm`/`rpc` (a distinct "no such method" error shape) — out of proportion for a review-response pass. What was genuinely wrong: the slice plan's own §0.4a argument for skipping the manifest declaration reads as if "the saga reaches `failed`" happens promptly, when it actually takes the full retry window. Corrected in both the plan doc and a new backlog row (§8) that states the honest timeline and names what a real fix would need. `substrate.proxy.saga.failed` now does move once the budget exhausts (SAGA-06), which was the other half of the operator-visibility gap. |
+| SAGA-06 | The exhausted-budget path never increments `substrate.proxy.saga.failed` | **Fixed.** Real: the `Disposition::Retry` arm discarded `fail_compensation`'s returned `CompensationOutcome`, so the counter only fired from a terminal disposition or the poison-undo guard — never from the far more common case of a target that stayed unreachable until the budget ran out. `fail_saga_step` now increments the counter when its own `fail_compensation` call returns `Failed`; the three call sites that previously incremented it manually (now redundant, and one of them was the SAGA-01 fix) were folded into `fail_saga_step`/`fail_terminal_saga_step` themselves so the counter can no longer be added at one call site and forgotten at the next. |
+| SAGA-07 | Each undo gets no call budget at all, on a worker the outbox now shares | **Fixed.** Real: the undo's `ProxyRequest` used `timeout: None`, falling through to `DEFAULT_PROXY_CALL_TIMEOUT` (30s), and `sweep_sagas_once` dispatches up to `SAGA_SWEEP_LIMIT` (16) sagas per service sequentially from the same task that drains every service's outbox — a batch pointed at an unreachable provider could hold that shared loop, and therefore every other service's delivery, for minutes. Added `SAGA_UNDO_CALL_BUDGET` (5s, longer than the 2s `ENQUEUE_PROBE_BUDGET` since an undo is a real delivery attempt on its own retry schedule, not a probe) and set it on every undo's `ProxyRequest`. A timed-out undo is `Disposition::Retry`, same as before, so this does not change what counts as a failure, only how long one attempt can hold the worker. |
+| SAGA-08 | Five tests the plan names as evidence for specific failure-matrix rows do not exist | **Fixed, all five plus a sixth.** Added, named exactly as the plan and this review named them: `an_undo_carries_the_saga_and_step_as_its_idempotency_key` (asserts the literal `saga:<id>:<idx>` key via a new test-only `CallDedupGuard::debug_has_settled_key` that reuses the receiver's own cached store rather than opening a second connection), `a_dependency_bound_to_nobody_fails_the_compensation_without_retrying` (SAGA-01's regression test), `an_unopenable_saga_log_settles_nothing_and_loses_nothing` (a real encrypted store, KEK injected then cleared on a fresh `SagaStore` instance to simulate a post-restart locked vault, proving the sweep settles nothing and the saga survives), `cancellation_interrupts_an_in_flight_undo_and_leaves_the_saga_compensating` (mirrors the outbox's own `shutdown_abandons_an_in_flight_delivery_rather_than_draining`), and `bookkeeping_before_the_call_shortens_the_step_budget_rather_than_extending_the_epoch` (the margin-rule subtraction extracted into a pure `step_call_budget_ms` function so it is unit-testable without a real clock, plus a floor test). Row 13's missing `SagaStore` at-rest pair was added too: `a_saga_step_survives_reopening_the_encrypted_log_file` and `the_saga_log_file_is_unreadable_without_the_services_dek`, mirroring `Queue`'s own two tests exactly. |
+| SAGA-09 | Planning-doc identifiers are spread through the new code, including the shipped WIT and SDK | **Fixed.** Every milestone/slice reference and bare (non-ADR) plan-section reference this slice's own diff introduced — roughly 40 sites across `async_queue/saga.rs`, `router/saga.rs`, `router/proxy.rs`, `router/proxy_outbox.rs`, `router/route_handler.rs`, `sandbox_wasm/host_capabilities.rs`, `control_plane/orchestration.rs`, `saga_e2e.rs`, the `saga-test` fixture and its WIT world, `control-plane.wit`, `sdk/lib.rs`, `roymctl/commands/svc.rs`, and `roymctl/tests/cli_args.rs` — was rewritten to state its reasoning standing alone. ADR references (`ADR-0023 §7`, etc.) were left untouched, per the project rule. Pre-existing references from earlier slices (M04A, M04B, B1-B3) that this slice's diff did not add were left alone, out of scope for this pass. Verified by diffing this branch against `main` and grepping the added lines only, twice, with two different pattern sets. |
+| SAGA-10 | The shared `async_db_location` extraction silently made a dedup-store I/O failure terminal | **Fixed.** Real regression: before this slice, `CallDedupGuard::store_for` mapped a `load_service_dek` failure to `PermissionDenied` (deliberately fail-closed) but a `service_db_dir` failure to `Internal`; the `async_db_location` extraction collapsed both into one `anyhow::Result`, and the single call site mapped the whole thing to `PermissionDenied` — so a transient path/IO problem resolving a *receiving* service's directory now made the *sender's* outbox dead-letter the call instead of retrying it. `async_db_location` now returns a two-variant `AsyncDbLocationError` (`Dek`/`Dir`) instead of `anyhow::Error`, and `CallDedupGuard::store_for` maps each variant separately (`Dek` stays `PermissionDenied`; `Dir` is now `Internal`, matching pre-slice behaviour). `ProxyOutbox`/`SagaStore` map both variants to `Internal` as before, since neither fails closed on a DEK the way the dedup guard does — this was `service_async_db.rs`'s own doc comment's original intent, which the flattened `anyhow::Result` had accidentally undone. **Pinned (2026-08-08):** `a_directory_resolution_failure_is_internal_not_permission_denied`, against a `DekOnlyStorageProvider` test double that resolves a real DEK but leaves `service_db_dir` at the trait's own `Err`-returning default. Verified to actually fail against the regression: reverting the two-arm `map_err` to the single-arm form (still compiles, since `AsyncDbLocationError` implements `Display`) turns the outcome from `Internal` back into `PermissionDenied`. This was the only one of the three high/medium findings this review round had left unpinned — SAGA-06 has no metrics-assertion harness anywhere in this crate and SAGA-07 has no timeout-capturing fixture, so both remain argued from the code rather than proven by a failing test; SAGA-10 was the one actually cheap to close, and it was the only regression among the ten fixes, so it is now pinned. |
+
+### Low
+
+| # | Finding | Disposition |
+|---|---|---|
+| SAGA-11 | B2's three operator verbs now depend on the saga store existing | **Fixed, with a comment rather than an `Option` refactor.** Confirmed unreachable on the production path (`route_handler.rs` always calls `.with_outbox()` then `.with_sagas()` before reading `proxy_state()`); the two test-only call sites that construct a router with only one of the two never call the operator-verb wiring. Documented the invariant at the one call site that would break if a future caller changed that, rather than widening `ProxyState`'s fields to `Option` for a case that cannot occur today. |
+| SAGA-12 | Step params are serialized twice, inside the budget the function is trying to protect | **Fixed.** `req.params.to_string().len()` (a throwaway allocation just to measure) followed by a second `serde_json::to_vec` is now one `serde_json::to_vec` followed by a `.len()` check on the result, moved before the size check so the size limit is measured against what is actually stored. |
+| SAGA-13 | An operator cannot tell "no sagas" from "wrong service id" | **Pushed back.** Confirmed this exactly mirrors B2's own `queued_calls`/`replay_dead_letter` pair — `ProxyOutbox::queued_calls` returns `Ok(vec![])` for a service with no queue file, while `replay_dead_letter` errors for the same condition — which the review itself notes. This is an existing, deliberate B2 convention (a listing verb answers empty rather than erroring on an unrecognized id, so a typo does read as "clean"), not a defect B4 introduced; fixing it for sagas alone would make the two operator surfaces disagree with each other for no reason tied to this slice. Left as a system-wide UX question rather than a local patch. |
+
+**Verification evidence.**
+
+- `cargo +nightly fmt --all`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings (one new `clippy::expect_used` warning surfaced during this
+  round, on the new `saga_undeploy_candidates` lock; fixed by recovering
+  from poisoning via `PoisonError::into_inner` instead of `.expect()`,
+  matching the low blast-radius of that particular lock rather than adding
+  a new panic path).
+- `cargo test --workspace --no-fail-fast` (sandboxed): the same documented
+  pre-existing sandbox-bind category as every prior round in this file
+  (`syneroym-community-registry`, `syneroym-control-plane --lib` 168/175
+  passed — the same 7 `a_probe_*`/`an_http_probe_*`/`status_*` failures
+  already on record, `syneroym-coordinator-iroh` ×3, `syneroym-mqtt-broker`,
+  `syneroym-sdk --test connect_timeout`, every `crates/substrate/tests/
+  *_e2e.rs` target). Every crate this round touches is fully green in
+  isolation: `syneroym-router` 174/174 (up from 165 -- 9 net new tests this
+  round), `syneroym-async-queue` 64/64 (2 net new), `syneroym-app-orchestration`
+  131/131, `syneroym-sandbox-wasm` 66/66, `syneroym-sdk --lib` 45/45,
+  `roymctl --test cli_args` 14/14 (including the two saga-help tests whose
+  doc comments this round rewrote).
+- `saga_e2e` (sandbox disabled, real port binds), against the already-built
+  `saga-test` fixture: **3/3 consecutive runs green**, both tests each time
+  (~79-81s combined per run) — the same evidence SAGA-04's fix demanded of
+  itself.
+- `mise run test:e2e` (Playwright, sandbox disabled for real port binds):
+  12/12, unchanged — this round touches no browser-visible surface.
+
+**Backlog changes.** One row added: a missing compensation's classification
+as retryable (SAGA-05), with the honest ~10-hour timeline this round found
+missing from both the slice plan and the existing backlog row it
+contradicted. The existing "a service cannot declare that it *intends* to
+be compensable" row (§0.4a) was amended in place with a pointer to the new
+row, since the new row is what its own safety-net argument now rests on.
+Every other B4 row from the delivery pass is unchanged.

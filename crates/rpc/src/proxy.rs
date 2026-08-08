@@ -209,6 +209,56 @@ pub struct DeadLetterInfo {
     pub created_at: i64,
 }
 
+/// What `syneroym:proxy/saga.begin` hands the host.
+#[derive(Clone, Debug)]
+pub struct SagaBegin {
+    pub caller_service_id: String,
+    pub app_instance_id: Option<String>,
+    pub name: String,
+    pub deadline_secs: Option<u64>,
+}
+
+/// One forward step, as the host hands it to the proxy. Mirrors
+/// [`QueuedCall`]'s field set for the same reason: the undo it will one day
+/// produce has to be rebuildable long after the caller is gone.
+#[derive(Clone, Debug)]
+pub struct SagaStepRequest {
+    pub caller_service_id: String,
+    pub app_instance_id: Option<String>,
+    pub saga_id: String,
+    pub target: QueuedTarget,
+    pub routing_key: Option<String>,
+    pub interface: String,
+    pub method: String,
+    pub params: Value,
+    pub idempotency_key: Option<String>,
+    pub protocol: Option<String>,
+    pub timeout_ms: Option<u64>,
+}
+
+/// A saga's own lifecycle state, mirrored from `syneroym-async-queue` so
+/// this crate need not depend on it for one enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SagaState {
+    Open,
+    Compensating,
+    Compensated,
+    Failed,
+}
+
+/// One saga, as an operator or guest listing shows it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SagaInfo {
+    pub saga_id: String,
+    pub name: String,
+    pub state: SagaState,
+    pub steps: u32,
+    pub compensated_steps: u32,
+    pub created_at: i64,
+    pub deadline_at: i64,
+    pub last_error: Option<String>,
+}
+
 /// Read-and-replay access to a service's durable proxy queues, for the
 /// operator verbs.
 ///
@@ -223,6 +273,11 @@ pub trait ProxyQueueInspector: Send + Sync + Debug {
     async fn dead_letters(&self, service_id: &str) -> Result<Vec<DeadLetterInfo>, String>;
     /// Re-enqueues a dead letter. Never executes inline.
     async fn replay_dead_letter(&self, service_id: &str, id: u64) -> Result<(), String>;
+    /// Every saga `service_id`'s own log holds, oldest first.
+    async fn sagas(&self, service_id: &str) -> Result<Vec<SagaInfo>, String>;
+    /// Re-arms a `failed` saga back to `compensating`, with the current
+    /// step's attempts reset. Never walks inline.
+    async fn rearm_saga(&self, service_id: &str, saga_id: &str) -> Result<(), String>;
 }
 
 #[async_trait::async_trait]
@@ -242,6 +297,39 @@ pub trait ServiceProxy: Send + Sync + Debug {
     async fn enqueue(&self, call: QueuedCall) -> Result<(), ProxyError> {
         let _ = call;
         Err(ProxyError::Internal("this proxy has no durable outbox behind it".to_string()))
+    }
+
+    /// Opens a saga and returns its host-minted id. The default body
+    /// refuses, the same shape `enqueue` uses: a proxy with no per-service
+    /// saga log behind it cannot durably record a step, and pretending
+    /// otherwise would drop one silently.
+    async fn saga_begin(&self, req: SagaBegin) -> Result<String, ProxyError> {
+        let _ = req;
+        Err(ProxyError::Internal("this proxy has no durable saga log behind it".to_string()))
+    }
+
+    /// Takes one forward step and records it durably before dispatching
+    /// the call.
+    async fn saga_step(&self, req: SagaStepRequest) -> Result<Value, ProxyError> {
+        let _ = req;
+        Err(ProxyError::Internal("this proxy has no durable saga log behind it".to_string()))
+    }
+
+    async fn saga_commit(&self, service_id: &str, saga_id: &str) -> Result<(), ProxyError> {
+        let _ = (service_id, saga_id);
+        Err(ProxyError::Internal("this proxy has no durable saga log behind it".to_string()))
+    }
+
+    /// Marks the saga for compensation; the walk itself runs on the async
+    /// worker's next tick, never inline.
+    async fn saga_compensate(&self, service_id: &str, saga_id: &str) -> Result<(), ProxyError> {
+        let _ = (service_id, saga_id);
+        Err(ProxyError::Internal("this proxy has no durable saga log behind it".to_string()))
+    }
+
+    async fn saga_status(&self, service_id: &str, saga_id: &str) -> Result<SagaInfo, ProxyError> {
+        let _ = (service_id, saga_id);
+        Err(ProxyError::Internal("this proxy has no durable saga log behind it".to_string()))
     }
 }
 

@@ -285,6 +285,45 @@ an underscore; WIT identifiers are kebab-case, so the convention is
 `undo-<operation>` and the spec's spelling is a prose artifact.) No workflow
 DSL, no engine, no coordinator service.
 
+> **Amended 2026-08-07, after M05B slice B4 shipped**
+> ([slice plan](../planning/milestones/M05B-async-primitives/slice-b4-implementation-plan.md)
+> §0). Four corrections to the paragraph above, in the order a participant
+> author would meet them:
+>
+> 1. **The marker is `saga-undo-`, not a bare `undo-`.** `undo-` is an
+>    ordinary business verb (`undo-last-update` is a perfectly legal export
+>    with no relation to any saga), so a check built on it would either
+>    refuse a legal name or — worse — let the backward walk call a business
+>    function believing it to be a compensation. `saga-` is a reserved,
+>    platform-only prefix no domain interface has a reason to start a
+>    function with.
+> 2. **An undo may be called for an operation that never happened.** The step
+>    log this section describes as "completed steps" is written *before* the
+>    forward call, not after: a step whose result never came back because the
+>    substrate died mid-call is exactly the ambiguous case a saga exists to
+>    cover, and a log of only-completed steps would skip it. The convention's
+>    real contract is therefore stronger than this section states — an undo
+>    must tolerate being asked to reverse something that may never have run.
+> 3. **The backward walk is a worker with its own retry and terminal state,
+>    not a helper in the queue crate.** A saga of N steps is N remote calls;
+>    a guest that called `compensate` and waited for all of them would be
+>    waiting inside `dispatch_epoch_timeout_secs` (5 seconds by default) for
+>    work that can legitimately take minutes. `compensate` returns as soon as
+>    the saga is marked; a worker walks it on its own tick, the same shape
+>    the outbox's own delivery worker already has.
+> 4. **There is no manifest declaration of saga participation.** Not
+>    declaring is the ordinary case — most services have nothing to
+>    compensate, since an idempotent or read-only operation needs no undo —
+>    so absence already means "takes part in no saga" whether or not a
+>    declaration exists. The deploy-time check point 1 forces is instead
+>    derived from the component's own compiled exports: every `saga-undo-<x>`
+>    it exports must have an `<x>` beside it on the same interface. A
+>    service that means to be compensable and forgets to export anything is
+>    not caught at deploy — it surfaces when a saga tries to unwind and the
+>    walk's own error names the convention. Tracked as a backlog row with a
+>    pickup trigger (M6's Guild work showing authors actually hit this)
+>    rather than built now.
+
 **Long-running tasks.** The specified restart rules ("restarts from the
 beginning only when idempotent or explicitly restartable; otherwise it fails and
 runs compensations") presuppose that a long-running task can be *started*. None

@@ -35,7 +35,8 @@ use syneroym_mqtt_broker::{
 use syneroym_rpc::{
     AbacError, Ability, AuthLevel, CallOrigin, CallerContext, CandidateRow,
     ProxyError as RpcProxyError, ProxyProtocol, ProxyRequest, QueuedCall, QueuedTarget,
-    ResourceUri, RowAuthorizer, ServiceProxy, apply_stage4, union_masked_fields,
+    ResourceUri, RowAuthorizer, SagaBegin, SagaState as RpcSagaState, SagaStepRequest,
+    ServiceProxy, apply_stage4, union_masked_fields,
 };
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::{self, ConfigError},
@@ -48,7 +49,10 @@ use syneroym_wit_interfaces::host::syneroym::{
     },
     host::context::Host,
     messaging::host_api::{self, MessagingError},
-    proxy::proxy::{self, CallOptions, CallTarget, CalleeError},
+    proxy::{
+        proxy::{self, CallOptions, CallTarget, CalleeError},
+        saga::{self, SagaState as WitSagaState, SagaStatus},
+    },
     vault::vault::{self, VaultError},
 };
 use tracing::error;
@@ -1326,6 +1330,176 @@ impl proxy::Host for HostState {
     }
 }
 
+fn rpc_saga_state_to_wit(state: RpcSagaState) -> WitSagaState {
+    match state {
+        RpcSagaState::Open => WitSagaState::Open,
+        RpcSagaState::Compensating => WitSagaState::Compensating,
+        RpcSagaState::Compensated => WitSagaState::Compensated,
+        RpcSagaState::Failed => WitSagaState::Failed,
+    }
+}
+
+impl saga::Host for HostState {
+    /// Opens a saga (ADR-0023 §7, as amended). Each of this interface's
+    /// five functions follows `proxy::Host::call`'s own shape:
+    /// the `read_only` refusal first, then `service_proxy.upgrade()`, then
+    /// params parsing, then the call.
+    async fn begin(
+        &mut self,
+        name: String,
+        deadline_secs: Option<u64>,
+    ) -> Result<String, proxy::ProxyError> {
+        if self.read_only {
+            return Err(proxy::ProxyError::Internal(
+                "stage-4 after-step instances may not originate proxy calls".to_string(),
+            ));
+        }
+        let service_proxy = self
+            .service_proxy
+            .upgrade()
+            .ok_or_else(|| proxy::ProxyError::Internal("proxy unavailable".to_string()))?;
+        service_proxy
+            .saga_begin(SagaBegin {
+                caller_service_id: self.component_id.clone(),
+                app_instance_id: self.app_instance_id.clone(),
+                name,
+                deadline_secs,
+            })
+            .await
+            .map_err(map_proxy_error)
+    }
+
+    /// Takes one forward step. Follows `enqueue`'s own target handling
+    /// exactly: a dependency name is validated, never resolved here --
+    /// resolution happens host-side, at the moment of dispatch.
+    async fn step(
+        &mut self,
+        saga_id: String,
+        target: CallTarget,
+        interface: String,
+        method: String,
+        params: String,
+        options: Option<CallOptions>,
+    ) -> Result<String, proxy::ProxyError> {
+        if self.read_only {
+            return Err(proxy::ProxyError::Internal(
+                "stage-4 after-step instances may not originate proxy calls".to_string(),
+            ));
+        }
+        let service_proxy = self
+            .service_proxy
+            .upgrade()
+            .ok_or_else(|| proxy::ProxyError::Internal("proxy unavailable".to_string()))?;
+
+        let params: Value = if params.trim().is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&params)
+                .map_err(|e| proxy::ProxyError::Internal(format!("params must be JSON: {e}")))?
+        };
+
+        let options = options.unwrap_or(CallOptions {
+            protocol: None,
+            idempotent: false,
+            timeout_ms: None,
+            routing_key: None,
+            idempotency_key: None,
+        });
+        ProxyProtocol::parse(options.protocol.as_deref())
+            .map_err(proxy::ProxyError::UnsupportedProtocol)?;
+
+        let target = match target {
+            CallTarget::Service(service) => QueuedTarget::Service(service),
+            CallTarget::Dependency(name) => {
+                LogicalServiceName::try_new(&name).map_err(|e| {
+                    proxy::ProxyError::DependencyNotBound(format!("invalid dependency name: {e}"))
+                })?;
+                if self.app_instance_id.is_none() {
+                    return Err(proxy::ProxyError::DependencyNotBound(format!(
+                        "component '{}' was not deployed as part of an app instance, so it has no \
+                         declared dependency '{name}'",
+                        self.component_id
+                    )));
+                }
+                QueuedTarget::Dependency(name)
+            }
+        };
+
+        let value = service_proxy
+            .saga_step(SagaStepRequest {
+                caller_service_id: self.component_id.clone(),
+                app_instance_id: self.app_instance_id.clone(),
+                saga_id,
+                target,
+                routing_key: options.routing_key,
+                interface,
+                method,
+                params,
+                idempotency_key: options.idempotency_key,
+                protocol: options.protocol,
+                timeout_ms: options.timeout_ms.map(u64::from),
+            })
+            .await
+            .map_err(map_proxy_error)?;
+        Ok(match value {
+            Value::String(s) => s,
+            other => other.to_string(),
+        })
+    }
+
+    async fn commit(&mut self, saga_id: String) -> Result<(), proxy::ProxyError> {
+        if self.read_only {
+            return Err(proxy::ProxyError::Internal(
+                "stage-4 after-step instances may not originate proxy calls".to_string(),
+            ));
+        }
+        let service_proxy = self
+            .service_proxy
+            .upgrade()
+            .ok_or_else(|| proxy::ProxyError::Internal("proxy unavailable".to_string()))?;
+        service_proxy.saga_commit(&self.component_id, &saga_id).await.map_err(map_proxy_error)
+    }
+
+    async fn compensate(&mut self, saga_id: String) -> Result<(), proxy::ProxyError> {
+        if self.read_only {
+            return Err(proxy::ProxyError::Internal(
+                "stage-4 after-step instances may not originate proxy calls".to_string(),
+            ));
+        }
+        let service_proxy = self
+            .service_proxy
+            .upgrade()
+            .ok_or_else(|| proxy::ProxyError::Internal("proxy unavailable".to_string()))?;
+        service_proxy.saga_compensate(&self.component_id, &saga_id).await.map_err(map_proxy_error)
+    }
+
+    async fn status(&mut self, saga_id: String) -> Result<SagaStatus, proxy::ProxyError> {
+        if self.read_only {
+            return Err(proxy::ProxyError::Internal(
+                "stage-4 after-step instances may not originate proxy calls".to_string(),
+            ));
+        }
+        let service_proxy = self
+            .service_proxy
+            .upgrade()
+            .ok_or_else(|| proxy::ProxyError::Internal("proxy unavailable".to_string()))?;
+        let info = service_proxy
+            .saga_status(&self.component_id, &saga_id)
+            .await
+            .map_err(map_proxy_error)?;
+        Ok(SagaStatus {
+            saga_id: info.saga_id,
+            name: info.name,
+            state: rpc_saga_state_to_wit(info.state),
+            steps: info.steps,
+            compensated_steps: info.compensated_steps,
+            created_at: info.created_at,
+            deadline_at: info.deadline_at,
+            last_error: info.last_error,
+        })
+    }
+}
+
 fn map_blob_error(e: BlobStoreError) -> BlobError {
     match e {
         BlobStoreError::NotFound => BlobError::NotFound,
@@ -1573,6 +1747,10 @@ pub(crate) mod tests {
         invoke_count: AtomicUsize,
         last_enqueued: Mutex<Option<QueuedCall>>,
         enqueue_count: AtomicUsize,
+        last_saga_begin: Mutex<Option<SagaBegin>>,
+        last_saga_step: Mutex<Option<SagaStepRequest>>,
+        last_saga_commit: Mutex<Option<(String, String)>>,
+        last_saga_compensate: Mutex<Option<(String, String)>>,
     }
 
     #[async_trait::async_trait]
@@ -1588,6 +1766,49 @@ pub(crate) mod tests {
             self.enqueue_count.fetch_add(1, Ordering::SeqCst);
             *self.last_enqueued.lock().unwrap() = Some(call);
             Ok(())
+        }
+
+        async fn saga_begin(&self, req: SagaBegin) -> Result<String, RpcProxyError> {
+            *self.last_saga_begin.lock().unwrap() = Some(req);
+            Ok("saga-1".to_string())
+        }
+
+        async fn saga_step(&self, req: SagaStepRequest) -> Result<Value, RpcProxyError> {
+            *self.last_saga_step.lock().unwrap() = Some(req);
+            Ok(Value::Null)
+        }
+
+        async fn saga_commit(&self, service_id: &str, saga_id: &str) -> Result<(), RpcProxyError> {
+            *self.last_saga_commit.lock().unwrap() =
+                Some((service_id.to_string(), saga_id.to_string()));
+            Ok(())
+        }
+
+        async fn saga_compensate(
+            &self,
+            service_id: &str,
+            saga_id: &str,
+        ) -> Result<(), RpcProxyError> {
+            *self.last_saga_compensate.lock().unwrap() =
+                Some((service_id.to_string(), saga_id.to_string()));
+            Ok(())
+        }
+
+        async fn saga_status(
+            &self,
+            _service_id: &str,
+            saga_id: &str,
+        ) -> Result<syneroym_rpc::SagaInfo, RpcProxyError> {
+            Ok(syneroym_rpc::SagaInfo {
+                saga_id: saga_id.to_string(),
+                name: "wf".to_string(),
+                state: RpcSagaState::Open,
+                steps: 1,
+                compensated_steps: 0,
+                created_at: 1_000,
+                deadline_at: 4_600_000,
+                last_error: None,
+            })
         }
     }
 
@@ -3024,5 +3245,135 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, DataLayerError::PermissionDenied));
+    }
+
+    // -- sagas -----------------------------------------------------------
+
+    fn saga_host(
+        read_only: bool,
+        proxy: &Arc<RecordingProxy>,
+        db_dir: &std::path::Path,
+    ) -> HostState {
+        HostState::new(
+            "driver".to_string(),
+            None,
+            Arc::new(KeyStore::new()),
+            Arc::new(SqliteStorageProvider::new(db_dir, false).unwrap()),
+            test_blob_provider(),
+            CallerContext::service_system("driver"),
+            0,
+            test_messaging_context(),
+            test_streaming_context(),
+            Arc::downgrade(proxy) as Weak<dyn ServiceProxy>,
+            None,
+            read_only,
+            syneroym_rpc::empty_row_authorizer(),
+            None,
+            syneroym_app_orchestration::empty_resolver(),
+        )
+    }
+
+    #[tokio::test]
+    async fn begin_reaches_the_fake_proxy_with_the_fields_the_wit_carried() {
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = saga_host(false, &proxy, temp_dir.path());
+
+        let saga_id =
+            saga::Host::begin(&mut host, "checkout".to_string(), Some(120)).await.unwrap();
+        assert_eq!(saga_id, "saga-1");
+
+        let recorded = proxy.last_saga_begin.lock().unwrap().clone().unwrap();
+        assert_eq!(recorded.caller_service_id, "driver");
+        assert_eq!(recorded.name, "checkout");
+        assert_eq!(recorded.deadline_secs, Some(120));
+    }
+
+    #[tokio::test]
+    async fn step_reaches_the_fake_proxy_with_the_fields_the_wit_carried() {
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = saga_host(false, &proxy, temp_dir.path());
+
+        let result = saga::Host::step(
+            &mut host,
+            "saga-1".to_string(),
+            CallTarget::Service("did:key:zParticipant".to_string()),
+            "saga-participant".to_string(),
+            "reserve".to_string(),
+            "{\"item\":\"a\"}".to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, "null");
+
+        let recorded = proxy.last_saga_step.lock().unwrap().clone().unwrap();
+        assert_eq!(recorded.saga_id, "saga-1");
+        assert_eq!(recorded.target, QueuedTarget::Service("did:key:zParticipant".to_string()));
+        assert_eq!(recorded.interface, "saga-participant");
+        assert_eq!(recorded.method, "reserve");
+        assert_eq!(recorded.params, serde_json::json!({"item": "a"}));
+    }
+
+    #[tokio::test]
+    async fn commit_reaches_the_fake_proxy_with_the_saga_id() {
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = saga_host(false, &proxy, temp_dir.path());
+
+        saga::Host::commit(&mut host, "saga-1".to_string()).await.unwrap();
+
+        let recorded = proxy.last_saga_commit.lock().unwrap().clone().unwrap();
+        assert_eq!(recorded, ("driver".to_string(), "saga-1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn compensate_reaches_the_fake_proxy_with_the_saga_id() {
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = saga_host(false, &proxy, temp_dir.path());
+
+        saga::Host::compensate(&mut host, "saga-1".to_string()).await.unwrap();
+
+        let recorded = proxy.last_saga_compensate.lock().unwrap().clone().unwrap();
+        assert_eq!(recorded, ("driver".to_string(), "saga-1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn status_maps_the_fake_proxys_answer_onto_the_wit_record() {
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = saga_host(false, &proxy, temp_dir.path());
+
+        let status = saga::Host::status(&mut host, "saga-1".to_string()).await.unwrap();
+        assert_eq!(status.saga_id, "saga-1");
+        assert_eq!(status.name, "wf");
+        assert_eq!(status.state, WitSagaState::Open);
+        assert_eq!(status.steps, 1);
+        assert_eq!(status.compensated_steps, 0);
+        assert_eq!(status.created_at, 1_000);
+        assert_eq!(status.deadline_at, 4_600_000);
+        assert!(status.last_error.is_none());
+    }
+
+    /// ADR-0017 §7 is *local* read-only lookups; a stage-4 after-step
+    /// instance may not originate any proxy call, saga included -- the
+    /// same refusal `proxy::Host::call`/`enqueue` apply.
+    #[tokio::test]
+    async fn a_stage_four_after_step_instance_cannot_open_a_saga() {
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = saga_host(true, &proxy, temp_dir.path());
+
+        let err = saga::Host::begin(&mut host, "checkout".to_string(), None).await.unwrap_err();
+        assert!(
+            matches!(err, proxy::ProxyError::Internal(_)),
+            "expected the stage-4 refusal, got {err:?}"
+        );
+        assert!(
+            proxy.last_saga_begin.lock().unwrap().is_none(),
+            "the fake proxy must not be reached"
+        );
     }
 }

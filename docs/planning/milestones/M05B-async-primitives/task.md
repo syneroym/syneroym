@@ -117,7 +117,7 @@ itself in its own `§0.1` after starting as one slice.
 | **B1** | The durable queue crate (`syneroym-async-queue`), the supervisor's delivery outbox, the DLQ with its alert and operator surface. **Closes M05A slice A6.** | Real — the App Supervisor | ADR-0023 accepted |
 | **B2** | Guest-facing outbox and proxy DLQ: `call-options` gains `idempotency-key` and a separate `enqueue` function; receiver-side dedup; failed-after-retries proxy calls land in the DLQ | Real — M6 chat | B1 |
 | **B3** | Scheduled tasks: a manifest schedule surface, evaluation on the supervisor's existing pass tick, member selection, overlap prevention | None yet | B1 |
-| **B4** | Saga compensations: the `undo-<operation>` convention, deploy-time checking, a durable step log, reverse walk on terminal failure | Near-term — M6's Professional Services Guild, whose cross-provider workflow the architecture doc describes as exactly this | B1 |
+| **B4** | Saga compensations: the `saga-undo-<operation>` convention (a reserved prefix, not a bare `undo-`), a deploy-time export check with no manifest declaration, a durable step log, and a reverse walk that starts only on a guest's own `compensate` call or an expired deadline — never on a failed step alone | Near-term — M6's Professional Services Guild, whose cross-provider workflow the architecture doc describes as exactly this | B1 |
 | ~~**B5**~~ | ~~Long-running tasks~~ | — | **Deferred out of this milestone, 2026-08-04** |
 
 ### B5 is deferred, and why that is the right cut
@@ -284,8 +284,11 @@ it. B1 status below reflects [status.md](status.md)'s B1 evidence
    `a_keyed_call_that_exhausts_its_retries_writes_a_dead_letter_and_still_returns_its_error`,
    `a_callee_error_on_a_queued_item_dead_letters_rather_than_completing`,
    `the_dlq_cap_is_scoped_per_target`, plus the three operator verbs.
-6. ⬜ **Milestone closeout (needs B4).** `[PLT-ASY]` stays **Pending** in
-   the traceability matrix; B1-B3 alone do not close it.
+6. ✅ **B4.** `[PLT-ASY]` moves **Pending → Complete** in the traceability
+   matrix, scoped to the four mechanisms this milestone builds (long-running
+   tasks stay deferred, per the row's own existing scoping). `[PRD-OFF]`
+   moves alongside it — both of its clauses shipped with B1/B2, and B4 is
+   the slice that closes the row rather than the slice that earned it.
 7. ✅ **B1.** M05A slice A6 recorded Complete in
    [M05A status.md](../M05A-app-supervisor/status.md) (2026-08-05); its
    [deferred-backlog.md](../../deferred-backlog.md) §8 row moved to
@@ -356,3 +359,40 @@ it. B1 status below reflects [status.md](status.md)'s B1 evidence
     `no_supervisor_verb_accepts_or_returns_key_material`), which fail
     without a matching dispatch arm -- the same mechanism B1/B2 relied on,
     not a new test written for this.
+17. ✅ **B4.** The reference scenario passes end to end against two real
+    substrates —
+    [saga_e2e.rs](../../../../crates/substrate/tests/saga_e2e.rs).
+    `a_failed_workflow_is_undone_in_reverse_order` covers a real
+    cross-node saga: two steps recorded on the driver, undone newest-first
+    on the participant, with the ledger's own order as the assertion.
+    `a_workflow_abandoned_across_a_restart_is_compensated_by_its_deadline`
+    covers a driver substrate that is torn down mid-workflow and restarted
+    locked, asserting nothing is compensated -- and that the `sagas` verb
+    answers with an error naming the locked vault rather than an empty
+    list -- until the KEK is injected, after which the abandoned saga is
+    compensated by its own deadline with no guest involved. Both cases run
+    green three consecutive times.
+18. ✅ **B4**, for the rows B4 owns and inherits (2, 9, 12, 13, 14 -- an
+    undo applied twice, a dependency bound to nobody, saga growth bounded,
+    saga contents at rest, re-arm authorization -- plus B4-a through B4-e:
+    the substrate dying mid-workflow, a step added while compensating, an
+    undo that can never be delivered, an expired caller certificate, and a
+    locked vault). Each has its own in-process unit test in
+    `syneroym-async-queue`/`syneroym-router`; the crash case and the
+    locked-vault direction are corroborated by `saga_e2e.rs`'s second test.
+    Row 4's alert clause is deliberately not satisfied the same way B1
+    does -- a `failed` saga raises no `AlertStore` row, for the same
+    reason B2's proxy dead letters raise none (`AlertStore` lives in
+    `supervisor.db`, on the wrong side of the crate boundary); the
+    `sagas` verb and the `substrate.proxy.saga.failed` counter are this
+    row's visibility instead.
+19. ✅ **B4.** One new WIT interface, `saga`, on the `syneroym:proxy`
+    package
+    ([proxy.wit](../../../../crates/wit_interfaces/wit/proxy/proxy.wit)),
+    plus two new `orchestrator` verbs, `sagas` and `saga-compensate`
+    ([control-plane.wit](../../../../crates/wit_interfaces/wit/control-plane/control-plane.wit)).
+    Additive only: no manifest change and no wire change to any existing
+    type, verified rather than argued -- `cargo test -p syneroym-router
+    --test proxy_dispatch` passes 8/8 without rebuilding the `proxy-test`
+    fixture, confirming a component whose own world does not import `saga`
+    links exactly as it did before this slice.

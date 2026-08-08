@@ -37,6 +37,22 @@ impl AppSandboxEngine {
         false
     }
 
+    /// A sandbox-less build never has a compiled component to inspect,
+    /// mirroring `exports_authorize_rows`'s own reasoning above -- used by
+    /// the saga compensation deploy gate.
+    #[must_use]
+    pub fn exports_function(&self, _service_id: &str, _interface: &str, _function: &str) -> bool {
+        false
+    }
+
+    /// A sandbox-less build never has a compiled component to inspect,
+    /// mirroring `exports_authorize_rows`'s own reasoning above -- used by
+    /// the saga compensation deploy gate.
+    #[must_use]
+    pub fn exported_functions(&self, _service_id: &str, _interface: &str) -> Option<Vec<String>> {
+        None
+    }
+
     /// A sandbox-less build never has a loaded component, mirroring
     /// `exports_authorize_rows`'s own reasoning above (M05A A4).
     #[must_use]

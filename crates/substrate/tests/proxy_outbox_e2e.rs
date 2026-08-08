@@ -44,7 +44,7 @@ use syneroym_identity::{
 use syneroym_sdk::SyneroymClient;
 use syneroym_substrate::identity;
 use tokio::{
-    sync::{mpsc, mpsc::Sender},
+    sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
     time,
 };
@@ -73,6 +73,16 @@ const DLQ_ATTEMPT_BUDGET: u8 = 3;
 /// too -- but it keeps this test's timing about the outbox rather than
 /// about how quickly the target's services happen to come up.
 const NODE_B_REBOOT_PORTS: (u16, u16, u16) = (13_900, 13_901, 13_902);
+
+/// Not sharing a port block keeps the two tests here from colliding, but
+/// they still each boot two full substrate instances (real iroh QUIC
+/// socket, self-hosted relay, mainline DHT, wasmtime), and running that
+/// many concurrently starves the CI runner's CPU badly enough that iroh's
+/// QUIC path validation times out with "no viable network path exists"
+/// even though nothing is actually broken. Serializing full-substrate-
+/// instance lifetimes within this binary (same fix as `tests/common/mod.rs`'s
+/// `SUBSTRATE_TEST_LOCK`) avoids it.
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// A queued call must not have to wait out the production ~10-hour budget
 /// for a test to see it dead-letter. Deliberately not the real numbers:
@@ -406,6 +416,7 @@ fn artifacts() -> Option<(Vec<u8>, Vec<u8>)> {
 /// stage rather than inferred.
 #[tokio::test]
 async fn a_queued_guest_call_to_an_offline_node_lands_after_it_returns() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();
     let Some((proxy_wasm, greeter_wasm)) = artifacts() else {
         eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
@@ -647,6 +658,7 @@ async fn a_queued_guest_call_to_an_offline_node_lands_after_it_returns() {
 /// is replayable from there.
 #[tokio::test]
 async fn a_permanently_unreachable_target_lands_in_the_dlq_and_replays() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();
     let Some((proxy_wasm, greeter_wasm)) = artifacts() else {
         eprintln!("skipping: proxy-test/greeter wasm artifacts not built");

@@ -55,7 +55,7 @@ use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
 use syneroym_sdk::SyneroymClient;
 use syneroym_substrate::identity;
 use tokio::{
-    sync::{mpsc, mpsc::Sender},
+    sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
     time,
 };
@@ -88,6 +88,16 @@ const PORTS: PortBlock = PortBlock {
     managed_b_registry: 13_401,
     managed_b_gateway: 13_402,
 };
+
+/// Not sharing a port block keeps the two tests here from colliding, but
+/// they still each boot three full substrate instances (real iroh QUIC
+/// socket, self-hosted relay, mainline DHT, wasmtime), and running that
+/// many concurrently starves the CI runner's CPU badly enough that iroh's
+/// QUIC path validation times out with "no viable network path exists"
+/// even though nothing is actually broken. Serializing full-substrate-
+/// instance lifetimes within this binary (same fix as `tests/common/mod.rs`'s
+/// `SUBSTRATE_TEST_LOCK`) avoids it.
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 const MANAGED_A_ALIAS: &str = "managed-a";
 const MANAGED_B_ALIAS: &str = "managed-b";
@@ -417,6 +427,7 @@ async fn active_alert_kinds(supervisor_node: &Node, substrate_did: &str) -> BTre
 
 #[tokio::test]
 async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();
 
     let supervisor_owner = Identity::generate().unwrap();
@@ -648,6 +659,7 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
 /// silently lost.
 #[tokio::test]
 async fn a_permanently_unreachable_substrate_lands_in_the_dlq_and_replays() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();
 
     let supervisor_owner = Identity::generate().unwrap();

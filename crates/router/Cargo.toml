@@ -47,6 +47,7 @@ rand.workspace = true
 hex.workspace = true
 metrics.workspace = true
 ed25519-dalek.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 syneroym-core = { workspace = true, features = ["test-utils"] }
