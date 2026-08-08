@@ -234,6 +234,7 @@ async fn publish_endpoint(
         is_private: false,
         ttl: None,
         not_after: u64::MAX / 2,
+        generation: 0,
     };
     let signed = info.sign(signer).unwrap();
     let res = Client::new()

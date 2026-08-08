@@ -248,6 +248,7 @@ fn two_service_manifest() -> SynAppManifest {
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(BACKEND_ALIAS))),
             replicas: 1,
+            sharding_strategy: None,
             schedule: None,
         },
     );
@@ -271,6 +272,7 @@ fn two_service_manifest() -> SynAppManifest {
             depends_on: vec![LogicalServiceName::new("backend")],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(FRONTEND_ALIAS))),
             replicas: 1,
+            sharding_strategy: None,
             schedule: None,
         },
     );
@@ -417,6 +419,7 @@ async fn certify_and_publish(
             is_private: false,
             ttl: None,
             not_after: far_future_not_after(),
+            generation: 0,
         }
         .sign(master)
         .unwrap();

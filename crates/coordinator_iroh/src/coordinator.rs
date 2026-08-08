@@ -490,6 +490,7 @@ async fn register_coordinator_in_registry(
         is_private: false,
         ttl: None,
         not_after,
+        generation: 0,
     };
 
     let signed_info = info.sign(&identity)?;

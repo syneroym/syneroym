@@ -1,13 +1,22 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! The app-instance master identity end to end (M05A A7), across two
-//! genuinely independent `syneroym-substrate` instances -- the operator's
-//! own sequence: `submit`, `adopt`, `status`, `export-master`, a second
-//! `adopt`. `Node` is copied from `supervisor_interface_e2e.rs`, with one
-//! addition (`app_data_dir`) so this file can confirm `export-master`
-//! wrote a real file under the node's own `master_backup_dir`, not just
-//! that the RPC returned a path string.
+//! Tier 1 of the logical discovery overlay (ADR-0022 §2), proven across two
+//! genuinely independent `syneroym-substrate` instances -- a caller outside
+//! the app instance resolving "which supervisor holds this app" through the
+//! same registry every other DID in the system already uses.
+//!
+//! `Node`, `boot_pair`, `supervisor_role`, `one_service_manifest`,
+//! `compiled_plan_json`, `node_wide_supervisor_grant`, and `submission` are
+//! copied from `app_instance_identity_e2e.rs`, with `poll_interval_secs`
+//! lowered so the resident loop's own Tier-1 publish -- which nothing on the
+//! `supervisor` RPC surface triggers synchronously (`force-reconcile` calls
+//! `deploy_submission` directly, not the write-phase gate the resident loop
+//! evaluates) -- lands inside this test's own poll budget.
 
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use rustls::crypto::ring;
 use semver::Version;
@@ -20,9 +29,12 @@ use syneroym_app_orchestration::{
     },
 };
 use syneroym_app_supervisor::inventory::SupervisorInventoryEntry;
-use syneroym_core::config::{
-    ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig, LogTarget,
-    ServiceRegistryRole, SubstrateConfig, SupervisorRole,
+use syneroym_core::{
+    config::{
+        ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig, LogTarget,
+        ServiceRegistryRole, SubstrateConfig, SupervisorRole,
+    },
+    dht_registry::{EndpointInfo, EndpointType, RegistryClient},
 };
 use syneroym_identity::{Identity, substrate};
 use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
@@ -32,6 +44,7 @@ use tempfile::TempDir;
 use tokio::{
     sync::{mpsc, mpsc::Sender},
     task::JoinHandle,
+    time,
 };
 
 #[derive(Clone, Copy)]
@@ -44,17 +57,26 @@ struct PortBlock {
     managed_gateway: u16,
 }
 
-// The next free block after `reference_scenario_e2e.rs`'s 12_700-12_902,
-// the highest claimed so far -- cargo runs integration-test binaries
-// concurrently, so reusing a claimed block crashes whichever binary binds
-// second with "Address already in use".
-const PORTS_APP_INSTANCE_IDENTITY: PortBlock = PortBlock {
-    supervisor_iroh: 13_000,
-    supervisor_registry: 13_001,
-    supervisor_gateway: 13_002,
-    managed_iroh: 13_100,
-    managed_registry: 13_101,
-    managed_gateway: 13_102,
+// The next free block after `saga_e2e.rs`'s 14_200-14_302, the highest
+// claimed at the time this file was written -- cargo runs integration-test
+// binaries concurrently, so reusing a claimed block crashes whichever binary
+// binds second with "Address already in use". Each of this file's two tests
+// gets its own block: they run concurrently within one binary too.
+const PORTS_RESOLVES_THROUGH_REGISTRY: PortBlock = PortBlock {
+    supervisor_iroh: 15_000,
+    supervisor_registry: 15_001,
+    supervisor_gateway: 15_002,
+    managed_iroh: 15_100,
+    managed_registry: 15_101,
+    managed_gateway: 15_102,
+};
+const PORTS_FORGED_RECORD_REJECTED: PortBlock = PortBlock {
+    supervisor_iroh: 15_200,
+    supervisor_registry: 15_201,
+    supervisor_gateway: 15_202,
+    managed_iroh: 15_300,
+    managed_registry: 15_301,
+    managed_gateway: 15_302,
 };
 
 const MANAGED_ALIAS: &str = "managed";
@@ -65,11 +87,6 @@ struct Node {
     substrate_client: SyneroymClient,
     shutdown_tx: Sender<()>,
     substrate_handle: JoinHandle<()>,
-    /// M05A A7: kept (unlike the file this struct is copied from) so the
-    /// test can find the real file `export-master` writes under this
-    /// node's own `master_backup_dir`, not just trust the RPC's returned
-    /// path string.
-    app_data_dir: PathBuf,
     _temp_dir: TempDir,
 }
 
@@ -153,7 +170,6 @@ impl Node {
             substrate_client,
             shutdown_tx,
             substrate_handle,
-            app_data_dir: config.app_data_dir,
             _temp_dir: temp_dir,
         }
     }
@@ -169,9 +185,14 @@ impl Node {
     }
 }
 
+/// `poll_interval_secs` is lowered to 2s from the 30s default so this
+/// test's own poll budget does not have to be minutes long -- nothing on
+/// the `supervisor` RPC surface triggers a Tier-1 publish synchronously,
+/// so the resident loop's own tick is what this test is actually waiting
+/// on.
 fn supervisor_role() -> SupervisorRole {
     SupervisorRole {
-        poll_interval_secs: 30,
+        poll_interval_secs: 2,
         db_name: "supervisor.db".to_string(),
         max_restart_attempts: 3,
         restart_backoff_secs: 30,
@@ -182,8 +203,8 @@ fn supervisor_role() -> SupervisorRole {
 }
 
 /// Node-wide `orchestrator/deploy` **and** `orchestrator/status` for
-/// `grantee_did` on `node_did`, issued by `node_owner` -- what a supervisor
-/// needs on every substrate it manages.
+/// `grantee_did` on `node_did` -- what a supervisor needs on every substrate
+/// it manages.
 fn node_wide_supervisor_grant(
     node_owner: &Identity,
     grantee_did: &str,
@@ -216,7 +237,7 @@ fn one_service_manifest() -> SynAppManifest {
         ServiceSpec {
             config: ServiceConfig {
                 service_type: ServiceType::Tcp,
-                source: "127.0.0.1:41601".to_string(),
+                source: "127.0.0.1:41901".to_string(),
                 hash: None,
                 interfaces: vec![],
                 env: BTreeMap::new(),
@@ -236,7 +257,7 @@ fn one_service_manifest() -> SynAppManifest {
         },
     );
     SynAppManifest {
-        id: AppBlueprintId::new("syneroym:a7-test-app"),
+        id: AppBlueprintId::new("syneroym:tier1-test-app"),
         version: Version::new(0, 1, 0),
         description: None,
         placement: None,
@@ -253,8 +274,8 @@ async fn compiled_plan_json(manifest: &SynAppManifest, instance_id: &str) -> Str
 
 /// Boots a supervisor node and a managed node (B sharing A's
 /// registry/relay), grants the supervisor's own node-wide `orchestrator/
-/// deploy` on the managed node, and returns everything a test needs to
-/// call `submit`.
+/// deploy` on the managed node, and returns everything a test needs to call
+/// `submit`. Copied from `app_instance_identity_e2e.rs`.
 async fn boot_pair(
     supervisor_owner: &Identity,
     managed_owner: &Identity,
@@ -314,95 +335,137 @@ fn submission(
     }])
 }
 
-/// Test 98: the operator's own sequence over a real supervisor and a real
-/// managed substrate -- `submit`, `adopt`, then (a) `adopt`'s result
-/// carries a `did:key:` app master and a vault name, (b) `status` reports
-/// the same DID, (c) `export-master` with that name writes a file under
-/// the node's `master_backup_dir`, and (d) a second `adopt` reports the
-/// identical DID at a higher generation. The individual properties are
-/// already proven at unit scale (tests 90-97, 99-101); the claim here is
-/// the sequence, in the operator's own order.
+/// The reference scenario's steps 1-2: submit and adopt an app instance,
+/// confirm the app master DID on `status`, then assert the Tier-1 record
+/// resolves through the registry -- naming the supervisor and verifying
+/// against the app DID with no other trust input.
 #[tokio::test]
-async fn an_adopted_app_instance_carries_an_exportable_master_did() {
+async fn an_app_did_resolves_to_its_supervising_node_through_the_registry() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner, PORTS_APP_INSTANCE_IDENTITY).await;
+        boot_pair(&supervisor_owner, &managed_owner, PORTS_RESOLVES_THROUGH_REGISTRY).await;
 
     let manifest = one_service_manifest();
-    let plan_json = compiled_plan_json(&manifest, "a7-adopt-inst").await;
+    let plan_json = compiled_plan_json(&manifest, "tier1-resolve-inst").await;
     supervisor_node
         .substrate_client
-        .request("supervisor", "submit", submission("a7-adopt-inst", plan_json, inventory_json, 0))
+        .request(
+            "supervisor",
+            "submit",
+            submission("tier1-resolve-inst", plan_json, inventory_json, 0),
+        )
         .await
         .expect("submit failed");
-
-    // (a) `adopt`'s result carries a `did:key:` app master and a vault
-    // name (D-A7-8).
     let adopted = supervisor_node
         .substrate_client
-        .request("supervisor", "adopt", json!(["a7-adopt-inst"]))
+        .request("supervisor", "adopt", json!(["tier1-resolve-inst"]))
         .await
         .expect("adopt failed");
-    assert_eq!(adopted.result.get("generation").and_then(serde_json::Value::as_u64), Some(1));
-    let app_master_did = adopted
+    let app_did = adopted
         .result
         .get("app_master_did")
         .and_then(|v| v.as_str())
         .expect("adopt-result carries app_master_did")
         .to_string();
-    assert!(app_master_did.starts_with("did:key:"), "{app_master_did}");
-    let vault_name = adopted
-        .result
-        .get("vault_name")
-        .and_then(|v| v.as_str())
-        .expect("adopt-result carries vault_name")
-        .to_string();
-    assert_eq!(vault_name, "app-a7-adopt-inst");
+    assert!(app_did.starts_with("did:key:"), "{app_did}");
 
-    // (b) `status` reports the same DID (D-A7-6).
+    // Confirmed on `status` too (D-A7-6, already proven at unit scale) --
+    // the DID this test then resolves through the registry is the exact
+    // one the operator would read off `status`.
     let status = supervisor_node
         .substrate_client
-        .request("supervisor", "status", json!(["a7-adopt-inst"]))
+        .request("supervisor", "status", json!(["tier1-resolve-inst"]))
         .await
         .expect("status failed");
     assert_eq!(
         status.result.get("app_master_did").and_then(|v| v.as_str()),
-        Some(app_master_did.as_str())
+        Some(app_did.as_str())
     );
 
-    // (c) `export-master` with that name writes a real file under this
-    // node's own `master_backup_dir` (`task.md`'s "movable through
-    // `export-master`/`import-master`", D-A7-3).
-    let exported = supervisor_node
-        .substrate_client
-        .request("supervisor", "export-master", json!([vault_name.clone()]))
-        .await
-        .expect("export-master failed");
-    let exported_path =
-        PathBuf::from(exported.result.as_str().expect("export-master returns a path string"));
+    // The resident loop's own tick publishes the Tier-1 record; nothing on
+    // the RPC surface triggers it synchronously (`force-reconcile` bypasses
+    // the write-phase gate the loop itself evaluates), so this polls for
+    // it rather than asserting immediately.
+    let registry_client = RegistryClient::new(false, Some(supervisor_node.registry_url.clone()));
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let signed = loop {
+        match registry_client.lookup(&app_did, false).await {
+            Ok(signed) => break signed,
+            Err(e) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "the Tier-1 record never resolved through the registry: {e}"
+                );
+                time::sleep(Duration::from_millis(300)).await;
+            }
+        }
+    };
+
+    // Looking up the app DID returns the supervising node, and the record
+    // verifies against the app DID with no other trust input.
     assert_eq!(
-        exported_path,
-        supervisor_node.app_data_dir.join("master-backups").join(format!("{vault_name}.key"))
+        signed.info.substrate_id,
+        supervisor_node.did(),
+        "the record must name the substrate supervising this app, not the app DID itself"
     );
+    assert_eq!(signed.info.service_id, app_did);
+    assert_eq!(signed.info.endpoint_type, EndpointType::Substrate);
+    assert!(signed.verify().is_ok(), "a freshly published Tier-1 record must verify");
+
+    // `status`'s own expiry field (D-C-2) is populated once a publish has
+    // actually landed.
+    let status_after = supervisor_node
+        .substrate_client
+        .request("supervisor", "status", json!(["tier1-resolve-inst"]))
+        .await
+        .expect("status failed");
     assert!(
-        tokio::fs::metadata(&exported_path).await.is_ok(),
-        "export-master must have written a real file at {}",
-        exported_path.display()
+        status_after.result.get("app_record_expires_at").and_then(|v| v.as_u64()).is_some(),
+        "status must report the published record's expiry: {:?}",
+        status_after.result
     );
 
-    // (d) a second `adopt` reports the identical DID at a higher
-    // generation (D-A7-5).
-    let adopted_again = supervisor_node
-        .substrate_client
-        .request("supervisor", "adopt", json!(["a7-adopt-inst"]))
+    supervisor_node.teardown().await;
+    managed_node.teardown().await;
+}
+
+/// Failure-matrix row 1: a Tier-1 record claiming an app DID as its
+/// `service_id` but signed by a key unrelated to it must be rejected at the
+/// registry, in the shape `master_endpoint_record_e2e.rs`'s own
+/// hand-forged-record case already uses.
+#[tokio::test]
+async fn a_forged_tier1_record_is_rejected_at_the_registry() {
+    let supervisor_owner = Identity::generate().unwrap();
+    let managed_owner = Identity::generate().unwrap();
+    let (supervisor_node, managed_node, _inventory_json) =
+        boot_pair(&supervisor_owner, &managed_owner, PORTS_FORGED_RECORD_REJECTED).await;
+
+    let claimed_app_master = Identity::generate().unwrap();
+    let claimed_app_did = substrate::derive_did_key(&claimed_app_master.public_key());
+    let uncertified = Identity::generate().unwrap();
+
+    let forged = EndpointInfo {
+        service_id: claimed_app_did,
+        substrate_id: supervisor_node.did().to_string(),
+        endpoint_type: EndpointType::Substrate,
+        mechanisms: vec![],
+        nickname: Some("forged".to_string()),
+        is_private: false,
+        ttl: None,
+        not_after: u64::MAX / 2,
+        generation: 0,
+    }
+    .sign(&uncertified)
+    .expect("failed to sign forged record");
+
+    let res = reqwest::Client::new()
+        .post(format!("{}/register", supervisor_node.registry_url))
+        .json(&forged)
+        .send()
         .await
-        .expect("second adopt failed");
-    assert_eq!(adopted_again.result.get("generation").and_then(serde_json::Value::as_u64), Some(2));
-    assert_eq!(
-        adopted_again.result.get("app_master_did").and_then(|v| v.as_str()),
-        Some(app_master_did.as_str())
-    );
+        .expect("failed to POST forged record");
+    assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED);
 
     supervisor_node.teardown().await;
     managed_node.teardown().await;

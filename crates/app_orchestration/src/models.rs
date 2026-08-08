@@ -5,8 +5,8 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use crate::schedule::ScheduleSpec;
 use crate::schedule::{MAX_SCHEDULE_TIMEOUT_MS, MAX_SCHEDULED_SERVICES};
+pub use crate::{resolver::ShardingStrategy, schedule::ScheduleSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParseError(pub String);
@@ -538,6 +538,17 @@ pub struct ServiceSpec {
     /// is byte-for-byte unchanged.
     #[serde(default = "default_replicas", skip_serializing_if = "is_one_u32")]
     pub replicas: u32,
+    /// Which sub-strategy a `Sharded` selection uses (ADR-0022 §6). Read by
+    /// nothing yet: the compiler never emits `TopologyMode::Sharded` today
+    /// (`replicas` alone only ever produces `Redundant`), and shard
+    /// rebalancing -- the first actual consumer -- is a later milestone's
+    /// work. Declared now anyway, on the same reasoning `replicas` itself
+    /// was added under: a manifest field is free to add before anything
+    /// depends on the format, and expensive after.
+    /// `#[serde(skip_serializing_if)]` so a manifest that never mentions it
+    /// is byte-for-byte unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharding_strategy: Option<ShardingStrategy>,
     /// When and what to run on exactly one member of this logical service
     /// (ADR-0023 §6). Absent means unscheduled, which is
     /// every manifest that exists before this field. Lives here and on
@@ -676,6 +687,23 @@ impl SynAppManifest {
                      until M7's state replication lands; this refusal relaxes then.",
                     name,
                     spec.replicas
+                ));
+            }
+            if spec.replicas <= 1 && spec.sharding_strategy.is_some() {
+                return Err(anyhow!(
+                    "Service '{}' declares a sharding_strategy with replicas = {}; a strategy \
+                     over one member is not a selection",
+                    name,
+                    spec.replicas
+                ));
+            }
+            if matches!(spec.sharding_strategy, Some(ShardingStrategy::RangeSharding(_))) {
+                return Err(anyhow!(
+                    "Service '{}' declares a range_sharding strategy; range sharding names \
+                     concrete members by ServiceId, which a manifest cannot express before those \
+                     members are minted -- it is reachable only once shard rebalancing assigns \
+                     them, not from a manifest",
+                    name
                 ));
             }
         }
@@ -1705,6 +1733,7 @@ mod tests {
                     depends_on: vec![],
                     placement: None,
                     replicas: 1,
+                    sharding_strategy: None,
                     schedule: Some(ScheduleSpec {
                         cron: "* * * * *".to_string(),
                         interface: InterfaceName::new("scheduled-driver"),
@@ -1717,5 +1746,83 @@ mod tests {
         }
         let err = manifest.validate().unwrap_err();
         assert!(err.to_string().contains("above the cap"), "{err}");
+    }
+
+    // ── `ShardingStrategy` on the manifest surface (ADR-0022 §6) ────────
+
+    #[test]
+    fn a_sharding_strategy_round_trips_through_a_manifest() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [services.worker]
+            service_type = "wasm"
+            source = "unused"
+            replicas = 2
+            sharding_strategy = "hash_sharding"
+        "#;
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        let worker = manifest.services.get(&LogicalServiceName::new("worker")).unwrap();
+        assert_eq!(worker.sharding_strategy, Some(ShardingStrategy::HashSharding));
+
+        let toml_round = manifest.to_toml().unwrap();
+        assert_eq!(SynAppManifest::from_toml(&toml_round).unwrap(), manifest);
+        let json_round = manifest.to_json().unwrap();
+        assert_eq!(SynAppManifest::from_json(&json_round).unwrap(), manifest);
+    }
+
+    #[test]
+    fn a_manifest_with_no_sharding_strategy_parses_as_it_does_today() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [services.worker]
+            service_type = "wasm"
+            source = "unused"
+        "#;
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        let worker = manifest.services.get(&LogicalServiceName::new("worker")).unwrap();
+        assert_eq!(worker.sharding_strategy, None);
+        let serialized = manifest.to_toml().unwrap();
+        assert!(!serialized.contains("sharding_strategy"));
+    }
+
+    #[test]
+    fn a_sharding_strategy_with_replicas_of_one_is_refused_at_validation() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [services.worker]
+            service_type = "wasm"
+            source = "unused"
+            sharding_strategy = "hash_sharding"
+        "#;
+        let err = SynAppManifest::from_toml(toml_str).unwrap_err();
+        assert!(err.to_string().contains("not a selection"), "{err}");
+    }
+
+    /// `RangeSharding` names concrete `ServiceId`s, which a manifest is
+    /// authored long before any of a scaled service's members are minted --
+    /// so it is refused here rather than accepted and left permanently
+    /// unreachable.
+    #[test]
+    fn a_range_sharding_strategy_is_refused_at_validation() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [services.worker]
+            service_type = "wasm"
+            source = "unused"
+            replicas = 2
+
+            [services.worker.sharding_strategy]
+            range_sharding = { chunks = [] }
+        "#;
+        let err = SynAppManifest::from_toml(toml_str).unwrap_err();
+        assert!(err.to_string().contains("range_sharding"), "{err}");
     }
 }

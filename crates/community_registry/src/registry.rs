@@ -393,6 +393,7 @@ mod tests {
             is_private: false,
             ttl: None,
             not_after: far_future(),
+            generation: 0,
         }
     }
 
@@ -462,6 +463,7 @@ mod tests {
             is_private: false,
             ttl: None,
             not_after: far_future(),
+            generation: 0,
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -495,6 +497,7 @@ mod tests {
             is_private: false,
             ttl: None,
             not_after: far_future(),
+            generation: 0,
         };
 
         // Sign with OTHER identity
@@ -519,6 +522,7 @@ mod tests {
             is_private: false,
             ttl: None,
             not_after: far_future(),
+            generation: 0,
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -548,6 +552,7 @@ mod tests {
                 is_private: false,
                 ttl: None,
                 not_after: far_future(),
+                generation: 0,
             },
             pkarr_packet_hex: "mock-hex".to_string(),
         };
@@ -566,6 +571,7 @@ mod tests {
                 is_private: false,
                 ttl: None,
                 not_after: far_future(),
+                generation: 0,
             },
             pkarr_packet_hex: "mock-hex".to_string(),
         };
@@ -595,6 +601,7 @@ mod tests {
             is_private: false,
             ttl: None,
             not_after: far_future(),
+            generation: 0,
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -625,6 +632,7 @@ mod tests {
             is_private: false,
             ttl: None,
             not_after: far_future(),
+            generation: 0,
         };
 
         let signed_info = create_signed_info(&identity, info);

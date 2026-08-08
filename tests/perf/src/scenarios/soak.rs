@@ -120,6 +120,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
         is_private: false,
         ttl: None,
         not_after: u64::MAX / 2,
+        generation: 0,
     };
     let signed_info = info_reg.sign(&app_identity).unwrap();
 
@@ -319,6 +320,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                         is_private: false,
                         ttl: None,
                         not_after: u64::MAX / 2,
+                        generation: 0,
                     };
                     let signed_info = info_reg.sign(&churn_identity).unwrap();
 

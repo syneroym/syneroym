@@ -329,6 +329,7 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         is_private: false,
         ttl: None,
         not_after: far_future_not_after(),
+        generation: 0,
     }
     .sign(&member_master)
     .expect("failed to sign the member's endpoint record with its master key");
@@ -441,6 +442,7 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         is_private: false,
         ttl: None,
         not_after: far_future_not_after(),
+        generation: 0,
     }
     .sign(&member_master)
     .expect("failed to sign the relocated record with the same master key");
@@ -502,6 +504,7 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         is_private: false,
         ttl: None,
         not_after: far_future_not_after(),
+        generation: 0,
     }
     .sign(&uncertified)
     .expect("failed to sign forged record");

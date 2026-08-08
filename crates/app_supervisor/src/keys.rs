@@ -409,6 +409,19 @@ pub async fn app_master(
     Ok((did, name))
 }
 
+/// The app instance's own master, read-only: `Ok(None)` if this instance
+/// has never had one minted (D-A7-7: it gains one at its next `adopt`, and
+/// nowhere else). Deliberately not `get_or_mint`, for the reason
+/// `master_for_member` below gives for members -- minting here would
+/// create an app identity outside `adopt`, the one place that owns it.
+pub async fn existing_app_master(
+    vault: &MasterVault,
+    app_instance_id: &str,
+) -> Result<Option<Identity>, VaultError> {
+    let name = app_master_name(app_instance_id)?;
+    vault.get(&name).await
+}
+
 /// The member master a *renewal* signs with: read-only, under the same
 /// computable name `mint_and_substitute` stored it as. Deliberately not
 /// `get_or_mint` -- a placed member whose master is missing from the vault
@@ -894,6 +907,22 @@ mod tests {
         assert_eq!(first_did, second_did);
         assert_eq!(first_name, second_name);
         assert_eq!(first_name, "app-inst-1");
+    }
+
+    /// The Tier-1 publisher's own read: `Ok(None)` for an instance that has
+    /// never been through `adopt`, and never mints one to fill the gap --
+    /// unlike `app_master` above, which resolves-or-mints.
+    #[tokio::test]
+    async fn existing_app_master_reads_none_and_mints_nothing_before_adopt() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+
+        assert!(existing_app_master(&v, "inst-1").await.unwrap().is_none());
+        assert!(v.get("app-inst-1").await.unwrap().is_none(), "a read must never mint");
+
+        let (did, _) = app_master(&v, "inst-1").await.unwrap();
+        let found = existing_app_master(&v, "inst-1").await.unwrap().unwrap();
+        assert_eq!(substrate::derive_did_key(&found.public_key()), did);
     }
 
     /// `task.md`'s own exit criterion: the app master "moves through

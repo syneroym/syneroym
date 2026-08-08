@@ -181,6 +181,19 @@ impl SupervisorStore {
                 master_did        TEXT PRIMARY KEY,
                 last_refreshed_at INTEGER NOT NULL
              );
+             -- ADR-0022 §2: when each app instance's Tier-1 registry record
+             -- was last republished. Keyed by app DID rather than by
+             -- `app_instance_id`, the same reasoning `master_anchor_refresh`
+             -- uses for member masters -- and, unlike that table, there is
+             -- exactly one app master per instance, so no fan-out case
+             -- applies. Read every pass and compared against
+             -- `master_anchor_refresh_interval_secs` (the same cadence,
+             -- reused rather than given a second config field), so this
+             -- needs no timer of its own.
+             CREATE TABLE IF NOT EXISTS app_tier1_refresh (
+                app_did           TEXT PRIMARY KEY,
+                last_refreshed_at INTEGER NOT NULL
+             );
              -- M05A A5d: placements whose instance key an operator has
              -- revoked. Read by *every* path that can mint a certificate
              -- -- the renewal work-list, `submit`, and `force-reconcile`
@@ -432,6 +445,37 @@ impl SupervisorStore {
              VALUES (?1, ?2)
              ON CONFLICT(master_did) DO UPDATE SET last_refreshed_at = excluded.last_refreshed_at",
             params![master_did, at],
+        )?;
+        Ok(())
+    }
+
+    /// When this app instance's Tier-1 registry record was last
+    /// republished, or `None` if this supervisor never has. An absent row
+    /// reads as "overdue", the same first-pass reading
+    /// `last_master_anchor_refresh` gives -- a Tier-1 record this
+    /// supervisor has no record of publishing may not exist at the
+    /// registry at all.
+    pub fn last_tier1_refresh(&self, app_did: &str) -> Result<Option<i64>> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.query_row(
+            "SELECT last_refreshed_at FROM app_tier1_refresh WHERE app_did = ?1",
+            params![app_did],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    /// Stamps a successful Tier-1 publish. Only called after the writer
+    /// returns cleanly -- a failed publish must leave the previous stamp
+    /// alone so the next pass retries.
+    pub fn record_tier1_refresh(&self, app_did: &str, at: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "INSERT INTO app_tier1_refresh (app_did, last_refreshed_at)
+             VALUES (?1, ?2)
+             ON CONFLICT(app_did) DO UPDATE SET last_refreshed_at = excluded.last_refreshed_at",
+            params![app_did, at],
         )?;
         Ok(())
     }
@@ -1338,5 +1382,39 @@ mod tests {
             store.schedule_states("inst-2").unwrap().contains_key("inst-2/kept"),
             "pruning is scoped to the instance whose plan was read"
         );
+    }
+
+    /// The Tier-1 refresh fact is keyed by app DID, not by
+    /// `app_instance_id` -- one row per app master, independent of every
+    /// other app instance's own row.
+    #[test]
+    fn a_refresh_fact_is_recorded_per_app_did() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.record_tier1_refresh("did:key:zAppA", 100).unwrap();
+        store.record_tier1_refresh("did:key:zAppB", 200).unwrap();
+
+        assert_eq!(store.last_tier1_refresh("did:key:zAppA").unwrap(), Some(100));
+        assert_eq!(store.last_tier1_refresh("did:key:zAppB").unwrap(), Some(200));
+
+        store.record_tier1_refresh("did:key:zAppA", 150).unwrap();
+        assert_eq!(
+            store.last_tier1_refresh("did:key:zAppA").unwrap(),
+            Some(150),
+            "a later refresh replaces the stamp rather than adding a row"
+        );
+        assert_eq!(
+            store.last_tier1_refresh("did:key:zAppB").unwrap(),
+            Some(200),
+            "refreshing one app DID must not touch another's row"
+        );
+    }
+
+    /// An app DID this supervisor has never published a Tier-1 record for
+    /// reads as overdue, the same first-pass reading
+    /// `last_master_anchor_refresh` gives an unpublished master anchor.
+    #[test]
+    fn an_app_did_with_no_refresh_fact_is_due_immediately() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        assert_eq!(store.last_tier1_refresh("did:key:zNeverPublished").unwrap(), None);
     }
 }

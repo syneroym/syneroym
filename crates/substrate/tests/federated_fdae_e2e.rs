@@ -314,6 +314,7 @@ async fn register_service(
         is_private: false,
         ttl: None,
         not_after: u64::MAX / 2,
+        generation: 0,
     };
     let signed_info = info.sign(service_identity).expect("failed to sign endpoint info");
     let res = HttpClient::new()

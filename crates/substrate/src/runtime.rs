@@ -785,7 +785,8 @@ async fn init_supervisor(
     shared: &SharedNodeHandles,
 ) -> anyhow::Result<Arc<SupervisorHandle>> {
     use syneroym_app_supervisor::{
-        MasterVault, RegistryAnchorWriter, SupervisorService, store::SupervisorStore,
+        MasterVault, RegistryAnchorWriter, RegistryTier1Writer, SupervisorService,
+        store::SupervisorStore,
     };
 
     let role = config
@@ -824,6 +825,14 @@ async fn init_supervisor(
             config.substrate.enable_bep0044_dht,
             config.substrate.registry_url.as_deref(),
         ),
+        // Same absent-when-unconfigured shape as the anchor writer above,
+        // and the same reason (ADR-0022 §2, matrix row 11): a single-node
+        // deployment with no registry does not use cross-app discovery,
+        // and must not be broken to enable it.
+        RegistryTier1Writer::from_registry_url(
+            config.substrate.enable_bep0044_dht,
+            config.substrate.registry_url.as_deref(),
+        ),
         role.queue_tick_secs,
     ));
     shared
@@ -835,6 +844,14 @@ async fn init_supervisor(
             "supervisor role is enabled but its vault is LOCKED: no KEK has been injected, so it \
              cannot mint, certify, or renew member masters. Inject one with: roymctl --substrate \
              {service_id} security inject-kek --kek-hex <...>"
+        );
+    }
+    if config.substrate.registry_url.is_none() {
+        warn!(
+            "supervisor role is enabled but this node has no substrate.registry_url configured: \
+             this app instance's Tier-1 registry record cannot be published, so callers outside \
+             it will not be able to discover it (ADR-0022). Intra-app service discovery is \
+             unaffected."
         );
     }
 
@@ -1218,6 +1235,7 @@ fn build_signed_endpoint_info(
         is_private: false,
         ttl: None,
         not_after,
+        generation: 0,
     };
 
     let identity = Identity::from_bytes(secret_key);
