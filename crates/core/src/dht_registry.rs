@@ -360,6 +360,21 @@ impl RegistryClient {
                     // FAIL FAST: Don't fall back to DHT if registry returned invalid data
                     return Err(anyhow::anyhow!("Registry returned invalid data for {id}: {e}"));
                 }
+                // `verify()` only proves the record is validly self-signed
+                // under *its own* `service_id` -- it says nothing about
+                // whether that is the DID this lookup actually asked for.
+                // A compromised or malicious registry could otherwise
+                // answer a lookup for A with any other party's perfectly
+                // valid record, redirecting the caller. Gated on `id`
+                // being a full DID -- same reason the DHT branch below
+                // gates on it -- since a shorthash alias lookup cannot be
+                // checked this way by construction.
+                if substrate::resolve_did_key(id).is_ok() && info.info.service_id != id {
+                    return Err(anyhow::anyhow!(
+                        "registry returned a record for '{}', not the requested '{id}'",
+                        info.info.service_id
+                    ));
+                }
                 result = Some(info);
             }
         }

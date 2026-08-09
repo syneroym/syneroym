@@ -486,3 +486,91 @@ through 10 (S1 closed 1-3 and 11) each have a named test per the slice plan
   above.
 - `mise run test:e2e` (Playwright WebRTC suite): **4 passed**. Unaffected by
   this slice, as expected (no client-gateway or WebRTC surface touched).
+
+### S2 — Post-merge review fixes (2026-08-09)
+
+An independent review against this plan and `task.md`'s exit criteria found
+14 findings in the shipped commit. 13 were confirmed and fixed; one (a
+`cache_ttl` refresh gap) was investigated and declined as a code change,
+recorded instead as a sharper backlog row. See
+[slice-s2-implementation-plan.md](slice-s2-implementation-plan.md) §0's
+"Post-merge code review" addendum for the five defects that change a
+decision this plan made; the summary here is the full list, fix vs.
+pushback, and the re-verification.
+
+**Fixed:**
+
+1. **The signed-document cache ignored the app DID** (High, correctness).
+   `handle_resolve`'s `signed_documents` cache hit condition now also
+   requires `cached.signed.document.app_did == app_did`, closing a window
+   where an in-place handover could serve a document no caller could
+   verify. `crates/app_supervisor/src/service.rs` (`handle_resolve`).
+2. **A failed fingerprint write could brick `resolve` permanently, and a
+   genuine concurrent `submit` failed every `resolve` for its duration**
+   (High + Medium, correctness + concurrency). `handle_resolve` now falls
+   back to taking the per-instance async lock and using the *advancing*
+   form of the fingerprint write once, after two lock-free attempts still
+   disagree — repairing a stuck row and riding out a real race instead of
+   erroring. Same file.
+3. **A cached document could report a stale `generation`** (Medium,
+   correctness). Added to the same cache hit condition as finding 1.
+4. **The Tier-1 HTTP lookup was never bound to the DID it was asked for**
+   (High, security). `RegistryClient::lookup`'s HTTP branch now checks the
+   returned record's `service_id` against the requested id (when the id is
+   a full DID), mirroring the check the DHT branch already had.
+   `crates/core/src/dht_registry.rs`.
+5. **D-S2-6's re-sign-at-half-validity rule had no test.** Added
+   `a_nearly_expired_cached_document_is_re_signed_rather_than_served`.
+6. **`resolve` was missing from
+   `every_verb_is_refused_without_substrate_admin`.** Added.
+7. **The scale-out e2e never exercised the caller's own `LogicalResolver`
+   cache**, only the supervisor's. Extended to register both documents and
+   assert `resolve_all` reflects the second.
+   `crates/substrate/tests/topology_document_e2e.rs`.
+8. **A 1s `not_after` margin in a resolver unit test raced the wall-clock
+   second boundary.** Widened to 3s, matching commit 38ebbea's flakiness
+   fixes. `crates/app_orchestration/src/resolver.rs`.
+9. **`topology_document_not_after_secs`/`cache_ttl_secs` were unvalidated**
+   (a `0` or a `cache_ttl` at/above half of `not_after` both broke a stated
+   property). Clamped with a warning in `SupervisorService::new`, same
+   shape as the existing `max_renewals_per_pass` guard.
+10. **`AppDid` permitted `/` and `#`**, unlike its two siblings, despite
+    being interpolated into a `synapp:<app-did>` `ResourceUri`. Forbidden
+    now. `crates/app_orchestration/src/models.rs`.
+11. **Duplicate `member_index` values were not refused** in
+    `service_topology`, leaving output order plan-order-dependent.
+    Refused as a third `InconsistentPlan` case.
+    `crates/app_supervisor/src/topology.rs`.
+12. **An unknown service name came back as `InternalError`** instead of
+    `InvalidParams`. Fixed in `handle_resolve`.
+
+**Declined as a code change:** `cache_ttl`'s "on expiry try to refresh"
+(ADR-0022 §3) has no implementation anywhere yet — not a regression this
+slice introduced, and building a scheduled refresher for S2 would be
+building ahead of a consumer (S3/S4's own substrate-side fetcher, D-S2-13)
+that does not exist yet. Recorded as a sharper backlog row instead of a
+new one (the existing D-S2-13 row already named the closest cause).
+
+**Not covered by a new test:** finding 4's `RegistryClient::lookup` fix has
+no dedicated regression test — reproducing a malicious registry's mismatched
+HTTP response needs a mock HTTP server this crate's test module does not
+have today. The fix mirrors an already-tested sibling check
+(`extract_verified_endpoint_from_packet`'s `service_id == id`), and every
+existing `dht_registry`/`community_registry` test still passes.
+
+**Also fixed in this pass, unrelated to the review**: a flaky
+`supervisor_alerts_e2e` failure ("no viable network path exists: last path
+abandoned by peer" on the first `submit` after `managed_node`'s full boot)
+— same root cause and same reconnect-then-retry fix as commit 38ebbea's
+`app_instance_identity_e2e` fix.
+`crates/substrate/tests/supervisor_alerts_e2e.rs`. Investigating it also
+surfaced one real gap behind the "Endpoint dropped without calling
+`Endpoint::close`" log noise every e2e file emits on teardown:
+`ConnectionRouter::shutdown` propagated `Router::shutdown`'s `Err` via `?`,
+which skipped its own fallback `ep.close()` on that path. Fixed to match
+`coordinator_iroh::Coordinator::shutdown`'s existing shape.
+`crates/router/src/connection_router.rs`.
+
+**Re-verification**: `cargo +nightly fmt --all` clean; `cargo clippy
+--workspace --all-targets --all-features` clean; `cargo test --workspace`
+— see numbers below.

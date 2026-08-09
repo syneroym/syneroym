@@ -60,6 +60,61 @@ put a range table into a **signed** document. Closed by a third sibling
 (D-S2-15) rather than annotated, which makes the WIT declaration a checked
 property instead of a comment asking future readers to be careful.
 
+**Post-merge code review (2026-08-09)** found five defects in the shipped
+code the three planning rounds above did not catch, all fixed in place
+rather than re-planned:
+
+- `handle_resolve`'s document cache was keyed `(app_instance_id,
+  service_name)` with no check binding the cached document to the app DID
+  actually being resolved, so an in-place handover (`import-master` +
+  `adopt`, unchanged membership) could serve a document signed by the
+  *previous* master to a caller resolving the *new* DID -- a document that
+  fails `verify` at every caller for up to half of `not_after`. The same
+  cache hit condition also never compared `generation`, which `adopt` can
+  advance with no epoch change, so a cached document's `generation` could
+  read stale. Both are now part of the cache hit condition, not the key.
+- D-S2-4's insert-only claim for `handle_resolve` ("can never advance
+  [the epoch]") is now true only of its **fast path**. Two lock-free
+  attempts landing on a fingerprint mismatch could mean a `submit` is
+  genuinely still in flight (a transient, and previously fatal, race) or
+  that an earlier `submit`'s best-effort fingerprint write never landed,
+  which insert-only can never repair on its own -- contrary to the comment
+  claiming it would. `handle_resolve` now falls back to taking the
+  per-instance async lock and using the advancing form once, exactly the
+  repair `record_topology_fingerprint`'s own doc comment describes; it is
+  never held on the common path.
+- `RegistryClient::lookup`'s HTTP branch verified a returned
+  `SignedEndpointInfo` against *its own* embedded `service_id`, never
+  against the DID the lookup actually asked for -- the DHT branch a few
+  lines below already guards this (`extract_verified_endpoint_from_packet`),
+  the HTTP branch did not. A compromised or malicious registry could
+  answer a Tier-1 lookup for app A with any other party's validly
+  self-signed record, redirecting `RegistryTopologyFetcher` to a
+  supervisor of the attacker's choosing (and presenting the caller's UCAN
+  to it). Now checked, gated on `id` being a full DID so a shorthash-alias
+  lookup -- which cannot be checked this way by construction -- is
+  unaffected.
+- `TopologyBuildError::NoSuchService` (caller input) and
+  `InconsistentPlan` (a compiler defect) both mapped to `InternalError` in
+  `handle_resolve`; only the former now maps to `InvalidParams`.
+- `service_topology` refused members disagreeing on mode or sharding
+  strategy but not two members sharing one `member_index` -- silently
+  order-dependent on `plan.services`'s own order rather than refused like
+  every other disagreement in that function. Now a third `InconsistentPlan`
+  case.
+
+Three lower-severity gaps were also closed: `resolve` was missing from
+`every_verb_is_refused_without_substrate_admin`'s hand-maintained list; a
+configured `0` for `topology_document_not_after_secs`, or a `cache_ttl`
+at or above half of it, went unvalidated (both now clamped with a
+warning, the same shape `max_renewals_per_pass` already uses); `AppDid`
+permitted `/` and `#`, unlike its two siblings, despite being interpolated
+into a `synapp:<app-did>` `ResourceUri`. One finding was investigated and
+declined as a code change: `cache_ttl`'s "on expiry try to refresh" has no
+implementation anywhere yet (not a regression introduced by any of the
+above), recorded instead as a sharper backlog row rather than built ahead
+of a scheduled refresher nothing calls yet.
+
 ### 0.1 (Correctness, and it is this slice's sharpest finding) The topology epoch ADR-0022 §6 says "already exists" does not exist
 
 ADR-0022 §6:

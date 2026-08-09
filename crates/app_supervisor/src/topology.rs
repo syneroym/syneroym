@@ -69,6 +69,14 @@ pub fn service_topology(
     if members.iter().any(|s| s.topology_mode != mode || s.sharding_strategy != sharding_strategy) {
         return Err(TopologyBuildError::InconsistentPlan(service_name.clone()));
     }
+    // Two members sharing a `member_index` would leave their relative
+    // order dependent on `plan.services`'s own order rather than on
+    // anything meaningful -- the fingerprint, the signed member list, and
+    // the epoch it drives could then differ between two readings of the
+    // same plan. A compiler bug, exactly like the disagreement above.
+    if members.windows(2).any(|w| w[0].member_index == w[1].member_index) {
+        return Err(TopologyBuildError::InconsistentPlan(service_name.clone()));
+    }
 
     Ok(ServiceTopology {
         mode,
@@ -177,6 +185,16 @@ mod tests {
         let p = plan(vec![
             member("backend", 0, TopologyMode::Sharded, Some(ShardingStrategy::HashSharding)),
             member("backend", 1, TopologyMode::Sharded, Some(ShardingStrategy::EntityTagSharding)),
+        ]);
+        let err = service_topology(&p, &svc_name("backend")).unwrap_err();
+        assert!(matches!(err, TopologyBuildError::InconsistentPlan(_)));
+    }
+
+    #[test]
+    fn members_sharing_a_member_index_are_refused() {
+        let p = plan(vec![
+            member("backend", 0, TopologyMode::Redundant, None),
+            member("backend", 0, TopologyMode::Redundant, None),
         ]);
         let err = service_topology(&p, &svc_name("backend")).unwrap_err();
         assert!(matches!(err, TopologyBuildError::InconsistentPlan(_)));

@@ -13,6 +13,7 @@
 use std::{
     collections::BTreeMap,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -26,6 +27,7 @@ use syneroym_app_orchestration::{
         AppBlueprintId, AppInstanceId, PlacementSelector, ServiceConfig, ServiceSpec, ServiceType,
         SubstrateAlias, SynAppManifest,
     },
+    register_verified,
 };
 use syneroym_app_supervisor::inventory::SupervisorInventoryEntry;
 use syneroym_core::{
@@ -465,7 +467,7 @@ async fn an_outside_caller_resolves_an_apps_members_and_calls_one() {
     let fetcher = outside_caller_fetcher(&supervisor_node.registry_url, &outside_caller, grant);
 
     let app_did_typed = AppDid::new(app_did.clone());
-    let resolver = LogicalResolver::new(std::sync::Arc::new(StaticInventory::new()));
+    let resolver = LogicalResolver::new(Arc::new(StaticInventory::new()));
     let key = fetch_and_register(
         &fetcher,
         &resolver,
@@ -548,6 +550,15 @@ async fn a_scaled_out_service_supersedes_the_cached_document_at_a_new_epoch() {
     assert_eq!(first.document.members.len(), 1);
     let first_epoch = first.document.epoch;
 
+    // The caller side: register the first document and resolve through it,
+    // the same path a real outside caller uses -- not just compare the raw
+    // fetched documents, which would say nothing about `LogicalResolver`'s
+    // own cache being superseded.
+    let resolver = LogicalResolver::new(Arc::new(StaticInventory::new()));
+    let key = register_verified(&resolver, &first, &app_did_typed, None)
+        .expect("register_verified failed for the first document");
+    assert_eq!(resolver.resolve_all(&key).unwrap().members.len(), 1);
+
     // Scale out: resubmit at 2 replicas.
     let manifest = service_manifest(2);
     let plan_json = compiled_plan_json(&manifest, "scale-out-inst").await;
@@ -568,6 +579,13 @@ async fn a_scaled_out_service_supersedes_the_cached_document_at_a_new_epoch() {
     };
     assert_eq!(second.document.members.len(), 2);
     assert!(second.document.epoch.0 > first_epoch.0);
+
+    // Re-registering the second document must supersede the first in the
+    // caller's own resolver, under the same key, with no further fetch.
+    let key2 = register_verified(&resolver, &second, &app_did_typed, None)
+        .expect("register_verified failed for the second document");
+    assert_eq!(key2, key, "a scale-out must not change which key a caller resolves under");
+    assert_eq!(resolver.resolve_all(&key).unwrap().members.len(), 2);
 
     supervisor_node.teardown().await;
     managed_node.teardown().await;
@@ -597,7 +615,7 @@ async fn a_cached_document_still_routes_after_the_supervisor_is_down() {
     let fetcher = outside_caller_fetcher(&supervisor_node.registry_url, &outside_caller, grant);
     let app_did_typed = AppDid::new(app_did.clone());
 
-    let resolver = LogicalResolver::new(std::sync::Arc::new(StaticInventory::new()));
+    let resolver = LogicalResolver::new(Arc::new(StaticInventory::new()));
     let key = fetch_and_register(
         &fetcher,
         &resolver,

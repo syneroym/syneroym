@@ -173,6 +173,19 @@ define_string_wrapper!(
         if !s.starts_with("did:key:") {
             return Err(anyhow!("AppDid must start with 'did:key:'"));
         }
+        // A validly-derived did:key never contains either character, so
+        // this only ever refuses a malformed one -- but this value is
+        // interpolated straight into a `synapp:<app-did>` `ResourceUri`
+        // (ADR-0022 §5), where a stray `/` would produce a
+        // selector-bearing resource `covers_resource` treats under a
+        // different rule. Same two characters `AppInstanceId` and
+        // `LogicalServiceName` already forbid.
+        if s.contains('/') {
+            return Err(anyhow!("AppDid cannot contain '/'"));
+        }
+        if s.contains('#') {
+            return Err(anyhow!("AppDid cannot contain '#'"));
+        }
         Ok(())
     }
 );

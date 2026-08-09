@@ -66,6 +66,7 @@ use crate::{
     outbox::{QueueKey, SupervisorOutbox},
     store::{DesiredState, RemediationState, ScheduleState, SupervisorStore},
     tier1, topology,
+    topology::TopologyBuildError,
 };
 
 const SUPERVISOR_INTERFACE: &str = "supervisor";
@@ -454,6 +455,41 @@ impl SupervisorService {
             1
         } else {
             max_renewals_per_pass
+        };
+        // A `0` here makes every signed topology document born expired
+        // (`verify` rejects it on issue) while the supervisor keeps
+        // signing and serving one afresh per request -- exactly the
+        // per-request latency surface D-S2-6's re-sign-at-half-validity
+        // cache exists to remove. Same clamp shape as
+        // `max_renewals_per_pass` above.
+        let topology_document_not_after_secs = if topology_document_not_after_secs == 0 {
+            tracing::warn!(
+                "supervisor.topology_document_not_after_secs was configured to 0, which would \
+                 make every signed topology document expire the instant it is issued; clamped to \
+                 3600"
+            );
+            3_600
+        } else {
+            topology_document_not_after_secs
+        };
+        // A `cache_ttl` at or above half of `not_after` breaks D-S2-6's "a
+        // served copy always outlives the caller's own cache TTL" -- a
+        // reader that re-asks exactly on the advised TTL could then read a
+        // document that already expired.
+        let topology_document_cache_ttl_secs = if topology_document_cache_ttl_secs.saturating_mul(2)
+            >= topology_document_not_after_secs
+        {
+            let clamped = topology_document_not_after_secs / 4;
+            tracing::warn!(
+                topology_document_cache_ttl_secs,
+                topology_document_not_after_secs,
+                "supervisor.topology_document_cache_ttl_secs is at least half of \
+                 topology_document_not_after_secs, which breaks the property that a served copy \
+                 always outlives the caller's own cache TTL; clamped to {clamped}"
+            );
+            clamped
+        } else {
+            topology_document_cache_ttl_secs
         };
         Self {
             node_did,
@@ -5291,15 +5327,21 @@ impl SupervisorService {
 
         // The plan read, the epoch, and the signature must describe one
         // plan. This call holds no instance lock, so a `submit` can land
-        // between the read and the sign -- retry once, then give up
-        // rather than signing a mismatched pair.
+        // between the read and the sign -- retry once on the lock-free
+        // insert-only path, then fall back to a locked repair below rather
+        // than sign a mismatched pair. `NoSuchService` is caller input (an
+        // authorized caller asking for a service this app does not have),
+        // unlike `InconsistentPlan`, which is a compiler defect.
+        let map_topology_err = |e: TopologyBuildError| match e {
+            TopologyBuildError::NoSuchService(_) => RpcError::InvalidParams(e.to_string()),
+            TopologyBuildError::InconsistentPlan(_) => RpcError::InternalError(e.to_string()),
+        };
         let mut topo = None;
         let mut epoch = 0u64;
         for _attempt in 0..2 {
             let plan = DeploymentPlan::from_json(&state.plan_json)
                 .map_err(|e| RpcError::InternalError(e.to_string()))?;
-            let t = topology::service_topology(&plan, &service_name)
-                .map_err(|e| RpcError::InternalError(e.to_string()))?;
+            let t = topology::service_topology(&plan, &service_name).map_err(map_topology_err)?;
             let fp = topology_fingerprint(t.mode, &t.members, t.sharding_strategy.as_ref());
             let (e, stored_fp) = self
                 .store
@@ -5317,19 +5359,58 @@ impl SupervisorService {
                 .map_err(|e| RpcError::InternalError(e.to_string()))?
                 .ok_or_else(denied)?;
         }
-        let Some(topo) = topo else {
-            return Err(RpcError::InternalError(
-                "this app instance's plan is changing faster than a document can be signed for \
-                 it; retry"
-                    .to_string(),
-            ));
+        let (topo, epoch) = match topo {
+            Some(t) => (t, epoch),
+            None => {
+                // Two lock-free attempts still disagreed with the stored
+                // fingerprint: either a `submit` is genuinely still in
+                // flight, or an earlier `submit`'s fingerprint write never
+                // landed (that write is best-effort against a durable
+                // write already made, so a failure there only ever
+                // surfaces as a `tracing::warn!` in `handle_submit`),
+                // leaving a permanently stale row the insert-only form can
+                // never correct on its own. The instance lock is an async
+                // per-instance mutex never held across the store's own
+                // (synchronous, short) critical section, so taking it here
+                // can only ever wait behind an in-flight submit/adopt/
+                // retire/force-reconcile finishing -- not deadlock one --
+                // and the advancing form is safe once this call is the
+                // sole writer for the instance.
+                let lock = self.instance_lock(&state.app_instance_id);
+                let _guard = lock.lock().await;
+                state = self
+                    .store
+                    .instance_by_app_master_did(app_did.as_str())
+                    .map_err(|e| RpcError::InternalError(e.to_string()))?
+                    .ok_or_else(denied)?;
+                let plan = DeploymentPlan::from_json(&state.plan_json)
+                    .map_err(|e| RpcError::InternalError(e.to_string()))?;
+                let t =
+                    topology::service_topology(&plan, &service_name).map_err(map_topology_err)?;
+                let fp = topology_fingerprint(t.mode, &t.members, t.sharding_strategy.as_ref());
+                let e = self
+                    .store
+                    .record_topology_fingerprint(&state.app_instance_id, service_name.as_str(), &fp)
+                    .map_err(|e| RpcError::InternalError(e.to_string()))?;
+                (t, e)
+            }
         };
 
         // One signature per (service, epoch), re-signed when less than
-        // half the document's own validity remains.
+        // half the document's own validity remains. Keyed only by
+        // (app_instance_id, service_name), which a handover can leave
+        // pointing at a document signed by a *different* master -- the
+        // instance id survives `import-master`/`adopt`, the app DID does
+        // not -- so the hit condition, not the key, has to bind to the DID
+        // actually being resolved. `generation` is checked for the same
+        // reason: `adopt` can advance it with no membership change, so the
+        // epoch alone does not prove a cached document's `generation` is
+        // still current.
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let cache_key = (state.app_instance_id.clone(), service_name.to_string());
         if let Some(cached) = self.signed_documents.get(&cache_key)
+            && cached.signed.document.app_did == app_did
+            && cached.signed.document.generation == state.generation
             && cached.epoch == epoch
             && cached.signed.document.not_after.saturating_sub(now)
                 > self.topology_document_not_after_secs / 2
@@ -5722,6 +5803,12 @@ mod tests {
             ("replay", serde_json::json!(["i", 1])),
             // No new resource namespace here either.
             ("schedules", serde_json::json!(["i"])),
+            // `resolve` checks `synapp:<app-did>`, not `substrate:<node>`,
+            // but a caller with no capabilities at all still denies on
+            // either resource -- a syntactically valid DID is needed so
+            // the call reaches the capability check rather than failing at
+            // `InvalidParams` first.
+            ("resolve", serde_json::json!(["did:key:zX", "backend"])),
         ] {
             let err = dispatch(&s, unauthenticated_caller(), method, params).await.unwrap_err();
             assert_eq!(err.code(), PERMISSION_DENIED_CODE, "{method} must deny without admin");
@@ -9916,6 +10003,26 @@ mod tests {
         assert_eq!(s.max_renewals_per_pass, 1);
     }
 
+    /// A `0` here would make every signed topology document born expired.
+    #[test]
+    fn a_configured_zero_topology_document_not_after_secs_is_clamped() {
+        let s = Fixture { topology_document_not_after_secs: Some(0), ..Fixture::default() }.build();
+        assert_eq!(s.topology_document_not_after_secs, 3_600);
+    }
+
+    /// A `cache_ttl` at or above half of `not_after` breaks the property
+    /// that a served copy always outlives the caller's own cache TTL.
+    #[test]
+    fn a_cache_ttl_at_least_half_of_not_after_is_clamped() {
+        let s = Fixture {
+            topology_document_not_after_secs: Some(100),
+            topology_document_cache_ttl_secs: Some(50),
+            ..Fixture::default()
+        }
+        .build();
+        assert_eq!(s.topology_document_cache_ttl_secs, 25);
+    }
+
     // ── Phase 4: master-anchor refresh on the existing tick ──────────────
 
     #[tokio::test]
@@ -13588,6 +13695,39 @@ mod tests {
         );
         assert_eq!(first.signature, second.signature, "a cache hit must not re-sign");
         assert_eq!(first.document.issued_at, second.document.issued_at);
+    }
+
+    /// D-S2-6: a cached document is re-signed once less than half its
+    /// validity remains, so a served copy always outlives a caller's own
+    /// cache TTL rather than being served right up to the moment it
+    /// expires.
+    #[tokio::test]
+    async fn a_nearly_expired_cached_document_is_re_signed_rather_than_served() {
+        let s = Fixture { topology_document_not_after_secs: Some(2), ..Fixture::default() }.build();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+        let caller = resolve_grant("did:key:zOutsideCaller", &app_did);
+
+        let first = decode_signed_document(
+            dispatch(&s, caller.clone(), "resolve", serde_json::json!([app_did, "backend"]))
+                .await
+                .unwrap()
+                .payload,
+        );
+
+        // Past half of the 2s validity, with no membership change.
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+
+        let second = decode_signed_document(
+            dispatch(&s, caller, "resolve", serde_json::json!([app_did, "backend"]))
+                .await
+                .unwrap()
+                .payload,
+        );
+        assert_ne!(first.signature, second.signature, "a nearly-expired document must re-sign");
+        assert!(second.document.issued_at >= first.document.issued_at);
+        assert!(second.document.not_after > first.document.not_after);
+        assert_eq!(first.document.epoch, second.document.epoch, "membership did not change");
     }
 
     /// A membership change re-signs the document at the new epoch. The

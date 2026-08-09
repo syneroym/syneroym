@@ -1396,16 +1396,20 @@ mod tests {
         // Cache-hit path: an entry valid when cached (a long `cache_ttl`,
         // a `not_after` a moment away) must stop answering once real time
         // carries it past `not_after`, with no registry re-read involved.
+        // A 1s margin here raced `unix_now()`'s own second boundary under
+        // load (the immediate "still valid" resolve could land exactly on
+        // it); 3s leaves two full seconds of slack regardless of where in
+        // its current second `register` happens to land.
         let key2 = foreign_key("app-1", "svc2");
         inv.register(
             key2.clone(),
             TopologyEntry {
-                not_after: Some(unix_now() + 1),
+                not_after: Some(unix_now() + 3),
                 ..make_entry(TopologyMode::Singleton, vec![svc_id("m2")], None)
             },
         );
         assert!(resolver.resolve(&key2, None).is_ok(), "warms the cache while still valid");
-        std::thread::sleep(Duration::from_millis(1100));
+        std::thread::sleep(Duration::from_millis(3200));
         let err2 = resolver.resolve(&key2, None).unwrap_err();
         assert!(err2.to_string().contains("expired"), "{err2}");
     }
