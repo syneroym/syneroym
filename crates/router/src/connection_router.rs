@@ -239,7 +239,15 @@ impl ConnectionRouter {
         info!("shutting down connection router");
         if let Some(router) = self.iroh_router.as_ref() {
             let ep = router.endpoint().clone();
-            router.shutdown().await?;
+            // `Router::shutdown` already closes the endpoint internally on
+            // its own success path, so the explicit `ep.close()` below is
+            // normally a no-op safety net -- but propagating an `Err` here
+            // (its accept-loop task panicked or was aborted before reaching
+            // that internal close) used to skip the fallback entirely via
+            // `?`, leaving the endpoint to log iroh's own "dropped without
+            // calling Endpoint::close" error on drop instead. Same shape
+            // `coordinator_iroh::Coordinator::shutdown` already uses.
+            let _ = router.shutdown().await;
             ep.close().await;
         }
         Ok(())
