@@ -115,6 +115,18 @@ implementation anywhere yet (not a regression introduced by any of the
 above), recorded instead as a sharper backlog row rather than built ahead
 of a scheduled refresher nothing calls yet.
 
+**A second-round review of that first fix pass** found four more gaps: the
+repair path's re-read never re-checked `retired`, so a `resolve` that
+blocks behind a concurrent `retire` holding the same instance lock woke to
+a now-retired state and signed anyway -- fixed with the same guard,
+re-run after the re-read; F1, F2, F4, and F6 shipped with no regression
+test, closed with three (F2 and F6 share one fix, and one test); the
+cache-TTL clamp's `not_after_secs / 4` could itself yield `0` for a very
+short `not_after`, producing a `Duration::ZERO` reader TTL that never
+registers a cache hit -- `.max(1)`; and `AppDid`'s new separator refusal
+had no test, unlike its two siblings. See
+[status.md](status.md)'s "Second-round review fixes" for the full list.
+
 ### 0.1 (Correctness, and it is this slice's sharpest finding) The topology epoch ADR-0022 §6 says "already exists" does not exist
 
 ADR-0022 §6:

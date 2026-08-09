@@ -479,7 +479,10 @@ impl SupervisorService {
         let topology_document_cache_ttl_secs = if topology_document_cache_ttl_secs.saturating_mul(2)
             >= topology_document_not_after_secs
         {
-            let clamped = topology_document_not_after_secs / 4;
+            // `.max(1)`: `not_after_secs` under 4 would otherwise clamp to
+            // 0, and a reader taking that advice as its cache TTL gets
+            // `Duration::ZERO`, which never registers a cache hit at all.
+            let clamped = (topology_document_not_after_secs / 4).max(1);
             tracing::warn!(
                 topology_document_cache_ttl_secs,
                 topology_document_not_after_secs,
@@ -5383,6 +5386,14 @@ impl SupervisorService {
                     .instance_by_app_master_did(app_did.as_str())
                     .map_err(|e| RpcError::InternalError(e.to_string()))?
                     .ok_or_else(denied)?;
+                // The lock hand-off makes this the expected ordering, not
+                // a narrow race: a `retire` holding the same instance lock
+                // can finish while this call waits for it, and the
+                // pre-lock `retired` check above read a state from before
+                // that happened.
+                if state.retired {
+                    return Err(denied());
+                }
                 let plan = DeploymentPlan::from_json(&state.plan_json)
                     .map_err(|e| RpcError::InternalError(e.to_string()))?;
                 let t =
@@ -10023,6 +10034,20 @@ mod tests {
         assert_eq!(s.topology_document_cache_ttl_secs, 25);
     }
 
+    /// `not_after_secs / 4` alone would clamp to `0` for any `not_after`
+    /// under 4 seconds, and a reader that takes `0` as its cache TTL gets
+    /// `Duration::ZERO`, which never registers a cache hit at all.
+    #[test]
+    fn the_cache_ttl_clamp_never_produces_zero() {
+        let s = Fixture {
+            topology_document_not_after_secs: Some(2),
+            topology_document_cache_ttl_secs: Some(2),
+            ..Fixture::default()
+        }
+        .build();
+        assert_eq!(s.topology_document_cache_ttl_secs, 1);
+    }
+
     // ── Phase 4: master-anchor refresh on the existing tick ──────────────
 
     #[tokio::test]
@@ -13769,6 +13794,132 @@ mod tests {
         assert_eq!(second.document.epoch, TopologyEpoch(2));
         assert_eq!(second.document.members.len(), 2);
         assert_ne!(first.signature, second.signature);
+    }
+
+    /// F1: the document cache is keyed only by `(app_instance_id,
+    /// service_name)`, so a handover that reassigns `app_master_did`
+    /// (`import-master` + `adopt`, simulated here at the store level --
+    /// the same shortcut the test above uses for a resubmit) must not let
+    /// a caller asking for the *new* DID be served a document cached
+    /// under the *old* one, which would carry the wrong `app_did` and
+    /// fail every caller's `verify`.
+    #[tokio::test]
+    async fn a_handover_to_a_different_app_did_does_not_serve_the_previous_masters_cached_document()
+    {
+        let s = service();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        let old_app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+
+        let first = decode_signed_document(
+            dispatch(
+                &s,
+                resolve_grant("did:key:zOutsideCaller", &old_app_did),
+                "resolve",
+                serde_json::json!([old_app_did, "backend"]),
+            )
+            .await
+            .unwrap()
+            .payload,
+        );
+        assert_eq!(first.document.app_did, AppDid::new(old_app_did.clone()));
+
+        // The row-level effect of `import-master` + `adopt`: the same
+        // instance, a different recorded app master DID, no vault key
+        // rotation (a real handover also imports a new vault key -- the
+        // resulting mismatch, and its alert, are `resolve_on_a_locked_
+        // vault_fails_loudly_and_names_inject_kek`'s sibling test, not
+        // this one's concern). Generation is held at `1`, unchanged from
+        // `adopted_instance`'s own call, so this isolates the app DID as
+        // the only thing that moved -- `record_adopt` is a plain `UPDATE`
+        // with no monotonic guard on generation, so re-recording the same
+        // one is accepted. Bumping it here as well would let the
+        // `generation` clause alone force the cache miss this test means
+        // to pin on `app_did`.
+        let new_app_did = "did:key:zHandedOverMaster";
+        s.store.record_adopt("inst-1", 1, new_app_did).unwrap();
+
+        let err = dispatch(
+            &s,
+            resolve_grant("did:key:zOutsideCaller", new_app_did),
+            "resolve",
+            serde_json::json!([new_app_did, "backend"]),
+        )
+        .await
+        .unwrap_err();
+        // Proves the stale document was not served: a cache hit would
+        // have returned `Ok` with `first`'s bytes. Instead the fresh-sign
+        // path ran and correctly refused, since the vault's real key
+        // still derives `old_app_did`, not `new_app_did`.
+        assert!(err.to_string().contains("does not match its recorded app master DID"), "{err}");
+    }
+
+    /// F4: the cache hit condition did not compare `generation`, so a
+    /// second `adopt` of the same app master -- no membership change, no
+    /// `AppDid` change -- could serve a document carrying the *previous*
+    /// generation, the field ADR-0022 §2 gives a reader to tell two
+    /// supervisors' documents apart.
+    #[tokio::test]
+    async fn a_generation_bump_with_no_membership_change_is_not_served_from_a_stale_cache() {
+        let s = service();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+        let caller = resolve_grant("did:key:zOutsideCaller", &app_did);
+
+        let first = decode_signed_document(
+            dispatch(&s, caller.clone(), "resolve", serde_json::json!([app_did, "backend"]))
+                .await
+                .unwrap()
+                .payload,
+        );
+        assert_eq!(first.document.generation, 1);
+
+        // Same app master, same plan -- only the generation moves, the
+        // way a second `adopt` of an already-adopted instance would.
+        s.store.record_adopt("inst-1", 2, &app_did).unwrap();
+
+        let second = decode_signed_document(
+            dispatch(&s, caller, "resolve", serde_json::json!([app_did, "backend"]))
+                .await
+                .unwrap()
+                .payload,
+        );
+        assert_eq!(second.document.generation, 2);
+        assert_ne!(first.signature, second.signature, "a stale generation must not be served");
+        assert_eq!(first.document.epoch, second.document.epoch, "membership did not change");
+    }
+
+    /// F2 (and F6, the same fix): `initialise_topology_epoch`'s
+    /// insert-only form can never correct an existing row's fingerprint,
+    /// so a row left holding one that disagrees with the real plan --
+    /// whether from an earlier `submit`'s fingerprint write landing
+    /// wrong, or a genuine concurrent `submit` -- used to exhaust both
+    /// lock-free attempts and fail permanently. The locked repair path
+    /// settles it instead.
+    #[tokio::test]
+    async fn resolve_repairs_a_topology_epoch_row_stuck_on_the_wrong_fingerprint() {
+        let s = service();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+
+        // A row that disagrees with what `service_topology` actually
+        // computes for the stored plan -- the state a lock-free
+        // `resolve` can never fix on its own.
+        s.store.record_topology_fingerprint("inst-1", "backend", "garbage-fingerprint").unwrap();
+
+        let doc = decode_signed_document(
+            dispatch(
+                &s,
+                resolve_grant("did:key:zOutsideCaller", &app_did),
+                "resolve",
+                serde_json::json!([app_did, "backend"]),
+            )
+            .await
+            .unwrap()
+            .payload,
+        );
+        // The repair path's advancing write bumps the epoch past the
+        // garbage row's `1`, since the stored fingerprint did not match.
+        assert_eq!(doc.document.epoch, TopologyEpoch(2));
     }
 
     /// The WIT record and the serde struct are two descriptions of one

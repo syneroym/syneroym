@@ -574,3 +574,71 @@ which skipped its own fallback `ep.close()` on that path. Fixed to match
 **Re-verification**: `cargo +nightly fmt --all` clean; `cargo clippy
 --workspace --all-targets --all-features` clean; `cargo test --workspace`
 — see numbers below.
+
+### S2 — Second-round review fixes (2026-08-09)
+
+A follow-up pass on the round above found four more gaps, all fixed:
+
+1. **The repair path re-read `state` but never re-checked `retired`**
+   (`handle_resolve`). A `resolve` that reaches the locked repair branch
+   while a concurrent `retire` holds the same instance lock blocks, wakes
+   once `retire` finishes, re-reads a now-`retired` state, and signed
+   anyway — the lock hand-off makes this the *expected* ordering, not a
+   narrow race, since the pre-lock `retired` check ran before `retire`
+   landed. Fixed: the same `if state.retired { return Err(denied()) }`
+   guard, re-run after the repair path's re-read.
+2. **Findings F1, F2, F4, and F6 shipped with no regression test.** The
+   cache hit condition is four `&&` clauses now, two of which are one
+   refactor away from silently vanishing. Added three tests (F2 and F6
+   share the identical fix, so one test covers both):
+   `a_handover_to_a_different_app_did_does_not_serve_the_previous_masters_cached_document`
+   (F1, via `record_adopt` with a different DID and no vault key
+   rotation, asserting the fresh-sign path runs and correctly refuses
+   rather than serving the stale document),
+   `a_generation_bump_with_no_membership_change_is_not_served_from_a_stale_cache`
+   (F4, via `record_adopt` at a new generation with the same DID and
+   plan), and
+   `resolve_repairs_a_topology_epoch_row_stuck_on_the_wrong_fingerprint`
+   (F2/F6, via a directly-written `record_topology_fingerprint` row that
+   disagrees with the real plan).
+3. **The cache-TTL clamp (`not_after_secs / 4`) could itself produce
+   `0`** for any `not_after` under 4 seconds, and a reader taking that
+   `0` as its own cache TTL gets `Duration::ZERO`, which never registers
+   a cache hit. Only reachable with a misconfigured (very short)
+   `not_after` today, mostly relevant to tests. Fixed with `.max(1)`, and
+   pinned by `the_cache_ttl_clamp_never_produces_zero`.
+4. **`AppDid`'s new `/`/`#` refusal had no test**, unlike both sibling
+   wrappers (`AppInstanceId`, `LogicalServiceName`). Added
+   `an_app_did_containing_a_separator_is_refused`, matching their
+   existing test shape.
+
+**Re-verification**: `cargo +nightly fmt --all` clean; `cargo clippy
+--workspace --all-targets --all-features` clean; `cargo test -p
+syneroym-app-supervisor --lib` 280/280 (4 new), `cargo test -p
+syneroym-app-orchestration --lib` 153/153 (1 new).
+
+### S2 — Third-round review: a test that passed for the wrong reason
+
+A third pass on the tests above found finding 2's F1 test
+(`a_handover_to_a_different_app_did_does_not_serve_the_previous_masters_cached_document`)
+was not discriminating: it called `record_adopt("inst-1", 2, new_app_did)`,
+which bumps `generation` to `2` *and* changes the DID in one write
+(`store.rs`'s `record_adopt` sets both columns together). Since the cache
+hit condition already checks `generation`, that clause alone forced the
+cache miss the test asserts on -- the `app_did` clause it meant to pin
+was never consulted, and deleting it left the test green. Fixed by holding
+`generation` at `1` (unchanged from `adopted_instance`'s own call) and
+changing only the DID, isolating the dimension the test names. Verified
+by temporarily removing the `app_did` clause from the cache hit condition
+and confirming the test now fails (`Result::unwrap_err()` on an `Ok`
+carrying the stale document), then restoring it. F4's mirror-image test
+was already discriminating -- it holds the DID fixed and moves only the
+generation -- and needed no change.
+
+Also found in this pass, pre-existing and unrelated to S2 (that slice's
+only change to `keys.rs` is one fixture field): a flaky
+`keys::tests::get_or_mint_warns_with_the_wording_matching_its_kind`, whose
+log-capture harness (`run_capturing_logs`) uses a thread-local
+`tracing` subscriber that only sees a warning if it happens to fire on the
+same thread that installed it. Recorded in
+[deferred-backlog.md](../../deferred-backlog.md), not fixed here.

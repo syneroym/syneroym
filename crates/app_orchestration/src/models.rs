@@ -1170,6 +1170,17 @@ mod tests {
         assert!(AppInstanceId::try_new("inst-1").is_ok());
     }
 
+    /// `AppDid` is interpolated straight into a `synapp:<app-did>`
+    /// `ResourceUri` (ADR-0022 §5) -- a `/` or `#` in it would produce a
+    /// selector-bearing resource `covers_resource` treats under a
+    /// different rule, the same reason its two siblings above forbid them.
+    #[test]
+    fn an_app_did_containing_a_separator_is_refused() {
+        assert!(AppDid::try_new("did:key:zAbc/evil").is_err());
+        assert!(AppDid::try_new("did:key:zAbc#evil").is_err());
+        assert!(AppDid::try_new("did:key:zAbc").is_ok());
+    }
+
     /// M05A A7 review finding 5: `..` and `\` are refused at construction
     /// now, not only later at `crates/app_supervisor/src/keys.rs`'s
     /// `validate_backup_name` -- an id that can never be a vault backup
