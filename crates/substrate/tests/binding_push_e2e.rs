@@ -355,7 +355,7 @@ async fn boot_pair(
 ) -> (Node, Node, BTreeMap<SubstrateAlias, Arc<SyneroymClient>>) {
     let _ = ring::default_provider().install_default();
 
-    let node_a = Node::boot_fresh(
+    let mut node_a = Node::boot_fresh(
         ports.node_a_iroh,
         ports.node_a_registry,
         ports.node_a_gateway,
@@ -376,7 +376,30 @@ async fn boot_pair(
     )
     .await;
 
-    node_a.substrate_client.inject_kek("aa".repeat(32)).await.expect("node A inject_kek failed");
+    // `node_a`'s connection was dialed and proven live by its own
+    // `wait_for_ready` during `Node::boot_fresh`, then sat idle for the
+    // entire `node_b` boot that followed (a second full substrate start)
+    // -- long enough under CI's scheduling pressure for the peer to
+    // abandon that idle path ("no viable network path exists: last path
+    // abandoned by peer"; same root cause fixed in
+    // `app_instance_identity_e2e.rs` and `supervisor_alerts_e2e.rs`).
+    // `SyneroymClient::connect` no-ops on an already-`Some` connection, so
+    // recovering means an explicit `shutdown`-then-`connect` (redial)
+    // before one retry, not just retrying the same request on the same
+    // dead connection.
+    if node_a.substrate_client.inject_kek("aa".repeat(32)).await.is_err() {
+        node_a
+            .substrate_client
+            .shutdown()
+            .await
+            .expect("failed to reset node A's stale connection");
+        node_a.substrate_client.connect().await.expect("failed to reconnect node A");
+        node_a
+            .substrate_client
+            .inject_kek("aa".repeat(32))
+            .await
+            .expect("node A inject_kek failed");
+    }
     node_b.substrate_client.inject_kek("bb".repeat(32)).await.expect("node B inject_kek failed");
 
     let operator_did = substrate::derive_did_key(&operator.public_key());
