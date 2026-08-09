@@ -227,7 +227,7 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
     // comparison below.
     let operator = Identity::generate().unwrap();
 
-    let node_a =
+    let mut node_a =
         Node::boot(NODE_A_IROH_PORT, NODE_A_REGISTRY_PORT, NODE_A_GATEWAY_PORT, &operator).await;
     let node_b =
         Node::boot(NODE_B_IROH_PORT, NODE_B_REGISTRY_PORT, NODE_B_GATEWAY_PORT, &operator).await;
@@ -236,7 +236,26 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
     // service's native-capability endpoints (registered regardless of
     // service type) can be set up -- same precedent as this crate's other
     // e2e fixtures.
-    node_a.substrate_client.inject_kek("55".repeat(32)).await.expect("node A inject_kek failed");
+    // `node_a`'s connection was dialed and proven live by its own
+    // `wait_for_ready` during `Node::boot`, then sat idle for the entire
+    // `node_b` boot that followed -- long enough under CI's scheduling
+    // pressure for the peer to abandon that idle path ("no viable network
+    // path exists: last path abandoned by peer"; same root cause fixed in
+    // `binding_push_e2e.rs`). Recover by explicit shutdown→reconnect before
+    // one retry.
+    if node_a.substrate_client.inject_kek("55".repeat(32)).await.is_err() {
+        node_a
+            .substrate_client
+            .shutdown()
+            .await
+            .expect("failed to reset node A's stale connection");
+        node_a.substrate_client.connect().await.expect("failed to reconnect node A");
+        node_a
+            .substrate_client
+            .inject_kek("55".repeat(32))
+            .await
+            .expect("node A inject_kek failed");
+    }
     node_b.substrate_client.inject_kek("66".repeat(32)).await.expect("node B inject_kek failed");
 
     let member_master = Identity::generate().unwrap();

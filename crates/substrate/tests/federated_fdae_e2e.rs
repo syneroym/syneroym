@@ -346,7 +346,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     // `resolve_relation`'s A1/A2 fork (B3-07) treats as "holds a capability
     // scoped to this resource" regardless of ability -- forcing A1 and
     // defeating `resolvable_without_capability`'s A2 path for every caller.
-    let node_a = Node::boot(
+    let mut node_a = Node::boot(
         NODE_A_IROH_PORT,
         NODE_A_REGISTRY_PORT,
         NODE_A_GATEWAY_PORT,
@@ -381,7 +381,26 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     // Default `storage.encryption = true` requires a KEK before any
     // service's database can be opened (`crates/substrate/tests/
     // http_passthrough_e2e.rs`'s own precedent for this exact step).
-    node_a.substrate_client.inject_kek("11".repeat(32)).await.expect("node A inject_kek failed");
+    // `node_a`'s connection was dialed and proven live by its own
+    // `wait_for_ready` during `Node::boot`, then sat idle for the entire
+    // `node_b` boot that followed -- long enough under CI's scheduling
+    // pressure for the peer to abandon that idle path ("no viable network
+    // path exists: last path abandoned by peer"; same root cause fixed in
+    // `binding_push_e2e.rs`). Recover by explicit shutdown→reconnect before
+    // one retry.
+    if node_a.substrate_client.inject_kek("11".repeat(32)).await.is_err() {
+        node_a
+            .substrate_client
+            .shutdown()
+            .await
+            .expect("failed to reset node A's stale connection");
+        node_a.substrate_client.connect().await.expect("failed to reconnect node A");
+        node_a
+            .substrate_client
+            .inject_kek("11".repeat(32))
+            .await
+            .expect("node A inject_kek failed");
+    }
     node_b.substrate_client.inject_kek("22".repeat(32)).await.expect("node B inject_kek failed");
 
     // --- Node A: the data-owning "hr" service. A2 (`resolvable_without_
