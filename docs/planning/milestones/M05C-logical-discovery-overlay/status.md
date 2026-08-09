@@ -25,7 +25,7 @@ is the first; S2–S4 get theirs when picked up. The reasoning is in
 | S0 | App-instance master DID | **Complete (2026-08-04)** as [M05A slice A7](../M05A-app-supervisor/slice-a7-implementation-plan.md) | — |
 | S1 | Tier 1: the app-DID registry record; `ShardingStrategy` manifest surface | **✅ Complete (2026-08-08)** — [plan](slice-s1-implementation-plan.md); evidence below | S0 **cleared** |
 | S2 | Tier 2: signed topology document, `resolve` RPC, client verify/cache | **✅ Complete (2026-08-08)** — [plan](slice-s2-implementation-plan.md); evidence below | S1 **cleared** |
-| S3 | Gateway hostname scheme + routing-key header; coordinator relay | 📋 Planned (sketch; owes its own `§0`) | S2 **cleared** |
+| S3 | Gateway hostname scheme + routing-key header; coordinator relay | 📋 **Planned (2026-08-09)** — [plan](slice-s3-implementation-plan.md), `§0` written | S2 **cleared** |
 | S4 | Cross-app `Bind` | 📋 Planned (sketch; owes its own `§0`) | S2 **and a real consumer** (D-C-7) |
 | S5 | Shard rebalancing, epoch enforcement | Out of this milestone | **M7** `[PLT-RED]` |
 
