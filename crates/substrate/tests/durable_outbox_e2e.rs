@@ -220,7 +220,16 @@ impl Node {
 /// one poll interval") needs a long one for the *second* boot, after the
 /// item is already queued, so a passing convergence cannot be a coincidence
 /// of the loop also happening to retry in time.
-fn supervisor_role(poll_interval_secs: u64) -> SupervisorRole {
+///
+/// `queue_max_attempts` is a caller-chosen parameter too, for the same
+/// reason: the queue worker ticks every second the whole time a substrate
+/// this test deliberately keeps offline stays unreachable, each attempt
+/// paying up to `MANAGED_SUBSTRATE_CONNECT_TIMEOUT` (10s). A low budget is
+/// the point for the DLQ test (it wants delivery to actually exhaust and
+/// dead-letter); a caller asserting the item is *still pending* across a
+/// restart needs enough headroom that a slow CI runner's extra wall-clock
+/// time can't dead-letter it out from under that assertion first.
+fn supervisor_role(poll_interval_secs: u64, queue_max_attempts: u8) -> SupervisorRole {
     SupervisorRole {
         poll_interval_secs,
         db_name: "supervisor.db".to_string(),
@@ -229,7 +238,7 @@ fn supervisor_role(poll_interval_secs: u64) -> SupervisorRole {
         alert_topic: "supervisor/alerts".to_string(),
         master_backup_dir: "master-backups".to_string(),
         queue_tick_secs: 1,
-        queue_max_attempts: 3,
+        queue_max_attempts,
         queue_max_backoff_secs: 1,
         queue_visibility_timeout_secs: 5,
         queue_dlq_max_rows: 10,
@@ -446,8 +455,13 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
         &supervisor_owner,
         // Short for this first boot: the resident loop's own pass is what
         // discovers step 3's scale-out diff and attempts (and fails, and
-        // enqueues) the push to frontend while managed-b is down.
-        Some(supervisor_role(3)),
+        // enqueues) the push to frontend while managed-b is down. A high
+        // queue_max_attempts: managed-b stays offline for this entire
+        // boot, so every queue-worker tick in that window is expected to
+        // fail -- a low budget would race a slow CI runner's extra
+        // wall-clock time into dead-lettering the item before step 5 gets
+        // to assert it is still pending.
+        Some(supervisor_role(3, 100)),
     )
     .await;
     let shared_registry = supervisor_node.registry_url.clone();
@@ -591,8 +605,11 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
         // "within one worker tick, not one poll interval" -- set far above
         // `queue_tick_secs` (1s) so the loop's own next pass is nowhere
         // near step 7's window, and the convergence it asserts there can
-        // only have come from the queue worker.
-        Some(supervisor_role(3600)),
+        // only have come from the queue worker. High queue_max_attempts
+        // for the same reason as the first boot: managed-b is still
+        // rebooting when this worker's first ticks fire, and a slow CI
+        // runner could stretch that reboot past a low attempt budget.
+        Some(supervisor_role(3600, 100)),
     )
     .await;
     let status = supervisor_status(&supervisor_node).await;
@@ -680,8 +697,10 @@ async fn a_permanently_unreachable_substrate_lands_in_the_dlq_and_replays() {
         // resident loop's pass is what discovers the scale-out diff and
         // attempts (and fails, and enqueues) the push while managed-b is
         // down. DLQ exhaustion itself is driven by the queue worker's own
-        // tick, not by this interval.
-        Some(supervisor_role(3)),
+        // tick, not by this interval. Unlike test 1, this test *wants*
+        // the low default queue_max_attempts -- it asserts the item does
+        // dead-letter.
+        Some(supervisor_role(3, 3)),
     )
     .await;
     let shared_registry = supervisor_node.registry_url.clone();

@@ -17,7 +17,8 @@ use axum::{Json, Router, routing};
 use dashmap::DashMap;
 use iroh::EndpointAddr;
 use syneroym_app_orchestration::{
-    AppInstanceId, AppRegistry, LogicalResolver, LogicalServiceName, StaticInventory, TopologyEntry,
+    AppInstanceId, AppRegistry, LogicalResolver, LogicalServiceName, StaticInventory,
+    TopologyEntry, TopologyKey,
 };
 use syneroym_client_gateway::ClientGateway;
 use syneroym_community_registry::EcosystemRegistry;
@@ -833,6 +834,8 @@ async fn init_supervisor(
         RegistryAnchorWriter::from_registry_client(registry_client.clone()),
         RegistryTier1Writer::from_registry_client(registry_client),
         role.queue_tick_secs,
+        role.topology_document_not_after_secs,
+        role.topology_document_cache_ttl_secs,
     ));
     shared
         .native_dispatch
@@ -892,7 +895,7 @@ async fn replay_persisted_bindings(
         })();
         match parsed {
             Ok((instance_id, service_name, entry)) => {
-                app_registry.register(instance_id, service_name, entry);
+                app_registry.register(TopologyKey::local(instance_id, service_name), entry);
             }
             Err(e) => {
                 warn!(%instance, %dep_name, error = %e, "skipping an unreadable persisted binding");
@@ -1245,7 +1248,7 @@ fn build_signed_endpoint_info(
 mod tests {
     use std::sync::Arc;
 
-    use syneroym_app_orchestration::{ServiceId, TopologyEpoch, TopologyMode};
+    use syneroym_app_orchestration::{AppScope, ServiceId, TopologyEpoch, TopologyMode};
     use syneroym_core::storage::MockStorage;
     use syneroym_identity::{DelegationCertificate, delegation::SCOPE_SERVICE_INSTANCE};
 
@@ -1308,6 +1311,7 @@ mod tests {
             sharding_strategy: None,
             epoch: TopologyEpoch::default(),
             cache_ttl: Duration::from_secs(60),
+            not_after: None,
         };
         registry
             .save_binding(
@@ -1323,10 +1327,13 @@ mod tests {
 
         assert!(
             app_registry
-                .get(&AppInstanceId::new("app-1"), &LogicalServiceName::new("good-dep"))
+                .get(&TopologyKey::local(
+                    AppInstanceId::new("app-1"),
+                    LogicalServiceName::new("good-dep")
+                ))
                 .is_some(),
             "the well-formed row alongside the corrupt ones must still replay"
         );
-        assert_eq!(app_registry.list(&AppInstanceId::new("app-1")).len(), 1);
+        assert_eq!(app_registry.list(&AppScope::Local(AppInstanceId::new("app-1"))).len(), 1);
     }
 }

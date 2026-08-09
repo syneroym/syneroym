@@ -23,11 +23,13 @@ use dashmap::DashMap;
 use serde_json::Value;
 use syneroym_app_orchestration::{
     ActionRecord, AlertKind, DeploymentState, MAX_SCHEDULE_TIMEOUT_MS, MAX_SCHEDULED_SERVICES,
-    ReconcileAction, Reconciler, has_occurrence_in,
+    ReconcileAction, Reconciler, ShardingStrategy, SignedTopologyDocument, TopologyDocument,
+    TopologyEpoch, has_occurrence_in,
     models::{
-        AppInstanceId, DeploymentPlan, LogicalServiceRef, MAX_REPLICAS, MemberRef, PlannedService,
-        RotationPolicy, ScheduleSpec, ServiceId, SubstrateAlias,
+        AppDid, AppInstanceId, DeploymentPlan, LogicalServiceName, LogicalServiceRef, MAX_REPLICAS,
+        MemberRef, PlannedService, RotationPolicy, ScheduleSpec, ServiceId, SubstrateAlias,
     },
+    topology_fingerprint,
 };
 use syneroym_async_queue::{FailOutcome, QueueItem};
 use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
@@ -63,7 +65,8 @@ use crate::{
     keys, outbox,
     outbox::{QueueKey, SupervisorOutbox},
     store::{DesiredState, RemediationState, ScheduleState, SupervisorStore},
-    tier1,
+    tier1, topology,
+    topology::TopologyBuildError,
 };
 
 const SUPERVISOR_INTERFACE: &str = "supervisor";
@@ -269,6 +272,15 @@ enum PushOutcome {
     Deferred,
 }
 
+/// The signed document for one logical service, plus the epoch it was
+/// signed at -- what `SupervisorService::signed_documents`'s in-process
+/// cache holds.
+#[derive(Debug, Clone)]
+struct CachedDocument {
+    signed: SignedTopologyDocument,
+    epoch: u64,
+}
+
 pub struct SupervisorService {
     node_did: String,
     store: SupervisorStore,
@@ -334,6 +346,22 @@ pub struct SupervisorService {
     /// -- a single-node deployment with no registry configured does not
     /// use cross-app discovery, and must not be broken to enable it.
     tier1_writer: Option<Arc<dyn Tier1Writer>>,
+    /// `SupervisorRole.topology_document_not_after_secs` (ADR-0022 §3).
+    /// This is the window a caller with a cached document keeps routing
+    /// while this supervisor is down -- the availability property the
+    /// document form exists for.
+    topology_document_not_after_secs: u64,
+    /// `SupervisorRole.topology_document_cache_ttl_secs`, carried inside
+    /// the signed document as `cache_ttl_ms` -- advice to the reader, not
+    /// authority.
+    topology_document_cache_ttl_secs: u64,
+    /// Signed Tier-2 documents, keyed `(app_instance_id, service_name)`:
+    /// one signature per epoch, not one per request. In process
+    /// only -- after a restart the vault is locked anyway, so persisting
+    /// these would buy one signature and a durability question. A cached
+    /// copy is still served while the vault is locked, which is the
+    /// availability property ADR-0022 §3 chose the document form for.
+    signed_documents: DashMap<(String, String), CachedDocument>,
     /// A per-app-instance async mutex, held for the whole duration of a
     /// loop pass and for the whole duration of `submit`/`force-reconcile`/
     /// `adopt`/`release`/`retire` -- not `pause`/`resume` (single-column
@@ -410,6 +438,8 @@ impl SupervisorService {
         anchor_writer: Option<Arc<dyn AnchorWriter>>,
         tier1_writer: Option<Arc<dyn Tier1Writer>>,
         queue_tick_secs: u64,
+        topology_document_not_after_secs: u64,
+        topology_document_cache_ttl_secs: u64,
     ) -> Self {
         // `.take(0)` in `renewal_candidates` silently disables renewal for
         // the whole node, with no warning and no config validation to
@@ -426,6 +456,44 @@ impl SupervisorService {
         } else {
             max_renewals_per_pass
         };
+        // A `0` here makes every signed topology document born expired
+        // (`verify` rejects it on issue) while the supervisor keeps
+        // signing and serving one afresh per request -- exactly the
+        // per-request latency surface D-S2-6's re-sign-at-half-validity
+        // cache exists to remove. Same clamp shape as
+        // `max_renewals_per_pass` above.
+        let topology_document_not_after_secs = if topology_document_not_after_secs == 0 {
+            tracing::warn!(
+                "supervisor.topology_document_not_after_secs was configured to 0, which would \
+                 make every signed topology document expire the instant it is issued; clamped to \
+                 3600"
+            );
+            3_600
+        } else {
+            topology_document_not_after_secs
+        };
+        // A `cache_ttl` at or above half of `not_after` breaks D-S2-6's "a
+        // served copy always outlives the caller's own cache TTL" -- a
+        // reader that re-asks exactly on the advised TTL could then read a
+        // document that already expired.
+        let topology_document_cache_ttl_secs = if topology_document_cache_ttl_secs.saturating_mul(2)
+            >= topology_document_not_after_secs
+        {
+            // `.max(1)`: `not_after_secs` under 4 would otherwise clamp to
+            // 0, and a reader taking that advice as its cache TTL gets
+            // `Duration::ZERO`, which never registers a cache hit at all.
+            let clamped = (topology_document_not_after_secs / 4).max(1);
+            tracing::warn!(
+                topology_document_cache_ttl_secs,
+                topology_document_not_after_secs,
+                "supervisor.topology_document_cache_ttl_secs is at least half of \
+                 topology_document_not_after_secs, which breaks the property that a served copy \
+                 always outlives the caller's own cache TTL; clamped to {clamped}"
+            );
+            clamped
+        } else {
+            topology_document_cache_ttl_secs
+        };
         Self {
             node_did,
             store,
@@ -441,6 +509,9 @@ impl SupervisorService {
             master_anchor_refresh_interval_secs,
             anchor_writer,
             tier1_writer,
+            topology_document_not_after_secs,
+            topology_document_cache_ttl_secs,
+            signed_documents: DashMap::new(),
             queue_tick_secs,
             queue_connector: Arc::new(LiveQueueConnector {
                 client_identity_bytes: client_identity.to_bytes(),
@@ -2855,6 +2926,40 @@ impl SupervisorService {
         Ok(())
     }
 
+    /// The manifest's two `sharding_strategy` rules, re-applied to an
+    /// already-compiled plan. `SynAppManifest::validate` enforces both at
+    /// compile time, and nothing between the compiler and here re-checks
+    /// them --
+    /// the exact gap the two functions above exist to close, now with a
+    /// sharper consequence: a strategy that reaches this supervisor goes
+    /// into a *signed* Tier-2 document (ADR-0022 §3), where a reader acts
+    /// on it against member ids the plan's author chose.
+    fn refuse_unshardable_plan(plan: &DeploymentPlan) -> Result<(), String> {
+        let mut counts: BTreeMap<&LogicalServiceRef, u32> = BTreeMap::new();
+        for svc in &plan.services {
+            *counts.entry(&svc.logical_ref).or_insert(0) += 1;
+        }
+        for svc in &plan.services {
+            let Some(strategy) = &svc.sharding_strategy else { continue };
+            if matches!(strategy, ShardingStrategy::RangeSharding(_)) {
+                return Err(format!(
+                    "'{}' declares a range_sharding strategy in this plan; range sharding names \
+                     concrete members by ServiceId, which is reachable only once shard \
+                     rebalancing assigns them",
+                    svc.logical_ref
+                ));
+            }
+            if counts.get(&svc.logical_ref).copied().unwrap_or(0) <= 1 {
+                return Err(format!(
+                    "'{}' declares a sharding_strategy with one member in this plan; a strategy \
+                     over one member is not a selection",
+                    svc.logical_ref
+                ));
+            }
+        }
+        Ok(())
+    }
+
     async fn refuse_placement_change(
         &self,
         plan: &DeploymentPlan,
@@ -3833,6 +3938,7 @@ impl SupervisorService {
         // actually accepts a compiled plan.
         Self::refuse_replicas_above_cap(&plan).map_err(RpcError::InternalError)?;
         Self::refuse_unrunnable_schedules(&plan).map_err(RpcError::InternalError)?;
+        Self::refuse_unshardable_plan(&plan).map_err(RpcError::InternalError)?;
 
         // Mint before connecting anywhere -- a locked vault or a bad plan
         // must fail before anything is persisted or a network round trip
@@ -3847,6 +3953,26 @@ impl SupervisorService {
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
         let plan_json_substituted =
             plan.to_json().map_err(|e| RpcError::InternalError(e.to_string()))?;
+
+        // ADR-0022 §6/§3: a per-logical-service topology epoch for
+        // every service this plan names. Computed here, ahead of
+        // `store.submit`'s durable write, alongside everything else that
+        // can fail -- `service_topology` can refuse an inconsistent plan
+        // (a compiler bug), and that must refuse the submit with nothing
+        // written, not land a stored plan no later `resolve` can build a
+        // document from. Over `plan` post-`mint_and_substitute`, so the
+        // fingerprint is over the members a document will actually carry,
+        // not the compiler's fabricated ids.
+        let service_names: BTreeSet<_> =
+            plan.services.iter().map(|svc| svc.logical_ref.service_name.clone()).collect();
+        let mut topology_fingerprints = Vec::with_capacity(service_names.len());
+        for service_name in service_names {
+            let topo = topology::service_topology(&plan, &service_name)
+                .map_err(|e| RpcError::InternalError(e.to_string()))?;
+            let fingerprint =
+                topology_fingerprint(topo.mode, &topo.members, topo.sharding_strategy.as_ref());
+            topology_fingerprints.push((service_name, fingerprint));
+        }
 
         // M05A A5c (matrix row 12): persisted here, before the deploy
         // attempt below -- so a substrate that is down or slow at this
@@ -3866,6 +3992,36 @@ impl SupervisorService {
                 s.generation,
             )
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
+
+        // Infallible in practice: a failure here is a stale epoch on an
+        // otherwise-correct stored plan, which `resolve`'s own insert-only
+        // backfill repairs on the next read. The cache eviction is
+        // belt-and-braces -- `handle_resolve` re-signs on an epoch
+        // mismatch anyway -- but removing it here means a scale-out is
+        // visible without waiting for that comparison.
+        for (service_name, fingerprint) in topology_fingerprints {
+            let before =
+                self.store.topology_epoch(&s.app_instance_id, service_name.as_str()).unwrap_or(0);
+            match self.store.record_topology_fingerprint(
+                &s.app_instance_id,
+                service_name.as_str(),
+                &fingerprint,
+            ) {
+                Ok(after) => {
+                    if after != before {
+                        self.signed_documents
+                            .remove(&(s.app_instance_id.clone(), service_name.to_string()));
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    app_instance_id = %s.app_instance_id,
+                    %service_name,
+                    error = %e,
+                    "failed to record this submit's topology fingerprint; a later resolve will \
+                     repair it"
+                ),
+            }
+        }
 
         // Best-effort immediate apply: still surfaced to the caller as an
         // error if it does not fully land (an operator's `submit` should
@@ -4258,6 +4414,7 @@ impl SupervisorService {
         // written before this check existed must not get a permanent pass.
         Self::refuse_replicas_above_cap(&plan).map_err(RpcError::InternalError)?;
         Self::refuse_unrunnable_schedules(&plan).map_err(RpcError::InternalError)?;
+        Self::refuse_unshardable_plan(&plan).map_err(RpcError::InternalError)?;
         // D-A5c-20 (§19.20/F5): a directed reconcile is a fresh start,
         // regardless of what this call's own outcome turns out to be --
         // a terminal `InstanceNotRunning` service is otherwise never
@@ -5104,6 +5261,251 @@ impl SupervisorService {
             .collect();
         Ok(NativeResponse { payload: serde_json::to_value(tasks).unwrap_or(Value::Null) })
     }
+
+    /// Tier 2 (ADR-0022 §3): signs and serves this app instance's topology
+    /// document for one logical service.
+    ///
+    /// - looked up by the app's **master DID**, not its human name -- Tier 1
+    ///   answers with a DID;
+    /// - an unknown app and an unauthorized caller are refused identically, so
+    ///   a caller with no grant cannot probe for an app's existence;
+    /// - a refusal carries no member DIDs at all: the document is built whole
+    ///   or not at all, and the authorization check runs before it is built;
+    /// - answers for a paused instance, refuses for a retired one -- pause
+    ///   stops the resident loop touching an instance, not its members, which
+    ///   stay worth routing to;
+    /// - signs once per `(service, epoch)` and serves the cached copy
+    ///   afterwards, re-signing once less than half its validity remains.
+    async fn handle_resolve(
+        &self,
+        caller: &CallerContext,
+        params: Value,
+    ) -> RpcResult<NativeResponse> {
+        let (app_did_str, service_name_str): (String, String) = serde_json::from_value(params)
+            .map_err(|e| RpcError::InvalidParams(format!("failed to parse resolve params: {e}")))?;
+        let app_did = AppDid::try_new(&app_did_str)
+            .map_err(|e| RpcError::InvalidParams(format!("invalid app DID: {e}")))?;
+        let service_name = LogicalServiceName::try_new(&service_name_str)
+            .map_err(|e| RpcError::InvalidParams(format!("invalid service name: {e}")))?;
+
+        // Look up first, authorize second, and report both failures the
+        // same way: the lookup is a local read that tells the caller
+        // nothing, and returning a distinguishable "no such app" would let
+        // an ungranted caller enumerate this node's apps.
+        let denied = || {
+            RpcError::Custom(
+                PERMISSION_DENIED_CODE,
+                format!(
+                    "no app instance '{app_did}' is resolvable by caller {} on this supervisor",
+                    caller.caller_did
+                ),
+                None,
+            )
+        };
+        let mut state = self
+            .store
+            .instance_by_app_master_did(app_did.as_str())
+            .map_err(|e| RpcError::InternalError(e.to_string()))?
+            .ok_or_else(denied)?;
+
+        // `synapp:<app-did>`, not `substrate:<node>/app/<id>`: the
+        // latter's `app/` slot already holds a `service_id`, and it dies on
+        // the handover ADR-0022 §5 explicitly worried about. A bare
+        // `substrate:<node>` `substrate/admin` grant still covers this,
+        // because `Capability::grants` short-circuits on
+        // `is_substrate_scope`.
+        if !caller.has_capability(
+            &ResourceUri(format!("synapp:{app_did}")),
+            &Ability(Ability::SUPERVISOR_RESOLVE.to_string()),
+        ) {
+            return Err(denied());
+        }
+        // A retired instance answers nothing -- the same denial as an
+        // unknown app. `paused` is deliberately NOT checked: pause stops
+        // the resident loop touching an instance, not its members, which
+        // stay worth routing to.
+        if state.retired {
+            return Err(denied());
+        }
+
+        // The plan read, the epoch, and the signature must describe one
+        // plan. This call holds no instance lock, so a `submit` can land
+        // between the read and the sign -- retry once on the lock-free
+        // insert-only path, then fall back to a locked repair below rather
+        // than sign a mismatched pair. `NoSuchService` is caller input (an
+        // authorized caller asking for a service this app does not have),
+        // unlike `InconsistentPlan`, which is a compiler defect.
+        let map_topology_err = |e: TopologyBuildError| match e {
+            TopologyBuildError::NoSuchService(_) => RpcError::InvalidParams(e.to_string()),
+            TopologyBuildError::InconsistentPlan(_) => RpcError::InternalError(e.to_string()),
+        };
+        let mut topo = None;
+        let mut epoch = 0u64;
+        for _attempt in 0..2 {
+            let plan = DeploymentPlan::from_json(&state.plan_json)
+                .map_err(|e| RpcError::InternalError(e.to_string()))?;
+            let t = topology::service_topology(&plan, &service_name).map_err(map_topology_err)?;
+            let fp = topology_fingerprint(t.mode, &t.members, t.sharding_strategy.as_ref());
+            let (e, stored_fp) = self
+                .store
+                .initialise_topology_epoch(&state.app_instance_id, service_name.as_str(), &fp)
+                .map_err(|e| RpcError::InternalError(e.to_string()))?;
+            if stored_fp == fp {
+                topo = Some(t);
+                epoch = e;
+                break;
+            }
+            // A submit landed under us. Re-read and try once more.
+            state = self
+                .store
+                .instance_by_app_master_did(app_did.as_str())
+                .map_err(|e| RpcError::InternalError(e.to_string()))?
+                .ok_or_else(denied)?;
+        }
+        let (topo, epoch) = match topo {
+            Some(t) => (t, epoch),
+            None => {
+                // Two lock-free attempts still disagreed with the stored
+                // fingerprint: either a `submit` is genuinely still in
+                // flight, or an earlier `submit`'s fingerprint write never
+                // landed (that write is best-effort against a durable
+                // write already made, so a failure there only ever
+                // surfaces as a `tracing::warn!` in `handle_submit`),
+                // leaving a permanently stale row the insert-only form can
+                // never correct on its own. The instance lock is an async
+                // per-instance mutex never held across the store's own
+                // (synchronous, short) critical section, so taking it here
+                // can only ever wait behind an in-flight submit/adopt/
+                // retire/force-reconcile finishing -- not deadlock one --
+                // and the advancing form is safe once this call is the
+                // sole writer for the instance.
+                let lock = self.instance_lock(&state.app_instance_id);
+                let _guard = lock.lock().await;
+                state = self
+                    .store
+                    .instance_by_app_master_did(app_did.as_str())
+                    .map_err(|e| RpcError::InternalError(e.to_string()))?
+                    .ok_or_else(denied)?;
+                // The lock hand-off makes this the expected ordering, not
+                // a narrow race: a `retire` holding the same instance lock
+                // can finish while this call waits for it, and the
+                // pre-lock `retired` check above read a state from before
+                // that happened.
+                if state.retired {
+                    return Err(denied());
+                }
+                let plan = DeploymentPlan::from_json(&state.plan_json)
+                    .map_err(|e| RpcError::InternalError(e.to_string()))?;
+                let t =
+                    topology::service_topology(&plan, &service_name).map_err(map_topology_err)?;
+                let fp = topology_fingerprint(t.mode, &t.members, t.sharding_strategy.as_ref());
+                let e = self
+                    .store
+                    .record_topology_fingerprint(&state.app_instance_id, service_name.as_str(), &fp)
+                    .map_err(|e| RpcError::InternalError(e.to_string()))?;
+                (t, e)
+            }
+        };
+
+        // One signature per (service, epoch), re-signed when less than
+        // half the document's own validity remains. Keyed only by
+        // (app_instance_id, service_name), which a handover can leave
+        // pointing at a document signed by a *different* master -- the
+        // instance id survives `import-master`/`adopt`, the app DID does
+        // not -- so the hit condition, not the key, has to bind to the DID
+        // actually being resolved. `generation` is checked for the same
+        // reason: `adopt` can advance it with no membership change, so the
+        // epoch alone does not prove a cached document's `generation` is
+        // still current.
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let cache_key = (state.app_instance_id.clone(), service_name.to_string());
+        if let Some(cached) = self.signed_documents.get(&cache_key)
+            && cached.signed.document.app_did == app_did
+            && cached.signed.document.generation == state.generation
+            && cached.epoch == epoch
+            && cached.signed.document.not_after.saturating_sub(now)
+                > self.topology_document_not_after_secs / 2
+        {
+            return Ok(NativeResponse {
+                payload: serde_json::to_value(&cached.signed).unwrap_or(Value::Null),
+            });
+        }
+
+        let instance_id = AppInstanceId::try_new(state.app_instance_id.clone())
+            .map_err(|e| RpcError::InternalError(e.to_string()))?;
+        let master = match keys::existing_app_master(&self.vault, &state.app_instance_id).await {
+            Ok(Some(m)) => m,
+            Ok(None) => {
+                return Err(RpcError::InternalError(format!(
+                    "app instance '{}' has no app master; run `adopt`",
+                    state.app_instance_id
+                )));
+            }
+            Err(keys::VaultError::Locked) => {
+                let _ = self.store.alerts.raise(
+                    &instance_id,
+                    None,
+                    None,
+                    &self.node_did,
+                    AlertKind::VaultLocked,
+                    &format!(
+                        "'{}' cannot sign a Tier-2 topology document because this supervisor's \
+                         vault is locked. Run: roymctl --substrate {} security inject-kek \
+                         --kek-hex <...>",
+                        state.app_instance_id, self.node_did
+                    ),
+                );
+                return Err(RpcError::InternalError(format!(
+                    "this supervisor's vault is locked; run `inject-kek` before {} can be resolved",
+                    state.app_instance_id
+                )));
+            }
+            Err(e) => return Err(RpcError::InternalError(e.to_string())),
+        };
+        let actual_did = syneroym_identity::substrate::derive_did_key(&master.public_key());
+        if actual_did != app_did.as_str() {
+            let _ = self.store.alerts.raise(
+                &instance_id,
+                None,
+                None,
+                &self.node_did,
+                AlertKind::AppIdentityMismatch,
+                &format!(
+                    "this instance's row records app master {app_did}, but the vault's app-<id> \
+                     key derives {actual_did} -- run `import-master` for the correct key, then \
+                     `adopt`, before this app instance can be resolved"
+                ),
+            );
+            return Err(RpcError::InternalError(
+                "this instance's vault key does not match its recorded app master DID".to_string(),
+            ));
+        }
+        let _ = self.store.alerts.clear(&instance_id, None, &self.node_did, AlertKind::VaultLocked);
+        let _ = self.store.alerts.clear(
+            &instance_id,
+            None,
+            &self.node_did,
+            AlertKind::AppIdentityMismatch,
+        );
+
+        let document = TopologyDocument {
+            app_instance_id: instance_id,
+            app_did: app_did.clone(),
+            service_name,
+            mode: topo.mode,
+            members: topo.members,
+            sharding_strategy: topo.sharding_strategy,
+            epoch: TopologyEpoch(epoch),
+            generation: state.generation,
+            issued_at: now,
+            not_after: now.saturating_add(self.topology_document_not_after_secs),
+            cache_ttl_ms: self.topology_document_cache_ttl_secs.saturating_mul(1_000),
+        };
+        let signed = document.sign(&master).map_err(|e| RpcError::InternalError(e.to_string()))?;
+        self.signed_documents.insert(cache_key, CachedDocument { signed: signed.clone(), epoch });
+
+        Ok(NativeResponse { payload: serde_json::to_value(&signed).unwrap_or(Value::Null) })
+    }
 }
 
 /// A `StatusQuery` that always fails, for a substrate this supervisor
@@ -5157,6 +5559,7 @@ impl NativeService for SupervisorService {
             "dead-letters" => self.handle_dead_letters(&invocation.caller, invocation.params).await,
             "replay" => self.handle_replay(&invocation.caller, invocation.params).await,
             "schedules" => self.handle_schedules(&invocation.caller, invocation.params).await,
+            "resolve" => self.handle_resolve(&invocation.caller, invocation.params).await,
             method => Err(RpcError::MethodNotFound(method.to_string())),
         }
     }
@@ -5175,8 +5578,8 @@ mod tests {
     use syneroym_app_orchestration::{
         ActionState, DEFAULT_SCHEDULE_TIMEOUT_MS, DeploymentJournal,
         models::{
-            AppBlueprintId, InterfaceName, LogicalServiceName, LogicalServiceRef, ServiceConfig,
-            ServiceType, TopologyMode,
+            AppBlueprintId, InterfaceName, LogicalServiceRef, ServiceConfig, ServiceType,
+            TopologyMode,
         },
     };
     use syneroym_async_queue::{Queue, QueueConfig};
@@ -5239,6 +5642,11 @@ mod tests {
         /// within one worker tick rather than one poll interval set this
         /// explicitly, far above the tick (M05B B1).
         poll_interval_secs: Option<u64>,
+        /// `None` leaves the default (3600s). Tests proving a document
+        /// re-signs once less than half its validity remains set this low.
+        topology_document_not_after_secs: Option<u64>,
+        /// `None` leaves the default (300s).
+        topology_document_cache_ttl_secs: Option<u64>,
     }
 
     impl Fixture {
@@ -5320,6 +5728,8 @@ mod tests {
                 self.anchor_writer,
                 self.tier1_writer,
                 self.queue_tick_secs.unwrap_or(5),
+                self.topology_document_not_after_secs.unwrap_or(3600),
+                self.topology_document_cache_ttl_secs.unwrap_or(300),
             );
             service._fixture_tempdir = Some(dir);
             (service, key_store)
@@ -5404,6 +5814,12 @@ mod tests {
             ("replay", serde_json::json!(["i", 1])),
             // No new resource namespace here either.
             ("schedules", serde_json::json!(["i"])),
+            // `resolve` checks `synapp:<app-did>`, not `substrate:<node>`,
+            // but a caller with no capabilities at all still denies on
+            // either resource -- a syntactically valid DID is needed so
+            // the call reaches the capability check rather than failing at
+            // `InvalidParams` first.
+            ("resolve", serde_json::json!(["did:key:zX", "backend"])),
         ] {
             let err = dispatch(&s, unauthenticated_caller(), method, params).await.unwrap_err();
             assert_eq!(err.code(), PERMISSION_DENIED_CODE, "{method} must deny without admin");
@@ -7445,6 +7861,7 @@ mod tests {
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
             schedule: None,
+            sharding_strategy: None,
         }
     }
 
@@ -8027,6 +8444,7 @@ mod tests {
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
             schedule: None,
+            sharding_strategy: None,
         };
         let old_plan = DeploymentPlan {
             app_instance_id: AppInstanceId::new("inst-1"),
@@ -9594,6 +10012,40 @@ mod tests {
     fn a_configured_zero_max_renewals_per_pass_is_clamped_to_one() {
         let s = Fixture { max_renewals_per_pass: Some(0), ..Fixture::default() }.build();
         assert_eq!(s.max_renewals_per_pass, 1);
+    }
+
+    /// A `0` here would make every signed topology document born expired.
+    #[test]
+    fn a_configured_zero_topology_document_not_after_secs_is_clamped() {
+        let s = Fixture { topology_document_not_after_secs: Some(0), ..Fixture::default() }.build();
+        assert_eq!(s.topology_document_not_after_secs, 3_600);
+    }
+
+    /// A `cache_ttl` at or above half of `not_after` breaks the property
+    /// that a served copy always outlives the caller's own cache TTL.
+    #[test]
+    fn a_cache_ttl_at_least_half_of_not_after_is_clamped() {
+        let s = Fixture {
+            topology_document_not_after_secs: Some(100),
+            topology_document_cache_ttl_secs: Some(50),
+            ..Fixture::default()
+        }
+        .build();
+        assert_eq!(s.topology_document_cache_ttl_secs, 25);
+    }
+
+    /// `not_after_secs / 4` alone would clamp to `0` for any `not_after`
+    /// under 4 seconds, and a reader that takes `0` as its cache TTL gets
+    /// `Duration::ZERO`, which never registers a cache hit at all.
+    #[test]
+    fn the_cache_ttl_clamp_never_produces_zero() {
+        let s = Fixture {
+            topology_document_not_after_secs: Some(2),
+            topology_document_cache_ttl_secs: Some(2),
+            ..Fixture::default()
+        }
+        .build();
+        assert_eq!(s.topology_document_cache_ttl_secs, 1);
     }
 
     // ── Phase 4: master-anchor refresh on the existing tick ──────────────
@@ -11999,6 +12451,7 @@ mod tests {
                 params: None,
                 timeout_ms: DEFAULT_SCHEDULE_TIMEOUT_MS,
             }),
+            sharding_strategy: None,
         }
     }
 
@@ -13016,5 +13469,651 @@ mod tests {
         assert_eq!(tasks[0].evaluated_at, 12_345);
         assert_eq!(tasks[0].last_run_at, Some(12_345));
         assert_eq!(tasks[0].last_member_index, Some(2));
+    }
+
+    // ── Tier 2 `resolve` ──────────────────────────────────────
+
+    fn plan_json_n_member_service(
+        instance: &str,
+        service_name: &str,
+        mode: &str,
+        n: u32,
+    ) -> String {
+        let services: Vec<_> = (0..n)
+            .map(|i| {
+                serde_json::json!({
+                    "service_id": format!("did:key:hMember{i}"),
+                    "logical_ref": format!("{instance}/{service_name}"),
+                    "substrate": "edge-1",
+                    "service_type": "tcp", "source": "127.0.0.1:9000",
+                    "rotation_policy": "none",
+                    "resolved_dependencies": {},
+                    "topology_mode": mode,
+                    "member_index": i,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "app_instance_id": instance,
+            "blueprint_id": "syneroym:test",
+            "version": "1.0.0",
+            "services": services,
+        })
+        .to_string()
+    }
+
+    /// Directly submits desired state and adopts an app master, bypassing
+    /// the RPC `submit`/`adopt` pipeline's mint/apply machinery -- this
+    /// slice's `resolve` reads only the store and the vault, so a fully
+    /// applied plan (which needs a live substrate connection) is not
+    /// needed to exercise it. Returns the app master DID `resolve` is
+    /// looked up by.
+    async fn adopted_instance(s: &SupervisorService, instance_id: &str, plan_json: &str) -> String {
+        s.store.submit(instance_id, plan_json, "{}", "did:key:owner", 0).unwrap();
+        let (app_did, _) = keys::app_master(&s.vault, instance_id).await.unwrap();
+        s.store.record_adopt(instance_id, 1, &app_did).unwrap();
+        app_did
+    }
+
+    /// A caller holding `supervisor/resolve` on exactly `synapp:<app_did>`
+    /// -- not `substrate/admin`, so this is an honest reading of the
+    /// reference scenario's "a caller outside the app instance".
+    fn resolve_grant(caller_did: &str, app_did: &str) -> CallerContext {
+        use syneroym_rpc::{Capability, SessionContext};
+        CallerContext {
+            caller_did: caller_did.to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: caller_did.to_string(),
+                capabilities: vec![Capability {
+                    with: ResourceUri(format!("synapp:{app_did}")),
+                    can: Ability(Ability::SUPERVISOR_RESOLVE.to_string()),
+                    caveats: None,
+                }],
+                ..Default::default()
+            },
+            auth: AuthLevel::Ucan,
+            proof: None,
+        }
+    }
+
+    fn caller_with_no_capabilities(caller_did: &str) -> CallerContext {
+        CallerContext {
+            caller_did: caller_did.to_string(),
+            app_instance: None,
+            session: Default::default(),
+            auth: AuthLevel::Delegated,
+            proof: None,
+        }
+    }
+
+    fn decode_signed_document(payload: Value) -> SignedTopologyDocument {
+        serde_json::from_value(payload).unwrap()
+    }
+
+    /// The document names every member in member-index order.
+    #[tokio::test]
+    async fn resolve_returns_a_document_naming_every_member_master_did_in_index_order() {
+        let s = service();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "redundant", 3);
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+
+        let resp = dispatch(
+            &s,
+            resolve_grant("did:key:zOutsideCaller", &app_did),
+            "resolve",
+            serde_json::json!([app_did, "backend"]),
+        )
+        .await
+        .unwrap();
+        let signed = decode_signed_document(resp.payload);
+
+        assert_eq!(
+            signed.document.members,
+            vec![
+                ServiceId::new("did:key:hMember0"),
+                ServiceId::new("did:key:hMember1"),
+                ServiceId::new("did:key:hMember2"),
+            ]
+        );
+        assert_eq!(signed.document.mode, TopologyMode::Redundant);
+        assert!(signed.verify(&AppDid::new(app_did)).is_ok());
+    }
+
+    /// Matrix row 7: a caller holding no grant for this app is refused.
+    #[tokio::test]
+    async fn resolve_refuses_a_caller_holding_no_grant_for_this_app() {
+        let s = service();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+
+        let err = dispatch(
+            &s,
+            caller_with_no_capabilities("did:key:zOutsideCaller"),
+            "resolve",
+            serde_json::json!([app_did, "backend"]),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), PERMISSION_DENIED_CODE);
+    }
+
+    /// The probing guard: an unknown app and an unauthorized caller are
+    /// reported identically, asserted on the exact error string.
+    /// `record_adopt` writes the row's `app_master_did`
+    /// directly (bypassing the vault) so both branches can share one
+    /// literal DID and one literal caller DID, making the two error
+    /// strings byte-comparable.
+    #[tokio::test]
+    async fn resolve_reports_an_unknown_app_and_an_unauthorized_caller_identically() {
+        const SHARED_DID: &str = "did:key:zSharedForComparison";
+        const SHARED_CALLER: &str = "did:key:zOutsideCaller";
+
+        // Branch 1: no instance anywhere claims this DID.
+        let unknown_app = service();
+        let err_unknown = dispatch(
+            &unknown_app,
+            resolve_grant(SHARED_CALLER, SHARED_DID),
+            "resolve",
+            serde_json::json!([SHARED_DID, "backend"]),
+        )
+        .await
+        .unwrap_err();
+
+        // Branch 2: the app exists, under the same DID, but the caller
+        // holds no grant for it.
+        let unauthorized = service();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        unauthorized.store.submit("inst-1", &plan_json, "{}", "did:key:owner", 0).unwrap();
+        unauthorized.store.record_adopt("inst-1", 1, SHARED_DID).unwrap();
+        let err_unauthorized = dispatch(
+            &unauthorized,
+            caller_with_no_capabilities(SHARED_CALLER),
+            "resolve",
+            serde_json::json!([SHARED_DID, "backend"]),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err_unknown.to_string(), err_unauthorized.to_string());
+        assert!(err_unknown.to_string().contains(SHARED_DID));
+        assert!(err_unknown.to_string().contains(SHARED_CALLER));
+    }
+
+    /// A refusal carries no member DIDs at all -- the document is built
+    /// whole or not at all, and the authorization check runs before it is
+    /// built.
+    #[tokio::test]
+    async fn a_refused_resolve_carries_no_member_dids_at_all() {
+        let s = service();
+        let plan_json = serde_json::json!({
+            "app_instance_id": "inst-1",
+            "blueprint_id": "syneroym:test",
+            "version": "1.0.0",
+            "services": [{
+                "service_id": "did:key:hVerySecretMember",
+                "logical_ref": "inst-1/backend",
+                "substrate": "edge-1",
+                "service_type": "tcp", "source": "127.0.0.1:9000",
+                "rotation_policy": "none",
+                "resolved_dependencies": {},
+                "topology_mode": "singleton",
+            }],
+        })
+        .to_string();
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+
+        let err = dispatch(
+            &s,
+            caller_with_no_capabilities("did:key:zOutsideCaller"),
+            "resolve",
+            serde_json::json!([app_did, "backend"]),
+        )
+        .await
+        .unwrap_err();
+        assert!(!err.to_string().contains("hVerySecretMember"), "{err}");
+    }
+
+    /// A locked vault fails loudly and names `inject-kek`, never a silent
+    /// empty answer.
+    #[tokio::test]
+    async fn resolve_on_a_locked_vault_fails_loudly_and_names_inject_kek() {
+        let s = service_with_locked_vault();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        s.store.submit("inst-1", &plan_json, "{}", "did:key:owner", 0).unwrap();
+        s.store.record_adopt("inst-1", 1, "did:key:zPlaceholderAppMaster").unwrap();
+
+        let err = dispatch(
+            &s,
+            resolve_grant("did:key:zOutsideCaller", "did:key:zPlaceholderAppMaster"),
+            "resolve",
+            serde_json::json!(["did:key:zPlaceholderAppMaster", "backend"]),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("inject-kek"), "{err}");
+        let active = s.store.alerts.active(&AppInstanceId::new("inst-1")).unwrap();
+        assert!(active.iter().any(|a| a.kind == AlertKind::VaultLocked));
+    }
+
+    /// The supervisor signs once per `(service, epoch)` and serves the
+    /// cached document afterwards -- asserted on the signature bytes being
+    /// identical across two calls.
+    #[tokio::test]
+    async fn resolve_signs_once_per_epoch_and_serves_the_cached_document_afterwards() {
+        let s = service();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+        let caller = resolve_grant("did:key:zOutsideCaller", &app_did);
+
+        let first = decode_signed_document(
+            dispatch(&s, caller.clone(), "resolve", serde_json::json!([app_did, "backend"]))
+                .await
+                .unwrap()
+                .payload,
+        );
+        let second = decode_signed_document(
+            dispatch(&s, caller, "resolve", serde_json::json!([app_did, "backend"]))
+                .await
+                .unwrap()
+                .payload,
+        );
+        assert_eq!(first.signature, second.signature, "a cache hit must not re-sign");
+        assert_eq!(first.document.issued_at, second.document.issued_at);
+    }
+
+    /// D-S2-6: a cached document is re-signed once less than half its
+    /// validity remains, so a served copy always outlives a caller's own
+    /// cache TTL rather than being served right up to the moment it
+    /// expires.
+    #[tokio::test]
+    async fn a_nearly_expired_cached_document_is_re_signed_rather_than_served() {
+        let s = Fixture { topology_document_not_after_secs: Some(2), ..Fixture::default() }.build();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+        let caller = resolve_grant("did:key:zOutsideCaller", &app_did);
+
+        let first = decode_signed_document(
+            dispatch(&s, caller.clone(), "resolve", serde_json::json!([app_did, "backend"]))
+                .await
+                .unwrap()
+                .payload,
+        );
+
+        // Past half of the 2s validity, with no membership change.
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+
+        let second = decode_signed_document(
+            dispatch(&s, caller, "resolve", serde_json::json!([app_did, "backend"]))
+                .await
+                .unwrap()
+                .payload,
+        );
+        assert_ne!(first.signature, second.signature, "a nearly-expired document must re-sign");
+        assert!(second.document.issued_at >= first.document.issued_at);
+        assert!(second.document.not_after > first.document.not_after);
+        assert_eq!(first.document.epoch, second.document.epoch, "membership did not change");
+    }
+
+    /// A membership change re-signs the document at the new epoch. The
+    /// store's own epoch/fingerprint update (which
+    /// `handle_submit` performs after a real resubmit) is driven directly
+    /// here, since a real resubmit needs a live substrate connection this
+    /// unit test has no reason to stand up.
+    #[tokio::test]
+    async fn a_membership_change_re_signs_the_document_at_the_new_epoch() {
+        let s = service();
+        let one_member = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        let app_did = adopted_instance(&s, "inst-1", &one_member).await;
+        let caller = resolve_grant("did:key:zOutsideCaller", &app_did);
+
+        let first = decode_signed_document(
+            dispatch(&s, caller.clone(), "resolve", serde_json::json!([app_did, "backend"]))
+                .await
+                .unwrap()
+                .payload,
+        );
+        assert_eq!(first.document.epoch, TopologyEpoch(1));
+
+        // A scale-out: the stored plan now names two members, and the
+        // fingerprint is advanced the way `handle_submit` would after a
+        // real resubmit.
+        let two_members = plan_json_n_member_service("inst-1", "backend", "redundant", 2);
+        s.store.submit("inst-1", &two_members, "{}", "did:key:owner", 1).unwrap();
+        let plan = DeploymentPlan::from_json(&two_members).unwrap();
+        let topo = topology::service_topology(&plan, &LogicalServiceName::new("backend")).unwrap();
+        let fp = topology_fingerprint(topo.mode, &topo.members, topo.sharding_strategy.as_ref());
+        s.store.record_topology_fingerprint("inst-1", "backend", &fp).unwrap();
+
+        let second = decode_signed_document(
+            dispatch(&s, caller, "resolve", serde_json::json!([app_did, "backend"]))
+                .await
+                .unwrap()
+                .payload,
+        );
+        assert_eq!(second.document.epoch, TopologyEpoch(2));
+        assert_eq!(second.document.members.len(), 2);
+        assert_ne!(first.signature, second.signature);
+    }
+
+    /// F1: the document cache is keyed only by `(app_instance_id,
+    /// service_name)`, so a handover that reassigns `app_master_did`
+    /// (`import-master` + `adopt`, simulated here at the store level --
+    /// the same shortcut the test above uses for a resubmit) must not let
+    /// a caller asking for the *new* DID be served a document cached
+    /// under the *old* one, which would carry the wrong `app_did` and
+    /// fail every caller's `verify`.
+    #[tokio::test]
+    async fn a_handover_to_a_different_app_did_does_not_serve_the_previous_masters_cached_document()
+    {
+        let s = service();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        let old_app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+
+        let first = decode_signed_document(
+            dispatch(
+                &s,
+                resolve_grant("did:key:zOutsideCaller", &old_app_did),
+                "resolve",
+                serde_json::json!([old_app_did, "backend"]),
+            )
+            .await
+            .unwrap()
+            .payload,
+        );
+        assert_eq!(first.document.app_did, AppDid::new(old_app_did.clone()));
+
+        // The row-level effect of `import-master` + `adopt`: the same
+        // instance, a different recorded app master DID, no vault key
+        // rotation (a real handover also imports a new vault key -- the
+        // resulting mismatch, and its alert, are `resolve_on_a_locked_
+        // vault_fails_loudly_and_names_inject_kek`'s sibling test, not
+        // this one's concern). Generation is held at `1`, unchanged from
+        // `adopted_instance`'s own call, so this isolates the app DID as
+        // the only thing that moved -- `record_adopt` is a plain `UPDATE`
+        // with no monotonic guard on generation, so re-recording the same
+        // one is accepted. Bumping it here as well would let the
+        // `generation` clause alone force the cache miss this test means
+        // to pin on `app_did`.
+        let new_app_did = "did:key:zHandedOverMaster";
+        s.store.record_adopt("inst-1", 1, new_app_did).unwrap();
+
+        let err = dispatch(
+            &s,
+            resolve_grant("did:key:zOutsideCaller", new_app_did),
+            "resolve",
+            serde_json::json!([new_app_did, "backend"]),
+        )
+        .await
+        .unwrap_err();
+        // Proves the stale document was not served: a cache hit would
+        // have returned `Ok` with `first`'s bytes. Instead the fresh-sign
+        // path ran and correctly refused, since the vault's real key
+        // still derives `old_app_did`, not `new_app_did`.
+        assert!(err.to_string().contains("does not match its recorded app master DID"), "{err}");
+    }
+
+    /// F4: the cache hit condition did not compare `generation`, so a
+    /// second `adopt` of the same app master -- no membership change, no
+    /// `AppDid` change -- could serve a document carrying the *previous*
+    /// generation, the field ADR-0022 §2 gives a reader to tell two
+    /// supervisors' documents apart.
+    #[tokio::test]
+    async fn a_generation_bump_with_no_membership_change_is_not_served_from_a_stale_cache() {
+        let s = service();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+        let caller = resolve_grant("did:key:zOutsideCaller", &app_did);
+
+        let first = decode_signed_document(
+            dispatch(&s, caller.clone(), "resolve", serde_json::json!([app_did, "backend"]))
+                .await
+                .unwrap()
+                .payload,
+        );
+        assert_eq!(first.document.generation, 1);
+
+        // Same app master, same plan -- only the generation moves, the
+        // way a second `adopt` of an already-adopted instance would.
+        s.store.record_adopt("inst-1", 2, &app_did).unwrap();
+
+        let second = decode_signed_document(
+            dispatch(&s, caller, "resolve", serde_json::json!([app_did, "backend"]))
+                .await
+                .unwrap()
+                .payload,
+        );
+        assert_eq!(second.document.generation, 2);
+        assert_ne!(first.signature, second.signature, "a stale generation must not be served");
+        assert_eq!(first.document.epoch, second.document.epoch, "membership did not change");
+    }
+
+    /// F2 (and F6, the same fix): `initialise_topology_epoch`'s
+    /// insert-only form can never correct an existing row's fingerprint,
+    /// so a row left holding one that disagrees with the real plan --
+    /// whether from an earlier `submit`'s fingerprint write landing
+    /// wrong, or a genuine concurrent `submit` -- used to exhaust both
+    /// lock-free attempts and fail permanently. The locked repair path
+    /// settles it instead.
+    #[tokio::test]
+    async fn resolve_repairs_a_topology_epoch_row_stuck_on_the_wrong_fingerprint() {
+        let s = service();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+
+        // A row that disagrees with what `service_topology` actually
+        // computes for the stored plan -- the state a lock-free
+        // `resolve` can never fix on its own.
+        s.store.record_topology_fingerprint("inst-1", "backend", "garbage-fingerprint").unwrap();
+
+        let doc = decode_signed_document(
+            dispatch(
+                &s,
+                resolve_grant("did:key:zOutsideCaller", &app_did),
+                "resolve",
+                serde_json::json!([app_did, "backend"]),
+            )
+            .await
+            .unwrap()
+            .payload,
+        );
+        // The repair path's advancing write bumps the epoch past the
+        // garbage row's `1`, since the stored fingerprint did not match.
+        assert_eq!(doc.document.epoch, TopologyEpoch(2));
+    }
+
+    /// The WIT record and the serde struct are two descriptions of one
+    /// wire format, and nothing else stops them drifting.
+    #[test]
+    fn the_resolve_payloads_json_keys_match_the_wit_records_field_names() {
+        let (resolve, iface_id) = supervisor_interface();
+        let iface = &resolve.interfaces[iface_id];
+        let record_ty = *iface.types.get("topology-document").expect("no topology-document type");
+        let wit_parser::TypeDefKind::Record(record) = &resolve.types[record_ty].kind else {
+            panic!("topology-document is not a record");
+        };
+        let wit_fields: BTreeSet<String> =
+            record.fields.iter().map(|f| f.name.replace('-', "_")).collect();
+
+        // The fixture must declare a sharding_strategy: it is
+        // skip_serializing_if = "Option::is_none", so a fixture without
+        // one omits the key and the comparison would read a real name
+        // match as a mismatch.
+        let doc = TopologyDocument {
+            app_instance_id: AppInstanceId::new("inst-1"),
+            app_did: AppDid::new("did:key:zApp"),
+            service_name: LogicalServiceName::new("backend"),
+            mode: TopologyMode::Sharded,
+            members: vec![ServiceId::new("did:key:zM0")],
+            sharding_strategy: Some(ShardingStrategy::HashSharding),
+            epoch: TopologyEpoch(1),
+            generation: 0,
+            issued_at: 0,
+            not_after: 0,
+            cache_ttl_ms: 0,
+        };
+        let value = serde_json::to_value(&doc).unwrap();
+        let json_keys: BTreeSet<String> = value.as_object().unwrap().keys().cloned().collect();
+
+        assert_eq!(wit_fields, json_keys);
+    }
+
+    /// An instance with no app master DID yet, the same skip
+    /// `refresh_due_app_tier1_record` makes.
+    #[tokio::test]
+    async fn resolve_is_refused_for_an_instance_that_has_no_app_master_did() {
+        let s = service();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        // Submitted, never adopted -- `app_master_did` stays empty.
+        s.store.submit("inst-1", &plan_json, "{}", "did:key:owner", 0).unwrap();
+
+        let err = dispatch(
+            &s,
+            resolve_grant("did:key:zOutsideCaller", "did:key:zNeverAssigned"),
+            "resolve",
+            serde_json::json!(["did:key:zNeverAssigned", "backend"]),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), PERMISSION_DENIED_CODE);
+    }
+
+    /// `resolve` answers for a paused instance and refuses for a retired
+    /// one, in one test because the decision is the contrast.
+    #[tokio::test]
+    async fn resolve_answers_for_a_paused_instance_and_refuses_for_a_retired_one() {
+        let paused = service();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        let paused_did = adopted_instance(&paused, "inst-1", &plan_json).await;
+        paused.store.pause("inst-1").unwrap();
+        let resp = dispatch(
+            &paused,
+            resolve_grant("did:key:zOutsideCaller", &paused_did),
+            "resolve",
+            serde_json::json!([paused_did, "backend"]),
+        )
+        .await;
+        assert!(resp.is_ok(), "pause stops the resident loop, not the members");
+
+        let retired = service();
+        let retired_did = adopted_instance(&retired, "inst-1", &plan_json).await;
+        retired.store.retire("inst-1").unwrap();
+        let err = dispatch(
+            &retired,
+            resolve_grant("did:key:zOutsideCaller", &retired_did),
+            "resolve",
+            serde_json::json!([retired_did, "backend"]),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), PERMISSION_DENIED_CODE);
+    }
+
+    /// Following `refuse_replicas_above_cap`'s existing refuse/allow pair
+    /// exactly.
+    #[test]
+    fn refuse_unshardable_plan_refuses_a_hand_authored_range_sharding_plan() {
+        use syneroym_app_orchestration::resolver::{RangeChunk, RangeRoutingTable};
+
+        let mut svc = dependent_service("backend", "unrelated");
+        svc.topology_mode = TopologyMode::Sharded;
+        svc.sharding_strategy = Some(ShardingStrategy::RangeSharding(RangeRoutingTable {
+            chunks: vec![RangeChunk {
+                start_key: None,
+                end_key: None,
+                target: ServiceId::new("did:key:hShard0"),
+            }],
+        }));
+        let mut svc2 = svc.clone();
+        svc2.member_index = 1;
+        let plan = DeploymentPlan {
+            app_instance_id: AppInstanceId::new("inst-1"),
+            blueprint_id: AppBlueprintId::new("syneroym:test"),
+            version: semver::Version::new(1, 0, 0),
+            services: vec![svc, svc2],
+        };
+        let err = SupervisorService::refuse_unshardable_plan(&plan).unwrap_err();
+        assert!(err.contains("range_sharding"), "{err}");
+    }
+
+    #[test]
+    fn refuse_unshardable_plan_refuses_a_strategy_over_a_single_member() {
+        let mut svc = dependent_service("backend", "unrelated");
+        svc.topology_mode = TopologyMode::Sharded;
+        svc.sharding_strategy = Some(ShardingStrategy::HashSharding);
+        let plan = DeploymentPlan {
+            app_instance_id: AppInstanceId::new("inst-1"),
+            blueprint_id: AppBlueprintId::new("syneroym:test"),
+            version: semver::Version::new(1, 0, 0),
+            services: vec![svc],
+        };
+        let err = SupervisorService::refuse_unshardable_plan(&plan).unwrap_err();
+        assert!(err.contains("one member"), "{err}");
+    }
+
+    #[test]
+    fn refuse_unshardable_plan_allows_a_plan_with_no_strategy() {
+        let svc = dependent_service("backend", "unrelated");
+        let plan = DeploymentPlan {
+            app_instance_id: AppInstanceId::new("inst-1"),
+            blueprint_id: AppBlueprintId::new("syneroym:test"),
+            version: semver::Version::new(1, 0, 0),
+            services: vec![svc],
+        };
+        assert!(SupervisorService::refuse_unshardable_plan(&plan).is_ok());
+    }
+
+    /// The refusal runs beside its two siblings, ahead of `store.submit`,
+    /// so nothing durable is written -- the test that makes the WIT's
+    /// `option<string>` a checked property rather than a comment.
+    #[tokio::test]
+    async fn a_submitted_plan_declaring_range_sharding_is_refused_before_anything_is_stored() {
+        let s = service();
+        let plan_json = serde_json::json!({
+            "app_instance_id": "inst-1",
+            "blueprint_id": "syneroym:test",
+            "version": "1.0.0",
+            "services": [{
+                "service_id": "did:key:hFabricated0",
+                "logical_ref": "inst-1/backend",
+                "substrate": "edge-1",
+                "service_type": "tcp", "source": "127.0.0.1:9000",
+                "rotation_policy": "none",
+                "resolved_dependencies": {},
+                "topology_mode": "sharded",
+                "sharding_strategy": {"range_sharding": {"chunks": [
+                    {"start_key": null, "end_key": null, "target": "did:key:hShard0"}
+                ]}},
+            }, {
+                "service_id": "did:key:hFabricated1",
+                "logical_ref": "inst-1/backend",
+                "substrate": "edge-1",
+                "service_type": "tcp", "source": "127.0.0.1:9000",
+                "rotation_policy": "none",
+                "resolved_dependencies": {},
+                "topology_mode": "sharded",
+                "member_index": 1,
+                "sharding_strategy": {"range_sharding": {"chunks": [
+                    {"start_key": null, "end_key": null, "target": "did:key:hShard0"}
+                ]}},
+            }],
+        })
+        .to_string();
+
+        let err = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "submit",
+            serde_json::json!([{
+                "app_instance_id": "inst-1",
+                "plan_json": plan_json,
+                "inventory_json": "{}",
+                "generation": 0,
+            }]),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("range_sharding"), "{err}");
+        assert!(s.store.get("inst-1").unwrap().is_none(), "nothing must be stored on refusal");
     }
 }

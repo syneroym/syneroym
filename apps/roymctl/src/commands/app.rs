@@ -11,19 +11,21 @@ use clap::Subcommand;
 use semver::Version;
 use syneroym_app_orchestration::{
     ActionRecord, ActionState, AlertStore, AppInstanceId, DeploymentJournal, DeploymentPlan,
-    DeploymentState, LocalFilesystemCatalog, Reconciler, SynAppManifest, compile,
+    DeploymentState, LocalFilesystemCatalog, Reconciler, SynAppManifest, TopologyFetcher, compile,
     models::{
-        AppBlueprintId, LogicalServiceName, LogicalServiceRef, MemberRef, PlannedService,
+        AppBlueprintId, AppDid, LogicalServiceName, LogicalServiceRef, MemberRef, PlannedService,
         ServiceConfig, ServiceSpec, ServiceType, SubstrateAlias,
     },
     substrate_inventory::{SubstrateEntry, SubstrateInventory, check_placement, placement_demand},
 };
 use syneroym_core::dht_registry::RegistryClient;
+use syneroym_identity::Identity;
 use syneroym_sdk::{
-    SubstrateStatus, SyneroymClient,
+    RegistryTopologyFetcher, SubstrateStatus, SyneroymClient,
     deploy::{self, ApplyRequest, DeployTarget},
     health,
 };
+use syneroym_ucan::CapabilityToken;
 
 use super::member_identity;
 
@@ -135,6 +137,19 @@ pub enum AppCommands {
         /// Include alerts that have since cleared.
         #[arg(long)]
         all: bool,
+    },
+    /// Resolve an app's logical service to its current member set (ADR-0022
+    /// §3): look the app DID up in the registry (Tier 1), fetch the signed
+    /// topology document from the supervisor holding it (Tier 2), verify it
+    /// against the app DID, and print the members. Prints the members as
+    /// DIDs, not addresses -- turning one into an address is an ordinary
+    /// registry lookup (Tier 3), unaffected by this command.
+    Resolve {
+        /// The app instance's own master DID, as Tier 1 answers with (not
+        /// its human `AppInstanceId`).
+        app_did: String,
+        /// The logical service name within that app instance.
+        service_name: String,
     },
 }
 
@@ -1056,6 +1071,38 @@ pub async fn handle(
                 );
             }
         }
+        AppCommands::Resolve { app_did, service_name } => {
+            let app_did = AppDid::try_new(app_did.clone())?;
+            let service_name = LogicalServiceName::try_new(service_name.clone())?;
+
+            let mut fetcher = RegistryTopologyFetcher::new(api_url.to_string());
+            if let Some(name) = run_as {
+                let path = dir.join("identities").join(format!("{name}.key"));
+                let id = Identity::load_from_path(&path)
+                    .with_context(|| format!("no local identity '{name}' at {}", path.display()))?;
+                fetcher = fetcher.with_identity(&id);
+            }
+            if let Some(path) = ucan_path {
+                let raw = fs::read_to_string(path)
+                    .with_context(|| format!("failed to read UCAN token at {}", path.display()))?;
+                let token: CapabilityToken = serde_json::from_str(&raw)
+                    .with_context(|| format!("invalid UCAN token JSON at {}", path.display()))?;
+                fetcher = fetcher.with_ucan(token);
+            }
+
+            let signed =
+                fetcher.fetch(&app_did, &service_name).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+            signed
+                .verify(&app_did)
+                .context("the fetched document did not verify against the resolved app DID")?;
+
+            println!("app: {app_did}  service: {service_name}");
+            println!("mode: {:?}  epoch: {}", signed.document.mode, signed.document.epoch.0);
+            println!("members:");
+            for member in &signed.document.members {
+                println!("  {member}");
+            }
+        }
     }
     Ok(())
 }
@@ -1404,6 +1451,7 @@ mod tests {
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
             schedule: None,
+            sharding_strategy: None,
         }
     }
 
@@ -1792,5 +1840,19 @@ mod tests {
             timeout_ms: DEFAULT_SCHEDULE_TIMEOUT_MS,
         });
         assert!(plan_declares_a_schedule(&dummy_deployment_plan(&instance_id, scheduled)));
+    }
+
+    #[test]
+    fn test_app_resolve_command_parsing() {
+        let cli = DummyCli::try_parse_from(["dummy", "resolve", "did:key:zAppMaster", "backend"])
+            .unwrap();
+
+        match cli.command {
+            AppCommands::Resolve { app_did, service_name } => {
+                assert_eq!(app_did, "did:key:zAppMaster");
+                assert_eq!(service_name, "backend");
+            }
+            _ => panic!("Expected Resolve command"),
+        }
     }
 }

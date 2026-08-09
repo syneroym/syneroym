@@ -20,7 +20,7 @@ use dashmap::DashMap;
 use serde_json::{Value, json};
 use syneroym_app_orchestration::{
     AppInstanceId, LogicalResolver, LogicalServiceName, ServiceId, StaticInventory, TopologyEntry,
-    TopologyEpoch, TopologyMode,
+    TopologyEpoch, TopologyKey, TopologyMode,
 };
 use syneroym_control_plane::SynSvcNativeService;
 use syneroym_core::{
@@ -206,14 +206,14 @@ async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, A
     let app_registry = Arc::new(StaticInventory::new());
     let logical_resolver = Arc::new(LogicalResolver::new(app_registry));
     logical_resolver.register(
-        AppInstanceId::new("app-1"),
-        LogicalServiceName::new("callee-dep"),
+        TopologyKey::local(AppInstanceId::new("app-1"), LogicalServiceName::new("callee-dep")),
         TopologyEntry {
             mode: TopologyMode::Singleton,
             members: vec![ServiceId::new("did:key:zProxyCallee")],
             sharding_strategy: None,
             epoch: TopologyEpoch::default(),
             cache_ttl: std::time::Duration::from_secs(60),
+            not_after: None,
         },
     );
 
@@ -392,14 +392,14 @@ async fn guest_dependency_target_reaches_the_bound_member_and_a_re_registration_
     // guest had somehow captured `proxy-callee`'s resolved DID rather than
     // re-resolving `callee-dep` on every call, this would still succeed.
     logical_resolver.register(
-        AppInstanceId::new("app-1"),
-        LogicalServiceName::new("callee-dep"),
+        TopologyKey::local(AppInstanceId::new("app-1"), LogicalServiceName::new("callee-dep")),
         TopologyEntry {
             mode: TopologyMode::Singleton,
             members: vec![ServiceId::new("did:key:zNoSuchMember")],
             sharding_strategy: None,
             epoch: TopologyEpoch(1),
             cache_ttl: std::time::Duration::from_secs(60),
+            not_after: None,
         },
     );
 

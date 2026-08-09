@@ -17,6 +17,7 @@ use iroh::{
 pub mod deploy;
 pub mod health;
 pub mod mapper;
+pub mod topology;
 pub use deploy::{
     ApplyReport, ApplyRequest, DeployTarget, ServiceFailure, SubstrateActor, apply_plan,
     resolve_targets,
@@ -37,6 +38,7 @@ pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane
     TopologyMode, WasmManifest,
 };
 use tokio::{io, net::TcpStream, sync::mpsc, task::JoinHandle, time};
+pub use topology::{RegistryTopologyFetcher, fetch_and_register};
 use tracing::debug;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -252,14 +252,41 @@ async fn publish_endpoint(
 /// and installs an instance certificate -- required for the driver, since
 /// `begin` refuses a caller with no unexpired one; the participant needs
 /// none, as it never originates a saga call itself.
-async fn deploy_guest(node: &Node, master: &Identity, wasm: Vec<u8>, with_cert: bool) -> String {
+async fn deploy_guest(
+    node: &mut Node,
+    master: &Identity,
+    wasm: Vec<u8>,
+    with_cert: bool,
+) -> String {
     let service_id = substrate::derive_did_key(&master.public_key());
     let instance_certificate = if with_cert {
-        let identity = node
-            .substrate_client
-            .instance_identity(&service_id)
-            .await
-            .expect("instance-identity query failed");
+        // `node`'s connection was dialed and proven live by its own
+        // `wait_for_ready` during `Node::boot`, then may have sat idle
+        // through a second full substrate boot (and that node's own
+        // `deploy_guest`, when this is the driver) before this, the
+        // first real call on it, reuses it -- long enough under CI's
+        // scheduling pressure for the peer to abandon that idle path
+        // ("no viable network path exists: last path abandoned by
+        // peer"; same root cause as `app_instance_identity_e2e.rs`'s
+        // and `supervisor_alerts_e2e.rs`'s own fixes).
+        // `SyneroymClient::connect` no-ops on an already-`Some`
+        // connection, so recovering means an explicit
+        // `shutdown`-then-`connect` (redial) before one retry, not just
+        // retrying the same request on the same dead connection.
+        let identity = match node.substrate_client.instance_identity(&service_id).await {
+            Ok(identity) => identity,
+            Err(_) => {
+                node.substrate_client
+                    .shutdown()
+                    .await
+                    .expect("failed to reset node's stale connection");
+                node.substrate_client.connect().await.expect("failed to reconnect node");
+                node.substrate_client
+                    .instance_identity(&service_id)
+                    .await
+                    .expect("instance-identity query failed")
+            }
+        };
         let pubkey_bytes: [u8; 32] = hex::decode(&identity.pubkey_hex)
             .expect("instance pubkey is not hex")
             .try_into()
@@ -431,7 +458,7 @@ async fn a_failed_workflow_is_undone_in_reverse_order() {
     let participant_dir = tempfile::tempdir().unwrap();
     let owner = Identity::generate().unwrap();
 
-    let node_a = Node::boot(
+    let mut node_a = Node::boot(
         driver_dir.path().to_path_buf(),
         a_iroh,
         a_reg,
@@ -443,7 +470,7 @@ async fn a_failed_workflow_is_undone_in_reverse_order() {
     .await;
     let shared_registry = node_a.registry_url.clone();
 
-    let node_b = Node::boot(
+    let mut node_b = Node::boot(
         participant_dir.path().to_path_buf(),
         b_iroh,
         b_reg,
@@ -455,10 +482,10 @@ async fn a_failed_workflow_is_undone_in_reverse_order() {
     .await;
 
     let participant_master = Identity::generate().unwrap();
-    let participant_did = deploy_guest(&node_b, &participant_master, wasm.clone(), false).await;
+    let participant_did = deploy_guest(&mut node_b, &participant_master, wasm.clone(), false).await;
 
     let driver_master = Identity::generate().unwrap();
-    let driver_did = deploy_guest(&node_a, &driver_master, wasm, true).await;
+    let driver_did = deploy_guest(&mut node_a, &driver_master, wasm, true).await;
 
     let saga_id = begin_workflow(&node_a, &driver_did, 3600).await;
     add_step(&node_a, &driver_did, &saga_id, &participant_did, "a").await;
@@ -529,7 +556,7 @@ async fn a_workflow_abandoned_across_a_restart_is_compensated_by_its_deadline() 
     let participant_dir = tempfile::tempdir().unwrap();
     let owner = Identity::generate().unwrap();
 
-    let node_a = Node::boot(
+    let mut node_a = Node::boot(
         driver_dir.path().to_path_buf(),
         a_iroh,
         a_reg,
@@ -541,7 +568,7 @@ async fn a_workflow_abandoned_across_a_restart_is_compensated_by_its_deadline() 
     .await;
     let shared_registry = node_a.registry_url.clone();
 
-    let node_b = Node::boot(
+    let mut node_b = Node::boot(
         participant_dir.path().to_path_buf(),
         b_iroh,
         b_reg,
@@ -552,10 +579,10 @@ async fn a_workflow_abandoned_across_a_restart_is_compensated_by_its_deadline() 
     )
     .await;
     let participant_master = Identity::generate().unwrap();
-    let participant_did = deploy_guest(&node_b, &participant_master, wasm.clone(), false).await;
+    let participant_did = deploy_guest(&mut node_b, &participant_master, wasm.clone(), false).await;
 
     let driver_master = Identity::generate().unwrap();
-    let driver_did = deploy_guest(&node_a, &driver_master, wasm, true).await;
+    let driver_did = deploy_guest(&mut node_a, &driver_master, wasm, true).await;
 
     // A short deadline: long enough to add the one step, short enough that
     // the test does not have to wait long for it to pass.

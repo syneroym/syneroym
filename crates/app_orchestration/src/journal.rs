@@ -424,6 +424,7 @@ mod tests {
                 topology_mode: TopologyMode::Singleton,
                 member_index: 0,
                 schedule: None,
+                sharding_strategy: None,
             }],
         }
     }

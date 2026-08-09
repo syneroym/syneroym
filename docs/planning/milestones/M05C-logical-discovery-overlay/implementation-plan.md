@@ -217,9 +217,9 @@ Two things follow, and they are worth keeping even under a sequence:
 
 | Slice | Plan | State |
 |---|---|---|
-| S1 | [slice-s1-implementation-plan.md](slice-s1-implementation-plan.md) | 📋 Planned, full detail |
-| S2 | *(not written)* | Sketch in [task.md](task.md); owes its own `§0`, which must settle §0.4 |
-| S3 | *(not written)* | Sketch in [task.md](task.md); owes its own `§0` |
+| S1 | [slice-s1-implementation-plan.md](slice-s1-implementation-plan.md) | ✅ Complete (2026-08-08) |
+| S2 | [slice-s2-implementation-plan.md](slice-s2-implementation-plan.md) | ✅ Complete (2026-08-08) — settled §0.4 as D-S2-1 |
+| S3 | [slice-s3-implementation-plan.md](slice-s3-implementation-plan.md) | 📋 Planned (2026-08-09) — `§0` written; three findings each block the slice on their own |
 | S4 | *(not written)* | Sketch in [task.md](task.md); owes its own `§0`. Not started without a consumer (D-C-7) |
 
 ---

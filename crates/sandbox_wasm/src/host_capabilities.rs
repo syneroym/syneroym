@@ -15,9 +15,7 @@ use std::{
 };
 
 use serde_json::Value;
-use syneroym_app_orchestration::{
-    AppInstanceId, LogicalResolver, LogicalServiceName, LogicalServiceRef,
-};
+use syneroym_app_orchestration::{AppInstanceId, LogicalResolver, LogicalServiceName, TopologyKey};
 use syneroym_core::local_registry::SubstrateEndpoint;
 use syneroym_data_blob::{
     BlobError as BlobStoreError, HostDownloadSession, HostUploadSession, traits::BlobProvider,
@@ -1137,25 +1135,25 @@ impl proxy::Host for HostState {
                         self.component_id
                     ))
                 })?;
-                let logical_ref = LogicalServiceRef {
+                let topology_key = TopologyKey::local(
                     // This string came out of a `service_app_context` row,
                     // not out of the guest. A corrupted row is a
                     // substrate-side fault, so it maps to `Internal`, not to
                     // the guest-facing "you are not bound".
-                    app_instance_id: AppInstanceId::try_new(app_instance_id).map_err(|e| {
+                    AppInstanceId::try_new(app_instance_id).map_err(|e| {
                         proxy::ProxyError::Internal(format!(
                             "stored app context for '{}' is unreadable: {e}",
                             self.component_id
                         ))
                     })?,
-                    service_name: LogicalServiceName::try_new(&name).map_err(|e| {
+                    LogicalServiceName::try_new(&name).map_err(|e| {
                         proxy::ProxyError::DependencyNotBound(format!(
                             "invalid dependency name: {e}"
                         ))
                     })?,
-                };
+                );
                 self.logical_resolver
-                    .resolve(&logical_ref, routing_key.as_deref().map(str::as_bytes))
+                    .resolve(&topology_key, routing_key.as_deref().map(str::as_bytes))
                     .map_err(|e| {
                         proxy::ProxyError::DependencyNotBound(format!(
                             "dependency '{name}' of '{}' is not bound: {e}",
@@ -1928,8 +1926,7 @@ pub(crate) mod tests {
 
         let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
         registry.register(
-            AppInstanceId::new("app-1"),
-            LogicalServiceName::new("backend"),
+            TopologyKey::local(AppInstanceId::new("app-1"), LogicalServiceName::new("backend")),
             dependency_topology_entry(vec!["did:key:zBackendMember"]),
         );
         let resolver = Arc::new(LogicalResolver::new(registry));
@@ -2047,6 +2044,7 @@ pub(crate) mod tests {
             sharding_strategy: None,
             epoch: syneroym_app_orchestration::TopologyEpoch::default(),
             cache_ttl: Duration::from_secs(60),
+            not_after: None,
         }
     }
 
@@ -2085,8 +2083,7 @@ pub(crate) mod tests {
 
         let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
         registry.register(
-            AppInstanceId::new("app-1"),
-            LogicalServiceName::new("backend"),
+            TopologyKey::local(AppInstanceId::new("app-1"), LogicalServiceName::new("backend")),
             dependency_topology_entry(vec!["did:key:zBackendMember"]),
         );
         let resolver = Arc::new(LogicalResolver::new(registry));
@@ -2211,8 +2208,7 @@ pub(crate) mod tests {
 
         let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
         registry.register(
-            AppInstanceId::new("app-1"),
-            LogicalServiceName::new("backend"),
+            TopologyKey::local(AppInstanceId::new("app-1"), LogicalServiceName::new("backend")),
             dependency_topology_entry(vec!["did:key:zMemberA", "did:key:zMemberB"]),
         );
         let resolver = Arc::new(LogicalResolver::new(registry));
@@ -2322,8 +2318,7 @@ pub(crate) mod tests {
 
         let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
         registry.register(
-            AppInstanceId::new("app-1"),
-            LogicalServiceName::new("self-dep"),
+            TopologyKey::local(AppInstanceId::new("app-1"), LogicalServiceName::new("self-dep")),
             dependency_topology_entry(vec!["did:key:zSelf"]),
         );
         let resolver = Arc::new(LogicalResolver::new(registry));

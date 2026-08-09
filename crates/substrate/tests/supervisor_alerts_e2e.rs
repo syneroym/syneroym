@@ -283,7 +283,7 @@ async fn an_operator_subscribed_to_the_alert_topic_receives_an_opened_alert() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
 
-    let supervisor_node = Node::boot(
+    let mut supervisor_node = Node::boot(
         PORTS_ALERT_PUBLISH.supervisor_iroh,
         PORTS_ALERT_PUBLISH.supervisor_registry,
         PORTS_ALERT_PUBLISH.supervisor_gateway,
@@ -322,10 +322,38 @@ async fn an_operator_subscribed_to_the_alert_topic_receives_an_opened_alert() {
     let instance_id = "a5c-alerts-inst";
     let manifest = one_service_manifest();
     let plan_json = compiled_plan_json(&manifest, instance_id).await;
+    let submit_params = submission(instance_id, plan_json, inventory_json, 0);
 
+    // `supervisor_node`'s connection was dialed and proven live by its own
+    // `wait_for_ready` during `Node::boot`, then sat idle for the entire
+    // `managed_node` boot that followed (a second full substrate start) --
+    // long enough under CI's scheduling pressure for the peer to abandon
+    // that idle path ("no viable network path exists: last path abandoned
+    // by peer"; same root cause fixed in `app_instance_identity_e2e.rs`).
+    // `SyneroymClient::connect` no-ops on an already-`Some` connection, so
+    // recovering means an explicit `shutdown`-then-`connect` (redial)
+    // before one retry, not just retrying the same request on the same
+    // dead connection.
+    if supervisor_node
+        .substrate_client
+        .request("supervisor", "submit", submit_params.clone())
+        .await
+        .is_err()
+    {
+        supervisor_node
+            .substrate_client
+            .shutdown()
+            .await
+            .expect("failed to reset supervisor_node's stale connection");
+        supervisor_node
+            .substrate_client
+            .connect()
+            .await
+            .expect("failed to reconnect supervisor_node");
+    }
     let submit_res = supervisor_node
         .substrate_client
-        .request("supervisor", "submit", submission(instance_id, plan_json, inventory_json, 0))
+        .request("supervisor", "submit", submit_params)
         .await
         .expect("submit failed");
     let masters =

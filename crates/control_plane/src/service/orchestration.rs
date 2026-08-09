@@ -21,7 +21,8 @@ use serde_json::Value;
 use syneroym_app_orchestration::{
     AppInstanceId, BindingWriteOutcome, HealthCheck, HttpProbe, InterfaceName, LogicalServiceName,
     RpcProbe, ServiceId as AppServiceId, ServiceType as AppServiceType, TcpProbe, TopologyEntry,
-    TopologyEpoch, TopologyMode as AppTopologyMode, classify_binding_write, compensated_operation,
+    TopologyEpoch, TopologyKey, TopologyMode as AppTopologyMode, classify_binding_write,
+    compensated_operation,
 };
 use syneroym_core::{
     deploy_docs,
@@ -312,6 +313,7 @@ fn prepare_binding(
         sharding_strategy: None, // D-A2-4
         epoch: TopologyEpoch(binding.epoch),
         cache_ttl: Duration::from_millis(binding.cache_ttl_ms),
+        not_after: None,
     };
     Ok((dependency_name, entry))
 }
@@ -581,8 +583,7 @@ impl ControlPlaneService {
             // different is a reported conflict, higher applies -- belongs
             // at exactly this call and is the supervisor slice's.
             self.logical_resolver.register(
-                prepared.instance_id.clone(),
-                dependency_name.clone(),
+                TopologyKey::local(prepared.instance_id.clone(), dependency_name.clone()),
                 entry.clone(),
             );
         }
@@ -2066,7 +2067,8 @@ impl ControlPlaneService {
                 // `prepare_binding`'s own doc calls out this exact hazard.
                 let app_instance_id =
                     AppInstanceId::try_new(&write.app_instance_id).map_err(|e| e.to_string())?;
-                self.logical_resolver.register(app_instance_id, dependency_name, entry);
+                self.logical_resolver
+                    .register(TopologyKey::local(app_instance_id, dependency_name), entry);
             }
             outcomes.push(wire_binding_outcome(&outcome));
         }
@@ -3253,7 +3255,6 @@ mod tests {
     };
 
     use dashmap::DashMap;
-    use syneroym_app_orchestration::LogicalServiceRef;
     use syneroym_core::{
         config::SubstrateConfig,
         http_routes::HttpRouteRegistry,
@@ -3859,10 +3860,10 @@ mod tests {
         let resolved = service
             .logical_resolver
             .resolve(
-                &LogicalServiceRef {
-                    app_instance_id: AppInstanceId::new("app-1"),
-                    service_name: LogicalServiceName::new("backend"),
-                },
+                &TopologyKey::local(
+                    AppInstanceId::new("app-1"),
+                    LogicalServiceName::new("backend"),
+                ),
                 None,
             )
             .unwrap();
@@ -3952,10 +3953,10 @@ mod tests {
         let resolved = service
             .logical_resolver
             .resolve(
-                &LogicalServiceRef {
-                    app_instance_id: AppInstanceId::new("app-1"),
-                    service_name: LogicalServiceName::new("backend"),
-                },
+                &TopologyKey::local(
+                    AppInstanceId::new("app-1"),
+                    LogicalServiceName::new("backend"),
+                ),
                 None,
             )
             .unwrap();
@@ -4087,10 +4088,10 @@ mod tests {
         let resolved = service
             .logical_resolver
             .resolve(
-                &LogicalServiceRef {
-                    app_instance_id: AppInstanceId::new("app-1"),
-                    service_name: LogicalServiceName::new("backend"),
-                },
+                &TopologyKey::local(
+                    AppInstanceId::new("app-1"),
+                    LogicalServiceName::new("backend"),
+                ),
                 None,
             )
             .unwrap();

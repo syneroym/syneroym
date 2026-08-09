@@ -2059,7 +2059,7 @@ mod tests {
     async fn outbox_node(target_reachable: bool, max_attempts: u8) -> OutboxNode {
         use syneroym_app_orchestration::{
             AppInstanceId, LogicalResolver, LogicalServiceName, ServiceId, StaticInventory,
-            TopologyEntry, TopologyEpoch, TopologyMode,
+            TopologyEntry, TopologyEpoch, TopologyKey, TopologyMode,
         };
         use syneroym_data_db::SqliteStorageProvider;
         use syneroym_data_keystore::KeyStore;
@@ -2121,8 +2121,7 @@ mod tests {
         let inventory = Arc::new(StaticInventory::new());
         let resolver = Arc::new(LogicalResolver::new(inventory));
         resolver.register(
-            AppInstanceId::new("app-1"),
-            LogicalServiceName::new("backend"),
+            TopologyKey::local(AppInstanceId::new("app-1"), LogicalServiceName::new("backend")),
             TopologyEntry {
                 mode: TopologyMode::Singleton,
                 members: vec![ServiceId::new("did:key:zTarget")],
@@ -2131,6 +2130,7 @@ mod tests {
                 // No caching, so a test that re-registers a binding sees
                 // the change on the very next resolution.
                 cache_ttl: Duration::ZERO,
+                not_after: None,
             },
         );
 
@@ -2354,7 +2354,7 @@ mod tests {
     async fn a_queued_call_resolves_its_dependency_again_at_delivery() {
         use syneroym_app_orchestration::{
             AppInstanceId, LogicalServiceName, ServiceId, TopologyEntry, TopologyEpoch,
-            TopologyMode,
+            TopologyKey, TopologyMode,
         };
         let node = outbox_node(false, 3).await;
         node.router
@@ -2381,14 +2381,14 @@ mod tests {
             .await
             .unwrap();
         node.resolver.register(
-            AppInstanceId::new("app-1"),
-            LogicalServiceName::new("backend"),
+            TopologyKey::local(AppInstanceId::new("app-1"), LogicalServiceName::new("backend")),
             TopologyEntry {
                 mode: TopologyMode::Singleton,
                 members: vec![ServiceId::new("did:key:zMoved")],
                 sharding_strategy: None,
                 epoch: TopologyEpoch::default(),
                 cache_ttl: Duration::ZERO,
+                not_after: None,
             },
         );
 
@@ -2406,7 +2406,8 @@ mod tests {
     #[tokio::test]
     async fn a_queued_call_whose_dependency_no_longer_resolves_is_terminal() {
         use syneroym_app_orchestration::{
-            AppInstanceId, LogicalServiceName, TopologyEntry, TopologyEpoch, TopologyMode,
+            AppInstanceId, LogicalServiceName, TopologyEntry, TopologyEpoch, TopologyKey,
+            TopologyMode,
         };
         let node = outbox_node(false, 50).await;
         node.router
@@ -2416,14 +2417,14 @@ mod tests {
 
         // The binding goes away entirely.
         node.resolver.register(
-            AppInstanceId::new("app-1"),
-            LogicalServiceName::new("backend"),
+            TopologyKey::local(AppInstanceId::new("app-1"), LogicalServiceName::new("backend")),
             TopologyEntry {
                 mode: TopologyMode::Singleton,
                 members: vec![],
                 sharding_strategy: None,
                 epoch: TopologyEpoch::default(),
                 cache_ttl: Duration::ZERO,
+                not_after: None,
             },
         );
 

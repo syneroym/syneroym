@@ -2,17 +2,17 @@
 //!
 //! This module implements the logical resolver that sits *above* the physical
 //! network router. The router continues to route by explicit [`ServiceId`]s;
-//! this layer translates [`LogicalServiceRef`]s into `ServiceId`s via an
+//! this layer translates [`TopologyKey`]s into `ServiceId`s via an
 //! [`AppRegistry`].
 //!
 //! # Architecture summary
 //!
 //! ```text
-//! [Caller] → resolve(LogicalServiceRef, routing_key?) → ServiceId
+//! [Caller] → resolve(TopologyKey, routing_key?) → ServiceId
 //!               ↓
 //!          AppRegistry (topology state)
 //!               ↓
-//!          TopologyCache (keyed by AppInstanceId + LogicalServiceName)
+//!          TopologyCache (keyed by TopologyKey = AppScope + LogicalServiceName)
 //!               ↓
 //!          Selector (Singleton | Redundant | Sharded via BLAKE3)
 //!               ↓
@@ -56,9 +56,7 @@ use std::{
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 
-use crate::models::{
-    AppInstanceId, LogicalServiceName, LogicalServiceRef, ServiceId, TopologyMode,
-};
+use crate::models::{AppDid, AppInstanceId, LogicalServiceName, ServiceId, TopologyMode};
 
 // ─────────────────────────────────────────────────────────────
 // Domain types
@@ -207,7 +205,9 @@ pub enum BindingWriteOutcome {
 /// **not** `cache_ttl`: a TTL difference at one epoch is a policy
 /// difference between two writers, not a disagreement about who is
 /// serving the service, and reporting it as a two-writer conflict would
-/// make the signal noisy exactly where it must be trustworthy.
+/// make the signal noisy exactly where it must be trustworthy. `not_after`
+/// is excluded for the same reason: it is a policy value about when an
+/// entry stops answering, not a claim about who is serving the service.
 #[must_use]
 pub fn classify_binding_write(
     held: Option<&TopologyEntry>,
@@ -236,11 +236,32 @@ pub struct TopologyEntry {
     /// Sharding sub-strategy (only meaningful for `Sharded` mode).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sharding_strategy: Option<ShardingStrategy>,
-    /// Current epoch; incremented on any membership or mode change.
+    /// Which counter this is depends on the entry's `AppScope`, and nothing
+    /// in the type says so:
+    ///
+    /// - under `AppScope::Local`, the **per-dependent binding epoch** the
+    ///   supervisor advances on every push to one dependent
+    ///   (`SupervisorStore::advance_binding_epoch`), which is what
+    ///   `classify_binding_write` compares;
+    /// - under `AppScope::Foreign`, the **per-logical-service topology epoch**
+    ///   a Tier-2 document carries (ADR-0022 §6), which changes when and only
+    ///   when a member set or mode does.
+    ///
+    /// They are never compared with each other only because the two scopes
+    /// are disjoint keys -- the separation is `AppScope`'s, not this
+    /// field's. Anything that later reads this epoch without knowing the
+    /// scope (shard rebalancing's data-path fence is the one on the map) has
+    /// to establish the scope first.
     pub epoch: TopologyEpoch,
     /// Maximum age of a cached copy of this topology.
     #[serde(with = "duration_millis")]
     pub cache_ttl: Duration,
+    /// Unix seconds after which this entry must stop resolving (ADR-0022 §3,
+    /// failure-matrix row 6: past `not_after`, fail -- not "stale but
+    /// usable"). `None` for an entry pushed by the intra-app binding path,
+    /// which has no expiry and is refreshed by a later push.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_after: Option<u64>,
 }
 
 /// The resolved topology for a logical service — what the cache stores.
@@ -255,6 +276,22 @@ pub struct ResolvedTopology {
     pub sharding_strategy: Option<ShardingStrategy>,
     pub epoch: TopologyEpoch,
     pub rr_counter: Arc<AtomicU64>,
+    /// Copied from `TopologyEntry.not_after` at resolution time.
+    pub not_after: Option<u64>,
+}
+
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn expired_error(key: &TopologyKey, not_after: u64, now: u64) -> anyhow::Error {
+    anyhow!(
+        "topology for '{key}' expired at unix time {not_after} (now {now}); a Tier-2 document \
+         must be re-fetched"
+    )
 }
 
 /// The result of a `resolve_all` call: an epoch-consistent snapshot of all
@@ -266,6 +303,80 @@ pub struct AllMembers {
 }
 
 // ─────────────────────────────────────────────────────────────
+// AppScope / TopologyKey
+// ─────────────────────────────────────────────────────────────
+
+/// Which app a topology entry belongs to (ADR-0022 §1, milestone plan §0.4).
+///
+/// `Local` is an app instance deployed through this node, keyed by the name
+/// this node's own operator chose -- unique here by construction. `Foreign`
+/// is another app's topology, learned from a verified Tier-2 document and
+/// keyed by the app master DID, which is globally unique. Two unrelated apps
+/// both called `chat` are two different keys, because they are two different
+/// DIDs; keying both by the human name would silently re-point one at the
+/// other's members.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum AppScope {
+    Local(AppInstanceId),
+    Foreign(AppDid),
+}
+
+impl AppScope {
+    /// The bytes this scope contributes to `rendezvous_select`'s domain
+    /// separator.
+    ///
+    /// Deliberately *not* canonical across the two variants: an intra-app
+    /// caller separates by the instance id and a foreign caller by the app
+    /// DID, so the two disagree about which member a routing key selects.
+    /// Unreachable today (`Sharded` is compiled by nothing, `Redundant`'s
+    /// keyed path is load balancing, and no cross-app caller exists), and
+    /// it becomes reachable when shard rebalancing enforces the epoch fence
+    /// on the data path. Fixing it needs one canonical separator -- the app
+    /// DID -- which needs the intra-app push path to carry the app DID on
+    /// the wire. Recorded in the deferred backlog rather than built against
+    /// a consumer that does not exist.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Local(id) => id.as_str(),
+            Self::Foreign(did) => did.as_str(),
+        }
+    }
+}
+
+impl fmt::Display for AppScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// The key of a topology entry: which app, and which logical service inside
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct TopologyKey {
+    pub app: AppScope,
+    pub service_name: LogicalServiceName,
+}
+
+impl TopologyKey {
+    #[must_use]
+    pub fn local(app_instance_id: AppInstanceId, service_name: LogicalServiceName) -> Self {
+        Self { app: AppScope::Local(app_instance_id), service_name }
+    }
+
+    #[must_use]
+    pub fn foreign(app_did: AppDid, service_name: LogicalServiceName) -> Self {
+        Self { app: AppScope::Foreign(app_did), service_name }
+    }
+}
+
+impl fmt::Display for TopologyKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.app, self.service_name)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 // AppRegistry trait
 // ─────────────────────────────────────────────────────────────
 
@@ -274,31 +385,22 @@ pub struct AllMembers {
 /// Lives outside the router; the router only ever sees [`ServiceId`]s.  The
 /// registry is responsible for persisting and invalidating topology entries.
 pub trait AppRegistry: Send + Sync + fmt::Debug {
-    /// Register or update the topology for `(instance_id, service_name)`.
-    fn register(
-        &self,
-        instance_id: AppInstanceId,
-        service_name: LogicalServiceName,
-        entry: TopologyEntry,
-    );
+    /// Register or update the topology for `key`.
+    fn register(&self, key: TopologyKey, entry: TopologyEntry);
 
-    /// Look up the topology entry for `(instance_id, service_name)`.
+    /// Look up the topology entry for `key`.
     ///
     /// Returns `None` if the combination has never been registered.
-    fn get(
-        &self,
-        instance_id: &AppInstanceId,
-        service_name: &LogicalServiceName,
-    ) -> Option<TopologyEntry>;
+    fn get(&self, key: &TopologyKey) -> Option<TopologyEntry>;
 
-    /// Explicitly invalidate the cached copy for `(instance_id, service_name)`.
+    /// Explicitly invalidate the cached copy for `key`.
     ///
     /// The *registry* entry itself is preserved; only in-process caches should
     /// be evicted.  The next resolution will re-read from the registry.
-    fn invalidate(&self, instance_id: &AppInstanceId, service_name: &LogicalServiceName);
+    fn invalidate(&self, key: &TopologyKey);
 
-    /// List all registered logical services for an app instance.
-    fn list(&self, instance_id: &AppInstanceId) -> Vec<LogicalServiceName>;
+    /// List all registered logical services under an app scope.
+    fn list(&self, app: &AppScope) -> Vec<LogicalServiceName>;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -317,7 +419,7 @@ pub struct StaticInventory {
 
 #[derive(Debug, Default)]
 struct StaticInventoryInner {
-    entries: BTreeMap<LogicalServiceRef, TopologyEntry>,
+    entries: BTreeMap<TopologyKey, TopologyEntry>,
 }
 
 impl StaticInventory {
@@ -338,47 +440,25 @@ impl Default for StaticInventory {
 // `expect` is therefore the correct idiom here.
 #[allow(clippy::expect_used)]
 impl AppRegistry for StaticInventory {
-    fn register(
-        &self,
-        instance_id: AppInstanceId,
-        service_name: LogicalServiceName,
-        entry: TopologyEntry,
-    ) {
+    fn register(&self, key: TopologyKey, entry: TopologyEntry) {
         let mut inner = self.inner.write().expect("registry lock poisoned");
-        inner
-            .entries
-            .insert(LogicalServiceRef { app_instance_id: instance_id, service_name }, entry);
+        inner.entries.insert(key, entry);
     }
 
-    fn get(
-        &self,
-        instance_id: &AppInstanceId,
-        service_name: &LogicalServiceName,
-    ) -> Option<TopologyEntry> {
+    fn get(&self, key: &TopologyKey) -> Option<TopologyEntry> {
         let inner = self.inner.read().expect("registry lock poisoned");
-        inner
-            .entries
-            .get(&LogicalServiceRef {
-                app_instance_id: instance_id.clone(),
-                service_name: service_name.clone(),
-            })
-            .cloned()
+        inner.entries.get(key).cloned()
     }
 
-    fn invalidate(&self, _instance_id: &AppInstanceId, _service_name: &LogicalServiceName) {
+    fn invalidate(&self, _key: &TopologyKey) {
         // For StaticInventory there is no separate cache tier; the in-memory
         // map IS the cache.  Invalidation is a no-op at this level; the
         // LogicalResolver's cache handles eviction separately.
     }
 
-    fn list(&self, instance_id: &AppInstanceId) -> Vec<LogicalServiceName> {
+    fn list(&self, app: &AppScope) -> Vec<LogicalServiceName> {
         let inner = self.inner.read().expect("registry lock poisoned");
-        inner
-            .entries
-            .keys()
-            .filter(|r| r.app_instance_id == *instance_id)
-            .map(|r| r.service_name.clone())
-            .collect()
+        inner.entries.keys().filter(|k| k.app == *app).map(|k| k.service_name.clone()).collect()
     }
 }
 
@@ -404,25 +484,20 @@ impl CacheEntry {
 
 #[derive(Debug, Default)]
 struct TopologyCache {
-    entries: dashmap::DashMap<LogicalServiceRef, CacheEntry>,
+    entries: dashmap::DashMap<TopologyKey, CacheEntry>,
 }
 
 impl TopologyCache {
-    fn get(&self, logical_ref: &LogicalServiceRef) -> Option<Arc<ResolvedTopology>> {
-        self.entries.get(logical_ref).filter(|e| e.is_valid()).map(|e| e.topology.clone())
+    fn get(&self, key: &TopologyKey) -> Option<Arc<ResolvedTopology>> {
+        self.entries.get(key).filter(|e| e.is_valid()).map(|e| e.topology.clone())
     }
 
-    fn insert(
-        &self,
-        logical_ref: LogicalServiceRef,
-        topology: Arc<ResolvedTopology>,
-        ttl: Duration,
-    ) {
-        self.entries.insert(logical_ref, CacheEntry { topology, cached_at: Instant::now(), ttl });
+    fn insert(&self, key: TopologyKey, topology: Arc<ResolvedTopology>, ttl: Duration) {
+        self.entries.insert(key, CacheEntry { topology, cached_at: Instant::now(), ttl });
     }
 
-    fn evict(&self, logical_ref: &LogicalServiceRef) {
-        self.entries.remove(logical_ref);
+    fn evict(&self, key: &TopologyKey) {
+        self.entries.remove(key);
     }
 }
 
@@ -501,12 +576,12 @@ pub fn range_select(table: &RangeRoutingTable, key: &[u8]) -> Result<ServiceId> 
 // LogicalResolver
 // ─────────────────────────────────────────────────────────────
 
-/// Translates a [`LogicalServiceRef`] into an explicit [`ServiceId`] via the
+/// Translates a [`TopologyKey`] into an explicit [`ServiceId`] via the
 /// [`AppRegistry`], applying topology-aware selection.
 ///
 /// The resolver maintains a local topology cache to avoid redundant registry
 /// reads on the hot resolution path.  The cache is keyed by
-/// `(AppInstanceId, LogicalServiceName)` and stores the [`ResolvedTopology`]
+/// [`TopologyKey`] and stores the [`ResolvedTopology`]
 /// (i.e., the full eligible set + epoch), **not** the selected member.
 /// Member selection happens after the cache look-up so different callers
 /// with different `routing_key`s get correct results without separate cache
@@ -535,10 +610,10 @@ impl LogicalResolver {
         Self { registry, cache: TopologyCache::default() }
     }
 
-    /// Resolve a [`LogicalServiceRef`] to a single [`ServiceId`].
+    /// Resolve a [`TopologyKey`] to a single [`ServiceId`].
     ///
     /// # Arguments
-    /// - `logical_ref` — the logical name to resolve.
+    /// - `key` — the app scope and logical name to resolve.
     /// - `routing_key` — optional bytes used for keyed selection (rendezvous
     ///   hashing for `Redundant` / `Sharded`, ignored for `Singleton`).
     ///
@@ -546,26 +621,23 @@ impl LogicalResolver {
     /// - The logical service is not registered.
     /// - The topology has no eligible members.
     /// - `Sharded` mode is requested with an empty `routing_key`.
-    pub fn resolve(
-        &self,
-        logical_ref: &LogicalServiceRef,
-        routing_key: Option<&[u8]>,
-    ) -> Result<ServiceId> {
-        let topology = self.get_topology(logical_ref)?;
-        select_member(&topology, routing_key, logical_ref)
+    /// - The registered entry is past its `not_after`.
+    pub fn resolve(&self, key: &TopologyKey, routing_key: Option<&[u8]>) -> Result<ServiceId> {
+        let topology = self.get_topology(key)?;
+        select_member(&topology, routing_key, key)
     }
 
-    /// Return the entire eligible member set for `logical_ref` as an
+    /// Return the entire eligible member set for `key` as an
     /// epoch-consistent snapshot.  Use this for scatter-gather patterns.
-    pub fn resolve_all(&self, logical_ref: &LogicalServiceRef) -> Result<AllMembers> {
-        let topology = self.get_topology(logical_ref)?;
+    pub fn resolve_all(&self, key: &TopologyKey) -> Result<AllMembers> {
+        let topology = self.get_topology(key)?;
         Ok(AllMembers { topology_epoch: topology.epoch, members: topology.members.clone() })
     }
 
-    /// Explicitly evict the cache entry for `logical_ref`.
-    pub fn invalidate(&self, logical_ref: &LogicalServiceRef) {
-        self.cache.evict(logical_ref);
-        self.registry.invalidate(&logical_ref.app_instance_id, &logical_ref.service_name);
+    /// Explicitly evict the cache entry for `key`.
+    pub fn invalidate(&self, key: &TopologyKey) {
+        self.cache.evict(key);
+        self.registry.invalidate(key);
     }
 
     /// Register `entry` and drop any cached copy in one step -- the write
@@ -574,35 +646,46 @@ impl LogicalResolver {
     /// live cache entry serving the old membership for up to `cache_ttl`,
     /// which is what would make a scale-out invisible for up to a minute --
     /// well past the milestone's 5s convergence budget.
-    pub fn register(
-        &self,
-        instance_id: AppInstanceId,
-        service_name: LogicalServiceName,
-        entry: TopologyEntry,
-    ) {
-        let logical_ref = LogicalServiceRef {
-            app_instance_id: instance_id.clone(),
-            service_name: service_name.clone(),
-        };
-        self.registry.register(instance_id, service_name, entry);
-        self.cache.evict(&logical_ref);
+    pub fn register(&self, key: TopologyKey, entry: TopologyEntry) {
+        self.registry.register(key.clone(), entry);
+        self.cache.evict(&key);
     }
 
     // ── Internal helpers ─────────────────────────────────────
 
-    /// Retrieve the `ResolvedTopology` for `logical_ref`, using the cache
-    /// when valid, or re-fetching from the registry and updating the cache.
-    fn get_topology(&self, logical_ref: &LogicalServiceRef) -> Result<Arc<ResolvedTopology>> {
+    /// Retrieve the `ResolvedTopology` for `key`, using the cache when
+    /// valid, or re-fetching from the registry and updating the cache.
+    ///
+    /// Checked on both paths -- a cache entry whose `cache_ttl` outlives its
+    /// `not_after` must not keep answering (ADR-0022 §3, failure-matrix row
+    /// 6: "fails. Not 'stale but usable'").
+    fn get_topology(&self, key: &TopologyKey) -> Result<Arc<ResolvedTopology>> {
+        let now = unix_now();
+
         // 1. Check cache validity first (fast path).
-        if let Some(resolved) = self.cache.get(logical_ref) {
+        if let Some(resolved) = self.cache.get(key) {
+            if let Some(not_after) = resolved.not_after
+                && now >= not_after
+            {
+                self.cache.evict(key);
+                return Err(expired_error(key, not_after, now));
+            }
             return Ok(resolved);
         }
 
         // 2. Cache miss or stale → Probe registry for entry.
-        let entry =
-            self.registry.get(&logical_ref.app_instance_id, &logical_ref.service_name).ok_or_else(
-                || anyhow!("No topology registered for logical service '{}'", logical_ref),
-            )?;
+        let entry = self
+            .registry
+            .get(key)
+            .ok_or_else(|| anyhow!("No topology registered for logical service '{key}'"))?;
+
+        if let Some(not_after) = entry.not_after
+            && now >= not_after
+        {
+            // Never cached: an already-expired entry must not become a
+            // cache hit later.
+            return Err(expired_error(key, not_after, now));
+        }
 
         // 3. Build ResolvedTopology from the registry entry.
         let resolved = Arc::new(ResolvedTopology {
@@ -611,10 +694,11 @@ impl LogicalResolver {
             sharding_strategy: entry.sharding_strategy,
             epoch: entry.epoch,
             rr_counter: Arc::new(AtomicU64::new(0)),
+            not_after: entry.not_after,
         });
 
         // 4. Store in cache.
-        self.cache.insert(logical_ref.clone(), resolved.clone(), entry.cache_ttl);
+        self.cache.insert(key.clone(), resolved.clone(), entry.cache_ttl);
 
         Ok(resolved)
     }
@@ -635,7 +719,7 @@ pub fn empty_resolver() -> Arc<LogicalResolver> {
 fn select_member(
     topology: &ResolvedTopology,
     routing_key: Option<&[u8]>,
-    logical_ref: &LogicalServiceRef,
+    key: &TopologyKey,
 ) -> Result<ServiceId> {
     if topology.members.is_empty() {
         return Err(anyhow!("Topology has no eligible members"));
@@ -652,13 +736,13 @@ fn select_member(
         }
 
         TopologyMode::Redundant => {
-            if let Some(key) = routing_key {
+            if let Some(routing_key) = routing_key {
                 // Keyed call: rendezvous hashing.
                 rendezvous_select(
                     &topology.members,
-                    logical_ref.app_instance_id.as_str().as_bytes(),
-                    logical_ref.service_name.as_str().as_bytes(),
-                    key,
+                    key.app.as_str().as_bytes(),
+                    key.service_name.as_str().as_bytes(),
+                    routing_key,
                 )
                 .cloned()
                 .ok_or_else(|| anyhow!("Redundant topology member selection failed"))
@@ -671,25 +755,25 @@ fn select_member(
         }
 
         TopologyMode::Sharded => {
-            let key = routing_key
+            let routing_key = routing_key
                 .ok_or_else(|| anyhow!("Sharded topology requires a routing_key for selection"))?;
 
             match &topology.sharding_strategy {
-                Some(ShardingStrategy::RangeSharding(table)) => range_select(table, key),
+                Some(ShardingStrategy::RangeSharding(table)) => range_select(table, routing_key),
                 Some(ShardingStrategy::HashSharding)
                 | None
                 | Some(ShardingStrategy::EntityTagSharding) => {
                     let effective_key = match &topology.sharding_strategy {
                         Some(ShardingStrategy::EntityTagSharding) => {
-                            key.split(|&b| b == 0).next().unwrap_or(key)
+                            routing_key.split(|&b| b == 0).next().unwrap_or(routing_key)
                         }
-                        _ => key,
+                        _ => routing_key,
                     };
 
                     rendezvous_select(
                         &topology.members,
-                        logical_ref.app_instance_id.as_str().as_bytes(),
-                        logical_ref.service_name.as_str().as_bytes(),
+                        key.app.as_str().as_bytes(),
+                        key.service_name.as_str().as_bytes(),
                         effective_key,
                     )
                     .cloned()
@@ -728,7 +812,7 @@ mod tests {
     use std::{collections::HashSet, sync::Arc, time::Duration};
 
     use super::*;
-    use crate::models::{AppInstanceId, LogicalServiceName, LogicalServiceRef, TopologyMode};
+    use crate::models::{AppDid, AppInstanceId, LogicalServiceName, TopologyMode};
 
     // ── Helper builders ──────────────────────────────────────
 
@@ -744,8 +828,16 @@ mod tests {
         ServiceId::new(format!("did:key:{s}"))
     }
 
-    fn logical_ref(inst_id: &str, name: &str) -> LogicalServiceRef {
-        LogicalServiceRef { app_instance_id: inst(inst_id), service_name: svc_name(name) }
+    fn did(s: &str) -> AppDid {
+        AppDid::new(format!("did:key:{s}"))
+    }
+
+    fn local_key(inst_id: &str, name: &str) -> TopologyKey {
+        TopologyKey::local(inst(inst_id), svc_name(name))
+    }
+
+    fn foreign_key(app_did: &str, name: &str) -> TopologyKey {
+        TopologyKey::foreign(did(app_did), svc_name(name))
     }
 
     fn make_entry(
@@ -759,15 +851,14 @@ mod tests {
             sharding_strategy: strategy,
             epoch: TopologyEpoch::default(),
             cache_ttl: Duration::from_secs(60),
+            not_after: None,
         }
     }
 
-    fn registry_with(
-        entries: Vec<(AppInstanceId, LogicalServiceName, TopologyEntry)>,
-    ) -> Arc<StaticInventory> {
+    fn registry_with(entries: Vec<(TopologyKey, TopologyEntry)>) -> Arc<StaticInventory> {
         let reg = Arc::new(StaticInventory::new());
-        for (id, name, entry) in entries {
-            reg.register(id, name, entry);
+        for (key, entry) in entries {
+            reg.register(key, entry);
         }
         reg
     }
@@ -777,13 +868,12 @@ mod tests {
     #[test]
     fn test_static_inventory_register_and_get() {
         let inv = StaticInventory::new();
-        let id = inst("app-1");
-        let name = svc_name("auth");
+        let key = local_key("app-1", "auth");
         let entry = make_entry(TopologyMode::Singleton, vec![svc_id("abc")], None);
 
-        inv.register(id.clone(), name.clone(), entry.clone());
+        inv.register(key.clone(), entry.clone());
 
-        let got = inv.get(&id, &name).expect("should be present");
+        let got = inv.get(&key).expect("should be present");
         assert_eq!(got.mode, TopologyMode::Singleton);
         assert_eq!(got.members, vec![svc_id("abc")]);
     }
@@ -793,23 +883,20 @@ mod tests {
         let inv = StaticInventory::new();
         let id = inst("app-1");
         inv.register(
-            id.clone(),
-            svc_name("auth"),
+            local_key("app-1", "auth"),
             make_entry(TopologyMode::Singleton, vec![svc_id("a")], None),
         );
         inv.register(
-            id.clone(),
-            svc_name("cache"),
+            local_key("app-1", "cache"),
             make_entry(TopologyMode::Redundant, vec![svc_id("b")], None),
         );
         // Different app — should not be listed.
         inv.register(
-            inst("other"),
-            svc_name("auth"),
+            local_key("other", "auth"),
             make_entry(TopologyMode::Singleton, vec![svc_id("c")], None),
         );
 
-        let mut names = inv.list(&id);
+        let mut names = inv.list(&AppScope::Local(id));
         names.sort();
         assert_eq!(names, vec![svc_name("auth"), svc_name("cache")]);
     }
@@ -817,24 +904,18 @@ mod tests {
     #[test]
     fn test_static_inventory_update_replaces_entry() {
         let inv = StaticInventory::new();
-        let id = inst("app-1");
-        let name = svc_name("auth");
+        let key = local_key("app-1", "auth");
 
+        inv.register(key.clone(), make_entry(TopologyMode::Singleton, vec![svc_id("old")], None));
         inv.register(
-            id.clone(),
-            name.clone(),
-            make_entry(TopologyMode::Singleton, vec![svc_id("old")], None),
-        );
-        inv.register(
-            id.clone(),
-            name.clone(),
+            key.clone(),
             TopologyEntry {
                 epoch: TopologyEpoch(1),
                 ..make_entry(TopologyMode::Redundant, vec![svc_id("new1"), svc_id("new2")], None)
             },
         );
 
-        let got = inv.get(&id, &name).unwrap();
+        let got = inv.get(&key).unwrap();
         assert_eq!(got.mode, TopologyMode::Redundant);
         assert_eq!(got.epoch, TopologyEpoch(1));
         assert_eq!(got.members.len(), 2);
@@ -843,7 +924,7 @@ mod tests {
     #[test]
     fn test_static_inventory_get_missing() {
         let inv = StaticInventory::new();
-        assert!(inv.get(&inst("app-x"), &svc_name("nonexistent")).is_none());
+        assert!(inv.get(&local_key("app-x", "nonexistent")).is_none());
     }
 
     // ── Rendezvous hashing ───────────────────────────────────
@@ -922,14 +1003,13 @@ mod tests {
     #[test]
     fn test_resolve_singleton() {
         let reg = registry_with(vec![(
-            inst("app-1"),
-            svc_name("auth"),
+            local_key("app-1", "auth"),
             make_entry(TopologyMode::Singleton, vec![svc_id("sole-member")], None),
         )]);
         let resolver = LogicalResolver::new(reg);
-        let lref = logical_ref("app-1", "auth");
+        let key = local_key("app-1", "auth");
 
-        let id = resolver.resolve(&lref, None).unwrap();
+        let id = resolver.resolve(&key, None).unwrap();
         assert_eq!(id, svc_id("sole-member"));
     }
 
@@ -937,7 +1017,7 @@ mod tests {
     fn test_resolve_unregistered_returns_error() {
         let reg = Arc::new(StaticInventory::new());
         let resolver = LogicalResolver::new(reg);
-        let err = resolver.resolve(&logical_ref("ghost-app", "missing"), None);
+        let err = resolver.resolve(&local_key("ghost-app", "missing"), None);
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("No topology registered"));
     }
@@ -945,12 +1025,11 @@ mod tests {
     #[test]
     fn test_resolve_empty_members_returns_error() {
         let reg = registry_with(vec![(
-            inst("app-1"),
-            svc_name("empty"),
+            local_key("app-1", "empty"),
             make_entry(TopologyMode::Singleton, vec![], None),
         )]);
         let resolver = LogicalResolver::new(reg);
-        let err = resolver.resolve(&logical_ref("app-1", "empty"), None);
+        let err = resolver.resolve(&local_key("app-1", "empty"), None);
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("no eligible members"));
     }
@@ -961,18 +1040,17 @@ mod tests {
     fn test_resolve_redundant_round_robin() {
         let members = vec![svc_id("r0"), svc_id("r1"), svc_id("r2")];
         let reg = registry_with(vec![(
-            inst("app-1"),
-            svc_name("cache"),
+            local_key("app-1", "cache"),
             make_entry(TopologyMode::Redundant, members.clone(), None),
         )]);
         let resolver = LogicalResolver::new(reg);
-        let lref = logical_ref("app-1", "cache");
+        let key = local_key("app-1", "cache");
 
         // With no routing key, round-robin through members.
-        let r0 = resolver.resolve(&lref, None).unwrap();
-        let r1 = resolver.resolve(&lref, None).unwrap();
-        let r2 = resolver.resolve(&lref, None).unwrap();
-        let r3 = resolver.resolve(&lref, None).unwrap(); // wraps back
+        let r0 = resolver.resolve(&key, None).unwrap();
+        let r1 = resolver.resolve(&key, None).unwrap();
+        let r2 = resolver.resolve(&key, None).unwrap();
+        let r3 = resolver.resolve(&key, None).unwrap(); // wraps back
 
         assert_eq!(r0, members[0]);
         assert_eq!(r1, members[1]);
@@ -984,15 +1062,14 @@ mod tests {
     fn test_resolve_redundant_keyed_is_deterministic() {
         let members = vec![svc_id("r0"), svc_id("r1"), svc_id("r2")];
         let reg = registry_with(vec![(
-            inst("app-1"),
-            svc_name("cache"),
+            local_key("app-1", "cache"),
             make_entry(TopologyMode::Redundant, members, None),
         )]);
         let resolver = LogicalResolver::new(reg);
-        let lref = logical_ref("app-1", "cache");
+        let key = local_key("app-1", "cache");
 
-        let a = resolver.resolve(&lref, Some(b"key-abc")).unwrap();
-        let b = resolver.resolve(&lref, Some(b"key-abc")).unwrap();
+        let a = resolver.resolve(&key, Some(b"key-abc")).unwrap();
+        let b = resolver.resolve(&key, Some(b"key-abc")).unwrap();
         assert_eq!(a, b, "keyed redundant resolve must be deterministic");
     }
 
@@ -1001,8 +1078,7 @@ mod tests {
     #[test]
     fn test_resolve_sharded_requires_routing_key() {
         let reg = registry_with(vec![(
-            inst("app-1"),
-            svc_name("store"),
+            local_key("app-1", "store"),
             make_entry(
                 TopologyMode::Sharded,
                 vec![svc_id("s0"), svc_id("s1")],
@@ -1010,9 +1086,9 @@ mod tests {
             ),
         )]);
         let resolver = LogicalResolver::new(reg);
-        let lref = logical_ref("app-1", "store");
+        let key = local_key("app-1", "store");
 
-        let err = resolver.resolve(&lref, None);
+        let err = resolver.resolve(&key, None);
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("routing_key"));
     }
@@ -1021,15 +1097,14 @@ mod tests {
     fn test_resolve_sharded_hash_deterministic() {
         let members = vec![svc_id("s0"), svc_id("s1"), svc_id("s2")];
         let reg = registry_with(vec![(
-            inst("app-1"),
-            svc_name("store"),
+            local_key("app-1", "store"),
             make_entry(TopologyMode::Sharded, members, Some(ShardingStrategy::HashSharding)),
         )]);
         let resolver = LogicalResolver::new(reg);
-        let lref = logical_ref("app-1", "store");
+        let key = local_key("app-1", "store");
 
-        let a = resolver.resolve(&lref, Some(b"user:42")).unwrap();
-        let b_res = resolver.resolve(&lref, Some(b"user:42")).unwrap();
+        let a = resolver.resolve(&key, Some(b"user:42")).unwrap();
+        let b_res = resolver.resolve(&key, Some(b"user:42")).unwrap();
         assert_eq!(a, b_res);
     }
 
@@ -1038,20 +1113,19 @@ mod tests {
         // EntityTagSharding: only the bytes before the first NUL matter.
         let members = vec![svc_id("s0"), svc_id("s1"), svc_id("s2")];
         let reg = registry_with(vec![(
-            inst("app-1"),
-            svc_name("ts"),
+            local_key("app-1", "ts"),
             make_entry(TopologyMode::Sharded, members, Some(ShardingStrategy::EntityTagSharding)),
         )]);
         let resolver = LogicalResolver::new(reg);
-        let lref = logical_ref("app-1", "ts");
+        let key = local_key("app-1", "ts");
 
         // Same partition key, different item keys → same shard.
         let mut key1 = b"tenant-99\0item-1".to_vec();
         let mut key2 = b"tenant-99\0item-2".to_vec();
         let _ = &mut key1; // suppress unused warning
         let _ = &mut key2;
-        let r1 = resolver.resolve(&lref, Some(&key1)).unwrap();
-        let r2 = resolver.resolve(&lref, Some(&key2)).unwrap();
+        let r1 = resolver.resolve(&key, Some(&key1)).unwrap();
+        let r2 = resolver.resolve(&key, Some(&key2)).unwrap();
         assert_eq!(r1, r2, "same partition key must map to same shard");
     }
 
@@ -1059,8 +1133,7 @@ mod tests {
     fn test_resolve_sharded_distribution() {
         let members = vec![svc_id("s0"), svc_id("s1"), svc_id("s2")];
         let reg = registry_with(vec![(
-            inst("app-1"),
-            svc_name("store"),
+            local_key("app-1", "store"),
             make_entry(
                 TopologyMode::Sharded,
                 members.clone(),
@@ -1068,12 +1141,12 @@ mod tests {
             ),
         )]);
         let resolver = LogicalResolver::new(reg);
-        let lref = logical_ref("app-1", "store");
+        let key = local_key("app-1", "store");
 
         let mut counts = BTreeMap::new();
         for i in 0u64..300 {
-            let key = i.to_be_bytes();
-            let selected = resolver.resolve(&lref, Some(&key)).unwrap();
+            let routing_key = i.to_be_bytes();
+            let selected = resolver.resolve(&key, Some(&routing_key)).unwrap();
             *counts.entry(selected.to_string()).or_insert(0u64) += 1;
         }
         // All 3 members should be selected at least once with 300 distinct keys.
@@ -1093,13 +1166,13 @@ mod tests {
         }
 
         impl AppRegistry for MockRegistry {
-            fn register(&self, _: AppInstanceId, _: LogicalServiceName, _: TopologyEntry) {}
-            fn get(&self, _: &AppInstanceId, _: &LogicalServiceName) -> Option<TopologyEntry> {
+            fn register(&self, _: TopologyKey, _: TopologyEntry) {}
+            fn get(&self, _: &TopologyKey) -> Option<TopologyEntry> {
                 self.call_count.fetch_add(1, Ordering::Relaxed);
                 Some(self.entry.clone())
             }
-            fn invalidate(&self, _: &AppInstanceId, _: &LogicalServiceName) {}
-            fn list(&self, _: &AppInstanceId) -> Vec<LogicalServiceName> {
+            fn invalidate(&self, _: &TopologyKey) {}
+            fn list(&self, _: &AppScope) -> Vec<LogicalServiceName> {
                 vec![]
             }
         }
@@ -1110,74 +1183,61 @@ mod tests {
         });
 
         let resolver = LogicalResolver::new(mock.clone());
-        let lref = logical_ref("app-1", "auth");
+        let key = local_key("app-1", "auth");
 
         // First resolve -> miss -> calls get
-        resolver.resolve(&lref, None).unwrap();
+        resolver.resolve(&key, None).unwrap();
         assert_eq!(mock.call_count.load(Ordering::Relaxed), 1);
 
         // Second resolve -> hit -> should NOT call get
-        resolver.resolve(&lref, None).unwrap();
+        resolver.resolve(&key, None).unwrap();
         assert_eq!(mock.call_count.load(Ordering::Relaxed), 1, "Cache hit must bypass registry");
     }
 
     #[test]
     fn test_explicit_invalidate_clears_cache() {
         let inv = Arc::new(StaticInventory::new());
-        let id = inst("app-1");
-        let name = svc_name("auth");
-        inv.register(
-            id.clone(),
-            name.clone(),
-            make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None),
-        );
+        let key = local_key("app-1", "auth");
+        inv.register(key.clone(), make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None));
 
         let resolver = LogicalResolver::new(inv.clone());
-        let lref = logical_ref("app-1", "auth");
 
         // Populate cache.
-        let _ = resolver.resolve(&lref, None).unwrap();
+        let _ = resolver.resolve(&key, None).unwrap();
 
         // Update registry (same epoch — TTL still valid, would not normally
         // refresh).  After explicit invalidate the new value should be seen.
-        inv.register(id, name, make_entry(TopologyMode::Singleton, vec![svc_id("v2")], None));
-        resolver.invalidate(&lref);
+        inv.register(key.clone(), make_entry(TopologyMode::Singleton, vec![svc_id("v2")], None));
+        resolver.invalidate(&key);
 
         // Same epoch → cache was just evicted, re-fetch from registry.
-        let got = resolver.resolve(&lref, None).unwrap();
+        let got = resolver.resolve(&key, None).unwrap();
         assert_eq!(got, svc_id("v2"), "explicit invalidate should evict cache");
     }
 
     #[test]
     fn register_through_the_resolver_evicts_the_cached_topology() {
         let inv = Arc::new(StaticInventory::new());
-        let id = inst("app-1");
-        let name = svc_name("backend");
-        inv.register(
-            id.clone(),
-            name.clone(),
-            make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None),
-        );
+        let key = local_key("app-1", "backend");
+        inv.register(key.clone(), make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None));
 
         let resolver = LogicalResolver::new(inv);
-        let lref = logical_ref("app-1", "backend");
 
         // Populate the cache with a long TTL, so a plain TTL expiry could
         // never explain a refresh below.
-        let got = resolver.resolve(&lref, None).unwrap();
+        let got = resolver.resolve(&key, None).unwrap();
         assert_eq!(got, svc_id("v1"));
 
         // A scale-out: two members now, written through the resolver's own
         // `register`, not the registry directly.
         resolver.register(
-            id,
-            name,
+            key.clone(),
             make_entry(TopologyMode::Redundant, vec![svc_id("v1"), svc_id("v2")], None),
         );
 
         // Visible immediately -- not after `cache_ttl` -- because `register`
         // evicted the stale cached copy in the same step.
-        let all = resolver.resolve_all(&lref).unwrap();
+        let all = resolver.resolve_all(&key).unwrap();
         assert_eq!(all.members, vec![svc_id("v1"), svc_id("v2")]);
     }
 
@@ -1185,11 +1245,9 @@ mod tests {
     fn test_ttl_expiry_triggers_refresh() {
         // Use a zero-TTL entry to simulate instant expiry.
         let inv = Arc::new(StaticInventory::new());
-        let id = inst("app-1");
-        let name = svc_name("auth");
+        let key = local_key("app-1", "auth");
         inv.register(
-            id.clone(),
-            name.clone(),
+            key.clone(),
             TopologyEntry {
                 cache_ttl: Duration::ZERO,
                 ..make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None)
@@ -1197,15 +1255,13 @@ mod tests {
         );
 
         let resolver = LogicalResolver::new(inv.clone());
-        let lref = logical_ref("app-1", "auth");
 
         // Populate cache (with zero TTL it immediately expires).
-        let _ = resolver.resolve(&lref, None).unwrap();
+        let _ = resolver.resolve(&key, None).unwrap();
 
         // Update registry.
         inv.register(
-            id,
-            name,
+            key.clone(),
             TopologyEntry {
                 cache_ttl: Duration::ZERO,
                 ..make_entry(TopologyMode::Singleton, vec![svc_id("v2")], None)
@@ -1213,7 +1269,7 @@ mod tests {
         );
 
         // TTL is zero → expired → must re-fetch.
-        let got = resolver.resolve(&lref, None).unwrap();
+        let got = resolver.resolve(&key, None).unwrap();
         assert_eq!(got, svc_id("v2"), "expired TTL should trigger cache refresh");
     }
 
@@ -1223,8 +1279,7 @@ mod tests {
     fn test_resolve_all_returns_epoch_snapshot() {
         let members = vec![svc_id("m0"), svc_id("m1")];
         let reg = registry_with(vec![(
-            inst("app-1"),
-            svc_name("store"),
+            local_key("app-1", "store"),
             TopologyEntry {
                 epoch: TopologyEpoch(7),
                 ..make_entry(
@@ -1235,9 +1290,9 @@ mod tests {
             },
         )]);
         let resolver = LogicalResolver::new(reg);
-        let lref = logical_ref("app-1", "store");
+        let key = local_key("app-1", "store");
 
-        let all = resolver.resolve_all(&lref).unwrap();
+        let all = resolver.resolve_all(&key).unwrap();
         assert_eq!(all.topology_epoch, TopologyEpoch(7));
         assert_eq!(all.members, members);
     }
@@ -1246,7 +1301,7 @@ mod tests {
     fn test_resolve_all_unregistered_returns_error() {
         let reg = Arc::new(StaticInventory::new());
         let resolver = LogicalResolver::new(reg);
-        let err = resolver.resolve_all(&logical_ref("ghost", "svc"));
+        let err = resolver.resolve_all(&local_key("ghost", "svc"));
         assert!(err.is_err());
     }
 
@@ -1260,11 +1315,131 @@ mod tests {
             sharding_strategy: Some(ShardingStrategy::EntityTagSharding),
             epoch: TopologyEpoch(42),
             cache_ttl: Duration::from_secs(120),
+            not_after: Some(1_800_000_000),
         };
 
         let json = serde_json::to_string(&entry).unwrap();
         let decoded: TopologyEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(entry, decoded);
+    }
+
+    // ── AppScope / TopologyKey / not_after (S2) ──────────────
+
+    /// Failure-matrix row 8: two unrelated apps both called `chat` must not
+    /// collide -- each is keyed by its own app DID, a disjoint namespace
+    /// from `AppScope::Local`.
+    #[test]
+    fn two_foreign_apps_with_the_same_instance_id_do_not_collide() {
+        let reg = registry_with(vec![
+            (
+                foreign_key("appA", "chat"),
+                make_entry(TopologyMode::Singleton, vec![svc_id("member-a")], None),
+            ),
+            (
+                foreign_key("appB", "chat"),
+                make_entry(TopologyMode::Singleton, vec![svc_id("member-b")], None),
+            ),
+        ]);
+        let resolver = LogicalResolver::new(reg);
+
+        assert_eq!(
+            resolver.resolve(&foreign_key("appA", "chat"), None).unwrap(),
+            svc_id("member-a")
+        );
+        assert_eq!(
+            resolver.resolve(&foreign_key("appB", "chat"), None).unwrap(),
+            svc_id("member-b")
+        );
+    }
+
+    #[test]
+    fn a_local_entry_and_a_foreign_entry_with_the_same_service_name_are_distinct() {
+        let reg = registry_with(vec![
+            (
+                local_key("app-1", "auth"),
+                make_entry(TopologyMode::Singleton, vec![svc_id("local-member")], None),
+            ),
+            (
+                foreign_key("app-1", "auth"),
+                make_entry(TopologyMode::Singleton, vec![svc_id("foreign-member")], None),
+            ),
+        ]);
+        let resolver = LogicalResolver::new(reg);
+
+        assert_eq!(
+            resolver.resolve(&local_key("app-1", "auth"), None).unwrap(),
+            svc_id("local-member"),
+            "expected the local entry to resolve independently of the foreign one"
+        );
+    }
+
+    /// Matrix row 6, checked on both the registry-read path and the
+    /// cache-hit path -- an entry past `not_after` must fail, not keep
+    /// answering from a warm cache.
+    #[test]
+    fn an_entry_past_its_not_after_stops_resolving() {
+        // Registry path: an already-expired entry is never even cached.
+        let past = unix_now().saturating_sub(3600);
+        let inv = Arc::new(StaticInventory::new());
+        let key = foreign_key("app-1", "svc");
+        inv.register(
+            key.clone(),
+            TopologyEntry {
+                not_after: Some(past),
+                ..make_entry(TopologyMode::Singleton, vec![svc_id("m1")], None)
+            },
+        );
+        let resolver = LogicalResolver::new(inv.clone());
+        let err = resolver.resolve(&key, None).unwrap_err();
+        assert!(err.to_string().contains("expired"), "{err}");
+
+        // Cache-hit path: an entry valid when cached (a long `cache_ttl`,
+        // a `not_after` a moment away) must stop answering once real time
+        // carries it past `not_after`, with no registry re-read involved.
+        // A 1s margin here raced `unix_now()`'s own second boundary under
+        // load (the immediate "still valid" resolve could land exactly on
+        // it); 3s leaves two full seconds of slack regardless of where in
+        // its current second `register` happens to land.
+        let key2 = foreign_key("app-1", "svc2");
+        inv.register(
+            key2.clone(),
+            TopologyEntry {
+                not_after: Some(unix_now() + 3),
+                ..make_entry(TopologyMode::Singleton, vec![svc_id("m2")], None)
+            },
+        );
+        assert!(resolver.resolve(&key2, None).is_ok(), "warms the cache while still valid");
+        std::thread::sleep(Duration::from_millis(3200));
+        let err2 = resolver.resolve(&key2, None).unwrap_err();
+        assert!(err2.to_string().contains("expired"), "{err2}");
+    }
+
+    /// The absent-means-current-behavior property: every intra-app binding
+    /// entry has `not_after: None` and must resolve exactly as it does
+    /// today, with no expiry check ever tripping.
+    #[test]
+    fn an_entry_with_no_not_after_resolves_as_it_does_today() {
+        let reg = registry_with(vec![(
+            local_key("app-1", "auth"),
+            make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None),
+        )]);
+        let resolver = LogicalResolver::new(reg);
+        assert_eq!(resolver.resolve(&local_key("app-1", "auth"), None).unwrap(), svc_id("v1"));
+    }
+
+    /// `not_after` is excluded from `classify_binding_write`'s content
+    /// comparison, the same way `cache_ttl` already is.
+    #[test]
+    fn a_not_after_difference_at_one_epoch_is_not_a_binding_conflict() {
+        let held = TopologyEntry {
+            not_after: Some(1_000),
+            ..make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None)
+        };
+        let incoming = TopologyEntry {
+            not_after: Some(2_000),
+            ..make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None)
+        };
+        assert_eq!(classify_binding_write(Some(&held), &incoming), BindingWriteOutcome::NoOp);
     }
 
     // ── Performance: cache-hit latency budget ────────────────
@@ -1273,21 +1448,20 @@ mod tests {
     fn test_cache_hit_latency_under_100ns() {
         let members = vec![svc_id("only")];
         let reg = registry_with(vec![(
-            inst("app-perf"),
-            svc_name("svc"),
+            local_key("app-perf", "svc"),
             make_entry(TopologyMode::Singleton, members, None),
         )]);
         let resolver = LogicalResolver::new(reg);
-        let lref = logical_ref("app-perf", "svc");
+        let key_ref = local_key("app-perf", "svc");
         let key = b"hot-routing-key";
 
         // Warm the cache.
-        resolver.resolve(&lref, Some(key)).unwrap();
+        resolver.resolve(&key_ref, Some(key)).unwrap();
 
         // Measure 1000 cache-hit resolutions.
         let start = Instant::now();
         for _ in 0..1000 {
-            resolver.resolve(&lref, Some(key)).unwrap();
+            resolver.resolve(&key_ref, Some(key)).unwrap();
         }
         let elapsed = start.elapsed();
         let per_call_ns = elapsed.as_nanos() / 1000;
@@ -1315,20 +1489,18 @@ mod tests {
         let members_b = vec![svc_id("b1"), svc_id("b2")];
         let reg = registry_with(vec![
             (
-                inst("app"),
-                svc_name("svc_a"),
+                local_key("app", "svc_a"),
                 make_entry(TopologyMode::Redundant, members_a.clone(), None),
             ),
             (
-                inst("app"),
-                svc_name("svc_b"),
+                local_key("app", "svc_b"),
                 make_entry(TopologyMode::Redundant, members_b.clone(), None),
             ),
         ]);
         let resolver = LogicalResolver::new(reg);
 
-        let ref_a = logical_ref("app", "svc_a");
-        let ref_b = logical_ref("app", "svc_b");
+        let ref_a = local_key("app", "svc_a");
+        let ref_b = local_key("app", "svc_b");
 
         // Resolving A should not affect B's counter
         assert_eq!(resolver.resolve(&ref_a, None).unwrap(), members_a[0]);
@@ -1516,8 +1688,7 @@ mod tests {
 
         let members = vec![svc_id("shard-1"), svc_id("shard-2"), svc_id("shard-3")];
         let reg = registry_with(vec![(
-            inst("app-1"),
-            svc_name("range-service"),
+            local_key("app-1", "range-service"),
             make_entry(
                 TopologyMode::Sharded,
                 members,
@@ -1525,17 +1696,17 @@ mod tests {
             ),
         )]);
         let resolver = LogicalResolver::new(reg);
-        let lref = logical_ref("app-1", "range-service");
+        let key = local_key("app-1", "range-service");
 
         // "a" < "bar" -> shard-1
-        assert_eq!(resolver.resolve(&lref, Some(b"a")).unwrap(), svc_id("shard-1"));
+        assert_eq!(resolver.resolve(&key, Some(b"a")).unwrap(), svc_id("shard-1"));
         // "bar" -> shard-2 (start_key inclusive)
-        assert_eq!(resolver.resolve(&lref, Some(b"bar")).unwrap(), svc_id("shard-2"));
+        assert_eq!(resolver.resolve(&key, Some(b"bar")).unwrap(), svc_id("shard-2"));
         // "baz" -> shard-2 ("bar" <= "baz" < "foo")
-        assert_eq!(resolver.resolve(&lref, Some(b"baz")).unwrap(), svc_id("shard-2"));
+        assert_eq!(resolver.resolve(&key, Some(b"baz")).unwrap(), svc_id("shard-2"));
         // "foo" -> shard-3 (start_key inclusive)
-        assert_eq!(resolver.resolve(&lref, Some(b"foo")).unwrap(), svc_id("shard-3"));
+        assert_eq!(resolver.resolve(&key, Some(b"foo")).unwrap(), svc_id("shard-3"));
         // "z" -> shard-3
-        assert_eq!(resolver.resolve(&lref, Some(b"z")).unwrap(), svc_id("shard-3"));
+        assert_eq!(resolver.resolve(&key, Some(b"z")).unwrap(), svc_id("shard-3"));
     }
 }

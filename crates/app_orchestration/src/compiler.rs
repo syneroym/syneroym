@@ -173,6 +173,7 @@ fn compile_recursive<'a>(
                     topology_mode,
                     member_index,
                     schedule: spec.schedule.clone(),
+                    sharding_strategy: spec.sharding_strategy.clone(),
                 });
             }
         }

@@ -15,15 +15,12 @@ use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use syneroym_app_orchestration::{
-    LogicalResolver, StaticInventory, TopologyEntry, TopologyEpoch,
-    models::{AppInstanceId, LogicalServiceName, LogicalServiceRef, ServiceId, TopologyMode},
+    LogicalResolver, StaticInventory, TopologyEntry, TopologyEpoch, TopologyKey,
+    models::{AppInstanceId, LogicalServiceName, ServiceId, TopologyMode},
 };
 
-fn logical_ref(instance: &str, service: &str) -> LogicalServiceRef {
-    LogicalServiceRef {
-        app_instance_id: AppInstanceId::new(instance),
-        service_name: LogicalServiceName::new(service),
-    }
+fn topology_key(instance: &str, service: &str) -> TopologyKey {
+    TopologyKey::local(AppInstanceId::new(instance), LogicalServiceName::new(service))
 }
 
 fn entry(mode: TopologyMode, members: Vec<ServiceId>) -> TopologyEntry {
@@ -33,24 +30,24 @@ fn entry(mode: TopologyMode, members: Vec<ServiceId>) -> TopologyEntry {
         sharding_strategy: None,
         epoch: TopologyEpoch(1),
         cache_ttl: std::time::Duration::from_secs(60),
+        not_after: None,
     }
 }
 
 /// The cache-hit path: `resolve` after the topology is already warm.
 fn bench_cache_hit(c: &mut Criterion) {
-    let l_ref = logical_ref("bench-inst", "backend");
+    let key = topology_key("bench-inst", "backend");
     let registry = Arc::new(StaticInventory::new());
     let resolver = LogicalResolver::new(registry);
     resolver.register(
-        l_ref.app_instance_id.clone(),
-        l_ref.service_name.clone(),
+        key.clone(),
         entry(TopologyMode::Singleton, vec![ServiceId::new("did:key:hMember")]),
     );
     // Warm the cache once before timing.
-    resolver.resolve(&l_ref, None).unwrap();
+    resolver.resolve(&key, None).unwrap();
 
     c.bench_function("logical_resolver_resolve_cache_hit", |b| {
-        b.iter(|| resolver.resolve(&l_ref, None).unwrap());
+        b.iter(|| resolver.resolve(&key, None).unwrap());
     });
 }
 
@@ -58,19 +55,18 @@ fn bench_cache_hit(c: &mut Criterion) {
 /// through the registry (`AppRegistry::get`), which is the "network hop"
 /// this budget exists to bound in-process against.
 fn bench_cache_miss_through_registry(c: &mut Criterion) {
-    let l_ref = logical_ref("bench-inst", "backend");
+    let key = topology_key("bench-inst", "backend");
     let registry = Arc::new(StaticInventory::new());
     let resolver = LogicalResolver::new(registry);
     resolver.register(
-        l_ref.app_instance_id.clone(),
-        l_ref.service_name.clone(),
+        key.clone(),
         entry(TopologyMode::Singleton, vec![ServiceId::new("did:key:hMember")]),
     );
 
     c.bench_function("logical_resolver_resolve_cache_miss_through_registry", |b| {
         b.iter(|| {
-            resolver.invalidate(&l_ref);
-            resolver.resolve(&l_ref, None).unwrap()
+            resolver.invalidate(&key);
+            resolver.resolve(&key, None).unwrap()
         });
     });
 }
@@ -80,21 +76,20 @@ fn bench_cache_miss_through_registry(c: &mut Criterion) {
 /// (`ResolvedTopology::rr_counter`) -- still no network hop, just an
 /// atomic increment on top of the cache-hit path above.
 fn bench_two_member_redundant_round_robin(c: &mut Criterion) {
-    let l_ref = logical_ref("bench-inst", "backend");
+    let key = topology_key("bench-inst", "backend");
     let registry = Arc::new(StaticInventory::new());
     let resolver = LogicalResolver::new(registry);
     resolver.register(
-        l_ref.app_instance_id.clone(),
-        l_ref.service_name.clone(),
+        key.clone(),
         entry(
             TopologyMode::Redundant,
             vec![ServiceId::new("did:key:hMember0"), ServiceId::new("did:key:hMember1")],
         ),
     );
-    resolver.resolve(&l_ref, None).unwrap();
+    resolver.resolve(&key, None).unwrap();
 
     c.bench_function("logical_resolver_resolve_redundant_round_robin", |b| {
-        b.iter(|| resolver.resolve(&l_ref, None).unwrap());
+        b.iter(|| resolver.resolve(&key, None).unwrap());
     });
 }
 
