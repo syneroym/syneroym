@@ -76,7 +76,10 @@ impl SubstrateTestContext {
                 http_bind_address: format!("0.0.0.0:{registry_port}"),
                 ..Default::default()
             }),
-            client_gateway: Some(ClientGatewayRole { http_port: gateway_port }),
+            client_gateway: Some(ClientGatewayRole {
+                http_port: gateway_port,
+                ..Default::default()
+            }),
             podman_sandbox: Some(PodmanSandboxRole { podman_path: "podman".to_string() }),
             ..Default::default()
         };

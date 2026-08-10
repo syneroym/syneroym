@@ -153,15 +153,31 @@ registry_url = "http://127.0.0.1:7661"
   if (!appAlias) throw new Error("Could not calculate app alias");
   console.log('App Alias:', appAlias);
 
+  // M05C S3, test 104: a second alias naming a second app-declared
+  // interface explicitly. `miniapp-demo1-web` gains a second declared
+  // interface below (`--interfaces http,admin`) precisely so this host
+  // is no longer covered by D-S3-15's "the service's one app-declared
+  // interface" fallback -- without a second interface, a lost `-i`
+  // segment would still resolve by that fallback and this test would
+  // pass vacuously, which is exactly how the JS parser defect §0.1
+  // describes would have shipped unnoticed.
+  const adminAliasOutput = execSync(`"${ROYMCTL_BIN}" alias ${appDid} --nickname demo1 --interface admin`, { cwd: WORKSPACE_DIR }).toString().trim();
+  const appAliasAdmin = adminAliasOutput.split('\n').pop()?.trim();
+  if (!appAliasAdmin) throw new Error("Could not calculate the admin-interface app alias");
+  console.log('App Alias (admin interface):', appAliasAdmin);
+
   // Register in Community Registry FIRST
   console.log('Registering service in Community Registry...');
   execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 registry register --identity demo1 --substrate ${substrateDid} --nickname demo1`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
-  // Deploy Passthrough Service
+  // Deploy Passthrough Service. Two declared interfaces (`http`, `admin`)
+  // both proxy to the one real TCP backend -- what matters for D-S3-15's
+  // property is that two names are *registered*, not that they answer
+  // differently.
   console.log('Deploying TCP Service (Passthrough)...');
   try {
     await new Promise(r => setTimeout(r, 2000));
-    execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 --substrate ${substrateDid} --as owner svc deploy --svc-id ${appDid} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+    execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 --substrate ${substrateDid} --as owner svc deploy --svc-id ${appDid} --interfaces http,admin --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
   } catch (err: any) {
     console.error("Deploy failed!");
     throw err;
@@ -171,6 +187,7 @@ registry_url = "http://127.0.0.1:7661"
   process.env.SUBSTRATE_DID = substrateDid;
   process.env.APP_DID = appDid;
   process.env.APP_ALIAS = appAlias;
-  
+  process.env.APP_ALIAS_ADMIN = appAliasAdmin;
+
   console.log('--- E2E Global Setup Complete ---\n');
 }

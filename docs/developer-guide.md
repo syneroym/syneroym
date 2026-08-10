@@ -236,7 +236,7 @@ You can verify the registration using the lookup command:
 
 ```bash
 # Look up by DID or alias (nickname + shorthash)
-roymctl registry lookup "alice-p<SERVICE_DID_SHORTHASH>"
+roymctl registry lookup "alice-<SERVICE_DID_SHORTHASH>"
 ```
 
 ### Discovering Services
@@ -266,9 +266,10 @@ The Orchestrator is a native service running inside the substrate. You can inter
 
 #### List Deployed Services
 ```bash
-# Replace <NICKNAME> and <SUBSTRATE_DID_SHORTHASH>
+# Replace <NICKNAME> and <SUBSTRATE_DID_SHORTHASH>. `-iorchestrator` names
+# the interface literally, not by hash -- the parser accepts either.
 curl -X POST http://localhost:7960/ \
-  -H "Host: <NICKNAME>-p<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
+  -H "Host: <NICKNAME>-s<SUBSTRATE_DID_SHORTHASH>-iorchestrator-roym1.localhost" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -1253,13 +1254,63 @@ on this yet (tracked in `deferred-backlog.md`).
 
 ### Interacting with Applications
 
+#### The gateway hostname scheme (ADR-0022 §7)
+
+One grammar, two forms, both terminated by a trailing `-roym1` format
+marker:
+
+```text
+<nickname>-s<service-did-hash>[-i<interface-hash>]-roym1.<domain>          # a service outside any app instance
+<nickname>-a<app-did-hash>-s<service-name-hash>[-i<interface-hash>]-roym1.<domain>  # a logical service of an app instance
+```
+
+`-s` is the only required segment. `-a`'s presence decides whether `-s`
+carries a hash of a concrete service DID (reversed by the registry's alias
+index) or a hash of a logical service name inside an app (reversed by the
+app's own supervisor). Omitting `-i` means "the service's one
+app-declared interface" and is resolved at the destination — it fails
+loudly if the service declares zero or more than one.
+
+`roymctl alias <SERVICE_ID> --nickname <NICKNAME> [--interface <NAME>]`
+builds the unscoped form; adding `--service <LOGICAL_SERVICE_NAME>` (which
+also requires `--nickname`, since it must be the app's own
+`AppInstanceId`) builds the app-scoped form against the app's own master
+DID.
+
+An app-scoped hostname carries a routing key, when the caller has one, as
+the `X-Syneroym-Routing-Key` request header rather than a hostname
+segment — the gateway forwards it unmodified. A `Redundant` service picks
+the same member for the same key; a `Sharded` service requires one.
+
+Resolving an app-scoped host needs the gateway (or WebRTC coordinator) to
+be authorized for `supervisor/resolve` on the target app. Two config
+keys, in `[iam]` and `[roles.client_gateway]` (or `[roles.coordinator]`)
+respectively:
+
+```toml
+[iam]
+# Grants this node's own DID `supervisor/resolve`, node-wide -- covers
+# every app supervised on this node with no credential file. Off by
+# default.
+grant_resolve_to_node_did = true
+
+[roles.client_gateway]
+# A CapabilityToken file granting `supervisor/resolve` on apps supervised
+# by *other* nodes -- the same file `roymctl app resolve --ucan` takes.
+resolve_ucan = "/path/to/resolve-token.json"
+```
+
+With neither set, every app-scoped hostname is refused by the supervisor
+it reaches (a startup warning names both keys); unscoped (`-s` only)
+hostnames are unaffected either way.
+
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy
 
 > [!TIP]
 > You can use `roymctl alias <APP_DID> --nickname <NICKNAME> --interface <INTERFACE_NAME>` to get the full Host header.
 
 ```bash
-# Host header format: <NICKNAME>-p<APP_DID_HASH>-i<INTERFACE_HASH>.localhost
+# Host header format: <NICKNAME>-s<APP_DID_HASH>[-i<INTERFACE_HASH>]-roym1.localhost
 curl -X POST http://localhost:7960/ \
   -H "Host: $(roymctl alias <APP_DID> --nickname <NICKNAME> --interface <INTERFACE_NAME>)" \
   -H "Content-Type: application/json" \
@@ -1275,7 +1326,7 @@ curl -X POST http://localhost:7960/ \
 ```bash
 # Simple GET request
 curl http://localhost:7960/api/data \
-  -H "Host: my-tcp-service-p<APP_DID_HASH>-i<INTERFACE_HASH>.localhost"
+  -H "Host: my-tcp-service-s<APP_DID_HASH>-i<INTERFACE_HASH>-roym1.localhost"
 ```
 
 ### Health and Metrics

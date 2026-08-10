@@ -137,7 +137,8 @@ impl Node {
         // peers otherwise adds real latency this fixture has no need to pay.
         let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
         config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
 
         let substrate_identity_state =

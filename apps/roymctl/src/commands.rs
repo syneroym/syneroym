@@ -58,17 +58,32 @@ pub enum Commands {
         /// The input string to hash (e.g. DID or interface name)
         input: String,
     },
-    /// Generate a consistent alias for a service ID and optional nickname
+    /// Generate a gateway host (or a bare registry alias) for a service ID
+    /// or, with `--service`, a logical service of an app instance
+    /// (ADR-0022 §7)
     Alias {
-        /// The service ID (DID)
+        /// The service ID (DID). With `--service`, this is the app's own
+        /// master DID rather than a physical service DID
         service_id: String,
-        /// Optional nickname
+        /// Optional nickname. Required with `--service`: it must be the
+        /// app instance's own `AppInstanceId`, since `<nickname>-<app-did-
+        /// hash>` is the registry alias the app's Tier-1 record was
+        /// admitted under (D-S3-2)
         #[arg(long)]
         nickname: Option<String>,
-        /// Optional interface name to include in the alias (outputs full
-        /// hostname)
+        /// Optional interface name to include in the host. Omitted means
+        /// "the service's one app-declared interface", resolved at the
+        /// destination (D-S3-15)
         #[arg(long)]
         interface: Option<String>,
+        /// The logical service name of an app instance -- when given,
+        /// `service_id` is read as the app's master DID rather than a
+        /// physical service DID, and `--nickname` becomes required
+        #[arg(long, requires = "nickname")]
+        service: Option<String>,
+        /// The domain the resulting host is served under
+        #[arg(long, default_value = "localhost")]
+        domain: String,
     },
     /// Manage entries in the community registry
     Registry {
@@ -211,13 +226,30 @@ pub async fn run(
             let hash = util::short_hash(&input);
             println!("{hash}");
         }
-        Commands::Alias { service_id, nickname, interface } => {
-            let alias = util::generate_alias(nickname.as_deref(), &service_id);
-            if let Some(iface) = interface {
-                let iface_hash = util::short_hash(&iface);
-                println!("{alias}-i{iface_hash}.localhost");
+        Commands::Alias { service_id, nickname, interface, service, domain } => {
+            if let Some(service_name) = service {
+                // `nickname` is guaranteed `Some` here -- clap's own
+                // `requires = "nickname"` on `--service` refuses the
+                // command otherwise, naming the missing flag.
+                let nickname = nickname
+                    .as_deref()
+                    .context("--service requires --nickname (the app's AppInstanceId)")?;
+                let host = util::generate_app_host(
+                    nickname,
+                    &service_id,
+                    &service_name,
+                    interface.as_deref(),
+                    &domain,
+                )?;
+                println!("{host}");
             } else {
-                println!("{alias}");
+                let host = util::generate_service_host(
+                    nickname.as_deref(),
+                    &service_id,
+                    interface.as_deref(),
+                    &domain,
+                )?;
+                println!("{host}");
             }
         }
         Commands::Registry { command } => {

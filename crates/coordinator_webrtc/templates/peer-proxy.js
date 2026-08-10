@@ -500,16 +500,15 @@ class SynWebSocket extends EventTarget {
         this.onerror = null;
         this.onclose = null;
 
-        const hostname = url.hostname;
-        let hostBase = hostname.endsWith('.localhost') ? hostname.slice(0, -10) : hostname;
-        let parts = hostBase.split('-');
-        let interfaceName = '';
-        if (parts.length > 1 && parts[parts.length - 1].startsWith('i') && parts[parts.length - 1].length > 1) {
-            interfaceName = parts.pop().substring(1);
-        }
+        // S3, D-S3-16: the interface is resolved from the hostname once,
+        // on the coordinator, and interpolated as TARGET_INTERFACE -- not
+        // re-derived here. A per-request parse of `location.hostname` was
+        // always redundant anyway, since the page's own origin does not
+        // change between fetches, and re-parsing here would make this a
+        // second (now stale) implementation of the grammar.
         let serviceId = TARGET_SERVICE_ID;
 
-        const preamble = `raw://${interfaceName}|${serviceId}?enc=ecdh-p256&pubkey=placeholder\n`;
+        const preamble = `raw://${TARGET_INTERFACE}|${serviceId}?enc=ecdh-p256&pubkey=placeholder\n`;
 
         let headerBuffer = new Uint8Array(0);
         let handshakeComplete = false;
@@ -855,19 +854,15 @@ async function handleSignalingMessage(msg) {
 async function handleSWRequest(reqData, port) {
     try {
         const url = new URL(reqData.url);
-        const hostname = url.hostname;
-        let hostBase = hostname.endsWith('.localhost') ? hostname.slice(0, -10) : hostname;
-
-        let parts = hostBase.split('-');
-        let interfaceName = '';
-        if (parts.length > 1 && parts[parts.length - 1].startsWith('i') && parts[parts.length - 1].length > 1) {
-            interfaceName = parts.pop().substring(1);
-        }
+        // S3, D-S3-16: TARGET_INTERFACE is resolved once, on the
+        // coordinator, from the bootstrap hostname -- not re-derived per
+        // request here (the page's own origin does not change between
+        // fetches, so the per-request parse this replaced was redundant).
         let serviceId = TARGET_SERVICE_ID;
 
-        console.debug(`[Page][SW] Intercepted ${reqData.method} ${url.pathname} (interface='${interfaceName}' service='${serviceId}')`);
+        console.debug(`[Page][SW] Intercepted ${reqData.method} ${url.pathname} (interface='${TARGET_INTERFACE}' service='${serviceId}')`);
 
-        const preamble = `http://${interfaceName}|${serviceId}?enc=ecdh-p256&pubkey=placeholder\n`;
+        const preamble = `http://${TARGET_INTERFACE}|${serviceId}?enc=ecdh-p256&pubkey=placeholder\n`;
         console.debug(`[Page][SW] Preamble to send: ${preamble.trim()}`);
 
         const { writable, readable } = new TransformStream();

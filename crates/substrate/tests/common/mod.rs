@@ -90,7 +90,8 @@ impl SubstrateTestContext {
         config.substrate.registry_url = Some(registry_url.clone());
         config.parent_coordinator.iroh =
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
 
         // An unowned substrate now fails closed, so this
         // harness must own its own node -- mint an owner identity and

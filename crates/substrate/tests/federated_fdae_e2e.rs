@@ -141,7 +141,8 @@ impl Node {
         // condition the 50 ms federated-hop budget is meant to capture.
         let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
         config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         // An owned node so an unrelated caller (e.g. Node A's own forwarded
         // `resolve-relation` invocation, proxying for a Node B principal who
         // never delegated anything on Node A) does not fall back to a

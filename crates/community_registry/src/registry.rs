@@ -473,8 +473,7 @@ mod tests {
         assert_eq!(res.unwrap(), StatusCode::OK);
 
         // Lookup by alias
-        let service_hash = util::short_hash(&did);
-        let alias = format!("alice-p{service_hash}");
+        let alias = util::generate_alias(Some("alice"), &did);
         let lookup_res = lookup_endpoint(Path(alias), State(state)).await;
 
         let Json(retrieved) = lookup_res.unwrap();
@@ -607,9 +606,8 @@ mod tests {
         let signed_info = create_signed_info(&identity, info);
         register_endpoint(State(state.clone()), Json(signed_info)).await.unwrap();
 
-        // Lookup by shorthash (p{hash}) should work
-        let service_hash = util::short_hash(&did);
-        let alias = format!("p{service_hash}");
+        // Lookup by bare shorthash should work
+        let alias = util::generate_alias(None, &did);
         let lookup_res = lookup_endpoint(Path(alias), State(state)).await;
 
         assert!(lookup_res.is_ok());
@@ -638,9 +636,8 @@ mod tests {
         let signed_info = create_signed_info(&identity, info);
         register_endpoint(State(state.clone()), Json(signed_info)).await.unwrap();
 
-        // Lookup by shorthash-only (p{hash}) should FAIL because nickname was provided
-        let service_hash = util::short_hash(&did);
-        let alias = format!("p{service_hash}");
+        // Lookup by bare shorthash should FAIL because a nickname was provided
+        let alias = util::generate_alias(None, &did);
         let lookup_res = lookup_endpoint(Path(alias), State(state)).await;
 
         assert!(lookup_res.is_err());
@@ -689,8 +686,7 @@ mod tests {
 
         register_endpoint(State(state.clone()), Json(signed)).await.unwrap();
 
-        let master_hash = util::short_hash(&master_did);
-        let alias = format!("member-one-p{master_hash}");
+        let alias = util::generate_alias(Some("member-one"), &master_did);
         let lookup_res = lookup_endpoint(Path(alias), State(state)).await;
         let Json(retrieved) = lookup_res.unwrap();
         assert_eq!(retrieved.info.service_id, master_did);

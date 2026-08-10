@@ -208,7 +208,8 @@ impl SubstrateTestContext {
         config.parent_coordinator.iroh =
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
 
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
 
         // An unowned substrate now fails closed, so this
         // harness must own its own node.
@@ -423,9 +424,13 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     // Test HTTP requests through client_gateway
     let req_client = Client::new();
     let url = format!("{}/", ctx.gateway_url());
-    let interface_hash = util::short_hash("default");
-    let pubkeyhash = util::short_hash(&app_service_id);
-    let host_header = format!("tcp-demo-app-p{pubkeyhash}-i{interface_hash}.localhost");
+    let host_header = util::generate_service_host(
+        Some("tcp-demo-app"),
+        &app_service_id,
+        Some("default"),
+        "localhost",
+    )
+    .unwrap();
 
     // 1. GET /
     let res = req_client.get(&url).header("Host", &host_header).send().await.expect("GET / failed");
@@ -602,9 +607,13 @@ async fn test_http_proxy_invocation(
 
     let req_client = Client::new();
     let url = format!("{}/", ctx.gateway_url());
-    let interface_hash = util::short_hash(GREETER_INTERFACE_NAME);
-    let pubkeyhash = util::short_hash(app_service_id);
-    let host_header = format!("{nickname}-p{pubkeyhash}-i{interface_hash}.localhost");
+    let host_header = util::generate_service_host(
+        Some(nickname),
+        app_service_id,
+        Some(GREETER_INTERFACE_NAME),
+        "localhost",
+    )
+    .unwrap();
 
     let proxy_res = req_client
         .post(&url)

@@ -8,6 +8,11 @@
         const SIGNALING_SERVER_URL = "{{ signaling_server_url }}";
         const TARGET_PEER_ID = "{{ target_peer_id }}";
         const TARGET_SERVICE_ID = "{{ target_service_id }}";
+        // S3, D-S3-16: the interface the route preamble names, already
+        // resolved from the hostname by `parse_target_host` on the
+        // coordinator. Empty when the host carried no `-i`, which the
+        // destination resolves (D-S3-15) -- never re-derived here.
+        const TARGET_INTERFACE = "{{ target_interface }}";
         const HTTP_VERSION = "{{ http_version }}";
         const TARGET_PUBKEY_HEX = "{{ target_pubkey_hex }}";
         const urlParams = new URLSearchParams(window.location.search);

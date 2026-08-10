@@ -832,6 +832,12 @@ pub struct CoordinatorRole {
     pub iroh: Option<CoordinatorIrohConfig>,
     pub webrtc: Option<CoordinatorWebRtcConfig>,
     pub transport_bridge: Option<TransportBridgeRole>,
+    /// Path to a `CapabilityToken` granting `supervisor/resolve` on apps
+    /// supervised by *other* nodes -- the WebRTC coordinator's own copy of
+    /// `ClientGatewayRole::resolve_ucan` (D-S3-6). Same default, same
+    /// warning shape.
+    #[serde(default)]
+    pub resolve_ucan: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -927,11 +933,20 @@ const fn default_http_port() -> u16 {
 #[serde(default)]
 pub struct ClientGatewayRole {
     pub http_port: u16,
+    /// Path to a `CapabilityToken` granting `supervisor/resolve` on apps
+    /// supervised by *other* nodes (D-S3-6). Not needed for apps
+    /// supervised by this node -- `[iam].grant_resolve_to_node_did`
+    /// covers those. Absent, with that gate off too, means every logical
+    /// hostname is refused by the supervisor it reaches; a startup
+    /// warning names both keys. Unscoped (`-s` only) hostnames are
+    /// unaffected either way.
+    #[serde(default)]
+    pub resolve_ucan: Option<PathBuf>,
 }
 
 impl Default for ClientGatewayRole {
     fn default() -> Self {
-        Self { http_port: default_http_port() }
+        Self { http_port: default_http_port(), resolve_ucan: None }
     }
 }
 
@@ -1140,6 +1155,23 @@ pub struct IamConfig {
     /// mutually signed (see `syneroym_identity::substrate`) -- this config
     /// value is only the fallback for deployments with no such agreement.
     pub admin_ucan_root: Option<String>,
+    /// Grants a caller whose verified DID is **this node's own** the
+    /// ability `supervisor/resolve`, node-wide (ADR-0022 §7, D-S3-6).
+    ///
+    /// This is what lets a same-node client gateway or WebRTC coordinator
+    /// resolve a logical (`-a…-s…`) hostname for an app whose supervisor
+    /// runs here, with no credential file. Deliberately **not**
+    /// `substrate/admin`: the grant is a bare `substrate:<node_did>`
+    /// resource, which short-circuits `Capability::grants` and therefore
+    /// covers `synapp:<any-app-did>` -- but its *ability* is only
+    /// `supervisor/resolve`, so the node's own key gains resolution and
+    /// nothing else. Says nothing about apps supervised elsewhere; those
+    /// need `resolve_ucan` (`ClientGatewayRole`/`CoordinatorRole`),
+    /// because the check runs on the remote supervisor. Defaults to
+    /// `false`: a grant is asked for, not assumed, matching
+    /// `admin_ucan_root`'s own symmetry.
+    #[serde(default)]
+    pub grant_resolve_to_node_did: bool,
 }
 
 #[cfg(test)]

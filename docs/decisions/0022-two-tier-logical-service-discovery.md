@@ -265,6 +265,33 @@ will reach — that is what Tier 2 is for. Four hashed components plus a nicknam
 is close to the 63-character DNS label limit, so truncation lengths are chosen
 deliberately rather than inherited.
 
+**Amendment (2026-08-10, M05C slice S3 implementation).** The printed form
+above is superseded; the decision itself — the hostname carries what decides
+reachability, the routing key is a header — is unchanged. Three corrections,
+worked out in [the slice's own plan](../planning/milestones/M05C-logical-discovery-overlay/slice-s3-implementation-plan.md):
+
+- **A trailing `-roym1` format marker.** The grammar had no way to tell a
+  Syneroym host from a mistyped one, and no way to change the grammar again
+  without guessing. The marker is popped first (right to left), so a future
+  format ships as `-roym2` and both are served side by side.
+- **`-p` is renamed `-s`.** `p` meant "pubkey hash", a distinction that stops
+  existing once the app DID is *also* a pubkey; `-s` says directly what the
+  segment names ("which service"), whether that is a concrete `ServiceId` or
+  a logical name, decided by whether `-a` is present.
+- **`-a` and `-i` are both optional**, not four hashed components as this
+  section's own arithmetic (now corrected) implied: the real form has three
+  hashed segments (`a`, `s`, `i`) plus the marker, leaving 27 characters for
+  the nickname on an app-scoped host (37 with no `-i`). An omitted `-i`
+  resolves at the destination to the service's one app-declared interface,
+  rather than matching nothing as the pre-S3 code actually did.
+
+The corrected grammar:
+
+```
+<nickname>-s<service-did-hash>[-i<interface-hash>]-roym1.<domain>
+<nickname>-a<app-did-hash>-s<logical-service-name-hash>[-i<interface-hash>]-roym1.<domain>
+```
+
 The **routing key travels in a request header**, absent meaning unkeyed. It
 fails the hostname test twice over:
 

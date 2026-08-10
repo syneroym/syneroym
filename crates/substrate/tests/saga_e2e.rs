@@ -124,7 +124,8 @@ impl Node {
         config.substrate.registry_url = Some(effective_registry_url.clone());
         config.parent_coordinator.iroh =
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
         if let Some(role) = app_sandbox {
             config.roles.app_sandbox = Some(role);

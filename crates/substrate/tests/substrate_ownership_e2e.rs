@@ -86,7 +86,8 @@ impl Node {
         config.substrate.registry_url = Some(registry_url.clone());
         config.parent_coordinator.iroh =
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
 
         let node = Identity::generate().expect("node identity");
         fs::create_dir_all(&config.app_data_dir).expect("create app_data_dir");

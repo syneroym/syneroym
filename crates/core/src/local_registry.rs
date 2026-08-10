@@ -188,37 +188,55 @@ impl EndpointRegistry {
         Ok(())
     }
 
+    /// Canonicalizes the interface a caller named into one this service
+    /// actually registered. Three inputs, one rule -- the party holding
+    /// the candidate set does the reversing:
+    ///
+    /// - an exact registered name;
+    /// - a `short_hash` of one (a caller off the network carries hashes, not
+    ///   names);
+    /// - **empty**, meaning "this service's one app-declared interface"
+    ///   (ADR-0022 §7's hostname omits `-i` when a caller has nothing to say
+    ///   about it, D-S3-15).
+    ///
+    /// The empty case filters [`NATIVE_CAPABILITY_INTERFACES`], which
+    /// every deployed service is registered under regardless of type, so
+    /// "only one" means only one the app itself declared. Zero or two or
+    /// more is `None`: an ambiguous interface is refused, never guessed.
+    #[must_use]
+    pub fn resolve_interface(&self, service_id: &str, interface_name: &str) -> Option<String> {
+        if interface_name.is_empty() {
+            let mut declared = self
+                .lookup_by_service(service_id)
+                .into_iter()
+                .filter(|(name, _)| !NATIVE_CAPABILITY_INTERFACES.contains(&name.as_str()));
+            let only = declared.next()?;
+            return if declared.next().is_none() { Some(only.0) } else { None };
+        }
+
+        if self.active_endpoints.contains_key(&(service_id.to_string(), interface_name.to_string()))
+        {
+            return Some(interface_name.to_string());
+        }
+
+        self.interface_hashes
+            .get(&(service_id.to_string(), interface_name.to_string()))
+            .map(|canonical| canonical.clone())
+    }
+
     /// Lookup a destination for an incoming request.
     /// Returns the endpoint and the canonical interface name it was registered
     /// under. The canonical interface name may differ from `interface_name`
-    /// when a short hash is provided.
+    /// when a short hash -- or, since S3, an empty string -- is provided.
     #[must_use]
     pub fn lookup(
         &self,
         service_id: &str,
         interface_name: &str,
     ) -> Option<(SubstrateEndpoint, String)> {
-        // First try exact match
-        if let Some(ep) = self
-            .active_endpoints
-            .get(&(service_id.to_string(), interface_name.to_string()))
-            .map(|e| e.clone())
-        {
-            return Some((ep, interface_name.to_string()));
-        }
-
-        // Then try hash match
-        if let Some(canonical) =
-            self.interface_hashes.get(&(service_id.to_string(), interface_name.to_string()))
-            && let Some(ep) = self
-                .active_endpoints
-                .get(&(service_id.to_string(), canonical.clone()))
-                .map(|e| e.clone())
-        {
-            return Some((ep, canonical.clone()));
-        }
-
-        None
+        let canonical = self.resolve_interface(service_id, interface_name)?;
+        let ep = self.active_endpoints.get(&(service_id.to_string(), canonical.clone()))?.clone();
+        Some((ep, canonical))
     }
 
     /// Lookup all endpoints for a given `service_id`.
@@ -529,6 +547,104 @@ mod tests {
             SubstrateEndpoint::WasmChannel { service_id } => assert_eq!(service_id, service),
             _ => panic!("Wrong endpoint type"),
         }
+    }
+
+    /// Test 79: D-S3-15, with the six `NATIVE_CAPABILITY_INTERFACES` also
+    /// registered, which is what makes the naive "only one endpoint" rule
+    /// wrong (§0.11).
+    #[tokio::test]
+    async fn an_empty_interface_resolves_to_the_only_app_declared_one() {
+        let storage = Arc::new(MockStorage::new());
+        let registry = EndpointRegistry::new(storage).await.unwrap();
+        let service = "svc-with-one-declared-iface".to_string();
+        let endpoint = SubstrateEndpoint::WasmChannel { service_id: service.clone() };
+
+        for native in NATIVE_CAPABILITY_INTERFACES {
+            registry.register(service.clone(), native.to_string(), endpoint.clone()).await.unwrap();
+        }
+        registry.register(service.clone(), "default".to_string(), endpoint.clone()).await.unwrap();
+
+        let (found, canonical) = registry.lookup(&service, "").unwrap();
+        assert_eq!(canonical, "default");
+        match found {
+            SubstrateEndpoint::WasmChannel { service_id } => assert_eq!(service_id, service),
+            _ => panic!("Wrong endpoint type"),
+        }
+    }
+
+    /// Test 80: the ambiguity and the empty-set halves, both `None`, never
+    /// a guess.
+    #[tokio::test]
+    async fn an_empty_interface_is_refused_when_two_are_declared_and_when_none_is() {
+        let storage = Arc::new(MockStorage::new());
+        let registry = EndpointRegistry::new(storage).await.unwrap();
+        let endpoint_of = |id: &str| SubstrateEndpoint::WasmChannel { service_id: id.to_string() };
+
+        // Zero app-declared interfaces (only native ones): refused.
+        let none_declared = "svc-only-native".to_string();
+        for native in NATIVE_CAPABILITY_INTERFACES {
+            registry
+                .register(none_declared.clone(), native.to_string(), endpoint_of(&none_declared))
+                .await
+                .unwrap();
+        }
+        assert!(registry.lookup(&none_declared, "").is_none());
+
+        // Two app-declared interfaces: refused.
+        let two_declared = "svc-two-declared".to_string();
+        registry
+            .register(two_declared.clone(), "default".to_string(), endpoint_of(&two_declared))
+            .await
+            .unwrap();
+        registry
+            .register(two_declared.clone(), "admin".to_string(), endpoint_of(&two_declared))
+            .await
+            .unwrap();
+        assert!(registry.lookup(&two_declared, "").is_none());
+    }
+
+    /// Test 81: the scoped form of D-S3-15's property -- at the hop that
+    /// resolves the service, the interface a downstream check sees is the
+    /// registered name, exactly as on the hash path (covered above by
+    /// `an_empty_interface_resolves_to_the_only_app_declared_one`). Its
+    /// paired assertion, here, is the relay case: for a service this
+    /// registry does not host, `lookup` (and `resolve_interface`) return
+    /// `None` regardless of the interface a caller named -- empty or
+    /// hashed alike -- which is exactly the condition
+    /// `RouteHandler::handle_stream` (`crates/router/src/route_handler/io.rs`)
+    /// uses to forward the original, uncanonicalized preamble to the next
+    /// hop rather than terminate it here. A relay hop does not host the
+    /// service and cannot know its interface names, so it must not guess
+    /// -- the same rule it already applies to an unresolved `short_hash`.
+    #[tokio::test]
+    async fn the_terminating_hop_canonicalizes_before_any_capability_check() {
+        let storage = Arc::new(MockStorage::new());
+        let registry = EndpointRegistry::new(storage).await.unwrap();
+        let hosted = "svc-hosted-here".to_string();
+        registry
+            .register(
+                hosted.clone(),
+                "default".to_string(),
+                SubstrateEndpoint::WasmChannel { service_id: hosted.clone() },
+            )
+            .await
+            .unwrap();
+
+        // Terminating: an empty interface canonicalizes to the one
+        // app-declared interface (the property test 79 already pins;
+        // repeated here as the paired half of this test's own claim).
+        let (_, canonical) = registry.lookup(&hosted, "").unwrap();
+        assert_eq!(canonical, "default");
+
+        // Relay: a service this registry does not host resolves to
+        // nothing, for every interface shape a caller might have named --
+        // empty, a hash, or a literal name -- which is what makes
+        // `handle_stream` take the relay branch and forward the original
+        // preamble untouched instead of canonicalizing here.
+        let unhosted = "svc-hosted-elsewhere";
+        assert!(registry.resolve_interface(unhosted, "").is_none());
+        assert!(registry.resolve_interface(unhosted, "default").is_none());
+        assert!(registry.resolve_interface(unhosted, &util::short_hash("default")).is_none());
     }
 
     /// M04A Slice B7a: `set_owner`/`owner_of`/`remove_owner` round-trip, and

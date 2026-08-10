@@ -5336,22 +5336,39 @@ impl SupervisorService {
         // authorized caller asking for a service this app does not have),
         // unlike `InconsistentPlan`, which is a compiler defect.
         let map_topology_err = |e: TopologyBuildError| match e {
-            TopologyBuildError::NoSuchService(_) => RpcError::InvalidParams(e.to_string()),
+            TopologyBuildError::NoSuchService(_) | TopologyBuildError::AmbiguousHash(_) => {
+                RpcError::InvalidParams(e.to_string())
+            }
             TopologyBuildError::InconsistentPlan(_) => RpcError::InternalError(e.to_string()),
         };
+        // The supplied name is canonicalised (S3, D-S3-3: `resolve` accepts
+        // a logical service name *or* its `short_hash`) **inside** the
+        // two-attempt loop, since each attempt re-reads `state.plan_json`
+        // and a `submit` landing between attempts can change the declared
+        // names. `resolved_name` then replaces `service_name` at every
+        // later use in this function -- the epoch key, the cache key, and
+        // `TopologyDocument.service_name` -- so the document always names
+        // the real service name, never the hash a caller sent. That
+        // property is what lets the gateway's D-S3-5 check
+        // (`short_hash(doc.service_name) == s_hash`) be meaningful rather
+        // than tautological.
         let mut topo = None;
+        let mut resolved_name = None;
         let mut epoch = 0u64;
         for _attempt in 0..2 {
             let plan = DeploymentPlan::from_json(&state.plan_json)
                 .map_err(|e| RpcError::InternalError(e.to_string()))?;
-            let t = topology::service_topology(&plan, &service_name).map_err(map_topology_err)?;
+            let name =
+                topology::resolve_service_name(&plan, &service_name).map_err(map_topology_err)?;
+            let t = topology::service_topology(&plan, &name).map_err(map_topology_err)?;
             let fp = topology_fingerprint(t.mode, &t.members, t.sharding_strategy.as_ref());
             let (e, stored_fp) = self
                 .store
-                .initialise_topology_epoch(&state.app_instance_id, service_name.as_str(), &fp)
+                .initialise_topology_epoch(&state.app_instance_id, name.as_str(), &fp)
                 .map_err(|e| RpcError::InternalError(e.to_string()))?;
             if stored_fp == fp {
                 topo = Some(t);
+                resolved_name = Some(name);
                 epoch = e;
                 break;
             }
@@ -5362,8 +5379,8 @@ impl SupervisorService {
                 .map_err(|e| RpcError::InternalError(e.to_string()))?
                 .ok_or_else(denied)?;
         }
-        let (topo, epoch) = match topo {
-            Some(t) => (t, epoch),
+        let (resolved_name, topo, epoch) = match topo {
+            Some(t) => (resolved_name.unwrap_or_else(|| service_name.clone()), t, epoch),
             None => {
                 // Two lock-free attempts still disagreed with the stored
                 // fingerprint: either a `submit` is genuinely still in
@@ -5396,16 +5413,18 @@ impl SupervisorService {
                 }
                 let plan = DeploymentPlan::from_json(&state.plan_json)
                     .map_err(|e| RpcError::InternalError(e.to_string()))?;
-                let t =
-                    topology::service_topology(&plan, &service_name).map_err(map_topology_err)?;
+                let name = topology::resolve_service_name(&plan, &service_name)
+                    .map_err(map_topology_err)?;
+                let t = topology::service_topology(&plan, &name).map_err(map_topology_err)?;
                 let fp = topology_fingerprint(t.mode, &t.members, t.sharding_strategy.as_ref());
                 let e = self
                     .store
-                    .record_topology_fingerprint(&state.app_instance_id, service_name.as_str(), &fp)
+                    .record_topology_fingerprint(&state.app_instance_id, name.as_str(), &fp)
                     .map_err(|e| RpcError::InternalError(e.to_string()))?;
-                (t, e)
+                (name, t, e)
             }
         };
+        let service_name = resolved_name;
 
         // One signature per (service, epoch), re-signed when less than
         // half the document's own validity remains. Keyed only by
@@ -5583,7 +5602,7 @@ mod tests {
         },
     };
     use syneroym_async_queue::{Queue, QueueConfig};
-    use syneroym_core::{config::SupervisorRole, dht_registry::SignedEndpointInfo};
+    use syneroym_core::{config::SupervisorRole, dht_registry::SignedEndpointInfo, util};
     use syneroym_identity::{DelegationCertificate, substrate};
     use syneroym_rpc::AuthLevel;
 
@@ -13578,6 +13597,42 @@ mod tests {
         );
         assert_eq!(signed.document.mode, TopologyMode::Redundant);
         assert!(signed.verify(&AppDid::new(app_did)).is_ok());
+    }
+
+    /// Test 78: the property phase 3's D-S3-5 check depends on -- the
+    /// signed document never echoes the hash back, always the real name,
+    /// even when the caller supplied the hash. Also pins matrix row 10
+    /// (S3's second named test): the epoch is still carried and preserved
+    /// on a hashed request.
+    #[tokio::test]
+    async fn resolve_answers_a_hashed_service_name_with_a_document_naming_the_real_name() {
+        let s = service();
+        let plan_json = plan_json_n_member_service("inst-1", "backend", "singleton", 1);
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+        let name_hash = util::short_hash("backend");
+
+        let by_name = dispatch(
+            &s,
+            resolve_grant("did:key:zOutsideCaller", &app_did),
+            "resolve",
+            serde_json::json!([app_did, "backend"]),
+        )
+        .await
+        .unwrap();
+        let by_hash = dispatch(
+            &s,
+            resolve_grant("did:key:zOutsideCaller", &app_did),
+            "resolve",
+            serde_json::json!([app_did, name_hash]),
+        )
+        .await
+        .unwrap();
+
+        let signed_by_hash = decode_signed_document(by_hash.payload);
+        let signed_by_name = decode_signed_document(by_name.payload);
+        assert_eq!(signed_by_hash.document.service_name.as_str(), "backend");
+        assert_eq!(signed_by_hash.document.epoch, signed_by_name.document.epoch);
+        assert!(signed_by_hash.verify(&AppDid::new(app_did)).is_ok());
     }
 
     /// Matrix row 7: a caller holding no grant for this app is refused.

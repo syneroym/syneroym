@@ -88,6 +88,7 @@ async fn main() -> Result<()> {
             }),
             webrtc: None,
             transport_bridge: None,
+            resolve_ucan: None,
         });
 
         let coordinator = CoordinatorIroh::init(&coord_config)
