@@ -23,8 +23,10 @@ D-S2-6, D-S2-7, D-S2-13), because S3 is the first consumer of all four.
 
 ## §0 — What ADR-0022, task.md, and the shipped tree leave open, understate, or state wrongly
 
-Nine findings. Three of them (0.1, 0.2, 0.3) each block the slice on their own,
-and none of the three is stated anywhere in the input documents.
+Thirteen findings. **Four of them block the slice on their own** — 0.1, 0.2,
+0.3, and 0.12 — and only the last of those is this plan's own defect rather
+than the input documents'. Nothing in ADR-0022, task.md, or S2's plan states
+any of the other three.
 
 ### 0.1 (Correctness, and it makes an exit criterion unsatisfiable as written) The hostname is parsed in two places and built in none
 
@@ -455,8 +457,7 @@ calls. Settled in D-S3-17.
 | ID | Decision |
 |---|---|
 | **D-S3-1** | **Centralise before extending.** Phase 1 moves *both* the build and the parse of every gateway host into `syneroym-core` — a new `TargetHost` enum and one `parse_target_host` in `core::protocol_utils`, and `generate_service_host`/`generate_app_host` in `core::util`, plus a reshaped `generate_alias` — and **deletes** `client_gateway::parse_target_service_and_interface` (§0.1). No new segment is added until every producer and consumer in the tree goes through those four functions. This is what makes exit criterion 5 ("demonstrated by the diff") true rather than aspirational. |
-| **D-S3-2** | **One grammar, with the app and interface segments optional** (§0.9, §0.10, §0.11; requester-directed 2026-08-09):
-`<nickname>-a<short_hash(app_did)>-s<short_hash(service_name)>[-i<short_hash(interface)>]-roym1.<domain>` for a logical service inside an app, and the same string without `-a` for a service that belongs to no app instance, where `-s` then holds `short_hash(service_did)`. **`-s` always means "which service"**; whether it is a name hash or a DID hash follows from whether `-a` is present, and so does how it is reversed (the supervisor's own plan, D-S3-3, versus the registry's alias index). `-p` is gone -- it meant "pubkey hash", which stops naming an axis once the app DID is also a pubkey. **`-s` is the only required segment**; `-a`, `-i`, and `<nickname>` are all optional, and an omitted `-i` means "the service's one app-declared interface" (D-S3-15). `<nickname>` on an app-scoped host must be the app's `AppInstanceId`: `<nickname>-<a_hash>` must equal the registry alias the Tier-1 record was admitted under, which `register_endpoint` derives via `generate_alias(info.nickname, service_id)` ([registry.rs:208](../../../../crates/community_registry/src/registry.rs#L208)) from the record's own `nickname`, which `sign_tier1_record` sets to the app instance id ([tier1.rs:184](../../../../crates/app_supervisor/src/tier1.rs#L184)). That is what lets an app-scoped hostname resolve with **no new registry surface at all**. A wrong nickname simply fails to resolve. |
+| **D-S3-2** | **One grammar, with the app and interface segments optional** (§0.9, §0.10, §0.11; requester-directed 2026-08-09): `<nickname>-a<short_hash(app_did)>-s<short_hash(service_name)>[-i<short_hash(interface)>]-roym1.<domain>` for a logical service inside an app, and the same string without `-a` for a service that belongs to no app instance, where `-s` then holds `short_hash(service_did)`. **`-s` always means "which service"**; whether it is a name hash or a DID hash follows from whether `-a` is present, and so does how it is reversed (the supervisor's own plan, D-S3-3, versus the registry's alias index). `-p` is gone -- it meant "pubkey hash", which stops naming an axis once the app DID is also a pubkey. **`-s` is the only required segment**; `-a`, `-i`, and `<nickname>` are all optional, and an omitted `-i` means "the service's one app-declared interface" (D-S3-15). `<nickname>` on an app-scoped host must be the app's `AppInstanceId`: `<nickname>-<a_hash>` must equal the registry alias the Tier-1 record was admitted under, which `register_endpoint` derives via `generate_alias(info.nickname, service_id)` ([registry.rs:208](../../../../crates/community_registry/src/registry.rs#L208)) from the record's own `nickname`, which `sign_tier1_record` sets to the app instance id ([tier1.rs:184](../../../../crates/app_supervisor/src/tier1.rs#L184)). That is what lets an app-scoped hostname resolve with **no new registry surface at all**. A wrong nickname simply fails to resolve. |
 | **D-S3-3** | **`resolve` accepts a logical service name *or* its `short_hash`** (§0.2), reversed against the instance's own plan, the same way an interface hash is reversed at its destination. An exact name match always wins over a hash match; a hash matching two names in one plan is **refused** (`InvalidParams`), never resolved arbitrarily. `TopologyFetcher::fetch`'s signature is unchanged — a `LogicalServiceName` carrying a hash is still a valid `LogicalServiceName` — so no client-side type changes and no WIT signature change. |
 | **D-S3-4** | **The routing key is the request header `X-Syneroym-Routing-Key`**, absent meaning unkeyed, its raw UTF-8 bytes passed to `LogicalResolver::resolve`'s `routing_key`. The name is defined once as `core::protocol_utils::ROUTING_KEY_HEADER` (there is no existing `X-Syneroym-*` header in the tree to be consistent with). The gateway **does not strip or rewrite it**: the forwarded bytes stay the bytes that arrived (§0.8), so a member can observe the key it was routed on. |
 | **D-S3-5** | **Every hop is bound to what the hostname asked for** (§0.4). After the Tier-1 lookup: `short_hash(record.info.service_id) == a_hash`, or refuse. After the Tier-2 fetch: `short_hash(document.service_name) == s_hash`, or refuse — `SignedTopologyDocument::verify` checks the signer and the expiry, never *which service*. Both checks are the caller's, in the same shape as S2 post-merge finding 4's fix, and both are refusals, not warnings. |
@@ -469,9 +470,9 @@ calls. Settled in D-S3-17.
 | **D-S3-12** | **No MQTT epoch-bump subscription in S3.** D-S2-10 targeted its backlog row at "S3, if a subscriber appears". The gateway is a subscriber-shaped thing, but subscribing would add an MQTT client to a component that has none, to shorten a 5-minute staleness window that D-S3-8's on-demand refresh already bounds by `cache_ttl`. The row stays open with its target re-pointed at "a consumer that needs sub-`cache_ttl` convergence", which nothing in this milestone is. |
 | **D-S3-13** | **Every gateway host carries a trailing `-roym1` format marker** (§0.10). **Trailing, not leading, and the grammar decides it**: every segment is popped right to left, so a marker at the end is read *first* -- the version is known before the segments whose meaning it governs, the nickname is simply whatever remains after the known segments are gone, and there is no special case at index 0. It also keeps the nickname where it has always been, at the front of the label, so an operator reading a `Host:` header still sees the app name first. Checking it is the first thing the parser does, so a host that is not ours is refused rather than turned into a half-built registry alias -- which also deletes the hardcoded `localhost`/`127` special case standing in for this today. No ambiguity with the segments beside it: `roym1` is a fixed 5-character literal and every hash is exactly 8, so no interface hash or nickname segment can be mistaken for it -- the same fixed-width argument §0.12 then applies to `-a` and `-s` themselves. `roym` is the CLI an operator already types (`roymctl`) and the distinctive half of the product name, spelled in full rather than clipped. **The digit is a format version, not a second subdomain**: it is the first dash-segment of the same single label, on the same domain, behind the same wildcard record and the same gateway. If the grammar ever changes again -- a fourth segment, a different hash length, a different meaning for `-s` -- new hosts are minted with `-roym2` and the parser dispatches on that segment, so `chat-a1234abcd-s5678efgh-roym1.example.com` and `…-roym2.example.com` resolve side by side instead of the older one breaking. **A version marker can only be introduced at a break**, because adding one later is itself the break it exists to avoid -- and S3 is already a break (every host string changes here). That is the whole argument for the digit: one character out of 63, spent at the only moment it can be spent. **It buys nothing for DNS** -- a wildcard label must be exactly `*` (RFC 4592 §2.1.1), and `*.<domain>` already matches every host in this single-label scheme -- and the plan says so rather than letting a reader assume otherwise. |
 | **D-S3-14** | **The registry alias loses its letter: `generate_alias` produces `<nickname>-<hash>`** (or a bare `<hash>` with no nickname). The letter was `p`, and keeping it would mean the hostname's `-a` segment reconstructs an alias spelled `-p`, and its `-s` segment one spelled `-p` too -- one letter standing for two different roles at a layer where it names neither. Without it, **both** segments reconstruct their alias the same way, `format!("{nickname}-{hash}")`. Unambiguous because `short_hash` is always exactly 8 characters and always last, so `rsplit_once('-')` recovers the pair even when the nickname contains dashes -- the same property the `-p` prefix gave. **Zero migration cost**: `RegistryState.aliases` is an in-memory `DashMap` ([registry.rs:57](../../../../crates/community_registry/src/registry.rs#L57)) rebuilt from re-registrations, so a restart is the whole migration, and the project's pre-release policy forbids a compatibility shim anyway. |
+| **D-S3-15** | **An omitted `-i` means "the service's one app-declared interface", resolved at the destination** (§0.11). `EndpointRegistry` grows `resolve_interface(service_id, name) -> Option<String>` carrying all three cases in one place: exact name, `short_hash` of a name (today's behaviour, moved), and **empty**, which filters `NATIVE_CAPABILITY_INTERFACES` out of `lookup_by_service` and succeeds only when exactly one app-declared interface remains. Zero or two or more is `None` -- refused, never guessed, the same rule D-S3-3 applies to an ambiguous name hash. **The canonicalization happens at the hop that terminates the route** ([io.rs:344](../../../../crates/router/src/route_handler/io.rs#L344)), and every downstream check there sees the canonical name. A *relay* hop deliberately forwards `preamble.interface` untouched ([io.rs:372](../../../../crates/router/src/route_handler/io.rs#L372)): it does not host the service, so it does not know its interface names, exactly as it already forwards a `short_hash` unresolved today. So the property is "nothing past the terminating lookup sees an empty interface", **not** "nothing past ingress" -- an earlier revision of this plan claimed the latter, which is false on the multi-hop path the WebRTC coordinator actually uses. Test 81 pins the true property and the relay case together. The guest proxy path is deliberately unchanged: its interface gate runs before `lookup` ([proxy.rs:599](../../../../crates/router/src/proxy.rs#L599)) and an empty interface simply fails it, so this convenience lands on the external entry point only, which is where a caller who cannot know the interface names actually is. **One trade, stated rather than left to be discovered**: deploying a *second* interface for that service later turns every previously-working `-i`-less host into a refusal. It fails loudly (a clean `None`) rather than routing to the wrong interface, which is what makes it acceptable -- but such a host's meaning then depends on the app, not on the host alone, which sits at an angle to ADR-0022 §7's rule that the hostname carries what decides reachability. Backlog row; the fix is a manifest-declared default interface, a surface S4 is already opening. |
 | **D-S3-16** | **The coordinator interpolates `TARGET_INTERFACE`, and the two JS hostname parsers are deleted** (§0.1). The page's raw-tunnel and service-worker paths each re-derive the interface from `location.hostname` ([peer-proxy.js:503](../../../../crates/coordinator_webrtc/templates/peer-proxy.js#L503), [:858](../../../../crates/coordinator_webrtc/templates/peer-proxy.js#L858)) and would both silently yield `''` under the trailing marker. Teaching them the new grammar would make JS a *third* implementation of it; interpolating the value the coordinator already parsed removes them instead, so the label is parsed in exactly one place, in one language. The per-request parse was always redundant anyway -- the page's origin does not change between fetches. This is what makes exit criterion 5 true for the browser path as well as the HTTP one. |
 | **D-S3-17** | **One Tier-1 lookup per cold app-scoped resolve, not two** (§0.13, task.md budget 2). The alias lookup already returns the record whose `substrate_id` is the supervising node, so `RegistryTopologyFetcher` gains an inherent `fetch_via(supervisor_did, app_did, service_name)` that skips its own Tier 1, and its trait `fetch` becomes `lookup` + `fetch_via` -- unchanged for every existing caller. The gateway caches `(app_did, supervisor_did)` together in `app_dids` and calls `fetch_via`. Cold cost is then one Tier-1 lookup plus the two Tier-3 lookups any call to a remote DID already pays (supervisor, then member); warm cost is zero, since `state.clients` caches the member connection. Pinned by a **registry-call count** assertion, which nothing in this milestone had. |
-| **D-S3-15** | **An omitted `-i` means "the service's one app-declared interface", resolved at the destination** (§0.11). `EndpointRegistry` grows `resolve_interface(service_id, name) -> Option<String>` carrying all three cases in one place: exact name, `short_hash` of a name (today's behaviour, moved), and **empty**, which filters `NATIVE_CAPABILITY_INTERFACES` out of `lookup_by_service` and succeeds only when exactly one app-declared interface remains. Zero or two or more is `None` -- refused, never guessed, the same rule D-S3-3 applies to an ambiguous name hash. The router canonicalizes `preamble.interface` **once at ingress** ([io.rs:344](../../../../crates/router/src/route_handler/io.rs#L344)) and uses the canonical name for every downstream check, so nothing after that point ever sees `""`. The guest proxy path is deliberately unchanged: its interface gate runs before `lookup` ([proxy.rs:599](../../../../crates/router/src/proxy.rs#L599)) and an empty interface simply fails it, so this convenience lands on the external entry point only, which is where a caller who cannot know the interface names actually is. | **One trade this makes, stated rather than left to be discovered**: an `-i`-less host means "the one app-declared interface", so deploying a *second* interface later turns every previously-working `-i`-less host for that service into a refusal. It fails loudly (`None`, a clean refusal) rather than routing to the wrong interface, which is the property that makes it acceptable -- but it does mean such a host's meaning depends on the app, not on the host alone, which sits at an angle to ADR-0022 §7's rule that the hostname carries what decides reachability. Backlog row; the eventual fix is a manifest-declared default interface, which is a surface S4 is already opening.
 
 ---
 
@@ -486,7 +487,7 @@ and the proof.
 | **1** | One builder and one parser in `syneroym-core`, both host forms, every call site moved, the gateway's duplicate parser deleted | §0.1: extending two grammars is writing the new one twice |
 | **2** | The destination resolves what the caller could not: `handle_resolve` accepts a hashed service name, and `EndpointRegistry` resolves an empty interface | §0.2 and §0.11, one principle -- the party holding the candidate set does the reversing. Nothing downstream can fetch until the first exists |
 | **3** | The client gateway's app-scoped path: the same-node grant, the credential, the resolver, the fetcher, the routing-key header | The slice's actual deliverable |
-| **4** | The coordinator resolves an app-scoped host and interpolates the member DID into the shell page | Reuses phase 3's fetcher and both binding checks; no browser-side code changes (D-S3-11) |
+| **4** | The coordinator resolves an app-scoped host, interpolates the member DID **and the interface** into the shell page, and the two JS hostname parsers are deleted | Reuses phase 3's fetcher and both binding checks. The browser side is a net **deletion** (D-S3-16), but it is not untouched — an earlier revision of this row claimed it was |
 | **5** | `roymctl alias --service`, the Rust e2e, the Playwright e2e, docs, backlog | Proof and operator surface |
 
 ---
@@ -859,12 +860,21 @@ fn resolve_interface(service_id, interface_name):
 
 **File:** `crates/router/src/route_handler/io.rs`.
 
-`preamble.interface` is canonicalized **once at ingress**
-([io.rs:344](../../../../crates/router/src/route_handler/io.rs#L344)) and the
-canonical name is used for every downstream check and for dispatch. Nothing
-after that point may see `""` — this is the property test 72c pins, and it is
-the reason the empty case lives here rather than in the gateway, which does
-not have the target's registry (the target is on another node).
+`preamble.interface` is canonicalized at the hop that **terminates** the route
+([io.rs:344](../../../../crates/router/src/route_handler/io.rs#L344)), and the
+canonical name is used for every downstream check and for dispatch there. That
+is the reason the empty case lives here rather than in the gateway, which does
+not have the target's registry — the target is on another node.
+
+**A relay hop is deliberately different.** On a local miss the router forwards
+the original preamble to the next hop untouched
+([io.rs:372](../../../../crates/router/src/route_handler/io.rs#L372)), empty
+interface and all, because it does not host the service and cannot know its
+interface names — exactly as it already forwards a `short_hash` unresolved.
+So the property is *"nothing past the terminating lookup sees an empty
+interface"*, not *"nothing past ingress"*. An earlier revision of this plan
+asserted the latter, which is false on the multi-hop path the WebRTC
+coordinator actually uses. **Test 81** pins both halves.
 
 **Deliberately not changed:** the guest proxy path
 ([proxy.rs:599](../../../../crates/router/src/proxy.rs#L599)). Its interface
@@ -973,7 +983,7 @@ impl TopologyFetcher for RegistryTopologyFetcher {
 `fetch`'s body moves into `fetch_via` unchanged from the `SyneroymClient`
 construction onward, so `roymctl app resolve` and every other S2 caller
 behaves identically. **The existing `tier1.verify()` on that path is
-redundant** for the same reason phase 3d's is
+redundant** for the same reason phase 3e's is
 ([dht_registry.rs:359](../../../../crates/core/src/dht_registry.rs#L359)
 already verifies and fails fast) — left alone rather than removed, since it is
 S2's line and harmless.
@@ -1242,8 +1252,13 @@ afterwards, unchanged.
 target_interface: String,
 ```
 
-filled from `TargetHost::interface()` on both arms of 4c, and surfaced in
-`peer-proxy.html` beside the existing constants:
+filled from `TargetHost::interface()` on 4c's two parsed arms. **The third
+arm needs stating**: an unparseable host falls back to treating the raw host
+as a peer id, has no `TargetHost` at all, and so interpolates `""` — which is
+the same value an `-i`-less host produces, and is resolved the same way by
+D-S3-15 at the destination. That is a behaviour change from today, where the
+page's own parser would have produced `''` for such a host anyway, so the two
+agree. Surfaced in `peer-proxy.html` beside the existing constants:
 
 ```html
 const TARGET_INTERFACE = "{{ target_interface }}";
@@ -1313,6 +1328,13 @@ spell. `StatusCode::BAD_GATEWAY`, with the reason logged.
   about the form it printed (§0.7). The decision itself is unchanged — the
   hostname still carries what decides reachability and the routing key is
   still a header — so this is a note, not a new ADR.
+- **`test-components/miniapp-demo1-web` gains a second app-declared
+  interface**, for test 104. Without it that test passes vacuously —
+  D-S3-15's empty-interface rule would cover for a lost `-i`, which is
+  precisely how §0.1's JS defect would have shipped unnoticed. The component
+  cross-compiles to `wasm32-wasip2`, so it rebuilds (exit criterion 10), and
+  it is excluded from the workspace build graph, so the rebuild is the
+  `mise run test:e2e` path's, not `cargo test`'s.
 - **`docs/planning/deferred-backlog.md`**: §5's rows per §5 below.
 
 ---
@@ -1619,7 +1641,7 @@ does not exercise (§0.6).
 | 4 | `[PLT-DAP-01]` cross-app half recorded Complete with S1-S3 evidence | **This slice completes the evidence.** Update `traceability-matrix.md` at closeout |
 | 5 | The hostname change goes through `core::util` / `core::protocol_utils` only | **Phase 1 and phase 4d are what make this true** (§0.1) — today it is not, and there are four parsers, not the two the first draft counted. The diff must show `client_gateway`'s duplicate parser deleted, **both `peer-proxy.js` parsers deleted** in favour of `TARGET_INTERFACE`, and every hand-formatted host replaced |
 | 6-9 | fmt / clippy / `cargo test --workspace` / `mise run test:e2e` | All four. **`mise run test:e2e` genuinely matters for the first time in this milestone** -- S1 and S2 both recorded it as "unaffected, no client-gateway or WebRTC surface touched", and phase 4 changes the coordinator's own bootstrap handler *and* `peer-proxy.js`, with phase 5 adding two Playwright cases (tests 103, 104) |
-| 10 | `wasm32-wasip2` components rebuild against changed WIT | `supervisor.wit` is unchanged (phase 2 is a doc-comment change only), so this is a no-op — worth confirming rather than assuming |
+| 10 | `wasm32-wasip2` components rebuild against changed WIT | **Not a no-op**, though not for the reason the criterion names: `supervisor.wit` is unchanged (phase 2 is a doc-comment change only), but **test 104 adds a second app-declared interface to `test-components/miniapp-demo1-web`**, which cross-compiles to `wasm32-wasip2` and must rebuild. An earlier revision of this row read "no-op" on the WIT argument alone |
 
 ---
 
@@ -1640,8 +1662,11 @@ here as open questions.** Items 4-6 came from a second pass on the same day.
    (§0.6, D-S3-11). The bootstrap page is a shell that registers a service
    worker; it needs the right DIDs wired into it and nothing more, and
    authenticating the shell page load is explicitly not a goal. Phase 4 lost
-   its WebCrypto/canonicalizer/z-base-32 half entirely, and `templates/` is
-   untouched. The consequence -- ADR-0022 §3's relay argument is discharged
+   its WebCrypto/canonicalizer/z-base-32 half entirely. `templates/` is
+   **not** untouched, though — item 10 found the page deriving the interface
+   from the hostname itself, so phase 4d interpolates `TARGET_INTERFACE` and
+   deletes both JS parsers. That is a deletion, not verification logic. The
+   consequence of not verifying -- ADR-0022 §3's relay argument is discharged
    only on the SDK/gateway path -- is recorded as a backlog row, not hidden.
 3. ~~**Does `-p` addressing stay?**~~ **The capability stays; the spelling
    does not** (D-S3-10, D-S3-2). `-p` was
@@ -1694,38 +1719,38 @@ here as open questions.** Items 4-6 came from a second pass on the same day.
 smaller; all incorporated rather than pushed back on, except one that was half
 right):
 
-10. **The parser invented an app from a nickname ending in `a…`** — §0.12,
+9. **The parser invented an app from a nickname ending in `a…`** — §0.12,
     a real defect in this plan's first draft, fixed by a width rule on `-a`
     and `-s`, a build-time refusal for the irreducible case, and test 63,
     which is specified against an `a…` fixture because the generic
     dashed-nickname tests would not have caught it.
-11. **The hostname is parsed in four places, not two** — §0.1. The two JS
+10. **The hostname is parsed in four places, not two** — §0.1. The two JS
     copies in `peer-proxy.js` would both have silently lost every explicit
     `-i` under the trailing marker, with the Playwright suite passing anyway.
     D-S3-16 deletes them in favour of an interpolated `TARGET_INTERFACE`,
     which also corrects D-S3-11's "templates need no change" claim.
-12. **Two Tier-1 lookups per cold resolve, and budget 2 unmeasured** —
+11. **Two Tier-1 lookups per cold resolve, and budget 2 unmeasured** —
     §0.13, D-S3-17, test 86.
-13. **Missed call sites and docs** — `global-setup-multihop.ts` (two sites,
+12. **Missed call sites and docs** — `global-setup-multihop.ts` (two sites,
     feeding `multi-hop.spec.ts`'s bootstrap URL), four hand-built aliases in
     `community_registry`'s tests, `AGENTS.md:110`, and four
     `developer-guide.md` sites. All now in phase 1c and phase 5.
-14. **ADR-0022 §7 needs its own amendment note** — added to phase 5,
-    alongside task.md's (item 9 below).
-15. **`rec.verify()` was redundant** — removed; `RegistryClient::lookup`
+13. **ADR-0022 §7 needs its own amendment note** — added to phase 5,
+    alongside task.md's (item 17 below).
+14. **`rec.verify()` was redundant** — removed; `RegistryClient::lookup`
     already verifies on both branches, and keeping it implied otherwise.
-16. **"Nothing past ingress sees an empty interface" was half right.** The
+15. **"Nothing past ingress sees an empty interface" was half right.** The
     property is false as stated — a *relay* hop forwards `preamble.interface`
     untouched, which is correct and deliberate (it does not host the service
     and cannot know its interface names, exactly as it forwards a hash
     unresolved today). The design is unchanged; the claim was overstated, and
     test 81 now pins the true property plus the relay case.
-17. **Test numbering was out of order** (`63`, `63c`, `63b`, `66b`,
+16. **Test numbering was out of order** (`63`, `63c`, `63b`, `66b`,
     `72a-c`) — renumbered sequentially, 60 through 104.
 
 **Still open:**
 
-9. **task.md's migration note now understates this slice.** It says "An
+17. **task.md's migration note now understates this slice.** It says "An
    external format change, S3. The client gateway hostname **gains** app and
    service segments", which was true of the first draft and is not true of
    this one: `-p` is renamed and a marker is added, so **every** gateway host
