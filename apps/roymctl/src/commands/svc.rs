@@ -301,12 +301,21 @@ pub async fn handle(
                     .await?;
                 println!("Successfully deployed WASM svc {svc_id}");
             } else if let Some(tcp_addr) = tcp {
-                if ifaces.len() > 1 {
-                    anyhow::bail!("TCP deployments only support a single interface for now");
-                }
                 let (host, port) = get_host_port_from_tcp_addr(tcp_addr)?;
-                let iface = ifaces.first().cloned().unwrap_or_else(|| "default".to_string());
-                let endpoints = vec![NetworkEndpoint { interface_name: iface, host, port }];
+                // One `NetworkEndpoint` per declared interface, all naming
+                // the same backend: a TCP passthrough has nothing to
+                // dispatch on, so every declared interface is just another
+                // registered name for the identical `(host, port)`.
+                let iface_names =
+                    if ifaces.is_empty() { vec!["default".to_string()] } else { ifaces };
+                let endpoints = iface_names
+                    .into_iter()
+                    .map(|interface_name| NetworkEndpoint {
+                        interface_name,
+                        host: host.clone(),
+                        port,
+                    })
+                    .collect();
                 client.deploy_svc_tcp(svc_id.clone(), endpoints, cert, instance_cert).await?;
                 println!("Successfully deployed TCP service {svc_id}");
             } else if let Some(image) = image {

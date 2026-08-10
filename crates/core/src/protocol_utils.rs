@@ -70,13 +70,6 @@ pub fn extract_host_from_http(buf: &[u8]) -> Result<String> {
 /// privilege boundary.
 pub const ROUTING_KEY_HEADER: &str = "X-Syneroym-Routing-Key";
 
-/// The trailing segment every gateway host carries, and a format version.
-/// The grammar is parsed right to left, so this is popped *first* -- the
-/// version is read before the segments whose meaning it governs, and a host
-/// that is not ours is refused rather than turned into a half-built registry
-/// alias. A later grammar ships as `-roym2` and both can be served at once.
-pub const HOST_FORMAT_MARKER: &str = "roym1";
-
 /// The exact character width of a `short_hash` (`z32::encode` of a 5-byte
 /// SHA-256 prefix), used to tell an `-a`/`-s` segment apart from a nickname
 /// segment that merely starts with the same letter (§0.12).
@@ -85,9 +78,14 @@ pub(crate) const SHORT_HASH_LEN: usize = 8;
 /// What a gateway host names (ADR-0022 §7). One grammar:
 ///
 /// ```text
-/// <nickname>-a<app-did-hash>-s<service-name-hash>[-i<interface-hash>]-roym1
-/// <nickname>-s<service-did-hash>[-i<interface-hash>]-roym1
+/// <nickname>-a<app-did-hash>-s<service-name-hash>[-i<interface-hash>]
+/// <nickname>-s<service-did-hash>[-i<interface-hash>]
 /// ```
+///
+/// This is the *first* DNS label only -- everything after it (`.localhost`,
+/// `.example.com`, or any number of further labels) is ignored, so the
+/// scheme is domain-agnostic and carries no format-version marker of its
+/// own.
 ///
 /// `-s` always names the service; `-a`'s presence decides whether that is
 /// a logical name inside an app (reversed by the app's own supervisor) or
@@ -145,8 +143,8 @@ fn join_alias(nickname: &str, hash: &str) -> String {
 /// `-a` and `-s` pass `require_hash_width: true`: both always carry a
 /// `short_hash`, so requiring the exact width is what stops an optional,
 /// last-popped `-a` from misreading a nickname's own final segment as an
-/// app hash (§0.12) -- `data-api-s12345678-roym1` must not parse as an app
-/// host with `app_did_hash = "pi"`. `-i` passes `false` and stays
+/// app hash (§0.12) -- `data-api-s12345678` must not parse as an app host
+/// with `app_did_hash = "pi"`. `-i` passes `false` and stays
 /// permissive: `EndpointRegistry` resolves an exact interface *name* before
 /// a hash, and `docs/developer-guide.md` documents a working
 /// `…-iorchestrator` host. That permissiveness is safe only because `-s` is
@@ -166,13 +164,11 @@ fn pop_prefixed(parts: &mut Vec<&str>, prefix: char, require_hash_width: bool) -
 
 /// Parses the host header or SNI into a [`TargetHost`] (ADR-0022 §7).
 ///
-/// Domain-agnostic: everything lives in one label, so this strips an
-/// optional `:<port>` suffix, takes the first dot-separated label (works
-/// unchanged for `.localhost`, `.syneroym.net`, or a bare label), and
-/// parses that label right to left. The trailing `-roym1` marker is
-/// checked first -- a host that is not ours returns `None` rather than a
-/// half-built registry alias, which also subsumes the old hardcoded
-/// `localhost`/`127` special case.
+/// Domain-agnostic: everything past the first dot-separated label is
+/// ignored (works unchanged for `.localhost`, `.syneroym.net`, or a bare
+/// label), after stripping an optional `:<port>` suffix. The first label
+/// is parsed right to left; a host whose first label does not carry at
+/// least a well-formed `-s<hash>` segment returns `None`.
 #[must_use]
 pub fn parse_target_host(host: &str) -> Option<TargetHost> {
     let mut host_str = host;
@@ -185,10 +181,6 @@ pub fn parse_target_host(host: &str) -> Option<TargetHost> {
 
     let label = host_str.split('.').next().unwrap_or(host_str);
     let mut parts: Vec<&str> = label.split('-').collect();
-
-    if parts.pop() != Some(HOST_FORMAT_MARKER) {
-        return None;
-    }
 
     let interface = pop_prefixed(&mut parts, 'i', false).unwrap_or_default();
     let s_hash = pop_prefixed(&mut parts, 's', true)?;
@@ -223,7 +215,7 @@ mod tests {
         let sh = h("did:key:zSvc");
         let ih = h("default");
 
-        let host = format!("my-svc-s{sh}-i{ih}-roym1.localhost");
+        let host = format!("my-svc-s{sh}-i{ih}.localhost");
         assert_eq!(
             parse_target_host(&host),
             Some(TargetHost::Service {
@@ -232,13 +224,13 @@ mod tests {
             })
         );
 
-        let bare = format!("s{sh}-i{ih}-roym1.localhost");
+        let bare = format!("s{sh}-i{ih}.localhost");
         assert_eq!(
             parse_target_host(&bare),
             Some(TargetHost::Service { lookup_alias: sh.clone(), interface: ih.clone() })
         );
 
-        let with_port = format!("my-svc-s{sh}-i{ih}-roym1.localhost:7960");
+        let with_port = format!("my-svc-s{sh}-i{ih}.localhost:7960");
         assert_eq!(
             parse_target_host(&with_port),
             Some(TargetHost::Service { lookup_alias: format!("my-svc-{sh}"), interface: ih })
@@ -252,7 +244,7 @@ mod tests {
         let sh = h("backend");
         let ih = h("default");
 
-        let host = format!("chat-a{ah}-s{sh}-i{ih}-roym1.localhost");
+        let host = format!("chat-a{ah}-s{sh}-i{ih}.localhost");
         assert_eq!(
             parse_target_host(&host),
             Some(TargetHost::App {
@@ -270,7 +262,7 @@ mod tests {
         let ah = h("did:key:zApp");
         let sh = h("backend");
 
-        let host = format!("my-chat-app-a{ah}-s{sh}-roym1.localhost");
+        let host = format!("my-chat-app-a{ah}-s{sh}.localhost");
         assert_eq!(
             parse_target_host(&host),
             Some(TargetHost::App {
@@ -289,7 +281,7 @@ mod tests {
     fn a_nickname_ending_in_an_a_segment_is_not_read_as_an_app_host() {
         for nickname in ["data-api", "my-app", "chat-admin"] {
             let sh = h("did:key:zSvc");
-            let host = format!("{nickname}-s{sh}-roym1.localhost");
+            let host = format!("{nickname}-s{sh}.localhost");
             assert_eq!(
                 parse_target_host(&host),
                 Some(TargetHost::Service {
@@ -301,18 +293,13 @@ mod tests {
         }
     }
 
-    /// Test 64: replaces the hardcoded `localhost`/`127` guard.
+    /// Test 64: a host missing a well-formed `-s<hash>` segment is refused
+    /// -- this is the whole guard now that there is no format marker: an
+    /// unrelated host's first label simply never carries one.
     #[test]
-    fn a_host_missing_the_marker_or_the_service_segment_is_refused() {
-        let sh = h("did:key:zSvc");
-        assert_eq!(parse_target_host(&format!("my-svc-s{sh}.localhost")), None, "no marker");
-        assert_eq!(
-            parse_target_host(&format!("my-svc-s{sh}-roym2.localhost")),
-            None,
-            "wrong marker"
-        );
-        assert_eq!(parse_target_host("my-svc-roym1.localhost"), None, "no -s");
-        assert_eq!(parse_target_host("my-svc-sabc-roym1.localhost"), None, "-s wrong width");
+    fn a_host_missing_the_service_segment_is_refused() {
+        assert_eq!(parse_target_host("my-svc.localhost"), None, "no -s");
+        assert_eq!(parse_target_host("my-svc-sabc.localhost"), None, "-s wrong width");
         assert_eq!(parse_target_host("www.example.com"), None, "not a syneroym host");
         assert_eq!(parse_target_host("localhost"), None, "bare localhost");
         assert_eq!(parse_target_host("127.0.0.1"), None, "bare loopback IP");
@@ -323,7 +310,7 @@ mod tests {
     #[test]
     fn an_interface_segment_may_carry_a_literal_name() {
         let sh = h("did:key:zSvc");
-        let host = format!("my-svc-s{sh}-iorchestrator-roym1.localhost");
+        let host = format!("my-svc-s{sh}-iorchestrator.localhost");
         assert_eq!(
             parse_target_host(&host),
             Some(TargetHost::Service {
@@ -339,7 +326,7 @@ mod tests {
     fn a_host_with_no_interface_segment_parses_with_an_empty_interface() {
         let sh = h("did:key:zSvc");
         assert_eq!(
-            parse_target_host(&format!("my-svc-s{sh}-roym1.localhost")),
+            parse_target_host(&format!("my-svc-s{sh}.localhost")),
             Some(TargetHost::Service {
                 lookup_alias: format!("my-svc-{sh}"),
                 interface: String::new(),
@@ -348,7 +335,7 @@ mod tests {
 
         let ah = h("did:key:zApp");
         assert_eq!(
-            parse_target_host(&format!("chat-a{ah}-s{sh}-roym1.localhost")),
+            parse_target_host(&format!("chat-a{ah}-s{sh}.localhost")),
             Some(TargetHost::App {
                 app_lookup_alias: format!("chat-{ah}"),
                 app_did_hash: ah,
@@ -362,8 +349,8 @@ mod tests {
     #[test]
     fn a_domain_other_than_localhost_parses_identically() {
         let sh = h("did:key:zSvc");
-        let localhost = parse_target_host(&format!("my-svc-s{sh}-roym1.localhost"));
-        let real_domain = parse_target_host(&format!("my-svc-s{sh}-roym1.syneroym.net"));
+        let localhost = parse_target_host(&format!("my-svc-s{sh}.localhost"));
+        let real_domain = parse_target_host(&format!("my-svc-s{sh}.syneroym.net"));
         assert_eq!(localhost, real_domain);
         assert!(localhost.is_some());
     }

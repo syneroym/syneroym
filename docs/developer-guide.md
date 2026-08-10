@@ -269,7 +269,7 @@ The Orchestrator is a native service running inside the substrate. You can inter
 # Replace <NICKNAME> and <SUBSTRATE_DID_SHORTHASH>. `-iorchestrator` names
 # the interface literally, not by hash -- the parser accepts either.
 curl -X POST http://localhost:7960/ \
-  -H "Host: <NICKNAME>-s<SUBSTRATE_DID_SHORTHASH>-iorchestrator-roym1.localhost" \
+  -H "Host: <NICKNAME>-s<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -1256,12 +1256,12 @@ on this yet (tracked in `deferred-backlog.md`).
 
 #### The gateway hostname scheme (ADR-0022 §7)
 
-One grammar, two forms, both terminated by a trailing `-roym1` format
-marker:
+One grammar, two forms. Everything after the first label is ignored (it
+doesn't have to be `localhost` -- any domain works unchanged):
 
 ```text
-<nickname>-s<service-did-hash>[-i<interface-hash>]-roym1.<domain>          # a service outside any app instance
-<nickname>-a<app-did-hash>-s<service-name-hash>[-i<interface-hash>]-roym1.<domain>  # a logical service of an app instance
+<nickname>-s<service-did-hash>[-i<interface-hash>].<domain>          # a service outside any app instance
+<nickname>-a<app-did-hash>-s<service-name-hash>[-i<interface-hash>].<domain>  # a logical service of an app instance
 ```
 
 `-s` is the only required segment. `-a`'s presence decides whether `-s`
@@ -1310,7 +1310,7 @@ hostnames are unaffected either way.
 > You can use `roymctl alias <APP_DID> --nickname <NICKNAME> --interface <INTERFACE_NAME>` to get the full Host header.
 
 ```bash
-# Host header format: <NICKNAME>-s<APP_DID_HASH>[-i<INTERFACE_HASH>]-roym1.localhost
+# Host header format: <NICKNAME>-s<APP_DID_HASH>[-i<INTERFACE_HASH>].localhost
 curl -X POST http://localhost:7960/ \
   -H "Host: $(roymctl alias <APP_DID> --nickname <NICKNAME> --interface <INTERFACE_NAME>)" \
   -H "Content-Type: application/json" \
@@ -1326,7 +1326,7 @@ curl -X POST http://localhost:7960/ \
 ```bash
 # Simple GET request
 curl http://localhost:7960/api/data \
-  -H "Host: my-tcp-service-s<APP_DID_HASH>-i<INTERFACE_HASH>-roym1.localhost"
+  -H "Host: my-tcp-service-s<APP_DID_HASH>-i<INTERFACE_HASH>.localhost"
 ```
 
 ### Health and Metrics

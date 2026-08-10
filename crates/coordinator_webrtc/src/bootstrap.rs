@@ -891,7 +891,7 @@ mod tests {
             test_state(Some(registry_url), FakeTier1 { response: tier1_record }, Some(fetcher))
                 .await;
 
-        let host = format!("my-chat-app-a{a_hash}-s{s_hash}-roym1.localhost");
+        let host = format!("my-chat-app-a{a_hash}-s{s_hash}.localhost");
         let req = Request::builder().uri("/").header(HOST, host).body(Body::empty()).unwrap();
         let response = app(state).oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -943,7 +943,7 @@ mod tests {
             Some(fetcher),
         )
         .await;
-        let host = format!("my-chat-app-a{a_hash}-s{s_hash}-i{i_hash}-roym1.localhost");
+        let host = format!("my-chat-app-a{a_hash}-s{s_hash}-i{i_hash}.localhost");
         let req = Request::builder().uri("/").header(HOST, host).body(Body::empty()).unwrap();
         let response = app(state).oneshot(req).await.unwrap();
         let body = body_text(response).await;
@@ -956,7 +956,7 @@ mod tests {
         let state =
             test_state(Some(registry_url), FakeTier1 { response: tier1_record }, Some(fetcher))
                 .await;
-        let host = format!("my-chat-app-a{a_hash}-s{s_hash}-roym1.localhost");
+        let host = format!("my-chat-app-a{a_hash}-s{s_hash}.localhost");
         let req = Request::builder().uri("/").header(HOST, host).body(Body::empty()).unwrap();
         let response = app(state).oneshot(req).await.unwrap();
         let body = body_text(response).await;
@@ -985,7 +985,7 @@ mod tests {
 
         let sh = util::short_hash("did:key:zSvc");
         let ih = util::short_hash("default");
-        let host = format!("my-svc-s{sh}-i{ih}-roym1.localhost");
+        let host = format!("my-svc-s{sh}-i{ih}.localhost");
         let req = Request::builder().uri("/").header(HOST, &host).body(Body::empty()).unwrap();
         let response = app(state).oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -1019,7 +1019,7 @@ mod tests {
 
         let a_hash = util::short_hash("did:key:zApp");
         let s_hash = util::short_hash("backend");
-        let host = format!("my-chat-app-a{a_hash}-s{s_hash}-roym1.localhost");
+        let host = format!("my-chat-app-a{a_hash}-s{s_hash}.localhost");
         let req = Request::builder().uri("/").header(HOST, &host).body(Body::empty()).unwrap();
         let response = app(state).oneshot(req).await.unwrap();
 

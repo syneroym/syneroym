@@ -369,7 +369,7 @@ fn roymctl_alias_with_a_service_prints_the_app_scoped_form() -> Result<(), Box<d
     assert!(host.contains("my-chat-app-a"), "{host}");
     assert!(host.contains("-s"), "{host}");
     assert!(host.contains("-i"), "{host}");
-    assert!(host.trim_end().ends_with("-roym1.localhost"), "{host}");
+    assert!(host.trim_end().ends_with(".localhost"), "{host}");
 
     let mut cmd_no_iface = Command::cargo_bin("roymctl")?;
     let output_no_iface = cmd_no_iface
@@ -386,7 +386,7 @@ fn roymctl_alias_with_a_service_prints_the_app_scoped_form() -> Result<(), Box<d
         .clone();
     let host_no_iface = String::from_utf8_lossy(&output_no_iface);
     assert!(!host_no_iface.contains("-i"), "{host_no_iface}");
-    assert!(host_no_iface.trim_end().ends_with("-roym1.localhost"), "{host_no_iface}");
+    assert!(host_no_iface.trim_end().ends_with(".localhost"), "{host_no_iface}");
 
     Ok(())
 }

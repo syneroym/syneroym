@@ -366,7 +366,7 @@ mod tests {
     fn an_unscoped_host_reaches_the_same_service_it_did_before() {
         let sh = syneroym_core::util::short_hash("did:key:zSvc");
         let ih = syneroym_core::util::short_hash("default");
-        let host = format!("my-svc-s{sh}-i{ih}-roym1.localhost");
+        let host = format!("my-svc-s{sh}-i{ih}.localhost");
 
         let target = parse_target_host(&host).unwrap();
         let TargetHost::Service { lookup_alias, interface } = target else {

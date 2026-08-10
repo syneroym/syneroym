@@ -6,7 +6,7 @@ use syneroym_identity::Identity;
 
 use crate::{
     config::{DEFAULT_SUBSTRATE_KEY_FILE, SubstrateConfig},
-    protocol_utils::{HOST_FORMAT_MARKER, SHORT_HASH_LEN},
+    protocol_utils::SHORT_HASH_LEN,
 };
 
 /// Loads the node's own substrate identity, the same key file
@@ -125,9 +125,8 @@ fn refuse_ambiguous_nickname_tail(nickname: &str) -> anyhow::Result<()> {
 }
 
 /// `hashed_suffix_len` is the length of everything in `label` after the
-/// nickname (the hashed segments plus the marker), so a refusal can name
-/// the nickname budget that was actually available, not just the overall
-/// limit.
+/// nickname (the hashed segments), so a refusal can name the nickname
+/// budget that was actually available, not just the overall limit.
 fn finish_host(label: String, domain: &str, hashed_suffix_len: usize) -> anyhow::Result<String> {
     anyhow::ensure!(
         label.len() <= MAX_DNS_LABEL_LEN,
@@ -139,7 +138,7 @@ fn finish_host(label: String, domain: &str, hashed_suffix_len: usize) -> anyhow:
     Ok(format!("{label}.{domain}"))
 }
 
-/// `<nickname>-s<service-did-hash>[-i<interface-hash>]-roym1.<domain>` -- a
+/// `<nickname>-s<service-did-hash>[-i<interface-hash>].<domain>` -- a
 /// service that belongs to no app instance.
 ///
 /// # Errors
@@ -161,13 +160,11 @@ pub fn generate_service_host(
         label.push_str(&format!("-i{}", short_hash(iface)));
         hashed_suffix_len += 2 + SHORT_HASH_LEN;
     }
-    label.push_str(&format!("-{HOST_FORMAT_MARKER}"));
-    hashed_suffix_len += 1 + HOST_FORMAT_MARKER.len();
     finish_host(label, domain, hashed_suffix_len)
 }
 
-/// `<nickname>-a<app-did-hash>-s<service-name-hash>[-i<interface-hash>]-roym1.
-/// <domain>` -- a logical service of an app instance (ADR-0022 §7).
+/// `<nickname>-a<app-did-hash>-s<service-name-hash>[-i<interface-hash>]
+/// .<domain>` -- a logical service of an app instance (ADR-0022 §7).
 ///
 /// `nickname` must be the app instance's `AppInstanceId`:
 /// `<nickname>-<app did hash>` is the registry alias the app's Tier-1
@@ -175,10 +172,9 @@ pub fn generate_service_host(
 /// recover the app DID with no new registry record type.
 ///
 /// # Errors
-/// The label exceeds [`MAX_DNS_LABEL_LEN`] (`-roym1` costs 6 and the three
-/// hashed segments 30, so the nickname budget is 27 -- 37 with no `-i`), or
-/// `nickname`'s own final segment would misread as an `-a<hash>` segment
-/// (§0.12).
+/// The label exceeds [`MAX_DNS_LABEL_LEN`] (the three hashed segments cost
+/// 30, so the nickname budget is 33 -- 43 with no `-i`), or `nickname`'s
+/// own final segment would misread as an `-a<hash>` segment (§0.12).
 /// `interface: None` omits the `-i` segment (D-S3-15).
 pub fn generate_app_host(
     nickname: &str,
@@ -196,8 +192,6 @@ pub fn generate_app_host(
         label.push_str(&format!("-i{}", short_hash(iface)));
         hashed_suffix_len += 2 + SHORT_HASH_LEN;
     }
-    label.push_str(&format!("-{HOST_FORMAT_MARKER}"));
-    hashed_suffix_len += 1 + HOST_FORMAT_MARKER.len();
     finish_host(label, domain, hashed_suffix_len)
 }
 
