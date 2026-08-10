@@ -412,7 +412,7 @@ async fn a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick() {
     let managed_owner = Identity::generate().unwrap();
 
     let supervisor_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let supervisor_node = Node::boot(
+    let mut supervisor_node = Node::boot(
         supervisor_dir.path().to_path_buf(),
         PORTS.supervisor_iroh,
         PORTS.supervisor_registry,
@@ -461,11 +461,39 @@ async fn a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick() {
     // shed.
     let plan_json = compiled_plan_json().await;
     sleep_until_unix_secs(next_minute_boundary(now_unix_secs())).await;
-    supervisor_node
+    // `supervisor_node`'s connection was dialed and proven live by its own
+    // `wait_for_ready` during `Node::boot`, then sat idle through the
+    // `managed` node's full boot plus the wait for the minute boundary
+    // above -- long enough under CI's scheduling pressure for the peer to
+    // abandon that idle path ("no viable network path exists: last path
+    // abandoned by peer"; same root cause fixed in `binding_push_e2e.rs`).
+    // `SyneroymClient::connect` no-ops on an already-`Some` connection, so
+    // recovering means an explicit `shutdown`-then-`connect` (redial)
+    // before one retry, not just retrying the same request on the same
+    // dead connection.
+    let submit_params = submission(plan_json, inventory_json, 0);
+    if supervisor_node
         .substrate_client
-        .request("supervisor", "submit", submission(plan_json, inventory_json, 0))
+        .request("supervisor", "submit", submit_params.clone())
         .await
-        .expect("submit failed");
+        .is_err()
+    {
+        supervisor_node
+            .substrate_client
+            .shutdown()
+            .await
+            .expect("failed to reset supervisor_node's stale connection");
+        supervisor_node
+            .substrate_client
+            .connect()
+            .await
+            .expect("failed to reconnect supervisor_node");
+        supervisor_node
+            .substrate_client
+            .request("supervisor", "submit", submit_params)
+            .await
+            .expect("submit failed");
+    }
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -549,7 +577,7 @@ async fn a_supervisor_restart_skips_the_ticks_it_missed() {
     // teardown/reboot below -- the whole point is to bring back the *same*
     // identity and the same `supervisor.db`, not a fresh one.
     let supervisor_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let supervisor_node = Node::boot(
+    let mut supervisor_node = Node::boot(
         supervisor_dir.path().to_path_buf(),
         PORTS.supervisor_iroh + 500,
         PORTS.supervisor_registry + 500,
@@ -589,11 +617,34 @@ async fn a_supervisor_restart_skips_the_ticks_it_missed() {
     .unwrap();
 
     let plan_json = compiled_plan_json().await;
-    supervisor_node
+    // See the comment on the equivalent `submit` in
+    // `a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick`
+    // above: `supervisor_node`'s connection sat idle through the `managed`
+    // node's full boot, long enough under CI's scheduling pressure for the
+    // peer to abandon that idle path.
+    let submit_params = submission(plan_json, inventory_json, 0);
+    if supervisor_node
         .substrate_client
-        .request("supervisor", "submit", submission(plan_json, inventory_json, 0))
+        .request("supervisor", "submit", submit_params.clone())
         .await
-        .expect("submit failed");
+        .is_err()
+    {
+        supervisor_node
+            .substrate_client
+            .shutdown()
+            .await
+            .expect("failed to reset supervisor_node's stale connection");
+        supervisor_node
+            .substrate_client
+            .connect()
+            .await
+            .expect("failed to reconnect supervisor_node");
+        supervisor_node
+            .substrate_client
+            .request("supervisor", "submit", submit_params)
+            .await
+            .expect("submit failed");
+    }
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
