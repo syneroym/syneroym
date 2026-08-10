@@ -48,6 +48,9 @@ use tokio::{
     time,
 };
 
+#[path = "common/retry.rs"]
+mod retry;
+
 #[derive(Clone, Copy)]
 struct PortBlock {
     supervisor_iroh: u16,
@@ -391,18 +394,29 @@ fn submission(
 /// Submits and adopts a `replicas`-member instance, returning the app
 /// master DID -- the reference scenario's step 1.
 async fn submit_and_adopt(
-    supervisor_node: &Node,
+    supervisor_node: &mut Node,
     instance_id: &str,
     inventory_json: String,
     replicas: u32,
 ) -> String {
     let manifest = service_manifest(replicas);
     let plan_json = compiled_plan_json(&manifest, instance_id).await;
-    supervisor_node
-        .substrate_client
-        .request("supervisor", "submit", submission(instance_id, plan_json, inventory_json, 0))
-        .await
-        .expect("submit failed");
+    // `supervisor_node`'s connection was dialed and proven live by its own
+    // `wait_for_ready` during `Node::boot` inside `boot_pair`, then sat
+    // idle through the managed node's own full boot that followed -- long
+    // enough under CI's scheduling pressure for the peer to abandon that
+    // idle path ("no viable network path exists: last path abandoned by
+    // peer"; same root cause fixed throughout this crate's e2e tests, e.g.
+    // `binding_push_e2e.rs`). Recover by explicit shutdown→reconnect
+    // before one retry, not just retrying the same request on the same
+    // dead connection.
+    let submit_params = submission(instance_id, plan_json, inventory_json, 0);
+    crate::call_with_reconnect!(
+        supervisor_node.substrate_client,
+        "supervisor",
+        "submit",
+        submit_params
+    );
     let adopted = supervisor_node
         .substrate_client
         .request("supervisor", "adopt", json!([instance_id]))
@@ -455,11 +469,11 @@ fn outside_caller_fetcher(
 async fn an_outside_caller_resolves_an_apps_members_and_calls_one() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (supervisor_node, managed_node, inventory_json) =
+    let (mut supervisor_node, managed_node, inventory_json) =
         boot_pair(&supervisor_owner, &managed_owner, PORTS_OUTSIDE_CALLER_RESOLVES).await;
 
     let app_did =
-        submit_and_adopt(&supervisor_node, "resolve-outside-inst", inventory_json, 2).await;
+        submit_and_adopt(&mut supervisor_node, "resolve-outside-inst", inventory_json, 2).await;
 
     let outside_caller = Identity::generate().unwrap();
     let outside_caller_did = substrate::derive_did_key(&outside_caller.public_key());
@@ -497,10 +511,11 @@ async fn an_outside_caller_resolves_an_apps_members_and_calls_one() {
 async fn a_relayed_document_verifies_for_a_party_that_never_contacted_the_supervisor() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (supervisor_node, managed_node, inventory_json) =
+    let (mut supervisor_node, managed_node, inventory_json) =
         boot_pair(&supervisor_owner, &managed_owner, PORTS_RELAYED_DOCUMENT_VERIFIES).await;
 
-    let app_did = submit_and_adopt(&supervisor_node, "relayed-doc-inst", inventory_json, 1).await;
+    let app_did =
+        submit_and_adopt(&mut supervisor_node, "relayed-doc-inst", inventory_json, 1).await;
 
     let outside_caller = Identity::generate().unwrap();
     let outside_caller_did = substrate::derive_did_key(&outside_caller.public_key());
@@ -533,11 +548,11 @@ async fn a_relayed_document_verifies_for_a_party_that_never_contacted_the_superv
 async fn a_scaled_out_service_supersedes_the_cached_document_at_a_new_epoch() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (supervisor_node, managed_node, inventory_json) =
+    let (mut supervisor_node, managed_node, inventory_json) =
         boot_pair(&supervisor_owner, &managed_owner, PORTS_SCALE_OUT_SUPERSEDES).await;
 
     let app_did =
-        submit_and_adopt(&supervisor_node, "scale-out-inst", inventory_json.clone(), 1).await;
+        submit_and_adopt(&mut supervisor_node, "scale-out-inst", inventory_json.clone(), 1).await;
 
     let outside_caller = Identity::generate().unwrap();
     let outside_caller_did = substrate::derive_did_key(&outside_caller.public_key());
@@ -599,7 +614,7 @@ async fn a_scaled_out_service_supersedes_the_cached_document_at_a_new_epoch() {
 async fn a_cached_document_still_routes_after_the_supervisor_is_down() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (supervisor_node, managed_node, inventory_json) = boot_pair(
+    let (mut supervisor_node, managed_node, inventory_json) = boot_pair(
         &supervisor_owner,
         &managed_owner,
         PORTS_CACHED_DOCUMENT_SURVIVES_SUPERVISOR_DOWN,
@@ -607,7 +622,7 @@ async fn a_cached_document_still_routes_after_the_supervisor_is_down() {
     .await;
 
     let app_did =
-        submit_and_adopt(&supervisor_node, "cached-survives-inst", inventory_json, 1).await;
+        submit_and_adopt(&mut supervisor_node, "cached-survives-inst", inventory_json, 1).await;
 
     let outside_caller = Identity::generate().unwrap();
     let outside_caller_did = substrate::derive_did_key(&outside_caller.public_key());
@@ -641,10 +656,10 @@ async fn a_cached_document_still_routes_after_the_supervisor_is_down() {
 async fn a_caller_with_no_cached_document_fails_cleanly_when_the_supervisor_is_down() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (supervisor_node, managed_node, inventory_json) =
+    let (mut supervisor_node, managed_node, inventory_json) =
         boot_pair(&supervisor_owner, &managed_owner, PORTS_NO_CACHE_FAILS_CLEANLY).await;
 
-    let app_did = submit_and_adopt(&supervisor_node, "no-cache-inst", inventory_json, 1).await;
+    let app_did = submit_and_adopt(&mut supervisor_node, "no-cache-inst", inventory_json, 1).await;
 
     let outside_caller = Identity::generate().unwrap();
     let outside_caller_did = substrate::derive_did_key(&outside_caller.public_key());
@@ -672,10 +687,11 @@ async fn a_caller_with_no_cached_document_fails_cleanly_when_the_supervisor_is_d
 async fn a_document_forged_under_a_different_key_is_rejected() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (supervisor_node, managed_node, inventory_json) =
+    let (mut supervisor_node, managed_node, inventory_json) =
         boot_pair(&supervisor_owner, &managed_owner, PORTS_FORGED_DOCUMENT_REJECTED).await;
 
-    let app_did = submit_and_adopt(&supervisor_node, "forged-doc-inst", inventory_json, 1).await;
+    let app_did =
+        submit_and_adopt(&mut supervisor_node, "forged-doc-inst", inventory_json, 1).await;
     let app_did_typed = AppDid::new(app_did.clone());
 
     let outside_caller = Identity::generate().unwrap();

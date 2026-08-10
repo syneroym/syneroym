@@ -22,6 +22,9 @@ use tokio::{
 };
 use tracing::debug;
 
+#[path = "common/retry.rs"]
+mod retry;
+
 const IROH_PORT: u16 = 7984;
 const REGISTRY_PORT: u16 = 7981;
 const GATEWAY_PORT: u16 = 7980;
@@ -158,7 +161,7 @@ async fn test_podman_lifecycle() {
         return;
     }
 
-    let ctx = SubstrateTestContext::setup(IROH_PORT, REGISTRY_PORT, GATEWAY_PORT).await;
+    let mut ctx = SubstrateTestContext::setup(IROH_PORT, REGISTRY_PORT, GATEWAY_PORT).await;
 
     let app_identity = Identity::generate().unwrap();
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
@@ -239,11 +242,19 @@ async fn test_podman_lifecycle() {
     // Give it a brief moment to warm up
     time::sleep(Duration::from_secs(3)).await;
 
-    // Verify readiness
-    ctx.substrate_client
-        .request("orchestrator", "readyz", serde_json::json!([app_service_id.clone()]))
-        .await
-        .expect("readiness check failed");
+    // The connection sat idle across that warm-up sleep, long enough under
+    // CI's scheduling pressure for the peer to abandon that idle path ("no
+    // viable network path exists: last path abandoned by peer"; same root
+    // cause fixed throughout this crate's e2e tests, e.g.
+    // `binding_push_e2e.rs`). Recover by explicit shutdown→reconnect before
+    // one retry, not just retrying the same request on the same dead
+    // connection.
+    crate::call_with_reconnect!(
+        ctx.substrate_client,
+        "orchestrator",
+        "readyz",
+        serde_json::json!([app_service_id.clone()])
+    );
 
     // The manifest-supplied file reached the container's filesystem.
     let container_name = app_service_id.replace(':', "_");

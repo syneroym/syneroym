@@ -61,6 +61,9 @@ use tokio::{
     time,
 };
 
+#[path = "common/retry.rs"]
+mod retry;
+
 #[derive(Clone, Copy)]
 struct PortBlock {
     supervisor_iroh: u16,
@@ -472,28 +475,12 @@ async fn a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick() {
     // before one retry, not just retrying the same request on the same
     // dead connection.
     let submit_params = submission(plan_json, inventory_json, 0);
-    if supervisor_node
-        .substrate_client
-        .request("supervisor", "submit", submit_params.clone())
-        .await
-        .is_err()
-    {
-        supervisor_node
-            .substrate_client
-            .shutdown()
-            .await
-            .expect("failed to reset supervisor_node's stale connection");
-        supervisor_node
-            .substrate_client
-            .connect()
-            .await
-            .expect("failed to reconnect supervisor_node");
-        supervisor_node
-            .substrate_client
-            .request("supervisor", "submit", submit_params)
-            .await
-            .expect("submit failed");
-    }
+    crate::call_with_reconnect!(
+        supervisor_node.substrate_client,
+        "supervisor",
+        "submit",
+        submit_params
+    );
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -623,28 +610,12 @@ async fn a_supervisor_restart_skips_the_ticks_it_missed() {
     // node's full boot, long enough under CI's scheduling pressure for the
     // peer to abandon that idle path.
     let submit_params = submission(plan_json, inventory_json, 0);
-    if supervisor_node
-        .substrate_client
-        .request("supervisor", "submit", submit_params.clone())
-        .await
-        .is_err()
-    {
-        supervisor_node
-            .substrate_client
-            .shutdown()
-            .await
-            .expect("failed to reset supervisor_node's stale connection");
-        supervisor_node
-            .substrate_client
-            .connect()
-            .await
-            .expect("failed to reconnect supervisor_node");
-        supervisor_node
-            .substrate_client
-            .request("supervisor", "submit", submit_params)
-            .await
-            .expect("submit failed");
-    }
+    crate::call_with_reconnect!(
+        supervisor_node.substrate_client,
+        "supervisor",
+        "submit",
+        submit_params
+    );
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -698,7 +669,7 @@ async fn a_supervisor_restart_skips_the_ticks_it_missed() {
     // looks at it.
     sleep_until_unix_secs(next_boundary + 22).await;
 
-    let supervisor_node = Node::boot(
+    let mut supervisor_node = Node::boot(
         supervisor_dir.path().to_path_buf(),
         PORTS.supervisor_iroh + 500,
         PORTS.supervisor_registry + 500,
@@ -741,7 +712,25 @@ async fn a_supervisor_restart_skips_the_ticks_it_missed() {
     // `evaluated_at` moved past it says the rebooted supervisor really did
     // look at the schedule and choose to skip -- a stronger statement than
     // an unchanged counter, which an idle supervisor would also produce.
-    let schedules = supervisor_schedules(&supervisor_node).await;
+    // `supervisor_node`'s connection was dialed and proven live by its own
+    // `wait_for_ready` during the `Node::boot` reboot above, then sat idle
+    // through the `sleep_until_unix_secs(settle_until)` wait -- long enough
+    // under CI's scheduling pressure for the peer to abandon that idle
+    // path ("no viable network path exists: last path abandoned by peer";
+    // same root cause fixed throughout this crate's e2e tests). Recover by
+    // explicit shutdown→reconnect before one retry, not just retrying the
+    // same request on the same dead connection -- `supervisor_schedules`
+    // itself takes `&Node` and cannot redial, so this call is inlined here.
+    let schedules = crate::call_with_reconnect!(
+        supervisor_node.substrate_client,
+        "supervisor",
+        "schedules",
+        json!([INSTANCE_ID])
+    )
+    .result
+    .as_array()
+    .cloned()
+    .unwrap_or_default();
     assert_eq!(schedules.len(), 1, "{schedules:?}");
     assert_eq!(
         u64_field(&schedules[0], "last_run_at"),
