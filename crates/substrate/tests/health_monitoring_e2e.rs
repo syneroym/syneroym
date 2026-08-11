@@ -141,9 +141,11 @@ impl Node {
         let own_registry_url = format!("http://localhost:{registry_port}");
         let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
         config.substrate.registry_url = Some(effective_registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
         config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
 
         let substrate_identity_state =
@@ -168,7 +170,8 @@ impl Node {
             substrate_service_id.clone(),
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -222,6 +225,7 @@ async fn client_for(node: &Node, operator: &Identity, grant: CapabilityToken) ->
         node.registry_url.clone(),
         Identity::from_bytes(&operator.to_bytes()),
     )
+    .with_registry_dht(false)
     .with_ucan(grant);
     client.connect().await.expect("failed to connect client");
     client
@@ -235,7 +239,8 @@ async fn owner_client_for(node: &Node, owner: &Identity) -> SyneroymClient {
         node.did().to_string(),
         node.registry_url.clone(),
         Identity::from_bytes(&owner.to_bytes()),
-    );
+    )
+    .with_registry_dht(false);
     client.connect().await.expect("failed to connect owner client");
     client
 }

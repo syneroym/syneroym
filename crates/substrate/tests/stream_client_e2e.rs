@@ -107,7 +107,8 @@ async fn test_real_client_opens_direct_stream_both_directions() {
     let mut peer = SyneroymClient::new_with_mechanisms(
         app_service_id.clone(),
         ctx.substrate_mechanisms.clone(),
-    );
+    )
+    .with_registry_dht(false);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
     eprintln!("[test] peer connected");
@@ -203,7 +204,8 @@ async fn test_unregistered_stream_protocol_rejected_cleanly() {
     let mut peer = SyneroymClient::new_with_mechanisms(
         app_service_id.clone(),
         ctx.substrate_mechanisms.clone(),
-    );
+    )
+    .with_registry_dht(false);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 

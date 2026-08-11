@@ -132,6 +132,7 @@ impl Node {
         let own_registry_url = format!("http://localhost:{registry_port}");
         let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
         config.substrate.registry_url = Some(effective_registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         // Sharing one node's relay (rather than each node self-relaying
         // through its own, distinct home relay) avoids cross-relay direct-
         // path/hole-punch negotiation between two localhost peers that
@@ -141,7 +142,8 @@ impl Node {
         // condition the 50 ms federated-hop budget is meant to capture.
         let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
         config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         // An owned node so an unrelated caller (e.g. Node A's own forwarded
         // `resolve-relation` invocation, proxying for a Node B principal who
         // never delegated anything on Node A) does not fall back to a
@@ -181,9 +183,11 @@ impl Node {
                 substrate_service_id.clone(),
                 effective_registry_url.clone(),
                 id,
-            ),
+            )
+            .with_registry_dht(false),
             None => {
                 SyneroymClient::new(substrate_service_id.clone(), effective_registry_url.clone())
+                    .with_registry_dht(false)
             }
         };
         substrate_client
@@ -413,7 +417,8 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
         node_a.did().to_string(),
         node_a.registry_url.clone(),
         Identity::from_bytes(&hr_owner_identity.to_bytes()),
-    );
+    )
+    .with_registry_dht(false);
     hr_deployer.connect().await.expect("failed to connect to node A for deploy");
 
     // `seed` (`paths: []`, public) lets the deploying owner's own
@@ -464,7 +469,8 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
         hr_service_id.clone(),
         node_a.registry_url.clone(),
         Identity::from_bytes(&hr_owner_identity.to_bytes()),
-    );
+    )
+    .with_registry_dht(false);
     hr_data_client.connect().await.expect("failed to connect to node A's hr service");
 
     hr_data_client
@@ -507,6 +513,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
         node_b.registry_url.clone(),
         Identity::from_bytes(&alice_identity.to_bytes()),
     )
+    .with_registry_dht(false)
     .with_ucan(app_deploy_grant(&node_b_owner, &alice_did, node_b.did(), &app_service_id));
     alice_deployer.connect().await.expect("failed to connect to node B for deploy");
 
@@ -572,6 +579,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
         node_b.registry_url.clone(),
         Identity::from_bytes(&alice_identity.to_bytes()),
     )
+    .with_registry_dht(false)
     .with_ucan(seed_token);
     alice_data_client.connect().await.expect("failed to connect to node B's app service");
 
@@ -619,6 +627,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
         node_b.registry_url.clone(),
         alice_identity,
     )
+    .with_registry_dht(false)
     .with_ucan(token);
     alice_query_client.connect().await.expect("failed to connect to node B as alice");
 
@@ -744,6 +753,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
         node_b.registry_url.clone(),
         Identity::from_bytes(&alice_identity_2.to_bytes()),
     )
+    .with_registry_dht(false)
     .with_ucan(app_deploy_grant(
         &node_b_owner,
         &alice_did_2,
@@ -787,6 +797,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
         node_b.registry_url.clone(),
         Identity::from_bytes(&alice_identity_2.to_bytes()),
     )
+    .with_registry_dht(false)
     .with_ucan(bad_seed_token);
     bad_app_data_client
         .connect()
@@ -833,6 +844,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
         node_b.registry_url.clone(),
         alice_identity_2,
     )
+    .with_registry_dht(false)
     .with_ucan(bad_token);
     bad_query_client.connect().await.expect("failed to connect to node B for the mismatch query");
 

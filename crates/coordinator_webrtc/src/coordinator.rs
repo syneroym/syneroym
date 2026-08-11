@@ -11,13 +11,18 @@ use std::{
 
 use anyhow::Result;
 use iroh::Endpoint;
+use syneroym_app_orchestration::{LogicalResolver, StaticInventory};
 use syneroym_core::{
     config::SubstrateConfig, dht_registry::RegistryClient, local_registry::EndpointRegistry,
+    util::load_or_generate_node_identity,
 };
 use syneroym_data_db::registry_store;
 use syneroym_router::net_iroh;
+use syneroym_sdk::topology::{
+    AppHostResolver, RegistryTier1Lookup, RegistryTopologyFetcher, Tier2Fetch, credential_warning,
+};
 use tokio::{net::TcpListener, sync::Mutex};
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use crate::{
     bootstrap::{self, BootstrapState},
@@ -71,6 +76,51 @@ impl CoordinatorWebRtc {
 
         let registry_client = RegistryClient::new(true, config.substrate.registry_url.clone());
 
+        // S3, D-S3-11: the coordinator resolves app-scoped (`-a…-s…`)
+        // bootstrap hosts the same way the client gateway does, over its
+        // own `AppHostResolver` (D-S3-7 -- never shared). The blind tunnel
+        // has no identity of its own; `resolve` is authorized, so it needs
+        // one, and it reuses the node's own key (not a fresh one) so
+        // `[iam].grant_resolve_to_node_did` covers this component with the
+        // same config key the client gateway uses, and a coordinator
+        // restart does not invalidate an operator's `resolve_ucan` token.
+        let identity = load_or_generate_node_identity(config)?;
+        let registry_url = config.substrate.registry_url.clone().unwrap_or_default();
+        let resolve_ucan_path =
+            config.roles.coordinator.as_ref().and_then(|c| c.resolve_ucan.as_ref());
+        let fetcher = if registry_url.is_empty() {
+            None
+        } else {
+            let mut f = RegistryTopologyFetcher::new(registry_url.clone()).with_identity(&identity);
+            if let Some(path) = resolve_ucan_path {
+                let raw = std::fs::read_to_string(path)?;
+                f = f.with_ucan(serde_json::from_str(&raw)?);
+            }
+            match credential_warning(
+                resolve_ucan_path.is_some(),
+                config.iam.grant_resolve_to_node_did,
+            ) {
+                Some(syneroym_sdk::topology::CredentialWarning::NeitherConfigured) => warn!(
+                    "coordinator has neither `roles.coordinator.resolve_ucan` nor \
+                     `iam.grant_resolve_to_node_did`; app-scoped (-a…-s…) bootstrap hosts will be \
+                     refused by any supervisor they reach. Unscoped (-s only) hosts are \
+                     unaffected."
+                ),
+                Some(syneroym_sdk::topology::CredentialWarning::OnlyTheSameNodeGate) => debug!(
+                    "coordinator has no `resolve_ucan`; app-scoped bootstrap hosts will resolve \
+                     only for apps supervised by this node"
+                ),
+                None => {}
+            }
+            Some(Box::new(f) as Box<dyn Tier2Fetch>)
+        };
+        let tier1 = Box::new(RegistryTier1Lookup::new(registry_url.clone()));
+        let app_host_resolver = AppHostResolver::new(
+            tier1,
+            fetcher,
+            LogicalResolver::new(Arc::new(StaticInventory::new())),
+        );
+
         let bootstrap_state = Arc::new(BootstrapState {
             iroh: endpoint,
             external_host: webrtc_config.external_host.clone(),
@@ -79,6 +129,7 @@ impl CoordinatorWebRtc {
             registry_url: config.substrate.registry_url.clone(),
             registry_client,
             connection_cache: Mutex::new(HashMap::new()),
+            app_host_resolver,
         });
 
         Ok(Self {

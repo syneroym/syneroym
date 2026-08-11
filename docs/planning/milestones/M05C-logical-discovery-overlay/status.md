@@ -5,12 +5,14 @@
 (Accepted 2026-08-02) · **Plan:**
 [implementation-plan.md](implementation-plan.md)
 
-**Overall:** 🚧 **In progress. S1 and S2 complete 2026-08-08.** Promoted from
-the *Committed Work: Logical Service Discovery Overlay* section of
+**Overall:** 🚧 **In progress. S1 and S2 complete 2026-08-08; S3 substantially
+complete 2026-08-10, post-review pass 2026-08-11 (Playwright tests 103-104
+still not implemented, see S3's evidence below).** Promoted from the
+*Committed Work: Logical Service
+Discovery Overlay* section of
 [meta-implementation-plan.md](../../meta-implementation-plan.md) into a
 milestone directory, so the largest committed-but-unplanned work in the tree
-carries the same discipline as everything else. **S3's gate is clear** — S2
-landed 2026-08-08.
+carries the same discipline as everything else.
 
 **Plan layout.** [implementation-plan.md](implementation-plan.md) is milestone
 level. Each slice's own findings, decisions, phases, and tests live in that
@@ -25,7 +27,7 @@ is the first; S2–S4 get theirs when picked up. The reasoning is in
 | S0 | App-instance master DID | **Complete (2026-08-04)** as [M05A slice A7](../M05A-app-supervisor/slice-a7-implementation-plan.md) | — |
 | S1 | Tier 1: the app-DID registry record; `ShardingStrategy` manifest surface | **✅ Complete (2026-08-08)** — [plan](slice-s1-implementation-plan.md); evidence below | S0 **cleared** |
 | S2 | Tier 2: signed topology document, `resolve` RPC, client verify/cache | **✅ Complete (2026-08-08)** — [plan](slice-s2-implementation-plan.md); evidence below | S1 **cleared** |
-| S3 | Gateway hostname scheme + routing-key header; coordinator relay | 📋 **Planned (2026-08-09)** — [plan](slice-s3-implementation-plan.md), `§0` written | S2 **cleared** |
+| S3 | Gateway hostname scheme + routing-key header; coordinator relay | ⚠️ **Substantially complete (2026-08-10); post-review pass 2026-08-11** — [plan](slice-s3-implementation-plan.md); evidence below. Playwright tests 103-104 blocked by a genuine iroh self-dial deadlock, not implemented | S2 **cleared** |
 | S4 | Cross-app `Bind` | 📋 Planned (sketch; owes its own `§0`) | S2 **and a real consumer** (D-C-7) |
 | S5 | Shard rebalancing, epoch enforcement | Out of this milestone | **M7** `[PLT-RED]` |
 
@@ -642,3 +644,517 @@ log-capture harness (`run_capturing_logs`) uses a thread-local
 `tracing` subscriber that only sees a warning if it happens to fire on the
 same thread that installed it. Recorded in
 [deferred-backlog.md](../../deferred-backlog.md), not fixed here.
+
+### S3 — Verification evidence (2026-08-10)
+
+**What shipped**, by phase (see
+[slice-s3-implementation-plan.md](slice-s3-implementation-plan.md) §2 for the
+phase plan):
+
+- **Phase 1 (one builder, one parser, in `syneroym-core`):** `TargetHost`
+  (`Service`/`App` variants) and a rewritten `parse_target_host` in
+  [protocol_utils.rs](../../../../crates/core/src/protocol_utils.rs), reading
+  the first DNS label and popping `-i`/`-s`/`-a` right to left with the
+  fixed-width guard §0.12 found necessary; everything past that first label
+  is ignored, same as before S3. `generate_alias` reshaped to drop its `-p`
+  letter (D-S3-14), and two new builders,
+  `generate_service_host`/`generate_app_host`, in
+  [util.rs](../../../../crates/core/src/util.rs), both refusing a label over
+  the 63-character DNS limit. **Directed out during this slice's own
+  implementation (2026-08-10)**: the plan's own D-S3-13 shipped a trailing
+  `-roym1` format-version marker, in two revisions — first as the label's own
+  last dash-segment, then moved to its own `.roym1.` subdomain label to free
+  6 characters back into the nickname budget — before being dropped
+  entirely, since the parser was already domain-agnostic before S3 and a
+  future grammar change is a problem for whenever it actually happens, not
+  one worth a marker today. `client_gateway`'s own duplicate parser is
+  deleted; every hand-formatted host site (`roymctl alias`,
+  `basic_lifecycle.rs`, `tcp_proxy_latency.rs`, the four hand-built
+  `community_registry` test aliases) now goes through these four functions —
+  what makes exit criterion 5 true.
+- **Phase 2 (the destination resolves what the caller could not):**
+  `resolve_service_name` in
+  [topology.rs](../../../../crates/app_supervisor/src/topology.rs) — an exact
+  name match wins, a hash matching two declared names is refused
+  (`AmbiguousHash`) — wired into `handle_resolve` so the signed document
+  always carries the real name, never the hash a caller sent. `EndpointRegistry`
+  in [local_registry.rs](../../../../crates/core/src/local_registry.rs) gained
+  `resolve_interface`, folding the exact/hash/empty cases into one function;
+  an empty interface resolves to "the one app-declared interface" only at the
+  hop that terminates the route (`route_handler/io.rs`) — a relay hop still
+  forwards it untouched, pinned by test 81.
+- **Phase 3 (the client gateway's app-scoped path):** `[iam]
+  .grant_resolve_to_node_did` and `[roles.client_gateway] resolve_ucan` (new
+  `SubstrateConfig`/`ClientGatewayRole` fields), a same-node bare
+  `substrate:<node_did>` grant with ability `supervisor/resolve` alongside the
+  existing `admin_ucan_root` branch in
+  [route_handler/io.rs](../../../../crates/router/src/route_handler/io.rs).
+  `GatewayState` gained its own `LogicalResolver`, `RegistryTopologyFetcher`,
+  and two caches (`app_dids`, `service_names`); `resolve_app_host` does the
+  Tier-1-then-Tier-2 walk with both D-S3-5 binding checks
+  (`short_hash(record.info.service_id) == a_hash`,
+  `short_hash(document.service_name) == s_hash`), refusing rather than
+  resolving on either mismatch. `RegistryTopologyFetcher` gained
+  `fetch_via`, skipping the redundant second Tier-1 lookup the plan's own
+  first draft had (D-S3-17).
+- **Phase 4 (the coordinator resolves an app-scoped host):** the WebRTC
+  coordinator gained an identity (the node's own key, so the same
+  `grant_resolve_to_node_did` gate covers it), a `topology_fetcher` and
+  `resolver` on `BootstrapState`, and the same `resolve_app_host` logic
+  reused from phase 3. `peer-proxy.html`/`peer-proxy.js` gained an
+  interpolated `TARGET_INTERFACE`, and both of the page's own hostname
+  parsers (raw-tunnel and service-worker paths) are **deleted** — the net
+  effect of phase 4 on `templates/` is a deletion, not an addition (D-S3-16).
+- **Phase 5 (the operator surface, the e2e proof):** `roymctl alias` gained
+  `--service`/`--domain`; a clap-level check refuses `--service` without
+  `--nickname`. New
+  [gateway_hostname_e2e.rs](../../../../crates/substrate/tests/gateway_hostname_e2e.rs)
+  covering tests 99-102 against two real substrates and a real registry —
+  the milestone's cross-app half, from an ordinary HTTP client, including the
+  routing-key header over the wire and both credential shapes D-S3-6
+  describes (a same-node grant with no credential file, and a cross-node
+  `resolve_ucan` token).
+
+**Playwright tests 103-104 are not implemented — a genuine blocker, not an
+oversight.** Both need a real app instance (adopted, with an app master DID)
+reachable through the WebRTC bootstrap page, and the Playwright fixture
+(`crates/substrate/tests/e2e/`) runs exactly one substrate process, so the
+only way to build that instance is a supervisor deploying onto **its own**
+node — a shape nothing else in the tree exercises (every Rust e2e's managed
+node, including this slice's own `gateway_hostname_e2e.rs`, is a genuinely
+separate process/DID). Standing this up (`[roles.supervisor]`, `[storage]
+encryption = false`, a node-wide `substrate/admin` self-grant, a `substrates.toml`
+inventory naming the node's own DID, `supervisor submit`/`adopt` against a
+two-interface `backend` manifest) worked right up to `adopt`, which calls
+`build_clients` → `connected_client` → `SyneroymClient::connect` to read the
+instance's currently-held generation from every substrate it is placed on —
+here, itself. That call **hung indefinitely**: reproduced twice, in the
+identical call chain both times (confirmed with macOS `sample(1)`, since
+`lldb -p` attach is blocked in this environment — parked inside
+`Endpoint::bind()`/`endpoint.connect()`, not spinning), killed after 40+
+minutes with zero forward progress, even though `wait_for_ready`'s own
+`time::timeout` should have bounded the attempt to `MANAGED_SUBSTRATE_CONNECT_TIMEOUT`
+(10 seconds). Not root-caused past that point — a same-node self-dial through
+the coordinator's own relay is a case iroh's own architecture may never
+exercise. Filed as its own backlog row
+([deferred-backlog.md](../../deferred-backlog.md) §1) with the full repro
+path and exact file:line citations, rather than forced. The fixture changes
+attempted for this were reverted in full (`global-setup.ts`,
+`webrtc.spec.ts` are unchanged from phase 5's commit) so the rest of the
+Playwright suite is not put at risk by code that hangs.
+
+**A bug found and fixed along the way, unrelated to S3's own design but
+blocking even the already-committed fixture code**: `roymctl svc deploy
+--tcp` refused more than one `--interfaces` value
+(`apps/roymctl/src/commands/svc.rs`), even though `deploy_svc_tcp` and the
+underlying WIT `network-endpoint` record already take a list — the guard was
+an artificial CLI-level restriction with nothing behind it. This blocked
+`global-setup.ts`'s own pre-existing two-interface TCP deploy (`--interfaces
+http,admin --tcp ...`, added for test 104's fixture) from ever running.
+Fixed by building one `NetworkEndpoint` per declared interface, all naming
+the same `(host, port)` — a TCP passthrough has nothing to dispatch on, so
+every declared interface is just another registered name for the identical
+backend.
+
+**Test coverage**: 43 new test functions across the phases above — 8 in
+[protocol_utils.rs](../../../../crates/core/src/protocol_utils.rs), 5 in
+[util.rs](../../../../crates/core/src/util.rs), 3 in
+[local_registry.rs](../../../../crates/core/src/local_registry.rs), 5 in
+[app_supervisor/topology.rs](../../../../crates/app_supervisor/src/topology.rs),
+1 in [service.rs](../../../../crates/app_supervisor/src/service.rs), 2 in
+[client_gateway/gateway.rs](../../../../crates/client_gateway/src/gateway.rs),
+4 in [bootstrap.rs](../../../../crates/coordinator_webrtc/src/bootstrap.rs),
+2 in [route_handler/io.rs](../../../../crates/router/src/route_handler/io.rs),
+7 in [sdk/topology.rs](../../../../crates/sdk/src/topology.rs), 2 in
+`roymctl`'s [cli_args.rs](../../../../apps/roymctl/tests/cli_args.rs), and 4
+e2e in `gateway_hostname_e2e.rs` (tests 99-102).
+
+**Matrix and budget coverage**: no new matrix row (S1 closed 1-3/11, S2
+closed 4-10); rows 6, 7, and 10 gain a second named test at the hostname
+layer (test 87 for expiry, test 101 for a clean denial, test 78 for the
+epoch surviving a hashed request) per the slice plan §4. Budget 1
+re-measured at the gateway (test 85, a fetch-count assertion); budget 2 —
+one Tier-1 lookup per cold app-scoped resolve, not two — measured for the
+first time in this milestone (test 86, a registry-call-count assertion).
+
+**A live requester correction, worked out during this slice's own
+implementation (2026-08-10), not part of the original plan**: D-S3-13's
+`-roym1` format-version marker is gone entirely, in two rounds the same
+day — first moved from the label's own trailing dash-segment to a `.roym1.`
+subdomain label (freeing 6 characters into the nickname budget, since DNS
+label limits are per-label), then dropped outright, since the parser was
+already domain-agnostic before S3 (everything past the first label was, and
+still is, ignored) and a version marker was paying for a problem — a future
+grammar change — that has no consumer yet. The corrected grammar carries no
+marker at all: `<nickname>-a<app-did-hash>-s<service-name-hash>
+[-i<interface-hash>].<domain>`, freeing the nickname budget to 33 characters
+on an app-scoped host (43 with no `-i`), up from the plan's original
+27/37. See [ADR-0022](../../../decisions/0022-two-tier-logical-service-discovery.md)
+§7's amendment and this plan's D-S3-13 for the full record. Every builder,
+parser, and test this touched — `crates/core/src/protocol_utils.rs`,
+`util.rs`, `apps/roymctl/tests/cli_args.rs`, `crates/client_gateway/src/
+gateway.rs`, `crates/coordinator_webrtc/src/bootstrap.rs` — was re-verified
+after the change (below); the 43 new-test count above is unaffected, since no
+test functions were added or removed, only their bodies.
+
+**Verification**:
+- `cargo +nightly fmt --all`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean.
+- `cargo build --workspace --all-targets`: clean (confirms nothing else in
+  the tree referenced the now-deleted `HOST_FORMAT_MARKER`).
+- `cargo test --workspace` (sandboxed): everything not needing a real socket
+  bind passes clean, including every one of the 43 new tests above. The same
+  fixed set S1/S2's evidence documents needs a separate sandbox-disabled
+  re-run for a real socket bind (`Operation not permitted` under the
+  sandbox) — `syneroym-community-registry`, `syneroym-control-plane`,
+  `syneroym-mqtt-broker`, `syneroym-coordinator-iroh`'s integration
+  binaries, `syneroym-sdk`'s `connect_timeout` — **plus one new addition
+  this slice**: `syneroym-coordinator-webrtc`'s own lib tests, since phase 4
+  added `#[tokio::test]`s in `bootstrap.rs` that bind real sockets too. Every
+  one of those, re-run independently with the sandbox disabled, passes in
+  full: `syneroym-community-registry` 16/16, `syneroym-control-plane`
+  176/176, `syneroym-coordinator-iroh` 9/9 (2 lib + connection_limit 1/1 +
+  multi_hop_relay 5/5 + tls_rotation 1/1), `syneroym-coordinator-webrtc`
+  6/6, `syneroym-mqtt-broker` 12/12, `syneroym-sdk`'s `connect_timeout` 1/1.
+  One pre-existing, already-documented flaky failure hit during a
+  `--no-fail-fast` full run and unrelated to this slice (`syneroym-router`'s
+  `native_dispatch_identity`, a `mainline::dht` "actor thread unexpectedly
+  shutdown: SendError" panic under parallel load — see
+  [deferred-backlog.md](../../deferred-backlog.md) §1): confirmed by
+  re-running the file alone with `--test-threads=1`, 39/39.
+- `crates/substrate`'s `tests/*_e2e.rs` integration binaries (sandbox
+  disabled, `--test-threads=4`, ~29 binaries): this slice's own new file,
+  `gateway_hostname_e2e.rs`, passes in full — all 4 tests (99-102), ~130s,
+  re-verified again after the marker-removal redesign. Every other file
+  passed too, except `durable_outbox_e2e`, which hit `Address already in
+  use` on a port a concurrently-running parallel session (a different
+  worktree, fixing an unrelated e2e issue on this same machine) was using at
+  the time — not a regression from this slice, which touches no code in the
+  outbox/queue path.
+- `mise run test:e2e` (Playwright WebRTC suite): **12 passed**, re-run twice
+  (once before, once after the marker-removal redesign) — the pre-existing 8
+  in `webrtc.spec.ts` and 4 in `multi-hop.spec.ts`, unaffected by this
+  slice's own gateway/coordinator changes (both still address a service by
+  its unscoped `-s...` host, now with no `-roym1` marker at all). Tests
+  103-104 are not present, per the blocker above.
+
+### S3 — Post-review pass (2026-08-11)
+
+An independent review against `task.md` and this slice's own plan found 17
+findings in the shipped commit (`baf5f22`): 4 correctness, 5
+security/robustness, 7 test-coverage, 1 clarity. 15 were fixed; 1
+(A2) was investigated and declined as a code change in this pass, recorded
+instead as a sharper backlog row; 1 (B5) was a "note, not a defect" the
+review itself flagged, recorded as a backlog row rather than a fix. All
+fixes re-verified (below).
+
+**Fixed:**
+
+1. **The unscoped host builder skipped §0.12's ambiguous-nickname refusal**
+   (A1, critical). `refuse_ambiguous_nickname_tail` was wired into
+   `generate_app_host` only; `generate_service_host` minted a host whose
+   nickname's own final segment could misread as a real `-a<hash>` segment
+   on parse. Called from both builders now; test 70 extended to cover both
+   (also closes C4, the matching test-coverage finding).
+   `crates/core/src/util.rs`.
+2. **Every `resolve` error was treated as a cache miss** (A3, major),
+   so a *permanent* selection failure (`Sharded` with no routing key, an
+   empty member set) refetched Tier 2 on every single request, breaking
+   task.md budget 1 for any caller stuck in one of those states.
+   `LogicalResolver` gained a typed, downcastable
+   `RetryableResolveError`/`is_retryable_resolve_error` distinguishing
+   "not registered" and "expired" (genuinely retryable) from everything
+   `select_member` returns (a permanent property of the document, not a
+   cache state) — `resolve_app_host`'s warm path now falls through to a
+   refetch only on the former, and returns the latter straight to the
+   caller. `crates/app_orchestration/src/resolver.rs`,
+   `crates/sdk/src/topology.rs`.
+3. **An empty interface reached the guest proxy path** (A4, major),
+   contradicting D-S3-15's own claim that it "simply fails" there.
+   `check_native_capability_gate`'s `matches_interface` closure can never
+   match `""` against a real interface name, so nothing stopped a guest
+   call from reaching `registry.lookup(target, "")`, which now resolves to
+   "the one app-declared interface" (D-S3-15). No live escalation --
+   `NODE_NATIVE_INTERFACES` was not filtered by that empty-interface
+   resolution, but every node registers both `orchestrator` and
+   `security`, so the ambiguity check happened to refuse it -- but that
+   safety was incidental, not designed. Fixed two ways: the gate now
+   refuses an empty interface for `CallOrigin::Guest` outright (a WASM
+   guest always names the interface it wants; the convenience is for a
+   caller reading a hostname, not a guest), and `resolve_interface`'s
+   empty branch now filters `NODE_NATIVE_INTERFACES` alongside
+   `NATIVE_CAPABILITY_INTERFACES` as defence in depth.
+   `crates/router/src/proxy.rs`, `crates/core/src/local_registry.rs`.
+4. **`AppHostResolver`'s Tier-1 cache was keyed by `a_hash` alone**
+   (B3, minor) while the registry lookup itself uses the full
+   `app_lookup_alias`, so a warm entry could answer a *different*
+   nickname over the same app hash without its own alias lookup --
+   D-S3-5's binding check still bound the answer to the right app DID, so
+   this never crossed an authority boundary, but it silently widened what
+   the parser accepts. Keyed on the alias now.
+   `crates/sdk/src/topology.rs`.
+5. **`TARGET_INTERFACE` (and every other constant on the bootstrap
+   page) was interpolated into a `<script>` block through askama's
+   default HTML escaper** (B4, minor) -- the right escaper for an HTML
+   *body*, not a JS string literal: it handles `"`/`<`/`&`, never `\`, so
+   a value ending in an odd number of backslashes (reachable through the
+   deliberately permissive `-i` segment, D-S3-12) could escape the
+   closing quote. Not reachable from a real browser URL, but the wrong
+   escaper for the context regardless. Every constant now renders through
+   askama's `json` filter (new `serde-json` cargo feature) followed by
+   `|safe`, producing a complete, self-quoting JS/JSON literal instead of
+   a hand-quoted, HTML-escaped one. `Cargo.toml`,
+   `crates/coordinator_webrtc/templates/peer-proxy.html`.
+6. **The public, unauthenticated WebRTC bootstrap listener did
+   uncached Tier-1/Tier-2 work per request, with no bound on concurrent
+   in-flight resolves** (B1 + B2, both major). `AppHostResolver` gained
+   two things behind its existing warm-path cache: a per-`(app_lookup_
+   alias, s_hash)` `tokio::sync::Mutex`-based single-flight (B2), so
+   concurrent callers for the same not-yet-cached host share one Tier-1-
+   then-Tier-2 round trip instead of each starting an independent one;
+   and a 5-second negative-result cache (B1), so a caller repeating the
+   same unresolvable host does not repeat a full round trip for every
+   repeat. Both apply uniformly to the client gateway and the coordinator,
+   since they share this one resolver (D-S3-7/D-S3-11).
+   `crates/sdk/src/topology.rs`.
+7. **e2e test 100 could not fail regardless of correctness** (C1,
+   critical): both `Redundant` replicas proxy to the *same* physical TCP
+   backend by construction in this milestone (`service_manifest` clones
+   `config.source` per `member_index`), so comparing response *content*
+   across two keyed requests was true no matter which member the gateway
+   actually dialed -- and the test reused one `Client` across every
+   request, so finding A2's per-connection behavior would have masked a
+   real bug too. Renamed and rewritten: the backend now echoes the exact
+   `X-Syneroym-Routing-Key` bytes it received, each request runs over its
+   own fresh connection, and the assertion is on that echoed value (three
+   requests: none, `"alice"`, `"bob"`) -- proving the header travels the
+   real wire unmodified per request, which is what this test's own doc
+   comment always said its job was. Per-member selection consistency
+   stays unit-tested, with real members to distinguish, at `syneroym-sdk`
+   test 88. `crates/substrate/tests/gateway_hostname_e2e.rs`.
+8. **Test 88 never asserted its own title's second half** (C2, major)
+   -- "the same key twice returns the same member" was covered; "no
+   header returns members in round-robin" was not. Added.
+   `crates/sdk/src/topology.rs`.
+9. **`global-setup.ts` computed and exported `APP_ALIAS_ADMIN` for
+   Playwright test 104**, which no spec consumes and which cannot land
+   until the iroh self-dial deadlock blocking 103-104 is resolved (see
+   the backlog row below) -- left in place, it would have rotted into a
+   false signal (C3, major). Dropped the unused alias computation/export
+   and the second declared interface it existed to support; the TCP
+   deploy is back to a single `http` interface.
+   `crates/substrate/tests/e2e/global-setup.ts`.
+10. **Test 84 passed an unformatted literal string and accepted either
+    of two unrelated error messages** (C5, minor), so it would have
+    passed on a Tier-1 regression as readily as on the Tier-2 binding
+    check it exists to pin. Alias now built with `format!`; the
+    assertion now pins the Tier-2 message specifically.
+    `crates/sdk/src/topology.rs`.
+11. **Test 82 ("the gateway's own regression pin") exercised no
+    gateway code**, only `protocol_utils::parse_target_host` -- a copy of
+    that module's own test 60 (C6, minor). The `TargetHost ->
+    (service_id, interface)` decision `handle_connection` makes is now
+    its own function, `resolve_target`, with its own two direct unit
+    tests (the unscoped pass-through, and an app-scoped resolution
+    failure surfacing as `resolve_target`'s own `Err`); test 82 itself is
+    retitled to say what it actually checks.
+    `crates/client_gateway/src/gateway.rs`,
+    `crates/client_gateway/Cargo.toml` (new `async-trait` dev-dependency).
+12. **The gateway's own no-registry-configured path had no test**
+    (C7, minor) -- covered only through the coordinator's test 96. Added.
+    `crates/sdk/src/topology.rs`.
+13. **`CredentialWarning`'s doc comment opened with a truncated,
+    mid-sentence paragraph copied from `AppHostResolver`'s own doc** (D1,
+    minor merge artifact) -- the real `AppHostResolver` doc appeared
+    again, complete, thirty lines later. Deleted the stray paragraph.
+    `crates/sdk/src/topology.rs`.
+14. Unrelated to the review, found while investigating a `cargo audit`
+    warning the requester separately flagged: `smartstring` (transitively
+    pulled in by `swc_ecma_parser`, itself pulled in by the `swc_core`
+    build-dependency this crate uses to minify `sw.js`/`peer-proxy.js` in
+    release builds) is unmaintained
+    ([RUSTSEC-2026-0249](https://rustsec.org/advisories/RUSTSEC-2026-0249)).
+    Bumped `swc_core` from `68.0.5` to the current `76.0.0`; confirmed via
+    `cargo tree -i smartstring` that the newer version's dependency graph
+    drops it entirely (`swc_atoms` moved to the `hstr` crate), rather than
+    adding an `audit.toml` suppression for a warning a real upgrade
+    removes. `build.rs`'s `swc_core` API usage needed no changes across
+    the eight-minor-version jump; a release build was run to completion to
+    confirm the minifier still runs, and `cargo audit` is clean.
+    `Cargo.toml`, `crates/coordinator_webrtc/Cargo.toml`.
+
+**Declined as a code change:** the routing-key header (A2, critical) is
+read once, from the first HTTP request on a TCP connection, and the whole
+connection is then handed to `passthrough_with_conn`'s raw bidirectional
+byte copy for its lifetime -- every later request an HTTP keep-alive
+reuses that connection for rides the member chosen for request one,
+regardless of its own header. A real fix needs the gateway to parse HTTP
+request boundaries *inside* an already-open raw byte tunnel and
+potentially re-select a member mid-connection -- turning
+`ServiceType::Tcp` passthrough from a byte-level proxy into an HTTP-aware
+one, a substantially larger change than this pass's scope. Documented
+instead: a caller-facing note in the developer guide's gateway-hostname
+section, a code comment at the read site, and a backlog row.
+`crates/client_gateway/src/gateway.rs` (`handle_connection`),
+[developer-guide.md](../../../developer-guide.md).
+
+**Backlog rows added** (both in [deferred-backlog.md](../../deferred-backlog.md)
+§7): A2's per-connection routing-key limitation above, and B5's note that
+the `-a<app-did-hash>`/`-s<service-name-hash>` binding rests on a 40-bit
+(`short_hash`) collision space, closed against an *unrelated* record only
+by D-S3-5's check and against a *colliding, same-nickname* record only by
+the registry's alias-collision refusal at admission -- itself in-memory
+and rebuilt on restart. Not fixed: S3 makes this hash the root of a
+resolution chain that previously ended at a plain service lookup, and
+closing it for real (persisting the alias map, or widening the hash) is
+sized for the next gateway-hostname format break, not a review-pass fix.
+
+**Test coverage**: 8 new regression tests, plus the C1 rewrite and the C2
+addition to an existing one --
+`a_permanent_selection_failure_is_not_treated_as_a_cache_miss`,
+`a_different_nickname_over_the_same_app_hash_repeats_the_tier1_lookup`,
+`an_app_scoped_host_is_refused_with_no_registry_configured`,
+`a_recent_failure_is_served_from_the_negative_cache_without_a_repeat_lookup`,
+`concurrent_cold_resolves_for_the_same_host_share_one_fetch` (all in
+`sdk/src/topology.rs`); `guest_with_an_empty_interface_is_denied_before_
+resolution` (`router/src/proxy.rs`);
+`an_empty_interface_never_resolves_to_a_node_native_interface`
+(`core/src/local_registry.rs`);
+`resolve_target_passes_an_unscoped_host_through_unresolved` and
+`resolve_target_routes_an_app_scoped_host_through_the_resolver_and_
+surfaces_its_error` (`client_gateway/src/gateway.rs`);
+`a_value_ending_in_a_backslash_cannot_escape_its_js_string_literal`
+(`coordinator_webrtc/src/bootstrap.rs`).
+
+**Verification**:
+- `cargo +nightly fmt --all`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean.
+- `cargo build --workspace --all-targets`: clean, including a `--release`
+  build (exercises `coordinator_webrtc`'s `build.rs` minifier against the
+  bumped `swc_core`).
+- `cargo test --workspace --lib --bins` (every crate's unit tests, the fast
+  and exhaustive half): **34/34 crates pass, 0 failures**, including every
+  new test listed above. `cargo test --workspace` unqualified was tried
+  first and abandoned -- it also serially runs all ~29 real-node
+  `crates/substrate/tests/*_e2e.rs` binaries, which S1/S2/S3's own evidence
+  above already puts at 40+ minutes for that directory alone, so the
+  `--lib --bins` split plus a targeted e2e re-run below is this pass's
+  verification shape, not a shortcut around it.
+- Targeted `crates/substrate/tests/*_e2e.rs` re-runs (sandbox disabled),
+  chosen for direct coverage of the changed code: `gateway_hostname_e2e`
+  (this slice's own file, all 4 tests 99-102, ~124s), `topology_document_e2e`
+  (exercises `LogicalResolver` directly, the file finding A3 changed, all 6
+  tests, ~127s), `tier1_endpoint_record_e2e` (registry/Tier-1 path, both
+  tests, ~123s), `basic_lifecycle` (calls `util::generate_service_host`
+  directly, the function finding A1 changed, all 3 tests, ~11s) -- all
+  pass.
+- `mise run test:e2e` (Playwright WebRTC suite): **12 passed** (the same 8
+  in `webrtc.spec.ts` + 4 in `multi-hop.spec.ts` as before), re-run twice
+  after the `global-setup.ts` cleanup (finding C3) to confirm dropping the
+  unused `APP_ALIAS_ADMIN` scaffolding changed nothing it shouldn't have.
+- `cargo audit`: clean (see finding 14 above) -- previously one allowed
+  warning (`smartstring`, `RUSTSEC-2026-0249`).
+
+### S3 — Two residuals in the review-pass code itself (2026-08-11)
+
+Found reading `ensure_populated` (`crates/sdk/src/topology.rs`) after the
+pass above landed, both in the B1/B2 fix:
+
+1. **`negative_cache` never swept.** An entry expired logically after
+   `NEGATIVE_CACHE_TTL` but was only ever removed by a *later success* for
+   that exact key -- a host that keeps failing keeps its entry forever.
+   Both key parts (`app_lookup_alias`, `s_hash`) come straight off the
+   `Host` header on the unauthenticated `0.0.0.0:7962` WebRTC bootstrap
+   listener, so this was unbounded growth inside the fix meant to harden
+   that exact path (slow -- one real Tier-1 round trip buys each new key
+   -- but unbounded). Fixed: a failure now sweeps every expired entry
+   (`retain`) before inserting its own, bounding the map to roughly one
+   `NEGATIVE_CACHE_TTL` window's worth of distinct failures. Pinned by
+   `a_new_failure_sweeps_every_expired_negative_cache_entry`.
+2. **`inflight.remove` ran before the outcome was cached.** On the
+   failure path, `self.inflight.remove(&coalesce_key)` ran, then the
+   `negative_cache` write -- so a caller arriving in that exact window
+   found neither the lock (already gone) nor the cached failure (not yet
+   written), and started its own redundant fetch. One extra fetch under a
+   real but narrow race, not a correctness bug (the success path was
+   already safe, since `fetch_and_bind` writes `app_dids`/
+   `service_names` before returning). Fixed by recording the outcome
+   before dropping the in-flight lock, making the ordering deliberate
+   rather than incidental. Not given its own regression test: reproducing
+   the exact race window deterministically needs an injection point this
+   pass judged not worth adding to production code for one timing test:
+   `concurrent_cold_resolves_for_the_same_host_share_one_fetch` (finding
+   B2) already covers the success-path single-flight property under real
+   concurrency.
+
+**Re-verification**: `cargo +nightly fmt --all -- --check` clean; `cargo
+clippy --workspace --all-targets --all-features` clean; `cargo test -p
+syneroym-sdk --lib topology::` 14/14 (1 new); `gateway_hostname_e2e.rs`
+re-run in full, 4/4.
+
+### S3 — A "what does an unnamed interface get called" pass (2026-08-11)
+
+Raised in PR review, not by an independent tool: three different
+"single interface, no name given" code paths had three different
+answers, none of them a single source of truth.
+
+- **`roymctl svc deploy`'s own `--interfaces` fallback was dead code.**
+  `if ifaces.is_empty() { vec!["default"] } else { ifaces }`, applied
+  *after* `interfaces.split(',')` -- but `"".split(',')` yields one
+  empty-string element, never zero, so the length check could never see
+  the empty case. `--interfaces ""` silently registered a service under
+  the literal interface name `""` instead of falling back to anything.
+- **The manifest-driven deploy path (`sdk::mapper`'s TCP mapping) had its
+  own, different, silent default: `"main"`.** Same situation (`svc.config.
+  interfaces.is_empty()`), different answer, and neither path knew about
+  the other's choice.
+- **WASM had no fallback at all** -- an empty `interfaces` list registers
+  zero interfaces, which D-S3-15's own ambiguity rule then correctly
+  refuses to resolve (zero is as ambiguous as two). Left alone: this one
+  was never inconsistent, just a third shape.
+
+**Fixed**, unifying on one shared name rather than just repairing the
+broken check: `syneroym_sdk::mapper::DEFAULT_INTERFACE_NAME` (`"default"`,
+chosen as the already-dominant convention -- used explicitly across ~18
+files in `crates/substrate/tests/*_e2e.rs`, this slice's own D-S3-15 tests,
+and the developer guide's own examples, versus `"main"`'s handful of
+occurrences confined to `sdk::mapper` and one `control_plane::orchestration`
+test file). `sdk::mapper`'s TCP-mapping fallback now uses the constant
+instead of a hardcoded `"main"`. `roymctl`'s own parsing is now a real
+function, `parse_interfaces`, with the check fixed to actually detect a
+blank value (rather than an empty vector that could never occur) --
+and a **new distinction this pass adds**: a *fully* blank `--interfaces`
+falls back to the shared default, but a blank *segment* amid otherwise
+real names (a stray comma, e.g. `"http,,admin"`) is refused outright
+rather than silently coerced, since guessing which name the operator
+actually meant there would be wrong as often as right. `apps/roymctl/
+src/commands/svc.rs`, `crates/sdk/src/mapper.rs`.
+
+**Doc-only, no code change**: the developer guide's deploy section gained
+a note on "interface" meaning two different things depending on service
+type -- a WIT-exported namespace for WASM, a named auxiliary port (closer
+to "a metrics/readiness port alongside the main one") for TCP/container --
+sharing the same `--interfaces` flag and hostname `-i` segment only
+because `EndpointRegistry` doesn't need to know which sense applies.
+Raised in the same review pass; not renamed, since the fix would ripple
+through WIT files, the route preamble wire format, and every CLI flag for
+a naming question, not a behavior one -- out of scope for this slice.
+`docs/developer-guide.md`.
+
+**Test coverage**: 3 new tests in `apps/roymctl/src/commands/svc.rs`
+(`parse_interfaces_falls_back_to_the_shared_default_name_when_blank`,
+`parse_interfaces_splits_and_trims_a_real_list`,
+`parse_interfaces_rejects_a_blank_segment_in_an_otherwise_real_list`) plus
+one composing `parse_interfaces` with the container-port validator
+(`a_blank_interfaces_value_composes_with_a_default_named_container_port`);
+2 new tests in `crates/sdk/src/mapper.rs`
+(`a_tcp_service_with_no_declared_interfaces_gets_the_shared_default_name`,
+`a_tcp_services_declared_interface_name_is_used_verbatim`).
+
+**Re-verification**: `cargo +nightly fmt --all -- --check` clean; `cargo
+clippy --workspace --all-targets --all-features` clean; `cargo test -p
+syneroym-sdk --lib` 61/61 (2 new); `cargo test -p roymctl --lib` 69/69
+(4 new). No e2e fixture passes a blank `--interfaces` (checked
+`crates/substrate/tests/e2e/*.ts` and every Rust e2e file shelling out to
+`roymctl svc deploy`), so none needed re-verification against the new
+error path.

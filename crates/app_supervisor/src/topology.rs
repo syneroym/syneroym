@@ -3,11 +3,12 @@
 //! holds this app," this module answers "who are the members of one of its
 //! logical services" from the supervisor's own stored plan.
 
-use std::fmt;
+use std::{collections::BTreeSet, fmt};
 
 use syneroym_app_orchestration::{
     DeploymentPlan, LogicalServiceName, ServiceId, ShardingStrategy, TopologyMode,
 };
+use syneroym_core::util;
 
 /// One logical service's topology, as read out of a stored `DeploymentPlan`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,13 @@ pub enum TopologyBuildError {
     /// Two members of the same logical service disagree about `mode` or
     /// `sharding_strategy` -- a compiler bug, not a recoverable state.
     InconsistentPlan(LogicalServiceName),
+    /// Two (or more) declared service names share a `short_hash`, so a
+    /// hashed lookup (ADR-0022 §7's `-s<hash>` gateway segment) cannot
+    /// name one of them. Carries every colliding name -- the plan's own
+    /// sketch held a single `LogicalServiceName` here, but naming *both*
+    /// colliding names in the message (as the plan's own prose requires)
+    /// needs the whole set, not one of them.
+    AmbiguousHash(Vec<LogicalServiceName>),
 }
 
 impl fmt::Display for TopologyBuildError {
@@ -38,11 +46,64 @@ impl fmt::Display for TopologyBuildError {
                 "service '{name}''s members disagree about topology mode or sharding strategy -- \
                  this is a compiler defect, not a recoverable plan state"
             ),
+            Self::AmbiguousHash(names) => {
+                let joined =
+                    names.iter().map(LogicalServiceName::as_str).collect::<Vec<_>>().join("', '");
+                write!(
+                    f,
+                    "a short_hash matches more than one of this instance's declared service names \
+                     ('{joined}') -- refusing rather than guessing which one was meant"
+                )
+            }
         }
     }
 }
 
 impl std::error::Error for TopologyBuildError {}
+
+/// Resolves the `service_name` a caller supplied against the names this
+/// plan actually declares, accepting either the exact name or its
+/// `short_hash` (ADR-0022 §7 puts a hash of the logical service name in
+/// the gateway hostname, and a hash cannot be reversed by the caller --
+/// the party holding the candidate set does the reversing, exactly as an
+/// interface hash is reversed at its destination).
+///
+/// An exact match always wins. A hash matching two declared names is
+/// refused rather than resolved to whichever sorted first: `short_hash` is
+/// a five-byte SHA-256 prefix, and answering with the wrong service's
+/// members is worse than answering with nothing.
+pub fn resolve_service_name(
+    plan: &DeploymentPlan,
+    supplied: &LogicalServiceName,
+) -> Result<LogicalServiceName, TopologyBuildError> {
+    resolve_service_name_with_hasher(plan, supplied, util::short_hash)
+}
+
+/// `resolve_service_name`'s actual logic, parameterised over the hash
+/// function so a test can stub a collision without searching for a real
+/// five-byte SHA-256 one (impractical at fixture-construction time).
+fn resolve_service_name_with_hasher(
+    plan: &DeploymentPlan,
+    supplied: &LogicalServiceName,
+    hash: impl Fn(&str) -> String,
+) -> Result<LogicalServiceName, TopologyBuildError> {
+    let names: BTreeSet<&LogicalServiceName> =
+        plan.services.iter().map(|s| &s.logical_ref.service_name).collect();
+    if names.contains(supplied) {
+        return Ok(supplied.clone());
+    }
+
+    let matches: Vec<LogicalServiceName> = names
+        .iter()
+        .filter(|n| hash(n.as_str()) == supplied.as_str())
+        .map(|n| (*n).clone())
+        .collect();
+    match matches.len() {
+        0 => Err(TopologyBuildError::NoSuchService(supplied.clone())),
+        1 => Ok(matches[0].clone()),
+        _ => Err(TopologyBuildError::AmbiguousHash(matches)),
+    }
+}
 
 /// Groups a stored plan's members into one logical service's topology.
 /// Pure: no vault, no store, no clock, so the grouping rule is testable on
@@ -167,6 +228,68 @@ mod tests {
     fn an_unknown_service_name_is_refused() {
         let p = plan(vec![member("backend", 0, TopologyMode::Singleton, None)]);
         let err = service_topology(&p, &svc_name("ghost")).unwrap_err();
+        assert!(matches!(err, TopologyBuildError::NoSuchService(_)));
+    }
+
+    /// Test 73: the exact-match path is unchanged.
+    #[test]
+    fn a_service_name_resolves_to_itself() {
+        let p = plan(vec![member("backend", 0, TopologyMode::Singleton, None)]);
+        let resolved = resolve_service_name(&p, &svc_name("backend")).unwrap();
+        assert_eq!(resolved, svc_name("backend"));
+    }
+
+    /// Test 74.
+    #[test]
+    fn a_short_hash_of_a_service_name_resolves_to_that_name() {
+        let p = plan(vec![member("backend", 0, TopologyMode::Singleton, None)]);
+        let hash = util::short_hash("backend");
+        let resolved = resolve_service_name(&p, &svc_name(&hash)).unwrap();
+        assert_eq!(resolved, svc_name("backend"));
+    }
+
+    /// Test 75: construct a plan with a service literally named
+    /// `short_hash("other")`.
+    #[test]
+    fn an_exact_name_wins_over_a_hash_that_matches_a_different_name() {
+        let hash_of_other = util::short_hash("other");
+        let p = plan(vec![
+            member(&hash_of_other, 0, TopologyMode::Singleton, None),
+            member("other", 0, TopologyMode::Singleton, None),
+        ]);
+        // A plan with two logical services sharing a member_index is fine
+        // -- they are different services, so `service_topology` never
+        // groups them together.
+        let resolved = resolve_service_name(&p, &svc_name(&hash_of_other)).unwrap();
+        assert_eq!(resolved, svc_name(&hash_of_other), "the exact name must win over the hash");
+    }
+
+    /// Test 76: `AmbiguousHash`, with both names in the message. A real
+    /// five-byte SHA-256 collision is impractical to search for at
+    /// fixture-construction time, so the collision is constructed by
+    /// stubbing the hash function -- asserted as "the branch exists and
+    /// refuses", which is what it is.
+    #[test]
+    fn two_service_names_sharing_a_short_hash_are_refused() {
+        let p = plan(vec![
+            member("alpha", 0, TopologyMode::Singleton, None),
+            member("beta", 0, TopologyMode::Singleton, None),
+        ]);
+        let stub_hash = |_: &str| "collidinghash".to_string();
+        let err = resolve_service_name_with_hasher(&p, &svc_name("collidinghash"), stub_hash)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(matches!(err, TopologyBuildError::AmbiguousHash(_)));
+        assert!(msg.contains("alpha"), "{msg}");
+        assert!(msg.contains("beta"), "{msg}");
+    }
+
+    /// Test 77: the mapping S2's post-merge finding 12 established for
+    /// `NoSuchService`, extended to `AmbiguousHash`.
+    #[test]
+    fn an_unknown_hash_is_invalid_params_not_internal_error() {
+        let p = plan(vec![member("backend", 0, TopologyMode::Singleton, None)]);
+        let err = resolve_service_name(&p, &svc_name("nonexistenthash")).unwrap_err();
         assert!(matches!(err, TopologyBuildError::NoSuchService(_)));
     }
 

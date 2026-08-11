@@ -155,9 +155,11 @@ impl Node {
         let own_registry_url = format!("http://localhost:{registry_port}");
         let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
         config.substrate.registry_url = Some(effective_registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
         config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
         config.roles.supervisor = supervisor;
 
@@ -183,7 +185,8 @@ impl Node {
             substrate_service_id.clone(),
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -486,7 +489,7 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
     let shared_relay = format!("http://localhost:{}", PORTS.supervisor_iroh);
 
     let managed_a_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let managed_a = Node::boot(
+    let mut managed_a = Node::boot(
         managed_a_dir.path().to_path_buf(),
         PORTS.managed_a_iroh,
         PORTS.managed_a_registry,
@@ -630,6 +633,19 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
         Some(supervisor_role(3600, 100)),
     )
     .await;
+
+    // The community registry supervisor_node hosts keeps its records in
+    // memory, so its own restart empties it -- including managed-a's own
+    // record, even though managed-a itself was never restarted. Nothing
+    // else re-publishes that record on managed-a's behalf before its own
+    // hourly heartbeat, so a health-sweep pass connecting to it here would
+    // otherwise find it genuinely absent from the registry (not merely
+    // slow to reach) until then. Forced immediately via `republish` rather
+    // than waiting on it.
+    crate::call_with_reconnect!(
+        managed_a.substrate_client,
+        managed_a.substrate_client.republish().await
+    );
     let status = supervisor_status(&supervisor_node).await;
     assert!(
         !is_converged(&status),

@@ -79,13 +79,17 @@ impl SubstrateTestContext {
                 http_bind_address: format!("0.0.0.0:{registry_port}"),
                 ..Default::default()
             }),
-            client_gateway: Some(ClientGatewayRole { http_port: gateway_port }),
+            client_gateway: Some(ClientGatewayRole {
+                http_port: gateway_port,
+                ..Default::default()
+            }),
             podman_sandbox: Some(PodmanSandboxRole { podman_path: "podman".to_string() }),
             ..Default::default()
         };
 
         let registry_url = format!("http://localhost:{registry_port}");
         config.substrate.registry_url = Some(registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         config.parent_coordinator.iroh =
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
 
@@ -117,7 +121,8 @@ impl SubstrateTestContext {
             substrate_service_id.clone(),
             registry_url.clone(),
             owner,
-        );
+        )
+        .with_registry_dht(false);
 
         substrate_client
             .wait_for_ready(Duration::from_secs(30))

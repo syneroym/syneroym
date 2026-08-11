@@ -88,9 +88,11 @@ impl SubstrateTestContext {
         });
         let registry_url = format!("http://localhost:{registry_port}");
         config.substrate.registry_url = Some(registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         config.parent_coordinator.iroh =
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
 
         // An unowned substrate now fails closed, so this
         // harness must own its own node -- mint an owner identity and
@@ -123,7 +125,8 @@ impl SubstrateTestContext {
             substrate_service_id.clone(),
             registry_url.clone(),
             owner,
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await

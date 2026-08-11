@@ -6,6 +6,7 @@
 
 use std::{
     fmt::{self, Debug, Formatter},
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -165,6 +166,23 @@ pub struct SyneroymClient {
     /// finish, which is what was producing iroh's "Endpoint dropped without
     /// calling `Endpoint::close`" warning.
     pending_closes: Vec<JoinHandle<()>>,
+    /// Whether `registry_client()` builds its cached client with a real
+    /// mainline-DHT client attached. `true` by default (existing behavior:
+    /// the DHT is a best-effort backup, checked only if the HTTP registry
+    /// lookup fails), overridden via [`Self::with_registry_dht`] by a
+    /// caller that wants to opt out entirely -- e.g. a node whose own
+    /// `enable_bep0044_dht` is off should not spin one up for its own
+    /// outbound connections either.
+    enable_dht: bool,
+    /// Lazily built and cached on first use, then reused for the rest of
+    /// this client's lifetime. Building a [`RegistryClient`] with DHT
+    /// enabled spins up a real mainline-DHT client (a UDP socket plus a
+    /// background routing-table-bootstrap task); rebuilding one on every
+    /// `connect`/`lookup_registry` call -- as this used to do -- meant a
+    /// retry loop like `wait_for_ready` (polling every 500ms) leaked one
+    /// of these every iteration, exhausting sockets/fds under sustained
+    /// retry pressure instead of just paying the bootstrap cost once.
+    registry_client: OnceLock<Arc<RegistryClient>>,
 }
 
 impl Debug for SyneroymClient {
@@ -272,6 +290,8 @@ impl SyneroymClient {
             identity: generate_ephemeral_identity(),
             caller_ucan: None,
             pending_closes: Vec::new(),
+            enable_dht: true,
+            registry_client: OnceLock::new(),
         }
     }
 
@@ -286,6 +306,8 @@ impl SyneroymClient {
             identity: generate_ephemeral_identity(),
             caller_ucan: None,
             pending_closes: Vec::new(),
+            enable_dht: true,
+            registry_client: OnceLock::new(),
         }
     }
 
@@ -308,6 +330,8 @@ impl SyneroymClient {
             identity,
             caller_ucan: None,
             pending_closes: Vec::new(),
+            enable_dht: true,
+            registry_client: OnceLock::new(),
         }
     }
 
@@ -327,6 +351,27 @@ impl SyneroymClient {
         self
     }
 
+    /// Opts this client's `connect`/`lookup_registry` out of the mainline
+    /// DHT (see the `enable_dht` field doc). No effect once the cached
+    /// registry client has already been built -- call before the first
+    /// `connect`/`lookup_registry`/`lookup`/`wait_for_ready`.
+    #[must_use]
+    pub fn with_registry_dht(mut self, enable: bool) -> Self {
+        self.enable_dht = enable;
+        self
+    }
+
+    /// The registry client backing `connect`/`lookup_registry`, built once
+    /// and cached (see the `registry_client` field doc) rather than on
+    /// every call.
+    fn registry_client(&self) -> Arc<RegistryClient> {
+        self.registry_client
+            .get_or_init(|| {
+                Arc::new(RegistryClient::new(self.enable_dht, Some(self.registry_url.clone())))
+            })
+            .clone()
+    }
+
     pub async fn connect(&mut self) -> Result<()> {
         if self.connection.is_some() {
             return Ok(());
@@ -337,8 +382,7 @@ impl SyneroymClient {
         let mechanisms = if let Some(m) = &self.provided_mechanisms {
             m.clone()
         } else if !self.registry_url.is_empty() {
-            let registry_client = RegistryClient::new(true, Some(self.registry_url.clone()));
-            let info = registry_client.lookup(&self.service_id, true).await?.info;
+            let info = self.registry_client().lookup(&self.service_id, true).await?.info;
             // The lookup might have been done by an alias. Update service_id to the
             // canonical DID.
             self.service_id = info.service_id;
@@ -874,6 +918,20 @@ impl SyneroymClient {
         }
     }
 
+    /// Forces this substrate to publish its own endpoint record and every
+    /// hosted service's record to its community registry right now,
+    /// instead of waiting for the next hourly heartbeat -- e.g. after a
+    /// registry this node's records were wiped from (an in-memory registry
+    /// that itself restarted) comes back up.
+    pub async fn republish(&self) -> Result<()> {
+        let res = self.request("orchestrator", "republish", serde_json::json!({})).await?;
+        if res.result == serde_json::json!({"status": "republished"}) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Republish failed: {:?}", res.result))
+        }
+    }
+
     pub async fn list_svcs(&self) -> Result<Vec<DeployedService>> {
         let res = self.request("orchestrator", "list", serde_json::json!({})).await?;
         let services: Vec<DeployedService> = serde_json::from_value(res.result)?;
@@ -959,8 +1017,7 @@ impl SyneroymClient {
     }
 
     pub async fn lookup_registry(&self) -> Result<SignedEndpointInfo> {
-        let registry_client = RegistryClient::new(true, Some(self.registry_url.clone()));
-        registry_client.lookup(&self.service_id, true).await
+        self.registry_client().lookup(&self.service_id, true).await
     }
 
     pub async fn inject_kek(&self, kek_hex: String) -> Result<()> {

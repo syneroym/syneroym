@@ -92,7 +92,7 @@ S0 landed as M05A slice A7. S5 is M7 work and is listed for completeness only.
 | **S0** | App-instance master DID: minted at `adopt`, held in the supervisor vault, surfaced on `status`, exportable for handover | **Landed as M05A slice A7, Complete 2026-08-04** |
 | **S1** | Tier 1: the app-DID registry record, published and refreshed by the supervisor, carrying a generation a reader can compare. Manifest surface for `ShardingStrategy` | **Complete 2026-08-08** |
 | **S2** | Tier 2: the signed topology document, the supervisor `resolve` RPC, and the client-side verify/cache path feeding `LogicalResolver::register`. Ships `epoch` unenforced | **Complete 2026-08-08** |
-| **S3** | Gateway hostname scheme (`-a…-s…-i…`) plus the routing-key request header; coordinator relay of the document in the WebRTC bootstrap page | S2 |
+| **S3** | Gateway hostname scheme (`-a…-s…-i…`) plus the routing-key request header; coordinator relay of the document in the WebRTC bootstrap page | **Substantially complete 2026-08-10** — Playwright tests 103-104 blocked, see [status.md](status.md) |
 | **S4** | Cross-app `Bind`: manifest surface, UCAN-scoped per-service exposure declared in the submitted plan, and replacing `prepare_binding`'s intra-app refusal with an authorization check | S2 **and** a first real cross-app dependency exists |
 | **S5** | Shard rebalancing, and enforcing the epoch fence on the data path | **M7** `[PLT-RED]`. Executed there, not here |
 
@@ -119,10 +119,16 @@ writing the publisher.
   `Bind` naming. Both absent-means-today's-behavior.
 - **A new supervisor-side fact.** The Tier-1 record's last-refreshed timestamp,
   in the shape A5d's `master_anchor_refresh` table already uses.
-- **An external format change, S3.** The client gateway hostname gains app and
-  service segments. Centralised in `core::util` (build) and
-  `core::protocol_utils` (parse), so a client going through those helpers sees
-  one change in one place. Anything formatting host strings by hand breaks.
+- **An external format change, S3.** Every client gateway hostname string
+  changes, not only new ones: the segment naming an unscoped service is
+  renamed from `-p` to `-s`. Centralised in `core::util` (build) and
+  `core::protocol_utils` (parse), so a client going through those helpers
+  sees one change in one place. Anything formatting host strings by hand
+  breaks. Nothing persists a host string across the change
+  (`RegistryState.aliases` is an in-memory `DashMap`, and the Playwright
+  suite builds its host from `roymctl` at setup), and the pre-release policy
+  forbids a compatibility shim, so this is a clean break rather than a
+  migration.
 - **Nothing is dropped or renamed**, and no existing resolution path changes:
   Tier 3 is untouched, and the intra-app push path is untouched.
 

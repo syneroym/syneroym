@@ -50,6 +50,10 @@ use tokio::{
     task::JoinHandle,
 };
 
+#[path = "common/client_shutdown.rs"]
+mod client_shutdown;
+use client_shutdown::shutdown_clients;
+
 /// Every `#[tokio::test]` in this file runs concurrently by default (the
 /// crate's other e2e files get away with one fixed port block each because
 /// each file has exactly one test) -- so each of the five tests here needs
@@ -182,9 +186,11 @@ impl Node {
         let own_registry_url = format!("http://localhost:{registry_port}");
         let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
         config.substrate.registry_url = Some(effective_registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
         config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
 
         let substrate_identity_state =
@@ -209,7 +215,8 @@ impl Node {
             substrate_service_id.clone(),
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -417,23 +424,10 @@ async fn client_for(
         node.registry_url.clone(),
         Identity::from_bytes(&operator.to_bytes()),
     )
+    .with_registry_dht(false)
     .with_ucan(grant);
     client.connect().await.expect("failed to connect client");
     Arc::new(client)
-}
-
-/// Closes each client's iroh endpoint explicitly instead of leaving it to
-/// `Drop`'s fire-and-forget safety net -- a client dropped that way races
-/// this test's own tokio runtime shutdown and can trip iroh's "Endpoint
-/// dropped without calling `Endpoint::close`" warning. Only closes a client
-/// this call holds the sole `Arc` to; if something else still references
-/// it, leaving it open is correct, not a leak.
-async fn shutdown_clients(clients: impl IntoIterator<Item = Arc<SyneroymClient>>) {
-    for mut client in clients {
-        if let Some(c) = Arc::get_mut(&mut client) {
-            let _ = c.shutdown().await;
-        }
-    }
 }
 
 /// Boots both nodes (B sharing A's registry/relay, D-A3-17's own

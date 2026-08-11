@@ -157,7 +157,7 @@ registry_url = "http://127.0.0.1:7661"
   console.log('Registering service in Community Registry...');
   execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 registry register --identity demo1 --substrate ${substrateDid} --nickname demo1`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
-  // Deploy Passthrough Service
+  // Deploy Passthrough Service.
   console.log('Deploying TCP Service (Passthrough)...');
   try {
     await new Promise(r => setTimeout(r, 2000));
@@ -171,6 +171,6 @@ registry_url = "http://127.0.0.1:7661"
   process.env.SUBSTRATE_DID = substrateDid;
   process.env.APP_DID = appDid;
   process.env.APP_ALIAS = appAlias;
-  
+
   console.log('--- E2E Global Setup Complete ---\n');
 }

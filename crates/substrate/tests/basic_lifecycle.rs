@@ -30,12 +30,21 @@ use syneroym_substrate::identity;
 use tempfile::{NamedTempFile, TempDir};
 use test_constants::GREETER_INTERFACE_NAME;
 use tokio::{
-    sync::{mpsc, mpsc::Sender},
+    sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
     time,
 };
 use tokio_tungstenite::tungstenite::Message;
 use tracing::debug;
+
+/// Every test in this binary boots one or more full substrate
+/// instances (real iroh QUIC socket, self-hosted relay, wasmtime).
+/// Running every test's own full stack concurrently (Rust's default
+/// test harness) means many simultaneous substrate processes' worth
+/// of sockets/fds at once -- CPU starvation and, on a low
+/// `ulimit -n`, real fd exhaustion. Same fix as `tests/common/mod.rs`'s
+/// `SUBSTRATE_TEST_LOCK`.
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 fn send_ctrl_c(#[allow(unused_variables)] pid: u32) {
     #[cfg(unix)]
@@ -82,10 +91,13 @@ fn substrate_integration_stub() {
 // This is a black-box test that runs the binary as a subprocess.
 #[tokio::test]
 async fn test_run_finishes_on_ctrl_c() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     // Create a temporary config file to explicitly enable the client_gateway role
     let mut config_file = NamedTempFile::new().expect("Failed to create temp config file");
     let config_toml = r#"
     profile = "enduser"
+    [substrate]
+    enable_bep0044_dht = false
     [roles.client_gateway]
     http_port = 0
     [roles.observability.health]
@@ -205,10 +217,12 @@ impl SubstrateTestContext {
         });
         let registry_url = format!("http://localhost:{registry_port}");
         config.substrate.registry_url = Some(registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         config.parent_coordinator.iroh =
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
 
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
 
         // An unowned substrate now fails closed, so this
         // harness must own its own node.
@@ -238,7 +252,8 @@ impl SubstrateTestContext {
             substrate_service_id.clone(),
             registry_url.clone(),
             owner,
-        );
+        )
+        .with_registry_dht(false);
 
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
@@ -271,6 +286,7 @@ impl SubstrateTestContext {
 
 #[tokio::test]
 async fn test_substrate_lifecycle_scenarios() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();
 
     // We use a single substrate instance to run multiple scenarios.
@@ -321,7 +337,8 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
     let mut app_client = SyneroymClient::new_with_mechanisms(
         app_service_id.clone(),
         ctx.substrate_mechanisms.clone(),
-    );
+    )
+    .with_registry_dht(false);
     app_client.connect().await.expect("Failed to connect to app on substrate");
 
     let app_res = time::timeout(
@@ -423,9 +440,13 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     // Test HTTP requests through client_gateway
     let req_client = Client::new();
     let url = format!("{}/", ctx.gateway_url());
-    let interface_hash = util::short_hash("default");
-    let pubkeyhash = util::short_hash(&app_service_id);
-    let host_header = format!("tcp-demo-app-p{pubkeyhash}-i{interface_hash}.localhost");
+    let host_header = util::generate_service_host(
+        Some("tcp-demo-app"),
+        &app_service_id,
+        Some("default"),
+        "localhost",
+    )
+    .unwrap();
 
     // 1. GET /
     let res = req_client.get(&url).header("Host", &host_header).send().await.expect("GET / failed");
@@ -602,9 +623,13 @@ async fn test_http_proxy_invocation(
 
     let req_client = Client::new();
     let url = format!("{}/", ctx.gateway_url());
-    let interface_hash = util::short_hash(GREETER_INTERFACE_NAME);
-    let pubkeyhash = util::short_hash(app_service_id);
-    let host_header = format!("{nickname}-p{pubkeyhash}-i{interface_hash}.localhost");
+    let host_header = util::generate_service_host(
+        Some(nickname),
+        app_service_id,
+        Some(GREETER_INTERFACE_NAME),
+        "localhost",
+    )
+    .unwrap();
 
     let proxy_res = req_client
         .post(&url)

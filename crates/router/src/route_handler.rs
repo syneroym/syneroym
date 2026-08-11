@@ -130,6 +130,13 @@ pub struct RouteHandlerInner {
     /// this is granted `substrate/admin`. `None` in coordinator mode
     /// (coordinators don't host native capabilities).
     pub admin_ucan_root: Option<String>,
+    /// `[iam].grant_resolve_to_node_did` (S3, D-S3-6(a)): when set, a
+    /// caller whose verified DID is this node's own is granted a bare
+    /// `substrate:<node_did>` capability whose ability is
+    /// `supervisor/resolve`, so a same-node client gateway or WebRTC
+    /// coordinator can resolve a logical hostname with no credential
+    /// file. `false` in coordinator mode, the same as `admin_ucan_root`.
+    pub grant_resolve_to_node_did: bool,
     /// This node's own DID -- `RouteHandler::init`'s `service_id` (M04A
     /// Slice B7a). Named `node_did` where it is used as an identity rather
     /// than a routing key: `substrate:<node_did>` resources name it.
@@ -359,6 +366,7 @@ impl RouteHandler {
             key_store: Some(deps.key_store),
             storage_provider: Some(deps.storage_provider),
             admin_ucan_root: config.iam.admin_ucan_root.clone(),
+            grant_resolve_to_node_did: config.iam.grant_resolve_to_node_did,
             node_did: service_id.clone(),
             _proxy: Some(proxy),
             dedup_guard: Some(dedup_guard),
@@ -398,6 +406,7 @@ impl RouteHandler {
             key_store: None,
             storage_provider: None,
             admin_ucan_root: None,
+            grant_resolve_to_node_did: false,
             node_did,
             // Coordinators have no native capabilities or sandbox to proxy
             // to, and no per-service storage to fence a keyed call with.

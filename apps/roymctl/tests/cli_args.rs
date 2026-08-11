@@ -342,3 +342,66 @@ fn test_svc_saga_compensate_help() -> Result<(), Box<dyn Error>> {
         .stdout(contains("--saga-id"));
     Ok(())
 }
+
+/// Test 97 (M05C S3): `roymctl alias --service` prints the app-scoped
+/// host form, and without `--interface` prints the same host with no
+/// `-i` segment.
+#[test]
+fn roymctl_alias_with_a_service_prints_the_app_scoped_form() -> Result<(), Box<dyn Error>> {
+    let app_did = "did:key:h7wyixfzo3km6k8uq98mcini8q67pxs1jkf1ymnrmrogesimteapsufe";
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    let output = cmd
+        .arg("alias")
+        .arg(app_did)
+        .arg("--nickname")
+        .arg("my-chat-app")
+        .arg("--service")
+        .arg("backend")
+        .arg("--interface")
+        .arg("default")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let host = String::from_utf8_lossy(&output);
+    assert!(host.contains("my-chat-app-a"), "{host}");
+    assert!(host.contains("-s"), "{host}");
+    assert!(host.contains("-i"), "{host}");
+    assert!(host.trim_end().ends_with(".localhost"), "{host}");
+
+    let mut cmd_no_iface = Command::cargo_bin("roymctl")?;
+    let output_no_iface = cmd_no_iface
+        .arg("alias")
+        .arg(app_did)
+        .arg("--nickname")
+        .arg("my-chat-app")
+        .arg("--service")
+        .arg("backend")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let host_no_iface = String::from_utf8_lossy(&output_no_iface);
+    assert!(!host_no_iface.contains("-i"), "{host_no_iface}");
+    assert!(host_no_iface.trim_end().ends_with(".localhost"), "{host_no_iface}");
+
+    Ok(())
+}
+
+/// Test 98: the `AppInstanceId` requirement D-S3-2 rests on -- `--service`
+/// without `--nickname` is refused at the clap level.
+#[test]
+fn roymctl_alias_with_a_service_and_no_nickname_is_refused() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("alias")
+        .arg("did:key:h7wyixfzo3km6k8uq98mcini8q67pxs1jkf1ymnrmrogesimteapsufe")
+        .arg("--service")
+        .arg("backend")
+        .assert()
+        .failure()
+        .stderr(contains("--nickname"));
+    Ok(())
+}

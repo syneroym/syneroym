@@ -4,7 +4,7 @@ use anyhow::Result;
 use reqwest::Client;
 use syneroym_core::{
     dht_registry::{EndpointInfo, EndpointType},
-    util::short_hash,
+    util,
 };
 use syneroym_identity::{Identity, substrate};
 use syneroym_sdk::SyneroymClient;
@@ -95,9 +95,13 @@ pub async fn run_scenario() -> Result<()> {
         http_client.post(format!("{registry_url}/register")).json(&signed_info).send().await?;
     assert!(res.status().is_success());
 
-    let interface_hash = short_hash("default");
-    let pubkeyhash = short_hash(&app_service_id);
-    let host_header = format!("tcp-perf-p{pubkeyhash}-i{interface_hash}.localhost");
+    let host_header = util::generate_service_host(
+        Some("tcp-perf"),
+        &app_service_id,
+        Some("default"),
+        "localhost",
+    )
+    .unwrap();
 
     // Warmup Via Substrate
     for _ in 0..10 {

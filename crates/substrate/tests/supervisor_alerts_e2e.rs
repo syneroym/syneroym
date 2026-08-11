@@ -116,9 +116,11 @@ impl Node {
         let own_registry_url = format!("http://localhost:{registry_port}");
         let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
         config.substrate.registry_url = Some(effective_registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
         config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
         config.roles.supervisor = supervisor;
 
@@ -144,7 +146,8 @@ impl Node {
             substrate_service_id.clone(),
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -372,7 +375,8 @@ async fn an_operator_subscribed_to_the_alert_topic_receives_an_opened_alert() {
         supervisor_node.did().to_string(),
         supervisor_node.registry_url.clone(),
         operator_identity,
-    );
+    )
+    .with_registry_dht(false);
     operator.connect().await.expect("operator failed to connect to the supervisor node");
     let mut alert_stream = time::timeout(
         Duration::from_secs(10),

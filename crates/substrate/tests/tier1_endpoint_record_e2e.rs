@@ -42,10 +42,19 @@ use syneroym_sdk::SyneroymClient;
 use syneroym_substrate::identity;
 use tempfile::TempDir;
 use tokio::{
-    sync::{mpsc, mpsc::Sender},
+    sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
     time,
 };
+
+/// Every test in this binary boots one or more full substrate
+/// instances (real iroh QUIC socket, self-hosted relay, wasmtime).
+/// Running every test's own full stack concurrently (Rust's default
+/// test harness) means many simultaneous substrate processes' worth
+/// of sockets/fds at once -- CPU starvation and, on a low
+/// `ulimit -n`, real fd exhaustion. Same fix as `tests/common/mod.rs`'s
+/// `SUBSTRATE_TEST_LOCK`.
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[path = "common/retry.rs"]
 mod retry;
@@ -133,9 +142,11 @@ impl Node {
         let own_registry_url = format!("http://localhost:{registry_port}");
         let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
         config.substrate.registry_url = Some(effective_registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
         config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
         config.roles.supervisor = supervisor;
 
@@ -161,7 +172,8 @@ impl Node {
             substrate_service_id.clone(),
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -344,6 +356,7 @@ fn submission(
 /// against the app DID with no other trust input.
 #[tokio::test]
 async fn an_app_did_resolves_to_its_supervising_node_through_the_registry() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
@@ -445,6 +458,7 @@ async fn an_app_did_resolves_to_its_supervising_node_through_the_registry() {
 /// hand-forged-record case already uses.
 #[tokio::test]
 async fn a_forged_tier1_record_is_rejected_at_the_registry() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (supervisor_node, managed_node, _inventory_json) =

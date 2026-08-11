@@ -56,10 +56,19 @@ use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
 use syneroym_sdk::SyneroymClient;
 use syneroym_substrate::identity;
 use tokio::{
-    sync::{mpsc, mpsc::Sender},
+    sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
     time,
 };
+
+/// Every test in this binary boots one or more full substrate
+/// instances (real iroh QUIC socket, self-hosted relay, wasmtime).
+/// Running every test's own full stack concurrently (Rust's default
+/// test harness) means many simultaneous substrate processes' worth
+/// of sockets/fds at once -- CPU starvation and, on a low
+/// `ulimit -n`, real fd exhaustion. Same fix as `tests/common/mod.rs`'s
+/// `SUBSTRATE_TEST_LOCK`.
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[path = "common/retry.rs"]
 mod retry;
@@ -138,9 +147,11 @@ impl Node {
         let own_registry_url = format!("http://localhost:{registry_port}");
         let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
         config.substrate.registry_url = Some(effective_registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
         config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
         config.roles.supervisor = supervisor;
 
@@ -166,7 +177,8 @@ impl Node {
             substrate_service_id.clone(),
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -345,7 +357,7 @@ async fn deployed_service_id(supervisor_node: &Node) -> String {
 /// `reference_scenario_e2e.rs::call_backend_through_frontend` uses.
 async fn tick_count(worker_client: &SyneroymClient) -> u32 {
     let res = time::timeout(
-        Duration::from_secs(15),
+        Duration::from_secs(25),
         worker_client.request(
             test_constants::SCHEDULED_TEST_DRIVER_INTERFACE,
             "tick-count",
@@ -408,6 +420,7 @@ fn fail_if_fixture_missing() {
 
 #[tokio::test]
 async fn a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     fail_if_fixture_missing();
     let _ = ring::default_provider().install_default();
 
@@ -493,7 +506,8 @@ async fn a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick() {
     }
 
     let worker_service_id = deployed_service_id(&supervisor_node).await;
-    let mut worker_client = SyneroymClient::new(worker_service_id, shared_registry.clone());
+    let mut worker_client =
+        SyneroymClient::new(worker_service_id, shared_registry.clone()).with_registry_dht(false);
     worker_client.connect().await.expect("failed to connect to the deployed worker");
 
     // ---- Step 2: nothing has run yet. ----
@@ -548,12 +562,14 @@ async fn a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick() {
         .result;
     assert_eq!(dead_letters.as_array().map(Vec::len), Some(0), "{dead_letters:?}");
 
+    worker_client.shutdown().await.ok();
     supervisor_node.teardown().await;
     managed.teardown().await;
 }
 
 #[tokio::test]
 async fn a_supervisor_restart_skips_the_ticks_it_missed() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     fail_if_fixture_missing();
     let _ = ring::default_provider().install_default();
 
@@ -628,7 +644,8 @@ async fn a_supervisor_restart_skips_the_ticks_it_missed() {
     }
 
     let worker_service_id = deployed_service_id(&supervisor_node).await;
-    let mut worker_client = SyneroymClient::new(worker_service_id, shared_registry.clone());
+    let mut worker_client =
+        SyneroymClient::new(worker_service_id, shared_registry.clone()).with_registry_dht(false);
     worker_client.connect().await.expect("failed to connect to the deployed worker");
 
     // ---- First tick: prove the schedule runs normally before the
@@ -757,6 +774,7 @@ async fn a_supervisor_restart_skips_the_ticks_it_missed() {
         .result;
     assert_eq!(outbox.as_array().map(Vec::len), Some(0), "{outbox:?}");
 
+    worker_client.shutdown().await.ok();
     supervisor_node.teardown().await;
     managed.teardown().await;
 }

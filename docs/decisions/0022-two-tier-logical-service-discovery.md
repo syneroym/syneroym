@@ -265,6 +265,35 @@ will reach — that is what Tier 2 is for. Four hashed components plus a nicknam
 is close to the 63-character DNS label limit, so truncation lengths are chosen
 deliberately rather than inherited.
 
+**Amendment (2026-08-10, M05C slice S3 implementation).** The printed form
+above is superseded; the decision itself — the hostname carries what decides
+reachability, the routing key is a header — is unchanged. Corrections,
+worked out in [the slice's own plan](../planning/milestones/M05C-logical-discovery-overlay/slice-s3-implementation-plan.md):
+
+- **`-p` is renamed `-s`.** `p` meant "pubkey hash", a distinction that stops
+  existing once the app DID is *also* a pubkey; `-s` says directly what the
+  segment names ("which service"), whether that is a concrete `ServiceId` or
+  a logical name, decided by whether `-a` is present.
+- **`-a` and `-i` are both optional**, not four hashed components as this
+  section's own arithmetic (now corrected) implied: the real form has three
+  hashed segments (`a`, `s`, `i`), leaving 33 characters for the nickname on
+  an app-scoped host (43 with no `-i`). An omitted `-i` resolves at the
+  destination to the service's one app-declared interface, rather than
+  matching nothing as the pre-S3 code actually did.
+- **No format-version marker.** An earlier revision of this amendment added
+  a trailing `-roym1` segment (later moved to a `.roym1.` subdomain) so a
+  future grammar change could be told apart from this one. Directed out
+  (2026-08-10, same day): everything past the first DNS label is simply
+  ignored, as it always was pre-S3 — a later grammar change is a problem for
+  whenever it actually happens, not one to design a marker for now.
+
+The corrected grammar:
+
+```
+<nickname>-s<service-did-hash>[-i<interface-hash>].<domain>
+<nickname>-a<app-did-hash>-s<logical-service-name-hash>[-i<interface-hash>].<domain>
+```
+
 The **routing key travels in a request header**, absent meaning unkeyed. It
 fails the hostname test twice over:
 

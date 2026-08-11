@@ -236,7 +236,7 @@ You can verify the registration using the lookup command:
 
 ```bash
 # Look up by DID or alias (nickname + shorthash)
-roymctl registry lookup "alice-p<SERVICE_DID_SHORTHASH>"
+roymctl registry lookup "alice-<SERVICE_DID_SHORTHASH>"
 ```
 
 ### Discovering Services
@@ -266,9 +266,10 @@ The Orchestrator is a native service running inside the substrate. You can inter
 
 #### List Deployed Services
 ```bash
-# Replace <NICKNAME> and <SUBSTRATE_DID_SHORTHASH>
+# Replace <NICKNAME> and <SUBSTRATE_DID_SHORTHASH>. `-iorchestrator` names
+# the interface literally, not by hash -- the parser accepts either.
 curl -X POST http://localhost:7960/ \
-  -H "Host: <NICKNAME>-p<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
+  -H "Host: <NICKNAME>-s<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -277,6 +278,28 @@ curl -X POST http://localhost:7960/ \
     "id": 1
   }'
 ```
+
+> [!NOTE]
+> **"Interface" means two different things depending on the service type.**
+> For a WASM component, an interface is a WIT-exported namespace of
+> functions — part of the component itself, in the WASM component-model
+> sense. For a TCP or container service, there is no component to export
+> anything: "interface" here just names one of possibly several endpoints
+> the substrate registers for the same backing `(host, port)` or process —
+> closer to "a named auxiliary port" (e.g. a metrics or readiness port
+> alongside the main one) than to a WASM interface. Both senses share the
+> same `--interfaces` flag and the same hostname `-i<hash>` segment because
+> the mechanism that registers and resolves them (`EndpointRegistry`) does
+> not need to know which sense applies — but a reader should not assume a
+> TCP/container "interface" means the same thing a WASM one does.
+>
+> When a service declares exactly one interface -- including via
+> `--interfaces` left blank, which `roymctl svc deploy` (any of `--wasm`,
+> `--tcp`, `--image`) treats as "one interface, name it for me" -- the
+> destination resolves it automatically; a hostname can omit `-i` too, and
+> gets the same answer. That single, unnamed interface is always called
+> `default`, not `""` or `main` -- both other spellings existed briefly, in
+> different code paths, before being unified.
 
 #### Deploy a WASM Component
 Only `roymctl` can sign as the claimed substrate's controller (see the note
@@ -1253,13 +1276,72 @@ on this yet (tracked in `deferred-backlog.md`).
 
 ### Interacting with Applications
 
+#### The gateway hostname scheme (ADR-0022 §7)
+
+One grammar, two forms. Everything after the first label is ignored (it
+doesn't have to be `localhost` -- any domain works unchanged):
+
+```text
+<nickname>-s<service-did-hash>[-i<interface-hash>].<domain>          # a service outside any app instance
+<nickname>-a<app-did-hash>-s<service-name-hash>[-i<interface-hash>].<domain>  # a logical service of an app instance
+```
+
+`-s` is the only required segment. `-a`'s presence decides whether `-s`
+carries a hash of a concrete service DID (reversed by the registry's alias
+index) or a hash of a logical service name inside an app (reversed by the
+app's own supervisor). Omitting `-i` means "the service's one
+app-declared interface" and is resolved at the destination — it fails
+loudly if the service declares zero or more than one.
+
+`roymctl alias <SERVICE_ID> --nickname <NICKNAME> [--interface <NAME>]`
+builds the unscoped form; adding `--service <LOGICAL_SERVICE_NAME>` (which
+also requires `--nickname`, since it must be the app's own
+`AppInstanceId`) builds the app-scoped form against the app's own master
+DID.
+
+An app-scoped hostname carries a routing key, when the caller has one, as
+the `X-Syneroym-Routing-Key` request header rather than a hostname
+segment — the gateway forwards it unmodified. A `Redundant` service picks
+the same member for the same key; a `Sharded` service requires one.
+
+The member is selected once, from the first HTTP request on a TCP
+connection, and every later request on that same connection (an HTTP
+keep-alive reusing the socket) rides the same tunnel — the header on a
+second request on a reused connection has no effect. A client that needs
+per-request routing-key accuracy must open a fresh connection per request
+(most HTTP clients do this by default when the `Host` changes; a client
+pooling connections to one gateway across different keys does not).
+Tracked in `deferred-backlog.md`.
+
+Resolving an app-scoped host needs the gateway (or WebRTC coordinator) to
+be authorized for `supervisor/resolve` on the target app. Two config
+keys, in `[iam]` and `[roles.client_gateway]` (or `[roles.coordinator]`)
+respectively:
+
+```toml
+[iam]
+# Grants this node's own DID `supervisor/resolve`, node-wide -- covers
+# every app supervised on this node with no credential file. Off by
+# default.
+grant_resolve_to_node_did = true
+
+[roles.client_gateway]
+# A CapabilityToken file granting `supervisor/resolve` on apps supervised
+# by *other* nodes -- the same file `roymctl app resolve --ucan` takes.
+resolve_ucan = "/path/to/resolve-token.json"
+```
+
+With neither set, every app-scoped hostname is refused by the supervisor
+it reaches (a startup warning names both keys); unscoped (`-s` only)
+hostnames are unaffected either way.
+
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy
 
 > [!TIP]
 > You can use `roymctl alias <APP_DID> --nickname <NICKNAME> --interface <INTERFACE_NAME>` to get the full Host header.
 
 ```bash
-# Host header format: <NICKNAME>-p<APP_DID_HASH>-i<INTERFACE_HASH>.localhost
+# Host header format: <NICKNAME>-s<APP_DID_HASH>[-i<INTERFACE_HASH>].localhost
 curl -X POST http://localhost:7960/ \
   -H "Host: $(roymctl alias <APP_DID> --nickname <NICKNAME> --interface <INTERFACE_NAME>)" \
   -H "Content-Type: application/json" \
@@ -1275,7 +1357,7 @@ curl -X POST http://localhost:7960/ \
 ```bash
 # Simple GET request
 curl http://localhost:7960/api/data \
-  -H "Host: my-tcp-service-p<APP_DID_HASH>-i<INTERFACE_HASH>.localhost"
+  -H "Host: my-tcp-service-s<APP_DID_HASH>-i<INTERFACE_HASH>.localhost"
 ```
 
 ### Health and Metrics

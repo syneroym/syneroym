@@ -177,9 +177,11 @@ impl Node {
         let own_registry_url = format!("http://localhost:{registry_port}");
         let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
         config.substrate.registry_url = Some(effective_registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
         config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
         config.roles.supervisor = supervisor;
 
@@ -205,7 +207,8 @@ impl Node {
             substrate_service_id.clone(),
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -561,7 +564,8 @@ async fn the_reference_scenario_runs_end_to_end_over_two_substrates() {
 
     // ---- Step 2: a resolved dependency call actually reaches backend. ----
     let mut frontend_client =
-        SyneroymClient::new(frontend_service_id.clone(), shared_registry.clone());
+        SyneroymClient::new(frontend_service_id.clone(), shared_registry.clone())
+            .with_registry_dht(false);
     frontend_client.connect().await.expect("failed to connect to frontend");
 
     let reply = call_backend_through_frontend(&frontend_client).await;

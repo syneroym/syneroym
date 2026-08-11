@@ -162,6 +162,7 @@ async fn build_caller(
     node_did: &str,
     registry: &EndpointRegistry,
     resolver: &dyn MasterAnchorResolver,
+    grant_resolve_to_node_did: bool,
 ) -> CallerContext {
     let now = now_secs();
     let mut session = SessionContext {
@@ -187,6 +188,23 @@ async fn build_caller(
             // Bare `substrate:<node_did>` -- the node itself, node-wide.
             with: ResourceUri::substrate(node_did),
             can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
+            caveats: None,
+        });
+    }
+
+    // D-S3-6(a): the same-node resolve grant. A caller whose verified DID
+    // is this node's own is granted a bare `substrate:<node_did>`
+    // capability whose ability is `supervisor/resolve`, deliberately not
+    // `substrate/admin` -- the bare resource short-circuits
+    // `Capability::grants` and so covers `synapp:<any-app-did>`, but the
+    // ability check still gates it to resolution alone. This is what lets
+    // a same-node client gateway or WebRTC coordinator resolve a logical
+    // (`-a…-s…`) hostname for an app supervised here with no credential
+    // file (ADR-0022 §7).
+    if grant_resolve_to_node_did && id.master_did == node_did {
+        session.capabilities.push(Capability {
+            with: ResourceUri::substrate(node_did),
+            can: Ability(Ability::SUPERVISOR_RESOLVE.to_string()),
             caveats: None,
         });
     }
@@ -320,6 +338,7 @@ impl RouteHandler {
                     &self.inner.node_did,
                     &self.inner.registry,
                     self.inner.registry_client.as_ref(),
+                    self.inner.grant_resolve_to_node_did,
                 )
                 .await,
             ),
@@ -641,6 +660,7 @@ mod tests {
             "did:key:zNode",
             &empty_registry(),
             &resolver,
+            false,
         )
         .await;
 
@@ -713,9 +733,16 @@ mod tests {
         let registry = empty_registry();
         registry.set_owner("svc1".to_string(), user_a_did.clone()).await.unwrap();
 
-        let caller =
-            build_caller(&preamble, &id, Some(&admin_root), "did:key:zNode", &registry, &resolver)
-                .await;
+        let caller = build_caller(
+            &preamble,
+            &id,
+            Some(&admin_root),
+            "did:key:zNode",
+            &registry,
+            &resolver,
+            false,
+        )
+        .await;
 
         assert_eq!(caller.session.anchor_did, Some(user_a_did));
     }
@@ -772,6 +799,7 @@ mod tests {
             "did:key:zNode",
             &empty_registry(),
             &resolver,
+            false,
         )
         .await;
 
@@ -823,6 +851,7 @@ mod tests {
             "did:key:zNode",
             &empty_registry(),
             &resolver,
+            false,
         )
         .await;
 
@@ -874,6 +903,7 @@ mod tests {
             "did:key:zNode",
             &empty_registry(),
             &resolver,
+            false,
         )
         .await;
 
@@ -923,6 +953,7 @@ mod tests {
             "did:key:zNode",
             &empty_registry(),
             &resolver,
+            false,
         )
         .await;
 
@@ -1073,7 +1104,7 @@ mod tests {
         let resolver = MockResolver { revoked: HashMap::new() };
 
         let caller =
-            build_caller(&preamble, &id, None, node_did, &empty_registry(), &resolver).await;
+            build_caller(&preamble, &id, None, node_did, &empty_registry(), &resolver, false).await;
 
         for ability in [
             Ability::ORCHESTRATOR_DEPLOY,
@@ -1106,7 +1137,7 @@ mod tests {
         let resolver = MockResolver { revoked: HashMap::new() };
 
         let caller =
-            build_caller(&preamble, &id, None, node_did, &empty_registry(), &resolver).await;
+            build_caller(&preamble, &id, None, node_did, &empty_registry(), &resolver, false).await;
 
         assert!(
             !caller.has_capability(&some_service, &Ability(Ability::DATA_LAYER_ADMIN.to_string())),
@@ -1116,6 +1147,82 @@ mod tests {
             &ResourceUri::substrate(node_did),
             &Ability(Ability::SUBSTRATE_ADMIN.to_string())
         ));
+    }
+
+    /// Test 91: D-S3-6(a) -- the node's own DID is granted
+    /// `supervisor/resolve` node-wide only when
+    /// `[iam].grant_resolve_to_node_did` is on, and never otherwise (even
+    /// for the node's own DID) or for any other caller.
+    #[tokio::test]
+    async fn the_node_did_is_granted_supervisor_resolve_only_when_the_gate_is_on() {
+        let node_did = "did:key:zNodeSelf";
+        let node_resource = ResourceUri::substrate(node_did);
+        let resolve_ability = Ability(Ability::SUPERVISOR_RESOLVE.to_string());
+        let preamble = RoutePreamble::binary_json_rpc("svc", "data-layer");
+        let resolver = MockResolver { revoked: HashMap::new() };
+
+        // Gate off: even the node's own DID gets nothing.
+        let self_id = VerifiedIdentity {
+            master_did: node_did.to_string(),
+            temporary_did: node_did.to_string(),
+        };
+        let caller =
+            build_caller(&preamble, &self_id, None, node_did, &empty_registry(), &resolver, false)
+                .await;
+        assert!(!caller.has_capability(&node_resource, &resolve_ability), "gate is off");
+
+        // Gate on, but a different caller: still nothing.
+        let other = Identity::generate().unwrap();
+        let other_did = derive_did_key(&other.public_key());
+        let other_id = VerifiedIdentity { master_did: other_did.clone(), temporary_did: other_did };
+        let caller =
+            build_caller(&preamble, &other_id, None, node_did, &empty_registry(), &resolver, true)
+                .await;
+        assert!(!caller.has_capability(&node_resource, &resolve_ability), "not the node's DID");
+
+        // Gate on, node's own DID: granted.
+        let caller =
+            build_caller(&preamble, &self_id, None, node_did, &empty_registry(), &resolver, true)
+                .await;
+        assert!(caller.has_capability(&node_resource, &resolve_ability), "gate on, node's DID");
+    }
+
+    /// Test 92: D-S3-6(a)'s whole safety claim, as a negative on the same
+    /// `CallerContext` -- the granted capability answers `supervisor/resolve`
+    /// on any `synapp:` resource and `false` for `substrate/admin`,
+    /// `orchestrator/deploy`, and `data-layer/admin`.
+    #[tokio::test]
+    async fn the_same_node_grant_does_not_confer_substrate_admin() {
+        let node_did = "did:key:zNodeSelf2";
+        let preamble = RoutePreamble::binary_json_rpc("svc", "data-layer");
+        let resolver = MockResolver { revoked: HashMap::new() };
+        let self_id = VerifiedIdentity {
+            master_did: node_did.to_string(),
+            temporary_did: node_did.to_string(),
+        };
+
+        let caller =
+            build_caller(&preamble, &self_id, None, node_did, &empty_registry(), &resolver, true)
+                .await;
+
+        assert!(
+            caller.has_capability(
+                &ResourceUri(format!("synapp:{}", "did:key:zSomeApp")),
+                &Ability(Ability::SUPERVISOR_RESOLVE.to_string())
+            ),
+            "the bare substrate scope must cover any synapp: resource"
+        );
+        for ability in
+            [Ability::SUBSTRATE_ADMIN, Ability::ORCHESTRATOR_DEPLOY, Ability::DATA_LAYER_ADMIN]
+        {
+            assert!(
+                !caller.has_capability(
+                    &ResourceUri::substrate(node_did),
+                    &Ability(ability.to_string())
+                ),
+                "the same-node resolve grant must not confer {ability}"
+            );
+        }
     }
 
     /// On an owned substrate, only the caller whose DID equals `admin_root`
@@ -1142,6 +1249,7 @@ mod tests {
             node_did,
             &empty_registry(),
             &resolver,
+            false,
         )
         .await;
         assert!(
@@ -1157,6 +1265,7 @@ mod tests {
             node_did,
             &empty_registry(),
             &resolver,
+            false,
         )
         .await;
         assert!(
@@ -1189,9 +1298,16 @@ mod tests {
         let id =
             VerifiedIdentity { master_did: owner_did.clone(), temporary_did: owner_did.clone() };
 
-        let caller =
-            build_caller(&preamble, &id, Some(&owner_did), node_did, &empty_registry(), &resolver)
-                .await;
+        let caller = build_caller(
+            &preamble,
+            &id,
+            Some(&owner_did),
+            node_did,
+            &empty_registry(),
+            &resolver,
+            false,
+        )
+        .await;
 
         assert!(
             caller.session.capabilities.iter().any(|c| c.with == ResourceUri::substrate(node_did)),
@@ -1230,8 +1346,16 @@ mod tests {
         };
         let resolver = MockResolver { revoked: HashMap::new() };
 
-        let caller =
-            build_caller(&preamble, &id, None, "did:key:zNode", &empty_registry(), &resolver).await;
+        let caller = build_caller(
+            &preamble,
+            &id,
+            None,
+            "did:key:zNode",
+            &empty_registry(),
+            &resolver,
+            false,
+        )
+        .await;
 
         assert_eq!(caller.caller_did, master_did);
         assert_ne!(caller.caller_did, temporary_did);
@@ -1318,7 +1442,8 @@ mod tests {
         let id = VerifiedIdentity { master_did: client_did.clone(), temporary_did: client_did };
         let resolver = MockResolver { revoked: HashMap::new() };
 
-        let caller = build_caller(&preamble, &id, None, node_did, &registry, &resolver).await;
+        let caller =
+            build_caller(&preamble, &id, None, node_did, &registry, &resolver, false).await;
 
         assert_eq!(caller.auth, AuthLevel::Ucan);
         assert!(
@@ -1366,7 +1491,8 @@ mod tests {
         let id = VerifiedIdentity { master_did: owner_did.clone(), temporary_did: owner_did };
         let resolver = MockResolver { revoked: HashMap::new() };
 
-        let caller = build_caller(&preamble, &id, None, node_did, &registry, &resolver).await;
+        let caller =
+            build_caller(&preamble, &id, None, node_did, &registry, &resolver, false).await;
 
         assert!(
             !caller
@@ -1407,7 +1533,8 @@ mod tests {
         let id = VerifiedIdentity { master_did: owner_did.clone(), temporary_did: owner_did };
         let resolver = MockResolver { revoked: HashMap::new() };
 
-        let caller = build_caller(&preamble, &id, None, node_did, &registry, &resolver).await;
+        let caller =
+            build_caller(&preamble, &id, None, node_did, &registry, &resolver, false).await;
 
         assert!(
             caller
@@ -1457,7 +1584,8 @@ mod tests {
         // capability leaks in and masks the chain's own outcome.
         let admin_root = derive_did_key(&Identity::generate().unwrap().public_key());
         let caller =
-            build_caller(&preamble, &id, Some(&admin_root), node_did, &registry, &resolver).await;
+            build_caller(&preamble, &id, Some(&admin_root), node_did, &registry, &resolver, false)
+                .await;
 
         assert!(
             !caller.session.has_capability(
@@ -1505,6 +1633,7 @@ mod tests {
             this_node,
             &empty_registry(),
             &resolver,
+            false,
         )
         .await;
 
@@ -1554,7 +1683,8 @@ mod tests {
         // capability leaks in and masks the revocation's own effect.
         let admin_root = derive_did_key(&Identity::generate().unwrap().public_key());
         let caller =
-            build_caller(&preamble, &id, Some(&admin_root), node_did, &registry, &resolver).await;
+            build_caller(&preamble, &id, Some(&admin_root), node_did, &registry, &resolver, false)
+                .await;
 
         assert_eq!(caller.auth, AuthLevel::Delegated);
         assert!(
@@ -1617,7 +1747,8 @@ mod tests {
         // leaks in and masks the delegation block's own effect.
         let admin_root = derive_did_key(&Identity::generate().unwrap().public_key());
         let caller =
-            build_caller(&preamble, &id, Some(&admin_root), node_did, &registry, &resolver).await;
+            build_caller(&preamble, &id, Some(&admin_root), node_did, &registry, &resolver, false)
+                .await;
 
         assert!(
             !caller

@@ -33,10 +33,11 @@ use iroh::{Endpoint, EndpointAddr, PublicKey, RelayUrl, endpoint::Connection};
 use syneroym_core::{
     dht_registry::{EndpointMechanism, RegistryClient},
     local_registry::EndpointRegistry,
-    protocol_utils::parse_target_host,
+    protocol_utils::{TargetHost, parse_target_host},
 };
 use syneroym_identity::substrate::resolve_did_key;
 use syneroym_router::{RoutePreamble, SYNEROYM_ALPN, net_iroh::IrohStream};
+use syneroym_sdk::topology::AppHostResolver;
 use tokio::{
     io,
     io::{AsyncReadExt, AsyncWriteExt},
@@ -61,6 +62,10 @@ pub struct BootstrapState {
     /// initiate competing handshakes to the same target peer,
     /// causing protocol conflicts and timeouts in the underlying QUIC stack.
     pub connection_cache: Mutex<HashMap<PublicKey, Connection>>,
+    /// S3, D-S3-7/D-S3-11: resolves an app-scoped (`-a…-s…`) bootstrap
+    /// host through Tier 1 and Tier 2, shared with the client gateway's
+    /// implementation rather than reimplemented.
+    pub app_host_resolver: AppHostResolver,
 }
 
 impl Debug for BootstrapState {
@@ -83,6 +88,14 @@ struct PeerProxyTemplate {
     signaling_server_url: String,
     http_version: String,
     target_pubkey_hex: String,
+    /// The interface the route preamble names, already resolved from the
+    /// hostname by `parse_target_host` (D-S3-16). Empty when the host
+    /// carried no `-i`, which the destination resolves (D-S3-15).
+    /// Interpolated rather than re-derived in the page: the page used to
+    /// parse `location.hostname` itself, in two places, which made the
+    /// browser a third implementation of a grammar that now lives in one
+    /// function.
+    target_interface: String,
 }
 
 pub async fn start(listener: TcpListener, state: Arc<BootstrapState>) -> anyhow::Result<()> {
@@ -171,14 +184,54 @@ async fn handle_bootstrap(
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    let (mut target_peer_id, _interface) = match parse_target_host(&host) {
-        Some(res) => res,
-        None => (host.clone(), "".to_string()),
-    };
+    let (mut target_peer_id, mut target_service_id, target_interface, already_resolved) =
+        match parse_target_host(&host) {
+            None => (host.clone(), host.clone(), String::new(), false),
+            Some(TargetHost::Service { lookup_alias, interface }) => {
+                (lookup_alias.clone(), lookup_alias, interface, false)
+            }
+            Some(TargetHost::App {
+                app_lookup_alias,
+                app_did_hash,
+                service_name_hash,
+                interface,
+            }) => {
+                // D-S3-11: resolve through Tier 1 -> Tier 2 -> member
+                // selection, exactly as the client gateway's own
+                // app-scoped path does (both D-S3-5 binding checks are
+                // applied inside `resolve_app_host`, shared rather than
+                // reimplemented). A failed resolve returns an error,
+                // never the raw-host fallback below -- that fallback
+                // would dial whatever the hostname happened to spell.
+                let member_did = match state
+                    .app_host_resolver
+                    .resolve_app_host(&app_lookup_alias, &app_did_hash, &service_name_hash, None)
+                    .await
+                {
+                    Ok(m) => m,
+                    Err(e) => {
+                        error!("coordinator failed to resolve app-scoped host '{host}': {e:#}");
+                        return StatusCode::BAD_GATEWAY.into_response();
+                    }
+                };
+                // Tier 3, exactly as the physical path already does it:
+                // the member DID's own endpoint record names the
+                // substrate hosting it. Already resolved -- the alias
+                // lookup below is for the physical path's own alias,
+                // which `member_did` already is not.
+                match state.registry_client.lookup(&member_did, true).await {
+                    Ok(rec) => (rec.info.substrate_id, member_did, interface, true),
+                    Err(e) => {
+                        error!(
+                            "coordinator failed to resolve Tier 3 for member '{member_did}': {e:#}"
+                        );
+                        return StatusCode::BAD_GATEWAY.into_response();
+                    }
+                }
+            }
+        };
 
-    let mut target_service_id = target_peer_id.clone();
-
-    if state.registry_url.is_some() {
+    if !already_resolved && state.registry_url.is_some() {
         debug!("Attempting to resolve alias: {}", target_peer_id);
         if let Ok(info) = state.registry_client.lookup(&target_peer_id, true).await {
             info!(
@@ -207,6 +260,7 @@ async fn handle_bootstrap(
         signaling_server_url,
         http_version: "HTTP/1.1".to_string(),
         target_pubkey_hex,
+        target_interface,
     };
 
     match tpl.render() {
@@ -612,5 +666,410 @@ mod tests {
 
         assert_eq!(node_id, manual_node_id);
         assert_eq!(resolved_pubkey.as_bytes(), pubkey.as_bytes());
+    }
+
+    // ── S3: app-scoped bootstrap resolution (tests 93-96) ───────────────
+
+    use std::{
+        collections::VecDeque,
+        sync::{Mutex as StdMutex, atomic::AtomicUsize},
+    };
+
+    use http_body_util::BodyExt;
+    use syneroym_app_orchestration::{
+        AppDid, AppInstanceId, LogicalResolver, LogicalServiceName, ServiceId,
+        SignedTopologyDocument, StaticInventory, TopologyDocument, TopologyEpoch, TopologyMode,
+    };
+    use syneroym_community_registry::EcosystemRegistry;
+    use syneroym_core::{
+        config::{ServiceRegistryRole, SubstrateConfig},
+        dht_registry::{EndpointInfo, EndpointType, SignedEndpointInfo},
+        storage::MockStorage,
+        util,
+    };
+    use syneroym_identity::{Identity, substrate::derive_did_key};
+    use syneroym_router::net_iroh;
+    use syneroym_sdk::topology::{AppHostResolver, Tier1Lookup, Tier2Fetch};
+    use tower::ServiceExt;
+
+    #[derive(Debug)]
+    struct FakeTier1 {
+        response: SignedEndpointInfo,
+    }
+
+    #[async_trait::async_trait]
+    impl Tier1Lookup for FakeTier1 {
+        async fn lookup(&self, _alias: &str) -> anyhow::Result<SignedEndpointInfo> {
+            Ok(self.response.clone())
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct FakeTier2 {
+        calls: AtomicUsize,
+        responses: StdMutex<VecDeque<SignedTopologyDocument>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tier2Fetch for FakeTier2 {
+        async fn fetch_via(
+            &self,
+            _supervisor_did: &str,
+            _app_did: &AppDid,
+            _service_name: &LogicalServiceName,
+        ) -> anyhow::Result<SignedTopologyDocument> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| anyhow::anyhow!("FakeTier2 has no more queued responses"))
+        }
+    }
+
+    /// Spins up a real `syneroym-community-registry` HTTP server on
+    /// `127.0.0.1:0` -- Tier 3 (`state.registry_client.lookup`) is a real
+    /// `RegistryClient`, not a seam, so testing the coordinator's own
+    /// resolution end to end needs a real registry behind it, the same
+    /// shape the milestone's e2e tests already use. Returns the server's
+    /// URL; the caller must keep the returned `EcosystemRegistry` alive
+    /// for the test's duration.
+    async fn spawn_test_registry(base: &std::path::Path) -> (String, EcosystemRegistry) {
+        let mut config = SubstrateConfig {
+            app_local_data_dir: base.join("data"),
+            app_data_dir: base.join("user_data"),
+            ..Default::default()
+        };
+        config.substrate.enable_bep0044_dht = false;
+        config.roles.community_registry = Some(ServiceRegistryRole {
+            http_bind_address: "127.0.0.1:0".to_string(),
+            ..Default::default()
+        });
+        let mut registry = EcosystemRegistry::init(&config).await.unwrap();
+        let url = registry.bind().await.unwrap();
+        registry.spawn().await.unwrap();
+        (url, registry)
+    }
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    async fn test_state(
+        registry_url: Option<String>,
+        tier1: FakeTier1,
+        fetcher: Option<FakeTier2>,
+    ) -> Arc<BootstrapState> {
+        let iroh = net_iroh::build_iroh_endpoint(None, None, None).await.unwrap();
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+        let registry_client = RegistryClient::new(false, registry_url.clone());
+        let app_host_resolver = AppHostResolver::new(
+            Box::new(tier1),
+            fetcher.map(|f| Box::new(f) as Box<dyn Tier2Fetch>),
+            LogicalResolver::new(Arc::new(StaticInventory::new())),
+        );
+        Arc::new(BootstrapState {
+            iroh,
+            external_host: None,
+            signaling_port: 0,
+            registry,
+            registry_url,
+            registry_client,
+            connection_cache: Mutex::new(HashMap::new()),
+            app_host_resolver,
+        })
+    }
+
+    async fn body_text(response: axum::response::Response) -> String {
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    /// Registers a member's own endpoint record, plus a real substrate
+    /// record for the node hosting it, in the real test registry -- Tier
+    /// 3's `resolve: true` lookup recurses into `substrate_id` to fetch
+    /// its mechanisms, so that value must itself be a resolvable record,
+    /// not a placeholder string. Returns `(member_did, substrate_did)`.
+    async fn register_member(registry_url: &str) -> (String, String) {
+        let client = RegistryClient::new(false, Some(registry_url.to_string()));
+
+        let substrate_identity = Identity::generate().unwrap();
+        let substrate_did = derive_did_key(&substrate_identity.public_key());
+        let substrate_record = EndpointInfo {
+            service_id: substrate_did.clone(),
+            substrate_id: substrate_did.clone(),
+            endpoint_type: EndpointType::Substrate,
+            mechanisms: vec![],
+            nickname: None,
+            is_private: false,
+            ttl: None,
+            not_after: now_secs() + 3600,
+            generation: 0,
+        }
+        .sign(&substrate_identity)
+        .unwrap();
+        client.register(&substrate_record, false).await.unwrap();
+
+        let member_identity = Identity::generate().unwrap();
+        let member_did = derive_did_key(&member_identity.public_key());
+        let member_record = EndpointInfo {
+            service_id: member_did.clone(),
+            substrate_id: substrate_did.clone(),
+            endpoint_type: EndpointType::Service,
+            mechanisms: vec![],
+            nickname: None,
+            is_private: false,
+            ttl: None,
+            not_after: now_secs() + 3600,
+            generation: 0,
+        }
+        .sign(&member_identity)
+        .unwrap();
+        client.register(&member_record, false).await.unwrap();
+
+        (member_did, substrate_did)
+    }
+
+    fn app_signed_topology_doc(
+        app_did: &AppDid,
+        master: &Identity,
+        member_did: &str,
+    ) -> SignedTopologyDocument {
+        let now = now_secs();
+        let doc = TopologyDocument {
+            app_instance_id: AppInstanceId::new("my-chat-app"),
+            app_did: app_did.clone(),
+            service_name: LogicalServiceName::new("backend"),
+            mode: TopologyMode::Singleton,
+            members: vec![ServiceId::new(member_did.to_string())],
+            sharding_strategy: None,
+            epoch: TopologyEpoch(1),
+            generation: 0,
+            issued_at: now,
+            not_after: now + 3600,
+            cache_ttl_ms: 60_000,
+        };
+        doc.sign(master).unwrap()
+    }
+
+    /// Test 93: an axum-level test over `app(state)`, asserting
+    /// `TARGET_SERVICE_ID` in the rendered HTML is a member DID from the
+    /// document and `TARGET_PEER_ID` is the substrate hosting it.
+    #[tokio::test]
+    async fn an_app_scoped_bootstrap_request_renders_the_resolved_member_did() {
+        let dir = tempfile::tempdir().unwrap();
+        let (registry_url, _registry) = spawn_test_registry(dir.path()).await;
+
+        let app_master = Identity::generate().unwrap();
+        let app_did = AppDid::new(derive_did_key(&app_master.public_key()));
+        let a_hash = util::short_hash(app_did.as_str());
+        let s_hash = util::short_hash("backend");
+
+        let (member_did, substrate_did) = register_member(&registry_url).await;
+
+        let tier1_record = SignedEndpointInfo {
+            info: EndpointInfo {
+                service_id: app_did.as_str().to_string(),
+                substrate_id: "did:key:zSupervisor".to_string(),
+                endpoint_type: EndpointType::Service,
+                mechanisms: vec![],
+                nickname: Some("my-chat-app".to_string()),
+                is_private: false,
+                ttl: None,
+                not_after: now_secs() + 3600,
+                generation: 0,
+            },
+            pkarr_packet_hex: String::new(),
+        };
+        let doc = app_signed_topology_doc(&app_did, &app_master, &member_did);
+        let fetcher = FakeTier2::default();
+        fetcher.responses.lock().unwrap().push_back(doc);
+        let state =
+            test_state(Some(registry_url), FakeTier1 { response: tier1_record }, Some(fetcher))
+                .await;
+
+        let host = format!("my-chat-app-a{a_hash}-s{s_hash}.localhost");
+        let req = Request::builder().uri("/").header(HOST, host).body(Body::empty()).unwrap();
+        let response = app(state).oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_text(response).await;
+        assert!(body.contains(&format!("TARGET_SERVICE_ID = \"{member_did}\"")), "{body}");
+        assert!(body.contains(&format!("TARGET_PEER_ID = \"{substrate_did}\"")), "{body}");
+    }
+
+    /// Test 94: D-S3-16 -- a host with an explicit `-i` renders that hash
+    /// into `TARGET_INTERFACE`, and one without renders the empty string.
+    /// Without this, the JS deletion is unverified and the regression
+    /// §0.1 describes (every host silently losing its interface) has no
+    /// failing test anywhere.
+    #[tokio::test]
+    async fn the_rendered_page_carries_the_hosts_interface() {
+        let dir = tempfile::tempdir().unwrap();
+        let (registry_url, _registry) = spawn_test_registry(dir.path()).await;
+
+        let app_master = Identity::generate().unwrap();
+        let app_did = AppDid::new(derive_did_key(&app_master.public_key()));
+        let a_hash = util::short_hash(app_did.as_str());
+        let s_hash = util::short_hash("backend");
+        let i_hash = util::short_hash("default");
+
+        let (member_did, _substrate_did) = register_member(&registry_url).await;
+
+        let tier1_record = SignedEndpointInfo {
+            info: EndpointInfo {
+                service_id: app_did.as_str().to_string(),
+                substrate_id: "did:key:zSupervisor".to_string(),
+                endpoint_type: EndpointType::Service,
+                mechanisms: vec![],
+                nickname: Some("my-chat-app".to_string()),
+                is_private: false,
+                ttl: None,
+                not_after: now_secs() + 3600,
+                generation: 0,
+            },
+            pkarr_packet_hex: String::new(),
+        };
+
+        // With an explicit `-i`.
+        let doc = app_signed_topology_doc(&app_did, &app_master, &member_did);
+        let fetcher = FakeTier2::default();
+        fetcher.responses.lock().unwrap().push_back(doc);
+        let state = test_state(
+            Some(registry_url.clone()),
+            FakeTier1 { response: tier1_record.clone() },
+            Some(fetcher),
+        )
+        .await;
+        let host = format!("my-chat-app-a{a_hash}-s{s_hash}-i{i_hash}.localhost");
+        let req = Request::builder().uri("/").header(HOST, host).body(Body::empty()).unwrap();
+        let response = app(state).oneshot(req).await.unwrap();
+        let body = body_text(response).await;
+        assert!(body.contains(&format!("TARGET_INTERFACE = \"{i_hash}\"")), "{body}");
+
+        // Without one.
+        let doc = app_signed_topology_doc(&app_did, &app_master, &member_did);
+        let fetcher = FakeTier2::default();
+        fetcher.responses.lock().unwrap().push_back(doc);
+        let state =
+            test_state(Some(registry_url), FakeTier1 { response: tier1_record }, Some(fetcher))
+                .await;
+        let host = format!("my-chat-app-a{a_hash}-s{s_hash}.localhost");
+        let req = Request::builder().uri("/").header(HOST, host).body(Body::empty()).unwrap();
+        let response = app(state).oneshot(req).await.unwrap();
+        let body = body_text(response).await;
+        assert!(body.contains("TARGET_INTERFACE = \"\""), "{body}");
+    }
+
+    /// Finding B4: a value ending in a backslash (reachable through the
+    /// deliberately permissive `-i` segment, D-S3-12) must not be able to
+    /// escape the JS string literal it is rendered into. Constructed
+    /// directly against `PeerProxyTemplate` rather than through a real
+    /// hostname, since the point is the template's own escaping, not the
+    /// parser -- `parse_target_host` never rejects this value, so the
+    /// template is the only remaining backstop. Before the fix (hand-
+    /// written quotes around askama's default HTML escaper), the rendered
+    /// script read `const TARGET_INTERFACE = "a\";alert(1);//";`, letting
+    /// the closing quote escape and the rest run as script.
+    #[test]
+    fn a_value_ending_in_a_backslash_cannot_escape_its_js_string_literal() {
+        let hostile = r#"a\";alert(1);//"#;
+        let tpl = PeerProxyTemplate {
+            target_peer_id: "did:key:zPeer".to_string(),
+            target_service_id: "did:key:zService".to_string(),
+            signaling_server_url: "ws://localhost/ws".to_string(),
+            http_version: "HTTP/1.1".to_string(),
+            target_pubkey_hex: "deadbeef".to_string(),
+            target_interface: hostile.to_string(),
+        };
+        let html = tpl.render().unwrap();
+
+        // The naive, unescaped concatenation a regression would produce.
+        assert!(
+            !html.contains(&format!("TARGET_INTERFACE = \"{hostile}\"")),
+            "the hostile value must not appear unescaped: {html}"
+        );
+        // What must appear instead is a complete, self-quoting JSON
+        // string literal for the constant -- round-tripping it back
+        // through a JSON parser is the actual proof the escaping is
+        // correct, not just different.
+        let line = html
+            .lines()
+            .find(|l| l.trim_start().starts_with("const TARGET_INTERFACE"))
+            .expect("TARGET_INTERFACE line");
+        let literal = line
+            .trim_start()
+            .strip_prefix("const TARGET_INTERFACE = ")
+            .unwrap()
+            .trim_end_matches(';');
+        let decoded: String = serde_json::from_str(literal).unwrap();
+        assert_eq!(decoded, hostile);
+    }
+
+    /// Test 95: the no-regression half, on the same handler -- an
+    /// unscoped bootstrap request is unchanged.
+    #[tokio::test]
+    async fn an_unscoped_bootstrap_request_is_unchanged() {
+        let dummy_tier1 = SignedEndpointInfo {
+            info: EndpointInfo {
+                service_id: "did:key:zUnused".to_string(),
+                substrate_id: "did:key:zUnused".to_string(),
+                endpoint_type: EndpointType::Service,
+                mechanisms: vec![],
+                nickname: None,
+                is_private: false,
+                ttl: None,
+                not_after: now_secs() + 3600,
+                generation: 0,
+            },
+            pkarr_packet_hex: String::new(),
+        };
+        let state = test_state(None, FakeTier1 { response: dummy_tier1 }, None).await;
+
+        let sh = util::short_hash("did:key:zSvc");
+        let ih = util::short_hash("default");
+        let host = format!("my-svc-s{sh}-i{ih}.localhost");
+        let req = Request::builder().uri("/").header(HOST, &host).body(Body::empty()).unwrap();
+        let response = app(state).oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_text(response).await;
+        assert!(body.contains(&format!("TARGET_SERVICE_ID = \"my-svc-{sh}\"")), "{body}");
+        assert!(body.contains(&format!("TARGET_INTERFACE = \"{ih}\"")), "{body}");
+    }
+
+    /// Test 96: the phase-4c refusal -- 502, and the raw hostname never
+    /// reaches `resolve_did_key`.
+    #[tokio::test]
+    async fn an_app_scoped_host_that_fails_to_resolve_does_not_fall_back_to_the_raw_host() {
+        let dummy_tier1 = SignedEndpointInfo {
+            info: EndpointInfo {
+                service_id: "did:key:zUnused".to_string(),
+                substrate_id: "did:key:zUnused".to_string(),
+                endpoint_type: EndpointType::Service,
+                mechanisms: vec![],
+                nickname: None,
+                is_private: false,
+                ttl: None,
+                not_after: now_secs() + 3600,
+                generation: 0,
+            },
+            pkarr_packet_hex: String::new(),
+        };
+        // No fetcher configured -- `resolve_app_host` fails immediately
+        // ("no community registry configured"), exactly D-S3-6's
+        // uncredentialed case.
+        let state = test_state(None, FakeTier1 { response: dummy_tier1 }, None).await;
+
+        let a_hash = util::short_hash("did:key:zApp");
+        let s_hash = util::short_hash("backend");
+        let host = format!("my-chat-app-a{a_hash}-s{s_hash}.localhost");
+        let req = Request::builder().uri("/").header(HOST, &host).body(Body::empty()).unwrap();
+        let response = app(state).oneshot(req).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = body_text(response).await;
+        assert!(!body.contains(&host), "must not fall back to the raw host: {body}");
     }
 }

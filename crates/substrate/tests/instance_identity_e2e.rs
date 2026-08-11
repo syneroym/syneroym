@@ -113,9 +113,11 @@ impl Node {
         });
         let registry_url = format!("http://localhost:{registry_port}");
         config.substrate.registry_url = Some(registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         config.parent_coordinator.iroh =
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
-        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway =
+            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
 
         let substrate_identity_state =
@@ -140,7 +142,8 @@ impl Node {
             substrate_service_id.clone(),
             registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -213,6 +216,7 @@ async fn deploy(
 /// `hr_deployer`/`alice_deployer` pattern), presenting `caller`.
 fn orchestrator_client(node: &Node, caller: Identity) -> SyneroymClient {
     SyneroymClient::new_with_identity(node.did().to_string(), node.registry_url.clone(), caller)
+        .with_registry_dht(false)
 }
 
 #[tokio::test]

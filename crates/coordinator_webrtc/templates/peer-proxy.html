@@ -5,11 +5,31 @@
     <meta charset="UTF-8">
     <title>Bootstrapping peer...</title>
     <script>
-        const SIGNALING_SERVER_URL = "{{ signaling_server_url }}";
-        const TARGET_PEER_ID = "{{ target_peer_id }}";
-        const TARGET_SERVICE_ID = "{{ target_service_id }}";
-        const HTTP_VERSION = "{{ http_version }}";
-        const TARGET_PUBKEY_HEX = "{{ target_pubkey_hex }}";
+        // Every constant below is rendered with `|json`, not interpolated
+        // inside hand-written quotes (finding B4): askama's default
+        // filter HTML-escapes for an HTML *body* context -- `"`/`<`/`&`,
+        // never `\` -- which is the wrong escaper for a JS string
+        // literal. A value ending in an odd number of backslashes
+        // (reachable today only through the deliberately permissive `-i`
+        // segment, D-S3-12, or the raw-`Host` fallback the alias-resolve
+        // branch below can still take) would otherwise escape the closing
+        // quote and let the rest of the value run as script. `json`
+        // produces a complete, self-quoting JS/JSON string literal, and
+        // the trailing `|safe` stops askama's default filter from then
+        // HTML-entity-encoding that literal's own quotes -- `|json`
+        // alone still gets HTML-escaped on top, since only the *filter*
+        // is special-cased for content type, not this template's default
+        // escaping mode. No manual quotes around either filter's output.
+        const SIGNALING_SERVER_URL = {{ signaling_server_url|json|safe }};
+        const TARGET_PEER_ID = {{ target_peer_id|json|safe }};
+        const TARGET_SERVICE_ID = {{ target_service_id|json|safe }};
+        // S3, D-S3-16: the interface the route preamble names, already
+        // resolved from the hostname by `parse_target_host` on the
+        // coordinator. Empty when the host carried no `-i`, which the
+        // destination resolves (D-S3-15) -- never re-derived here.
+        const TARGET_INTERFACE = {{ target_interface|json|safe }};
+        const HTTP_VERSION = {{ http_version|json|safe }};
+        const TARGET_PUBKEY_HEX = {{ target_pubkey_hex|json|safe }};
         const urlParams = new URLSearchParams(window.location.search);
         let FORCE_TUNNEL = urlParams.get('force_tunnel') === 'true';
         if (FORCE_TUNNEL) {
