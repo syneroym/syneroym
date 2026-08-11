@@ -279,6 +279,28 @@ curl -X POST http://localhost:7960/ \
   }'
 ```
 
+> [!NOTE]
+> **"Interface" means two different things depending on the service type.**
+> For a WASM component, an interface is a WIT-exported namespace of
+> functions — part of the component itself, in the WASM component-model
+> sense. For a TCP or container service, there is no component to export
+> anything: "interface" here just names one of possibly several endpoints
+> the substrate registers for the same backing `(host, port)` or process —
+> closer to "a named auxiliary port" (e.g. a metrics or readiness port
+> alongside the main one) than to a WASM interface. Both senses share the
+> same `--interfaces` flag and the same hostname `-i<hash>` segment because
+> the mechanism that registers and resolves them (`EndpointRegistry`) does
+> not need to know which sense applies — but a reader should not assume a
+> TCP/container "interface" means the same thing a WASM one does.
+>
+> When a service declares exactly one interface -- including via
+> `--interfaces` left blank, which `roymctl svc deploy` (any of `--wasm`,
+> `--tcp`, `--image`) treats as "one interface, name it for me" -- the
+> destination resolves it automatically; a hostname can omit `-i` too, and
+> gets the same answer. That single, unnamed interface is always called
+> `default`, not `""` or `main` -- both other spellings existed briefly, in
+> different code paths, before being unified.
+
 #### Deploy a WASM Component
 Only `roymctl` can sign as the claimed substrate's controller (see the note
 above) -- the client gateway has no way to present that identity, so this is

@@ -29,6 +29,17 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 /// base64, to avoid a new dependency for a one-shot RPC payload.
 pub const INLINE_ARTIFACT_PREFIX: &str = "data:hex,";
 
+/// The interface name a single-interface TCP/container/WASM service gets
+/// when its author declares none explicitly. The one name both this
+/// mapper (a manifest-driven deploy's own fallback, below) and `roymctl
+/// svc deploy` (an ad-hoc deploy's `--interfaces` fallback,
+/// `apps/roymctl/src/commands/svc.rs`) use, so "what does an unnamed
+/// interface get called" has one answer across both deploy paths --
+/// before this constant existed the two independently picked different
+/// strings ("main" here, and a "default" this mapper never saw, since
+/// `svc.rs`'s own check for it was dead code).
+pub const DEFAULT_INTERFACE_NAME: &str = "default";
+
 /// Author-side container volume, mirroring the wire record but with `files`
 /// optional (so a volume that only needs an empty directory stays as terse as
 /// it was) and file contents still unresolved.
@@ -227,7 +238,7 @@ pub fn map_deployment_plan_to_wit(
                         if let Ok(port) = parts[1].parse::<u16>() {
                             endpoints.push(NetworkEndpoint {
                                 interface_name: if svc.config.interfaces.is_empty() {
-                                    "main".to_string()
+                                    DEFAULT_INTERFACE_NAME.to_string()
                                 } else {
                                     svc.config.interfaces[0].to_string()
                                 },
@@ -499,6 +510,41 @@ mod tests {
             map_all(&plan_with_config(base_config()), &BTreeMap::new(), &BTreeMap::new(), true)
                 .unwrap();
         assert!(wit_plan.services[0].manifest.config.health_check.is_none());
+    }
+
+    /// A TCP service with no declared interfaces gets `DEFAULT_INTERFACE_NAME`
+    /// -- the one name this mapper and `roymctl svc deploy`'s own
+    /// `--interfaces` fallback now share, rather than each independently
+    /// picking a different string.
+    #[test]
+    fn a_tcp_service_with_no_declared_interfaces_gets_the_shared_default_name() {
+        let wit_plan =
+            map_all(&plan_with_config(base_config()), &BTreeMap::new(), &BTreeMap::new(), true)
+                .unwrap();
+        match &wit_plan.services[0].manifest.service_type {
+            WitServiceType::Tcp(m) => {
+                assert_eq!(m.endpoints.len(), 1);
+                assert_eq!(m.endpoints[0].interface_name, DEFAULT_INTERFACE_NAME);
+            }
+            other => panic!("expected a TCP manifest, got {other:?}"),
+        }
+    }
+
+    /// An explicitly declared interface is used verbatim, never overridden
+    /// by the default.
+    #[test]
+    fn a_tcp_services_declared_interface_name_is_used_verbatim() {
+        let mut config = base_config();
+        config.interfaces = vec![InterfaceName::new("admin")];
+        let wit_plan =
+            map_all(&plan_with_config(config), &BTreeMap::new(), &BTreeMap::new(), true).unwrap();
+        match &wit_plan.services[0].manifest.service_type {
+            WitServiceType::Tcp(m) => {
+                assert_eq!(m.endpoints.len(), 1);
+                assert_eq!(m.endpoints[0].interface_name, "admin");
+            }
+            other => panic!("expected a TCP manifest, got {other:?}"),
+        }
     }
 
     #[test]

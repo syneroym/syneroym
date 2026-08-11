@@ -1091,3 +1091,70 @@ pass above landed, both in the B1/B2 fix:
 clippy --workspace --all-targets --all-features` clean; `cargo test -p
 syneroym-sdk --lib topology::` 14/14 (1 new); `gateway_hostname_e2e.rs`
 re-run in full, 4/4.
+
+### S3 — A "what does an unnamed interface get called" pass (2026-08-11)
+
+Raised in PR review, not by an independent tool: three different
+"single interface, no name given" code paths had three different
+answers, none of them a single source of truth.
+
+- **`roymctl svc deploy`'s own `--interfaces` fallback was dead code.**
+  `if ifaces.is_empty() { vec!["default"] } else { ifaces }`, applied
+  *after* `interfaces.split(',')` -- but `"".split(',')` yields one
+  empty-string element, never zero, so the length check could never see
+  the empty case. `--interfaces ""` silently registered a service under
+  the literal interface name `""` instead of falling back to anything.
+- **The manifest-driven deploy path (`sdk::mapper`'s TCP mapping) had its
+  own, different, silent default: `"main"`.** Same situation (`svc.config.
+  interfaces.is_empty()`), different answer, and neither path knew about
+  the other's choice.
+- **WASM had no fallback at all** -- an empty `interfaces` list registers
+  zero interfaces, which D-S3-15's own ambiguity rule then correctly
+  refuses to resolve (zero is as ambiguous as two). Left alone: this one
+  was never inconsistent, just a third shape.
+
+**Fixed**, unifying on one shared name rather than just repairing the
+broken check: `syneroym_sdk::mapper::DEFAULT_INTERFACE_NAME` (`"default"`,
+chosen as the already-dominant convention -- used explicitly across ~18
+files in `crates/substrate/tests/*_e2e.rs`, this slice's own D-S3-15 tests,
+and the developer guide's own examples, versus `"main"`'s handful of
+occurrences confined to `sdk::mapper` and one `control_plane::orchestration`
+test file). `sdk::mapper`'s TCP-mapping fallback now uses the constant
+instead of a hardcoded `"main"`. `roymctl`'s own parsing is now a real
+function, `parse_interfaces`, with the check fixed to actually detect a
+blank value (rather than an empty vector that could never occur) --
+and a **new distinction this pass adds**: a *fully* blank `--interfaces`
+falls back to the shared default, but a blank *segment* amid otherwise
+real names (a stray comma, e.g. `"http,,admin"`) is refused outright
+rather than silently coerced, since guessing which name the operator
+actually meant there would be wrong as often as right. `apps/roymctl/
+src/commands/svc.rs`, `crates/sdk/src/mapper.rs`.
+
+**Doc-only, no code change**: the developer guide's deploy section gained
+a note on "interface" meaning two different things depending on service
+type -- a WIT-exported namespace for WASM, a named auxiliary port (closer
+to "a metrics/readiness port alongside the main one") for TCP/container --
+sharing the same `--interfaces` flag and hostname `-i` segment only
+because `EndpointRegistry` doesn't need to know which sense applies.
+Raised in the same review pass; not renamed, since the fix would ripple
+through WIT files, the route preamble wire format, and every CLI flag for
+a naming question, not a behavior one -- out of scope for this slice.
+`docs/developer-guide.md`.
+
+**Test coverage**: 3 new tests in `apps/roymctl/src/commands/svc.rs`
+(`parse_interfaces_falls_back_to_the_shared_default_name_when_blank`,
+`parse_interfaces_splits_and_trims_a_real_list`,
+`parse_interfaces_rejects_a_blank_segment_in_an_otherwise_real_list`) plus
+one composing `parse_interfaces` with the container-port validator
+(`a_blank_interfaces_value_composes_with_a_default_named_container_port`);
+2 new tests in `crates/sdk/src/mapper.rs`
+(`a_tcp_service_with_no_declared_interfaces_gets_the_shared_default_name`,
+`a_tcp_services_declared_interface_name_is_used_verbatim`).
+
+**Re-verification**: `cargo +nightly fmt --all -- --check` clean; `cargo
+clippy --workspace --all-targets --all-features` clean; `cargo test -p
+syneroym-sdk --lib` 61/61 (2 new); `cargo test -p roymctl --lib` 69/69
+(4 new). No e2e fixture passes a blank `--interfaces` (checked
+`crates/substrate/tests/e2e/*.ts` and every Rust e2e file shelling out to
+`roymctl svc deploy`), so none needed re-verification against the new
+error path.

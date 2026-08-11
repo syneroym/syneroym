@@ -13,7 +13,10 @@ use chrono::DateTime;
 use clap::Subcommand;
 use syneroym_core::dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType};
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
-use syneroym_sdk::{ContainerPortMapping, ContainerVolumeMapping, NetworkEndpoint, deploy};
+use syneroym_sdk::{
+    ContainerPortMapping, ContainerVolumeMapping, NetworkEndpoint, deploy,
+    mapper::DEFAULT_INTERFACE_NAME,
+};
 
 use super::member_identity;
 
@@ -183,7 +186,7 @@ pub async fn handle(
             registry_url,
         } => {
             validate_container_flags(image, ports, volumes)?;
-            let ifaces: Vec<String> = interfaces.split(',').map(|s| s.trim().to_string()).collect();
+            let ifaces: Vec<String> = parse_interfaces(interfaces)?;
 
             // The record the substrate publishes and replays verbatim: it
             // holds no key of its own that could ever produce this
@@ -288,16 +291,8 @@ pub async fn handle(
 
             if let Some(wasm_path) = wasm {
                 let wasm_bytes = fs::read(wasm_path)?;
-                let interfaces_list =
-                    if ifaces.is_empty() { vec!["default".to_string()] } else { ifaces };
                 client
-                    .deploy_svc_wasm(
-                        svc_id.clone(),
-                        interfaces_list,
-                        wasm_bytes,
-                        cert,
-                        instance_cert,
-                    )
+                    .deploy_svc_wasm(svc_id.clone(), ifaces, wasm_bytes, cert, instance_cert)
                     .await?;
                 println!("Successfully deployed WASM svc {svc_id}");
             } else if let Some(tcp_addr) = tcp {
@@ -306,9 +301,7 @@ pub async fn handle(
                 // the same backend: a TCP passthrough has nothing to
                 // dispatch on, so every declared interface is just another
                 // registered name for the identical `(host, port)`.
-                let iface_names =
-                    if ifaces.is_empty() { vec!["default".to_string()] } else { ifaces };
-                let endpoints = iface_names
+                let endpoints = ifaces
                     .into_iter()
                     .map(|interface_name| NetworkEndpoint {
                         interface_name,
@@ -453,6 +446,38 @@ fn format_expiry(expires_at_secs: Option<u64>) -> String {
             .unwrap_or_else(|| "-".to_string()),
         None => "-".to_string(),
     }
+}
+
+/// Parses `--interfaces`' comma-separated value into a non-empty,
+/// non-blank interface name list. A blank `--interfaces` value (the
+/// common case: an operator with one interface and no reason to name it)
+/// falls back to `DEFAULT_INTERFACE_NAME` -- the
+/// same name a manifest-driven deploy's own equivalent fallback uses
+/// (`sdk::mapper`'s TCP mapping), so "what does an unnamed interface get
+/// called" has one answer regardless of which deploy path minted it.
+///
+/// This used to be `if ifaces.is_empty() { vec!["default"] } else {
+/// ifaces }` applied *after* splitting -- dead code, since
+/// `"".split(',')` yields one empty-string element, never zero elements,
+/// so the fallback could never fire. `--interfaces ""` silently
+/// registered a service under the literal interface name `""` instead.
+/// A comma-separated value with a genuinely blank *segment* (a stray
+/// comma, e.g. `"http,,admin"`) is different from an omitted value
+/// entirely and is refused rather than guessed at.
+fn parse_interfaces(interfaces: &str) -> anyhow::Result<Vec<String>> {
+    if interfaces.trim().is_empty() {
+        return Ok(vec![DEFAULT_INTERFACE_NAME.to_string()]);
+    }
+    let ifaces: Vec<String> = interfaces.split(',').map(|s| s.trim().to_string()).collect();
+    if let Some(pos) = ifaces.iter().position(|s| s.is_empty()) {
+        anyhow::bail!(
+            "--interfaces '{interfaces}' has a blank interface name at position {}; remove the \
+             stray comma, or leave --interfaces empty entirely for a single interface named '{}'",
+            pos + 1,
+            DEFAULT_INTERFACE_NAME
+        );
+    }
+    Ok(ifaces)
 }
 
 fn get_host_port_from_tcp_addr(tcp_addr: &str) -> anyhow::Result<(String, u16)> {
@@ -919,6 +944,47 @@ mod tests {
         let ifaces = vec!["default".to_string()];
         let mapping = parse_container_port_mapping("default:80").unwrap();
         validate_container_ports(&ifaces, &[mapping]).unwrap();
+    }
+
+    /// A blank `--interfaces` composes correctly with `--port` for a
+    /// container deploy too, not only `--wasm`/`--tcp`: `parse_interfaces`
+    /// falls back to `["default"]`, and a `--port default:80` mapping
+    /// names exactly that.
+    #[test]
+    fn a_blank_interfaces_value_composes_with_a_default_named_container_port() {
+        let ifaces = parse_interfaces("").unwrap();
+        let mapping = parse_container_port_mapping("default:80").unwrap();
+        validate_container_ports(&ifaces, &[mapping]).unwrap();
+    }
+
+    /// The bug this replaces: `"".split(',')` yields one empty-string
+    /// element, never zero, so a length check could never see this case
+    /// as "empty" -- `--interfaces ""` used to silently register a
+    /// service under the literal interface name `""`.
+    #[test]
+    fn parse_interfaces_falls_back_to_the_shared_default_name_when_blank() {
+        assert_eq!(parse_interfaces("").unwrap(), vec![DEFAULT_INTERFACE_NAME.to_string()]);
+        assert_eq!(parse_interfaces("   ").unwrap(), vec![DEFAULT_INTERFACE_NAME.to_string()]);
+    }
+
+    #[test]
+    fn parse_interfaces_splits_and_trims_a_real_list() {
+        assert_eq!(
+            parse_interfaces("http, admin").unwrap(),
+            vec!["http".to_string(), "admin".to_string()]
+        );
+    }
+
+    /// A blank *segment* amid otherwise real names (a stray comma) is a
+    /// different mistake than an omitted value entirely, and is refused
+    /// rather than silently coerced to the default.
+    #[test]
+    fn parse_interfaces_rejects_a_blank_segment_in_an_otherwise_real_list() {
+        let err = parse_interfaces("http,,admin").unwrap_err();
+        assert!(err.to_string().contains("position 2"), "{err}");
+
+        let err = parse_interfaces(",admin").unwrap_err();
+        assert!(err.to_string().contains("position 1"), "{err}");
     }
 
     #[test]
