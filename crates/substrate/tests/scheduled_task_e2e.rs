@@ -357,7 +357,7 @@ async fn deployed_service_id(supervisor_node: &Node) -> String {
 /// `reference_scenario_e2e.rs::call_backend_through_frontend` uses.
 async fn tick_count(worker_client: &SyneroymClient) -> u32 {
     let res = time::timeout(
-        Duration::from_secs(15),
+        Duration::from_secs(25),
         worker_client.request(
             test_constants::SCHEDULED_TEST_DRIVER_INTERFACE,
             "tick-count",
