@@ -1491,8 +1491,13 @@ per-milestone and continues from S2's 59.
     shape: submit + adopt an app with `replicas > 1`, build the host with
     `generate_app_host`, POST through the gateway, assert the app answered. The
     milestone's cross-app half, from an ordinary HTTP client
-100. **(e2e)** `a_keyed_request_reaches_a_stable_member_and_an_unkeyed_one_spreads`
-     — the routing-key header over the wire, against a real `Redundant` service
+100. **(e2e)** `a_routing_key_header_crosses_the_gateway_to_the_backend_per_request`
+     (renamed post-review-pass, finding C1: the original assertion compared
+     response content across a reused connection, which could not fail
+     regardless of correctness -- every TCP replica shares one physical
+     backend in this milestone, so the backend now echoes the routing-key
+     bytes it received instead) — the routing-key header over the wire,
+     against a real `Redundant` service, each request its own connection
 101. **(e2e)** `an_app_scoped_hostname_for_an_app_this_gateway_holds_no_grant_for_is_refused`
      — matrix row 7 at the hostname layer: a clean 502 with the denial logged,
      and no member DID anywhere in the response. The gateway node has the

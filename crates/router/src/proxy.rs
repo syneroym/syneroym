@@ -589,6 +589,22 @@ impl ProxyRouter {
     fn check_native_capability_gate(&self, req: &ProxyRequest) -> Result<(), ProxyError> {
         let CallOrigin::Guest { service_id } = &req.origin else { return Ok(()) };
 
+        // An empty interface is D-S3-15's convenience for a caller that
+        // cannot know a remote service's interface names -- a gateway or
+        // coordinator resolving an external hostname. A WASM guest is
+        // never in that position: it always names the interface it wants.
+        // Refused here, before `registry.lookup` gets a chance to resolve
+        // it to "the one app-declared interface" of whatever
+        // `target_service` names (finding A4) -- `matches_interface`
+        // below can never match `""` against a real interface name, so
+        // nothing past this point would otherwise have stopped it.
+        if req.interface.is_empty() {
+            return Err(ProxyError::PermissionDenied(format!(
+                "component '{service_id}' must name an interface; the proxy does not resolve an \
+                 empty interface for a guest call"
+            )));
+        }
+
         // `req.interface` may be the literal name or `EndpointRegistry`'s
         // short-hash of it (`local_registry::short_hash` is an unsalted
         // SHA-256 prefix -- guest-computable, and `lookup` canonicalizes it
@@ -3206,6 +3222,46 @@ mod tests {
                 "interface '{interface}' must be denied, got {result:?}"
             );
         }
+        assert_eq!(service.invoked.load(Ordering::SeqCst), 0);
+    }
+
+    /// Finding A4: D-S3-15's empty-interface convenience ("the destination
+    /// resolves the caller's one app-declared interface") is for an
+    /// external caller that cannot know a service's interface names -- the
+    /// gateway or coordinator resolving a hostname. A WASM guest always
+    /// names the interface it wants, so an empty one must be denied before
+    /// `registry.lookup` gets a chance to resolve it -- the target
+    /// registers exactly one app-declared interface here, so a resolve
+    /// would otherwise have succeeded.
+    #[tokio::test]
+    async fn guest_with_an_empty_interface_is_denied_before_resolution() {
+        let registry = empty_registry();
+        registry
+            .register(
+                "svc-b".to_string(),
+                "default".to_string(),
+                SubstrateEndpoint::WasmChannel { service_id: "svc-b".to_string() },
+            )
+            .await
+            .unwrap();
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let service = Arc::new(RecordingNativeService::default());
+        native_dispatch.insert("svc-b".to_string(), service.clone() as Arc<dyn NativeService>);
+
+        let router = ProxyRouter::new(
+            registry,
+            empty_registry_client(),
+            Arc::downgrade(&native_dispatch),
+            Weak::new(),
+            Arc::new(MockHop::default()),
+            Arc::new(Identity::generate().unwrap()),
+            RetryPolicy::default(),
+        );
+
+        let mut req = base_request("svc-b", "");
+        req.origin = CallOrigin::Guest { service_id: "svc-a".to_string() };
+        let result = router.invoke(req).await;
+        assert!(matches!(result, Err(ProxyError::PermissionDenied(_))), "{result:?}");
         assert_eq!(service.invoked.load(Ordering::SeqCst), 0);
     }
 

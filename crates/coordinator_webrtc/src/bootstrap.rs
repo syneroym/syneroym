@@ -963,6 +963,51 @@ mod tests {
         assert!(body.contains("TARGET_INTERFACE = \"\""), "{body}");
     }
 
+    /// Finding B4: a value ending in a backslash (reachable through the
+    /// deliberately permissive `-i` segment, D-S3-12) must not be able to
+    /// escape the JS string literal it is rendered into. Constructed
+    /// directly against `PeerProxyTemplate` rather than through a real
+    /// hostname, since the point is the template's own escaping, not the
+    /// parser -- `parse_target_host` never rejects this value, so the
+    /// template is the only remaining backstop. Before the fix (hand-
+    /// written quotes around askama's default HTML escaper), the rendered
+    /// script read `const TARGET_INTERFACE = "a\";alert(1);//";`, letting
+    /// the closing quote escape and the rest run as script.
+    #[test]
+    fn a_value_ending_in_a_backslash_cannot_escape_its_js_string_literal() {
+        let hostile = r#"a\";alert(1);//"#;
+        let tpl = PeerProxyTemplate {
+            target_peer_id: "did:key:zPeer".to_string(),
+            target_service_id: "did:key:zService".to_string(),
+            signaling_server_url: "ws://localhost/ws".to_string(),
+            http_version: "HTTP/1.1".to_string(),
+            target_pubkey_hex: "deadbeef".to_string(),
+            target_interface: hostile.to_string(),
+        };
+        let html = tpl.render().unwrap();
+
+        // The naive, unescaped concatenation a regression would produce.
+        assert!(
+            !html.contains(&format!("TARGET_INTERFACE = \"{hostile}\"")),
+            "the hostile value must not appear unescaped: {html}"
+        );
+        // What must appear instead is a complete, self-quoting JSON
+        // string literal for the constant -- round-tripping it back
+        // through a JSON parser is the actual proof the escaping is
+        // correct, not just different.
+        let line = html
+            .lines()
+            .find(|l| l.trim_start().starts_with("const TARGET_INTERFACE"))
+            .expect("TARGET_INTERFACE line");
+        let literal = line
+            .trim_start()
+            .strip_prefix("const TARGET_INTERFACE = ")
+            .unwrap()
+            .trim_end_matches(';');
+        let decoded: String = serde_json::from_str(literal).unwrap();
+        assert_eq!(decoded, hostile);
+    }
+
     /// Test 95: the no-regression half, on the same handler -- an
     /// unscoped bootstrap request is unchanged.
     #[tokio::test]

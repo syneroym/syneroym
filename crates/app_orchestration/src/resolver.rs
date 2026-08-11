@@ -45,7 +45,7 @@
 use std::{
     cmp,
     collections::BTreeMap,
-    fmt,
+    error, fmt,
     sync::{
         Arc, RwLock,
         atomic::{AtomicU64, Ordering},
@@ -53,7 +53,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Error, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
 use crate::models::{AppDid, AppInstanceId, LogicalServiceName, ServiceId, TopologyMode};
@@ -287,11 +287,49 @@ pub(crate) fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+/// Marks a [`LogicalResolver::resolve`] (or [`LogicalResolver::resolve_all`])
+/// failure a caller may fix by fetching a fresh Tier-2 document -- the entry
+/// is missing, or has aged past its own `not_after`. Every *other* `resolve`
+/// failure (an empty member set, a `Sharded` request with no routing key) is
+/// a permanent property of the document itself, and re-fetching the
+/// identical document changes nothing.
+///
+/// A caller that wants to retry on the first kind and surface the second
+/// kind directly checks [`is_retryable`] rather than matching on the error
+/// text -- `AppHostResolver::resolve_app_host` (S3) is the reason this
+/// exists: treating every `resolve` error as a cache miss made a permanent
+/// selection failure (e.g. a `Sharded` service called with no routing key)
+/// refetch Tier 2 on every single request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetryableResolveError {
+    NotRegistered,
+    Expired,
+}
+
+impl fmt::Display for RetryableResolveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotRegistered => write!(f, "not registered"),
+            Self::Expired => write!(f, "expired"),
+        }
+    }
+}
+
+impl error::Error for RetryableResolveError {}
+
+/// True when `err` came from [`LogicalResolver::resolve`] (or
+/// [`LogicalResolver::resolve_all`]) for a reason a fresh Tier-2 fetch can
+/// fix. See [`RetryableResolveError`].
+#[must_use]
+pub fn is_retryable_resolve_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| cause.downcast_ref::<RetryableResolveError>().is_some())
+}
+
 fn expired_error(key: &TopologyKey, not_after: u64, now: u64) -> anyhow::Error {
-    anyhow!(
+    Error::new(RetryableResolveError::Expired).context(format!(
         "topology for '{key}' expired at unix time {not_after} (now {now}); a Tier-2 document \
          must be re-fetched"
-    )
+    ))
 }
 
 /// The result of a `resolve_all` call: an epoch-consistent snapshot of all
@@ -674,10 +712,10 @@ impl LogicalResolver {
         }
 
         // 2. Cache miss or stale → Probe registry for entry.
-        let entry = self
-            .registry
-            .get(key)
-            .ok_or_else(|| anyhow!("No topology registered for logical service '{key}'"))?;
+        let entry = self.registry.get(key).ok_or_else(|| {
+            Error::new(RetryableResolveError::NotRegistered)
+                .context(format!("No topology registered for logical service '{key}'"))
+        })?;
 
         if let Some(not_after) = entry.not_after
             && now >= not_after

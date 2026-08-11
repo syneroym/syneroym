@@ -1282,6 +1282,15 @@ the `X-Syneroym-Routing-Key` request header rather than a hostname
 segment — the gateway forwards it unmodified. A `Redundant` service picks
 the same member for the same key; a `Sharded` service requires one.
 
+The member is selected once, from the first HTTP request on a TCP
+connection, and every later request on that same connection (an HTTP
+keep-alive reusing the socket) rides the same tunnel — the header on a
+second request on a reused connection has no effect. A client that needs
+per-request routing-key accuracy must open a fresh connection per request
+(most HTTP clients do this by default when the `Host` changes; a client
+pooling connections to one gateway across different keys does not).
+Tracked in `deferred-backlog.md`.
+
 Resolving an app-scoped host needs the gateway (or WebRTC coordinator) to
 be authorized for `supervisor/resolve` on the target app. Two config
 keys, in `[iam]` and `[roles.client_gateway]` (or `[roles.coordinator]`)

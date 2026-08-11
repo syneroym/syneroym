@@ -242,40 +242,28 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
                         .await;
                     }
                 };
+                // Read once, from the first request on this TCP connection.
+                // `passthrough_with_conn` below hands the whole socket to
+                // one iroh stream for the connection's lifetime, so the
+                // member this key selects covers every later request an
+                // HTTP keep-alive reuses the connection for too -- a
+                // per-connection decision, not a per-request one. Tracked
+                // in `deferred-backlog.md`; see the developer guide's
+                // gateway-hostname section for the caller-facing note.
                 let routing_key: Option<Vec<u8>> = req
                     .headers
                     .iter()
                     .find(|h| h.name.eq_ignore_ascii_case(ROUTING_KEY_HEADER))
                     .map(|h| h.value.to_vec());
 
-                let (service_id, interface) = match target {
-                    TargetHost::Service { lookup_alias, interface } => (lookup_alias, interface),
-                    TargetHost::App {
-                        app_lookup_alias,
-                        app_did_hash,
-                        service_name_hash,
-                        interface,
-                    } => {
-                        match state
-                            .app_host_resolver
-                            .resolve_app_host(
-                                &app_lookup_alias,
-                                &app_did_hash,
-                                &service_name_hash,
-                                routing_key.as_deref(),
-                            )
-                            .await
-                        {
-                            Ok(member_did) => (member_did, interface),
-                            Err(e) => {
-                                error!(
-                                    "gateway failed to resolve logical host '{host_header}': {e:#}"
-                                );
-                                return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
-                            }
+                let (service_id, interface) =
+                    match resolve_target(&state, target, routing_key.as_deref()).await {
+                        Ok(pair) => pair,
+                        Err(e) => {
+                            error!("gateway failed to resolve logical host '{host_header}': {e:#}");
+                            return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
                         }
-                    }
-                };
+                    };
 
                 debug!(
                     "Proxying to interface (hash): {}, service_id (alias): {}",
@@ -341,6 +329,31 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
     }
 }
 
+/// The decision `handle_connection` makes from a parsed `TargetHost`: an
+/// unscoped host's `(lookup_alias, interface)` pair needs no resolution;
+/// an app-scoped one is resolved through `AppHostResolver` first. Pulled
+/// out of the connection-handling loop so a unit test can drive it
+/// directly against a fake Tier 1/Tier 2, without a real TCP connection
+/// (finding C6 -- the previous "gateway's own regression pin" never
+/// touched this decision at all, only `protocol_utils::parse_target_host`,
+/// already covered by that module's own tests).
+async fn resolve_target(
+    state: &GatewayState,
+    target: TargetHost,
+    routing_key: Option<&[u8]>,
+) -> Result<(String, String)> {
+    match target {
+        TargetHost::Service { lookup_alias, interface } => Ok((lookup_alias, interface)),
+        TargetHost::App { app_lookup_alias, app_did_hash, service_name_hash, interface } => {
+            let member_did = state
+                .app_host_resolver
+                .resolve_app_host(&app_lookup_alias, &app_did_hash, &service_name_hash, routing_key)
+                .await?;
+            Ok((member_did, interface))
+        }
+    }
+}
+
 /// Writes a JSON-RPC error response as an HTTP response.
 async fn write_json_rpc_error(stream: &mut TcpStream, status: u16, message: &str) -> Result<()> {
     let body =
@@ -356,14 +369,19 @@ async fn write_json_rpc_error(stream: &mut TcpStream, status: u16, message: &str
 
 #[cfg(test)]
 mod tests {
+    use syneroym_core::dht_registry::SignedEndpointInfo;
+    use syneroym_sdk::topology::Tier1Lookup;
+
     use super::*;
 
-    /// Test 82: the gateway's own regression pin, at unit scale over the
-    /// parse + target selection, no network -- an unscoped host still
-    /// produces the same `(lookup_alias, interface)` pair `handle_connection`
-    /// fed into `state.clients` before this slice.
+    /// Test 82: `parse_target_host`'s own output, unaffected by S3's
+    /// hostname reshape. **Renamed from "the gateway's own regression
+    /// pin" (finding C6)**: this exercises only `protocol_utils::
+    /// parse_target_host`, a copy of that module's own test 60 -- it never
+    /// touches `handle_connection`'s actual target-selection decision.
+    /// `resolve_target_*` below are the gateway's real regression pins.
     #[test]
-    fn an_unscoped_host_reaches_the_same_service_it_did_before() {
+    fn parsing_an_unscoped_host_yields_the_expected_alias_and_interface() {
         let sh = syneroym_core::util::short_hash("did:key:zSvc");
         let ih = syneroym_core::util::short_hash("default");
         let host = format!("my-svc-s{sh}-i{ih}.localhost");
@@ -374,6 +392,72 @@ mod tests {
         };
         assert_eq!(lookup_alias, format!("my-svc-{sh}"));
         assert_eq!(interface, ih);
+    }
+
+    /// A `Tier1Lookup` that must never be called -- used where the test
+    /// expects `resolve_target` to fail (or succeed) before Tier 1 is
+    /// ever reached.
+    #[derive(Debug)]
+    struct UnreachableTier1;
+
+    #[async_trait::async_trait]
+    impl Tier1Lookup for UnreachableTier1 {
+        async fn lookup(&self, _alias: &str) -> Result<SignedEndpointInfo> {
+            Err(anyhow::anyhow!("Tier1Lookup::lookup must not be called here"))
+        }
+    }
+
+    fn test_state(fetcher: Option<Box<dyn Tier2Fetch>>) -> GatewayState {
+        GatewayState {
+            registry_url: String::new(),
+            clients: DashMap::new(),
+            identity: Identity::generate().unwrap(),
+            app_host_resolver: AppHostResolver::new(
+                Box::new(UnreachableTier1),
+                fetcher,
+                LogicalResolver::new(Arc::new(StaticInventory::new())),
+            ),
+        }
+    }
+
+    /// Finding C6: the actual `TargetHost -> (service_id, interface)`
+    /// decision `handle_connection` makes, exercised directly rather than
+    /// only through `parse_target_host`'s own output. An unscoped host
+    /// needs no resolver at all -- `resolve_target` must pass it through
+    /// unresolved, and `state`'s `app_host_resolver` (wired to a Tier 1
+    /// that panics if called) is the proof nothing was.
+    #[tokio::test]
+    async fn resolve_target_passes_an_unscoped_host_through_unresolved() {
+        let state = test_state(None);
+        let target = TargetHost::Service {
+            lookup_alias: "my-svc-alias".to_string(),
+            interface: "some-interface-hash".to_string(),
+        };
+
+        let (service_id, interface) = resolve_target(&state, target, None).await.unwrap();
+        assert_eq!(service_id, "my-svc-alias");
+        assert_eq!(interface, "some-interface-hash");
+    }
+
+    /// The other branch: an app-scoped host is routed through
+    /// `AppHostResolver`, and a resolution failure surfaces as
+    /// `resolve_target`'s own `Err` rather than being swallowed --
+    /// exactly what `handle_connection` turns into its 502. Uses the
+    /// gateway's own no-registry-configured shape (finding C7's sibling,
+    /// at this layer) since it needs no signed document to reach.
+    #[tokio::test]
+    async fn resolve_target_routes_an_app_scoped_host_through_the_resolver_and_surfaces_its_error()
+    {
+        let state = test_state(None);
+        let target = TargetHost::App {
+            app_lookup_alias: "my-app-abcdefgh".to_string(),
+            app_did_hash: "abcdefgh".to_string(),
+            service_name_hash: "ijklmnop".to_string(),
+            interface: String::new(),
+        };
+
+        let err = resolve_target(&state, target, None).await.unwrap_err();
+        assert!(err.to_string().contains("no community registry configured"), "{err}");
     }
 
     // Tests 83-89 (the D-S3-5 binding checks, task.md budgets 1 and 2, the

@@ -30,7 +30,8 @@ pub use reconcile::{ReconcileAction, ReconcilePlan, Reconciler};
 pub use resolver::{
     AllMembers, AppRegistry, AppScope, BindingWriteOutcome, DEFAULT_BINDING_CACHE_TTL_MS,
     LogicalResolver, ResolvedTopology, ShardingStrategy, StaticInventory, TopologyEntry,
-    TopologyEpoch, TopologyKey, classify_binding_write, empty_resolver, rendezvous_select,
+    TopologyEpoch, TopologyKey, classify_binding_write, empty_resolver, is_retryable_resolve_error,
+    rendezvous_select,
 };
 pub use saga::{SAGA_UNDO_PREFIX, compensated_operation, saga_undo_name};
 pub use schedule::{

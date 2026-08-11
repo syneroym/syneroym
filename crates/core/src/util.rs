@@ -142,7 +142,10 @@ fn finish_host(label: String, domain: &str, hashed_suffix_len: usize) -> anyhow:
 /// service that belongs to no app instance.
 ///
 /// # Errors
-/// The label exceeds [`MAX_DNS_LABEL_LEN`].
+/// The label exceeds [`MAX_DNS_LABEL_LEN`], or `nickname`'s own final
+/// segment would misread as an `-a<hash>` segment (§0.12) -- the parser
+/// pops an optional `-a` last, so an unscoped host is exposed to the same
+/// ambiguity an app-scoped one is.
 /// `interface: None` omits the `-i` segment: the destination resolves it
 /// to the service's one app-declared interface (D-S3-15).
 pub fn generate_service_host(
@@ -152,6 +155,7 @@ pub fn generate_service_host(
     domain: &str,
 ) -> anyhow::Result<String> {
     let nickname = nickname.unwrap_or_default();
+    refuse_ambiguous_nickname_tail(nickname)?;
     let s_hash = short_hash(service_id);
     let mut label = if nickname.is_empty() { String::new() } else { format!("{nickname}-") };
     label.push_str(&format!("s{s_hash}"));
@@ -260,13 +264,20 @@ mod tests {
     }
 
     /// Test 70: §0.12's irreducible residue -- refused at build, not
-    /// misread at parse.
+    /// misread at parse. Both builders share the guard: an unscoped host
+    /// is popped through the same optional-`-a` step an app-scoped one is,
+    /// so it is exposed to the identical ambiguity (finding A1).
     #[test]
     fn a_nickname_whose_last_segment_looks_like_an_app_hash_is_refused_at_build() {
         let fake_hash = "a".to_string() + &"b".repeat(SHORT_HASH_LEN);
         let nickname = format!("data-{fake_hash}");
+
         let err =
             generate_app_host(&nickname, "did:key:zApp", "backend", None, "localhost").unwrap_err();
+        assert!(err.to_string().contains(&fake_hash), "{err}");
+
+        let err =
+            generate_service_host(Some(&nickname), "did:key:zSvc", None, "localhost").unwrap_err();
         assert!(err.to_string().contains(&fake_hash), "{err}");
     }
 

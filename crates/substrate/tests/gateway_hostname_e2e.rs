@@ -404,11 +404,21 @@ async fn submit_and_adopt(
 }
 
 /// Spawns a minimal raw-TCP responder: whatever bytes arrive, it answers
-/// with one fixed HTTP response carrying `marker` in the body.
-/// `ServiceType::Tcp` proxies raw bytes end to end (the client gateway's
-/// own HTTP parsing only ever reads the `Host` header before forwarding
-/// the request verbatim), so this is a faithful stand-in for a real
-/// backend without pulling in a full HTTP server crate.
+/// with one fixed HTTP response carrying `marker`, and the raw
+/// `X-Syneroym-Routing-Key` header value it received (or `"none"` if the
+/// request carried none), in the body. `ServiceType::Tcp` proxies raw
+/// bytes end to end (the client gateway's own HTTP parsing only ever
+/// reads the `Host` header before forwarding the request verbatim), so
+/// this is a faithful stand-in for a real backend without pulling in a
+/// full HTTP server crate. Echoing the routing-key value back is what
+/// makes test 100 able to fail: every replica of a TCP service in this
+/// milestone shares one physical backend by construction
+/// (`service_manifest` clones the same `config.source` per `member_index`
+/// -- `compiler.rs`'s `PlannedService` loop -- so response *content*
+/// cannot distinguish which member DID the gateway dialed). What crossing
+/// the real wire intact end to end can prove instead, and what this
+/// test's own doc comment already promises, is that the header itself
+/// survives the gateway unmodified -- this is the check that lets it.
 async fn spawn_tcp_backend(port: u16, marker: &'static str) -> JoinHandle<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = TcpListener::bind(addr).await.expect("bind tcp backend");
@@ -417,8 +427,11 @@ async fn spawn_tcp_backend(port: u16, marker: &'static str) -> JoinHandle<()> {
             let Ok((mut stream, _)) = listener.accept().await else { break };
             tokio::spawn(async move {
                 let mut buf = [0u8; 4096];
-                let _ = stream.read(&mut buf).await;
-                let body = format!("Hello from {marker}");
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let routing_key =
+                    extract_header_value(&buf[..n], "x-syneroym-routing-key").unwrap_or_default();
+                let routing_key = if routing_key.is_empty() { "none" } else { &routing_key };
+                let body = format!("Hello from {marker}; routing-key={routing_key}");
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
                     body.len(),
@@ -428,6 +441,18 @@ async fn spawn_tcp_backend(port: u16, marker: &'static str) -> JoinHandle<()> {
                 let _ = stream.flush().await;
             });
         }
+    })
+}
+
+/// A minimal, case-insensitive raw-HTTP header value extractor over the
+/// exact bytes `spawn_tcp_backend` reads off the wire -- deliberately not
+/// pulling in a full HTTP parser for a header lookup this simple.
+fn extract_header_value(raw: &[u8], header_name: &str) -> Option<String> {
+    let text = String::from_utf8_lossy(raw);
+    let needle = format!("{}:", header_name.to_ascii_lowercase());
+    text.lines().find_map(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.starts_with(&needle).then(|| line[needle.len()..].trim().to_string())
     })
 }
 
@@ -603,13 +628,26 @@ async fn an_http_client_reaches_an_apps_logical_service_by_hostname_alone() {
 }
 
 /// Test 100: the routing-key header over the wire, against a real
-/// `Redundant` service -- a keyed request reaches a stable member across
-/// two requests, and an unkeyed one still succeeds (round-robin, not
-/// refused). Per-member response identity is checked at unit scale
-/// already (`syneroym-sdk` test 88); this test's own job is to confirm
-/// the header travels the real wire unmodified end to end.
+/// `Redundant` service. **Corrected post-review-pass (finding C1)**: the
+/// original version asserted `keyed_first == keyed_second` over identical
+/// response *content*, which was true regardless of correctness -- every
+/// replica of a TCP service shares one physical backend by construction
+/// in this milestone (`service_manifest` clones the same `config.source`
+/// per `member_index`), so content can never distinguish which member the
+/// gateway dialed, and it reused one `Client` across every request, so a
+/// gateway bug that only reads the header on a connection's first request
+/// (the exact shape finding A2 fixed) would have gone unnoticed too.
+///
+/// What this test actually verifies now, each over its own fresh
+/// connection (a reused one would prove nothing about a *second*
+/// request): the header's exact bytes reach the backend unmodified,
+/// per request, and an absent header reaches it as absent rather than as
+/// some stale value from an earlier request. Per-member selection
+/// consistency (the same key always picks the same member) is unit
+/// tested directly, with real members to distinguish, at `syneroym-sdk`
+/// test 88.
 #[tokio::test]
-async fn a_keyed_request_reaches_a_stable_member_and_an_unkeyed_one_spreads() {
+async fn a_routing_key_header_crosses_the_gateway_to_the_backend_per_request() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let backend_port = 42_610u16;
@@ -631,33 +669,41 @@ async fn a_keyed_request_reaches_a_stable_member_and_an_unkeyed_one_spreads() {
     let host =
         util::generate_app_host("gw-host-keyed", &app_did, "backend", None, "localhost").unwrap();
 
-    let client = Client::new();
     let deadline = Instant::now() + Duration::from_secs(20);
-    let unkeyed =
-        poll_gateway_until_success(&client, &supervisor_node.gateway_url(), &host, None, deadline)
-            .await;
-    assert!(unkeyed.contains("keyed"), "{unkeyed}");
 
-    let keyed_first = poll_gateway_until_success(
-        &client,
+    let unkeyed = poll_gateway_until_success(
+        &Client::new(),
+        &supervisor_node.gateway_url(),
+        &host,
+        None,
+        deadline,
+    )
+    .await;
+    assert!(unkeyed.contains("routing-key=none"), "{unkeyed}");
+
+    let keyed_alice = poll_gateway_until_success(
+        &Client::new(),
         &supervisor_node.gateway_url(),
         &host,
         Some("alice"),
         deadline,
     )
     .await;
-    let keyed_second = poll_gateway_until_success(
-        &client,
+    assert!(keyed_alice.contains("routing-key=alice"), "{keyed_alice}");
+
+    // A different key on a third, again fresh, connection -- proving the
+    // value genuinely travels with each request rather than being fixed
+    // once (by a stale cache, or a gateway bug reading only the first
+    // connection's headers) and echoed back regardless of what is sent.
+    let keyed_bob = poll_gateway_until_success(
+        &Client::new(),
         &supervisor_node.gateway_url(),
         &host,
-        Some("alice"),
+        Some("bob"),
         deadline,
     )
     .await;
-    assert_eq!(
-        keyed_first, keyed_second,
-        "the same routing key must reach the same member across two requests"
-    );
+    assert!(keyed_bob.contains("routing-key=bob"), "{keyed_bob}");
 
     supervisor_node.teardown().await;
     managed_node.teardown().await;

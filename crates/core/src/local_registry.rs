@@ -199,17 +199,20 @@ impl EndpointRegistry {
     ///   (ADR-0022 §7's hostname omits `-i` when a caller has nothing to say
     ///   about it, D-S3-15).
     ///
-    /// The empty case filters [`NATIVE_CAPABILITY_INTERFACES`], which
-    /// every deployed service is registered under regardless of type, so
-    /// "only one" means only one the app itself declared. Zero or two or
-    /// more is `None`: an ambiguous interface is refused, never guessed.
+    /// The empty case filters [`NATIVE_CAPABILITY_INTERFACES`] and
+    /// [`NODE_NATIVE_INTERFACES`], which every deployed service (the
+    /// latter, only the node's own DID) is registered under regardless of
+    /// type, so "only one" means only one the app itself declared. Zero or
+    /// two or more is `None`: an ambiguous interface is refused, never
+    /// guessed.
     #[must_use]
     pub fn resolve_interface(&self, service_id: &str, interface_name: &str) -> Option<String> {
         if interface_name.is_empty() {
-            let mut declared = self
-                .lookup_by_service(service_id)
-                .into_iter()
-                .filter(|(name, _)| !NATIVE_CAPABILITY_INTERFACES.contains(&name.as_str()));
+            let mut declared =
+                self.lookup_by_service(service_id).into_iter().filter(|(name, _)| {
+                    !NATIVE_CAPABILITY_INTERFACES.contains(&name.as_str())
+                        && !NODE_NATIVE_INTERFACES.contains(&name.as_str())
+                });
             let only = declared.next()?;
             return if declared.next().is_none() { Some(only.0) } else { None };
         }
@@ -570,6 +573,33 @@ mod tests {
             SubstrateEndpoint::WasmChannel { service_id } => assert_eq!(service_id, service),
             _ => panic!("Wrong endpoint type"),
         }
+    }
+
+    /// Finding A4: `NODE_NATIVE_INTERFACES` (`orchestrator`/`security`) is
+    /// filtered by the empty branch exactly like `NATIVE_CAPABILITY_INTERFACES`
+    /// -- neither is ever "the one app-declared interface" a caller with no
+    /// interface named actually meant, even though today `orchestrator`/
+    /// `security` are only ever registered under a node's own DID and never
+    /// under a deployed service's id (so this was previously unreachable in
+    /// practice, only in principle).
+    #[tokio::test]
+    async fn an_empty_interface_never_resolves_to_a_node_native_interface() {
+        let storage = Arc::new(MockStorage::new());
+        let registry = EndpointRegistry::new(storage).await.unwrap();
+        let service = "svc-with-node-native-only".to_string();
+        let endpoint = SubstrateEndpoint::WasmChannel { service_id: service.clone() };
+
+        for native in NODE_NATIVE_INTERFACES {
+            registry.register(service.clone(), native.to_string(), endpoint.clone()).await.unwrap();
+        }
+        assert!(registry.lookup(&service, "").is_none());
+
+        // With one genuine app-declared interface alongside them, that one
+        // still resolves -- the node-native pair is filtered out, not
+        // counted toward the ambiguity check.
+        registry.register(service.clone(), "default".to_string(), endpoint.clone()).await.unwrap();
+        let (_, canonical) = registry.lookup(&service, "").unwrap();
+        assert_eq!(canonical, "default");
     }
 
     /// Test 80: the ambiguity and the empty-set halves, both `None`, never
