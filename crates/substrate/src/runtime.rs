@@ -44,7 +44,13 @@ use syneroym_router::{ConnectionRouter, RouteHandlerDeps};
 use syneroym_rpc::{NativeDispatchRegistry, NativeService};
 use syneroym_sandbox_podman::ContainerEngine;
 use syneroym_sandbox_wasm::AppSandboxEngine;
-use tokio::{net::TcpListener, signal, task::JoinHandle, time};
+use tokio::{
+    net::TcpListener,
+    signal,
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+    time,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -607,22 +613,8 @@ async fn setup_connection_router(
         );
     }
 
-    let (router, endpoint_registry, publisher, supervisor) =
+    let (router, endpoint_registry, _publisher, supervisor) =
         setup_router(config, &service_id, secret_key).await?;
-
-    if let Some(publisher) = publisher
-        && let Some(endpoint_addr) = router.endpoint_addr()
-    {
-        let relay_url = config.parent_coordinator.iroh.as_ref().map(|c| c.url.clone());
-        publish_to_community_registry(
-            service_id,
-            endpoint_addr,
-            relay_url,
-            secret_key,
-            config.identity.nickname.clone(),
-            publisher,
-        );
-    }
 
     Ok((router, endpoint_registry, supervisor))
 }
@@ -736,6 +728,25 @@ async fn setup_router(
             )
         })?;
         control_plane.set_endpoint_publisher(publisher.clone());
+
+        // Wires `republish_now` to this heartbeat loop before spawning it,
+        // so a caller can force an immediate republish (e.g. after a
+        // community registry this node's records were wiped from comes
+        // back up) instead of waiting up to `HEARTBEAT_INTERVAL_SECS`.
+        if let Some(endpoint_addr) = router.endpoint_addr() {
+            let relay_url = config.parent_coordinator.iroh.as_ref().map(|c| c.url.clone());
+            let (force_tx, force_rx) = mpsc::channel(4);
+            control_plane.set_republish_trigger(force_tx);
+            publish_to_community_registry(
+                service_id.to_string(),
+                endpoint_addr,
+                relay_url,
+                secret_key,
+                config.identity.nickname.clone(),
+                publisher.clone(),
+                force_rx,
+            );
+        }
     }
 
     Ok((router, endpoint_registry, publisher, supervisor))
@@ -823,6 +834,7 @@ async fn init_supervisor(
         store,
         vault,
         &shared.client_identity,
+        config.substrate.enable_bep0044_dht,
         shared.messaging_broker.clone(),
         role.alert_topic.clone(),
         role.poll_interval_secs,
@@ -1102,6 +1114,59 @@ fn build_blob_provider(config: &SubstrateConfig) -> anyhow::Result<Arc<dyn BlobP
     }
 }
 
+/// One heartbeat pass's worth of work: (re-)register this substrate's own
+/// endpoint record, then replay every hosted service's still-verifying
+/// record. Split out of `publish_to_community_registry`'s loop so a forced
+/// republish (`ControlPlaneService::republish_now`) can run the exact same
+/// work as the scheduled heartbeat, not a parallel, drifting copy of it.
+async fn publish_self_and_hosted(
+    service_id: &str,
+    endpoint_addr: &EndpointAddr,
+    relay_url: Option<String>,
+    secret_key: &[u8; 32],
+    nickname: Option<String>,
+    registry_client: &RegistryClient,
+    publisher: &EndpointPublisher,
+) -> anyhow::Result<()> {
+    let signed_info =
+        build_signed_endpoint_info(service_id, endpoint_addr, relay_url, secret_key, nickname)
+            .map_err(|e| anyhow::anyhow!("failed to build signed endpoint info: {e}"))?;
+
+    let mut attempts = 0;
+    let mut success = false;
+    while attempts < 30 {
+        if let Err(e) = registry_client.register(&signed_info, false).await {
+            warn!("Failed to register endpoint (attempt {}): {}", attempts + 1, e);
+            time::sleep(Duration::from_millis(500)).await;
+            attempts += 1;
+        } else {
+            success = true;
+            break;
+        }
+    }
+
+    if success {
+        info!(service_id = %service_id, "Successfully registered substrate endpoint");
+    } else {
+        warn!(
+            service_id = %service_id,
+            "Exhausted registration retries. Substrate may be unreachable."
+        );
+    }
+
+    // Hosted services: replay every stored, still-verifying record
+    // verbatim. The substrate holds no key that could ever sign one itself
+    // (ADR-0020 §3), so this is pure replay, never a rebuild.
+    publisher.publish_all_services().await;
+    publisher.warn_on_near_expiry_records().await;
+
+    if success {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("exhausted registration retries for this substrate's own endpoint"))
+    }
+}
+
 fn publish_to_community_registry(
     service_id: String,
     endpoint_addr: EndpointAddr,
@@ -1109,6 +1174,7 @@ fn publish_to_community_registry(
     secret_key: [u8; 32],
     nickname: Option<String>,
     publisher: Arc<EndpointPublisher>,
+    mut force_rx: mpsc::Receiver<oneshot::Sender<anyhow::Result<()>>>,
 ) {
     tokio::spawn(async move {
         // Reuses the publisher's own client rather than building a second
@@ -1117,56 +1183,33 @@ fn publish_to_community_registry(
         // not just noise.
         let registry_client = publisher.registry_client();
 
+        // A forced request that arrived while a pass was already running
+        // (or while the pass just triggered by an earlier request was
+        // running) waits here for the *next* pass to reply to, rather than
+        // the caller's request going unanswered.
+        let mut pending_reply: Option<oneshot::Sender<anyhow::Result<()>>> = None;
         loop {
-            // Register native substrate endpoint
-            let signed_info = match build_signed_endpoint_info(
+            let result = publish_self_and_hosted(
                 &service_id,
                 &endpoint_addr,
                 relay_url.clone(),
                 &secret_key,
                 nickname.clone(),
-            ) {
-                Ok(info) => info,
-                Err(e) => {
-                    warn!("Failed to build signed endpoint info: {}", e);
-                    time::sleep(Duration::from_secs(60)).await;
-                    continue;
-                }
-            };
-
-            let mut attempts = 0;
-            let mut success = false;
-            while attempts < 30 {
-                if let Err(e) = registry_client.register(&signed_info, false).await {
-                    warn!("Failed to register endpoint (attempt {}): {}", attempts + 1, e);
-                    time::sleep(Duration::from_millis(500)).await;
-                    attempts += 1;
-                } else {
-                    success = true;
-                    break;
-                }
+                &registry_client,
+                &publisher,
+            )
+            .await;
+            if let Some(reply) = pending_reply.take() {
+                let _ = reply.send(result);
             }
 
-            if success {
-                info!(
-                    service_id = %service_id,
-                    "Successfully registered substrate endpoint"
-                );
-            } else {
-                warn!(
-                    service_id = %service_id,
-                    "Exhausted registration retries. Substrate may be unreachable."
-                );
+            // Sleep until the next heartbeat interval, unless a forced
+            // republish request arrives first -- in which case loop back
+            // around immediately and run another pass for it.
+            tokio::select! {
+                () = time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)) => {},
+                Some(reply) = force_rx.recv() => pending_reply = Some(reply),
             }
-
-            // Hosted services: replay every stored, still-verifying record
-            // verbatim. The substrate holds no key that could ever sign one
-            // itself (ADR-0020 §3), so this is pure replay, never a rebuild.
-            publisher.publish_all_services().await;
-            publisher.warn_on_near_expiry_records().await;
-
-            // Sleep until the next heartbeat interval
-            time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
         }
     });
 }

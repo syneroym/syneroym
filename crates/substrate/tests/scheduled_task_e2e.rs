@@ -56,10 +56,19 @@ use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
 use syneroym_sdk::SyneroymClient;
 use syneroym_substrate::identity;
 use tokio::{
-    sync::{mpsc, mpsc::Sender},
+    sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
     time,
 };
+
+/// Every test in this binary boots one or more full substrate
+/// instances (real iroh QUIC socket, self-hosted relay, wasmtime).
+/// Running every test's own full stack concurrently (Rust's default
+/// test harness) means many simultaneous substrate processes' worth
+/// of sockets/fds at once -- CPU starvation and, on a low
+/// `ulimit -n`, real fd exhaustion. Same fix as `tests/common/mod.rs`'s
+/// `SUBSTRATE_TEST_LOCK`.
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[path = "common/retry.rs"]
 mod retry;
@@ -168,7 +177,8 @@ impl Node {
             substrate_service_id.clone(),
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -410,6 +420,7 @@ fn fail_if_fixture_missing() {
 
 #[tokio::test]
 async fn a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     fail_if_fixture_missing();
     let _ = ring::default_provider().install_default();
 
@@ -495,7 +506,8 @@ async fn a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick() {
     }
 
     let worker_service_id = deployed_service_id(&supervisor_node).await;
-    let mut worker_client = SyneroymClient::new(worker_service_id, shared_registry.clone());
+    let mut worker_client =
+        SyneroymClient::new(worker_service_id, shared_registry.clone()).with_registry_dht(false);
     worker_client.connect().await.expect("failed to connect to the deployed worker");
 
     // ---- Step 2: nothing has run yet. ----
@@ -556,6 +568,7 @@ async fn a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick() {
 
 #[tokio::test]
 async fn a_supervisor_restart_skips_the_ticks_it_missed() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     fail_if_fixture_missing();
     let _ = ring::default_provider().install_default();
 
@@ -630,7 +643,8 @@ async fn a_supervisor_restart_skips_the_ticks_it_missed() {
     }
 
     let worker_service_id = deployed_service_id(&supervisor_node).await;
-    let mut worker_client = SyneroymClient::new(worker_service_id, shared_registry.clone());
+    let mut worker_client =
+        SyneroymClient::new(worker_service_id, shared_registry.clone()).with_registry_dht(false);
     worker_client.connect().await.expect("failed to connect to the deployed worker");
 
     // ---- First tick: prove the schedule runs normally before the

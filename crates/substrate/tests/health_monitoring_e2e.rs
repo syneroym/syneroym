@@ -170,7 +170,8 @@ impl Node {
             substrate_service_id.clone(),
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -224,6 +225,7 @@ async fn client_for(node: &Node, operator: &Identity, grant: CapabilityToken) ->
         node.registry_url.clone(),
         Identity::from_bytes(&operator.to_bytes()),
     )
+    .with_registry_dht(false)
     .with_ucan(grant);
     client.connect().await.expect("failed to connect client");
     client
@@ -237,7 +239,8 @@ async fn owner_client_for(node: &Node, owner: &Identity) -> SyneroymClient {
         node.did().to_string(),
         node.registry_url.clone(),
         Identity::from_bytes(&owner.to_bytes()),
-    );
+    )
+    .with_registry_dht(false);
     client.connect().await.expect("failed to connect owner client");
     client
 }

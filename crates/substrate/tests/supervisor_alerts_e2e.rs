@@ -146,7 +146,8 @@ impl Node {
             substrate_service_id.clone(),
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -374,7 +375,8 @@ async fn an_operator_subscribed_to_the_alert_topic_receives_an_opened_alert() {
         supervisor_node.did().to_string(),
         supervisor_node.registry_url.clone(),
         operator_identity,
-    );
+    )
+    .with_registry_dht(false);
     operator.connect().await.expect("operator failed to connect to the supervisor node");
     let mut alert_stream = time::timeout(
         Duration::from_secs(10),

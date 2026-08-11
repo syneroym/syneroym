@@ -171,7 +171,8 @@ impl Node {
             substrate_service_id,
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -241,6 +242,7 @@ async fn deploy(
 
 fn orchestrator_client(node: &Node, caller: Identity) -> SyneroymClient {
     SyneroymClient::new_with_identity(node.did().to_string(), node.registry_url.clone(), caller)
+        .with_registry_dht(false)
 }
 
 fn pubkey_from_hex(hex_str: &str) -> VerifyingKey {

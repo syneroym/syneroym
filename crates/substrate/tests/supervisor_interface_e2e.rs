@@ -34,9 +34,18 @@ use syneroym_sdk::SyneroymClient;
 use syneroym_substrate::identity;
 use tempfile::TempDir;
 use tokio::{
-    sync::{mpsc, mpsc::Sender},
+    sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
 };
+
+/// Every test in this binary boots one or more full substrate
+/// instances (real iroh QUIC socket, self-hosted relay, wasmtime).
+/// Running every test's own full stack concurrently (Rust's default
+/// test harness) means many simultaneous substrate processes' worth
+/// of sockets/fds at once -- CPU starvation and, on a low
+/// `ulimit -n`, real fd exhaustion. Same fix as `tests/common/mod.rs`'s
+/// `SUBSTRATE_TEST_LOCK`.
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[path = "common/retry.rs"]
 mod retry;
@@ -188,7 +197,8 @@ impl Node {
             substrate_service_id.clone(),
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -456,6 +466,7 @@ async fn submit_after_boot(
 
 #[tokio::test]
 async fn an_operator_submits_and_reads_back_status_over_the_supervisor_interface() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
@@ -493,6 +504,7 @@ async fn an_operator_submits_and_reads_back_status_over_the_supervisor_interface
 
 #[tokio::test]
 async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
@@ -543,7 +555,8 @@ async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
         managed_node.did().to_string(),
         managed_node.registry_url.clone(),
         Identity::from_bytes(&managed_owner.to_bytes()),
-    );
+    )
+    .with_registry_dht(false);
     second_writer
         .wait_for_ready(Duration::from_secs(30))
         .await
@@ -568,6 +581,7 @@ async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
 
 #[tokio::test]
 async fn a_supervisor_deploys_a_bound_app_using_masters_it_minted() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
@@ -607,6 +621,7 @@ async fn a_supervisor_deploys_a_bound_app_using_masters_it_minted() {
 
 #[tokio::test]
 async fn adopt_reads_the_held_generation_from_the_managed_node_and_claims_the_next() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
@@ -646,6 +661,7 @@ async fn adopt_reads_the_held_generation_from_the_managed_node_and_claims_the_ne
 
 #[tokio::test]
 async fn a_pushed_binding_reaches_a_dependent_the_supervisor_deployed() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, mut managed_node, inventory_json) =
@@ -720,6 +736,7 @@ async fn a_pushed_binding_reaches_a_dependent_the_supervisor_deployed() {
 /// every_write` stands in for one with a stale-generation `submit`.
 #[tokio::test]
 async fn a_supervisor_that_reads_a_higher_generation_marks_the_instance_superseded_and_alerts() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
@@ -746,7 +763,8 @@ async fn a_supervisor_that_reads_a_higher_generation_marks_the_instance_supersed
         managed_node.did().to_string(),
         managed_node.registry_url.clone(),
         Identity::from_bytes(&managed_owner.to_bytes()),
-    );
+    )
+    .with_registry_dht(false);
     second_writer
         .wait_for_ready(Duration::from_secs(30))
         .await

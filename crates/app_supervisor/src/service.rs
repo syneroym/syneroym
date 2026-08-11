@@ -228,6 +228,12 @@ trait QueueConnector: fmt::Debug + Send + Sync {
 #[derive(Debug)]
 struct LiveQueueConnector {
     client_identity_bytes: [u8; 32],
+    /// Mirrors this node's own `enable_bep0044_dht` (see
+    /// `SupervisorService::enable_registry_dht`'s doc): every delivery
+    /// attempt builds a fresh `SyneroymClient`, so leaving this on would
+    /// spin up a real mainline-DHT client on every queue-worker tick a
+    /// target substrate stays unreachable.
+    enable_registry_dht: bool,
 }
 
 #[async_trait::async_trait]
@@ -241,7 +247,8 @@ impl QueueConnector for LiveQueueConnector {
             entry.did.clone(),
             entry.api_url.clone().unwrap_or_default(),
             identity,
-        );
+        )
+        .with_registry_dht(self.enable_registry_dht);
         if let Some(token) = &entry.ucan {
             client = client.with_ucan(token.clone());
         }
@@ -292,6 +299,14 @@ pub struct SupervisorService {
     /// implement `Clone` -- a fresh `Identity` is reconstructed per
     /// outbound connection.
     client_identity_bytes: [u8; 32],
+    /// This node's own `SubstrateConfig.substrate.enable_bep0044_dht`
+    /// (ADR-0021 §8: the supervisor is itself a client of the substrates
+    /// it manages, so its outbound connections should honor the same DHT
+    /// policy this node applies to its own registry publishing). Passed
+    /// to every `SyneroymClient` this service builds -- `connected_client`
+    /// and `LiveQueueConnector` alike -- so a node with DHT disabled
+    /// doesn't spin one up on the client side instead.
+    enable_registry_dht: bool,
     /// D-A5c-6 (§19.5): this node's shared broker, registered under
     /// `SUPERVISOR_DISPATCH_ID` (`runtime.rs`) so `record_report`'s caller
     /// can publish a newly-opened alert without a deployed service in the
@@ -427,6 +442,7 @@ impl SupervisorService {
         store: SupervisorStore,
         vault: MasterVault,
         client_identity: &Identity,
+        enable_registry_dht: bool,
         messaging_broker: Arc<MqttBroker>,
         alert_topic: String,
         poll_interval_secs: u64,
@@ -499,6 +515,7 @@ impl SupervisorService {
             store,
             vault,
             client_identity_bytes: client_identity.to_bytes(),
+            enable_registry_dht,
             messaging_broker,
             alert_topic,
             poll_interval_secs,
@@ -515,6 +532,7 @@ impl SupervisorService {
             queue_tick_secs,
             queue_connector: Arc::new(LiveQueueConnector {
                 client_identity_bytes: client_identity.to_bytes(),
+                enable_registry_dht,
             }),
             instance_locks: DashMap::new(),
             last_reconciled: DashMap::new(),
@@ -2781,7 +2799,8 @@ impl SupervisorService {
             entry.did.clone(),
             entry.api_url.clone().unwrap_or_default(),
             identity,
-        );
+        )
+        .with_registry_dht(self.enable_registry_dht);
         if let Some(token) = &entry.ucan {
             client = client.with_ucan(token.clone());
         }
@@ -4200,6 +4219,17 @@ impl SupervisorService {
         let mut clients = BTreeMap::new();
         let mut failed = Vec::new();
         for alias in aliases {
+            // Shutdown must not wait out every remaining alias's own
+            // `MANAGED_SUBSTRATE_CONNECT_TIMEOUT` -- unlike
+            // `queue_worker_tick`'s per-item check (M05B B1 review finding
+            // 5), `run()`'s outer `select!` only races cancellation against
+            // *waiting for the next tick*, not against a pass already in
+            // flight, so without a check here a pass stuck connecting to
+            // one unreachable alias silently drags the whole shutdown out
+            // by however many alias timeouts remain.
+            if self.cancellation_token.is_cancelled() {
+                break;
+            }
             let Some(entry) = inventory.get(alias) else {
                 failed.push((
                     alias.clone(),
@@ -4214,11 +4244,14 @@ impl SupervisorService {
                 ));
                 continue;
             }
-            match self.connected_client(entry).await {
-                Ok(client) => {
-                    clients.insert(SubstrateAlias::new(alias.clone()), Arc::new(client));
-                }
-                Err(e) => failed.push((alias.clone(), e.to_string())),
+            tokio::select! {
+                () = self.cancellation_token.cancelled() => break,
+                result = self.connected_client(entry) => match result {
+                    Ok(client) => {
+                        clients.insert(SubstrateAlias::new(alias.clone()), Arc::new(client));
+                    }
+                    Err(e) => failed.push((alias.clone(), e.to_string())),
+                },
             }
         }
         (clients, failed)
@@ -5736,6 +5769,7 @@ mod tests {
                 store,
                 vault,
                 &identity,
+                false,
                 test_broker(),
                 "supervisor/alerts".to_string(),
                 self.poll_interval_secs.unwrap_or(30),

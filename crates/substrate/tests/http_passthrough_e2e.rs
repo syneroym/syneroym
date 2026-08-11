@@ -255,6 +255,7 @@ async fn wait_for_sse_event(recv: &mut RecvStream, needle: &str, timeout: Durati
 
 fn connect_peer(app_service_id: &str, mechanisms: &[EndpointMechanism]) -> SyneroymClient {
     SyneroymClient::new_with_mechanisms(app_service_id.to_string(), mechanisms.to_vec())
+        .with_registry_dht(false)
 }
 
 // ---------------------------------------------------------------------

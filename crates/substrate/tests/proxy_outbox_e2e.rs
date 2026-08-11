@@ -191,7 +191,8 @@ impl Node {
             substrate_service_id,
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -339,7 +340,8 @@ async fn guest_enqueue(
         guest_service_id.to_string(),
         node.registry_url.clone(),
         Identity::generate().unwrap(),
-    );
+    )
+    .with_registry_dht(false);
     client.connect().await.map_err(|e| format!("connect failed: {e}"))?;
     let outcome = client
         .request(

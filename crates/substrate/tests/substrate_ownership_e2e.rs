@@ -31,9 +31,18 @@ use syneroym_sdk::{NetworkEndpoint, SyneroymClient};
 use syneroym_substrate::identity;
 use tempfile::TempDir;
 use tokio::{
-    sync::{mpsc, mpsc::Sender},
+    sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
 };
+
+/// Every test in this binary boots one or more full substrate
+/// instances (real iroh QUIC socket, self-hosted relay, wasmtime).
+/// Running every test's own full stack concurrently (Rust's default
+/// test harness) means many simultaneous substrate processes' worth
+/// of sockets/fds at once -- CPU starvation and, on a low
+/// `ulimit -n`, real fd exhaustion. Same fix as `tests/common/mod.rs`'s
+/// `SUBSTRATE_TEST_LOCK`.
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 const IROH_PORT: u16 = 8600;
 const REGISTRY_PORT: u16 = 8601;
@@ -122,7 +131,8 @@ impl Node {
         });
 
         let mut substrate_client =
-            SyneroymClient::new(substrate_service_id.clone(), registry_url.clone());
+            SyneroymClient::new(substrate_service_id.clone(), registry_url.clone())
+                .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -197,10 +207,12 @@ impl Node {
 
 fn orchestrator_client(node: &Node, caller: Identity) -> SyneroymClient {
     SyneroymClient::new_with_identity(node.did().to_string(), node.registry_url.clone(), caller)
+        .with_registry_dht(false)
 }
 
 #[tokio::test]
 async fn a_claimed_substrate_admits_its_controller_and_denies_everyone_else() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();
 
     let controller = Identity::generate().unwrap();
@@ -301,6 +313,7 @@ const UNOWNED_GATEWAY_PORT: u16 = 8702;
 /// failure mode the fail-closed flip exists to fix.
 #[tokio::test]
 async fn an_unowned_substrate_rejects_a_deploy() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();
 
     let node =

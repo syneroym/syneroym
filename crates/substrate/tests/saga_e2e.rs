@@ -156,7 +156,8 @@ impl Node {
             substrate_service_id,
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -228,12 +229,13 @@ async fn publish_endpoint(
     mechanisms: Vec<EndpointMechanism>,
     signer: &Identity,
     registry_url: &str,
+    endpoint_type: EndpointType,
 ) {
     let mechanisms_snapshot = mechanisms.clone();
     let info = EndpointInfo {
         service_id: service_id.to_string(),
         substrate_id: substrate_id.to_string(),
-        endpoint_type: EndpointType::Service,
+        endpoint_type,
         nickname: None,
         mechanisms,
         is_private: false,
@@ -271,7 +273,7 @@ async fn deploy_guest(
     master: &Identity,
     wasm: Vec<u8>,
     with_cert: bool,
-) -> String {
+) -> (String, Vec<EndpointMechanism>) {
     let service_id = substrate::derive_did_key(&master.public_key());
     let instance_certificate = if with_cert {
         // `node`'s connection was dialed and proven live by its own
@@ -344,8 +346,16 @@ async fn deploy_guest(
 
     let mechanisms =
         node.substrate_client.lookup().await.expect("node lookup failed").info.mechanisms;
-    publish_endpoint(&service_id, node.did(), mechanisms, master, &node.registry_url).await;
-    service_id
+    publish_endpoint(
+        &service_id,
+        node.did(),
+        mechanisms.clone(),
+        master,
+        &node.registry_url,
+        EndpointType::Service,
+    )
+    .await;
+    (service_id, mechanisms)
 }
 
 /// Drives the driver's own `begin-workflow` export -- real guest code
@@ -355,7 +365,8 @@ async fn begin_workflow(node: &Node, driver_did: &str, deadline_secs: u64) -> St
         driver_did.to_string(),
         node.registry_url.clone(),
         Identity::generate().unwrap(),
-    );
+    )
+    .with_registry_dht(false);
     client.connect().await.expect("connect failed");
     let res = client
         .request(
@@ -375,7 +386,8 @@ async fn add_step(node: &Node, driver_did: &str, saga_id: &str, peer_did: &str, 
         driver_did.to_string(),
         node.registry_url.clone(),
         Identity::generate().unwrap(),
-    );
+    )
+    .with_registry_dht(false);
     client.connect().await.expect("connect failed");
     client
         .request(
@@ -393,7 +405,8 @@ async fn finish_workflow(node: &Node, driver_did: &str, saga_id: &str, outcome: 
         driver_did.to_string(),
         node.registry_url.clone(),
         Identity::generate().unwrap(),
-    );
+    )
+    .with_registry_dht(false);
     client.connect().await.expect("connect failed");
     client
         .request(
@@ -414,7 +427,8 @@ async fn read_ledger(node: &Node, participant_did: &str) -> String {
         participant_did.to_string(),
         node.registry_url.clone(),
         Identity::generate().unwrap(),
-    );
+    )
+    .with_registry_dht(false);
     client.connect().await.expect("connect failed");
     let res = client
         .request(test_constants::SAGA_TEST_PARTICIPANT_INTERFACE, "ledger", Value::Null)
@@ -496,10 +510,12 @@ async fn a_failed_workflow_is_undone_in_reverse_order() {
     .await;
 
     let participant_master = Identity::generate().unwrap();
-    let participant_did = deploy_guest(&mut node_b, &participant_master, wasm.clone(), false).await;
+    let (participant_did, _participant_mechanisms) =
+        deploy_guest(&mut node_b, &participant_master, wasm.clone(), false).await;
 
     let driver_master = Identity::generate().unwrap();
-    let driver_did = deploy_guest(&mut node_a, &driver_master, wasm, true).await;
+    let (driver_did, _driver_mechanisms) =
+        deploy_guest(&mut node_a, &driver_master, wasm, true).await;
 
     let saga_id = begin_workflow(&node_a, &driver_did, 3600).await;
     add_step(&node_a, &driver_did, &saga_id, &participant_did, "a").await;
@@ -597,10 +613,12 @@ async fn a_workflow_abandoned_across_a_restart_is_compensated_by_its_deadline() 
     )
     .await;
     let participant_master = Identity::generate().unwrap();
-    let participant_did = deploy_guest(&mut node_b, &participant_master, wasm.clone(), false).await;
+    let (participant_did, participant_mechanisms) =
+        deploy_guest(&mut node_b, &participant_master, wasm.clone(), false).await;
 
     let driver_master = Identity::generate().unwrap();
-    let driver_did = deploy_guest(&mut node_a, &driver_master, wasm, true).await;
+    let (driver_did, _driver_mechanisms) =
+        deploy_guest(&mut node_a, &driver_master, wasm, true).await;
 
     // A short deadline: long enough to add the one step, short enough that
     // the test does not have to wait long for it to pass.
@@ -644,26 +662,26 @@ async fn a_workflow_abandoned_across_a_restart_is_compensated_by_its_deadline() 
     // `proxy_outbox_e2e.rs`'s restart case does. Neither call needs the
     // KEK, so this happens before `unlock()`.
     //
-    // `node_b`'s connection has sat idle since its own `deploy_guest` call,
-    // through node A's `teardown` and full `boot_locked` reboot -- long
-    // enough under CI's scheduling pressure for the peer to abandon that
-    // idle path ("no viable network path exists: last path abandoned by
-    // peer"; same root cause fixed throughout this crate's e2e tests).
-    // Recover by explicit shutdown→reconnect before one retry.
-    let node_b_info = crate::call_with_reconnect!(
-        node_b.substrate_client,
-        node_b.substrate_client.lookup().await
-    )
-    .info
-    .mechanisms;
+    // Two republishes, not one: `participant_did`'s own guest-level record
+    // (reusing `participant_mechanisms` from `deploy_guest`'s earlier
+    // lookup, since node B itself never restarted and its mechanisms have
+    // not changed) *and* node B's own substrate-level record, forced via
+    // `republish` rather than waiting up to an hour for node B's own
+    // heartbeat. Both are needed: `SyneroymClient::connect`'s registry
+    // lookup resolves with `resolve: true`, which re-looks-up the guest
+    // record's `substrate_id` and overwrites its mechanisms with whatever
+    // that lookup finds -- so a missing substrate-level record breaks the
+    // guest lookup too, even with the guest record itself present.
     publish_endpoint(
         &participant_did,
         node_b.did(),
-        node_b_info,
+        participant_mechanisms,
         &participant_master,
         &shared_registry,
+        EndpointType::Service,
     )
     .await;
+    crate::call_with_reconnect!(node_b.substrate_client, node_b.substrate_client.republish().await);
     RegistryClient::new(false, Some(shared_registry.clone()))
         .publish_master_anchor(&driver_did, vec![], None, &driver_master, true)
         .await

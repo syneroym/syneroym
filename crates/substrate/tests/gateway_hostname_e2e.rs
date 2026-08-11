@@ -53,10 +53,18 @@ use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
-    sync::{mpsc, mpsc::Sender},
+    sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
     time,
 };
+
+/// Every test in this binary boots 2+ full substrate instances (real iroh
+/// QUIC socket, self-hosted relay, wasmtime). Distinct port blocks per test
+/// (below) avoid a bind collision, but running every test's own full stack
+/// concurrently still means many simultaneous substrate processes' worth of
+/// sockets/fds -- CPU starvation and, on a low `ulimit -n`, real fd
+/// exhaustion. Same fix as `tests/common/mod.rs`'s `SUBSTRATE_TEST_LOCK`.
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[derive(Clone, Copy)]
 struct PortBlock {
@@ -204,7 +212,8 @@ impl Node {
             substrate_service_id.clone(),
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -547,6 +556,7 @@ async fn boot_pair(
 /// it via an operator-supplied `resolve_ucan`.
 #[tokio::test]
 async fn an_http_client_reaches_an_apps_logical_service_by_hostname_alone() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let backend_port = 42_600u16;
@@ -649,6 +659,7 @@ async fn an_http_client_reaches_an_apps_logical_service_by_hostname_alone() {
 /// test 88.
 #[tokio::test]
 async fn a_routing_key_header_crosses_the_gateway_to_the_backend_per_request() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let backend_port = 42_610u16;
@@ -716,6 +727,7 @@ async fn a_routing_key_header_crosses_the_gateway_to_the_backend_per_request() {
 /// app supervised elsewhere -- the exact shape D-S3-6 says needs a token.
 #[tokio::test]
 async fn an_app_scoped_hostname_for_an_app_this_gateway_holds_no_grant_for_is_refused() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let backend_port = 42_620u16;
@@ -763,6 +775,7 @@ async fn an_app_scoped_hostname_for_an_app_this_gateway_holds_no_grant_for_is_re
 /// same-node grant deliberately.
 #[tokio::test]
 async fn a_same_node_gateway_resolves_with_no_credential_file() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let backend_port = 42_630u16;

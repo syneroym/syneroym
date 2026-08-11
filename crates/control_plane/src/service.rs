@@ -9,6 +9,7 @@ use std::{
     fs,
     path::PathBuf,
     sync::{Arc, OnceLock, Weak},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -32,6 +33,7 @@ use syneroym_rpc::{
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     BindingWrite, DeployManifest, DeploymentPlan, ProbeStatus,
 };
+use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
 use crate::dummy_sandbox::{AppSandboxEngine, ContainerEngine};
@@ -116,6 +118,18 @@ pub struct ControlPlaneService {
     /// holds no reference back to `ControlPlaneService`, so there is no
     /// cycle to guard against with a `Weak`.
     endpoint_publisher: OnceLock<Arc<EndpointPublisher>>,
+    /// Signals the substrate's background registry-heartbeat loop
+    /// (`publish_to_community_registry` in `crates/substrate/src/runtime.rs`)
+    /// to publish this node's own endpoint record and every hosted
+    /// service's record right now instead of waiting up to
+    /// `HEARTBEAT_INTERVAL_SECS` (1h). Wired the same two-phase,
+    /// post-construction way as `endpoint_publisher` and for the same
+    /// reason (`init` has many test call sites with no registry to
+    /// publish to). A request carries its own reply channel because the
+    /// loop, not this service, holds the node's own secret key and
+    /// endpoint address -- `endpoint_publisher` alone can only replay
+    /// *hosted* records, not re-sign this substrate's own.
+    republish_trigger: OnceLock<mpsc::Sender<oneshot::Sender<Result<()>>>>,
     // `Weak`, not `NativeDispatchRegistry` -- see the cycle explained in
     // `syneroym_rpc::dispatch_registry`'s module docs. `RouteHandlerInner`
     // owns the strong clone for as long as the router itself is alive.
@@ -193,6 +207,7 @@ impl ControlPlaneService {
             proxy_queues: OnceLock::new(),
             row_authorizer: OnceLock::new(),
             endpoint_publisher: OnceLock::new(),
+            republish_trigger: OnceLock::new(),
             native_dispatch: Arc::downgrade(&native_dispatch),
             http_routes,
             probe_cache: DashMap::new(),
@@ -210,6 +225,37 @@ impl ControlPlaneService {
     /// `row_authorizer`'s two-phase wiring.
     pub fn set_endpoint_publisher(&self, publisher: Arc<EndpointPublisher>) {
         let _ = self.endpoint_publisher.set(publisher);
+    }
+
+    /// Wires in the channel that reaches the substrate's registry-heartbeat
+    /// loop, so `republish_now` has somewhere to send a request. Same
+    /// two-phase, no-op-past-first-call wiring as `set_endpoint_publisher`.
+    pub fn set_republish_trigger(&self, tx: mpsc::Sender<oneshot::Sender<Result<()>>>) {
+        let _ = self.republish_trigger.set(tx);
+    }
+
+    /// Forces the registry-heartbeat loop to publish this node's own
+    /// endpoint record and every hosted service's record right now, rather
+    /// than waiting up to `HEARTBEAT_INTERVAL_SECS` (1h) for the next
+    /// scheduled pass -- e.g. after a registry this node's records were
+    /// wiped from (an in-memory community registry that itself restarted)
+    /// comes back up. Errs if no community registry is configured for this
+    /// node (`set_republish_trigger` never called), the loop is not
+    /// running, or it does not reply within 30s -- generous relative to the
+    /// loop's own worst case (30 registration attempts at 500ms apart).
+    pub async fn republish_now(&self) -> Result<()> {
+        let tx = self
+            .republish_trigger
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("no community registry is configured for this node"))?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send(reply_tx)
+            .await
+            .map_err(|_| anyhow::anyhow!("the registry-heartbeat loop is not running"))?;
+        tokio::time::timeout(Duration::from_secs(30), reply_rx)
+            .await
+            .map_err(|_| anyhow::anyhow!("republish timed out waiting for the heartbeat loop"))?
+            .map_err(|_| anyhow::anyhow!("the registry-heartbeat loop dropped the reply"))?
     }
 
     /// Never-constructed marker type coerced to an unsized `Weak<dyn
@@ -666,6 +712,20 @@ impl NativeService for ControlPlaneService {
                 // these four fields.
                 let facts = self.node_facts(&invocation.caller).await;
                 Ok(NativeResponse { payload: serde_json::to_value(facts).unwrap_or(Value::Null) })
+            }
+            "republish" => {
+                // Node-wide, like `status`: this republishes this node's own
+                // endpoint record, not a single service's, so there is no
+                // narrower resource to scope the gate to.
+                if !self.has_node_wide_ability(&invocation.caller, Ability::ORCHESTRATOR_STATUS) {
+                    return Err(RpcError::Custom(
+                        PERMISSION_DENIED_CODE,
+                        "caller holds no orchestrator/status on this node".to_string(),
+                        None,
+                    ));
+                }
+                self.republish_now().await.map_err(|e| RpcError::InternalError(e.to_string()))?;
+                Ok(NativeResponse { payload: serde_json::json!({"status": "republished"}) })
             }
             method => Err(RpcError::MethodNotFound(method.to_string())),
         }

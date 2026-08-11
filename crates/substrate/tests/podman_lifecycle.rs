@@ -121,7 +121,8 @@ impl SubstrateTestContext {
             substrate_service_id.clone(),
             registry_url.clone(),
             owner,
-        );
+        )
+        .with_registry_dht(false);
 
         substrate_client
             .wait_for_ready(Duration::from_secs(30))

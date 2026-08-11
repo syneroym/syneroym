@@ -49,7 +49,8 @@ async fn test_native_subscriber_receives_push_delivery_and_close_unsubscribes() 
     let mut subscriber = SyneroymClient::new_with_mechanisms(
         app_service_id.clone(),
         ctx.substrate_mechanisms.clone(),
-    );
+    )
+    .with_registry_dht(false);
     subscriber.connect().await.expect("subscriber failed to connect");
     let mut stream =
         time::timeout(Duration::from_secs(10), subscriber.subscribe("messaging", "orders/new"))
@@ -60,7 +61,8 @@ async fn test_native_subscriber_receives_push_delivery_and_close_unsubscribes() 
     let mut publisher = SyneroymClient::new_with_mechanisms(
         app_service_id.clone(),
         ctx.substrate_mechanisms.clone(),
-    );
+    )
+    .with_registry_dht(false);
     publisher.connect().await.expect("publisher failed to connect");
 
     let namespaced_topic = format!("svc/{app_service_id}/orders/new");

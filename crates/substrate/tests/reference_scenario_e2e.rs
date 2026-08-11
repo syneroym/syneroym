@@ -207,7 +207,8 @@ impl Node {
             substrate_service_id.clone(),
             effective_registry_url.clone(),
             Identity::from_bytes(&owner.to_bytes()),
-        );
+        )
+        .with_registry_dht(false);
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -563,7 +564,8 @@ async fn the_reference_scenario_runs_end_to_end_over_two_substrates() {
 
     // ---- Step 2: a resolved dependency call actually reaches backend. ----
     let mut frontend_client =
-        SyneroymClient::new(frontend_service_id.clone(), shared_registry.clone());
+        SyneroymClient::new(frontend_service_id.clone(), shared_registry.clone())
+            .with_registry_dht(false);
     frontend_client.connect().await.expect("failed to connect to frontend");
 
     let reply = call_backend_through_frontend(&frontend_client).await;
