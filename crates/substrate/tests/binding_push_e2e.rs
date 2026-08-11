@@ -6,8 +6,11 @@
 //!
 //! `Node` and the deploy scaffolding are copied from `multi_substrate_
 //! placement_e2e.rs`, which itself copies them from `master_endpoint_record_
-//! e2e.rs` -- this crate has no shared test-support module, so every e2e
-//! file duplicates the harness it needs (see that file's own module doc).
+//! e2e.rs` -- this crate has no shared test-support module for a harness
+//! this size, so every e2e file duplicates the one it needs (see that
+//! file's own module doc). `shutdown_clients` alone is small and identical
+//! everywhere it's used, so it comes from `common/client_shutdown.rs`
+//! instead of a third local copy.
 
 use std::{
     collections::BTreeMap,
@@ -45,6 +48,10 @@ use tokio::{
     sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
 };
+
+#[path = "common/client_shutdown.rs"]
+mod client_shutdown;
+use client_shutdown::shutdown_clients;
 
 /// Each `#[tokio::test]` in this file runs concurrently, so each of the two
 /// tests needs its own, non-overlapping port block -- the same convention
@@ -333,20 +340,6 @@ async fn client_for(
     .with_ucan(grant);
     client.connect().await.expect("failed to connect client");
     Arc::new(client)
-}
-
-/// Closes each client's iroh endpoint explicitly instead of leaving it to
-/// `Drop`'s fire-and-forget safety net -- a client dropped that way races
-/// this test's own tokio runtime shutdown and can trip iroh's "Endpoint
-/// dropped without calling `Endpoint::close`" warning. Only closes a client
-/// this call holds the sole `Arc` to; if something else still references
-/// it, leaving it open is correct, not a leak.
-async fn shutdown_clients(clients: impl IntoIterator<Item = Arc<SyneroymClient>>) {
-    for mut client in clients {
-        if let Some(c) = Arc::get_mut(&mut client) {
-            let _ = c.shutdown().await;
-        }
-    }
 }
 
 /// Boots both nodes (B sharing A's registry/relay), grants `operator` an

@@ -562,6 +562,7 @@ async fn a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick() {
         .result;
     assert_eq!(dead_letters.as_array().map(Vec::len), Some(0), "{dead_letters:?}");
 
+    worker_client.shutdown().await.ok();
     supervisor_node.teardown().await;
     managed.teardown().await;
 }
@@ -773,6 +774,7 @@ async fn a_supervisor_restart_skips_the_ticks_it_missed() {
         .result;
     assert_eq!(outbox.as_array().map(Vec::len), Some(0), "{outbox:?}");
 
+    worker_client.shutdown().await.ok();
     supervisor_node.teardown().await;
     managed.teardown().await;
 }

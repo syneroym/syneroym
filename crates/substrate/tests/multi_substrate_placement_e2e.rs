@@ -50,6 +50,10 @@ use tokio::{
     task::JoinHandle,
 };
 
+#[path = "common/client_shutdown.rs"]
+mod client_shutdown;
+use client_shutdown::shutdown_clients;
+
 /// Every `#[tokio::test]` in this file runs concurrently by default (the
 /// crate's other e2e files get away with one fixed port block each because
 /// each file has exactly one test) -- so each of the five tests here needs
@@ -424,20 +428,6 @@ async fn client_for(
     .with_ucan(grant);
     client.connect().await.expect("failed to connect client");
     Arc::new(client)
-}
-
-/// Closes each client's iroh endpoint explicitly instead of leaving it to
-/// `Drop`'s fire-and-forget safety net -- a client dropped that way races
-/// this test's own tokio runtime shutdown and can trip iroh's "Endpoint
-/// dropped without calling `Endpoint::close`" warning. Only closes a client
-/// this call holds the sole `Arc` to; if something else still references
-/// it, leaving it open is correct, not a leak.
-async fn shutdown_clients(clients: impl IntoIterator<Item = Arc<SyneroymClient>>) {
-    for mut client in clients {
-        if let Some(c) = Arc::get_mut(&mut client) {
-            let _ = c.shutdown().await;
-        }
-    }
 }
 
 /// Boots both nodes (B sharing A's registry/relay, D-A3-17's own

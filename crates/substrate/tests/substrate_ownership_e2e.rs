@@ -293,6 +293,8 @@ async fn a_claimed_substrate_admits_its_controller_and_denies_everyone_else() {
         "must be denied specifically, not fail on KekAlreadyInjected: {kek_err:?}"
     );
 
+    controller_client.shutdown().await.ok();
+    stranger_client.shutdown().await.ok();
     node.teardown().await;
 }
 
@@ -344,5 +346,6 @@ async fn an_unowned_substrate_rejects_a_deploy() {
         "must be denied for lack of a grant, not fail for some other reason: {deploy_err_string}"
     );
 
+    client.shutdown().await.ok();
     node.teardown().await;
 }
