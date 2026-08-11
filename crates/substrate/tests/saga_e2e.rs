@@ -45,6 +45,9 @@ use tokio::{
     time,
 };
 
+#[path = "common/retry.rs"]
+mod retry;
+
 /// This file's own hundred-port blocks, distinct from every other file in
 /// this directory (the highest claimed elsewhere at the time this was
 /// written is `proxy_outbox_e2e.rs`'s 13_900-13_902).
@@ -166,10 +169,19 @@ impl Node {
     }
 
     async fn unlock(&mut self) {
-        self.substrate_client
-            .inject_kek(hex::encode([0xcdu8; 32]))
-            .await
-            .expect("inject_kek failed");
+        // Some callers reach this right after `boot_locked` (no idle gap,
+        // never fails), others reach it after the connection sat idle
+        // through a teardown/reboot cycle plus a real wall-clock sleep
+        // ("no viable network path exists: last path abandoned by peer";
+        // same root cause fixed throughout this crate's e2e tests, e.g.
+        // `binding_push_e2e.rs`). `SyneroymClient::connect` no-ops on an
+        // already-`Some` connection, so recovering means an explicit
+        // `shutdown`-then-`connect` (redial) before one retry, not just
+        // retrying the same request on the same dead connection.
+        crate::call_with_reconnect!(
+            self.substrate_client,
+            self.substrate_client.inject_kek(hex::encode([0xcdu8; 32])).await
+        );
     }
 
     async fn boot(
@@ -518,14 +530,18 @@ async fn a_failed_workflow_is_undone_in_reverse_order() {
         read_ledger(&node_b, &participant_did).await
     );
 
-    let status = node_a
-        .substrate_client
-        .sagas(driver_did.clone())
-        .await
-        .expect("sagas failed")
-        .into_iter()
-        .find(|s| s.saga_id == saga_id)
-        .expect("the saga must still be listed");
+    // `node_a`'s connection sat idle through the entire 60s `wait_until`
+    // poll loop above (which only drives `node_b`'s client), long enough
+    // under CI's scheduling pressure for the peer to abandon that idle
+    // path ("no viable network path exists: last path abandoned by peer";
+    // same root cause fixed throughout this crate's e2e tests). Recover by
+    // explicit shutdown→reconnect before one retry.
+    let sagas_a = crate::call_with_reconnect!(
+        node_a.substrate_client,
+        node_a.substrate_client.sagas(driver_did.clone()).await
+    );
+    let status =
+        sagas_a.into_iter().find(|s| s.saga_id == saga_id).expect("the saga must still be listed");
     assert_eq!(status.state, SagaState::Compensated);
 
     // A second sweep changes nothing: the walk does not re-run.
@@ -625,8 +641,19 @@ async fn a_workflow_abandoned_across_a_restart_is_compensated_by_its_deadline() 
     // its own restart empties it -- republished here for the same reason
     // `proxy_outbox_e2e.rs`'s restart case does. Neither call needs the
     // KEK, so this happens before `unlock()`.
-    let node_b_info =
-        node_b.substrate_client.lookup().await.expect("node B lookup failed").info.mechanisms;
+    //
+    // `node_b`'s connection has sat idle since its own `deploy_guest` call,
+    // through node A's `teardown` and full `boot_locked` reboot -- long
+    // enough under CI's scheduling pressure for the peer to abandon that
+    // idle path ("no viable network path exists: last path abandoned by
+    // peer"; same root cause fixed throughout this crate's e2e tests).
+    // Recover by explicit shutdown→reconnect before one retry.
+    let node_b_info = crate::call_with_reconnect!(
+        node_b.substrate_client,
+        node_b.substrate_client.lookup().await
+    )
+    .info
+    .mechanisms;
     publish_endpoint(
         &participant_did,
         node_b.did(),
@@ -669,11 +696,15 @@ async fn a_workflow_abandoned_across_a_restart_is_compensated_by_its_deadline() 
          {:?}",
         read_ledger(&node_b, &participant_did).await
     );
-    let status = node_a
-        .substrate_client
-        .sagas(driver_did.clone())
-        .await
-        .expect("sagas failed")
+    // `node_a`'s connection sat idle through the 60s `wait_until` poll loop
+    // above (which only drives `node_b`'s client), long enough under CI's
+    // scheduling pressure for the peer to abandon that idle path. Recover
+    // by explicit shutdown→reconnect before one retry.
+    let sagas_a = crate::call_with_reconnect!(
+        node_a.substrate_client,
+        node_a.substrate_client.sagas(driver_did.clone()).await
+    );
+    let status = sagas_a
         .into_iter()
         .find(|s| s.saga_id == saga_id)
         .expect("the saga must have survived the restart under the same id");

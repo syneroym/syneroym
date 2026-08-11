@@ -60,6 +60,9 @@ use tokio::{
     time,
 };
 
+#[path = "common/retry.rs"]
+mod retry;
+
 #[derive(Clone, Copy)]
 struct PortBlock {
     supervisor_iroh: u16,
@@ -362,7 +365,19 @@ fn str_field<'a>(v: &'a Value, field: &str) -> Option<&'a str> {
 /// record published moments earlier. Every later call in this file (after
 /// the first pass has already reached each substrate once) needs no such
 /// retry.
-async fn submit_with_retry(supervisor_node: &Node, params: Value) {
+///
+/// `supervisor_node`'s own connection can independently be the thing at
+/// fault here too: it was dialed and proven live by its own
+/// `wait_for_ready` during `Node::boot`, then sat idle through both managed
+/// nodes' full boots -- long enough under CI's scheduling pressure for the
+/// peer to abandon that idle path ("no viable network path exists: last
+/// path abandoned by peer"; same root cause fixed throughout this crate's
+/// e2e tests, e.g. `binding_push_e2e.rs`). A dead connection object never
+/// heals itself by retrying the same request against it, so one
+/// `shutdown`-then-`connect` redial is folded into the loop below whenever
+/// a retriable attempt fails -- cheap insurance on top of the DHT-wait loop
+/// this helper already had.
+async fn submit_with_retry(supervisor_node: &mut Node, params: Value) {
     let deadline = Instant::now() + Duration::from_secs(180);
     loop {
         match supervisor_node.substrate_client.request("supervisor", "submit", params.clone()).await
@@ -370,6 +385,9 @@ async fn submit_with_retry(supervisor_node: &Node, params: Value) {
             Ok(_) => return,
             Err(e) if Instant::now() < deadline => {
                 tracing::debug!(error = %e, "initial submit not yet reachable, retrying");
+                if supervisor_node.substrate_client.shutdown().await.is_ok() {
+                    let _ = supervisor_node.substrate_client.connect().await;
+                }
                 time::sleep(Duration::from_secs(2)).await;
             }
             Err(e) => panic!("submit failed after retrying for 180s: {e}"),
@@ -520,7 +538,7 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
 
     // Step 1: deploy, converged.
     let plan_json = compiled_plan_json(1).await;
-    submit_with_retry(&supervisor_node, submission(plan_json, inventory_json.clone(), 0)).await;
+    submit_with_retry(&mut supervisor_node, submission(plan_json, inventory_json.clone(), 0)).await;
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -638,6 +656,22 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
     .await;
     assert_eq!(managed_b.did(), managed_b_did, "the rebooted node must keep its identity");
 
+    // `supervisor_node`'s own connection sat idle through managed-b's full
+    // boot just above, long enough under CI's scheduling pressure for the
+    // peer to abandon that idle path ("no viable network path exists: last
+    // path abandoned by peer"; same root cause fixed throughout this
+    // crate's e2e tests). `supervisor_status` panics on any error, so a
+    // stale connection here would abort the test with a misleading
+    // "status failed" instead of the deadline loop below ever getting a
+    // chance to run -- redial once, before entering that loop, rather than
+    // letting the first iteration find out the hard way.
+    let _ = crate::call_with_reconnect!(
+        supervisor_node.substrate_client,
+        "supervisor",
+        "status",
+        json!([INSTANCE_ID])
+    );
+
     // Step 7: within one worker tick (1s here; task.md's own budget is
     // "not one poll interval", 3600s in this test), convergence resumes
     // and the queue's own delivery clears the alert it raised. The
@@ -685,7 +719,7 @@ async fn a_permanently_unreachable_substrate_lands_in_the_dlq_and_replays() {
     let managed_owner = Identity::generate().unwrap();
 
     let supervisor_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let supervisor_node = Node::boot(
+    let mut supervisor_node = Node::boot(
         supervisor_dir.path().to_path_buf(),
         PORTS.supervisor_iroh + 500,
         PORTS.supervisor_registry + 500,
@@ -758,7 +792,7 @@ async fn a_permanently_unreachable_substrate_lands_in_the_dlq_and_replays() {
     .unwrap();
 
     let plan_json = compiled_plan_json(1).await;
-    submit_with_retry(&supervisor_node, submission(plan_json, inventory_json.clone(), 0)).await;
+    submit_with_retry(&mut supervisor_node, submission(plan_json, inventory_json.clone(), 0)).await;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if is_converged(&supervisor_status(&supervisor_node).await) {

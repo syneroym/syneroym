@@ -47,6 +47,9 @@ use tokio::{
     time,
 };
 
+#[path = "common/retry.rs"]
+mod retry;
+
 #[derive(Clone, Copy)]
 struct PortBlock {
     supervisor_iroh: u16,
@@ -343,20 +346,26 @@ fn submission(
 async fn an_app_did_resolves_to_its_supervising_node_through_the_registry() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (supervisor_node, managed_node, inventory_json) =
+    let (mut supervisor_node, managed_node, inventory_json) =
         boot_pair(&supervisor_owner, &managed_owner, PORTS_RESOLVES_THROUGH_REGISTRY).await;
 
     let manifest = one_service_manifest();
     let plan_json = compiled_plan_json(&manifest, "tier1-resolve-inst").await;
-    supervisor_node
-        .substrate_client
-        .request(
-            "supervisor",
-            "submit",
-            submission("tier1-resolve-inst", plan_json, inventory_json, 0),
-        )
-        .await
-        .expect("submit failed");
+    // `supervisor_node`'s connection was dialed and proven live by its own
+    // `wait_for_ready` during `Node::boot` inside `boot_pair`, then sat
+    // idle through the managed node's own full boot that followed -- long
+    // enough under CI's scheduling pressure for the peer to abandon that
+    // idle path ("no viable network path exists: last path abandoned by
+    // peer"; same root cause fixed throughout this crate's e2e tests, e.g.
+    // `binding_push_e2e.rs`). Recover by explicit shutdown→reconnect
+    // before one retry.
+    let submit_params = submission("tier1-resolve-inst", plan_json, inventory_json, 0);
+    crate::call_with_reconnect!(
+        supervisor_node.substrate_client,
+        "supervisor",
+        "submit",
+        submit_params
+    );
     let adopted = supervisor_node
         .substrate_client
         .request("supervisor", "adopt", json!(["tier1-resolve-inst"]))
