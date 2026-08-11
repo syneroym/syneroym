@@ -132,6 +132,7 @@ impl Node {
         let own_registry_url = format!("http://localhost:{registry_port}");
         let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
         config.substrate.registry_url = Some(effective_registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         // Sharing one node's relay (rather than each node self-relaying
         // through its own, distinct home relay) avoids cross-relay direct-
         // path/hole-punch negotiation between two localhost peers that

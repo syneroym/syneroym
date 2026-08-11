@@ -131,6 +131,7 @@ impl Node {
         let own_registry_url = format!("http://localhost:{registry_port}");
         let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
         config.substrate.registry_url = Some(effective_registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         // See federated_fdae_e2e.rs's `Node::boot` for why a shared relay
         // (rather than each node self-relaying through its own) matters here
         // too: cross-relay direct-path negotiation between two localhost

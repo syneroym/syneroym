@@ -88,6 +88,7 @@ impl SubstrateTestContext {
         });
         let registry_url = format!("http://localhost:{registry_port}");
         config.substrate.registry_url = Some(registry_url.clone());
+        config.substrate.enable_bep0044_dht = false;
         config.parent_coordinator.iroh =
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
         config.roles.client_gateway =
