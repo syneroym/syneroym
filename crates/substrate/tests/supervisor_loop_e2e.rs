@@ -50,6 +50,9 @@ use tokio::{
     time,
 };
 
+#[path = "common/retry.rs"]
+mod retry;
+
 #[derive(Clone, Copy)]
 struct PortBlock {
     supervisor_iroh: u16,
@@ -328,7 +331,7 @@ async fn a_partial_deploy_is_degraded_and_its_failed_service_is_retried_without_
     let managed_owner = Identity::generate().unwrap();
 
     let supervisor_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let supervisor_node = Node::boot(
+    let mut supervisor_node = Node::boot(
         supervisor_dir.path().to_path_buf(),
         PORTS.supervisor_iroh,
         PORTS.supervisor_registry,
@@ -420,6 +423,23 @@ async fn a_partial_deploy_is_degraded_and_its_failed_service_is_retried_without_
     .expect("submit call timed out");
     assert!(submit_res.is_err(), "submit with one substrate down must surface the failure");
 
+    // `supervisor_node`'s connection was dialed and proven live by its own
+    // `wait_for_ready` during `Node::boot`, then sat idle through both
+    // managed nodes' full boots plus the submit attempt above -- long
+    // enough under CI's scheduling pressure for the peer to abandon that
+    // idle path ("no viable network path exists: last path abandoned by
+    // peer"; same root cause fixed throughout this crate's e2e tests). The
+    // status loop below panics via `.expect("status failed")` rather than
+    // looping past a connection error, so redial once here, before
+    // entering it, rather than letting its first iteration find out the
+    // hard way.
+    let _ = crate::call_with_reconnect!(
+        supervisor_node.substrate_client,
+        "supervisor",
+        "status",
+        json!([instance_id])
+    );
+
     // The resident loop's own pass (poll_interval_secs=3) connects
     // best-effort and lands `svc-a` on the reachable substrate while
     // `svc-b` stays missing -- polled with a generous budget since each
@@ -483,6 +503,16 @@ async fn a_partial_deploy_is_degraded_and_its_failed_service_is_retried_without_
     )
     .await;
     assert_eq!(managed_b.did(), managed_b_did, "the rebooted node must keep its identity");
+
+    // Same idle-path risk as the preflight above, this time across
+    // managed-b's own reboot: redial `supervisor_node` once before the
+    // next status loop if the connection did not survive the wait.
+    let _ = crate::call_with_reconnect!(
+        supervisor_node.substrate_client,
+        "supervisor",
+        "status",
+        json!([instance_id])
+    );
 
     // A wider budget than the first loop: this pass needs a fresh connect
     // to the just-rebooted node *and* a `resolve-instance-identity`

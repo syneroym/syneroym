@@ -93,6 +93,9 @@ use tokio::{
     time,
 };
 
+#[path = "common/retry.rs"]
+mod retry;
+
 #[derive(Clone, Copy)]
 struct PortBlock {
     supervisor_iroh: u16,
@@ -445,7 +448,7 @@ async fn the_reference_scenario_runs_end_to_end_over_two_substrates() {
     let managed_owner = Identity::generate().unwrap();
 
     let supervisor_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let supervisor_node = Node::boot(
+    let mut supervisor_node = Node::boot(
         supervisor_dir.path().to_path_buf(),
         PORTS.supervisor_iroh,
         PORTS.supervisor_registry,
@@ -460,7 +463,7 @@ async fn the_reference_scenario_runs_end_to_end_over_two_substrates() {
     let shared_relay = format!("http://localhost:{}", PORTS.supervisor_iroh);
 
     let managed_a_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let managed_a = Node::boot(
+    let mut managed_a = Node::boot(
         managed_a_dir.path().to_path_buf(),
         PORTS.managed_a_iroh,
         PORTS.managed_a_registry,
@@ -515,11 +518,22 @@ async fn the_reference_scenario_runs_end_to_end_over_two_substrates() {
     // ---- Step 1: deploy + push (the initial deploy emits bindings at
     // deploy time, D-A5e-2's per-member epoch). ----
     let plan_json = compiled_plan_json(1).await;
-    let submit_res = supervisor_node
-        .substrate_client
-        .request("supervisor", "submit", submission(plan_json, inventory_json.clone(), 0))
-        .await
-        .expect("initial submit failed");
+    // `supervisor_node`'s connection was dialed and proven live by its own
+    // `wait_for_ready` during `Node::boot`, then sat idle through both
+    // managed nodes' full boots that followed -- long enough under CI's
+    // scheduling pressure for the peer to abandon that idle path ("no
+    // viable network path exists: last path abandoned by peer"; same root
+    // cause fixed throughout this crate's e2e tests, e.g.
+    // `binding_push_e2e.rs`). Recover by explicit shutdown→reconnect
+    // before one retry, not just retrying the same request on the same
+    // dead connection.
+    let submit_params = submission(plan_json, inventory_json.clone(), 0);
+    let submit_res = crate::call_with_reconnect!(
+        supervisor_node.substrate_client,
+        "supervisor",
+        "submit",
+        submit_params
+    );
     let masters =
         submit_res.result.get("masters").and_then(Value::as_array).expect("masters array");
     assert_eq!(masters.len(), 2, "one master per member: frontend#0, backend#0: {masters:?}");
@@ -710,23 +724,32 @@ async fn the_reference_scenario_runs_end_to_end_over_two_substrates() {
 
     let test_epoch = current_epoch + 1;
     let test_members = vec![backend_member0_did.clone(), backend_member1_did.clone()];
-    let applied = managed_a
-        .substrate_client
-        .write_bindings(BindingWrite {
-            service_id: frontend_service_id.clone(),
+    let first_write = BindingWrite {
+        service_id: frontend_service_id.clone(),
+        app_instance_id: INSTANCE_ID.to_string(),
+        bindings: vec![DependencyBinding {
+            dependency_name: "backend".to_string(),
             app_instance_id: INSTANCE_ID.to_string(),
-            bindings: vec![DependencyBinding {
-                dependency_name: "backend".to_string(),
-                app_instance_id: INSTANCE_ID.to_string(),
-                mode: TopologyMode::Redundant,
-                members: test_members.clone(),
-                epoch: test_epoch,
-                cache_ttl_ms: 60_000,
-            }],
-            generation: 0,
-        })
-        .await
-        .expect("write_bindings (establishing the epoch under test) failed");
+            mode: TopologyMode::Redundant,
+            members: test_members.clone(),
+            epoch: test_epoch,
+            cache_ttl_ms: 60_000,
+        }],
+        generation: 0,
+    };
+    // This is the first call this test makes directly on `managed_a`'s own
+    // client -- everything up to here went through `supervisor_node` or
+    // `frontend_client`. That connection was dialed and proven live by its
+    // own `wait_for_ready` during `Node::boot`, then sat idle through this
+    // entire test's deploy, scale-out, and cross-member-resolution steps --
+    // long enough under CI's scheduling pressure for the peer to abandon
+    // that idle path ("no viable network path exists: last path abandoned
+    // by peer"; same root cause fixed throughout this crate's e2e tests).
+    // Recover by explicit shutdown→reconnect before one retry.
+    let applied = crate::call_with_reconnect!(
+        managed_a.substrate_client,
+        managed_a.substrate_client.write_bindings(first_write.clone()).await
+    );
     assert!(matches!(applied[0], BindingWriteOutcome::Applied), "{applied:?}");
 
     let stale_members = vec![backend_member0_did.clone()];

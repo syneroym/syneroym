@@ -49,6 +49,9 @@ use tokio::{
     time,
 };
 
+#[path = "common/retry.rs"]
+mod retry;
+
 /// The highest block claimed in this directory before this file is
 /// `durable_outbox_e2e.rs`'s 13_200-13_402. Every node takes its own
 /// **hundred**-port block, not a ten-port one: the Iroh relay binds more
@@ -273,13 +276,12 @@ async fn publish_endpoint(
 /// The certificate is not optional dressing: `enqueue` refuses a service
 /// that holds no unexpired one, because every delivery attempt would
 /// otherwise present as anonymous and be refused by the receiver.
-async fn deploy_guest(node: &Node, master: &Identity, wasm: Vec<u8>) -> String {
+async fn deploy_guest(node: &mut Node, master: &Identity, wasm: Vec<u8>) -> String {
     let service_id = substrate::derive_did_key(&master.public_key());
-    let identity = node
-        .substrate_client
-        .instance_identity(&service_id)
-        .await
-        .expect("instance-identity query failed");
+    let identity = crate::call_with_reconnect!(
+        node.substrate_client,
+        node.substrate_client.instance_identity(&service_id).await
+    );
     let pubkey_bytes: [u8; 32] = hex::decode(&identity.pubkey_hex)
         .expect("instance pubkey is not hex")
         .try_into()
@@ -486,7 +488,7 @@ async fn a_queued_guest_call_to_an_offline_node_lands_after_it_returns() {
     // The caller: the guest fixture on node A, certified so `enqueue` is
     // not refused up front.
     let caller_master = Identity::generate().unwrap();
-    let guest_did = deploy_guest(&node_a, &caller_master, proxy_wasm.clone()).await;
+    let guest_did = deploy_guest(&mut node_a, &caller_master, proxy_wasm.clone()).await;
 
     // Node B goes down. The record stays in the registry, so the proxy
     // resolves an address and then fails to connect -- a *transport*
@@ -631,6 +633,19 @@ async fn a_queued_guest_call_to_an_offline_node_lands_after_it_returns() {
     )
     .await;
 
+    // `node_a`'s own connection sat idle through node B's full reboot,
+    // redeploy, and lookup just above, long enough under CI's scheduling
+    // pressure for the peer to abandon that idle path ("no viable network
+    // path exists: last path abandoned by peer"; same root cause fixed
+    // throughout this crate's e2e tests). `outbox_keys` panics on any
+    // error, so a stale connection here would abort the test with a
+    // misleading "proxy-outbox failed" instead of the poll loop below ever
+    // getting a chance to run -- redial once, before entering that loop,
+    // rather than letting its first iteration find out the hard way.
+    let _ = crate::call_with_reconnect!(
+        node_a.substrate_client,
+        node_a.substrate_client.proxy_outbox(guest_did.clone()).await
+    );
     assert!(
         wait_until(Duration::from_secs(120), || async {
             outbox_keys(&node_a, &guest_did).await.is_empty()
@@ -672,7 +687,7 @@ async fn a_permanently_unreachable_target_lands_in_the_dlq_and_replays() {
     let target_dir = tempfile::tempdir().unwrap();
     let owner = Identity::generate().unwrap();
 
-    let node_a = Node::boot(
+    let mut node_a = Node::boot(
         caller_dir.path().to_path_buf(),
         a_iroh,
         a_reg,
@@ -720,7 +735,7 @@ async fn a_permanently_unreachable_target_lands_in_the_dlq_and_replays() {
     .await;
 
     let caller_master = Identity::generate().unwrap();
-    let guest_did = deploy_guest(&node_a, &caller_master, proxy_wasm).await;
+    let guest_did = deploy_guest(&mut node_a, &caller_master, proxy_wasm).await;
 
     // Down for good this time. The record stays published, so every
     // attempt resolves an address and then fails to connect.

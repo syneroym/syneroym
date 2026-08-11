@@ -12,6 +12,7 @@
 
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
+use anyhow::Result;
 use rustls::crypto::ring;
 use semver::Version;
 use serde_json::{Map, json};
@@ -28,7 +29,7 @@ use syneroym_core::config::{
     ServiceRegistryRole, SubstrateConfig, SupervisorRole,
 };
 use syneroym_identity::{Identity, substrate};
-use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
+use syneroym_rpc::{Ability, Capability, CapabilityToken, JsonRpcResponse, ResourceUri};
 use syneroym_sdk::SyneroymClient;
 use syneroym_substrate::identity;
 use tempfile::TempDir;
@@ -36,6 +37,9 @@ use tokio::{
     sync::{mpsc, mpsc::Sender},
     task::JoinHandle,
 };
+
+#[path = "common/retry.rs"]
+mod retry;
 
 #[derive(Clone, Copy)]
 struct PortBlock {
@@ -424,25 +428,47 @@ fn submission(
     }])
 }
 
+/// Every test in this file reaches `boot_pair`'s `supervisor_node` here as
+/// its first call. That connection was dialed and proven live by its own
+/// `wait_for_ready` during `Node::boot`, then sat idle through the managed
+/// node's own full boot inside `boot_pair` -- long enough under CI's
+/// scheduling pressure for the peer to abandon that idle path ("no viable
+/// network path exists: last path abandoned by peer"; same root cause
+/// fixed throughout this crate's e2e tests, e.g. `binding_push_e2e.rs`).
+/// `SyneroymClient::connect` no-ops on an already-`Some` connection, so
+/// recovering means an explicit `shutdown`-then-`connect` (redial) before
+/// one retry, not just retrying the same request on the same dead
+/// connection.
+async fn submit_after_boot(
+    supervisor_node: &mut Node,
+    params: serde_json::Value,
+) -> Result<JsonRpcResponse> {
+    if let Ok(resp) =
+        supervisor_node.substrate_client.request("supervisor", "submit", params.clone()).await
+    {
+        return Ok(resp);
+    }
+    supervisor_node.substrate_client.shutdown().await?;
+    supervisor_node.substrate_client.connect().await?;
+    supervisor_node.substrate_client.request("supervisor", "submit", params).await
+}
+
 #[tokio::test]
 async fn an_operator_submits_and_reads_back_status_over_the_supervisor_interface() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (supervisor_node, managed_node, inventory_json) =
+    let (mut supervisor_node, managed_node, inventory_json) =
         boot_pair(&supervisor_owner, &managed_owner, PORTS_SUBMIT_AND_STATUS).await;
 
     let manifest = one_service_manifest();
     let plan_json = compiled_plan_json(&manifest, "a5b-submit-inst").await;
 
-    let res = supervisor_node
-        .substrate_client
-        .request(
-            "supervisor",
-            "submit",
-            submission("a5b-submit-inst", plan_json, inventory_json, 0),
-        )
-        .await
-        .expect("submit failed");
+    let res = submit_after_boot(
+        &mut supervisor_node,
+        submission("a5b-submit-inst", plan_json, inventory_json, 0),
+    )
+    .await
+    .expect("submit failed");
     let masters = res.result.get("masters").and_then(|m| m.as_array()).expect("masters array");
     assert_eq!(masters.len(), 1);
 
@@ -468,22 +494,19 @@ async fn an_operator_submits_and_reads_back_status_over_the_supervisor_interface
 async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (supervisor_node, managed_node, inventory_json) =
+    let (mut supervisor_node, managed_node, inventory_json) =
         boot_pair(&supervisor_owner, &managed_owner, PORTS_SECOND_SUPERVISOR_LOSES).await;
 
     let manifest = one_service_manifest();
     let plan_json = compiled_plan_json(&manifest, "a5b-second-inst").await;
 
     // First supervisor submits and adopts, claiming generation 1.
-    supervisor_node
-        .substrate_client
-        .request(
-            "supervisor",
-            "submit",
-            submission("a5b-second-inst", plan_json, inventory_json, 0),
-        )
-        .await
-        .expect("first submit failed");
+    submit_after_boot(
+        &mut supervisor_node,
+        submission("a5b-second-inst", plan_json, inventory_json, 0),
+    )
+    .await
+    .expect("first submit failed");
     let adopted = supervisor_node
         .substrate_client
         .request("supervisor", "adopt", json!(["a5b-second-inst"]))
@@ -546,17 +569,18 @@ async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
 async fn a_supervisor_deploys_a_bound_app_using_masters_it_minted() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (supervisor_node, managed_node, inventory_json) =
+    let (mut supervisor_node, managed_node, inventory_json) =
         boot_pair(&supervisor_owner, &managed_owner, PORTS_DEPLOYS_A_BOUND_APP).await;
 
     let manifest = bound_app_manifest();
     let plan_json = compiled_plan_json(&manifest, "a5b-bound-inst").await;
 
-    let res = supervisor_node
-        .substrate_client
-        .request("supervisor", "submit", submission("a5b-bound-inst", plan_json, inventory_json, 0))
-        .await
-        .expect("submit of a bound app failed -- regresses if custody is removed from A5b");
+    let res = submit_after_boot(
+        &mut supervisor_node,
+        submission("a5b-bound-inst", plan_json, inventory_json, 0),
+    )
+    .await
+    .expect("submit of a bound app failed -- regresses if custody is removed from A5b");
     let masters = res.result.get("masters").and_then(|m| m.as_array()).expect("masters array");
     assert_eq!(masters.len(), 2, "one master per member, minted by the supervisor itself");
 
@@ -584,16 +608,17 @@ async fn a_supervisor_deploys_a_bound_app_using_masters_it_minted() {
 async fn adopt_reads_the_held_generation_from_the_managed_node_and_claims_the_next() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (supervisor_node, managed_node, inventory_json) =
+    let (mut supervisor_node, managed_node, inventory_json) =
         boot_pair(&supervisor_owner, &managed_owner, PORTS_ADOPT_CLAIMS_THE_NEXT).await;
 
     let manifest = one_service_manifest();
     let plan_json = compiled_plan_json(&manifest, "a5b-adopt-inst").await;
-    supervisor_node
-        .substrate_client
-        .request("supervisor", "submit", submission("a5b-adopt-inst", plan_json, inventory_json, 0))
-        .await
-        .expect("submit failed");
+    submit_after_boot(
+        &mut supervisor_node,
+        submission("a5b-adopt-inst", plan_json, inventory_json, 0),
+    )
+    .await
+    .expect("submit failed");
 
     // No prior adopt: the managed node holds no generation for this
     // instance's un-adopted (generation-0) deploy, so the first adopt
@@ -622,20 +647,17 @@ async fn adopt_reads_the_held_generation_from_the_managed_node_and_claims_the_ne
 async fn a_pushed_binding_reaches_a_dependent_the_supervisor_deployed() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (supervisor_node, managed_node, inventory_json) =
+    let (mut supervisor_node, mut managed_node, inventory_json) =
         boot_pair(&supervisor_owner, &managed_owner, PORTS_PUSHED_BINDING).await;
 
     let manifest = bound_app_manifest();
     let plan_json = compiled_plan_json(&manifest, "a5b-binding-inst").await;
-    supervisor_node
-        .substrate_client
-        .request(
-            "supervisor",
-            "submit",
-            submission("a5b-binding-inst", plan_json, inventory_json, 0),
-        )
-        .await
-        .expect("submit failed");
+    submit_after_boot(
+        &mut supervisor_node,
+        submission("a5b-binding-inst", plan_json, inventory_json, 0),
+    )
+    .await
+    .expect("submit failed");
 
     let status = supervisor_node
         .substrate_client
@@ -659,11 +681,17 @@ async fn a_pushed_binding_reaches_a_dependent_the_supervisor_deployed() {
     // frontend's binding to backend was populated at deploy time --
     // readable back from the managed node's own service-status, without
     // needing a second `write-bindings` push.
-    let managed_status = managed_node
-        .substrate_client
-        .status(vec![frontend_id])
-        .await
-        .expect("managed node status failed");
+    //
+    // This is the first call this test makes directly on `managed_node`'s
+    // own client -- its connection was dialed and proven live by its own
+    // `wait_for_ready` inside `boot_pair`, then sat idle through the
+    // `submit`/`status` calls above, long enough under CI's scheduling
+    // pressure for the peer to abandon that idle path. Recover by explicit
+    // shutdown→reconnect before one retry.
+    let managed_status = crate::call_with_reconnect!(
+        managed_node.substrate_client,
+        managed_node.substrate_client.status(vec![frontend_id.clone()]).await
+    );
     let frontend_status = &managed_status.services[0];
     assert!(
         frontend_status.binding_epochs.iter().any(|(name, _)| name == "backend"),
@@ -693,20 +721,17 @@ async fn a_pushed_binding_reaches_a_dependent_the_supervisor_deployed() {
 async fn a_supervisor_that_reads_a_higher_generation_marks_the_instance_superseded_and_alerts() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (supervisor_node, managed_node, inventory_json) =
+    let (mut supervisor_node, managed_node, inventory_json) =
         boot_pair(&supervisor_owner, &managed_owner, PORTS_SUPERSEDED).await;
 
     let manifest = one_service_manifest();
     let plan_json = compiled_plan_json(&manifest, "a5b-superseded-inst").await;
-    supervisor_node
-        .substrate_client
-        .request(
-            "supervisor",
-            "submit",
-            submission("a5b-superseded-inst", plan_json, inventory_json, 0),
-        )
-        .await
-        .expect("submit failed");
+    submit_after_boot(
+        &mut supervisor_node,
+        submission("a5b-superseded-inst", plan_json, inventory_json, 0),
+    )
+    .await
+    .expect("submit failed");
     let adopted = supervisor_node
         .substrate_client
         .request("supervisor", "adopt", json!(["a5b-superseded-inst"]))
