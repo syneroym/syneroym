@@ -467,15 +467,29 @@ impl AppHostResolver {
         }
 
         let result = self.fetch_and_bind(app_lookup_alias, a_hash, s_hash).await;
-        self.inflight.remove(&coalesce_key);
+        // Recorded *before* the in-flight lock is dropped below: a caller
+        // that arrives in the window between the two would otherwise find
+        // neither the lock (already gone) nor the outcome (not yet
+        // cached) and start its own redundant fetch on the failure path
+        // -- the success path is unaffected, since `fetch_and_bind`
+        // already wrote `app_dids`/`service_names` before returning.
         match &result {
             Ok(_) => {
                 self.negative_cache.remove(&coalesce_key);
             }
             Err(e) => {
-                self.negative_cache.insert(coalesce_key, (e.to_string(), Instant::now()));
+                // Swept before inserting, not just on some other timer:
+                // `negative_cache` otherwise only ever loses an entry to a
+                // later *success* for that exact key, so on the public,
+                // unauthenticated bootstrap listener (D-S3-11) it grows by
+                // one entry per distinct bad `Host` header forever. This
+                // bounds it to roughly one `NEGATIVE_CACHE_TTL` window's
+                // worth of distinct failures.
+                self.negative_cache.retain(|_, (_, at)| at.elapsed() < NEGATIVE_CACHE_TTL);
+                self.negative_cache.insert(coalesce_key.clone(), (e.to_string(), Instant::now()));
             }
         }
+        self.inflight.remove(&coalesce_key);
         result
     }
 
@@ -1127,6 +1141,34 @@ mod tests {
             tier1.calls.load(Ordering::SeqCst),
             1,
             "a fresh negative-cache hit must not repeat the Tier-1 lookup"
+        );
+    }
+
+    /// Residual finding: the negative cache had no sweep -- an entry was
+    /// only ever removed by a later *success* for that exact key, so on
+    /// the public, unauthenticated bootstrap listener it grew by one
+    /// entry per distinct bad `Host` header forever. A new failure now
+    /// sweeps every expired entry on its way in.
+    #[tokio::test]
+    async fn a_new_failure_sweeps_every_expired_negative_cache_entry() {
+        let (master, app_did) = app_master();
+        let record = signed_tier1_record(&app_did, "did:key:zSupervisor", &master);
+        let tier1 = Arc::new(FakeTier1 { calls: AtomicUsize::new(0), response: record });
+        let resolver = app_host_resolver(tier1, Some(Arc::new(FakeTier2::default())));
+
+        let _ = resolver.resolve_app_host("host-one", "wronghash", "anyhash", None).await;
+        let _ = resolver.resolve_app_host("host-two", "wronghash", "anyhash", None).await;
+        assert_eq!(resolver.negative_cache.len(), 2);
+
+        tokio::time::sleep(NEGATIVE_CACHE_TTL + Duration::from_millis(500)).await;
+
+        // A third, distinct failure sweeps the first two (now stale) on
+        // its way in, leaving only itself.
+        let _ = resolver.resolve_app_host("host-three", "wronghash", "anyhash", None).await;
+        assert_eq!(
+            resolver.negative_cache.len(),
+            1,
+            "expired entries must be swept, not accumulate forever"
         );
     }
 

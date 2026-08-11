@@ -1054,3 +1054,40 @@ surfaces_its_error` (`client_gateway/src/gateway.rs`);
   unused `APP_ALIAS_ADMIN` scaffolding changed nothing it shouldn't have.
 - `cargo audit`: clean (see finding 14 above) -- previously one allowed
   warning (`smartstring`, `RUSTSEC-2026-0249`).
+
+### S3 — Two residuals in the review-pass code itself (2026-08-11)
+
+Found reading `ensure_populated` (`crates/sdk/src/topology.rs`) after the
+pass above landed, both in the B1/B2 fix:
+
+1. **`negative_cache` never swept.** An entry expired logically after
+   `NEGATIVE_CACHE_TTL` but was only ever removed by a *later success* for
+   that exact key -- a host that keeps failing keeps its entry forever.
+   Both key parts (`app_lookup_alias`, `s_hash`) come straight off the
+   `Host` header on the unauthenticated `0.0.0.0:7962` WebRTC bootstrap
+   listener, so this was unbounded growth inside the fix meant to harden
+   that exact path (slow -- one real Tier-1 round trip buys each new key
+   -- but unbounded). Fixed: a failure now sweeps every expired entry
+   (`retain`) before inserting its own, bounding the map to roughly one
+   `NEGATIVE_CACHE_TTL` window's worth of distinct failures. Pinned by
+   `a_new_failure_sweeps_every_expired_negative_cache_entry`.
+2. **`inflight.remove` ran before the outcome was cached.** On the
+   failure path, `self.inflight.remove(&coalesce_key)` ran, then the
+   `negative_cache` write -- so a caller arriving in that exact window
+   found neither the lock (already gone) nor the cached failure (not yet
+   written), and started its own redundant fetch. One extra fetch under a
+   real but narrow race, not a correctness bug (the success path was
+   already safe, since `fetch_and_bind` writes `app_dids`/
+   `service_names` before returning). Fixed by recording the outcome
+   before dropping the in-flight lock, making the ordering deliberate
+   rather than incidental. Not given its own regression test: reproducing
+   the exact race window deterministically needs an injection point this
+   pass judged not worth adding to production code for one timing test:
+   `concurrent_cold_resolves_for_the_same_host_share_one_fetch` (finding
+   B2) already covers the success-path single-flight property under real
+   concurrency.
+
+**Re-verification**: `cargo +nightly fmt --all -- --check` clean; `cargo
+clippy --workspace --all-targets --all-features` clean; `cargo test -p
+syneroym-sdk --lib topology::` 14/14 (1 new); `gateway_hostname_e2e.rs`
+re-run in full, 4/4.
