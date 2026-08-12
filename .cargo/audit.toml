@@ -17,4 +17,9 @@ ignore = [
     # quick-xml (used by plist). Used by iroh 0.97.0. No fixed version of plist is available on crates yet.
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
+
+    # lru panic-safety issue, fixed in 0.18.2. Pulled in transitively via
+    # pkarr 6.0.1 / mainline 6.2.0 / iroh-relay 0.97.0, all of which need a
+    # major-version bump to pick up the fix. Revisit with the iroh upgrade.
+    "RUSTSEC-2026-0253",
 ]
