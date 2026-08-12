@@ -24,4 +24,4 @@ Before we can accept any Pull Requests, you must agree to our [Contributor Licen
 
 ## Reporting Security Issues
 Please do not file public issues for security vulnerabilities.
-See `SECURITY.md` for the preferred disclosure process.
+See [SECURITY.md](SECURITY.md) for the preferred disclosure process.
