@@ -631,6 +631,44 @@ and the reason would otherwise be lost.
 > only on those, plus M4 FDAE and the M3B broker), so it validates the
 > foundation early rather than landing last.
 
+> **Planning-doc split (2026-08-13):** M6 is planned and implemented as three
+> sub-milestones, mirroring the M3A/M3B/M3C and M05A/M05B/M05C precedent. The
+> split came out of writing
+> [roym-integrated-experience-spec.md](../roym-integrated-experience-spec.md)
+> and reading it against the tree: M6 was first split two ways (foundation /
+> product), and scoping the foundation half found two unrelated clusters inside
+> it.
+>
+> - **M06A** — [App Platform Surface](./milestones/M06A-app-platform-surface/task.md).
+>   What any SynApp needs to be a web app at all: static assets served from
+>   blobs without instantiating the sandbox, and a route target that puts guest
+>   logic in an inbound HTTP request. Proven by building a WASM equivalent of
+>   `miniapp-demo1-web` and running the existing browser suite against it.
+>   Slices **A1–A4**. Nothing in it is Roym-specific.
+> - **M06B** — Roym's own substrate foundations: the dual-build shim, person
+>   identity at the client gateway, the durable messaging host interface and
+>   Layer 3 delivery, outbox delivery state, and service-record visibility.
+>   These are gaps **G1–G4** in the experience spec. Directory not yet created.
+> - **M06C** — the Roym product itself, following the spec's four releases (a
+>   usable local guild, the transaction vertical, cross-installation trust,
+>   private group chat). Directory not yet created.
+>
+> **Why this order.** M06A removes the only non-WASM piece of Roym — the spec's
+> Web entrypoint service, which exists purely because a component cannot serve
+> HTTP and is the sole part of Roym exempt from its one-source/two-builds rule.
+> Closing that gap against a throwaway fixture is cheaper than discovering it
+> under product code, and it gives a foundation milestone a runnable exit gate
+> rather than "the interfaces exist".
+>
+> **External prerequisite.** M06C additionally needs
+> [M05C](./milestones/M05C-logical-discovery-overlay/task.md) **S4's visibility
+> half** (ADR-0022 §5's per-logical-service "open to all" declaration).
+> Without it a client resolving an app on an unaffiliated node is refused
+> unless an operator pre-installed a token, which blocks both directory search
+> and every cross-installation flow. S4's *cross-app `Bind`* half stays parked
+> on its own gate — Roym does not supply the consumer it waits for. See
+> [deferred-backlog.md](./deferred-backlog.md) §3.
+
 **Goal:** Deliver the first cohesive product experience using the completed foundations, proving the value of the reference application.
 
 **Feature Grouping:**
