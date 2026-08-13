@@ -1,21 +1,25 @@
 ---
-title: RoyM: Integrated Experience
+title: "Roym: Integrated Experience"
 status: Draft
 last_review: 2026-08-13
 companion_documents:
-  - "[VISION.md](../VISION.md)"
-  - "[system-requirements-spec.md](../system-requirements-spec.md)"
-  - "[meta-implementation-plan.md](meta-implementation-plan.md)"
-  - "[ADR-0013](../decisions/0013-p2p-messaging-architecture.md)"
-  - "[ADR-0015](../decisions/0015-ucan-capability-model.md)"
-  - "[ADR-0023](../decisions/0023-durable-async-primitives.md)"
+  - "[VISION.md](VISION.md)"
+  - "[system-requirements-spec.md](system-requirements-spec.md)"
+  - "[TERMINOLOGY.md](TERMINOLOGY.md)"
+  - "[meta-implementation-plan.md](planning/meta-implementation-plan.md)"
+  - "[ADR-0013](decisions/0013-p2p-messaging-architecture.md)"
+  - "[ADR-0015](decisions/0015-ucan-capability-model.md)"
+  - "[ADR-0016](decisions/0016-native-dispatch-identity-threading.md)"
+  - "[ADR-0018](decisions/0018-service-record-visibility.md)"
+  - "[ADR-0022](decisions/0022-two-tier-logical-service-discovery.md)"
+  - "[ADR-0023](decisions/0023-durable-async-primitives.md)"
 ---
 
-# RoyM: Integrated Experience
+# Roym: Integrated Experience
 
-## What RoyM is
+## What Roym is
 
-RoyM is one place to talk with people, find local help or goods, and arrange
+Roym is one place to talk with people, find local help or goods, and arrange
 work or purchases. It should feel as simple as a chat app, while letting small
 businesses and local groups serve people directly.
 
@@ -26,727 +30,716 @@ It starts with two kinds of local offerings:
 - **Food and small shops:** people can find local producers and sellers, ask
   questions, and arrange an order or delivery.
 
-RoyM does not make people choose one role forever. The same person can chat
+Roym does not make people choose one role forever. The same person can chat
 with friends, buy something, offer a service, or help run a local group.
 
-## People who use RoyM
+## People who use Roym
 
-- **Customer (Consumer):** Finds people or shops, asks questions, agrees on
-  work or a purchase, and keeps the conversation and record in one place.
-- **Service business or seller (Provider):** Shows what they offer, speaks with
-  customers, manages bookings or orders, and keeps their customer
-  relationships. Runs a Syneroym substrate with the RoyM app.
-- **Local group (SynOrg):** Helps members join, shares local knowledge,
-  recommends trusted members, and deals with problems inside the group. The
-  SynOrg Owner manages member providers, operates discovery, and maintains
-  group rules.
+- **Consumer:** Finds people or shops, asks questions, agrees on work or a
+  purchase, and keeps the conversation and record in one place.
+- **Provider:** A service business or seller. Shows what they offer, speaks
+  with customers, manages bookings or orders, and keeps their customer
+  relationships.
+- **SynOrg Owner:** Runs a local group (guild, union, cooperative). Approves
+  member providers, runs a directory, sets group rules, and handles complaints
+  inside the group.
 
 **Terminology:** This document uses both "local group" (plain English) and
-"SynOrg" (Syneroym Organization). They mean the same thing: an autonomous
-administrative domain (guild, union, cooperative, etc.).
+"SynOrg" (Syneroym Organization). They mean the same thing: an independent
+administrative domain.
 
-> **Note on roles:** A single person can hold more than one role. A SynOrg
-> owner may also be a provider. A consumer may later become a provider. The
-> participant journey below orders roles by logical dependency, not by the
-> identity of people.
-
-## How people and programs use RoyM
-
-- **Web, desktop, and mobile apps:** A light RoyM app shows chats and action
-  cards on the web, as an installable web app, or in desktop and mobile apps.
-  These user interfaces use the JSON-RPC API.
-- **Program API:** Other apps and scripts use JSON-RPC through the client
-  gateway.
-- **Command line:** `roymctl` extensions support simple automation and provider
-  management from a terminal.
-
-## Trust and records
-
-- **Signed actions:** Each message and action is signed by the person's stable
-  cryptographic identity, called a Master DID, so its author can be verified.
-- **Recommendations:** People can share trusted contacts and provider
-  recommendations in private chat.
-- **Group membership proof:** A local group can issue a signed credential to an
-  approved provider, proving that the provider belongs to that group.
-- **Payment proof:** After an external payment, a signed receipt can be added
-  to the conversation so both sides have the same proof of payment.
-- **Fulfilment proof:** When a service is completed or goods are delivered, a
-  mutually signed receipt can be added to the conversation to prove the work
-  was done.
-- **Community moderation:** A local group can suspend or remove members who
-  break its rules, including removing their listings from its local search.
-
-## Features
-
-### Everyday chat
-
-- **Your profile:** Add a name, short introduction, and picture so people know
-  who they are talking with.
-- **Contacts and favourites:** Add or share contact details, keep important
-  people easy to find, and send the same update to a chosen list.
-- **One inbox:** See personal chats, group chats, customer conversations, and
-  order updates together in one place.
-- **Private chats:** Have private one-to-one conversations where only the two
-  people in the chat can read the messages.
-- **Group chats:** Talk with a chosen group, such as a family, a team, or a
-  neighbourhood group, without outsiders reading the conversation.
-- **Text, photos, and files:** Send words, pictures, videos, and files in the
-  same conversation.
-- **Replies and separate topics:** Reply to one message or continue a side
-  topic without mixing it into the main group conversation.
-- **Forwarding:** Pass a useful message, file, or update from one conversation
-  to another.
-- **Useful message cards:** Send a small card in a chat for an action such as
-  answering a poll, reviewing a quote, or choosing a time.
-- **Messages when someone is away:** Send a message even when the other person
-  is offline; it is delivered when they are reachable again.
-- **Typing and read signs:** See when someone is typing and, when they allow
-  it, when they have read a message.
-- **Use more than one device:** Keep chats and changes in step when the same
-  person uses RoyM on more than one device.
-- **Edit, delete, and keep messages:** Correct or remove messages, with
-  conventional rules for how long chat records are kept.
-
-### Finding local help and goods
-
-- **Local search:** Search in plain words, such as "plumber near me" or "fresh
-  bread nearby," and see relevant local people and shops.
-- **Service and shop pages:** Each business can show what it offers, where it
-  serves, when it is available, and any important details.
-- **Work across independent installations:** Find, assess, and transact with a
-  provider even when they use a different Syneroym installation.
-- **Recommendations and membership proof:** See recommendations and proof that
-  a business belongs to a local group before deciding whether to contact it.
-- **Talk before you decide:** Start a chat from a listing to ask questions,
-  explain a need, or decide whether the business is suitable.
-
-### Booking, buying, and getting work done
-
-- **Quotes in chat:** A business can send a clear offer showing the work,
-  price, and terms; the customer can accept it or ask for changes in the chat.
-- **Book a time:** See open times and choose an appointment without leaving the
-  conversation.
-- **Place an order:** Agree on goods, quantity, price, and delivery details in
-  a single order conversation.
-- **Track progress:** Both sides can see simple updates, from request through
-  booking, work, delivery, and completion.
-- **Pay using a familiar payment service:** Open a normal payment link, such as
-  a card or bank-payment page, when payment is needed.
-- **Keep payment proof:** Add proof of a completed payment to the conversation
-  so both sides have the same record.
-- **Keep fulfilment proof:** Add a signed receipt to the conversation when the
-  work is finished or goods are delivered, so both sides have an agreed record
-  of completion.
-- **Ask for help with a problem:** Start a dispute from the conversation and
-  share the agreed details with the local group that handles the case.
-
-### For service businesses and sellers
-
-- **Create and update listings:** Describe services or goods, prices, service
-  area, opening times, available stock, and other useful details.
-- **Describe an offer in a standard way:** A listing records booking, payment,
-  product, service, location, relationship, and service-record details.
-- **Manage availability:** Show when appointments can be booked or when goods
-  can be supplied.
-- **Manage customer work:** Use the conversation to follow each request from
-  the first question to the final result.
-- **Reach people through local groups:** Let chosen local groups show a listing
-  to people who are looking for it.
-
-### For local groups
-
-- **Welcome members:** Check new businesses and give approved members a clear
-  sign that customers can recognise.
-- **Maintain local listings:** Help members' listings appear in local search
-  and remove listings that no longer belong in the group.
-- **Set and apply group rules:** Suspend or remove members who break the
-  group's rules.
-- **Share updates and knowledge:** Send announcements, guides, and important
-  local information to members.
-- **Link with nearby groups:** Maintain relationships with other local groups
-  as the basis for future shared discovery, while each group keeps its rules.
-
-### Extra tools in conversations
-
-- **Attachments:** Share files and images when they help a conversation.
-- **Reminders:** Create a reminder for an appointment, task, or follow-up.
-- **Polls:** Ask a group a simple question and collect responses in the chat.
-- **Order and service cards:** Add clear progress cards to a conversation so
-  everyone can see what is happening next.
-- **Share important proof safely:** Send proof of membership, permission, or
-  identity only to the people who need to see it.
+One person can hold more than one role. A SynOrg owner may also be a provider.
+A consumer may later become a provider. The journey below orders roles by
+what depends on what, not by who people are.
 
 ---
 
-## Participant Journey
+## Decisions of record
 
-This section traces the sequence of actions that each participant performs when
-using RoyM. All services, protocols, and data stores are treated as black
-boxes. The focus is on *who does what, and when*.
+These decisions are settled for the first release. The rest of this document
+assumes them. Nothing is open. The reasoning behind the one decision that
+overturned an ADR is kept at the end, under
+[Decisions taken during review](#decisions-taken-during-review).
 
-The journey follows the order in which participants come into the picture:
-providers first, then SynOrg owners, then consumers.
-
-| Order | Participant | Why they come first |
+| # | Decision | Why |
 |---|---|---|
-| 1 | Provider | Must exist before anything can be found or bought |
-| 2 | SynOrg Owner | Connects providers to discovery and adds trust (runs discovery pods on own node in the basic setup) |
-| 3 | Consumer | Needs providers and a SynOrg in place to search and buy |
+| D1 | **Search in the first release is one SynOrg directory service.** No distributed shard index, no rendezvous hashing, no signed publications. | The Distributed Matching Fabric (`[P2P-DSC]`) is M8 work. It is not needed to show search working across independent installations — see [Scope R3](#r3--cross-installation-trust). |
+| D2 | **Roym has one source tree with two build targets.** It compiles to `wasm32-wasip2` and runs in the sandbox, or it compiles into the `syneroym-substrate` binary. Both builds call only host interfaces. | Keeps one codebase and one security boundary. See [Packaging](#packaging-one-source-two-builds). |
+| D3 | **The native build must not touch host crates directly.** It goes through the same host interfaces as the WASM build, via an in-process shim. Existing native services (such as the control plane) call `syneroym-data-db` directly; Roym must not. | If the native build could take shortcuts, the two builds would drift and the WASM build would quietly become second-class. |
+| D4 | **No third-party mailboxes.** A message waits in the sender's own outbox until one of the recipient's substrates is reachable. | This is [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §3, already decided. Mailboxes would need their own ADR covering encryption, retention, abuse, deletion, and operator-visible metadata. That is not first-release work. |
+| D5 | **Group chat uses an owner-distributed group key over a Gossip DAG, ordered by raw sender timestamps.** The group owner generates one symmetric key per epoch and sends it to each member over the existing 1:1 channel, then generates a new one on every join, every removal, and on a schedule. Not MLS. | **Revised 2026-08-13**, amending [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §6. MLS assumes a Delivery Service that gives every member the same order of Commits. We have no server, and a DAG sort does not supply that: a member can apply the only Commit it has seen, advance its epoch, then receive one that sorts earlier — and MLS epochs are forward-only. The ordering rule from §5 is unchanged and still correct. See [O1](#resolved-o1--group-key-management) for the full reasoning. |
+| D6 | **Clients talk to Roym as JSON-RPC through the client gateway.** The HTML UI is one such client. The API is the product boundary, not the UI. | Any other client — a different UI, a script, a CLI — can be written against the same API. See [Client contract](#client-contract). |
+| D7 | **The substrate signs on the person's behalf under delegation.** The user's Master DID delegates to the Substrate Node DID; Roym signs with the delegated key. Private user keys do not go into browser storage. | [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §1 already defines this delegation. It also means the gateway must learn which person is asking — see [gap G3](#substrate-work-required). |
+| D8 | **Every participant installs a substrate, including consumers.** There is no browser-only consumer path in the first release. | The client gateway binds `127.0.0.1` and authenticates no client. A hosted gateway serving browser consumers needs remote binding plus client authentication — see [gap G3](#substrate-work-required). The lightweight device identity from the requirements still applies; the person just runs it on their own machine. |
+| D9 | **The Transaction service runs on the provider's substrate.** | It makes the provider the single writer for a transaction, which the requirements demand. Putting it on the SynOrg would make the group a required intermediary and would break providers who belong to no group. |
+| D10 | **Group chat is core, not a stretch.** Attachments and multi-device sync are not. | Group chat is a flagship demonstration and shares the Gossip DAG with nothing else in the release, so it cannot be added cheaply later. Attachments and multi-device sync are separate systems that no other core goal depends on. |
 
-The Discovery Volunteer role appears later as the network scales (see
-"Scale-out: Discovery Volunteers" below).
+> **Note on the plan text.** The meta plan's M6 item 3 says "relative-clock
+> deterministic ordering". [ADR-0013](decisions/0013-p2p-messaging-architecture.md)
+> §5 explicitly rejects relative-clock negotiation and chooses raw sender
+> timestamps. The plan wording is stale and should be corrected to match D5.
+
+---
+
+## What Roym is made of
+
+Roym is a SynApp: one deployment and management unit that groups several
+services. Each service has its own API, its own data, and its own access
+rules. They talk to each other through declared `Bind` dependencies, never
+through shared database access.
+
+| Service | Runs on | Owns | Main API |
+|---|---|---|---|
+| **Conversation** | Every participant's substrate | Conversations, messages, delivery state, outbox, group keys | `send`, `history`, `conversations`, `delivery-status` |
+| **Profile & Contacts** | Every participant's substrate | Own profile, contact list, favourites, block list | `profile.get/set`, `contacts.*`, `block.*` |
+| **Catalog** | Provider's substrate | Listings, prices, service area, availability | `listing.*`, `availability.*` |
+| **Transaction** | Provider's substrate | Requests, quotes, agreements, bookings, orders, receipts | `request.*`, `quote.*`, `agreement.*`, `receipt.*` |
+| **Directory** | SynOrg's substrate | Member list, published listings, search index, membership credentials, revocations | `search`, `member.*`, `credential.*`, `revocation.*` |
+
+Three rules follow from this split:
+
+1. **The Transaction service is the single writer for a transaction.** It lives
+   on the provider's substrate, because the provider owns the offer. The
+   consumer's actions reach it as requests, not as direct writes. This is what
+   the requirements mean by "a single writer per service resolves this".
+2. **The Directory is optional.** A consumer can reach a provider by direct
+   link or referral with no directory involved. A provider can be live and
+   sell without joining any SynOrg. The Directory adds reach and trust
+   evidence; it is not a required step in any protocol.
+3. **The Conversation service is symmetric.** Consumer, provider, and SynOrg
+   owner all run the same one. There is no "customer support" variant.
+
+## Client contract
+
+```
+  HTML UI ──HTTP/JSON-RPC──▶ client gateway (7960) ──▶ Roym services
+  any other client ────────▶        "                     "
+```
+
+- The gateway maps the request's `Host:` header to the right service, using
+  the hostname grammar in [ADR-0022](decisions/0022-two-tier-logical-service-discovery.md) §7.
+- Every Roym capability the UI uses is a public JSON-RPC method. If the UI
+  needs something the API cannot do, the API is wrong, not the UI.
+- The UI holds no user private key and no business logic it cannot recompute
+  from the API.
+
+**Today the gateway binds `127.0.0.1` and presents the node's own identity as
+the caller.** So for the first release the browser must run on the same machine
+as the substrate, and the gateway must gain a way to know which person is
+asking. See [gap G3](#substrate-work-required).
+
+---
+
+## Packaging: one source, two builds
+
+Roym is written once against the host interfaces. It is then built two ways.
+
+| | WASM build | Native build |
+|---|---|---|
+| Target | `wasm32-wasip2`, run by Wasmtime in the sandbox | linked into `syneroym-substrate`, behind a Cargo feature |
+| Host calls | `wit-bindgen` guest bindings | in-process shim implementing the same interfaces |
+| Data access | host interfaces only | host interfaces only (D3) |
+| Use | untrusted or separately-deployed installs | installs that want Roym built in, and lower call overhead |
+
+In Rust terms: define one trait per host interface, implement each trait twice
+(guest bindings, native shim), and make Roym generic over them. The same
+integration tests run against both builds. A test that passes on one and fails
+on the other is a bug in the shim.
+
+**This is the constraint that sets M6's real size.** Roym cannot use any
+capability that does not exist as a host interface. Two capabilities it needs
+do not exist yet — see [G1 and G2](#substrate-work-required).
+
+---
+
+## First release scope
+
+This table is the only normative scope statement in this document. The journey
+and technical sections that follow explain it; they do not extend it.
+
+Work is grouped into three releases. Each release must pass its acceptance
+tests before the next begins.
+
+### R1 — A usable local guild
+
+| Goal | Required contract | User scenario | Excluded | Acceptance test |
+|---|---|---|---|---|
+| A person can be a consumer without running a full install of their own | Device-bound consumer key with encrypted backup and import (`[FND-IDT]` Lightweight Consumer Identity) | A consumer sets up, backs up, then restores on a clean machine | Recovery by an operator; social recovery | Restore on a clean node reproduces identity and history; no operator can impersonate |
+| A provider can publish what they offer | Versioned listing schema covering booking, payment, product, service, location, relationship, and service-record dimensions | Provider publishes a listing and edits it | Media galleries; stock counting | Listing round-trips through export/import with schema version preserved |
+| Two people can talk | 1:1 text with X3DH + Double Ratchet; durable outbox with `pending`/`delivered`/`failed` visible to the user | Consumer messages an offline provider; provider comes online and sees it | Attachments; voice; video; group chat | Message survives a process restart on both sides and is never shown as delivered while pending |
+| A need becomes an offer | Versioned request → quote → agreement records, each signed | Consumer describes a need, provider quotes, consumer accepts | Negotiation history rendering; templates | Accepting a quote produces a signed agreement receipt containing every field listed in [Records](#records-and-what-each-one-proves) |
+| A person can find a provider through a group | Directory `search` by category, area, and filters, returning source and freshness | Consumer searches, sees results with trust evidence | Ranking; paid placement; free-text intent parsing | Results state their source and age; missing evidence shows as unknown, never as positive |
+| People are safe from unwanted contact | Block, report, per-sender contact rate limits, listing publication limits | Consumer blocks a provider and reports a listing | Automated moderation; appeals workflow | A blocked sender's messages never reach the recipient's inbox; the recipient keeps its transaction records |
+
+### R2 — The transaction vertical
+
+| Goal | Required contract | User scenario | Excluded | Acceptance test |
+|---|---|---|---|---|
+| An agreement becomes scheduled work | Transaction state machine with named writer, permitted transitions, expiry, idempotency key, conflict rule | Consumer books a slot; a second consumer tries the same slot | Recurring bookings; multi-part jobs | Two concurrent bookings of one slot produce one confirmation and one named conflict, never two confirmations |
+| Payment can be recorded honestly | `payment-acknowledgement` record, separate from settlement; payment instruction bound into the signed agreement | Provider requests payment, consumer pays outside Roym, both acknowledge | Provider-verified settlement; escrow; refunds | The UI never labels an acknowledgement as verified payment; the payee shown matches the agreement |
+| Completion is recorded | Mutually signed `fulfilment-receipt` | Both sides sign off completed work | Ratings; feedback scores | Neither party can alter a signed receipt; corrections appear as separate records |
+| A person can leave with their data | Versioned, integrity-checked export of conversations, agreements, and receipts | Consumer exports everything, imports on a new install | Selective export; redaction | Cross-version fixture test passes; import reproduces verification status |
+| A person can recover from device loss | Encrypted backup with a tested restore path | Provider loses their machine and restores | Automatic cloud backup | Restore on a clean node passes the durability suite with no acknowledged transaction lost |
+
+### R3 — Cross-installation trust
+
+| Goal | Required contract | User scenario | Excluded | Acceptance test |
+|---|---|---|---|---|
+| A consumer can transact with a provider on a different install | Endpoint resolution through the discovery overlay ([ADR-0022](decisions/0022-two-tier-logical-service-discovery.md)) | Consumer on install X hires a provider on install Z | Automatic discovery between SynOrgs | Full R1+R2 flow passes end to end with the three parties on three separate installs |
+| Group membership means something checkable | Signed membership credential with issuer, scope, and expiry; signed revocation list | Consumer checks a provider's guild membership | Trade licences; third-party credentials | The consumer's own node verifies signature, issuer, scope, and expiry — never the directory that served the result |
+| A group can enforce its rules | Signed, scoped moderation decision with source and timestamp | SynOrg suspends a member | Cross-group propagation; global blocklists | A suspended member vanishes from that directory's results; already-cached copies show the revocation on next check, and the document does not claim instant removal |
+
+### R4 — Private group chat
+
+Core, not a stretch. Built last of the core set, because it needs R1's 1:1
+messaging underneath it.
+
+| Goal | Required contract | User scenario | Excluded | Acceptance test |
+|---|---|---|---|---|
+| A group can talk with no central chat server | Gossip DAG: messages spread directly between members, each linking to earlier ones | A member posts; every other member receives it without any server in the path | Message search; pinned messages | With no coordinator reachable, members who can reach each other still exchange and order messages |
+| Every member sees the same order | Total order by `(sender_timestamp, sender_did)`, per [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §5 | Two members post at the same moment from skewed clocks | Correcting displayed times | Every member's transcript is byte-identical after sync, whatever order messages arrived in |
+| Only members can read the group | Owner-distributed per-epoch group key; rekey on every join, every removal, and on a schedule (D5) | A member joins, then another is removed | Rejoining and reading the gap; leaderless groups | A joiner cannot read messages from before the join; a removed member cannot read messages after the removal; a scheduled rekey with stable membership still changes the key |
+| Membership is visible to the group | Join and removal are ordinary DAG events, ordered by the same rule as messages | The owner adds a member | Approval votes; member-initiated invites | Every member's membership history is identical after sync; no key reaches a party absent from that history |
+| An offline member catches up | Members hold and serve the DAG to each other; no external store | A member is offline for a day, then returns | Unbounded history retention | The returning member pulls the gap from any online peer and converges to the same transcript |
+
+### Beyond the first release
+
+Real systems in their own right, sequenced after the core set:
+
+- **Attachments:** images, files, video
+- **Multi-device sync:** primary-substrate reconciliation per [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §2
+- **Chat polish:** threads, polls, reminders, read receipts, typing indicators, broadcasts
+
+### Not in the first release
+
+- Roym does not process payments, hold money, or run escrow. It opens an
+  external payment page and records what both sides say happened.
+- No public ratings or scores computed from past work.
+- No AI assistant that searches, recommends, or acts for people. Search is by
+  category, area, and filters — not free-text intent parsing.
+- No automatic discovery between independently run SynOrgs. Groups can record
+  peer relationships now; the protocol comes later.
+- No automated dispute workflow. A consumer can forward complaint details to a
+  SynOrg owner by hand.
+- No distributed shard index (D1).
+
+---
+
+## Participant journey
+
+This traces who does what, and when. Services and protocols are black boxes
+here.
 
 ### Phase 1 — Provider sets up
 
-The provider is the first to arrive. Without providers, there is nothing to
-discover or buy.
-
 ```
-P1.  Provider installs a Syneroym substrate with the RoyM app
-P2.  Provider creates their profile (name, description, picture)
-P3.  Provider creates a service/product catalog
-       — describes offerings, prices, service area, hours, stock
-       — the catalog is a signed listing that proves authorship
-         (signing proves who published it, not that it is trustworthy —
-          trust evidence comes separately from SynOrg membership,
-          recommendations, and payment history)
-P4.  Provider configures availability (appointment slots or supply schedule)
-P5.  Provider is now live but not yet discoverable through any SynOrg
-       — can still be found by direct contact or recommendation sharing
+P1.  Provider installs a Syneroym substrate with the Roym SynApp
+P2.  Provider creates their profile
+P3.  Provider creates a catalog of services or products
+       — the listing is signed, which proves who published it
+       — signing does not prove the listing is honest; trust evidence
+         comes separately, from membership credentials and receipts
+P4.  Provider sets availability (appointment slots or supply schedule)
+P5.  Provider is live and can be reached by direct link or referral
+       — being listed in a SynOrg directory is optional and comes next
 ```
 
-### Phase 2 — SynOrg Owner establishes a local group
-
-The SynOrg owner creates the organizational layer that connects providers to
-consumers through curated, trusted local search. In the basic setup, the
-SynOrg runs discovery pods on its own node.
-
-#### SynOrg setup
+### Phase 2 — SynOrg owner sets up a local group
 
 ```
-S1.   SynOrg Owner installs a Syneroym substrate with the RoyM app
-S2.   SynOrg Owner creates the SynOrg (name, rules, area, categories)
-S3.   SynOrg Owner configures discovery on their node
-        — enables discovery pod roles on their own substrate
-        — the node stores index data and answers search queries
-        — the node can also act as a mailbox for offline message delivery
+S1.  SynOrg Owner installs a Syneroym substrate with the Roym SynApp
+S2.  SynOrg Owner creates the SynOrg: name, rules, area, categories,
+       support contact, dispute path, directory policy, retention policy
+S3.  SynOrg Owner runs the Directory service on their own node
+S4.  Provider applies to join
+S5.  SynOrg Owner reviews the provider against group rules
+S6.  SynOrg Owner approves and issues a signed membership credential
+       — scoped, with an expiry date
+S7.  Provider chooses to publish listings to that directory
+       — publishing is the provider's action, not the SynOrg's
+S8.  Provider receives SynOrg announcements and updates
 ```
 
-#### Provider joins a SynOrg
+Everyday work for the SynOrg owner:
 
 ```
-S4.   Provider requests to join a SynOrg
-S5.   SynOrg Owner reviews the provider (vetting, rule check)
-S6.   SynOrg Owner approves the provider
-        — issues a signed membership credential to the provider
-S7.   Provider's catalog listings are published to the SynOrg's discovery
-        — listings carry the membership proof as trust evidence
-S8.   Provider can receive SynOrg announcements, guides, and updates
-```
-
-#### SynOrg Owner's everyday work
-
-```
-S9.   SynOrg Owner reviews a newly published listing from a member
-        — checks that descriptions, prices, and area are accurate
-        — confirms the listing follows group rules
-S10.  SynOrg Owner shares updates and local knowledge with members
-        — announcements, guides, seasonal information
-S11.  SynOrg Owner notices a listing that violates group rules
-        — contacts the member to resolve the issue
-        — if unresolved, suspends the member
-        — suspended member's listings disappear from the SynOrg's search
-S12.  SynOrg Owner receives a consumer complaint forwarded from a conversation
-        — reviews the complaint details and the transaction history
-        — contacts both the consumer and the provider
-        — takes action according to group rules (warning, suspension, removal)
-S13.  SynOrg Owner removes a member who repeatedly breaks rules
-        — revokes the membership credential
-        — all of that member's listings disappear from the SynOrg's search
+S9.   Reviews newly published listings for rule compliance
+S10.  Shares announcements, guides, and local information
+S11.  Contacts a member about a listing that breaks the rules;
+        if unresolved, publishes a signed suspension decision
+S12.  Receives a complaint forwarded from a conversation, reviews it
+        with both sides, and acts under group rules
+S13.  Removes a repeat offender: revokes the membership credential and
+        publishes the revocation
+        — the member disappears from this directory's results
+        — copies already cached elsewhere show the revocation when
+          they are next checked; nobody can promise instant removal
 ```
 
 ### Phase 3 — Consumer arrives
 
-The consumer is the last participant to need things in place. Providers and
-SynOrgs must exist before search and transactions work.
-
-#### Setup
-
 ```
-C1.   Consumer gets access to RoyM:
-        C1a.  Installs a Syneroym substrate with the RoyM app (full access)
-              — or —
-        C1b.  Accesses a SynOrg's client gateway through a browser
-              (limited to provider discovery and basic chat, no local data)
-C2.   Consumer creates their profile (name, description, picture)
-C3.   Consumer adds one or more SynOrgs to search through
+C1.  Consumer installs Roym and creates a device-bound identity
+C2.  Consumer is prompted to back it up, after seeing some value first
+C3.  Consumer creates a profile
+C4.  Consumer adds one or more SynOrg directories to search
 ```
 
-> **Note:** How a consumer discovers which SynOrgs exist is out-of-band:
-> word-of-mouth, a shared link, a recommendation from a contact, or a
-> well-known directory. Which SynOrg to trust is the consumer's own decision,
-> based on signals such as who recommended it, how many providers it has, and
-> its reputation.
+> **How does a consumer find a SynOrg?** Out of band: word of mouth, a shared
+> link, a referral, or a well-known list. Which SynOrg to trust is the
+> consumer's own decision.
 
-#### Finding a provider
-
-This is where RoyM's most distinctive capability shows: distributed search
-across independent installations without a central index.
+Finding a provider:
 
 ```
-C4.   Consumer enters an intent in natural language
-        — e.g. "plumber near me", "fresh bread nearby"
-C5.   Consumer's node interprets the request
-C6.   The request is sent to the consumer's configured SynOrg(s)
-C7.   Each SynOrg routes the query to its discovery pods
-        — pods may be on the SynOrg's own node or on volunteer nodes
-        — pods on different installations can answer if they hold
-          matching listings (this is cross-installation search)
-C8.   Discovery pods return matching listings to the SynOrg
-C9.   The SynOrg combines results and returns them to the consumer
-C10.  Consumer sees results: provider pages with offerings, area, hours
-        — results may include providers from different installations
-C11.  Consumer checks trust evidence on results
-        — membership proof (provider belongs to a SynOrg)
-        — recommendations from contacts
-        — payment proof history (when available)
-        — trust evidence is verified by the consumer's own node,
-          not by the SynOrg or the discovery pods
+C5.  Consumer searches by category, area, and filters
+C6.  The search goes to each directory the consumer has added
+       — directly, from the consumer's node
+       — a directory is a query target, not a required hub
+C7.  Each directory returns matching listings with their source and age
+C8.  Consumer's own node combines and verifies results
+       — checks each listing signature
+       — checks each membership credential: signature, issuer, scope,
+         expiry, revocation
+       — missing evidence shows as unknown, never as a positive default
+C9.  Consumer sees results, and can see why each one appeared
 ```
 
-#### Engaging a provider
-
-The provider may be on the same installation or a different one. The
-experience is the same — messages are end-to-end encrypted regardless.
+Engaging a provider — the provider may be on any installation; the flow is the
+same:
 
 ```
-C12.  Consumer starts a chat from a listing
-        — asks questions, explains the need
-C13.  Provider responds in the same conversation
-        — both see this in their unified inbox
-        — if the provider is offline, the message waits in the consumer's
-          outbox (or a mailbox node if configured) until the provider
-          is reachable
-C14.  Provider sends a quote card in the chat
-        — shows work description, price, terms
-C15.  Consumer reviews the quote
-        — accepts, rejects, or requests changes inside the chat
+C10.  Consumer starts a conversation from a listing
+        — subject to the provider's contact rate limits
+C11.  Provider replies in the same conversation
+        — if either side is offline, the message waits in the sender's
+          own outbox and shows as `pending` until it is delivered (D4)
+C12.  Consumer sends a structured request: category, description,
+        approximate area, preferred window, attachments, data-use notice
+        — the exact address is disclosed only when it is needed
+C13.  Provider sends a versioned quote card: scope, price, taxes and
+        fees, schedule, location, payment method and payee,
+        cancellation and refund terms, expiry, dispute path
+C14.  Consumer accepts, rejects, or asks for changes
+        — acceptance by both sides produces a signed agreement receipt
+        — a material change produces a new version, not an edit
 ```
 
-#### Booking and ordering
+Booking, payment, completion:
 
 ```
-C16.  Consumer books an appointment (chooses from provider's open slots)
-        — or —
-C16'. Consumer places an order (agrees on goods, quantity, price, delivery)
-C17.  Both sides see a progress card in the conversation
-        — status moves through: request → confirmed → in-progress →
-          delivered → completed
+C15.  Consumer books a slot, or places an order
+        — the provider's Transaction service is the single writer and
+          decides; a losing concurrent booking gets a named conflict
+C16.  Both sides see the same progress card, driven by the transaction
+        state machine
+C17.  Provider requests payment; the payment instruction was already
+        fixed in the signed agreement, so the payee cannot be swapped
+        in a later chat message
+C18.  Consumer pays through the external service
+C19.  Each side records a payment acknowledgement with whatever proof
+        they have
+        — this proves both sides said the same thing
+        — it does not prove the money moved; the UI must say so
+C20.  Provider marks the work complete; both sides sign a fulfilment
+        receipt
+C21.  Consumer may recommend the provider to a contact, in a private
+        conversation
 ```
 
-#### Payment
+### Later: discovery volunteers
+
+Not first-release work. As a network grows, volunteers can run directory
+capacity for a SynOrg instead of the SynOrg running it all itself. The
+mechanism for associating a volunteer node with a SynOrg is undesigned, and is
+sequenced with the Matching Fabric in M8.
+
+### Interaction map
 
 ```
-C18.  Provider sends a payment link in the chat
-        — links to an external payment service (card, bank transfer, etc.)
-C19.  Consumer completes payment using the external service
-C20.  Both sides confirm payment in the conversation:
-        — each party provides their confirmation and whatever proof
-          they have (screenshot, transaction ID, etc.)
-        — the other party accepts or rejects the confirmation
-        — once both accept, a mutual payment receipt is recorded
-          in the conversation
+  ┌──────────────────┐   membership credential,   ┌──────────────────┐
+  │      SynOrg      │   announcements            │     Provider     │
+  │                  │◀──────────────────────────▶│                  │
+  │  • members       │   provider publishes       │  • catalog       │
+  │  • directory     │   listings by choice       │  • availability  │
+  │  • rules         │                            │  • transactions  │
+  │  • revocations   │                            │                  │
+  └────────┬─────────┘                            └────────▲─────────┘
+           │                                               │
+           │ search query,                                 │ conversation,
+           │ verified results                              │ quote, booking,
+           │                                               │ payment, receipt
+           │                                               │ (direct, E2E)
+           │              ┌──────────────────┐             │
+           └─────────────▶│     Consumer     │◀────────────┘
+                          │                  │
+                          │  • verifies all  │
+                          │    evidence      │
+                          │    locally       │
+                          └──────────────────┘
 ```
 
-#### Fulfilment and completion
-
-```
-C21.  Provider marks the work or delivery as complete
-C22.  Both sides sign a fulfilment receipt in the conversation
-        — this is a mutually signed record that the agreed work was done
-        — combined with the payment receipt, both sides now have a
-          complete, verifiable transaction record
-C23.  Consumer can recommend the provider to contacts
-        — shares a recommendation in a private chat
-```
-
-### Phase 4 — Ongoing everyday use (all participants)
-
-Once set up, all participants share a common set of everyday features.
-Features are grouped by priority: **core** features are needed for the basic
-demo; **polish** features improve the experience but are not required to
-show RoyM's value.
-
-#### Core features
-
-**Unified inbox**
-
-```
-E1.   All participants see everything in one inbox:
-        — personal chats
-        — group chats
-        — customer/provider conversations
-        — order and booking updates
-```
-
-**Messaging**
-
-```
-E2.   Send text, photos, videos, files, and other attachments
-E3.   Reply to a specific message
-E4.   Forward a message, file, or update to another conversation
-E5.   Edit or delete sent messages
-E6.   Send messages to offline people — delivered when they come back online
-E7.   Use RoyM on multiple devices — chats stay in sync
-```
-
-**Private group chat** — a priority showcase feature: group messaging where
-only members can read the messages, with no central chat server involved.
-
-```
-E8.   Create or join group chats (family, team, neighbourhood)
-E9.   Group messages are private — only members can read them
-E10.  Messages arrive consistently even when delivery order varies
-```
-
-**Contacts**
-
-```
-E11.  Add and manage contacts and favourites
-E12.  Share contact details with others
-E13.  Share provider recommendations in private chat
-```
-
-**Transaction cards**
-
-```
-E14.  Use order and service progress cards in conversations
-E15.  Share proof of membership or permission (only to people who need it)
-```
-
-#### Polish features
-
-These features improve everyday use but are not needed for the core demo.
-
-```
-E16.  Start side threads from a message (like Discord or ChatGPT threads)
-E17.  See typing indicators and read receipts (when the other person allows)
-E18.  Send a broadcast update to a chosen list of contacts
-E19.  Set reminders for appointments, tasks, or follow-ups
-E20.  Create polls in group chats
-```
-
-### Scale-out: Discovery Volunteers
-
-In the basic setup (Phase 2), the SynOrg runs discovery pods on its own node.
-As the network grows, dedicated volunteers can take on discovery and mailbox
-roles to distribute the load.
-
-```
-V1.  Volunteer installs a Syneroym substrate with the RoyM app
-V2.  Volunteer enables extra substrate roles:
-       — Discovery pod: stores index data, answers search queries
-       — Mailbox: stores messages for offline recipients
-V3.  Volunteer's node is now available as a discovery pod
-       — it does not choose which categories or areas to handle
-       — what the pod stores and serves is determined by the
-         organizing SynOrg's configuration (hash ring position,
-         leaf index vs. proxy role, visibility, permissions)
-V4.  The volunteer's node is associated with a SynOrg:
-       — the SynOrg Owner could be configured in the volunteer,
-         with automated checks to establish the relationship
-       — exact mechanism to be designed later
-V5.  The volunteer's node now receives listings and answers queries
-       on behalf of the SynOrg, reducing load on the SynOrg's own node
-```
-
-### Interaction Map
-
-The diagram below shows how participants interact. The key routing model is:
-Consumer → SynOrg → Discovery Pods → results back to SynOrg → Consumer.
-The consumer never queries discovery pods directly.
-
-```
-                          ┌─────────────────────────┐
-                          │        SynOrg            │
-                          │                          │
-                          │  • member management     │
-                          │  • discovery endpoint    │
-                          │  • rules & moderation    │
-                          │  • announcements         │
-                          │                          │
-                          │    ┌─────────────────┐   │
-                          │    │  Discovery Pods  │   │
-                          │    │  (own node or    │   │
-                          │    │   volunteer      │   │
-                          │    │   nodes)         │   │
-                          │    └─────────────────┘   │
-                          └──────┬──────────┬────────┘
-                 credential,     │          │    routes queries,
-                 announcements   │          │    returns results
-                                 │          │
-               ┌─────────────────┘          └──────────────────┐
-               │                                               │
-               ▼                                               ▼
-  ┌──────────────────┐                            ┌──────────────────┐
-  │    Provider      │                            │    Consumer      │
-  │                  │◄──────────────────────────▶│                  │
-  │  • catalog       │   chat, quotes, orders,    │  • search        │
-  │  • availability  │   payment, fulfilment      │  • chat          │
-  │  • fulfilment    │   (direct, end-to-end      │  • book / order  │
-  │                  │    encrypted)               │  • pay           │
-  └──────────────────┘                            └──────────────────┘
-```
+The consumer queries directories directly and verifies every result on its own
+node. A directory can be skipped entirely when the consumer already has a link
+or a referral.
 
 ---
 
-## Priority showcase features
+## Records and what each one proves
 
-These are the first end-to-end demonstrations of what RoyM and Syneroym make
-possible. They take priority over familiar details such as profile pictures.
+Each record is signed, versioned, and append-only. Nothing in this list can be
+rewritten after the fact; corrections are new records that reference the old
+one.
 
-1. **Distributed local search:** Find a nearby service without a central index;
-   local groups route the search to the right places and combine the results.
-2. **One inbox:** See social chats, local-group chats, and active customer or
-   order conversations in one place.
-3. **Structured listings:** Publish services and goods in a consistent format,
-   including booking, delivery, location, and other relevant details.
-4. **Interactive order cards:** Negotiate a quote, confirm an order, and follow
-   its progress through cards in the same conversation.
-5. **Private group chat:** Demonstrate group messaging with centralized key management,
-   or MLS and Gossip DAG delivery, so members can communicate without a central server.
-6. **Offline direct messages:** Send a message or order request while a
-   provider is offline; it stays in the sender's outbox or receiver mailbox
-   until delivery works.
-7. **Trust and payment proof:** Add verified external-payment proof to a chat,
-   completing the shared record of a customer-provider interaction.
+| Record | Signed by | Proves | Does **not** prove |
+|---|---|---|---|
+| `listing` | Provider | Who published this offer, and when | That the offer is honest or the provider is competent |
+| `membership-credential` | SynOrg | This SynOrg approved this provider, within a scope, until an expiry date | That the SynOrg vetted them well, or that any other group agrees |
+| `revocation` | SynOrg | This SynOrg withdrew a credential at a stated time | That every cached copy is gone |
+| `request` | Consumer | What the consumer asked for | — |
+| `quote` | Provider | The exact terms offered, at a version | — |
+| `agreement-receipt` | Both | Both parties accepted these exact terms, including payee, expiry, cancellation and refund terms, and dispute path | That either side will perform |
+| `payment-acknowledgement` | Each side, separately | Each party stated what they observed about a payment | **That money moved.** Only a supported payment provider's own attestation could show that, and none is integrated |
+| `fulfilment-receipt` | Both | Both parties agreed the work was done | Quality, or that no dispute follows |
+| `moderation-decision` | SynOrg | This group applied this rule to this member at this time | Global truth; another group is free to disagree |
 
-### Showcase scenarios
+Two rules that follow:
 
-These scenarios make the priority showcase features concrete. Each shows a
-specific capability working end-to-end.
-
-#### Scenario A: Distributed local search
-
-Shows that search works across independent installations with no central
-index.
-
-```
-A1.  Consumer on installation X searches "electrician near me"
-A2.  The request goes to the consumer's configured SynOrg (on installation Y)
-A3.  The SynOrg routes the query to its discovery pods
-A4.  One pod holds listings from a provider on installation X
-     Another pod holds listings from a provider on installation Z
-A5.  Both pods return their matching results to the SynOrg
-A6.  The SynOrg combines the results and sends them to the consumer
-A7.  The consumer sees providers from two different installations
-       in one result list, with trust evidence for each
-```
-
-#### Scenario B: Offline direct message and delivery
-
-Shows that messages reach their destination even when the recipient is
-offline, with no central message server.
-
-```
-B1.  Consumer sends a booking request to a provider who is currently offline
-B2.  The message is stored in the consumer's local outbox
-       (or forwarded to a configured mailbox node)
-B3.  Hours later, the provider comes online
-B4.  The message is delivered — the provider sees the booking request
-B5.  The provider responds — the consumer sees the response in their inbox
-```
-
-#### Scenario C: Multi-device sync
-
-Shows that a participant can use RoyM on multiple devices with consistent
-state.
-
-```
-C-i.   Provider receives a booking notification on their phone
-C-ii.  Provider opens RoyM on their laptop, sees the same booking
-C-iii. Provider responds to the booking from the laptop
-C-iv.  The response appears on the phone too
-C-v.   Consumer sees one consistent conversation thread regardless
-         of which device the provider used
-```
-
-#### Scenario D: Complete service transaction with trust proof
-
-Shows the full trust chain: membership proof, transaction cards, payment
-proof, and fulfilment proof in one conversation.
-
-```
-D1.  Consumer finds a provider whose listing carries SynOrg membership proof
-D2.  Consumer chats with the provider and receives a quote card
-D3.  Consumer accepts the quote — a booking progress card appears
-D4.  Provider completes the work, sends a payment link
-D5.  Consumer pays — both sides confirm payment with their proof
-D6.  Both sides sign a fulfilment receipt
-D7.  The conversation now contains: membership proof, quote, booking,
-       payment receipt, and fulfilment receipt — a complete verifiable record
-```
-
-#### Scenario E: Private group chat
-
-Shows group messaging where only members can read messages, with no central
-chat server.
-
-```
-E-i.   SynOrg Owner creates a group chat for member providers
-E-ii.  Members join the group — encryption keys are established
-E-iii. A member sends a message — only group members can read it
-E-iv.  The message spreads between members directly, not through a
-         central server
-E-v.   A new member joins — they can read new messages but not old ones
-E-vi.  A member is removed — they can no longer read new messages
-```
+- **Payment evidence is not a public listing field.** A `payment-acknowledgement`
+  belongs to the two parties. It is disclosed to a third party only by an
+  explicit, scoped, expiring grant. The requirements are clear that trust
+  signals must not be pushed into one global public store, and search results
+  must not carry a party's payment history by default.
+- **Deleting a message does not delete the other party's record.** A person can
+  remove their own local copy and ask the other side to do the same. Agreements
+  and receipts survive that, because both parties signed them.
 
 ---
 
-## Technical Design & Architecture
+## Transaction state
 
-This section explains how RoyM provides the experience above. It is written for
-software engineers who know common web, distributed-systems, and security
-concepts, but do not yet know Syneroym.
+Every transaction is an entity with one named writer: the **Transaction
+service on the provider's substrate**. The consumer's client sends requests;
+the Transaction service decides.
 
-### Terms used in this section
+```
+  requested ──▶ quoted ──▶ agreed ──▶ scheduled ──▶ in-progress
+                  │           │           │              │
+                  ▼           ▼           ▼              ▼
+              expired    cancelled    cancelled      completed
+```
 
-- **Syneroym node:** A running Syneroym installation, on a person's device or
-  on infrastructure they have chosen.
-- **Service:** An independently run part of an application with a defined API,
-  such as chat, a business listing, or search.
-- **SynApp:** A Syneroym application definition that groups several services
-  into one product. It is the deployment and management boundary for RoyM.
-- **Capability token:** A signed, limited permission. It says who may perform
-  which action on which resource, and can be passed on with fewer permissions.
-- **Gossip DAG:** A graph of group messages that are shared between members.
-  Its links to earlier messages let clients order delayed messages consistently.
-- **CRDT:** A data structure that merges compatible changes from multiple
-  devices without a central lock or a fixed delivery order.
-- **Local group:** An independent group that can run services for its members;
-  the earlier documents call this a SynOrg or an aggregator.
+- **Writer:** the provider's Transaction service, always. There is no
+  multi-master merge for transactions.
+- **Idempotency:** every state-changing request carries an idempotency key.
+  A retry after a lost connection reaches the same final state; it never
+  creates a second booking.
+- **Expiry:** a quote has an explicit expiry. An unaccepted quote expires
+  rather than sitting open forever.
+- **Conflicts:** two consumers booking the same slot produce one `scheduled`
+  and one named conflict returned to the loser. Last-write-wins is not
+  acceptable here.
+- **Cancellation:** permitted states and actors are explicit and are part of
+  the agreed terms. A consumer can cancel a still-pending request, and the UI
+  shows when cancellation is no longer guaranteed.
+- **Audit:** transitions are append-only. Corrections never rewrite a
+  previously signed fact.
 
-### Packaging and deployment
+**CRDTs are not used for transactions.** They are appropriate for merging one
+person's own device state and chat metadata, and nothing else in Roym.
 
-- RoyM can run as a WebAssembly SynApp: a portable module executed by Syneroym
-  with access only to the services it has been given.
-- It can also be compiled into the Syneroym binary for installations that want
-  it built in, selected through build feature flags. Both forms use the same
-  RoyM code and the same service APIs.
-- The host provides `syneroym:messaging`, `syneroym:data-db`, and
-  `syneroym:blob-store` for messages, encrypted structured data, and files.
-  RoyM does not depend on direct access to another app's database.
+---
+
+## What is encrypted, and who can see what
+
+"End-to-end encrypted" needs a precise statement, so users are not misled.
+
+| Party | Can read message content? | Can see metadata? |
+|---|---|---|
+| The two people in a 1:1 conversation | Yes | Yes |
+| Group members (current epoch) | Yes, for that epoch | Yes |
+| **The group owner** | Yes — they generate and distribute the key (D5) | Yes, plus the full membership history |
+| A removed group member | No, from the next epoch onward | Sees nothing new |
+| Relay / coordinator node | **No** | Sees that two endpoints exchanged traffic, sizes, and timing |
+| Directory service | **No** — it never carries conversations | Sees search queries and which listings were returned |
+| The host operator of a provider's substrate | **Yes**, if the provider does not run their own machine. A compromised host can read plaintext in use | Everything on that node |
+| Backup destination | No, if backups are encrypted before they leave | Sizes and timing |
+| The device itself | Yes | Yes |
+
+Three consequences to state plainly in the product:
+
+1. **A managed-guild provider trusts its host.** If a SynOrg hosts a provider's
+   substrate, that operator can read that provider's conversations. This must be
+   disclosed before the provider chooses the managed path.
+2. **Transport encryption is not end-to-end privacy.** Relay and coordinator
+   links are encrypted, but that is a separate, weaker thing, and the UI must
+   never present it as message privacy.
+3. **A group owner can read their group.** They hold the key they distribute.
+   This is the same power a group admin has in any common chat app, with one
+   difference worth naming: the owner is also the key distributor. Membership
+   changes are visible DAG events precisely so the owner cannot add a reader
+   without the group seeing it. The group's UI should say who the owner is.
+
+**Recovering from a compromise.** If a member's device is compromised, the owner
+rekeys and the attacker loses access from the next epoch. That recovery depends
+on somebody *noticing*. Scheduled rekeying is what covers the case nobody
+notices: it bounds how long stolen key material stays useful, instead of leaving
+it useful forever.
+
+**Where signing happens:** in the substrate, using a key delegated from the
+person's Master DID (D7). The HTML UI does not hold a signing key. This means
+the substrate signs whatever an authenticated local client asks it to sign —
+which is exactly why the gateway needs to authenticate that client (G3).
+
+---
+
+## Safety and operations
+
+These are requirements, not polish, and they are in R1.
+
+- **Block:** a blocked sender's messages never reach the recipient's inbox.
+  Blocking does not delete the recipient's transaction records with that party.
+- **Report:** a person can report impersonation, fraud, harassment, unsafe
+  service, or illegal content to the relevant SynOrg. A report has a status.
+  An unverified allegation is never published as fact.
+- **Contact rate limits:** unsolicited first contact is rate-limited per
+  sender and controllable by the recipient.
+- **Publication limits:** a provider cannot flood a directory with listings.
+- **Policy disclosure:** a SynOrg's rules, retention policy, dispute path, and
+  support contact are visible before a provider joins or a consumer searches
+  through it.
+- **Retention and deletion:** every durable record has a stated owner, retention
+  policy, and deletion or tombstone behaviour. Export and account deletion are
+  separate actions. The product does not promise deletion it cannot enforce.
+- **Backup and recovery:** encrypted backup with a restore path that is tested
+  on a clean node before release.
+
+---
+
+## Technical design
+
+Written for engineers who know web, distributed systems, and security, but not
+Syneroym.
+
+### Terms
+
+- **Syneroym node / substrate:** one running Syneroym installation.
+- **Service:** an independently run part of an application with its own API.
+- **SynApp:** an application definition grouping several services. It is the
+  deployment and management unit. Roym is one SynApp.
+- **Capability token:** a signed, limited permission — who may do what, on
+  which resource. It can be passed on with fewer permissions, never more. In
+  Syneroym these use the UCAN format ([ADR-0015](decisions/0015-ucan-capability-model.md)).
+- **Gossip DAG:** a graph of group messages shared directly between members.
+  Each message links to earlier ones, which lets clients order late-arriving
+  messages the same way.
+- **CRDT:** a data structure that merges compatible changes from several
+  devices without a central lock. Used only for one person's own device state.
 
 ### Service boundaries and permissions
 
-- RoyM is both a provider and a consumer of services. It exposes a chat API to
-  other SynApps and calls listing or local-group services through their APIs.
-- A cross-app `Bind` is RoyM's declared dependency on another app's service.
-  It identifies the service RoyM may call instead of giving ambient access.
-- Calls between services carry the caller's identity and a capability token.
-  The receiving service verifies both before it permits an operation.
-- In Syneroym, these capability tokens follow the UCAN format. The important
-  property is scope: a plugin can receive permission for one chat or action,
-  not unrestricted access to the user's data.
+- Roym both offers and consumes services. It exposes its APIs to other SynApps
+  and calls other apps through their APIs.
+- A cross-app `Bind` is Roym's declared dependency on another app's service.
+  It names exactly what Roym may call. There is no ambient access.
+- Every call carries the caller's identity and a capability token. The
+  receiving service checks both ([ADR-0016](decisions/0016-native-dispatch-identity-threading.md)).
+- A plugin gets a token for one conversation or one action. It cannot read
+  unrelated conversations.
 
-### Private messaging and group delivery
+### Messaging
 
-- A one-to-one chat establishes shared secret keys, then changes them as
-  messages are exchanged. It uses X3DH and Double Ratchet through
-  `libsignal-protocol-rust`, the Signal-style messaging design.
-- A group chat uses Centralized Multicast Key Management by group Owner using
-  a Logical Key Hierarchy (LKH). Alternatively MLS (RFC 9420) through
-  `openmls` to change group keys as people join or leave. Each group member
-  can read its messages; relays cannot. Need to freeze on the approach.
-- Group messages spread between members as a Gossip DAG rather than passing
-  through one central chat server. Links to earlier messages give clients a
-  consistent order when deliveries arrive in a different order.
-- Connections to relays and coordinators use normal transport encryption, but
-  those systems do not have the message keys. They can forward a message but
-  cannot read its contents.
+- **1:1:** X3DH plus Double Ratchet, through `libsignal-protocol-rust`.
+- **Group:** one symmetric group key per epoch, generated by the group owner and
+  sent to each member over the 1:1 channel above. Messages spread as a Gossip
+  DAG between members. Relays forward but cannot read (D5).
+- **Rekey:** the owner generates a new group key on every join, on every
+  removal, and on a schedule. Scheduled rekeying is what bounds the damage from
+  a compromise nobody noticed — without it, a stolen key stays useful forever.
+- **Membership changes are DAG events.** Adding or removing a member is an
+  ordinary entry in the group's DAG, so every member sees it. The owner cannot
+  add a reader silently.
+- **Keying is one module behind one interface.** Nothing in the DAG, the
+  ordering rule, the history sync, or the storage depends on which key
+  agreement is in use, so this can be replaced without touching them (D5).
+- **Ordering:** each message carries a signed timestamp from its own sender,
+  taken at face value. The sequence is sorted by `(sender_timestamp, sender_did)`.
+  Every peer sorts the same immutable values, so ordering is identical
+  everywhere. Clock skew can make the *displayed* time wrong; it can never make
+  two peers disagree about order ([ADR-0013](decisions/0013-p2p-messaging-architecture.md) §5).
+- **Delivery:** before sending, Roym writes the message to a durable local
+  outbox. If no substrate of the recipient is reachable, it retries. There is no
+  third-party buffer (D4). The consequence is honest and must be shown: if the
+  two sides never overlap online, the message is not delivered, and it stays
+  `pending`.
+- **Ephemeral signals:** typing indicators and read receipts use the
+  `syneroym:messaging` publish/subscribe channel. They are best-effort and are
+  never part of durable delivery.
 
-### Offline delivery and multiple devices
+**Message deletion.** Deleting writes a durable deletion record and removes the
+local copy. It does **not** revoke a key: in a group, every member already holds
+the epoch key and may already hold the ciphertext. A key cannot be taken back.
+Deletion is a request that well-behaved clients honour, plus local removal.
+The product must say this, not imply cryptographic erasure.
 
-- Before sending a direct message, RoyM stores it in a durable local outbox.
-  If the recipient is offline, the sender retries direct delivery later.
-- Like any service has a home coordinator-relay, it could also have a home mailbox.
-  Senders can then send messages to this mailbox if the receiver is offline.
-  Receiver can retrieve from its configured mailbox when it comes online.
-- A person may use more than one node. One chosen primary node is the preferred
-  destination and makes the final decision when device changes conflict; it
-  merges compatible changes with CRDTs from the other devices' local logs.
-- Typing indicators and read receipts are short-lived signals. They use a
-  separate `syneroym:messaging` publish-and-subscribe channel and are not part
-  of durable message delivery.
-- Message removal uses a durable deletion record and the relevant encryption
-  keys are no longer available for reading the removed content. Retention rules
-  decide when remaining stored data is deleted.
+### Cards
 
-### Cards and plugins
+A card in a conversation is versioned, typed JSON. The client uses the type and
+version to render a quote, booking, or progress view. A client that meets an
+unknown card type renders it safely and never executes sender-supplied code.
 
-- A card in a chat is versioned, typed JSON data. The client uses the version
-  and type to render a quote, poll, booking, or progress view safely. The card
-  can act as a container and renderer for multiple messages too.
-- A plugin receives only the capability tokens it needs for the chat context or
-  service it works with. It cannot inspect unrelated conversations by default.
+### Search
 
-### Distributed Intent Resolution and Discovery Fabric
+For the first release (D1):
 
-The Discovery Fabric is RoyM's distributed search system. It helps a user turn
-a request such as "plumber near me" into a useful set of local business
-listings, without relying on one central search database.
+- The Directory service holds the listings its members published to it, and
+  answers queries by category, area, and filters.
+- A consumer's node queries each directory it has been given, in parallel,
+  and merges the answers.
+- Results carry their source and their age. The consumer's node verifies every
+  signature, credential, expiry, and revocation before showing anything as
+  trusted evidence.
+- **Finding is separate from trusting.** The directory helps find candidates.
+  It never declares them trustworthy, and the consumer's node never takes the
+  directory's word for a verification result.
 
-- **Business-neutral data model:** The search system does not need separate
-  code for plumbers, doctors, or shops. It works with signed listings,
-  searchable attributes, user requests, and supporting proof.
-- **Signed listings:** A business listing is a signed publication. It contains
-  searchable facts, such as category and service area, plus evidence such as
-  membership proof and payment proof where relevant.
-- **One protocol, different roles:** The same discovery protocol runs on every
-  Syneroym node. Configuration decides whether a node only sends searches,
-  stores an index, answers searches, or does more than one of these jobs.
-- **Predictable listing placement:** Category and location form a routing key.
-  Rendezvous hashing, a deterministic selection algorithm, maps that key to
-  the same suitable index nodes without a central directory deciding where the
-  listing belongs.
-- **Small routing advertisements:** Nodes tell connected peers what categories
-  and areas they can help with, how to reach them, and basic trust details.
-  They exchange these small summaries instead of copying every listing
-  everywhere.
-- **Step-by-step search:** A node interprets the request, checks the summaries
-  it knows, asks the relevant peers, combines their answers, and returns the
-  results. A local group can therefore ask other groups when it cannot answer
-  a request itself.
-- **Finding is separate from trust:** The network helps find possible matches;
-  it does not declare that they are trustworthy. The user's node verifies
-  signatures, membership proof, expiry dates, and payment proof before it
-  presents trust information as valid.
+The M8 Matching Fabric replaces the "which directories do I ask" step with
+deterministic placement and shard lookup. It does not change the verification
+rule above, which is why building the directory first does not create rework.
 
-### Data ownership and failure recovery
+### Data ownership and recovery
 
-- Each RoyM installation keeps chat history, contacts, and listings in its own
-  encrypted SQLite databases. These records can be exported and moved to a
-  different installation.
-- A user's identity is separate from a node's network identity. Replacing or
-  moving a node does not change who signed a message or authorised an action.
-- Important local state changes are recorded so an interrupted update can
-  recover after a crash. Durable outboxes keep retrying eligible work after a
-  network outage.
-- RoyM must not persist unencrypted user data to the filesystem. Encryption
-  keys remain separate from the encrypted files and databases they protect.
+- Each installation keeps its conversations, contacts, listings, and
+  transactions in its own encrypted SQLite databases.
+- A person's identity is separate from a node's network identity. Replacing a
+  node does not change who signed a message.
+- Important state changes are recorded so an interrupted update recovers after
+  a crash. Durable outboxes keep retrying after a network outage.
+- Roym must never write unencrypted user data to the filesystem. Keys stay
+  separate from the files they protect.
 
 ---
 
-## What is not part of the first release
+## Substrate work required
 
-- RoyM does not process payments itself or hold money between a customer and a
-  business. It has no native ledger or integrated escrow; it only opens a
-  payment service and keeps the resulting proof.
-- RoyM does not yet calculate public ratings from past work or payments.
-- RoyM does not yet include an automated assistant that searches, recommends,
-  or completes tasks for people.
-- The protocol for automatic discovery between independently run local groups
-  is deferred to a later release; groups can prepare peer relationships now.
-- Automated dispute resolution workflows are deferred; consumers can forward
-  complaint details to a SynOrg Owner manually.
+These do not exist today. Implementation planning must schedule them before,
+or alongside, the Roym services themselves.
+
+### G1 — A durable messaging host interface
+
+`syneroym:messaging` today is `publish` / `subscribe` / `unsubscribe` plus raw
+stream registration. It cannot carry chat, and
+[ADR-0013](decisions/0013-p2p-messaging-architecture.md) §6 says by name that
+durable message content must never depend on it.
+
+Needed: a host interface for conversations, direct delivery, delivery state,
+history, and group key handling — plus the Layer 3 machinery underneath it
+(direct exchange, DAG sync, group key distribution). **This is the largest single item
+in M6.** Under D2 and D3 there is no way around it: the native build cannot
+skip the interface and call internal crates.
+
+### G2 — A guest-reachable outbox
+
+The durable queue and dead-letter queue exist as a Rust library
+(`crates/async_queue`, per [ADR-0023](decisions/0023-durable-async-primitives.md))
+with no WIT surface. Roym needs `pending` / `delivered` / `failed` state and
+retry from both builds. Either give the queue a host interface, or fold outbox
+state into G1's interface — G1 is the better home, since message delivery state
+is what users actually see.
+
+### G3 — Person identity at the client gateway
+
+The gateway binds `127.0.0.1` and presents the **node's** identity as the
+caller ([gateway.rs:36](../crates/client_gateway/src/gateway.rs#L36)). It does
+not authenticate the HTTP client. So today any local process could ask the
+substrate to sign as the user, and the substrate cannot tell which person is
+asking on a shared node.
+
+Needed: a local session model that binds an authenticated client to a person's
+identity, so D7's delegated signing is safe.
+
+### G4 — Declared service visibility
+
+[ADR-0018](decisions/0018-service-record-visibility.md) is still *Proposed*.
+It records that no visibility flag exists at any layer, and that nothing can
+export or import a service record privately. Roym depends on this three times:
+a provider being live but unlisted (P5), publishing to a chosen directory (S7),
+and sharing a credential only with the people who need it. This ADR needs to be
+accepted and built.
+
+### G5 — Public contract versioning
+
+Publications, search results, credentials, revocations, conversations,
+agreements, receipts, and export bundles all cross installation boundaries and
+all need explicit schema versions with cross-version fixtures, per the
+Interoperability and Portability baselines.
+
+---
+
+## Decisions taken during review
+
+Nothing is open. All five questions raised during the 2026-08-13 review were
+settled and folded into the decisions of record. The reasoning for the one that
+changed an ADR is kept below, because the choice gives up a real security
+property and that should not be silently buried in a table.
+
+<a id="resolved-o1--group-key-management"></a>
+
+### Resolved: O1 — group key management
+
+**Taken: owner-distributed group key. Not MLS.** This amends
+[ADR-0013](decisions/0013-p2p-messaging-architecture.md) §6, which chose MLS via
+`openmls`. See D5.
+
+What the two options share, and therefore what was never at stake: the Gossip
+DAG, message ordering, history sync, membership events, storage, and the UI.
+Those are the larger half of group chat and are identical either way. Only the
+keying module differs, which is why this was a cheap decision to get right.
+
+**The deciding argument is that MLS assumes a server we do not have.** MLS's
+architecture relies on a Delivery Service to give every member the same order of
+Commits. That is not incidental — the ratchet tree advances as a linear chain of
+epochs, so members must agree on which Commit won. A DAG total sort does not
+supply this. A member can apply the only Commit it has seen, advance its epoch,
+and then receive a Commit that sorts earlier. MLS epochs are forward-only and
+`openmls` offers no un-commit, so that member must either buffer Commits behind
+a confidence rule we have not designed, or diverge and re-sync group state.
+[ADR-0013](decisions/0013-p2p-messaging-architecture.md) §5 handles the case
+where a member learns of the conflict *before* applying, and not this one. This
+is why decentralised group key agreement remains a research topic rather than a
+drop-in library choice.
+
+| | MLS via `openmls` | Owner-distributed key (**taken**) |
+|---|---|---|
+| Fit with no Delivery Service | Needs a consistent Commit order we would have to invent; late-arriving earlier Commits have no clean handling | No commits, no epochs to converge |
+| Integration work | Storage provider, crypto provider, group-state persistence across restarts, KeyPackage publication so members can be added while offline, Welcome flow | Generate a key, send it over channels R1 already built |
+| Concurrent membership changes | Two members committing at once race | Cannot happen — only the owner rekeys |
+| Recovering from a known compromise | Rekey; attacker locked out | Rekey; attacker locked out |
+| Recovering from an *unnoticed* compromise | Automatic — routine joins and leaves refresh key material | Only on the next scheduled rekey, which is why D5 requires one |
+| Who can read the group | Current members | Current members **and the owner** |
+| Owner offline | Any member can propose | Nobody can join or leave until the owner returns |
+| Scaling | `O(log N)` rekey | `O(N)` rekey — fine for groups of hundreds, wrong for tens of thousands |
+
+**Two costs were narrower than first assessed, and both are mitigated:**
+
+- *Post-compromise security.* The first assessment said there was none. That was
+  too strong: an owner who learns of a compromise rekeys, and the attacker is
+  out. The real gap is narrower — MLS recovers *without anyone noticing*, since
+  ordinary membership traffic refreshes keys. D5's scheduled rekey bounds the
+  unnoticed case instead of leaving it open forever.
+- *Group types.* The first assessment proposed restricting core group chat to
+  owner-led groups, on the argument that a family or neighbourhood group has no
+  natural owner. **Dropped.** Every group in every common chat app has a creator
+  who can add and remove people; "family group" is a name, not a different
+  structure. Making membership changes visible DAG events removes the one power
+  our owner would otherwise have beyond a normal admin — adding a reader
+  silently.
+
+**What remains given up, accepted knowingly:** the owner can read the group, the
+owner must be online for joins and leaves, and rekey cost grows linearly with
+group size. None binds at the scale this product targets.
+
+**Reversibility.** D5 requires the keying to sit behind one interface that the
+DAG, ordering, sync, and storage do not depend on. If MLS is ever wanted — for
+large groups, or to interoperate with other MLS clients — it replaces that one
+module. Recorded in [deferred-backlog.md](planning/deferred-backlog.md) §5.

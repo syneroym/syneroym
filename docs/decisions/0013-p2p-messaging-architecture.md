@@ -1,7 +1,9 @@
 # ADR 0013: P2P Messaging & Identity Architecture
 
 ## Status
-Proposed
+Proposed — **amended 2026-08-13**: Decision 6's MLS choice is replaced by an
+owner-distributed group key. See *Amendment 1* below. Decision 5's ordering rule
+is unaffected and still stands.
 
 ## Context
 Syneroym requires a messaging architecture that strictly adheres to locality-first, offline-first, and data sovereignty principles. A core challenge in true P2P networks is handling asynchronous messaging and multi-device sync without falling back to centralized SaaS-like database structures or "always-on" third-party maildrops. 
@@ -38,13 +40,64 @@ Group chats operate as decentralized shared logs maintained exclusively by group
 To ensure all participants in a group chat see the exact same message sequence despite asynchronous gossip paths and heavily drifting physical system clocks, without needing relative-clock negotiation or NTP:
 - **Raw Sender Timestamp:** Each message carries a timestamp set by its own sender's local clock, signed as part of the message, and taken at face value by every receiver — no per-peer clock-offset correction.
 - **Total Ordering:** The chat sequence is deterministically sorted globally by `(Sender_Timestamp, Sender_DID)`. Because every peer sorts on the same immutable, signed value regardless of how many relay hops the message took to arrive, ordering is consistent across all participants by construction — clock skew affects chronological *accuracy* (a message may sort earlier/later than it was "really" sent in wall-clock terms), never cross-peer ordering *consistency*. We explicitly avoid reliance on external NTP servers to maintain offline-first robustness.
-- **MLS Commits Use the Same Rule:** Group membership/key-rotation Commits are ordinary DAG entries, ordered by the identical rule above rather than a separate mechanism. A Commit that loses the race against a concurrent Commit is rejected per MLS's standard concurrent-commit handling; its sender observes the rejection via gossip and re-proposes against the new epoch. Members who haven't yet received the winning Commit remain on the prior epoch (unable to decrypt new messages) until it propagates — an expected, transient convergence window consistent with this architecture's offline-first, eventually-consistent posture elsewhere.
+- **Membership Changes Use the Same Rule:** Group membership and key-rotation events are ordinary DAG entries, ordered by the identical rule above rather than a separate mechanism. Under Amendment 1 only the group owner issues them, so concurrent membership changes cannot race. Members who have not yet received a rekey event remain on the prior key (unable to decrypt new messages) until it propagates — an expected, transient convergence window consistent with this architecture's offline-first posture elsewhere.
+
+  > *Superseded text (pre-Amendment 1):* this bullet previously described MLS Commits, with a losing Commit rejected per MLS's concurrent-commit handling and its sender re-proposing against the new epoch. Amendment 1 explains why that did not hold under gossip.
 
 ### 6. Layer 3 Primitives vs. Layer 4 Abstractions
 - **Layer 3 Substrate:** Handles the core protocol (Iroh P2P routing, sender-timestamp DAG ordering, DAG sync algorithms).
-- **MLS Integration:** Layer 3 utilizes Message Layer Security (MLS) to provide $O(\log N)$ scaling for group end-to-end encryption. The DAG guarantees *delivery ordering*, while MLS guarantees *cryptographic access*.
+- **Group Key Integration:** Layer 3 provides group end-to-end encryption through an owner-distributed per-epoch key (Amendment 1). The DAG guarantees *delivery ordering*; the group key guarantees *cryptographic access*. The two are separate concerns, and the key agreement sits behind an interface the DAG, ordering, sync, and storage do not depend on — so it can be replaced without touching them.
 - **Not Built on `syneroym:messaging` Pub/Sub:** Durable message content and history are delivered and ordered entirely by the mechanism above — direct exchange or participant-relay gossip — and never depend on the `syneroym:messaging` MQTT-style broker ([ADR-0010](0010-mqtt-broker-rumqttd.md)). That broker MAY optionally be used as a side-channel for purely ephemeral, best-effort UX signals with no durability requirement (e.g. typing indicators, or a "new message arrived" nudge to an already-online peer) — matching the requirements-spec's Substrate Feature Coverage Matrix entry for `[PLT-DAT]` Pub/Sub — but it is never load-bearing for message delivery, ordering, or history.
 - **Layer 4 Application:** Chat itself is exposed as a default, lightweight "wrapper" SynApp service installed on the substrate. It consumes the Layer 3 primitives to expose structured API endpoints (e.g., `sendMessage`, `getHistory`) to user-facing frontends.
+
+## Amendment 1 (2026-08-13): Owner-Distributed Group Key Replaces MLS
+
+Decision 6 originally selected MLS (RFC 9420) via `openmls` for group
+encryption. Reviewing it against this ADR's own no-server constraint, while
+specifying the first product release
+([roym-integrated-experience-spec.md](../roym-integrated-experience-spec.md)),
+found that the choice did not hold.
+
+**Why MLS does not fit this architecture.** MLS relies on a Delivery Service to
+give every member the same order of Commits. This is architectural, not an
+implementation convenience: the ratchet tree advances as a linear chain of
+epochs, so all members must agree on which Commit won. Decision 5 assumed the
+DAG's total sort supplied that. It does not. A total *sort* is not a *decided*
+order under gossip — a member can apply the only Commit it has seen, advance its
+epoch, and only later receive a Commit that sorts earlier. MLS epochs are
+forward-only and `openmls` exposes no un-commit, so such a member must either
+buffer Commits behind a confidence rule this ADR never defined, or diverge and
+re-synchronise group state out of band. Decision 5's original text handled the
+case where a member learns of a conflict *before* applying, and was silent on
+this one.
+
+**What replaces it.** The group owner generates one symmetric group key per
+epoch and distributes it to each member over the 1:1 channel from Decision 3.
+The owner generates a new key on every join, on every removal, and on a
+schedule. Membership changes are ordinary DAG entries, so every member observes
+them and the owner cannot admit a reader silently. Scheduled rekeying — not only
+event-driven rekeying — is required, because it is what bounds the damage from a
+compromise nobody detected.
+
+**Scope of the amendment.** Decisions 1-5 are unchanged; in particular Decision
+5's `(Sender_Timestamp, Sender_DID)` ordering rule was never the problem and
+still stands for messages and for membership events alike. Nothing else in the
+group-chat design moves: the Gossip DAG, ordering, history sync, storage, and
+delivery are identical under either scheme. Only the key agreement changes.
+
+**Accepted trade-offs.** The owner can read the group, and is a single point of
+trust for key distribution — the same power a group admin holds in common chat
+apps, made honest by visible membership events. The owner must be online for a
+join or removal to take effect. Rekey cost is $O(N)$ rather than MLS's
+$O(\log N)$, which is acceptable for groups of hundreds and would not be for
+tens of thousands. Recovery from a compromise depends on someone noticing it,
+where MLS recovered automatically through routine membership traffic; scheduled
+rekeying bounds that exposure instead of removing it.
+
+**Reversibility.** Because the key agreement sits behind its own interface, MLS
+remains available later — for very large groups, or for interoperability with
+other MLS clients — as a replacement of that one module rather than a redesign.
+Tracked in [deferred-backlog.md](../planning/deferred-backlog.md) §5.
 
 ## Consequences
 
@@ -61,6 +114,7 @@ To ensure all participants in a group chat see the exact same message sequence d
 - Chronological display order can be inaccurate (though still globally consistent across peers) if a sender's device clock is significantly skewed, since raw timestamps are trusted without correction.
 - Primary Substrate promotion is manual only, per `[PLT-RED]`'s CP-over-AP posture — requires explicit operator/user action and a brief availability gap while a new Primary takes over.
 - This design assumes the App Registry preserves its own `ServiceId` across recovery; see Open Questions.
+- *(Amendment 1)* A group's owner can read the group and is a single point of trust for key distribution; the group cannot add or remove members while the owner is offline; and recovery from an undetected key compromise waits for the next scheduled rekey rather than happening automatically.
 
 ## Open Questions
 - **App Registry identity continuity:** This ADR assumes the App Registry (which stores the Primary Substrate designation) always recovers under the same `ServiceId`/key, in which case Iroh's key-based routing plus standard reactive-retry already handles relocation to a new physical node with no new mechanism needed. If that invariant is ever broken (the App Registry must come back under a *new* identity), propagating the new identity to already-running services is a general `[TOP-REG]` problem, not solved by this ADR.

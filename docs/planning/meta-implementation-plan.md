@@ -637,12 +637,24 @@ and the reason would otherwise be lost.
 - Thin Syneroym Hub (Desktop/Web surface only)
 - Professional Services Guild Application
 - Chat SynApp (`[PLT-DAT]`/`[PLT-ASY]`/`[FND-IAM]` per the requirements-spec Substrate Feature Coverage Matrix)
+- Guild Directory service — category/area/filter search over listings members published to it. **Added 2026-08-13**: the grouping listed no discovery at all, though the milestone's product story cannot work without it. This is deliberately *not* `[P2P-DSC]`, which stays in M8: one directory service answering queries, with no shard placement, no signed Publications, and no rendezvous hashing. Cross-installation search is still demonstrated, because the consumer, the directory, and the provider can each be on a different installation. See [roym-integrated-experience-spec.md](../roym-integrated-experience-spec.md) D1.
 
 **Implementation Approach:**
 1. **Headless Native Shell:** Build the thin desktop/web UI shell that renders JSON Action Cards.
 2. **Product Polish:** Finalize the `SynSvcs` necessary for the Professional Guild to operate end-to-end.
-3. **Chat SynApp:** Implement the default Layer 4 chat wrapper described in [ADR-0013](../decisions/0013-p2p-messaging-architecture.md) — Actor/Infrastructure identity delegation, Primary Substrate multi-device sync, 1-to-1 delivery via X3DH + Double Ratchet (`libsignal-protocol-rust`), group chat via the Gossip DAG + MLS (`openmls`), and relative-clock deterministic ordering. Builds on the M3B pub/sub broker, M4 FDAE access control, and M5 outbox/DLQ primitives, all of which are already in place by this milestone.
-4. **Exclusions:** Native ledger/mutual credit and integrated escrow are explicitly excluded at this stage. AI participants in group chats (`[APP-AGI]`) are also excluded here — they depend on the Milestone 9A inference/tooling foundations and are sequenced as a Milestone 9 follow-on once Chat itself exists.
+3. **Chat SynApp:** Implement the default Layer 4 chat wrapper described in [ADR-0013](../decisions/0013-p2p-messaging-architecture.md) — Actor/Infrastructure identity delegation, 1-to-1 delivery via X3DH + Double Ratchet (`libsignal-protocol-rust`), group chat over the Gossip DAG, and deterministic ordering by **raw sender timestamps**, sorted `(sender_timestamp, sender_did)`. Builds on the M3B pub/sub broker, M4 FDAE access control, and M5 outbox/DLQ primitives, all of which are already in place by this milestone.
+
+   > **Corrected 2026-08-13.** This item previously said "relative-clock deterministic ordering"; [ADR-0013](../decisions/0013-p2p-messaging-architecture.md) §5 explicitly rejects relative-clock negotiation and chooses raw sender timestamps, so the old wording named a design the ADR had already ruled out. Two further changes, from [roym-integrated-experience-spec.md](../roym-integrated-experience-spec.md): **Primary Substrate multi-device sync moves out of the core set** (a separate system that no other core goal depends on), and **group encryption is no longer MLS** — [ADR-0013 Amendment 1](../decisions/0013-p2p-messaging-architecture.md) replaces it with an owner-distributed per-epoch key, since MLS assumes a Delivery Service supplying a consistent Commit order that a gossip DAG does not provide. The Gossip DAG, ordering, and history sync are unchanged by that swap.
+4. **Exclusions:** Native ledger/mutual credit and integrated escrow are explicitly excluded at this stage. AI participants in group chats (`[APP-AGI]`) are also excluded here — they depend on the Milestone 9A inference/tooling foundations and are sequenced as a Milestone 9 follow-on once Chat itself exists. **Added 2026-08-13:** attachments, multi-device sync, and chat polish (threads, polls, reminders, read receipts, typing indicators, broadcasts) are also out — each is its own system, and none is a prerequisite for the milestone's product story.
+
+> **Prerequisite substrate gaps.** M6 cannot start on the Chat SynApp until three
+> things exist that do not today: a durable messaging host interface (`syneroym:messaging`
+> is pub/sub only, and [ADR-0013](../decisions/0013-p2p-messaging-architecture.md) §6
+> forbids building durable chat on it), a guest-reachable outbox (`crates/async_queue`
+> has no WIT surface), and person-level identity at the client gateway (it authenticates
+> no client and presents the node's DID). All three are rows in
+> [deferred-backlog.md](./deferred-backlog.md); see
+> [roym-integrated-experience-spec.md](../roym-integrated-experience-spec.md) G1-G3.
 
 ---
 
