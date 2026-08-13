@@ -68,7 +68,7 @@ overturned an ADR is kept at the end, under
 | D3 | **The native build must not touch host crates directly.** It goes through the same host interfaces as the WASM build, via an in-process shim. Existing native services (such as the control plane) call `syneroym-data-db` directly; Roym must not. | If the native build could take shortcuts, the two builds would drift and the WASM build would quietly become second-class. |
 | D4 | **No third-party mailboxes.** A message waits in the sender's own outbox until one of the recipient's substrates is reachable. | This is [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §3, already decided. Mailboxes would need their own ADR covering encryption, retention, abuse, deletion, and operator-visible metadata. That is not first-release work. |
 | D5 | **Group chat uses an owner-distributed group key over a Gossip DAG, ordered by raw sender timestamps.** The group owner generates one symmetric key per epoch and sends it to each member over the existing 1:1 channel, then generates a new one on every join, every removal, and on a schedule. Not MLS. | **Revised 2026-08-13**, amending [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §6. MLS assumes a Delivery Service that gives every member the same order of Commits. We have no server, and a DAG sort does not supply that: a member can apply the only Commit it has seen, advance its epoch, then receive one that sorts earlier — and MLS epochs are forward-only. The ordering rule from §5 is unchanged and still correct. See [O1](#resolved-o1--group-key-management) for the full reasoning. |
-| D6 | **Clients talk to Roym as JSON-RPC through the client gateway.** The HTML UI is one such client. The API is the product boundary, not the UI. | Any other client — a different UI, a script, a CLI — can be written against the same API. See [Client contract](#client-contract). |
+| D6 | **Clients talk to Roym as JSON-RPC through the client gateway.** The HTML UI is one such client, served by a thin Web entrypoint service that is also the single API origin. The API is the product boundary, not the UI. | Any other client — a different UI, a script, a CLI — can be written against the same API. The entrypoint exists because a WASM component cannot serve HTTP today and because five services would otherwise mean five browser origins. See [Client contract](#client-contract). |
 | D7 | **The substrate signs on the person's behalf under delegation.** The user's Master DID delegates to the Substrate Node DID; Roym signs with the delegated key. Private user keys do not go into browser storage. | [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §1 already defines this delegation. It also means the gateway must learn which person is asking — see [gap G3](#substrate-work-required). |
 | D8 | **Every participant installs a substrate, including consumers.** There is no browser-only consumer path in the first release. | The client gateway binds `127.0.0.1` and authenticates no client. A hosted gateway serving browser consumers needs remote binding plus client authentication — see [gap G3](#substrate-work-required). The lightweight device identity from the requirements still applies; the person just runs it on their own machine. |
 | D9 | **The Transaction service runs on the provider's substrate.** | It makes the provider the single writer for a transaction, which the requirements demand. Putting it on the SynOrg would make the group a required intermediary and would break providers who belong to no group. |
@@ -90,13 +90,14 @@ through shared database access.
 
 | Service | Runs on | Owns | Main API |
 |---|---|---|---|
+| **Web entrypoint** | Every participant's substrate | The UI bundle; nothing else | serves static assets; forwards JSON-RPC to the four services below |
 | **Conversation** | Every participant's substrate | Conversations, messages, delivery state, outbox, group keys | `send`, `history`, `conversations`, `delivery-status` |
 | **Profile & Contacts** | Every participant's substrate | Own profile, contact list, favourites, block list | `profile.get/set`, `contacts.*`, `block.*` |
 | **Catalog** | Provider's substrate | Listings, prices, service area, availability | `listing.*`, `availability.*` |
 | **Transaction** | Provider's substrate | Requests, quotes, agreements, bookings, orders, receipts | `request.*`, `quote.*`, `agreement.*`, `receipt.*` |
 | **Directory** | SynOrg's substrate | Member list, published listings, search index, membership credentials, revocations | `search`, `member.*`, `credential.*`, `revocation.*` |
 
-Three rules follow from this split:
+Four rules follow from this split:
 
 1. **The Transaction service is the single writer for a transaction.** It lives
    on the provider's substrate, because the provider owns the offer. The
@@ -108,20 +109,53 @@ Three rules follow from this split:
    evidence; it is not a required step in any protocol.
 3. **The Conversation service is symmetric.** Consumer, provider, and SynOrg
    owner all run the same one. There is no "customer support" variant.
+4. **The Web entrypoint holds no business logic.** It serves files and forwards
+   calls. Anything it decided would exist only in the native build, which would
+   make the WASM build quietly incomplete and break D2. See
+   [Client contract](#client-contract) for why it exists at all.
 
 ## Client contract
 
 ```
-  HTML UI ──HTTP/JSON-RPC──▶ client gateway (7960) ──▶ Roym services
-  any other client ────────▶        "                     "
+  HTML UI ─────HTTP────▶ client gateway (7960) ──▶ Web entrypoint ──▶ Conversation
+  any other client ────▶          "                (one origin)    ├─▶ Profile & Contacts
+                                                                    ├─▶ Catalog
+                                                                    └─▶ Transaction
 ```
 
-- The gateway maps the request's `Host:` header to the right service, using
-  the hostname grammar in [ADR-0022](decisions/0022-two-tier-logical-service-discovery.md) §7.
+The UI is served with the app, from the Web entrypoint. Deploying the Roym
+SynApp gives you its UI; there is no separate install and no version skew
+between the UI and the API it speaks to.
+
+**Why a separate service rather than the Conversation service serving it.** Two
+independent reasons:
+
+1. **A WASM component cannot serve HTTP.** There is no `wasi:http` in the WIT
+   surface, and the gateway is a raw byte passthrough, so whatever it routes to
+   must speak HTTP itself. The proven pattern in this tree is
+   `test-components/miniapp-demo1-web`: a native binary deployed as a TCP
+   service, bundle embedded with `rust-embed`, reached through the gateway. The
+   Web entrypoint follows it.
+2. **One browser origin.** The gateway routes by `Host:`, so each service is a
+   different hostname and therefore a different origin. A UI served from one
+   hostname that called the other four directly would need CORS headers on
+   every service and a preflight on every call. Routing through one entrypoint
+   removes that entirely.
+
+The entrypoint reaches the other four services by declared dependency, which is
+intra-app and works today.
+
 - Every Roym capability the UI uses is a public JSON-RPC method. If the UI
   needs something the API cannot do, the API is wrong, not the UI.
 - The UI holds no user private key and no business logic it cannot recompute
   from the API.
+- The entrypoint is the **only** part of Roym exempt from D2 and D3, and only
+  because it holds no business logic. If logic moves into it, the WASM build
+  stops being a complete Roym and the rule stops meaning anything.
+- The bundle is embedded in the entrypoint for the first release, so it versions
+  with the app automatically. Serving it from `blob-store` instead would allow a
+  UI update without redeploying the service; that is a later convenience, not
+  first-release work.
 
 **Today the gateway binds `127.0.0.1` and presents the node's own identity as
 the caller.** So for the first release the browser must run on the same machine
@@ -540,8 +574,16 @@ Syneroym.
 
 - Roym both offers and consumes services. It exposes its APIs to other SynApps
   and calls other apps through their APIs.
-- A cross-app `Bind` is Roym's declared dependency on another app's service.
-  It names exactly what Roym may call. There is no ambient access.
+- Roym calls services two ways, and the difference matters for what has to be
+  built. A **declared dependency** (`Bind`) is fixed at deploy time and resolved
+  against Roym's own app instance — right for Roym's five services calling each
+  other. A **direct service call** names a DID at runtime — the only shape that
+  fits a directory the *user* chose after deployment, since a deploy-time
+  binding cannot express "the directories this person added last week".
+- Roym therefore needs no cross-app `Bind`. Its own services are one app
+  instance, and everything outside it is user-chosen at runtime. What it does
+  need is for a remote service to be *resolvable* by a caller its operator never
+  met — see [gap G4](#g4--declared-service-visibility).
 - Every call carries the caller's identity and a capability token. The
   receiving service checks both ([ADR-0016](decisions/0016-native-dispatch-identity-threading.md)).
 - A plugin gets a token for one conversation or one action. It cannot read
@@ -660,12 +702,37 @@ identity, so D7's delegated signing is safe.
 
 ### G4 — Declared service visibility
 
-[ADR-0018](decisions/0018-service-record-visibility.md) is still *Proposed*.
-It records that no visibility flag exists at any layer, and that nothing can
-export or import a service record privately. Roym depends on this three times:
-a provider being live but unlisted (P5), publishing to a chosen directory (S7),
-and sharing a credential only with the people who need it. This ADR needs to be
-accepted and built.
+Two separate visibility gaps sit at two layers, and Roym needs both.
+
+**Can a caller resolve this service at all?** Today, no — not across
+installations. The client gateway warns at startup that without a
+pre-installed `resolve_ucan` token, app-scoped hostnames "will be refused by any
+supervisor they reach"; with only the same-node gate they resolve "only for apps
+supervised by this node"
+([gateway.rs](../crates/client_gateway/src/gateway.rs#L128)). So a consumer
+reaching a provider's Roym app, or querying a SynOrg's Directory on another
+node, is cleanly refused unless an operator installed a token in advance. The
+fix is [ADR-0022](decisions/0022-two-tier-logical-service-discovery.md) §5's
+per-logical-service "open to all" declaration, scheduled as **M05C slice S4**.
+**This blocks R1's directory search and all of R3.**
+
+**Does this service's record get published?** [ADR-0018](decisions/0018-service-record-visibility.md)
+is still *Proposed*. It records that no visibility flag exists at any layer and
+that nothing exports or imports a service record privately, so publication is a
+side effect of whether a certificate flag was passed. Roym needs this for a
+provider being live but unlisted (P5) and for publishing to a chosen directory
+(S7).
+
+These are adjacent but not the same: one governs *resolution by a caller*, the
+other *publication of a record*. Whether they should stay two mechanisms or
+become one is a question for the implementation plan, not for this document.
+
+> **A note on M05C S4's gate.** S4 is gated on "a first real cross-app
+> dependency exists". Roym does not supply one — its own services share an app
+> instance, and everything outside is addressed by DID at runtime. So S4's
+> *visibility* half now has a consumer and is M6-blocking, while its *cross-app
+> `Bind`* half still has none. The two should be split rather than shipped
+> together on a gate only one of them clears.
 
 ### G5 — Public contract versioning
 
