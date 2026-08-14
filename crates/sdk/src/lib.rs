@@ -675,6 +675,7 @@ impl SyneroymClient {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: ServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -718,6 +719,7 @@ impl SyneroymClient {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: ServiceType::Tcp(TcpManifest { endpoints }),
             registry_certificate,
@@ -759,6 +761,7 @@ impl SyneroymClient {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: ServiceType::Container(ContainerManifest {
                 source: ArtifactSource::Binary(vec![]),

@@ -1,6 +1,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! Core traits and types for Syneroym.
 
+pub mod asset_manifest;
 pub mod config;
 pub mod deploy_docs;
 pub mod dht_registry;

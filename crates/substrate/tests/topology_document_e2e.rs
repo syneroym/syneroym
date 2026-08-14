@@ -316,6 +316,7 @@ fn service_manifest(replicas: u32) -> SynAppManifest {
                 rotation_policy: Default::default(),
                 fdae: None,
                 health_check: None,
+                assets: None,
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),

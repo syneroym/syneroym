@@ -122,6 +122,7 @@ fn tcp_manifest(port: u16) -> DeployManifest {
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            assets: None,
         },
         service_type: ServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {

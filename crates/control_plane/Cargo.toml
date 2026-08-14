@@ -38,6 +38,9 @@ jsonschema.workspace = true
 reqwest.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
+tar.workspace = true
+flate2.workspace = true
+mime_guess.workspace = true
 
 [dev-dependencies]
 wit-parser.workspace = true

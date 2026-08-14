@@ -496,6 +496,9 @@ pub struct ServiceConfig {
     /// Author-declared readiness probe (M05A A4). Absent = liveness only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check: Option<HealthCheck>,
+    /// Static assets served directly from blob storage (M06A A1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assets: Option<AssetBundle>,
 }
 
 /// Author-side declaration of a deploy-time document.
@@ -526,6 +529,33 @@ pub enum DocumentRef {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FdaeManifest {
     pub policy: DocumentRef,
+}
+
+/// Endpoint/asset visibility (ADR-0018). Defaults to the most private.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    Public,
+    Internal,
+    #[default]
+    Private,
+}
+
+/// Author-side declaration of a static asset bundle.
+///
+/// `archive` resolves **against the manifest's own directory** when it is a
+/// bare relative path -- deliberately *not* `ServiceConfig::source`'s rule,
+/// which resolves against the client process's cwd. Two rules already exist
+/// in the tree (`mapper` uses cwd, `roymctl supervisor submit` uses
+/// `manifest_dir`); a new field picks the one that is not surprising and
+/// says so, rather than claiming a single rule exists.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssetBundle {
+    pub archive: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+    #[serde(default)]
+    pub visibility: Visibility,
 }
 
 /// A `replicas` value above this is refused at `validate()` (M05A A5e,
@@ -1077,6 +1107,7 @@ mod tests {
                     rotation_policy: RotationPolicy::RestartOnRotation,
                     fdae: None,
                     health_check: None,
+                    assets: None,
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
@@ -1217,6 +1248,7 @@ mod tests {
                 rotation_policy: RotationPolicy::RestartOnRotation,
                 fdae: None,
                 health_check: None,
+                assets: None,
             },
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
@@ -1252,6 +1284,7 @@ mod tests {
                 rotation_policy: RotationPolicy::RestartOnRotation,
                 fdae: None,
                 health_check: None,
+                assets: None,
             },
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
@@ -1333,6 +1366,7 @@ mod tests {
                     rotation_policy: RotationPolicy::RestartOnRotation,
                     fdae: None,
                     health_check: None,
+                    assets: None,
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
@@ -1452,6 +1486,7 @@ mod tests {
                 rotation_policy: RotationPolicy::RestartOnRotation,
                 fdae: None,
                 health_check: None,
+                assets: None,
             },
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
@@ -1778,6 +1813,7 @@ mod tests {
                         rotation_policy: RotationPolicy::RestartOnRotation,
                         fdae: None,
                         health_check: None,
+                        assets: None,
                     },
                     depends_on: vec![],
                     placement: None,

@@ -306,6 +306,7 @@ mod tests {
                 rotation_policy: RotationPolicy::default(),
                 fdae: None,
                 health_check: None,
+                assets: None,
             },
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,

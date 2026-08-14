@@ -141,6 +141,51 @@ pub fn reject_relative_escape(relative_path: &str, field_name: &str) -> Result<(
     Ok(())
 }
 
+/// Cheap early guard on a compressed asset archive. **Not** the real limit --
+/// that is M06A A1's combined client-side check, because the 16 MiB RPC frame
+/// is shared with the component binary and both expand ~3.57x as JSON integer
+/// arrays. 2 MiB is what fits beside a component of realistic size; a bundle
+/// under it can still be refused by the combined check.
+pub const MAX_ASSET_BUNDLE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// The archive's unpacked total. A compressed-only cap is a
+/// decompression-bomb lever.
+pub const MAX_ASSET_UNPACKED_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Upper bound on the number of files a single asset archive may unpack to.
+pub const MAX_ASSET_FILE_COUNT: usize = 10_000;
+
+/// Like [`reject_relative_escape`], but for an archive entry: rejects a
+/// non-UTF-8 name before the lexical check, and names the archive rather than
+/// "the volume" in its errors. Returns the entry's path as a `String` on
+/// success, so callers don't re-derive it.
+pub fn reject_archive_entry_path(path: &Path, field_name: &str) -> Result<String, String> {
+    let name =
+        path.to_str().ok_or_else(|| format!("{field_name} has a non-UTF-8 name: {:?}", path))?;
+
+    let mut has_content = false;
+    for component in path.components() {
+        match component {
+            Component::Normal(_) => has_content = true,
+            // `.` is harmless and normalizes away.
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "{field_name} must be a relative path inside the archive, with no '..', root, \
+                     or drive prefix: {:?}",
+                    name
+                ));
+            }
+        }
+    }
+
+    if !has_content {
+        return Err(format!("{field_name} must not be empty: {:?}", name));
+    }
+
+    Ok(name.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -242,5 +287,45 @@ mod tests {
             let err = reject_relative_escape(bad, "volume file").unwrap_err();
             assert!(err.contains("must not be empty"), "{bad}: {err}");
         }
+    }
+
+    #[test]
+    fn reject_archive_entry_path_accepts_nested_relative_paths() {
+        assert_eq!(
+            reject_archive_entry_path(Path::new("index.html"), "assets archive entry").unwrap(),
+            "index.html"
+        );
+        assert_eq!(
+            reject_archive_entry_path(Path::new("assets/app.js"), "assets archive entry").unwrap(),
+            "assets/app.js"
+        );
+    }
+
+    #[test]
+    fn reject_archive_entry_path_rejects_traversal_and_absolute() {
+        for bad in ["../escape.txt", "assets/../../escape.txt", "/etc/passwd"] {
+            let err =
+                reject_archive_entry_path(Path::new(bad), "assets archive entry").unwrap_err();
+            assert!(err.contains("must be a relative path inside the archive"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn reject_archive_entry_path_rejects_empty() {
+        for bad in ["", ".", "./"] {
+            let err =
+                reject_archive_entry_path(Path::new(bad), "assets archive entry").unwrap_err();
+            assert!(err.contains("must not be empty"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn reject_archive_entry_path_rejects_non_utf8() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt, path::PathBuf};
+
+        let non_utf8 = PathBuf::from(OsStr::from_bytes(&[0x66, 0x6f, 0x80, 0x6f]));
+        let err =
+            reject_archive_entry_path(non_utf8.as_path(), "assets archive entry").unwrap_err();
+        assert!(err.contains("non-UTF-8"), "{err}");
     }
 }

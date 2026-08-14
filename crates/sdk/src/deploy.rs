@@ -824,6 +824,7 @@ mod tests {
             rotation_policy: Default::default(),
             fdae: None,
             health_check: None,
+            assets: None,
         }
     }
 

@@ -41,7 +41,10 @@ use hyper_util::{
     server::conn::auto::Builder as AutoBuilder,
 };
 use serde_json::Value;
-use syneroym_core::{http_routes::HttpRoute, streaming::StreamDirection};
+use syneroym_core::{
+    http_routes::{HttpRoute, match_path},
+    streaming::StreamDirection,
+};
 use syneroym_data_blob::{
     crypto,
     native_types::{OpenDownloadResponse, ReadChunkResponse},
@@ -236,29 +239,6 @@ enum BodyRead {
 fn blob_hash_from_path(path: &str) -> Option<&str> {
     let hash = path.strip_prefix("/blobs/")?;
     if hash.is_empty() || hash.contains('/') { None } else { Some(hash) }
-}
-
-/// Matches a single `{param}` path pattern (e.g. `/orders/{id}`) against a
-/// request path. Returns `None` if the pattern doesn't match at all,
-/// `Some(None)` if it matches with no captured parameter, `Some(Some(v))`
-/// if it matches and captured `v`. Only a single `{param}` segment is
-/// supported (sufficient for every route shape `task.md` specifies) -- no
-/// general globbing/regex.
-fn match_path(pattern: &str, path: &str) -> Option<Option<String>> {
-    let pattern_segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
-    let path_segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    if pattern_segs.len() != path_segs.len() {
-        return None;
-    }
-    let mut captured = None;
-    for (p, s) in pattern_segs.iter().zip(path_segs.iter()) {
-        if p.starts_with('{') && p.ends_with('}') {
-            captured = Some((*s).to_string());
-        } else if p != s {
-            return None;
-        }
-    }
-    Some(captured)
 }
 
 /// Parses an HTTP query string (`k=v&k2=v2`) leniently, matching
@@ -1089,27 +1069,6 @@ pub fn http_error(status: StatusCode, message: String) -> Response<HttpBody> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn match_path_captures_a_single_param() {
-        assert_eq!(match_path("/orders/{id}", "/orders/abc123"), Some(Some("abc123".to_string())));
-    }
-
-    #[test]
-    fn match_path_matches_exact_literal_with_no_param() {
-        assert_eq!(match_path("/orders", "/orders"), Some(None));
-    }
-
-    #[test]
-    fn match_path_rejects_different_segment_counts() {
-        assert_eq!(match_path("/orders", "/orders/abc123"), None);
-        assert_eq!(match_path("/orders/{id}", "/orders"), None);
-    }
-
-    #[test]
-    fn match_path_rejects_mismatched_literal_segments() {
-        assert_eq!(match_path("/orders/{id}", "/events/abc123"), None);
-    }
 
     #[test]
     fn blob_hash_from_path_extracts_a_bare_hash() {

@@ -3440,6 +3440,7 @@ mod tests {
                         rotation_policy: None,
                         fdae_policy: None,
                         health_check: None,
+                        assets: None,
                     },
                     service_type: WitServiceType::Wasm(WasmManifest {
                         source: ArtifactSource::Url("../../../../../etc/passwd".to_string()),
@@ -3523,6 +3524,7 @@ mod tests {
                         rotation_policy: None,
                         fdae_policy: None,
                         health_check: None,
+                        assets: None,
                     },
                     service_type: WitServiceType::Wasm(WasmManifest {
                         source: ArtifactSource::Url("/etc/passwd".to_string()),
@@ -3611,6 +3613,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -3698,6 +3701,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -3782,6 +3786,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -5146,6 +5151,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -5286,6 +5292,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -5325,6 +5332,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -5375,6 +5383,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -5480,6 +5489,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -6033,6 +6043,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6148,6 +6159,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Inline(STAGE4_POLICY.to_string())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(
@@ -6240,6 +6252,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Inline(STAGE4_POLICY.to_string())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6319,6 +6332,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Inline(STAGE4_POLICY.to_string())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(
@@ -6405,6 +6419,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wat.as_bytes().to_vec()),
@@ -6621,6 +6636,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6702,6 +6718,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6722,6 +6739,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6799,6 +6817,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6831,6 +6850,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -6916,6 +6936,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6946,6 +6967,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -7160,6 +7182,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7207,6 +7230,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wat.as_bytes().to_vec()),
@@ -7316,6 +7340,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -7357,6 +7382,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -7452,6 +7478,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7541,6 +7568,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7617,6 +7645,7 @@ mod tests {
                     rotation_policy: None,
                     fdae_policy: Some(DocumentSource::Path(bad_path.to_string())),
                     health_check: None,
+                    assets: None,
                 },
                 service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
                 registry_certificate: None,
@@ -7703,6 +7732,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(symlink_name.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7958,6 +7988,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -8042,6 +8073,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -8066,6 +8098,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -9082,6 +9115,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -9209,6 +9243,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -9233,6 +9268,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check,
+                assets: None,
             },
             service_type: WitServiceType::Container(ContainerManifest {
                 source: ArtifactSource::Url("docker.io/library/nginx:1.27".to_string()),
@@ -9257,6 +9293,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(vec![]),
@@ -10481,6 +10518,7 @@ mod tests {
                     method: "greet".to_string(),
                     timeout_ms: 2000,
                 })),
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -10529,6 +10567,7 @@ mod tests {
                     method: "get-uploaded-content".to_string(),
                     timeout_ms: 2000,
                 })),
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -10606,6 +10645,7 @@ mod tests {
                         method: "get-uploaded-content".to_string(),
                         timeout_ms: 2000,
                     })),
+                    assets: None,
                 },
                 service_type: WitServiceType::Wasm(WasmManifest {
                     source: ArtifactSource::Binary(wasm_bytes.clone()),
