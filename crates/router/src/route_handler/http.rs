@@ -37,7 +37,10 @@ use http_body_util::{
 use hyper::{
     Method, Request, Response, StatusCode,
     body::{Frame, Incoming},
-    header::{ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_NONE_MATCH},
+    header::{
+        ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderValue, IF_NONE_MATCH,
+        X_CONTENT_TYPE_OPTIONS,
+    },
     service,
 };
 use hyper_util::{
@@ -259,6 +262,30 @@ fn cache_control_for(content_type: &str) -> &'static str {
     }
 }
 
+/// Whether an `If-None-Match` header value matches `etag` (always a strong
+/// validator here -- the manifest's own content hash). Per RFC 9110
+/// §13.1.2: a bare `*` matches unconditionally (the entry was already
+/// resolved by the caller, so a representation does currently exist), and
+/// the header may otherwise carry a comma-separated list, each member
+/// optionally weak (`W/"..."`) -- a weak comparison ignores that prefix,
+/// same as a strong one, since this function is only ever asked "does the
+/// client already have exactly this content", not "byte-for-byte
+/// identical". A browser always echoes the token verbatim, so this is a
+/// pure widening: a proxy or `fetch` caller sending a list or a weak
+/// validator now gets a 304 instead of silently re-downloading the whole
+/// body.
+fn if_none_match_hits(header: Option<&HeaderValue>, etag: &str) -> bool {
+    let Some(value) = header.and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    let value = value.trim();
+    value == "*"
+        || value.split(',').any(|candidate| {
+            let candidate = candidate.trim();
+            candidate.strip_prefix("W/").unwrap_or(candidate) == etag
+        })
+}
+
 /// Parses an HTTP query string (`k=v&k2=v2`) leniently, matching
 /// `RoutePreamble::parse`'s own permissive, non-percent-decoding style
 /// elsewhere in this crate.
@@ -409,6 +436,17 @@ impl HttpHandler {
     /// target is unaffected, matching pre-Slice-7 behavior.
     async fn handle_json_rpc_bridge(&self, req: Request<Incoming>) -> Result<Response<HttpBody>> {
         if req.method() != Method::POST {
+            // Also where a static-asset miss and a non-`public` bundle land
+            // (D-A1-8, `try_handle_asset` returning `Ok(None)` for a `GET`/
+            // `HEAD` falls all the way through to here): 405, not the
+            // failure matrix's originally-planned 404, since this bridge
+            // rejects every non-`POST` method uniformly, asset request or
+            // not, and special-casing `GET`/`HEAD` here would change
+            // behaviour for the ordinary JSON-RPC-bridge case too, not just
+            // assets. The property the matrix actually cares about --
+            // absence and refusal look identical from outside -- holds
+            // regardless of which 4xx it is; task.md/status.md record 405
+            // as the deliberate answer, not 404.
             return Ok(http_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST is supported".into()));
         }
 
@@ -484,27 +522,34 @@ impl HttpHandler {
         .await
     }
 
-    /// Exact-path lookup, plus D-A1-11's one rewrite: a `path` ending in
-    /// `/` resolves to `<path>index.html`. This function owns the
+    /// Percent-decodes `path`, then does an exact-path lookup plus
+    /// D-A1-11's one rewrite: a path ending in `/` resolves to
+    /// `<path>index.html`. This function owns both the decoding and the
     /// rewrite -- callers pass the raw request path and do no
-    /// normalisation of their own, so there is exactly one place the rule
-    /// lives. No history-fallback, no prefix rules (D-A1-4): `/api/comments`
-    /// has no trailing slash, so it is never rewritten and always falls
-    /// through to route resolution.
+    /// normalisation of their own, so there is exactly one place either
+    /// rule lives. Manifest keys come from raw archive entry names (never
+    /// encoded), but every browser percent-encodes a request path (a file
+    /// named `my file.js` is requested as `/my%20file.js`), so decoding
+    /// here -- not at `resolve_route`, which keeps its existing
+    /// non-decoding style for API routes -- is what makes such a file
+    /// reachable at all. No history-fallback, no prefix rules (D-A1-4):
+    /// `/api/comments` has no trailing slash, so it is never rewritten and
+    /// always falls through to route resolution.
     ///
     /// `None` when the service has no bundle, its declared visibility is
-    /// not `public`, or no entry matches the (possibly rewritten) path --
-    /// deliberately indistinguishable, so a miss and a non-public bundle
-    /// both read as "not found" to the caller (D-A1-8).
+    /// not `public`, `path` isn't valid percent-encoded UTF-8, or no entry
+    /// matches the (possibly rewritten) path -- deliberately
+    /// indistinguishable, so a miss and a non-public bundle both read as
+    /// "not found" to the caller (D-A1-8).
     fn resolve_asset(&self, path: &str) -> Option<AssetEntry> {
         let service_assets = self.route_handler.inner.assets.get(&self.preamble.service_id)?;
         if !service_assets.public {
             return None;
         }
-        let lookup_path = if let Some(prefix) = path.strip_suffix('/') {
-            format!("{prefix}/index.html")
-        } else {
-            path.to_string()
+        let decoded = percent_encoding::percent_decode_str(path).decode_utf8().ok()?;
+        let lookup_path = match decoded.strip_suffix('/') {
+            Some(prefix) => format!("{prefix}/index.html"),
+            None => decoded.into_owned(),
         };
         service_assets.manifest.entries.get(&lookup_path).cloned()
     }
@@ -526,7 +571,7 @@ impl HttpHandler {
 
         let etag = format!("\"{}\"", entry.hash);
         let cache_control = cache_control_for(&entry.content_type);
-        if req.headers().get(IF_NONE_MATCH).and_then(|v| v.to_str().ok()) == Some(etag.as_str()) {
+        if if_none_match_hits(req.headers().get(IF_NONE_MATCH), &etag) {
             let resp = Response::builder()
                 .status(StatusCode::NOT_MODIFIED)
                 .header(ETAG, etag)
@@ -536,12 +581,32 @@ impl HttpHandler {
             return Ok(Some(resp));
         }
 
+        // `mime_guess` (`crates/control_plane/src/assets.rs`) falls back to
+        // `application/octet-stream` for an unrecognised extension --
+        // `nosniff` stops a browser from content-sniffing that into
+        // something it will execute or render unexpectedly. `text/html`
+        // additionally needs an explicit charset: with none, encoding falls
+        // back to the browser's default, which mangles non-ASCII pages.
+        let content_type = if entry.content_type == "text/html" {
+            "text/html; charset=utf-8".to_string()
+        } else {
+            entry.content_type.clone()
+        };
+        // `entry.len` is promised here, before the body has streamed a
+        // single byte -- a mid-stream `read-chunk` error in
+        // `blob_download_step` below ends the body short of this declared
+        // length instead of surfacing as a clean error, so the client sees
+        // an aborted connection rather than a graceful failure. Pre-existing
+        // on the signed-URL blob-download path too, just not previously
+        // paired with a `Content-Length` for the mismatch to be assertable
+        // against.
         let builder = Response::builder()
             .status(StatusCode::OK)
-            .header(CONTENT_TYPE, entry.content_type.clone())
+            .header(CONTENT_TYPE, content_type)
             .header(CONTENT_LENGTH, entry.len.to_string())
             .header(ETAG, etag)
-            .header(CACHE_CONTROL, cache_control);
+            .header(CACHE_CONTROL, cache_control)
+            .header(X_CONTENT_TYPE_OPTIONS, "nosniff");
 
         if *method == Method::HEAD {
             let resp = builder
@@ -1227,6 +1292,37 @@ mod tests {
         assert_eq!(blob_hash_from_path("/orders/abc"), None);
         assert_eq!(blob_hash_from_path("/blobs/"), None);
         assert_eq!(blob_hash_from_path("/blobs/a/b"), None);
+    }
+
+    #[test]
+    fn if_none_match_hits_a_wildcard() {
+        let value = HeaderValue::from_static("*");
+        assert!(if_none_match_hits(Some(&value), "\"abc\""));
+    }
+
+    #[test]
+    fn if_none_match_hits_an_exact_strong_etag() {
+        let value = HeaderValue::from_static("\"abc\"");
+        assert!(if_none_match_hits(Some(&value), "\"abc\""));
+    }
+
+    #[test]
+    fn if_none_match_hits_one_entry_in_a_comma_separated_list() {
+        let value = HeaderValue::from_static("\"nope\", \"abc\", \"also-nope\"");
+        assert!(if_none_match_hits(Some(&value), "\"abc\""));
+    }
+
+    #[test]
+    fn if_none_match_hits_a_weak_validator_by_stripping_the_prefix() {
+        let value = HeaderValue::from_static("W/\"abc\"");
+        assert!(if_none_match_hits(Some(&value), "\"abc\""));
+    }
+
+    #[test]
+    fn if_none_match_misses_a_different_etag_or_a_missing_header() {
+        let value = HeaderValue::from_static("\"different\"");
+        assert!(!if_none_match_hits(Some(&value), "\"abc\""));
+        assert!(!if_none_match_hits(None, "\"abc\""));
     }
 
     #[test]

@@ -114,7 +114,7 @@ pub enum SvcCommands {
         /// "public", "internal", or "private" (default). `internal` and
         /// `private` are identical to no `--assets` at all -- A1 has no
         /// middle tier.
-        #[arg(long, default_value = "private")]
+        #[arg(long, default_value = "private", requires = "assets")]
         asset_visibility: String,
     },
     /// Remove an installed `SynSvc` via API

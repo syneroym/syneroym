@@ -181,6 +181,20 @@ fn connect_peer(app_service_id: &str, mechanisms: &[EndpointMechanism]) -> Syner
 /// test installs the global recorder in `ObservabilityEngine::init`, and
 /// `SubstrateTestContext::setup` runs it in this same process, so the test
 /// can read it directly with no metrics endpoint involved.
+///
+/// This is a process-wide `OnceLock` (`syneroym_observability::recorder::
+/// GLOBAL_RECORDER`), reused as-is by every `SubstrateTestContext` in this
+/// binary rather than reset per test -- a `before`/`after` delta read
+/// around one request is only safe as long as no *other* test's substrate
+/// is concurrently live to increment it in between. That is currently true
+/// only because `common::SUBSTRATE_TEST_LOCK`'s guard is held for a whole
+/// `SubstrateTestContext`'s lifetime (from `setup` returning to
+/// `teardown`/drop, not just the setup race it was written for), so this
+/// file's five tests never actually overlap. If that lock is ever narrowed
+/// back to just the setup race, this delta becomes flaky the same way a
+/// missing lock would: prefer `AppSandboxEngine::instantiations()` (a
+/// per-engine, not process-global, counter -- see M06A D-A1-7) if that
+/// coupling ever needs to go away.
 fn counter_value(name: &str) -> u64 {
     MemoryRecorder::global()
         .expect("global MemoryRecorder must be installed by the substrate under test")
@@ -227,7 +241,10 @@ async fn test_static_asset_serving_index_etag_and_directory_rewrite() {
     let after = counter_value("substrate.wasm.instantiations_total");
     assert_eq!(resp.status, 200, "GET / must resolve to index.html");
     assert_eq!(resp.body, b"<html>root</html>");
-    assert_eq!(resp.headers.get("content-type").map(String::as_str), Some("text/html"));
+    assert_eq!(
+        resp.headers.get("content-type").map(String::as_str),
+        Some("text/html; charset=utf-8")
+    );
     assert_eq!(resp.headers.get("cache-control").map(String::as_str), Some("no-cache"));
     assert_eq!(after, before, "static asset GET must not instantiate the component");
     let etag = resp.headers.get("etag").cloned().expect("index.html response must carry an ETag");
@@ -334,7 +351,7 @@ async fn test_static_asset_cross_service_isolation() {
 // ---------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_static_asset_private_visibility_is_a_plain_404() {
+async fn test_static_asset_private_visibility_matches_no_bundle() {
     let _ = ring::default_provider().install_default();
     let ctx = SubstrateTestContext::setup(9106, 9107, 9108).await;
     ctx.substrate_client.inject_kek("23".repeat(32)).await.expect("inject_kek failed");

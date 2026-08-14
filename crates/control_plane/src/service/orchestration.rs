@@ -1726,12 +1726,42 @@ impl ControlPlaneService {
         let old_assets = self.assets.get(&service_id).map(|entry| entry.value().clone());
         let mut written_asset_hashes = BTreeSet::new();
         let new_assets: Option<ServiceAssets> = if let Some(bundle) = &manifest.config.assets {
-            let archive = resolve_asset_archive(&bundle.archive)?;
-            let dek = self
-                .storage_provider
-                .load_service_dek(&service_id, &self.key_store)
-                .await
-                .map_err(|e| format!("Failed to resolve service DEK: {e}"))?;
+            let archive = match resolve_asset_archive(&bundle.archive) {
+                Ok(a) => a,
+                Err(e) => {
+                    // Nothing has been written yet at this point, but the
+                    // FDAE policy and config generation above already have
+                    // been -- roll those back the same as every later
+                    // failure branch in this block, or a redeploy whose
+                    // manifest merely points at an unsupported archive
+                    // source silently drops the still-running previous
+                    // version's policy.
+                    self.rollback_asset_bundle(
+                        &service_id,
+                        &written_asset_hashes,
+                        old_assets.as_ref(),
+                    )
+                    .await;
+                    self.rollback_config_generation(&service_id, new_gen).await;
+                    self.rollback_fdae_policy(&service_id, &previous_fdae_policy).await;
+                    return Err(e);
+                }
+            };
+            let dek =
+                match self.storage_provider.load_service_dek(&service_id, &self.key_store).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        self.rollback_asset_bundle(
+                            &service_id,
+                            &written_asset_hashes,
+                            old_assets.as_ref(),
+                        )
+                        .await;
+                        self.rollback_config_generation(&service_id, new_gen).await;
+                        self.rollback_fdae_policy(&service_id, &previous_fdae_policy).await;
+                        return Err(format!("Failed to resolve service DEK: {e}"));
+                    }
+                };
             let unpacked = assets::unpack_asset_bundle(
                 &service_id,
                 &archive,
@@ -3472,6 +3502,7 @@ mod tests {
     };
 
     use dashmap::DashMap;
+    use sha2::{Digest, Sha256};
     use syneroym_core::{
         asset_manifest::AssetRegistry,
         config::SubstrateConfig,
@@ -8546,6 +8577,166 @@ mod tests {
         assert!(
             blob_provider.get_blob(&service_id, &old_only_hash, None).await.is_err(),
             "the dropped file's blob must be garbage-collected"
+        );
+
+        service.undeploy(service_id.clone(), 0, &caller).await.unwrap();
+    }
+
+    /// M06A A1 (D-A1-9): the backward asset rollback, driven through a real
+    /// deploy failure rather than `delete_hashes` called directly as pure
+    /// set arithmetic. `rollback_asset_bundle` is reached from five
+    /// separate failure branches in `deploy_with_context`; this exercises
+    /// the one already covered for FDAE-policy/config-generation rollback
+    /// by `test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy`
+    /// (same `FailingEndpointStorage` fixture, same failure point -- TCP
+    /// endpoint registration, which runs after the asset block has already
+    /// written the new generation's blobs), but proves the asset half: the
+    /// failed redeploy's own writes are gone, *and* every blob the
+    /// still-live previous generation references survives.
+    #[tokio::test]
+    async fn test_asset_bundle_rollback_on_a_real_deploy_failure_keeps_the_old_generation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new(Arc::new(FailingEndpointStorage {
+            inner: MockStorage::new(),
+            fail_interface: "fails-to-register".to_string(),
+        }))
+        .await
+        .unwrap();
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+        let asset_registry: AssetRegistry = Arc::new(DashMap::new());
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider.clone(),
+            messaging_broker,
+            native_dispatch,
+            http_routes,
+            asset_registry.clone(),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "asset-tcp-rollback-svc".to_string();
+        let caller = node_wide_caller("test-caller");
+
+        let manifest = |archive: Vec<u8>, interface_name: &str| DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+                assets: Some(WitAssetBundle {
+                    archive: ArtifactSource::Binary(archive),
+                    hash: None,
+                    visibility: Some(WitVisibility::Public),
+                }),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest {
+                endpoints: vec![NetworkEndpoint {
+                    interface_name: interface_name.to_string(),
+                    host: "127.0.0.1".to_string(),
+                    port: 9002,
+                }],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+
+        // First deploy succeeds: generation 0's asset bundle is live.
+        let first_archive = make_asset_archive(&[("index.html", b"gen0")]);
+        service
+            .deploy(service_id.clone(), manifest(first_archive, "safe-interface"), &caller)
+            .await
+            .unwrap();
+        let (gen0_manifest_hash, gen0_asset_hash) = {
+            let entry = asset_registry.get(&service_id).unwrap();
+            (
+                entry.manifest_hash.clone(),
+                entry.manifest.entries.get("/index.html").unwrap().hash.clone(),
+            )
+        };
+
+        // Redeploy with a *different* asset bundle (different content, so a
+        // different blob hash) plus an interface name the registry is
+        // rigged to reject -- the asset block runs and writes gen 1's blob
+        // successfully, then `deploy_tcp_service`'s endpoint registration
+        // fails, well after the asset write.
+        let second_archive = make_asset_archive(&[("index.html", b"gen1 -- must not survive")]);
+        let result = service
+            .deploy(service_id.clone(), manifest(second_archive, "fails-to-register"), &caller)
+            .await;
+        assert!(result.is_err(), "TCP endpoint registration must fail: {result:?}");
+        assert!(result.unwrap_err().contains("Endpoint registration failed"));
+
+        let entry = asset_registry.get(&service_id).expect(
+            "a failed redeploy must leave the still-live generation 0 asset registry entry in \
+             place",
+        );
+        assert_eq!(
+            entry.manifest_hash, gen0_manifest_hash,
+            "the registry must still point at generation 0's manifest, not a half-applied \
+             generation 1"
+        );
+        let gen0_entry = entry.manifest.entries.get("/index.html").unwrap();
+        assert_eq!(gen0_entry.hash, gen0_asset_hash);
+        drop(entry);
+
+        assert_eq!(
+            blob_provider.get_blob(&service_id, &gen0_asset_hash, None).await.unwrap(),
+            b"gen0",
+            "generation 0's blob, still referenced by the live manifest, must survive the failed \
+             redeploy's rollback"
+        );
+        assert!(
+            blob_provider.get_blob(&service_id, &gen0_manifest_hash, None).await.is_ok(),
+            "generation 0's manifest blob must survive too"
+        );
+
+        // The failed generation 1's own write must be gone -- find it by
+        // hashing the content directly, since nothing in the live manifest
+        // references it to look it up by.
+        let gen1_hash = hex::encode(Sha256::digest(b"gen1 -- must not survive"));
+        assert!(
+            blob_provider.get_blob(&service_id, &gen1_hash, None).await.is_err(),
+            "the failed redeploy's own blob write must have been rolled back, not orphaned \
+             alongside generation 0"
         );
 
         service.undeploy(service_id.clone(), 0, &caller).await.unwrap();

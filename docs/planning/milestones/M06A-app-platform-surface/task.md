@@ -203,11 +203,11 @@ Step 4 is the one to watch: if the sandbox is instantiated, slice A1 is wrong.
 |---|---|---|
 | 1 | Asset bundle contains `../` or an absolute path | Rejected at deploy, before any blob is written |
 | 2 | Asset bundle exceeds the size cap | Rejected at deploy with a clear error, no partial state. Slice A1's plan (D-A1-5) settles this as three caps, not one: a cheap `MAX_ASSET_BUNDLE_BYTES` (2 MiB) early guard, `MAX_ASSET_UNPACKED_BYTES` (64 MiB) against a decompression bomb, and the *authoritative* check — the combined `encoded(component) + encoded(bundle) + envelope` fitting the 16 MiB RPC frame, checked client-side, since both expand ~3.57× as JSON integer arrays and share one frame with the component binary |
-| 3 | Request for a path absent from the manifest | 404, no blob lookup, no sandbox instantiation |
+| 3 | Request for a path absent from the manifest | 405 (falls through to the JSON-RPC bridge's uniform non-`POST` rejection — the same status any other unmatched `GET`/`HEAD` gets, asset or not), no blob lookup, no sandbox instantiation |
 | 4 | A request tries to read another service's assets | Refused — the manifest is per service, resolved from the connection's own `service_id`, matching the existing blob GET's `svc` check |
 | 5 | Guest route handler traps or exceeds its epoch bound | 500 with a structured error; the connection stays usable; no partial response body |
 | 6 | Guest returns a malformed or oversized response | Bounded and rejected, not streamed to the client |
-| 7 | A service that never declared public assets is asked for one | 404, not 403 — absence and refusal look the same from outside |
+| 7 | A service that never declared public assets is asked for one | Same 405 as row 3, not 403 — absence and refusal look the same from outside |
 | 8 | Many concurrent SSE subscribers on one service | Bounded; exhausting them degrades that service, not the node |
 
 ---

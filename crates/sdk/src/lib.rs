@@ -136,6 +136,33 @@ pub struct SubstrateStatus {
 /// [`SyneroymClient::with_connect_timeout`].
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// M06A D-A1-5: the authoritative size check the asset-bundle deploy-time
+/// caps are only a "cheap early guard" ahead of
+/// (`crates/core/src/deploy_docs.rs`'s `MAX_ASSET_BUNDLE_BYTES` doc
+/// comment) -- every binary artifact in a request's `params` (a Wasm
+/// component, an asset bundle archive, a container volume file, ...)
+/// serializes as a JSON integer array, ~3.57x its raw byte length, and all
+/// of them share this one frame. Checking the real serialized length here
+/// -- called from `open_request_stream` before any network I/O for the
+/// call, not only before the send -- is exact (no estimated ratio to keep
+/// in sync with serde's actual encoding) and general: it catches *any*
+/// oversized request through this client, not only a deploy's asset
+/// bundle, and fails before wasting a stream open and a round trip on
+/// bytes the peer's own `framing::read_frame` would reject anyway with a
+/// bare byte count and no context about which call or field caused it.
+fn check_frame_size(method: &str, req_bytes: &[u8]) -> Result<()> {
+    if req_bytes.len() as u64 > framing::MAX_FRAME_SIZE as u64 {
+        return Err(anyhow::anyhow!(
+            "'{method}' request is {} bytes once serialized, exceeding the {} byte frame limit \
+             (MAX_FRAME_SIZE) -- reduce the size of any inline binary content (a Wasm component, \
+             an asset bundle archive, container volume files) in this call's params",
+            req_bytes.len(),
+            framing::MAX_FRAME_SIZE
+        ));
+    }
+    Ok(())
+}
+
 pub struct SyneroymClient {
     service_id: String,
     registry_url: String,
@@ -536,6 +563,9 @@ impl SyneroymClient {
         interface_name: &str,
         request: &JsonRpcRequest,
     ) -> Result<(SendStream, RecvStream)> {
+        let req_bytes = serde_json::to_vec(request)?;
+        check_frame_size(&request.method, &req_bytes)?;
+
         let conn_wrapper = self.connection.as_ref().context("Not connected")?;
         match conn_wrapper {
             TransportConnection::Iroh { conn, .. } => {
@@ -550,7 +580,6 @@ impl SyneroymClient {
                 preamble.ucan = self.caller_ucan.clone();
                 send.write_all(preamble.to_preamble_line().as_bytes()).await?;
 
-                let req_bytes = serde_json::to_vec(request)?;
                 framing::write_frame(&mut send, &req_bytes).await?;
                 Ok((send, recv))
             }
@@ -1095,5 +1124,34 @@ impl Drop for SyneroymClient {
         {
             drop(spawn_background_close(endpoint));
         }
+    }
+}
+
+#[cfg(test)]
+mod frame_size_tests {
+    use super::*;
+
+    #[test]
+    fn a_request_within_the_frame_limit_is_accepted() {
+        check_frame_size("orchestrator.deploy", &vec![0u8; 1024]).unwrap();
+    }
+
+    #[test]
+    fn a_request_right_at_the_limit_is_accepted() {
+        check_frame_size("orchestrator.deploy", &vec![0u8; framing::MAX_FRAME_SIZE as usize])
+            .unwrap();
+    }
+
+    #[test]
+    fn a_request_one_byte_over_the_limit_is_refused_naming_the_method_and_both_sizes() {
+        let err = check_frame_size(
+            "orchestrator.deploy",
+            &vec![0u8; framing::MAX_FRAME_SIZE as usize + 1],
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("orchestrator.deploy"), "{msg}");
+        assert!(msg.contains(&(framing::MAX_FRAME_SIZE as usize + 1).to_string()), "{msg}");
+        assert!(msg.contains(&framing::MAX_FRAME_SIZE.to_string()), "{msg}");
     }
 }

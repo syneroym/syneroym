@@ -116,23 +116,57 @@ exists to stop being the only way to serve a web app.
   full `Visibility` enum, since `syneroym-core` has no dependency on
   `syneroym-app-orchestration` and `internal`/`private` are byte-identical
   to "refuse" in A1 (D-A1-8) — see the same deferred-backlog.md row.
+- **A miss (D-A1-8, failure-matrix rows 3 and 7) answers 405, not the
+  plan's originally-specified 404.** `try_handle_asset` returning `None`
+  falls through to route resolution and then to the JSON-RPC bridge, whose
+  non-`POST` rejection is a uniform 405 for every unmatched `GET`/`HEAD`,
+  asset or not. Returning 404 instead would mean special-casing that
+  bridge's method check for those two methods, changing behaviour for the
+  ordinary (non-asset) unmatched-route case too — a bigger, riskier change
+  than this slice's own scope. The property the matrix actually cares
+  about — a private bundle is indistinguishable from no bundle — holds
+  regardless of which 4xx it is, and is what `test_static_asset_private_
+  visibility_matches_no_bundle` actually tests: response equality between
+  the two deploys, not a specific status code. Renamed from its original
+  `..._is_a_plain_404` for the same reason. task.md's matrix rows 3 and 7
+  are corrected to say 405.
+- **D-A1-5's authoritative combined-size check landed shaped differently
+  than the plan described, and later than the rest of the slice
+  (2026-08-14, post-implementation review).** The plan called for
+  `encoded(component) + encoded(bundle) + envelope < MAX_FRAME_SIZE`,
+  computed client-side ahead of assembling the request. What shipped
+  instead: `SyneroymClient::open_request_stream` (`crates/sdk/src/lib.rs`)
+  serializes the *actual* outgoing JSON-RPC request first, then checks the
+  real byte length against `MAX_FRAME_SIZE` before any network I/O for the
+  call — exact, not an estimated ratio, and it protects every request this
+  client makes (deploy, deploy-plan, write-bindings, ...), not only a
+  deploy's asset bundle. Both `roymctl svc deploy --assets` and `roymctl
+  supervisor submit` go through this one choke point, so no separate
+  `sdk::mapper`/`apps/roymctl` wiring was needed.
 
-Both are also documented inline where the deviation lives.
+All four are also documented inline where the deviation lives.
 
 ---
 
 ## A1 — Verification evidence (2026-08-14)
 
 **New tests:**
-- `crates/control_plane/src/assets.rs`: 17 unit tests covering every cap,
-  traversal/collision case (including the method-filtered collision check),
+- `crates/control_plane/src/assets.rs`: 22 unit tests covering every cap,
+  traversal/collision case (including the method-filtered collision check,
+  its D-A1-11 directory-index form, and a false-positive guard for a file
+  merely ending in "index.html"), a decompression-bomb-shaped non-file entry
+  still bounded by the unpacked cap, a duplicate-path rejection,
   quota-failure rollback, `written`-on-the-error-path, and `delete_hashes` as
   a pure set difference in both directions.
-- `crates/control_plane/src/service/orchestration.rs`: 2 integration tests —
+- `crates/control_plane/src/service/orchestration.rs`: 3 integration tests —
   deploy/undeploy round-trip (registry entry populated, blob readable back,
-  manifest blob deleted on undeploy) and a redeploy that shares some files
+  manifest blob deleted on undeploy); a redeploy that shares some files
   with the prior generation (unchanged blob survives, dropped file's blob is
-  collected).
+  collected); and a redeploy that fails at TCP endpoint registration (after
+  the asset block has already written the new generation's blobs), proving
+  the backward rollback through a real failure rather than `delete_hashes`
+  called directly as pure set arithmetic — the still-live old generation's
+  manifest and blobs survive, the failed attempt's own blob does not.
 - `crates/substrate/tests/static_assets_e2e.rs`: 5 end-to-end tests over a
   real Iroh QUIC connection — directory index / ETag / 304 / HEAD /
   Cache-Control-by-type / zero instantiation delta; cross-service isolation;

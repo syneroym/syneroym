@@ -53,7 +53,10 @@ const RESERVED_BLOBS_PREFIX: &str = "/blobs/";
 /// method -- checked with `match_path` so a parameterised route (`GET
 /// /docs/{slug}`) correctly collides with a literal asset path
 /// (`/docs/intro.html`) despite neither string equalling the other
-/// (D-A1-4).
+/// (D-A1-4). Every `.../index.html` entry is also checked against its
+/// D-A1-11 directory form (`/docs/`, or `/` at the root), since that path
+/// is answerable from the bundle too and a route pattern that only matches
+/// the directory form would otherwise deploy clean.
 pub async fn unpack_asset_bundle(
     service_id: &str,
     archive: &[u8],
@@ -78,17 +81,30 @@ pub async fn unpack_asset_bundle(
         }
     }
 
-    let get_head_routes: Vec<&HttpRoute> = declared_routes
+    let get_head_routes: Vec<HttpRoute> = declared_routes
         .iter()
         .filter(|r| r.method.eq_ignore_ascii_case("GET") || r.method.eq_ignore_ascii_case("HEAD"))
+        .cloned()
         .collect();
 
     // `tar::Archive`/`Entries` hold their reader behind a `RefCell`, so
     // neither is `Send` -- this whole phase must stay synchronous, with the
     // archive fully consumed and dropped before the first `.await` below,
     // or every caller up to the JSON-RPC dispatch trait's `async_trait`
-    // bound stops compiling (its futures must be `Send`).
-    let collected = parse_and_validate_entries(archive, &get_head_routes)?;
+    // bound stops compiling (its futures must be `Send`). It is also
+    // CPU-bound (gzip inflation of up to `MAX_ASSET_UNPACKED_BYTES`), so it
+    // runs on a blocking-pool thread rather than stalling a tokio worker
+    // for the whole deploy -- the same treatment schema validation already
+    // gets in `orchestration.rs`. `archive` is bounded at
+    // `MAX_ASSET_BUNDLE_BYTES` (2 MiB), so the clone into the blocking
+    // task's owned, `'static` closure is cheap.
+    let archive_owned = archive.to_vec();
+    let collected = tokio::task::spawn_blocking(move || {
+        let route_refs: Vec<&HttpRoute> = get_head_routes.iter().collect();
+        parse_and_validate_entries(&archive_owned, &route_refs)
+    })
+    .await
+    .map_err(|e| format!("asset bundle parsing task panicked: {e}"))??;
 
     let mut entries = BTreeMap::new();
     for (key, content, content_type) in collected {
@@ -118,6 +134,7 @@ fn parse_and_validate_entries(
 ) -> Result<Vec<(String, Vec<u8>, String)>, String> {
     let mut collected = Vec::new();
     let mut total: u64 = 0;
+    let mut seen_keys = BTreeSet::new();
 
     let mut tar = tar::Archive::new(GzDecoder::new(archive));
     let tar_entries =
@@ -125,44 +142,91 @@ fn parse_and_validate_entries(
 
     for entry in tar_entries {
         let mut entry = entry.map_err(|e| format!("failed to read asset bundle entry: {e}"))?;
-        if !entry.header().entry_type().is_file() {
-            // Directories and symlinks are skipped, not rejected: an
-            // ordinary `tar czf` of a directory is accepted, and a symlink
-            // is never followed -- the lexical guard below suffices and no
-            // canonicalisation against a real filesystem is needed.
-            continue;
-        }
+        // Directories and symlinks are skipped (not rejected -- an ordinary
+        // `tar czf` of a directory is accepted, and a symlink is never
+        // followed, so no canonicalisation against a real filesystem is
+        // needed), but "skipped" must still mean "read through the same
+        // MAX_ASSET_UNPACKED_BYTES-bounded loop as a real file", just
+        // without keeping the bytes: a non-file header can declare an
+        // arbitrary data-section size, and `tar`'s own iterator would
+        // decompress-and-discard that many bytes when advancing to the
+        // next entry regardless of whether this function ever calls
+        // `read`. Accounting nothing for a `continue`d entry left that
+        // decompression work -- and, at the file-count cap, the entry
+        // itself -- off the books.
+        let is_file = entry.header().entry_type().is_file();
 
-        let raw_path = entry
-            .path()
-            .map_err(|e| format!("failed to read asset bundle entry path: {e}"))?
-            .into_owned();
-        let accepted = reject_archive_entry_path(&raw_path, "assets archive entry")?;
-        let key = normalize_asset_path(&accepted);
+        let accepted_key = if is_file {
+            let raw_path = entry
+                .path()
+                .map_err(|e| format!("failed to read asset bundle entry path: {e}"))?
+                .into_owned();
+            let accepted = reject_archive_entry_path(&raw_path, "assets archive entry")?;
+            let key = normalize_asset_path(&accepted);
 
-        if key.starts_with(RESERVED_BLOBS_PREFIX) {
-            return Err(format!(
-                "asset path {key:?} collides with the reserved {RESERVED_BLOBS_PREFIX} prefix"
-            ));
-        }
-        for route in get_head_routes {
-            if match_path(&route.path, &key).is_some() {
+            // Two entries normalising to the same key would otherwise both
+            // `put_blob`, with the second silently winning the manifest
+            // slot -- the first entry's hash stays in `written` (correctly
+            // surviving rollback) but no manifest entry ever points to it,
+            // orphaning that blob forever (no boot-time loader, no GC).
+            // Rejected at deploy time instead, before either is written.
+            if !seen_keys.insert(key.clone()) {
+                return Err(format!("asset bundle contains a duplicate path {key:?}"));
+            }
+
+            if key.starts_with(RESERVED_BLOBS_PREFIX) {
                 return Err(format!(
-                    "asset path {key:?} collides with declared route {} {}",
-                    route.method, route.path
+                    "asset path {key:?} collides with the reserved {RESERVED_BLOBS_PREFIX} prefix"
                 ));
             }
-        }
-        if collected.len() + 1 > MAX_ASSET_FILE_COUNT {
-            return Err(format!("asset bundle contains more than {MAX_ASSET_FILE_COUNT} files"));
-        }
+            // D-A1-11's directory-index rewrite makes an `.../index.html`
+            // entry also answerable at the directory path itself
+            // (`/docs/index.html` for `GET /docs/`, `/index.html` for
+            // `GET /`) -- a route pattern that only collides with that
+            // directory form, not the literal manifest key, would
+            // otherwise deploy clean and then split one logical resource
+            // across two handlers depending on a trailing slash.
+            // `strip_suffix("/index.html")` (rather than "index.html")
+            // deliberately requires the path separator, so a file that
+            // merely ends in those letters (`/myindex.html`) is not
+            // misread as a directory index.
+            let directory_form = key.strip_suffix("/index.html").map(|prefix| format!("{prefix}/"));
+            for route in get_head_routes {
+                if match_path(&route.path, &key).is_some() {
+                    return Err(format!(
+                        "asset path {key:?} collides with declared route {} {}",
+                        route.method, route.path
+                    ));
+                }
+                if let Some(dir) = &directory_form
+                    && match_path(&route.path, dir).is_some()
+                {
+                    return Err(format!(
+                        "asset path {key:?} collides with declared route {} {} as directory index \
+                         {dir:?}",
+                        route.method, route.path
+                    ));
+                }
+            }
+            if collected.len() + 1 > MAX_ASSET_FILE_COUNT {
+                return Err(format!(
+                    "asset bundle contains more than {MAX_ASSET_FILE_COUNT} files"
+                ));
+            }
+            Some(key)
+        } else {
+            None
+        };
 
         let mut content = Vec::new();
         let mut buf = [0u8; UNPACK_READ_CHUNK_BYTES];
         loop {
-            let n = entry
-                .read(&mut buf)
-                .map_err(|e| format!("failed to read asset bundle entry {key:?}: {e}"))?;
+            let n = entry.read(&mut buf).map_err(|e| {
+                format!(
+                    "failed to read asset bundle entry {:?}: {e}",
+                    accepted_key.as_deref().unwrap_or("<non-file entry>")
+                )
+            })?;
             if n == 0 {
                 break;
             }
@@ -172,11 +236,15 @@ fn parse_and_validate_entries(
                     "asset bundle unpacks to more than {MAX_ASSET_UNPACKED_BYTES} bytes"
                 ));
             }
-            content.extend_from_slice(&buf[..n]);
+            if is_file {
+                content.extend_from_slice(&buf[..n]);
+            }
         }
 
-        let content_type = mime_guess::from_path(&key).first_or_octet_stream().to_string();
-        collected.push((key, content, content_type));
+        if let Some(key) = accepted_key {
+            let content_type = mime_guess::from_path(&key).first_or_octet_stream().to_string();
+            collected.push((key, content, content_type));
+        }
     }
 
     Ok(collected)
@@ -304,6 +372,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn duplicate_normalized_paths_are_rejected_with_nothing_written() {
+        // `./index.html` and `index.html` normalise to the same manifest
+        // key -- without the check, the second `put_blob` would silently
+        // win the manifest slot and orphan the first blob forever.
+        let archive = make_archive(&[("./index.html", b"one"), ("index.html", b"two")]);
+        let blob = provider();
+        let mut written = BTreeSet::new();
+        let err = unpack_asset_bundle("svc", &archive, None, NO_ROUTES, &blob, None, &mut written)
+            .await
+            .unwrap_err();
+        assert!(err.contains("duplicate path"), "{err}");
+        assert!(written.is_empty());
+    }
+
+    #[tokio::test]
     async fn unpacks_a_small_bundle_into_blobs() {
         let archive = make_archive(&[
             ("index.html", b"<html>hi</html>"),
@@ -415,6 +498,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn directory_index_form_colliding_with_a_declared_get_route_is_rejected() {
+        // `docs/index.html` doesn't literally equal `/docs`, but D-A1-11
+        // makes it answerable at `GET /docs/` too -- the collision check
+        // must catch that even though `match_path` alone (segment-count
+        // equality) would not.
+        let archive = make_archive(&[("docs/index.html", b"hi")]);
+        let routes = [HttpRoute {
+            method: "GET".to_string(),
+            path: "/docs".to_string(),
+            target: "data-layer".to_string(),
+            operation: "get".to_string(),
+            collection: Some("docs".to_string()),
+            topic: None,
+            protocol: None,
+        }];
+        let blob = provider();
+        let mut written = BTreeSet::new();
+        let err = unpack_asset_bundle("svc", &archive, None, &routes, &blob, None, &mut written)
+            .await
+            .unwrap_err();
+        assert!(err.contains("collides with declared route"), "{err}");
+        assert!(err.contains("directory index"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn root_directory_index_colliding_with_a_declared_get_route_is_rejected() {
+        let archive = make_archive(&[("index.html", b"hi")]);
+        let routes = [HttpRoute {
+            method: "GET".to_string(),
+            path: "/".to_string(),
+            target: "data-layer".to_string(),
+            operation: "get".to_string(),
+            collection: Some("root".to_string()),
+            topic: None,
+            protocol: None,
+        }];
+        let blob = provider();
+        let mut written = BTreeSet::new();
+        let err = unpack_asset_bundle("svc", &archive, None, &routes, &blob, None, &mut written)
+            .await
+            .unwrap_err();
+        assert!(err.contains("collides with declared route"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_file_merely_ending_in_index_html_is_not_treated_as_a_directory_index() {
+        // `myindex.html` ends in the letters "index.html" but has no path
+        // separator before them, so it must not be misread as
+        // `/my/index.html`'s directory form.
+        let archive = make_archive(&[("myindex.html", b"hi")]);
+        let routes = [HttpRoute {
+            method: "GET".to_string(),
+            path: "/my".to_string(),
+            target: "data-layer".to_string(),
+            operation: "get".to_string(),
+            collection: Some("my".to_string()),
+            topic: None,
+            protocol: None,
+        }];
+        let blob = provider();
+        let mut written = BTreeSet::new();
+        unpack_asset_bundle("svc", &archive, None, &routes, &blob, None, &mut written)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn path_matching_only_a_post_route_is_accepted() {
         let archive = make_archive(&[("docs/intro.html", b"hi")]);
         let routes = [HttpRoute {
@@ -461,6 +611,43 @@ mod tests {
         assert!(err.contains("unpacks to more than"), "{err}");
         // The oversized entry is never finished reading, so `put_blob` is
         // never reached for it -- nothing was written.
+        assert!(written.is_empty());
+    }
+
+    #[tokio::test]
+    async fn oversized_non_file_entry_is_still_bounded_by_the_unpacked_cap() {
+        // A directory entry with a manipulated, oversized declared data
+        // section -- the vector the `continue`-before-counting bug left
+        // open: `tar`'s own iterator decompresses that many bytes to skip
+        // past the entry regardless of whether this function looks at it,
+        // so it must count against MAX_ASSET_UNPACKED_BYTES the same as a
+        // real file's content would. All-zero data compresses well enough
+        // that the archive itself still fits under MAX_ASSET_BUNDLE_BYTES.
+        let big_size = MAX_ASSET_UNPACKED_BYTES as usize + 1;
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut dir_header = tar::Header::new_gnu();
+        let name_field = &mut dir_header.as_old_mut().name;
+        name_field[.."evil/".len()].copy_from_slice(b"evil/");
+        dir_header.set_entry_type(tar::EntryType::Directory);
+        dir_header.set_size(big_size as u64);
+        dir_header.set_mode(0o755);
+        dir_header.set_cksum();
+        builder.append(&dir_header, vec![0u8; big_size].as_slice()).unwrap();
+        let tar_bytes = builder.into_inner().unwrap();
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&tar_bytes).unwrap();
+        let archive = encoder.finish().unwrap();
+        assert!(
+            archive.len() as u64 <= MAX_ASSET_BUNDLE_BYTES,
+            "test archive must pass the compressed-size cap to reach the code path under test"
+        );
+
+        let blob = provider();
+        let mut written = BTreeSet::new();
+        let err = unpack_asset_bundle("svc", &archive, None, NO_ROUTES, &blob, None, &mut written)
+            .await
+            .unwrap_err();
+        assert!(err.contains("unpacks to more than"), "{err}");
         assert!(written.is_empty());
     }
 

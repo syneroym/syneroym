@@ -7767,6 +7767,7 @@ dependencies = [
  "iroh-relay",
  "metrics 0.23.1",
  "p256",
+ "percent-encoding",
  "rand 0.9.5",
  "rusqlite",
  "serde",
