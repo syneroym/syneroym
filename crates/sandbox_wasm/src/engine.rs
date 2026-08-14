@@ -473,6 +473,22 @@ impl AppSandboxEngine {
             let mut pooling_config = PoolingAllocationConfig::default();
             pooling_config.total_component_instances(instances);
             pooling_config.max_memory_size(memory);
+            // `total_memories`/`total_core_instances`/`total_tables` are
+            // *separate* pooling-allocator knobs from `total_component_instances`
+            // -- Wasmtime defaults each to 1000 regardless of it. The memory
+            // pool's actual address-space reservation is
+            // `total_memories * slot_bytes` (`MemoryPool::new`), so leaving
+            // `total_memories` at its default means `max_memory_size` above
+            // never shrinks the real reservation -- it stays governed by
+            // Wasmtime's own defaults (1000 slots) no matter how small
+            // `instances`/`memory` are configured. A component may embed a
+            // handful of core instances (guest module, WASI adapter shim),
+            // each with its own memory/table, so give some headroom above a
+            // strict 1:1 ratio with `instances`.
+            let pool_slots = instances.saturating_mul(4).max(instances);
+            pooling_config.total_memories(pool_slots);
+            pooling_config.total_core_instances(pool_slots);
+            pooling_config.total_tables(pool_slots);
             wasmtime_config
                 .allocation_strategy(InstanceAllocationStrategy::Pooling(pooling_config));
         }
