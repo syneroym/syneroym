@@ -1,0 +1,15 @@
+[package]
+name = "syneroym-test-http-guest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wit-bindgen = "0.55.0"
+serde_json = "1"
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.component.target.dependencies]
+"syneroym:http" = { path = "wit/deps/http" }
+"syneroym:data-layer" = { path = "wit/deps/data-layer" }

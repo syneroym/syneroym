@@ -28,6 +28,7 @@ use syneroym_core::{
     asset_manifest::ServiceAssets,
     deploy_docs,
     dht_registry::SignedEndpointInfo,
+    http_routes::HttpRoute,
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
     storage::AppInstanceManagement,
     util,
@@ -761,6 +762,7 @@ impl ControlPlaneService {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn deploy_wasm_service(
         &self,
         service_id: &str,
@@ -769,6 +771,7 @@ impl ControlPlaneService {
         new_gen: u64,
         previous_fdae_policy: &Option<String>,
         new_fdae_policy: Option<&Policy>,
+        http_routes: &[HttpRoute],
     ) -> Result<(), String> {
         if let Err(e) = self.app_sandbox_engine.deploy_wasm(service_id, manifest).await {
             self.rollback_config_generation(service_id, new_gen).await;
@@ -795,6 +798,23 @@ impl ControlPlaneService {
                 "FDAE policy for service {service_id} opts a permission into the stage-4 \
                  after-step (authorize_rows: true), but the deployed component does not export \
                  syneroym:data-layer/authorizer#authorize-rows"
+            ));
+        }
+
+        // M06A D-A2-10b: a declared `guest` route whose compiled component
+        // doesn't export the handler would 500 on every request it ever
+        // gets, discoverable only in production -- same reasoning, and
+        // placed right after, the stage-4 export check above. Must run
+        // after `deploy_wasm` (just above) has compiled the component,
+        // which is where `exports_http_handler` has a real answer.
+        if http_routes.iter().any(|r| r.target == "guest")
+            && !self.app_sandbox_engine.exports_http_handler(service_id)
+        {
+            self.rollback_config_generation(service_id, new_gen).await;
+            self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
+            return Err(format!(
+                "service {service_id} declares an http_routes entry with target=guest, but the \
+                 deployed component does not export syneroym:http/incoming-handler#handle-request"
             ));
         }
 
@@ -1658,6 +1678,21 @@ impl ControlPlaneService {
             ));
         }
 
+        // M06A D-A2-10a: same reasoning as the asset-bundle check above, for
+        // a `guest` route -- a `Tcp`/`Container` service's endpoint is
+        // `SubstrateEndpoint::TcpHostPort`, routed to raw
+        // `copy_bidirectional` passthrough regardless of what the client
+        // sends, so the guest HTTP bridge is structurally unreachable for
+        // one. Without this a declared `guest` route would be silent dead
+        // configuration.
+        if http_routes.iter().any(|r| r.target == "guest") && service_type != AppServiceType::Wasm {
+            return Err(format!(
+                "service '{service_id}': an http_routes entry with target=guest is only servable \
+                 for a 'Wasm' service; a '{service_type:?}' service's endpoint is raw TCP \
+                 passthrough, which never reaches the guest HTTP path"
+            ));
+        }
+
         // FDAE policy: independent of `custom_config` (unlike `schema`
         // above, which is only resolved when a `custom_config` is present) --
         // deliberately not nested inside the block above, since a policy has
@@ -1856,6 +1891,19 @@ impl ControlPlaneService {
             None
         };
 
+        // M06A D-A2-7: a `public` guest route is reachable with no verified
+        // caller identity over a direct anonymous connection -- the same
+        // loud-signal treatment the asset bundle's own visibility gets
+        // above, so an author who didn't mean to leave a route open still
+        // has one place to notice.
+        for route in http_routes.iter().filter(|r| r.target == "guest" && r.public) {
+            info!(
+                "guest HTTP route for '{service_id}': {} {} declared public -- reachable with no \
+                 verified caller identity (M06A D-A2-7)",
+                route.method, route.path
+            );
+        }
+
         let new_fdae_policy = fdae_policy.as_ref().map(|(_, policy)| policy.as_ref());
         match &manifest.service_type {
             WitServiceType::Wasm(wasm_manifest) => {
@@ -1867,6 +1915,7 @@ impl ControlPlaneService {
                         new_gen,
                         &previous_fdae_policy,
                         new_fdae_policy,
+                        &http_routes,
                     )
                     .await
                 {
@@ -2497,6 +2546,11 @@ impl ControlPlaneService {
         }
         if is_wasm {
             self.app_sandbox_engine.unsubscribe_all(&service_id);
+            // M06A A2: the per-service guest-HTTP admission semaphore has no
+            // storage-backed analogue either, same reasoning as
+            // `unsubscribe_all` beside it -- a map that only ever grows is a
+            // leak, however small.
+            self.app_sandbox_engine.forget_guest_http_permits(&service_id);
         }
 
         // An `fdae_policies` row has no in-memory analogue that gets torn
@@ -8987,6 +9041,288 @@ mod tests {
             .expect_err("a Container service must not accept an asset bundle");
         assert!(err.contains("only servable for a 'Wasm' service"), "{err}");
         assert!(asset_registry.get(&service_id).is_none());
+    }
+
+    fn guest_route_custom_config() -> String {
+        serde_json::json!({
+            "http_routes": [
+                {"method": "GET", "path": "/echo", "target": "guest", "operation": "handle-request"}
+            ]
+        })
+        .to_string()
+    }
+
+    /// M06A D-A2-10a: same reasoning as
+    /// `test_asset_bundle_is_rejected_for_a_tcp_service` -- a `Tcp`
+    /// service's endpoint is raw passthrough, so a declared `guest` route
+    /// would be silent dead configuration.
+    #[tokio::test]
+    async fn test_guest_route_is_rejected_for_a_tcp_service() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+        let asset_registry: AssetRegistry = Arc::new(DashMap::new());
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker,
+            native_dispatch,
+            http_routes.clone(),
+            asset_registry,
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "tcp-with-guest-route-svc".to_string();
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: Some(guest_route_custom_config()),
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+                assets: None,
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        let caller = node_wide_caller("test-caller");
+        let err = service
+            .deploy(service_id.clone(), manifest, &caller)
+            .await
+            .expect_err("a Tcp service must not accept a guest route");
+        assert!(err.contains("only servable for a 'Wasm' service"), "{err}");
+        assert!(
+            storage_provider.get_latest_config_generation(&service_id).await.unwrap().is_none(),
+            "rejected before anything fallible runs -- no config generation saved"
+        );
+        assert!(http_routes.get(&service_id).is_none());
+    }
+
+    /// Same as `test_guest_route_is_rejected_for_a_tcp_service`, for a
+    /// `Container` service.
+    #[tokio::test]
+    async fn test_guest_route_is_rejected_for_a_container_service() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+        let asset_registry: AssetRegistry = Arc::new(DashMap::new());
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker,
+            native_dispatch,
+            http_routes.clone(),
+            asset_registry,
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "container-with-guest-route-svc".to_string();
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: Some(guest_route_custom_config()),
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+                assets: None,
+            },
+            service_type: WitServiceType::Container(ContainerManifest {
+                source: ArtifactSource::Url("docker.io/library/nginx:1.27".to_string()),
+                hash: None,
+                image: "docker.io/library/nginx:1.27".to_string(),
+                ports: vec![],
+                volumes: vec![],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        let caller = node_wide_caller("test-caller");
+        let err = service
+            .deploy(service_id.clone(), manifest, &caller)
+            .await
+            .expect_err("a Container service must not accept a guest route");
+        assert!(err.contains("only servable for a 'Wasm' service"), "{err}");
+        assert!(http_routes.get(&service_id).is_none());
+    }
+
+    /// M06A D-A2-10b: a declared `guest` route whose compiled component
+    /// does not export `handle-request` must fail the deploy -- rolling
+    /// back the config generation, the FDAE policy, and any asset bundle
+    /// already written, exactly as `test_stage4_policy_without_the_export_
+    /// fails_deploy` does for the stage-4 export gate.
+    #[tokio::test]
+    async fn test_guest_route_without_the_export_fails_deploy_and_rolls_back() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+        let asset_registry: AssetRegistry = Arc::new(DashMap::new());
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker,
+            native_dispatch,
+            http_routes.clone(),
+            asset_registry.clone(),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "guest-route-missing-export-svc".to_string();
+        let archive = make_asset_archive(&[("index.html", b"hi")]);
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: Some(guest_route_custom_config()),
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+                assets: Some(WitAssetBundle {
+                    archive: ArtifactSource::Binary(archive),
+                    hash: None,
+                    visibility: Some(WitVisibility::Public),
+                }),
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(
+                    WASM_WITHOUT_AUTHORIZE_ROWS_EXPORT.as_bytes().to_vec(),
+                ),
+                hash: None,
+                interfaces: vec![],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        let caller = node_wide_caller("test-caller");
+        let err = service.deploy(service_id.clone(), manifest, &caller).await.expect_err(
+            "a component without the handler export must not deploy with a guest route",
+        );
+        assert!(
+            err.contains("target=guest") && err.contains("does not export"),
+            "expected the D-A2-10b error, got: {err}"
+        );
+        assert!(
+            storage_provider.get_latest_config_generation(&service_id).await.unwrap().is_none(),
+            "config generation must be rolled back"
+        );
+        assert!(
+            storage_provider.load_fdae_policy(&service_id).await.unwrap().is_none(),
+            "fdae policy must be rolled back"
+        );
+        assert!(asset_registry.get(&service_id).is_none(), "asset bundle must be rolled back");
     }
 
     fn owner_test_manifest() -> DeployManifest {

@@ -130,7 +130,7 @@ Nothing here is gated on M06B.
 | # | Scope | Gate |
 |---|---|---|
 | **A1** | **Blob-backed static serving.** Deploy carries an asset bundle; unpack into blobs; persist a path → hash manifest; router serves it without touching the sandbox — exact-path serving plus a trailing-slash directory index, not SPA history fallback (that's A3's problem); content type from the path; `ETag`/`Cache-Control` from the content hash; declared public readability (D-06A-3) | **Complete** |
-| **A2** | **Guest HTTP route target.** A fourth `dispatch_route` target that hands method, path, params, headers, and body to the component and turns its return into an HTTP response; error and status mapping; body size caps; behaviour within the existing 5s `dispatch_epoch_timeout_secs` bound | — |
+| **A2** | **Guest HTTP route target.** A fourth `dispatch_route` target that hands method, path, params, headers, and body to the component and turns its return into an HTTP response; error and status mapping; body size caps; behaviour within the existing 5s `dispatch_epoch_timeout_secs` bound; a deploy-time export check (a declared `guest` route whose component doesn't export the handler fails the deploy) and a non-`Wasm`-service refusal, mirroring A1's asset-bundle gates; the route is authenticated by default, reachable by an anonymous caller only when explicitly declared `public` (D-A2-7) | **Complete** |
 | **A3** | **The demo app.** A WASM component providing the same functionality as `miniapp-demo1-web`: UI bundle via A1, REST endpoints via A2, upload/download via the existing `stream` target, live updates via SSE | A1 **and** A2 |
 | **A4** | **The Playwright suite.** The four cases from `webrtc.spec.ts` re-pointed at the demo app, with the echo/broadcast case rewritten over SSE | A3 |
 
@@ -151,8 +151,14 @@ router changes with their own tests; A3 is the first thing that needs both.
   §4.
 - **What a guest HTTP handler looks like in WIT.** A dedicated
   `handle-request`-style export, or a JSON-RPC method invoked by convention.
-  The first is clearer at the boundary; the second adds no WIT surface. Slice
-  A2's plan decides, and the choice affects M06C's Web entrypoint.
+  The first is clearer at the boundary; the second adds no WIT surface.
+  **Resolved by slice A2's plan (D-A2-1):** a dedicated
+  `syneroym:http/incoming-handler@0.1.0` export, `handle-request` — reached by
+  calling the sandbox engine directly (`AppSandboxEngine::
+  handle_guest_http_request`), not through `dispatch_json_rpc_once`, since an
+  `http-native` connection always resolves to a `NativeService` pipeline and
+  can never reach a guest that way. No M06C document exists in the tree yet to
+  check the "affects M06C's Web entrypoint" note against.
 - **Whether the demo app needs its own DEK-scoped bundle.** Static assets are
   public by D-06A-3, so encrypting them at rest buys nothing against the
   stated threat model but keeps one storage path instead of two. **Resolved
@@ -171,8 +177,12 @@ router changes with their own tests; A3 is the first thing that needs both.
 - **A1 does add WIT**, correcting this section's earlier claim that only A2
   might: a `visibility` enum, an `asset-bundle` record, and
   `service-config.assets: option<asset-bundle>` (all additive — an existing
-  manifest with no `assets` field keeps deploying unchanged). Slice A2's plan
-  may add further WIT surface if it chooses a dedicated guest export.
+  manifest with no `assets` field keeps deploying unchanged). **A2 does too**:
+  a new standalone `syneroym:http@0.1.0` package (`incoming-handler`, two
+  records, one enum) — additive, and deliberately *not* added to the
+  `host-environment` world, so a component that doesn't export it deploys
+  exactly as before. `HttpRoute` also gains a `public: bool` field
+  (`#[serde(default)]`, defaulting `false`), additive for the same reason.
 - **No wire-format change** to endpoint records, topology documents, or gateway
   hostnames.
 
@@ -205,10 +215,10 @@ Step 4 is the one to watch: if the sandbox is instantiated, slice A1 is wrong.
 | 2 | Asset bundle exceeds the size cap | Rejected at deploy with a clear error, no partial state. Slice A1's plan (D-A1-5) settles this as three caps, not one: a cheap `MAX_ASSET_BUNDLE_BYTES` (2 MiB) early guard, `MAX_ASSET_UNPACKED_BYTES` (64 MiB) against a decompression bomb, and the *authoritative* check — the combined `encoded(component) + encoded(bundle) + envelope` fitting the 16 MiB RPC frame, checked client-side, since both expand ~3.57× as JSON integer arrays and share one frame with the component binary |
 | 3 | Request for a path absent from the manifest | 405 (falls through to the JSON-RPC bridge's uniform non-`POST` rejection — the same status any other unmatched `GET`/`HEAD` gets, asset or not), no blob lookup, no sandbox instantiation |
 | 4 | A request tries to read another service's assets | Refused — the manifest is per service, resolved from the connection's own `service_id`, matching the existing blob GET's `svc` check |
-| 5 | Guest route handler traps or exceeds its epoch bound | 500 with a structured error; the connection stays usable; no partial response body |
-| 6 | Guest returns a malformed or oversized response | Bounded and rejected, not streamed to the client |
+| 5 | Guest route handler traps or exceeds its epoch bound | 500 with a structured error; the connection stays usable; no partial response body. **A2 covers the guest-*wasm-execution* half only** — the epoch deadline does not interrupt a guest blocked inside a host call, and no guest-reachable host function in this tree blocks unboundedly today, so that half is deliberately untested rather than tested badly (backlog row owed, see [deferred-backlog.md](../../planning/deferred-backlog.md)) |
+| 6 | Guest returns a malformed or oversized response | Bounded and rejected, not streamed to the client. One word of precision: the host cannot bound the *allocation* — a guest's `list<u8>` return is fully materialised in host memory before its size is knowable; what `MAX_GUEST_RESPONSE_BODY_BYTES` bounds is what gets **sent**, and the allocation bound is the guest's own `max_memory_bytes` store limiter |
 | 7 | A service that never declared public assets is asked for one | Same 405 as row 3, not 403 — absence and refusal look the same from outside |
-| 8 | Many concurrent SSE subscribers on one service | Bounded; exhausting them degrades that service, not the node |
+| 8 | Many concurrent SSE subscribers on one service | Bounded; exhausting them degrades that service, not the node. The principle is general, not SSE-specific: A2's `D-A2-11` applies it to guest HTTP concurrency too, bounding it per service with a 503 past a fixed admission wait rather than the wasmtime pool's own hard instantiation failure |
 
 ---
 

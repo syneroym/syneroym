@@ -4,16 +4,16 @@
 [slice-a1-implementation-plan.md](slice-a1-implementation-plan.md) (A1),
 [slice-a2-implementation-plan.md](slice-a2-implementation-plan.md) (A2)
 
-**Overall:** Slice A1 complete (2026-08-14). A2 planned (2026-08-14), no code
-written. A3–A4 not started.
+**Overall:** Slice A1 complete (2026-08-14). Slice A2 complete (2026-08-14).
+A3–A4 not started.
 
 ## Slice status
 
 | Slice | Scope | Status | Gate |
 |---|---|---|---|
 | A1 | Blob-backed static serving | **Complete (2026-08-14)** — [implementation plan](slice-a1-implementation-plan.md), evidence below | None — independently mergeable |
-| A2 | Guest HTTP route target | **Planned (2026-08-14)** — [implementation plan](slice-a2-implementation-plan.md) revision 4, notes below. Implementation not started | None — independent of A1 |
-| A3 | The demo app | Not started | A1 (Complete) and A2 (Planned) |
+| A2 | Guest HTTP route target | **Complete (2026-08-14)** — [implementation plan](slice-a2-implementation-plan.md) revision 4, evidence below | None — independent of A1 |
+| A3 | The demo app | Not started | A1 (Complete) and A2 (Complete) |
 | A4 | The Playwright suite | Not started | A3 |
 
 ---
@@ -253,48 +253,319 @@ are A2/A3/A4's — the milestone's own criterion list says so explicitly):
 
 ---
 
-## A2 — Planned (2026-08-14), no code written
+## A2 — What shipped
 
 [slice-a2-implementation-plan.md](slice-a2-implementation-plan.md), revision 4
-after three review rounds. It settles task.md's open design point on what a
-guest HTTP handler looks like in WIT: a dedicated
+after three review rounds, is the design of record. It settles task.md's open
+design point on what a guest HTTP handler looks like in WIT: a dedicated
 `syneroym:http/incoming-handler@0.1.0` export (`handle-request`), reached by
 calling the sandbox engine directly rather than through
 `dispatch_json_rpc_once` — an `http-native` connection resolves to a
 `NativeService` pipeline, so the JSON-RPC bridge can never reach a guest.
 
-**Two decisions worth knowing before reading the plan**, because both changed
-during review and the reversals are recorded rather than tidied away:
+**Two decisions worth knowing**, because both changed during review and the
+reversals are recorded rather than tidied away:
 
 - **A guest route is authenticated by default.** `HttpRoute` gains
-  `public: bool`, default `false`, mirroring A1's `D-A1-1` rather than the
-  dispatch-layer doctrine that WASM guests admit anonymous callers. What it
-  actually gates is narrow and stated as such: a *direct* anonymous connection
-  (WebRTC, raw QUIC). It gates nothing proxied by the client gateway, which
-  presents the node's own DID on every request.
+  `public: bool` (`#[serde(default)]`, `crates/core/src/http_routes.rs`),
+  default `false`, mirroring A1's `D-A1-1` rather than the dispatch-layer
+  doctrine that WASM guests admit anonymous callers. What it actually gates is
+  narrow and stated as such: a *direct* anonymous connection (WebRTC, raw
+  QUIC). It gates nothing proxied by the client gateway or any
+  `SyneroymClient`, both of which always self-assert a pubkey — pinned by
+  `test_through_the_gateway_a_non_public_route_is_reached_and_reports_self_asserted_node_did`,
+  see below.
 - **The guest sees its caller** (`caller: option<caller-identity>` on the
-  request record), with a `self-asserted` variant so the WIT cannot imply that
-  gateway traffic — or an unchallenged pubkey — is a verified identity.
+  `http-request` WIT record, `crates/core/src/guest_http.rs`'s
+  `GuestCallerIdentity`/`GuestCallerAuth` on the host side), with a
+  `self-asserted` variant so the WIT cannot imply that gateway traffic — or an
+  unchallenged pubkey — is a verified identity. Derivation is deliberately
+  **mixed** (`D-A2-12`), not read off one source: `ucan` from
+  `CallerContext.auth == AuthLevel::Ucan` (the honest signal — a rejected
+  chain leaves `auth` at `Delegated` while `preamble.ucan` stays `Some`, F5b),
+  `delegated` from `preamble.delegation.is_some()` (a malformed certificate is
+  a hard reject before this point, so reaching here means it verified),
+  else `self-asserted`. `crates/router/src/route_handler/http.rs`'s
+  `guest_caller_identity` fails closed (a 500, not a lossy map) on a
+  substrate-injected `AuthLevel` (`LocalElevated`/`LocalReadOnly`/`System`),
+  which cannot legitimately reach an inbound HTTP request.
 
-**Two things A3 inherits, neither of which any shipped slice provides.** Both
-are recorded in the A2 plan (§9.8, §9.10) so A3 does not discover them from a
-red test:
+**WIT and host-side types.** `crates/wit_interfaces/wit/http/http.wit`: a new
+standalone `syneroym:http@0.1.0` package (`incoming-handler`,
+`caller-auth`/`caller-identity`/`http-request`/`http-response`) — deliberately
+*not* referenced from `wit/host/host.wit` (`D-A2-1`, matching
+`syneroym:data-layer/authorizer`'s precedent: optional, a component only
+implements it when it opts in). `crates/core/src/guest_http.rs` mirrors the
+records on the host side field-for-field, in WIT declaration order (the
+dynamic `Val::Record` built from it must match).
 
-1. **Every route A3's demo declares must set `public: true`**, or exit
-   criterion 2 (the four Playwright cases in the **direct WebRTC**
-   configuration) fails at the first request. The same routes would appear to
-   work through the local gateway.
-2. **SPA deep links have no mechanism.** `D-A1-11` left `/some/route` →
-   `index.html` as "A3's problem", and the route table cannot cover it either:
-   `match_path` requires equal segment counts and has no wildcard, so a deep
-   link of unknown depth cannot be declared as a route at all. A3 starts
-   blocked on this; the plan names the two candidate fixes.
+**Dynamic marshalling, not a typed `bindgen!` path** (`D-A2-2`,
+`crates/sandbox_wasm/src/http.rs`): `request_to_val`/`response_from_results`
+reuse `stream.rs`'s `bytes_to_val_list`/`val_list_to_bytes` (now `pub(crate)`)
+— every guest call in this crate is already dynamic, so a first typed export
+path for one interface capped at 1 MiB is new machinery the plan explicitly
+declines (backlog row owed, deferred-backlog.md). `response_from_results`
+distinguishes a guest `Err(msg)` (`Declined`) from a wrong return shape
+(`Malformed`) *before* inspecting the `Ok` payload, so a deliberate rejection
+is never reported the same way as a broken component.
 
-**No deferred-backlog rows yet.** The A2 plan's §9 marks each as "backlog row
-owed" at landing, the same way A1's plan did — those rows describe shipped
-behaviour, and nothing has shipped.
+**Engine** (`crates/sandbox_wasm/src/engine.rs`):
+`AppSandboxEngine::handle_guest_http_request` runs one request through a
+fresh per-call instance (`build_store_and_instantiate`, same
+"instantiate-call-discard" shape `authorize_rows`/`invoke_lifecycle_hook`
+use), bounded by the existing `dispatch_epoch_ticks` (task.md's 5s
+`dispatch_epoch_timeout_secs`, no new knob). `exports_http_handler` mirrors
+`exports_authorize_rows`'s cheap static-type check. A new per-service
+`guest_http_permits: Arc<DashMap<String, Arc<Semaphore>>>` (`D-A2-11`) bounds
+concurrent guest HTTP requests — sized by a new `AppSandboxRole` field
+`max_concurrent_guest_http_per_service` (default 4, living beside the other
+instance-budget knobs, not on `StreamingConfig`) — acquired *before*
+instantiation with a fixed `GUEST_HTTP_ADMISSION_TIMEOUT` (2s); a timed-out
+wait or a `PoolConcurrencyLimitError` from the pool both become
+`GuestHttpFailure::Unavailable`, mapped to 503 + `Retry-After: 1` by the
+router, never a 500 or a hang. `forget_guest_http_permits` tears the map down
+on undeploy, called beside `unsubscribe_all`
+(`crates/control_plane/src/service/orchestration.rs`).
 
-**Corrections this plan owes other documents** (task.md's migration-impact
-bullet and failure-matrix rows 5, 6 and 8; `docs/system-architecture.md`'s
-"HTTP Passthrough" bullet; `client_gateway/src/gateway.rs`'s "harmless today"
-note) are listed in its §10 and are part of A2's own "done", not this file's.
+**One trap classifier, not a third hand-rolled copy** (`D-A2-6`):
+`classify_call_failure`/`CallFailure` replace `execute_wasm_vals`'s and
+`authorize_rows`'s two independently-drifting copies of the same fuel/memory/
+epoch taxonomy (F9's finding — the two disagreed, and `authorize_rows` had no
+memory-fault arm at all). Both call sites' pre-refactor observable behaviour
+is preserved exactly, including that gap: a memory fault at the
+`authorize_rows` site still becomes `AbacError::Trap`, not a budget error.
+`ActiveInstanceGuard` (the `substrate.wasm.active_instances` gauge) is hoisted
+from inside `execute_wasm_vals` to module scope so `handle_guest_http_request`
+can reuse it too — every other guest-invoking path records this metric.
+
+**Router** (`crates/router/src/route_handler/http.rs`): `dispatch_route`
+gains a fourth arm, `"guest" => self.handle_guest_route(...)`.
+`handle_guest_route` checks the operation, then the `D-A2-7` 401 gate
+(`self.caller.is_none() && !route.public`, same `UNAUTHENTICATED_RPC_CODE`
+shape `dispatch_native` uses) — **before any engine call**, so every rejection
+in this function costs zero instantiations — then derives the caller identity,
+confirms the engine is available and the service deployed, reads and caps the
+body (`MAX_GUEST_REQUEST_BODY_BYTES`, 1 MiB, via `Limited`, its own constant
+rather than the small-body routes' `MAX_SMALL_BODY_BYTES` since this body is
+additionally marshalled into `Vec<Val::U8>`), and dispatches.
+`build_guest_response` turns the guest's answer into an HTTP response or the
+failure-matrix row 6 500: `Content-Length` is always the host's computed one,
+never the guest's; `HOST_OWNED_HEADERS` (`content-length`,
+`transfer-encoding`, `connection`, `keep-alive`, `upgrade`,
+`proxy-connection`, `te`, `trailer`) are stripped from both directions; an
+invalid header name/value or an out-of-range status (200-599 only) **fails
+the whole response** rather than being silently dropped; `nosniff` is added
+only when the guest didn't set `x-content-type-options`; repeated headers
+(e.g. `set-cookie`) survive.
+
+**Deploy-time gates** (`crates/control_plane/src/service/orchestration.rs`,
+`crates/control_plane/src/http_routes.rs`): two refusals mirroring A1's own
+asset-bundle gates exactly — (a) `D-A2-10a`, a `guest` route declared by a
+non-`Wasm` service is refused in `deploy_with_context`, before anything
+fallible runs (a `Tcp`/`Container` endpoint is raw passthrough, so the guest
+HTTP bridge is structurally unreachable for one); (b) `D-A2-10b`, a `guest`
+route whose compiled component doesn't export `handle-request` is refused in
+`deploy_wasm_service`, right after the stage-4 export check, rolling back the
+config generation, FDAE policy, and any asset bundle already written.
+`validate_route` (`control_plane/src/http_routes.rs`) accepts
+`("guest", "handle-request")`, rejects any other `guest` operation, and
+rejects `public: true` on a non-`guest` target (dead configuration, the same
+class of mistake A1's duplicate-route check exists to catch). A `public: true`
+guest route logs an `info!` at deploy, beside A1's asset-bundle visibility
+`info!` — the same loud-signal treatment for the same reason (`D-A2-7`/R2-A).
+
+**SDK and CLI** (`crates/sdk/src/lib.rs`, `apps/roymctl/src/commands/svc.rs`):
+`deploy_svc_wasm_with_assets` (one call site) is replaced by
+`deploy_svc_wasm_with_options(service_id, interfaces, wasm_bytes,
+DeploySvcOptions { registry_certificate, instance_certificate, assets,
+custom_config })` (`D-A2-9`) — `deploy_svc_wasm` keeps its old signature and
+delegates unchanged. `roymctl svc deploy` gains `--custom-config <path.json>`
+(`requires = "wasm"`, matching `--assets`), read verbatim into
+`ServiceConfig.custom_config`, whose reserved `http_routes` key is what
+declares a guest route from the CLI at all — previously only `roymctl
+supervisor submit`'s multi-service plans or a direct JSON-RPC deploy could
+populate it (F11).
+
+### Scoped deviations from the plan (recorded, not silent)
+
+- **`guest_request_headers`'s error type is `(StatusCode, String)`, not a
+  built `Response`**, as the plan's pseudocode has it. A `Response<HttpBody>`
+  as a `Result`'s `Err` variant trips clippy's `result_large_err`
+  (`perf`, deny-by-house-convention-clean) at 128+ bytes; returning the small
+  status+message pair and building the response at the one call site avoids
+  the lint with no behavior change.
+- **The `D-A2-11` concurrency e2e test needed `#[tokio::test(flavor =
+  "multi_thread")]` and a tuned `/slow?ms=N` duration**, not literally
+  "forcing the admission timeout low" as the plan's test-list entry phrased
+  it — `GUEST_HTTP_ADMISSION_TIMEOUT` is a fixed `const` (`D-A2-11`'s own
+  design, not a config knob), so the test instead forces
+  `max_concurrent_guest_http_per_service` to 1 via a new, additive
+  `SubstrateTestContext::setup_with` hook (`crates/substrate/tests/common/
+  mod.rs`) and uses a busy-spin `/slow` duration (4s, comfortably inside the
+  5s epoch budget) long enough that a second concurrent request's fixed 2s
+  admission wait reliably expires first. Multi-threaded because the guest's
+  busy-spin handler has no host-import call inside it to yield on; a
+  current-thread runtime would let it monopolize the only worker.
+- **No e2e test for the `delegated` caller-auth branch.** Driving one for
+  real requires publishing a master anchor for an ad-hoc test identity first
+  (`HandshakeVerifier::verify_preamble` hard-rejects a delegated connection
+  whose master anchor can't be resolved) — real but heavier infrastructure
+  than this branch's risk justified building from scratch. Coverage instead:
+  `guest_caller_identity_delegation_present_is_delegated` and its four
+  sibling unit tests in `crates/router/src/route_handler/http.rs` exhaustively
+  cover `guest_caller_identity`'s branching (bare pubkey, a rejected UCAN, a
+  verified UCAN, a present delegation, and the fail-closed substrate-injected
+  levels) against the router logic directly; only the *transport* shapes
+  (genuinely anonymous, and self-asserted via both a direct connection and
+  the gateway) needed e2e wire-level proof.
+- **`classify_call_failure`'s `OutOfFuel` variant does not distinguish** the
+  downcast-`Trap::OutOfFuel` sub-case from the string-matched
+  `"all fuel consumed"`/`"out of fuel"` sub-case the way `authorize_rows`'s
+  pre-refactor code did (a literal `"exceeded its fuel budget"` detail for
+  the first, the raw error string for the second). No existing test asserts
+  that exact string (only `matches!(err, AbacError::BudgetExceeded { .. })`),
+  so both sub-cases now uniformly use the literal — a simplification the
+  unified classifier buys, not a behavior change any test depended on.
+
+## A2 — Verification evidence (2026-08-14)
+
+**New tests:**
+- `crates/core/src/http_routes.rs`: `HttpRoute` deserializes `public: false`
+  when the key is absent; `param_name` returns the last `{...}` segment,
+  `None` for a literal, and agrees with `match_path` on a two-capture
+  pattern.
+- `crates/sandbox_wasm/src/http.rs`: 11 unit tests — `request_to_val` field
+  order, `path-params` shape, `caller: none`/`caller: some`;
+  `response_from_results` for a valid record, a guest `Err` (`Declined`, not
+  `Malformed`), wrong arity, non-record `Ok`, missing field, wrong field
+  type, non-`u8` body element.
+- `crates/sandbox_wasm/tests/guest_http_integration.rs`: 6 tests driving
+  `handle_guest_http_request` directly against the new `http-guest-test`
+  fixture — `/echo` round-trips every request field; `last-request`
+  (data-layer-backed) survives the fresh instantiation every call gets;
+  `/reject` returns the guest's own 422 and message; `/fail` becomes
+  `Declined`; `/whoami` reflects a forwarded `Delegated` caller as well as
+  `None`; a component with no `handle-request` export (`greeter`) becomes
+  `NoHandler`.
+- `crates/router/src/route_handler/http.rs`: 17 unit tests —
+  `guest_request_headers` (lowercasing, `HOST_OWNED_HEADERS` stripped,
+  non-UTF-8 dropped, 431 past the count cap); `guest_caller_identity` (`None`
+  → `None`; a bare self-asserted pubkey → `SelfAsserted` even though
+  `CallerContext.auth` says `Delegated`, F5a; a *rejected* UCAN →
+  `SelfAsserted`, never `Ucan`, F5b; a verified UCAN → `Ucan`; a delegation
+  present → `Delegated`; each substrate-injected `AuthLevel` → `Err`);
+  `build_guest_response` (strips host-owned headers, rejects an invalid
+  header value/out-of-range status/over-cap body/over-cap header count, sets
+  `Content-Length` from the body, adds `nosniff` only when absent, keeps two
+  `set-cookie` headers).
+- `crates/control_plane/src/http_routes.rs`: `validate_route` accepts
+  `("guest", "handle-request")`, rejects `("guest", other)`, rejects
+  `public: true` on a `data-layer` route, accepts it on `guest`.
+- `crates/control_plane/src/service/orchestration.rs`: 3 integration tests —
+  a `guest` route is rejected for a `Tcp` service and for a `Container`
+  service before anything fallible runs; a `guest` route whose component
+  lacks the export fails deploy and rolls back the config generation, FDAE
+  policy, and asset bundle.
+- `crates/substrate/tests/guest_http_e2e.rs`: 9 end-to-end tests over a real
+  Iroh QUIC connection (plus one real client-gateway TCP proxy hop) —
+  anonymous request to a non-`public` route → 401, zero instantiations; the
+  same route declared `public` → the guest answers, `/whoami` reports
+  `anonymous`; **through the client gateway, a non-`public` route is reached
+  anyway and `/whoami` reports `self-asserted:<node-did>`** (F5a's pin,
+  `test_through_the_gateway_a_non_public_route_is_reached_and_reports_self_asserted_node_did`,
+  published via a real registry `/register` call, resolved via the gateway's
+  unscoped `s<hash>.localhost` host form); `POST /reject` → 422 with the
+  guest's own message (exit criterion 5's mechanism); an over-cap request
+  body → 413, zero instantiations; `/trap` and `/spin` each → 500, and a
+  fresh stream afterward still succeeds; `/huge` and `/bad-header` each →
+  500 with no partial body; `D-A2-11`'s concurrency limit → 503 +
+  `Retry-After: 1` for a request that can't get admitted in time, while the
+  request holding the permit still succeeds; a `guest` route and a
+  `data-layer` route on one service coexist, neither shadowing the other.
+
+**New test fixture:** `test-components/http-guest-test`
+(`syneroym-test-http-guest`) — exports
+`syneroym:http/incoming-handler#handle-request` and a `test-driver` interface
+(`last-request`, data-layer-backed so it survives the fresh instantiation
+every `handle-request` call gets). Paths: `/echo`, `/items/{id}`, `/whoami`,
+`/reject`, `/fail`, `/trap`, `/spin`, `/huge`, `/bad-header`, `/framing`,
+`/slow?ms=N`. `crates/core/src/test_constants.rs` gains
+`http_guest_test_wasm_path()`/`HTTP_GUEST_TEST_DRIVER_INTERFACE`; the
+workspace's `exclude` list and `test-components/README.md` are updated.
+
+**Commands run, from a clean tree:**
+
+```
+cargo +nightly fmt --all                                    # clean, no diff
+cargo clippy --workspace --all-targets --all-features        # 0 warnings, 0 errors
+cargo test --workspace                                       # see below
+```
+
+`mise run test:e2e` (Playwright) was **not** re-run for A2: this slice adds no
+browser-facing surface of its own (no Playwright fixture consumes the guest
+target yet — that is A3/A4's job), so it is out of scope for this slice's own
+completion per this milestone's own AGENTS.md instruction ("if the slice has
+e2e-visible behaviour"). A1's own prior run (above) is unaffected by A2's
+changes to `route_handler/http.rs`, confirmed instead by the two targeted
+regression re-runs below (`static_assets_e2e`, `http_passthrough_e2e`).
+
+**`cargo test --workspace`:** run sandboxed (this environment's default) and
+via targeted unsandboxed re-runs of every crate/test binary the sandboxed run
+flagged — the same known, pre-existing sandbox artifact A1's evidence
+describes (a handful of `syneroym-control-plane` health/DHT-probe tests, the
+`syneroym-community-registry` tests, and every `crates/substrate/tests/
+*_e2e.rs` binary, all failing identically on `Operation not permitted`
+binding a real localhost socket). Confirmed unrelated to A2 and unsandboxed
+re-runs clean:
+
+- `cargo test -p syneroym-core --lib` (sandbox off): **89/89 passed**,
+  including the new `param_name`/`HttpRoute` default tests.
+- `cargo test -p syneroym-sandbox-wasm --lib` (sandbox off): **78/78
+  passed** (67 pre-existing + 11 new `http.rs` tests), proving the
+  `classify_call_failure` refactor changed no observable behaviour at
+  either of its two pre-existing call sites.
+- `cargo test -p syneroym-sandbox-wasm --test guest_http_integration`
+  (sandbox off): **6/6 passed**.
+- `cargo test -p syneroym-router --lib` (sandbox off): **195/195 passed**
+  (173 pre-existing + 22 new: 3 `guest_request_headers`, 6
+  `guest_caller_identity`, 1 `HttpRoute` default, 7 `build_guest_response`,
+  plus the surrounding module-doc/test-scaffolding additions).
+- `cargo test -p syneroym-control-plane --lib` (sandbox off): **207/207
+  passed** (the same 7 that fail sandboxed pass here), including the 5 new
+  `http_routes`/`guest_route_*` tests.
+- `cargo test -p syneroym-substrate --test guest_http_e2e` (sandbox off):
+  **9/9 passed**.
+- `cargo test -p syneroym-substrate --test static_assets_e2e --test
+  http_passthrough_e2e` (sandbox off): re-verified since A2 edits the same
+  file (`route_handler/http.rs`) both exercise — unaffected.
+
+No crate outside this list showed a failure in the sandboxed
+`cargo test --workspace --no-fail-fast` run beyond the same "every e2e test
+binary needs a real socket bind" pattern already described above.
+
+**Exit criteria from task.md, as far as A2 alone can prove them** (1, 2, 3, 4,
+6, 7 are A1/A3/A4's):
+5. *Mechanism* proven — `POST /reject` returns the guest's own 422 and
+   message (`test_reject_returns_the_guests_own_status_and_message`); the
+   criterion itself is milestone-level and closes with A3's demo app.
+8. Every row of the failure and security matrix that is A2's to cover has a
+   test: row 5's wasm-execution half (trap/spin → 500, connection stays
+   usable), row 6 (oversized/malformed guest response → 500, no partial
+   body), and row 8's principle applied to guest HTTP concurrency
+   (`D-A2-11`'s 503 + `Retry-After`).
+9. `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets
+   --all-features`, and `cargo test --workspace` are clean — see commands
+   above. `mise run test:e2e` (Playwright) is unaffected by A2, which adds no
+   browser-facing surface of its own.
+
+**Corrections this slice owed other documents** (task.md's migration-impact
+bullet, second open design point, and failure-matrix rows 5/6/8;
+`docs/system-architecture.md`'s "HTTP Passthrough" bullet;
+`client_gateway/src/gateway.rs`'s "harmless today" note) are applied, along
+with six new [deferred-backlog.md](../../deferred-backlog.md) rows for §9's
+"backlog row owed" items (the typed guest-export call path, no wall-clock
+ceiling on a guest blocked in a host call, no idempotency fencing for a guest
+`POST`, `stream`'s own missing caller check, the global instance-pool
+accounting `D-A2-11` sits inside but doesn't re-tune, and the client
+gateway's still-missing real end-user identity) plus one more for A3's
+inherited SPA-deep-link gap.

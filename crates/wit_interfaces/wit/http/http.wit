@@ -1,0 +1,112 @@
+package syneroym:http@0.1.0;
+
+/// Inbound HTTP handed to a component as an ordinary request/response
+/// (M06A A2). Deliberately **not** `wasi:http`: a component gets a request
+/// handed to a function, never a socket. Static assets never reach here --
+/// they are served straight from blob storage without instantiating the
+/// component (M06A A1).
+///
+/// Optional, like `syneroym:data-layer/authorizer`: a component only
+/// exports this when it declares an `http_routes` entry with
+/// `target = "guest"`, and the deploy refuses that combination when the
+/// export is missing.
+interface incoming-handler {
+    /// How the caller's identity was established -- read off what the
+    /// connection actually presented, not off any host-internal level.
+    ///
+    /// The substrate-injected levels (lifecycle, stage-4 ABAC,
+    /// service-system) are deliberately absent: none can reach an inbound
+    /// HTTP request, and one arriving is a host bug the router fails
+    /// closed on.
+    enum caller-auth {
+        /// A verified delegation certificate. A malformed one is refused at
+        /// the handshake, so reaching a guest at all means it verified.
+        delegated,
+        /// A UCAN capability chain that verified, was not revoked, and
+        /// carried at least one capability -- a chain that fails any of
+        /// those reports `delegated` or `self-asserted` instead, never
+        /// this.
+        ///
+        /// **Still not proof that the caller is who the DID says**, when
+        /// no delegation accompanies it: such a chain is audienced to a
+        /// public key nobody challenged, so its signatures are sound while
+        /// possession of that key is unproven. The capabilities are
+        /// trustworthy; the identity holding them is only as trustworthy
+        /// as `self-asserted` below.
+        ucan,
+        /// A bare public key with no delegation and no UCAN: an assertion
+        /// the handshake never challenged. **Treat as pseudonymous, not
+        /// authenticated.** This is what every request proxied by the
+        /// local client gateway looks like, and there `did` is the
+        /// *node's* own key -- the same value for every visitor, saying
+        /// nothing about who is at the keyboard.
+        self-asserted,
+    }
+
+    /// Who is asking, as far as the host can honestly say. Absent means
+    /// genuinely anonymous -- nothing usable on the connection at all --
+    /// which only a route declared `public` can reach.
+    record caller-identity {
+        /// did:key of the immediate caller. Trustworthy as an identity
+        /// only when `auth` is `delegated` or `ucan`.
+        did: string,
+        auth: caller-auth,
+        /// The app instance the caller acts as, when it acts as one.
+        app-instance: option<string>,
+    }
+
+    /// One inbound request, already matched against the service's declared
+    /// `http_routes` table by the router.
+    record http-request {
+        /// Uppercase HTTP method, verbatim (`GET`, `POST`, ...).
+        method: string,
+        /// Request path only, no query string. Percent-encoded exactly as
+        /// the client sent it -- the host does not decode it, so a guest
+        /// comparing against its own literals sees what was on the wire.
+        path: string,
+        /// Raw query string with no leading `?`, empty when absent.
+        /// Neither decoded nor split.
+        query: string,
+        /// The declared route *pattern* that matched (e.g.
+        /// `/api/comments/{id}`), so a guest can switch on the route it
+        /// declared rather than re-implementing path matching.
+        route: string,
+        /// Captures from `route`'s `{name}` segments, name -> value. At
+        /// most one entry today (the router matches a single capture).
+        path-params: list<tuple<string, string>>,
+        /// Request headers, names lowercased. Hop-by-hop and framing
+        /// headers are removed by the host; a header whose value is not
+        /// UTF-8 is dropped rather than failing the request.
+        headers: list<tuple<string, string>>,
+        /// Request body, empty when absent. Capped by the host before this
+        /// function is reached; an over-cap request never instantiates the
+        /// component.
+        body: list<u8>,
+        /// Who is asking. `none` on a route declared `public` reached with
+        /// nothing usable on the connection. Check `auth` before trusting
+        /// `did`: `self-asserted` is unchallenged, and on gateway-proxied
+        /// traffic it is the node's own key, not the end user's.
+        caller: option<caller-identity>,
+    }
+
+    /// The guest's answer. `status` and `body` are taken verbatim; the host
+    /// owns framing (`content-length`, `transfer-encoding` and the other
+    /// hop-by-hop headers are stripped if present).
+    record http-response {
+        /// 200-599. Anything else is a malformed response and becomes a
+        /// 500 to the client.
+        status: u16,
+        headers: list<tuple<string, string>>,
+        body: list<u8>,
+    }
+
+    /// Invoked once per matched request. `Ok` is the response to send --
+    /// including a deliberate rejection, which is an ordinary `Ok` with a
+    /// 4xx `status` and the guest's own message, not an `Err`. `Err` means
+    /// the handler itself failed, and becomes a 500 carrying the message.
+    handle-request: func(request: http-request) -> result<http-response, string>;
+}
+
+world http-guest {
+    export incoming-handler;
+}

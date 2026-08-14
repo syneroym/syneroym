@@ -16,7 +16,8 @@
 //!    means this and step 3 below never actually contend for the same path.
 //! 3. The connected service's `http_routes` table (method + path-with-
 //!    `{param}` match) -- bridges onto `data-layer`/`messaging`/a registered
-//!    stream protocol.
+//!    stream protocol, or (M06A A2) hands the request to the deployed
+//!    component's own `syneroym:http/incoming-handler#handle-request` export.
 //! 4. Fallthrough, unchanged: the original `POST`+`application/json` JSON-RPC
 //!    bridge.
 
@@ -35,11 +36,11 @@ use http_body_util::{
     BodyExt, Full, LengthLimitError, Limited, StreamBody, combinators::UnsyncBoxBody,
 };
 use hyper::{
-    Method, Request, Response, StatusCode,
+    HeaderMap, Method, Request, Response, StatusCode,
     body::{Frame, Incoming},
     header::{
-        ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderValue, IF_NONE_MATCH,
-        X_CONTENT_TYPE_OPTIONS,
+        ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderName, HeaderValue,
+        IF_NONE_MATCH, X_CONTENT_TYPE_OPTIONS,
     },
     service,
 };
@@ -50,7 +51,8 @@ use hyper_util::{
 use serde_json::Value;
 use syneroym_core::{
     asset_manifest::AssetEntry,
-    http_routes::{HttpRoute, match_path},
+    guest_http::{GuestCallerAuth, GuestCallerIdentity, GuestHttpRequest, GuestHttpResponse},
+    http_routes::{HttpRoute, match_path, param_name},
     streaming::StreamDirection,
 };
 use syneroym_data_blob::{
@@ -59,10 +61,10 @@ use syneroym_data_blob::{
 };
 use syneroym_mqtt_broker::namespace_topic;
 use syneroym_rpc::{
-    CallerContext, JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest, PROXY_TRANSPORT_RPC_CODE,
-    UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
+    AuthLevel, CallerContext, JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest,
+    PROXY_TRANSPORT_RPC_CODE, UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
 };
-use syneroym_sandbox_wasm::StreamRequestOutcome;
+use syneroym_sandbox_wasm::{GuestHttpFailure, GuestHttpOutcome, StreamRequestOutcome};
 use tokio::io::{self as tokio_io, AsyncRead, AsyncWrite};
 use tokio_util::io::StreamReader;
 use tracing::error;
@@ -89,6 +91,34 @@ const MAX_SMALL_BODY_BYTES: usize = 1024 * 1024;
 /// Chunk size requested per `blob-store/read-chunk` native-dispatch call
 /// while streaming a `GET /blobs/{hash}` response body.
 const BLOB_CHUNK_BYTES: u32 = 64 * 1024;
+
+/// Request-body ceiling for a `guest` route (M06A D-A2-8). Its own constant
+/// rather than `MAX_SMALL_BODY_BYTES`: this body is additionally marshalled
+/// into a `Vec<Val::U8>` for the component-model call, so the two limits
+/// have different cost curves and may diverge.
+const MAX_GUEST_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+
+/// Response-body ceiling for a `guest` route. Bounds what is **sent**, not
+/// what is allocated: the guest's `list<u8>` is fully materialised in host
+/// memory before it can be measured, and the allocation bound is the
+/// guest's own `max_memory_bytes` store limiter.
+const MAX_GUEST_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
+
+const MAX_GUEST_REQUEST_HEADERS: usize = 64;
+const MAX_GUEST_RESPONSE_HEADERS: usize = 64;
+
+/// Headers the host owns, never the guest: stripped from a guest response
+/// and never forwarded from a request (M06A D-A2-5).
+const HOST_OWNED_HEADERS: [&str; 8] = [
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "upgrade",
+    "proxy-connection",
+    "te",
+    "trailer",
+];
 
 /// A handler for HTTP-based JSON-RPC requests.
 ///
@@ -385,6 +415,179 @@ fn structured_rpc_error(status: StatusCode, code: i32, message: String) -> Respo
         id: None,
     };
     json_response(status, &serde_json::to_value(&body).unwrap_or(Value::Null))
+}
+
+/// Request headers a guest sees (M06A D-A2-5, D-A2-8): lowercased, with
+/// every `HOST_OWNED_HEADERS` entry removed (the host owns framing, not the
+/// guest) and any non-UTF-8 value silently dropped rather than failing the
+/// request. A free function so the filtering rule is unit-testable without
+/// a live `HttpHandler`, same as `blob_hash_from_path`/`if_none_match_hits`.
+/// Error is `(status, message)`, not a built `Response`, so this stays a
+/// small `Result` -- the caller builds the response with `http_error`.
+fn guest_request_headers(
+    headers: &HeaderMap,
+) -> result::Result<Vec<(String, String)>, (StatusCode, String)> {
+    let mut out = Vec::new();
+    for (name, value) in headers {
+        let lower = name.as_str().to_ascii_lowercase();
+        if HOST_OWNED_HEADERS.contains(&lower.as_str()) {
+            continue;
+        }
+        let Ok(text) = value.to_str() else { continue };
+        if out.len() == MAX_GUEST_REQUEST_HEADERS {
+            return Err((
+                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                format!("request has more than {MAX_GUEST_REQUEST_HEADERS} headers"),
+            ));
+        }
+        out.push((lower, text.to_string()));
+    }
+    Ok(out)
+}
+
+/// The router's view of `CallerContext` as a guest may see it (M06A
+/// D-A2-12). `Err` on a substrate-injected `AuthLevel`, which cannot
+/// legitimately reach an inbound HTTP request -- fail closed rather than
+/// report a level that isn't true.
+///
+/// Takes `preamble` as well as `caller` because the two `auth` halves read
+/// different sources: `CallerContext.auth` cannot distinguish a verified
+/// certificate from an unchallenged pubkey (F5a) -- `AuthLevel::Delegated`
+/// is assigned to *every* verified preamble, including the client gateway's
+/// unchallenged node-DID pubkey -- while the preamble's own `delegation`
+/// field can, since a malformed certificate is a hard reject before this
+/// point. Conversely `preamble.ucan.is_some()` says only that a token was
+/// *attached*, not that it verified (`build_caller` fails open on a bad
+/// chain), while `CallerContext.auth == AuthLevel::Ucan` is set only on a
+/// verified, unrevoked, capability-bearing chain. The two sources are
+/// therefore mixed on purpose, one field from each -- collapsing this to a
+/// single source would let a caller self-label the stronger `ucan` value
+/// with a junk token.
+fn guest_caller_identity(
+    caller: Option<&CallerContext>,
+    preamble: &RoutePreamble,
+) -> result::Result<Option<GuestCallerIdentity>, String> {
+    let Some(caller) = caller else { return Ok(None) };
+    if matches!(
+        caller.auth,
+        AuthLevel::LocalElevated | AuthLevel::LocalReadOnly | AuthLevel::System
+    ) {
+        return Err("substrate-injected auth level on an inbound HTTP request".to_string());
+    }
+    let auth = if matches!(caller.auth, AuthLevel::Ucan) {
+        GuestCallerAuth::Ucan
+    } else if preamble.delegation.is_some() {
+        GuestCallerAuth::Delegated
+    } else {
+        GuestCallerAuth::SelfAsserted
+    };
+    Ok(Some(GuestCallerIdentity {
+        did: caller.caller_did.clone(),
+        auth,
+        app_instance: caller.app_instance.clone(),
+    }))
+}
+
+/// Turns a guest's answer into an HTTP response, or into the 500 failure-
+/// matrix row 6 requires (M06A D-A2-5). `Content-Length` is always the
+/// host's computed one, never the guest's -- a mismatch would be a
+/// connection desync -- and an invalid header **fails the whole response**
+/// rather than being silently dropped: a guest that thought it set
+/// `Content-Type: application/json` must not silently serve
+/// `application/octet-stream`.
+fn build_guest_response(response: GuestHttpResponse) -> Response<HttpBody> {
+    if response.body.len() > MAX_GUEST_RESPONSE_BODY_BYTES {
+        return http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("guest response body exceeds {MAX_GUEST_RESPONSE_BODY_BYTES} byte limit"),
+        );
+    }
+    if response.headers.len() > MAX_GUEST_RESPONSE_HEADERS {
+        return http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("guest response declares more than {MAX_GUEST_RESPONSE_HEADERS} headers"),
+        );
+    }
+    // 200-599 only: the WIT doc caps this range (1xx is informational, not
+    // a final response), narrower than `StatusCode::from_u16`'s own
+    // 100..=999 acceptance.
+    if !(200..600).contains(&response.status) {
+        return http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("guest returned an out-of-range status: {}", response.status),
+        );
+    }
+    let Ok(status) = StatusCode::from_u16(response.status) else {
+        return http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("guest returned an out-of-range status: {}", response.status),
+        );
+    };
+
+    let mut builder = Response::builder().status(status);
+    let mut saw_content_type = false;
+    let mut saw_nosniff = false;
+    for (name, value) in response.headers {
+        let lower = name.to_ascii_lowercase();
+        if HOST_OWNED_HEADERS.contains(&lower.as_str()) {
+            continue;
+        }
+        let Ok(header_name) = HeaderName::from_bytes(lower.as_bytes()) else {
+            return http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("guest returned an invalid header name: {name:?}"),
+            );
+        };
+        let Ok(header_value) = HeaderValue::from_str(&value) else {
+            return http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("guest returned an invalid value for header {lower}"),
+            );
+        };
+        saw_content_type |= lower == CONTENT_TYPE.as_str();
+        saw_nosniff |= lower == X_CONTENT_TYPE_OPTIONS.as_str();
+        builder = builder.header(header_name, header_value);
+    }
+    if !saw_content_type {
+        builder = builder.header(CONTENT_TYPE, "application/octet-stream");
+    }
+    if !saw_nosniff {
+        builder = builder.header(X_CONTENT_TYPE_OPTIONS, "nosniff");
+    }
+    builder = builder.header(CONTENT_LENGTH, response.body.len().to_string());
+
+    match builder.body(full_body(Bytes::from(response.body))) {
+        Ok(resp) => resp,
+        Err(e) => http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to build guest response: {e}"),
+        ),
+    }
+}
+
+/// A short, safe-to-return sentence per `GuestHttpFailure` variant. The
+/// guest's own string (in `Declined`/`BudgetExceeded`/`Trap`/`Malformed`) is
+/// already truncated by the engine's `truncate_detail` before it reaches
+/// here, so it is safe to include verbatim.
+fn describe_guest_http_failure(failure: &GuestHttpFailure) -> String {
+    match failure {
+        GuestHttpFailure::NoHandler => {
+            "deployed component does not export the guest HTTP handler".to_string()
+        }
+        GuestHttpFailure::Declined(detail) => format!("guest HTTP handler failed: {detail}"),
+        GuestHttpFailure::BudgetExceeded(detail) => {
+            format!("guest HTTP handler exceeded its budget: {detail}")
+        }
+        GuestHttpFailure::Trap(detail) => format!("guest HTTP handler trapped: {detail}"),
+        GuestHttpFailure::Malformed(detail) => {
+            format!("guest HTTP handler returned a malformed response: {detail}")
+        }
+        // Handled by its own 503 branch at the call site; kept here so the
+        // match stays exhaustive if a new caller reuses this function.
+        GuestHttpFailure::Unavailable(detail) => {
+            format!("guest HTTP handler unavailable: {detail}")
+        }
+    }
 }
 
 impl HttpHandler {
@@ -782,6 +985,7 @@ impl HttpHandler {
             "data-layer" => self.handle_data_layer_route(route, path_param, req).await,
             "messaging" => self.handle_messaging_route(route, req).await,
             "stream" => self.handle_stream_route(route, req).await,
+            "guest" => self.handle_guest_route(route, path_param, req).await,
             other => Ok(http_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("http_routes entry has unknown target: {other}"),
@@ -1070,6 +1274,131 @@ impl HttpHandler {
         }
     }
 
+    // -- guest HTTP route target (M06A A2) --------------------------------
+
+    /// The fourth `dispatch_route` target: hands the request to the
+    /// deployed component's `syneroym:http/incoming-handler#handle-request`
+    /// export and turns its answer into an HTTP response. Reaches the guest
+    /// directly through `app_sandbox_engine`, mirroring
+    /// `handle_stream_route` -- an `http-native` connection resolves to a
+    /// `NativeService` pipeline (F2), so `dispatch_json_rpc_once` can never
+    /// reach a guest, unlike `data-layer`/`messaging` above.
+    async fn handle_guest_route(
+        &self,
+        route: &HttpRoute,
+        path_param: Option<String>,
+        req: Request<Incoming>,
+    ) -> Result<Response<HttpBody>> {
+        if route.operation != "handle-request" {
+            return Ok(http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("unsupported guest operation: {}", route.operation),
+            ));
+        }
+
+        // D-A2-7, BEFORE any engine work: an anonymous caller on a
+        // non-public route never instantiates anything. Same code and
+        // status shape `dispatch_native` uses, so one 401 taxonomy covers
+        // the whole bridge.
+        if self.caller.is_none() && !route.public {
+            return Ok(structured_rpc_error(
+                StatusCode::UNAUTHORIZED,
+                UNAUTHENTICATED_RPC_CODE,
+                format!("unauthenticated caller for guest route {} {}", route.method, route.path),
+            ));
+        }
+
+        let caller_identity = match guest_caller_identity(self.caller.as_ref(), &self.preamble) {
+            Ok(identity) => identity,
+            Err(reason) => {
+                return Ok(http_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("unexpected caller context: {reason}"),
+                ));
+            }
+        };
+
+        let Some(app_sandbox_engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
+            return Ok(http_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "app sandbox engine not available (coordinator mode)".into(),
+            ));
+        };
+        if !app_sandbox_engine.is_deployed(&self.preamble.service_id) {
+            return Ok(http_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service has no deployed WASM component".into(),
+            ));
+        }
+
+        let (parts, body) = req.into_parts();
+        let headers = match guest_request_headers(&parts.headers) {
+            Ok(headers) => headers,
+            Err((status, message)) => return Ok(http_error(status, message)),
+        };
+        // Every rejection above happens before any engine call, so each
+        // costs zero instantiations.
+        let limited = Limited::new(body, MAX_GUEST_REQUEST_BODY_BYTES);
+        let body_bytes = match limited.collect().await {
+            Ok(collected) => collected.to_bytes(),
+            Err(e) if e.downcast_ref::<LengthLimitError>().is_some() => {
+                return Ok(http_error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!("request body exceeds {MAX_GUEST_REQUEST_BODY_BYTES} byte limit"),
+                ));
+            }
+            Err(e) => {
+                return Ok(http_error(
+                    StatusCode::BAD_REQUEST,
+                    format!("failed to read request body: {e}"),
+                ));
+            }
+        };
+
+        let path_params = match (param_name(&route.path), path_param) {
+            (Some(name), Some(value)) => vec![(name.to_string(), value)],
+            _ => vec![],
+        };
+        let request = GuestHttpRequest {
+            method: parts.method.as_str().to_string(),
+            path: parts.uri.path().to_string(),
+            query: parts.uri.query().unwrap_or("").to_string(),
+            route: route.path.clone(),
+            path_params,
+            headers,
+            body: body_bytes.to_vec(),
+            caller: caller_identity,
+        };
+
+        match app_sandbox_engine
+            .handle_guest_http_request(&self.preamble.service_id, &request, self.caller.clone())
+            .await
+        {
+            Ok(GuestHttpOutcome::Response(response)) => Ok(build_guest_response(response)),
+            Ok(GuestHttpOutcome::Failed(GuestHttpFailure::Unavailable(detail))) => {
+                let mut resp = http_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("service is at its guest HTTP concurrency limit: {detail}"),
+                );
+                resp.headers_mut().insert("retry-after", HeaderValue::from_static("1"));
+                Ok(resp)
+            }
+            Ok(GuestHttpOutcome::Failed(failure)) => {
+                error!(
+                    service_id = %self.preamble.service_id,
+                    route = %route.path,
+                    ?failure,
+                    "guest HTTP handler failed"
+                );
+                Ok(http_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    describe_guest_http_failure(&failure),
+                ))
+            }
+            Err(e) => Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        }
+    }
+
     // -- signed-URL blob GET ---------------------------------------------
 
     async fn handle_blob_get(&self, hash: &str, query: &str) -> Result<Response<HttpBody>> {
@@ -1280,6 +1609,10 @@ pub fn http_error(status: StatusCode, message: String) -> Response<HttpBody> {
 
 #[cfg(test)]
 mod tests {
+    use syneroym_identity::DelegationCertificate;
+    use syneroym_rpc::SessionContext;
+    use syneroym_ucan::CapabilityToken;
+
     use super::*;
 
     #[test]
@@ -1395,5 +1728,235 @@ mod tests {
         assert_eq!(event_lines, 1, "exactly one event: line, frame was:\n{frame}");
         assert_eq!(data_lines, 1, "exactly one data: line, frame was:\n{frame}");
         assert!(!frame.contains('\r'), "no raw CR should survive into the frame");
+    }
+
+    // -- guest HTTP route target (M06A A2) -------------------------------
+
+    fn caller_context(auth: AuthLevel) -> CallerContext {
+        CallerContext {
+            caller_did: "did:key:caller".to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: "did:key:caller".to_string(),
+                ..Default::default()
+            },
+            auth,
+            proof: None,
+        }
+    }
+
+    fn preamble_with(delegation: Option<()>, ucan: Option<()>) -> RoutePreamble {
+        let mut preamble = RoutePreamble::binary_json_rpc("svc", "http-native");
+        if delegation.is_some() {
+            preamble.delegation = Some(DelegationCertificate {
+                master_did: "did:key:master".to_string(),
+                temporary_did: "did:key:temp".to_string(),
+                issued_at_secs: 0,
+                expires_at_secs: u64::MAX,
+                scope: "routing".to_string(),
+                signature: "test-signature".to_string(),
+            });
+        }
+        if ucan.is_some() {
+            // Only `preamble.ucan.is_some()`-ness is exercised by these
+            // tests (F5b: a rejected chain still leaves this set) -- the
+            // token's own fields don't need to verify.
+            preamble.ucan = Some(CapabilityToken {
+                issuer_did: "did:key:issuer".to_string(),
+                audience_did: "did:key:caller".to_string(),
+                anchor_did: None,
+                capabilities: vec![],
+                facts: serde_json::Map::new(),
+                not_before_secs: 0,
+                expires_at_secs: u64::MAX,
+                proofs: vec![],
+                signature: "junk-signature".to_string(),
+            });
+        }
+        preamble
+    }
+
+    #[test]
+    fn guest_request_headers_lowercases_and_drops_host_owned() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Test", HeaderValue::from_static("1"));
+        headers.insert(CONTENT_LENGTH, HeaderValue::from_static("100"));
+        headers.insert("Connection", HeaderValue::from_static("keep-alive"));
+        let result = guest_request_headers(&headers).unwrap();
+        assert_eq!(result, vec![("x-test".to_string(), "1".to_string())]);
+    }
+
+    #[test]
+    fn guest_request_headers_drops_non_utf8_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-binary", HeaderValue::from_bytes(&[0xff, 0xfe]).unwrap());
+        headers.insert("x-ok", HeaderValue::from_static("fine"));
+        let result = guest_request_headers(&headers).unwrap();
+        assert_eq!(result, vec![("x-ok".to_string(), "fine".to_string())]);
+    }
+
+    #[test]
+    fn guest_request_headers_431s_past_the_count_cap() {
+        let mut headers = HeaderMap::new();
+        for i in 0..MAX_GUEST_REQUEST_HEADERS + 1 {
+            headers.insert(
+                HeaderName::from_bytes(format!("x-h{i}").as_bytes()).unwrap(),
+                HeaderValue::from_static("v"),
+            );
+        }
+        let (status, _) = guest_request_headers(&headers).unwrap_err();
+        assert_eq!(status, StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE);
+    }
+
+    #[test]
+    fn guest_caller_identity_none_stays_none() {
+        let preamble = RoutePreamble::binary_json_rpc("svc", "http-native");
+        assert_eq!(guest_caller_identity(None, &preamble).unwrap(), None);
+    }
+
+    #[test]
+    fn guest_caller_identity_bare_pubkey_is_self_asserted_even_though_auth_says_delegated() {
+        // F5a: `AuthLevel::Delegated` is assigned to every verified preamble,
+        // including the client gateway's unchallenged pubkey -- so `auth`
+        // must not be read straight off it.
+        let caller = caller_context(AuthLevel::Delegated);
+        let preamble = preamble_with(None, None);
+        let identity = guest_caller_identity(Some(&caller), &preamble).unwrap().unwrap();
+        assert_eq!(identity.auth, GuestCallerAuth::SelfAsserted);
+    }
+
+    #[test]
+    fn guest_caller_identity_a_rejected_ucan_is_self_asserted_not_ucan() {
+        // F5b: `build_caller` fails open on a bad UCAN chain, leaving
+        // `preamble.ucan` set but `CallerContext.auth` at `Delegated` -- so
+        // keying `ucan` off the preamble would let any caller self-label
+        // the strongest value with a junk token.
+        let caller = caller_context(AuthLevel::Delegated);
+        let preamble = preamble_with(None, Some(()));
+        let identity = guest_caller_identity(Some(&caller), &preamble).unwrap().unwrap();
+        assert_eq!(identity.auth, GuestCallerAuth::SelfAsserted);
+    }
+
+    #[test]
+    fn guest_caller_identity_verified_ucan_is_ucan() {
+        let caller = caller_context(AuthLevel::Ucan);
+        let preamble = preamble_with(None, Some(()));
+        let identity = guest_caller_identity(Some(&caller), &preamble).unwrap().unwrap();
+        assert_eq!(identity.auth, GuestCallerAuth::Ucan);
+    }
+
+    #[test]
+    fn guest_caller_identity_delegation_present_is_delegated() {
+        let caller = caller_context(AuthLevel::Delegated);
+        let preamble = preamble_with(Some(()), None);
+        let identity = guest_caller_identity(Some(&caller), &preamble).unwrap().unwrap();
+        assert_eq!(identity.auth, GuestCallerAuth::Delegated);
+    }
+
+    #[test]
+    fn guest_caller_identity_fails_closed_on_substrate_injected_levels() {
+        let preamble = RoutePreamble::binary_json_rpc("svc", "http-native");
+        for level in [AuthLevel::LocalElevated, AuthLevel::LocalReadOnly, AuthLevel::System] {
+            let caller = caller_context(level);
+            assert!(guest_caller_identity(Some(&caller), &preamble).is_err());
+        }
+    }
+
+    #[test]
+    fn http_route_with_no_public_key_deserializes_to_public_false() {
+        let route: HttpRoute = serde_json::from_value(serde_json::json!({
+            "method": "GET",
+            "path": "/echo",
+            "target": "guest",
+            "operation": "handle-request"
+        }))
+        .unwrap();
+        assert!(!route.public);
+    }
+
+    fn sample_guest_response(
+        status: u16,
+        headers: Vec<(&str, &str)>,
+        body: Vec<u8>,
+    ) -> GuestHttpResponse {
+        GuestHttpResponse {
+            status,
+            headers: headers.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            body,
+        }
+    }
+
+    #[test]
+    fn build_guest_response_strips_host_owned_headers() {
+        let response = sample_guest_response(
+            200,
+            vec![("content-length", "999"), ("connection", "close"), ("x-ok", "1")],
+            b"hi".to_vec(),
+        );
+        let resp = build_guest_response(response);
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get(CONTENT_LENGTH).unwrap(), "2");
+        assert_eq!(resp.headers().get("x-ok").unwrap(), "1");
+    }
+
+    #[test]
+    fn build_guest_response_rejects_invalid_header_value_with_500() {
+        let response =
+            sample_guest_response(200, vec![("x-bad", "line1\r\nline2")], b"hi".to_vec());
+        let resp = build_guest_response(response);
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn build_guest_response_rejects_out_of_range_status() {
+        for status in [0u16, 99, 100, 600, 999] {
+            let response = sample_guest_response(status, vec![], vec![]);
+            let resp = build_guest_response(response);
+            assert_eq!(
+                resp.status(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "status {status} should have been rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn build_guest_response_rejects_over_cap_body() {
+        let response =
+            sample_guest_response(200, vec![], vec![0u8; MAX_GUEST_RESPONSE_BODY_BYTES + 1]);
+        let resp = build_guest_response(response);
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn build_guest_response_rejects_over_cap_header_count() {
+        let headers = (0..MAX_GUEST_RESPONSE_HEADERS + 1)
+            .map(|i| (format!("x-h{i}"), "v".to_string()))
+            .collect();
+        let response = GuestHttpResponse { status: 200, headers, body: vec![] };
+        let resp = build_guest_response(response);
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn build_guest_response_adds_nosniff_only_when_absent() {
+        let response = sample_guest_response(200, vec![], vec![]);
+        let resp = build_guest_response(response);
+        assert_eq!(resp.headers().get(X_CONTENT_TYPE_OPTIONS).unwrap(), "nosniff");
+
+        let response =
+            sample_guest_response(200, vec![("x-content-type-options", "custom")], vec![]);
+        let resp = build_guest_response(response);
+        assert_eq!(resp.headers().get(X_CONTENT_TYPE_OPTIONS).unwrap(), "custom");
+    }
+
+    #[test]
+    fn build_guest_response_keeps_repeated_set_cookie_headers() {
+        let response =
+            sample_guest_response(200, vec![("set-cookie", "a=1"), ("set-cookie", "b=2")], vec![]);
+        let resp = build_guest_response(response);
+        let values: Vec<&str> =
+            resp.headers().get_all("set-cookie").iter().map(|v| v.to_str().unwrap()).collect();
+        assert_eq!(values, vec!["a=1", "b=2"]);
     }
 }

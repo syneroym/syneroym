@@ -21,6 +21,7 @@ use syneroym_app_orchestration::LogicalResolver;
 use syneroym_chunk_transfer::{self as chunk_transfer, ChunkSink};
 use syneroym_core::{
     config::SubstrateConfig,
+    guest_http::{GuestHttpRequest, GuestHttpResponse},
     local_registry::{EndpointRegistry, SubstrateEndpoint},
     streaming::StreamDirection,
 };
@@ -65,6 +66,7 @@ use wasmtime_wasi::p2;
 use crate::{
     conversions::{json_to_wasm_params, wasm_results_to_json_string},
     host_capabilities::{HostState, MessagingContext},
+    http,
     stream::{self, GuestStreamCursor, GuestStreamSink, StreamContext, StreamRegistry},
 };
 
@@ -94,6 +96,38 @@ pub enum StreamRequestOutcome {
     /// a handler for this protocol at all; the stream was closed cleanly
     /// with no bytes transferred.
     Declined,
+}
+
+/// How a `handle-request` call ended (M06A A2). `Err` from the enclosing
+/// `Result` is reserved for host-side failure; everything a *guest* can do
+/// lands in here, mirroring `StreamRequestOutcome`'s split.
+#[derive(Debug)]
+pub enum GuestHttpOutcome {
+    Response(GuestHttpResponse),
+    Failed(GuestHttpFailure),
+}
+
+/// Why a guest HTTP call produced no usable response. Every variant maps to
+/// 500 **except `Unavailable`, which maps to 503** -- resource exhaustion is
+/// "try again", not "the guest broke".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GuestHttpFailure {
+    /// The component does not export `handle-request`. Unreachable through
+    /// a normal deploy (`D-A2-10b` refuses it); kept because the engine
+    /// cannot assume its caller checked.
+    NoHandler,
+    /// The guest returned `Err(msg)` -- the handler failed. A guest
+    /// *rejecting* a request returns `Ok` with a 4xx status instead.
+    Declined(String),
+    /// Fuel exhausted or the epoch deadline reached.
+    BudgetExceeded(String),
+    Trap(String),
+    /// The return value was not `result<http-response, string>`.
+    Malformed(String),
+    /// No instance could be obtained: the per-service admission permit
+    /// timed out, or wasmtime's pool refused
+    /// (`PoolConcurrencyLimitError`). M06A D-A2-11.
+    Unavailable(String),
 }
 
 /// Engine: Passive code module that wraps low-level OS operations
@@ -252,6 +286,23 @@ pub struct AppSandboxEngine {
     /// asserting on an absolute value would be coupled to unrelated
     /// deploy-time behaviour).
     instantiations: AtomicU64,
+    /// Pool slots this node will let *guest HTTP* requests hold
+    /// concurrently, per service (M06A D-A2-11). Unlike an RPC client, one
+    /// browser page issues six or more parallel requests, and exhausting
+    /// wasmtime's pool is a hard `PoolConcurrencyLimitError` at
+    /// instantiation rather than a wait -- so without this, a single page
+    /// load turns into 500s and can also drain the headroom
+    /// `stream_instance_permits` reserves for ordinary calls. Bounded
+    /// queuing instead, with a 503 past the wait.
+    ///
+    /// Entries are removed by `forget_guest_http_permits` on undeploy,
+    /// matching `unsubscribe_all`/`abort_streams` -- every other
+    /// per-service map here has an explicit teardown, and a map that only
+    /// ever grows is a leak however small.
+    guest_http_permits: Arc<DashMap<String, Arc<Semaphore>>>,
+    /// Snapshot of `AppSandboxRole::max_concurrent_guest_http_per_service`,
+    /// the size each per-service semaphore above is created at.
+    max_concurrent_guest_http_per_service: u32,
 }
 
 /// Per-instantiation differences from an ordinary dispatch call. Bundled
@@ -271,6 +322,12 @@ struct InstanceOptions {
 /// that field's doc comment for the cross-service DoS this prevents.
 const STREAM_INSTANCE_POOL_HEADROOM: u32 = 2;
 
+/// How long a guest HTTP request waits for its service's admission permit
+/// before the router answers 503 (M06A D-A2-11). Short on purpose: a
+/// browser that waited longer than this has already given the user a
+/// stalled page, and a fast, honest "busy, retry" beats a slow success.
+const GUEST_HTTP_ADMISSION_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// How often the epoch ticker (spawned in `init`) advances Wasmtime's global
 /// epoch. `Store::set_epoch_deadline` counts in ticks of this interval, not
 /// seconds directly -- see [`ticks_for_secs`].
@@ -282,6 +339,63 @@ const EPOCH_TICK_MS: u64 = 100;
 /// `Store::set_epoch_deadline` expects, given the `EPOCH_TICK_MS` ticker.
 const fn ticks_for_secs(secs: u64) -> u64 {
     (secs * 1000) / EPOCH_TICK_MS
+}
+
+/// Tracks the `substrate.wasm.active_instances` gauge for the lifetime of
+/// one guest call. Hoisted to module scope (M06A A2, call site 12a) from
+/// its original home inside `execute_wasm_vals` so
+/// `handle_guest_http_request` can reuse it too -- every other
+/// guest-invoking path records this metric, and the guest HTTP path is no
+/// exception.
+struct ActiveInstanceGuard;
+impl ActiveInstanceGuard {
+    fn new() -> Self {
+        metrics::gauge!("substrate.wasm.active_instances").increment(1.0);
+        Self
+    }
+}
+impl Drop for ActiveInstanceGuard {
+    fn drop(&mut self) {
+        metrics::gauge!("substrate.wasm.active_instances").decrement(1.0);
+    }
+}
+
+/// How a `Func::call_async` failure should be read (M06A D-A2-6). One
+/// definition, shared by `execute_wasm_vals`, `authorize_rows`, and
+/// `handle_guest_http_request` -- previously two hand-rolled, independently
+/// drifting copies of the same taxonomy, one of which had no memory-fault
+/// arm at all. Each consumer maps these variants to its own error type,
+/// preserving that consumer's pre-refactor behaviour exactly (see the two
+/// call sites for the pinned mapping, including the deliberately
+/// unchanged gaps).
+pub(crate) enum CallFailure {
+    OutOfFuel,
+    MemoryFault,
+    Deadline,
+    Other,
+}
+
+/// Classifies a `Func::call_async` error by inspecting the Wasmtime trap
+/// type first, then falling back to matching known substrings in the root
+/// cause -- the same two-step approach both pre-refactor copies used,
+/// unified into one place. Order matters: fuel is checked before memory,
+/// which is checked before an epoch deadline, matching both original
+/// implementations' precedence.
+pub(crate) fn classify_call_failure(e: &wasmtime::Error) -> CallFailure {
+    if let Some(Trap::OutOfFuel) = e.downcast_ref::<Trap>() {
+        return CallFailure::OutOfFuel;
+    }
+    let err_str = e.root_cause().to_string();
+    if err_str.contains("all fuel consumed") || err_str.contains("out of fuel") {
+        return CallFailure::OutOfFuel;
+    }
+    if err_str.contains("exceeded its memory limits") || err_str.contains("MemoryFault") {
+        return CallFailure::MemoryFault;
+    }
+    if err_str.contains("epoch") || err_str.contains("deadline") {
+        return CallFailure::Deadline;
+    }
+    CallFailure::Other
 }
 
 impl Debug for AppSandboxEngine {
@@ -389,6 +503,13 @@ impl AppSandboxEngine {
                 (2, 50_000_000)
             };
         let abac_epoch_ticks = ticks_for_secs(abac_timeout_secs);
+
+        let max_concurrent_guest_http_per_service =
+            if let Some(sandbox_config) = &config.roles.app_sandbox {
+                sandbox_config.max_concurrent_guest_http_per_service
+            } else {
+                4
+            };
         // Fixed, not scaled by `max_concurrent_instances` (review residual
         // R2 -- an earlier version scaled this and, computed independently
         // of `stream_instance_budget`, let the two jointly oversubscribe
@@ -458,6 +579,8 @@ impl AppSandboxEngine {
             abac_epoch_ticks,
             abac_max_instructions,
             instantiations: AtomicU64::new(0),
+            guest_http_permits: Arc::new(DashMap::new()),
+            max_concurrent_guest_http_per_service,
         };
 
         for (service_id, _interface_name, endpoint) in endpoints {
@@ -734,6 +857,14 @@ impl AppSandboxEngine {
         self.exports_function(service_id, Self::AUTHORIZER_INTERFACE, "authorize-rows")
     }
 
+    /// Whether `service_id`'s compiled component exports the guest HTTP
+    /// handler (M06A A2). Cheap (static component type, no instantiation) --
+    /// exactly `exports_authorize_rows`' shape and deploy-gate role.
+    #[must_use]
+    pub fn exports_http_handler(&self, service_id: &str) -> bool {
+        self.exports_function(service_id, http::HTTP_HANDLER_INTERFACE, "handle-request")
+    }
+
     /// Whether a compiled component is loaded for `service_id` -- the only
     /// liveness a wasm service has, since nothing runs between calls (M05A
     /// A4).
@@ -881,19 +1012,6 @@ impl AppSandboxEngine {
         caller: Option<CallerContext>,
     ) -> Result<Vec<Val>> {
         Self::validate_service_id(service_id)?;
-        struct ActiveInstanceGuard;
-        impl ActiveInstanceGuard {
-            fn new() -> Self {
-                metrics::gauge!("substrate.wasm.active_instances").increment(1.0);
-                Self
-            }
-        }
-        impl Drop for ActiveInstanceGuard {
-            fn drop(&mut self) {
-                metrics::gauge!("substrate.wasm.active_instances").decrement(1.0);
-            }
-        }
-
         let _guard = ActiveInstanceGuard::new();
         debug!("starting to execute wasm");
 
@@ -927,19 +1045,23 @@ impl AppSandboxEngine {
         debug!("called wasm function, processing results");
 
         if let Err(e) = res {
-            if let Some(Trap::OutOfFuel) = e.downcast_ref::<Trap>() {
-                warn!("Wasm execution exceeded fuel limit for service: {}", service_id);
-                return Err(anyhow::anyhow!("QuotaExceeded: Wasm execution exceeded fuel limit"));
+            match classify_call_failure(&e) {
+                CallFailure::OutOfFuel => {
+                    warn!("Wasm execution exceeded fuel limit for service: {}", service_id);
+                    return Err(anyhow::anyhow!(
+                        "QuotaExceeded: Wasm execution exceeded fuel limit"
+                    ));
+                }
+                CallFailure::MemoryFault => {
+                    return Err(anyhow::anyhow!(
+                        "MemoryFault: Wasm execution exceeded memory limit"
+                    ));
+                }
+                // Deadline and Other are indistinguishable here, matching
+                // pre-refactor behaviour: neither was classified before, so
+                // both fell through to the raw error.
+                CallFailure::Deadline | CallFailure::Other => return Err(e.into()),
             }
-            let err_str = e.root_cause().to_string();
-            if err_str.contains("all fuel consumed") || err_str.contains("out of fuel") {
-                warn!("Wasm execution exceeded fuel limit for service: {}", service_id);
-                return Err(anyhow::anyhow!("QuotaExceeded: Wasm execution exceeded fuel limit"));
-            }
-            if err_str.contains("exceeded its memory limits") || err_str.contains("MemoryFault") {
-                return Err(anyhow::anyhow!("MemoryFault: Wasm execution exceeded memory limit"));
-            }
-            return Err(e.into());
         }
 
         Ok(wasm_results)
@@ -1274,6 +1396,14 @@ impl AppSandboxEngine {
     /// every other teardown path (ADR-0014).
     pub fn abort_streams(&self, service_id: &str) {
         self.stream_registry.abort_all(service_id);
+    }
+
+    /// Drops `service_id`'s guest HTTP admission semaphore (M06A A2).
+    /// Called from the same undeploy path as `unsubscribe_all`; in-flight
+    /// requests keep their own `OwnedSemaphorePermit` and finish, they just
+    /// stop sharing a budget with a service that no longer exists.
+    pub fn forget_guest_http_permits(&self, service_id: &str) {
+        self.guest_http_permits.remove(service_id);
     }
 
     /// Invokes the deployed component's exported `guest-api::handle-message`
@@ -1739,7 +1869,7 @@ impl AppSandboxEngine {
 /// log in full on every read that hits it.
 const ABAC_ERROR_DETAIL_MAX_LEN: usize = 500;
 
-fn truncate_detail(s: String) -> String {
+pub(crate) fn truncate_detail(s: String) -> String {
     if s.len() <= ABAC_ERROR_DETAIL_MAX_LEN {
         return s;
     }
@@ -1863,23 +1993,22 @@ impl AppSandboxEngine {
 
         let service = service_id.to_string();
         if let Err(e) = call_result {
-            // Reuses `execute_wasm_vals`'s exact string classification --
-            // deliberately not a second, independently-drifting
-            // implementation of the same trap taxonomy.
-            if let Some(Trap::OutOfFuel) = e.downcast_ref::<Trap>() {
-                return Err(AbacError::BudgetExceeded {
+            // `classify_call_failure` (M06A D-A2-6) replaces this site's own
+            // hand-rolled copy of the trap taxonomy. Pinned mapping,
+            // preserving this function's pre-refactor behaviour exactly:
+            // this site has (and had) no memory-fault arm, so a memory
+            // fault still becomes `Trap`, not a budget error.
+            let err_str = truncate_detail(e.root_cause().to_string());
+            return Err(match classify_call_failure(&e) {
+                CallFailure::OutOfFuel => AbacError::BudgetExceeded {
                     service,
                     detail: "exceeded its fuel budget".to_string(),
-                });
-            }
-            let err_str = truncate_detail(e.root_cause().to_string());
-            if err_str.contains("all fuel consumed") || err_str.contains("out of fuel") {
-                return Err(AbacError::BudgetExceeded { service, detail: err_str });
-            }
-            if err_str.contains("epoch") || err_str.contains("deadline") {
-                return Err(AbacError::BudgetExceeded { service, detail: err_str });
-            }
-            return Err(AbacError::Trap { service, detail: err_str });
+                },
+                CallFailure::Deadline => AbacError::BudgetExceeded { service, detail: err_str },
+                CallFailure::MemoryFault | CallFailure::Other => {
+                    AbacError::Trap { service, detail: err_str }
+                }
+            });
         }
 
         let [result_val] = results.as_slice() else {
@@ -1953,6 +2082,108 @@ impl AppSandboxEngine {
             metrics::counter!("substrate.fdae.abac_rows_denied").increment(denied);
         }
         Ok(decisions)
+    }
+
+    /// Runs one inbound HTTP request through the guest's `handle-request`
+    /// export on a fresh per-call instance, bounded by
+    /// `dispatch_epoch_ticks` (task.md's existing 5s
+    /// `dispatch_epoch_timeout_secs`), the service's fuel/memory quota, and
+    /// this service's own guest-HTTP admission permit (M06A D-A2-11).
+    ///
+    /// `caller` is forwarded into `HostState.caller` exactly as
+    /// `execute_wasm_json` does. `None` reaches here only for a route the
+    /// deploy declared `public` -- the router answers 401 otherwise, before
+    /// this function is called (D-A2-7).
+    pub async fn handle_guest_http_request(
+        &self,
+        service_id: &str,
+        request: &GuestHttpRequest,
+        caller: Option<CallerContext>,
+    ) -> Result<GuestHttpOutcome> {
+        Self::validate_service_id(service_id)?;
+        debug_assert!(
+            !matches!(
+                &caller,
+                Some(c) if matches!(c.auth, AuthLevel::LocalElevated | AuthLevel::LocalReadOnly)
+            ),
+            "handle_guest_http_request must never receive a forwarded LocalElevated or \
+             LocalReadOnly caller -- those contexts are reserved for invoke_lifecycle_hook and \
+             authorize_rows respectively, neither of which calls this function"
+        );
+
+        // D-A2-11: bounded queuing instead of the pool's hard refusal. Per
+        // service, so one service's traffic degrades that service.
+        //
+        // MUST NOT be written as `entry(..).or_insert_with(..)` followed by
+        // an `.await` on the result: `entry` returns a `RefMut` that holds
+        // the DashMap shard's write lock for as long as it lives, so
+        // awaiting the permit would block every other task touching that
+        // shard for up to `GUEST_HTTP_ADMISSION_TIMEOUT`. Clone the `Arc`
+        // out and drop the guard in its own scope, BEFORE the await. Do not
+        // "simplify" this back.
+        let permits: Arc<Semaphore> = {
+            let entry =
+                self.guest_http_permits.entry(service_id.to_string()).or_insert_with(|| {
+                    Arc::new(Semaphore::new(self.max_concurrent_guest_http_per_service as usize))
+                });
+            entry.value().clone()
+        };
+        let Ok(Ok(_permit)) =
+            time::timeout(GUEST_HTTP_ADMISSION_TIMEOUT, permits.acquire_owned()).await
+        else {
+            return Ok(GuestHttpOutcome::Failed(GuestHttpFailure::Unavailable(
+                "guest HTTP admission timed out".to_string(),
+            )));
+        };
+
+        let caller = caller.unwrap_or_else(|| CallerContext::service_system(service_id));
+
+        let _active = ActiveInstanceGuard::new();
+        let (mut store, instance, _quota) = match self
+            .build_store_and_instantiate(
+                service_id,
+                caller,
+                self.dispatch_epoch_ticks,
+                InstanceOptions::default(),
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(e) if e.downcast_ref::<wasmtime::PoolConcurrencyLimitError>().is_some() => {
+                return Ok(GuestHttpOutcome::Failed(GuestHttpFailure::Unavailable(e.to_string())));
+            }
+            Err(e) => return Err(e),
+        };
+
+        let Ok((func, results_len, _item)) = Self::get_wasm_func(
+            &mut store,
+            &instance,
+            Some(http::HTTP_HANDLER_INTERFACE),
+            "handle-request",
+        ) else {
+            return Ok(GuestHttpOutcome::Failed(GuestHttpFailure::NoHandler));
+        };
+
+        let args = [http::request_to_val(request)];
+        let mut results = vec![Val::Bool(false); results_len];
+        let exec_start = Instant::now();
+        let call = func.call_async(&mut store, &args, &mut results).await;
+        metrics::histogram!("substrate.wasm.execution_ms")
+            .record(exec_start.elapsed().as_secs_f64() * 1000.0);
+        if let Err(e) = call {
+            let detail = truncate_detail(e.root_cause().to_string());
+            return Ok(GuestHttpOutcome::Failed(match classify_call_failure(&e) {
+                CallFailure::OutOfFuel | CallFailure::Deadline => {
+                    GuestHttpFailure::BudgetExceeded(detail)
+                }
+                CallFailure::MemoryFault | CallFailure::Other => GuestHttpFailure::Trap(detail),
+            }));
+        }
+
+        Ok(match http::response_from_results(&results) {
+            Ok(response) => GuestHttpOutcome::Response(response),
+            Err(failure) => GuestHttpOutcome::Failed(failure),
+        })
     }
 }
 
@@ -2537,6 +2768,8 @@ mod tests {
             abac_epoch_ticks: ticks_for_secs(2),
             abac_max_instructions: 50_000_000,
             instantiations: AtomicU64::new(0),
+            guest_http_permits: Arc::new(DashMap::new()),
+            max_concurrent_guest_http_per_service: 4,
         };
 
         // Cache the test component
@@ -2674,6 +2907,8 @@ mod tests {
             abac_epoch_ticks: ticks_for_secs(2),
             abac_max_instructions: 50_000_000,
             instantiations: AtomicU64::new(0),
+            guest_http_permits: Arc::new(DashMap::new()),
+            max_concurrent_guest_http_per_service: 4,
         }
     }
 

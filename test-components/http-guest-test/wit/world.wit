@@ -1,0 +1,24 @@
+package syneroym-test:http-guest-test@0.1.0;
+
+interface test-driver {
+    /// JSON string describing the most recently received `http-request`
+    /// (method/path/query/route/path-params/header count/body length/
+    /// caller), backed by `syneroym:data-layer/store` -- not in-guest
+    /// memory, since `handle-request` gets a fresh instance and store on
+    /// every call, so nothing kept in a `static`/`thread_local` would
+    /// survive to a later `last-request` call (M06A A2, mirrors
+    /// `stream-test`'s `get-uploaded-content`). Empty string if nothing has
+    /// been received yet.
+    last-request: func() -> result<string, string>;
+}
+
+world http-guest-test {
+    import syneroym:data-layer/store@0.1.0;
+    export syneroym:http/incoming-handler@0.1.0;
+
+    /// Creates the `requests` collection used to persist `last-request`.
+    export init: func() -> result<_, string>;
+    export migrate: func() -> result<_, string>;
+
+    export test-driver;
+}

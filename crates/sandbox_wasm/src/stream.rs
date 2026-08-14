@@ -118,13 +118,14 @@ impl Drop for StreamRegistry {
 }
 
 /// Converts a `Vec<u8>` into the `Val::List(Vec<Val::U8>)` shape wasmtime's
-/// dynamic API uses to represent a WIT `list<u8>`.
-fn bytes_to_val_list(data: Vec<u8>) -> Val {
+/// dynamic API uses to represent a WIT `list<u8>`. `pub(crate)` (M06A A2):
+/// also used by `crate::http`'s guest HTTP request/response marshalling.
+pub(crate) fn bytes_to_val_list(data: Vec<u8>) -> Val {
     Val::List(data.into_iter().map(Val::U8).collect())
 }
 
 /// The inverse of [`bytes_to_val_list`].
-fn val_list_to_bytes(val: &Val) -> Result<Vec<u8>> {
+pub(crate) fn val_list_to_bytes(val: &Val) -> Result<Vec<u8>> {
     let Val::List(items) = val else {
         return Err(anyhow!("expected Val::List, got {val:?}"));
     };
@@ -145,7 +146,7 @@ fn val_list_to_bytes(val: &Val) -> Result<Vec<u8>> {
 /// that arity here rather than callers indexing `results[0]` directly -- a
 /// deployed component whose export declares a different arity (e.g. no
 /// results) must surface as a clean `Err`, not a host panic.
-fn extract_result<T>(
+pub(crate) fn extract_result<T>(
     results: &[Val],
     ok_extractor: impl FnOnce(Option<&Val>) -> Result<T>,
 ) -> Result<T> {

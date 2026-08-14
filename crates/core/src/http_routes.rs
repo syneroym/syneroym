@@ -7,7 +7,8 @@
 //! undeploy (`ControlPlaneService`, `crates/control_plane/src/http_routes.rs`),
 //! and `syneroym-router` reads the registry per HTTP request
 //! (`crates/router/src/route_handler/http.rs`) to decide how a given verb+
-//! path bridges onto `data-layer`/`messaging`/a registered stream protocol.
+//! path bridges onto `data-layer`/`messaging`/a registered stream protocol/
+//! guest code (M06A A2).
 
 use std::sync::Arc;
 
@@ -17,7 +18,7 @@ use serde::Deserialize;
 /// One `http_routes` entry. `target` selects which native capability the
 /// route bridges onto; the optional fields are only meaningful for the
 /// matching target (`collection` for `data-layer`, `topic` for `messaging`,
-/// `protocol` for `stream`) and are ignored otherwise.
+/// `protocol` for `stream`, `public` for `guest`) and are ignored otherwise.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct HttpRoute {
     pub method: String,
@@ -30,6 +31,20 @@ pub struct HttpRoute {
     pub topic: Option<String>,
     #[serde(default)]
     pub protocol: Option<String>,
+    /// Whether a caller with no verified identity may reach this route
+    /// (M06A D-A2-7). Only meaningful for `target = "guest"`, where `false`
+    /// -- the default -- answers an anonymous request with 401 before the
+    /// component is instantiated. Refused at deploy on any other target,
+    /// where it would do nothing: `data-layer`/`messaging` already reject
+    /// an anonymous caller inside `dispatch_native`, and `stream` predates
+    /// this field (M06A §9.5).
+    ///
+    /// A bool, not ADR-0018's `visibility` enum: this is neither
+    /// endpoint-record publication nor byte readability, `syneroym-core`
+    /// cannot see `syneroym_app_orchestration::Visibility`, and there is no
+    /// middle tier to express.
+    #[serde(default)]
+    pub public: bool,
 }
 
 /// Shared, keyed-by-`service_id` HTTP route table. `ControlPlaneService`
@@ -65,6 +80,23 @@ pub fn match_path(pattern: &str, path: &str) -> Option<Option<String>> {
     Some(captured)
 }
 
+/// The name of the single capturing segment in `pattern` (`/orders/{id}` ->
+/// `Some("id")`), or `None` when the pattern has no `{...}` segment.
+///
+/// Returns the **last** such segment, matching `match_path`'s own last-wins
+/// capture (M06A `D-A2-4`): with two `{...}` segments the two functions must
+/// describe the same segment, or a guest would receive a name and a value
+/// from different parts of the path. Only a single capture is supported
+/// anyway.
+#[must_use]
+pub fn param_name(pattern: &str) -> Option<&str> {
+    pattern
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .rfind(|s| s.starts_with('{') && s.ends_with('}'))
+        .map(|s| &s[1..s.len() - 1])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +120,24 @@ mod tests {
     #[test]
     fn match_path_rejects_mismatched_literal_segments() {
         assert_eq!(match_path("/orders/{id}", "/events/abc123"), None);
+    }
+
+    #[test]
+    fn param_name_returns_the_last_captured_segment() {
+        assert_eq!(param_name("/orders/{id}"), Some("id"));
+        assert_eq!(param_name("/a/{x}/b/{y}"), Some("y"));
+    }
+
+    #[test]
+    fn param_name_returns_none_for_a_literal_pattern() {
+        assert_eq!(param_name("/orders"), None);
+    }
+
+    #[test]
+    fn param_name_agrees_with_match_path_on_a_two_capture_pattern() {
+        let pattern = "/a/{x}/b/{y}";
+        let path = "/a/one/b/two";
+        assert_eq!(match_path(pattern, path), Some(Some("two".to_string())));
+        assert_eq!(param_name(pattern), Some("y"));
     }
 }

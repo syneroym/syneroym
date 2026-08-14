@@ -488,6 +488,7 @@ mod tests {
             collection: Some("docs".to_string()),
             topic: None,
             protocol: None,
+            public: false,
         }];
         let blob = provider();
         let mut written = BTreeSet::new();
@@ -512,6 +513,7 @@ mod tests {
             collection: Some("docs".to_string()),
             topic: None,
             protocol: None,
+            public: false,
         }];
         let blob = provider();
         let mut written = BTreeSet::new();
@@ -533,6 +535,7 @@ mod tests {
             collection: Some("root".to_string()),
             topic: None,
             protocol: None,
+            public: false,
         }];
         let blob = provider();
         let mut written = BTreeSet::new();
@@ -556,6 +559,7 @@ mod tests {
             collection: Some("my".to_string()),
             topic: None,
             protocol: None,
+            public: false,
         }];
         let blob = provider();
         let mut written = BTreeSet::new();
@@ -575,6 +579,7 @@ mod tests {
             collection: Some("docs".to_string()),
             topic: None,
             protocol: None,
+            public: false,
         }];
         let blob = provider();
         let mut written = BTreeSet::new();

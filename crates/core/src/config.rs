@@ -458,6 +458,14 @@ const fn default_abac_max_instructions() -> u64 {
 const fn default_abac_epoch_timeout_secs() -> u64 {
     2
 }
+/// A browser page issues several parallel requests against one service, and
+/// exhausting Wasmtime's pool is a hard error at instantiation, not a wait
+/// (M06A `D-A2-11`). Bounded per-service queuing keeps that failure mode
+/// local to the one overloaded service rather than starving every other
+/// caller's share of the global pool.
+const fn default_max_concurrent_guest_http_per_service() -> u32 {
+    4
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -517,6 +525,11 @@ pub struct AppSandboxRole {
     /// runs on the hot read path, not once per deploy. A starting point, to
     /// be re-tuned against a measured `criterion` bench.
     pub abac_epoch_timeout_secs: u64,
+    /// Concurrent guest HTTP requests one service may have in flight
+    /// (M06A A2). Enforced per service by a semaphore, sized by this field;
+    /// a request that outwaits `GUEST_HTTP_ADMISSION_TIMEOUT` for a permit
+    /// gets a 503, never the pool's own hard instantiation error.
+    pub max_concurrent_guest_http_per_service: u32,
     /// The guest proxy outbox worker's own tick. Recovery after an
     /// unreachable target returns is bounded by this, and nothing finer
     /// helps when the wait is for a peer to come back.
@@ -625,6 +638,7 @@ impl Default for AppSandboxRole {
             lifecycle_hook_epoch_timeout_secs: default_lifecycle_hook_epoch_timeout_secs(),
             abac_max_instructions: default_abac_max_instructions(),
             abac_epoch_timeout_secs: default_abac_epoch_timeout_secs(),
+            max_concurrent_guest_http_per_service: default_max_concurrent_guest_http_per_service(),
             queue_tick_secs: default_proxy_queue_tick_secs(),
             queue_max_attempts: default_proxy_queue_max_attempts(),
             queue_max_backoff_secs: default_proxy_queue_max_backoff_secs(),

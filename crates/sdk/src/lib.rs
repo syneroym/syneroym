@@ -305,6 +305,20 @@ fn generate_ephemeral_identity() -> Identity {
     Identity::generate().expect("failed to generate ephemeral SDK client identity")
 }
 
+/// Everything optional about a [`SyneroymClient::deploy_svc_wasm_with_options`]
+/// call (M06A A2, `D-A2-9`). Replaces the growing positional tail
+/// `deploy_svc_wasm_with_assets` had started: `assets` was A1's addition,
+/// `custom_config` is A2's, and a third would have meant a third method.
+#[derive(Debug, Default)]
+pub struct DeploySvcOptions {
+    pub registry_certificate: Option<SignedEndpointInfo>,
+    pub instance_certificate: Option<DelegationCertificate>,
+    pub assets: Option<AssetBundle>,
+    /// Verbatim `ServiceConfig.custom_config`. The reserved `http_routes`
+    /// key inside it is what declares HTTP routes.
+    pub custom_config: Option<String>,
+}
+
 impl SyneroymClient {
     #[must_use]
     pub fn new(service_id: String, registry_url: String) -> Self {
@@ -686,35 +700,37 @@ impl SyneroymClient {
         registry_certificate: Option<SignedEndpointInfo>,
         instance_certificate: Option<DelegationCertificate>,
     ) -> Result<()> {
-        self.deploy_svc_wasm_with_assets(
+        self.deploy_svc_wasm_with_options(
             service_id,
             interfaces,
             wasm_bytes,
-            registry_certificate,
-            instance_certificate,
-            None,
+            DeploySvcOptions { registry_certificate, instance_certificate, ..Default::default() },
         )
         .await
     }
 
-    /// [`deploy_svc_wasm`](Self::deploy_svc_wasm), plus a static asset
-    /// bundle (M06A A1) served straight from blob storage without
-    /// instantiating the component -- absent means what `deploy_svc_wasm`
-    /// already means, no assets.
-    pub async fn deploy_svc_wasm_with_assets(
+    /// [`deploy_svc_wasm`](Self::deploy_svc_wasm), plus everything optional
+    /// about a WASM deploy (M06A A2, `D-A2-9`): a static asset bundle
+    /// (M06A A1) and a `custom_config` JSON blob, whose reserved
+    /// `http_routes` key declares a service's HTTP route table (M3B
+    /// Slice 7, M06A A2's `target = "guest"`). Replaces
+    /// `deploy_svc_wasm_with_assets`, which had exactly one call site --
+    /// a third optional field would have made the next one a fourth
+    /// `deploy_svc_wasm_*` method instead of growing this one.
+    pub async fn deploy_svc_wasm_with_options(
         &self,
         service_id: String,
         interfaces: Vec<String>,
         wasm_bytes: Vec<u8>,
-        registry_certificate: Option<SignedEndpointInfo>,
-        instance_certificate: Option<DelegationCertificate>,
-        assets: Option<AssetBundle>,
+        options: DeploySvcOptions,
     ) -> Result<()> {
-        let registry_certificate = registry_certificate
+        let registry_certificate = options
+            .registry_certificate
             .map(|c| serde_json::to_string(&c))
             .transpose()
             .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
-        let instance_certificate = instance_certificate
+        let instance_certificate = options
+            .instance_certificate
             .map(|c| c.to_json())
             .transpose()
             .map_err(|e| anyhow::anyhow!("Failed to serialize instance certificate: {e}"))?;
@@ -722,13 +738,13 @@ impl SyneroymClient {
             config: ServiceConfig {
                 env: vec![],
                 args: vec![],
-                custom_config: None,
+                custom_config: options.custom_config,
                 quota: None,
                 schema: None,
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
-                assets,
+                assets: options.assets,
             },
             service_type: ServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),

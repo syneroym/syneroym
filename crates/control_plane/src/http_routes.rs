@@ -12,7 +12,8 @@
 //! avoids adding new WIT surface for this: `crates/router/src/route_handler/
 //! http.rs` looks routes up by `service_id` at request time to decide how a
 //! given HTTP verb+path bridges onto `data-layer`/`messaging`/a registered
-//! stream protocol.
+//! stream protocol, or (M06A A2) reaches the deployed component's own
+//! `syneroym:http/incoming-handler#handle-request` export.
 
 use serde::Deserialize;
 use syneroym_core::http_routes::HttpRoute;
@@ -78,8 +79,26 @@ fn validate_route(route: &HttpRoute) -> Result<(), String> {
             }
             Ok(())
         }
+        ("guest", "handle-request") => Ok(()),
+        ("guest", other) => Err(format!(
+            "http_routes entry `{} {}` has target=guest with unsupported operation `{other}`; the \
+             only guest operation is `handle-request`",
+            route.method, route.path
+        )),
         _ => Ok(()),
+    }?;
+
+    // M06A D-A2-7: `public` does nothing outside a guest route, so accepting
+    // it there would be exactly the silently-dead configuration this
+    // module's duplicate-route check already exists to prevent.
+    if route.public && route.target != "guest" {
+        return Err(format!(
+            "http_routes entry `{} {}` sets `public` on target={}; `public` is only meaningful \
+             for target=guest",
+            route.method, route.path, route.target
+        ));
     }
+    Ok(())
 }
 
 /// Rejects a `Vec<HttpRoute>` containing two entries for the same
@@ -177,6 +196,48 @@ mod tests {
             ]
         });
         assert!(parse_http_routes(&json).unwrap_err().contains("PUT or POST"));
+    }
+
+    #[test]
+    fn guest_route_with_handle_request_operation_is_accepted() {
+        let json = serde_json::json!({
+            "http_routes": [
+                {"method": "GET", "path": "/echo", "target": "guest", "operation": "handle-request"}
+            ]
+        });
+        assert!(parse_http_routes(&json).is_ok());
+    }
+
+    #[test]
+    fn guest_route_with_unsupported_operation_is_rejected() {
+        let json = serde_json::json!({
+            "http_routes": [
+                {"method": "GET", "path": "/echo", "target": "guest", "operation": "get"}
+            ]
+        });
+        assert!(parse_http_routes(&json).unwrap_err().contains("handle-request"));
+    }
+
+    #[test]
+    fn public_true_on_a_non_guest_target_is_rejected() {
+        let json = serde_json::json!({
+            "http_routes": [
+                {"method": "GET", "path": "/orders/{id}", "target": "data-layer",
+                 "operation": "get", "collection": "orders", "public": true}
+            ]
+        });
+        assert!(parse_http_routes(&json).unwrap_err().contains("public"));
+    }
+
+    #[test]
+    fn public_true_on_a_guest_target_is_accepted() {
+        let json = serde_json::json!({
+            "http_routes": [
+                {"method": "GET", "path": "/echo", "target": "guest",
+                 "operation": "handle-request", "public": true}
+            ]
+        });
+        assert!(parse_http_routes(&json).is_ok());
     }
 
     #[test]
