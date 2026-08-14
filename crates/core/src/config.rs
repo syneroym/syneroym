@@ -420,6 +420,32 @@ fn default_memory_limit() -> String {
 const fn default_max_concurrent_instances() -> u32 {
     10
 }
+/// Deliberately generous: `100 * default_max_concurrent_instances() (10) ==
+/// 1000`, i.e. this reproduces Wasmtime's own pre-existing pool-wide default
+/// (`PoolingAllocationConfig`'s `total_core_instances`/`total_memories`/
+/// `total_tables` all default to 1000) for a role that only sets
+/// `max_concurrent_instances` and leaves these three at their defaults --
+/// deliberately *not* narrowed to a workload-specific number here (a
+/// deployed component's real shape isn't known at this layer), so an
+/// existing config that never mentions these new fields keeps behaving
+/// exactly as it did before they existed. It still adds real, if generous,
+/// protection: an explicit, enforced per-component ceiling in place of
+/// Wasmtime's own unbounded (`u32::MAX`) per-component default. Individual
+/// deployments/tests that know their actual component shape (e.g.
+/// `crates/router/tests/proxy_dispatch.rs`'s `test_substrate_config`, which
+/// measured its real fixtures at 3 core modules each) should override these
+/// with a tighter, validated number -- see
+/// `AppSandboxEngine`'s `a_component_at_the_configured_per_component_
+/// resource_max_still_instantiates` test for how to validate one.
+const fn default_max_core_instances_per_component() -> u32 {
+    100
+}
+const fn default_max_memories_per_component() -> u32 {
+    100
+}
+const fn default_max_tables_per_component() -> u32 {
+    100
+}
 const fn default_dispatch_epoch_timeout_secs() -> u64 {
     5
 }
@@ -441,6 +467,18 @@ pub struct AppSandboxRole {
     pub cpu_limit: u32,
     pub memory_limit: String,
     pub max_concurrent_instances: u32,
+    /// Per-component ceiling on embedded core-module instances (e.g. the
+    /// guest module plus a WASI adapter/fixup shim), Wasmtime linear
+    /// memories, and tables, respectively. Wasmtime's pooling allocator
+    /// leaves these unbounded per component by default, so the *global*
+    /// pool totals (`max_concurrent_instances` times each of these) are the
+    /// only thing standing between a component and the whole pool -- a
+    /// component that transitively needs more of one of these than its
+    /// declared max fails to instantiate with a clear Wasmtime error at
+    /// deploy/dispatch time rather than starving its neighbors silently.
+    pub max_core_instances_per_component: u32,
+    pub max_memories_per_component: u32,
+    pub max_tables_per_component: u32,
     pub default_max_instructions: Option<u64>,
     pub default_max_memory_bytes: Option<u64>,
     /// Wall-clock budget (Wasmtime epoch interruption) for an ordinary
@@ -578,6 +616,9 @@ impl Default for AppSandboxRole {
             cpu_limit: default_cpu_limit(),
             memory_limit: default_memory_limit(),
             max_concurrent_instances: default_max_concurrent_instances(),
+            max_core_instances_per_component: default_max_core_instances_per_component(),
+            max_memories_per_component: default_max_memories_per_component(),
+            max_tables_per_component: default_max_tables_per_component(),
             default_max_instructions: Some(10_000_000_000),
             default_max_memory_bytes: Some(256 * 1024 * 1024),
             dispatch_epoch_timeout_secs: default_dispatch_epoch_timeout_secs(),

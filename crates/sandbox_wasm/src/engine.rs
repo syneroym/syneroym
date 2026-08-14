@@ -330,13 +330,34 @@ impl AppSandboxEngine {
         }
 
         // Read these limits from `config` based on the hardware tier
-        let (max_instances, max_memory) = if let Some(sandbox_config) = &config.roles.app_sandbox {
-            (sandbox_config.max_concurrent_instances, sandbox_config.memory_limit_bytes() as usize)
+        let (
+            max_instances,
+            max_memory,
+            max_core_instances_per_component,
+            max_memories_per_component,
+            max_tables_per_component,
+        ) = if let Some(sandbox_config) = &config.roles.app_sandbox {
+            (
+                sandbox_config.max_concurrent_instances,
+                sandbox_config.memory_limit_bytes() as usize,
+                sandbox_config.max_core_instances_per_component,
+                sandbox_config.max_memories_per_component,
+                sandbox_config.max_tables_per_component,
+            )
         } else {
-            (10, 128 * 1024 * 1024)
+            // 100 * 10 == 1000, matching Wasmtime's own pool-wide
+            // default -- see `AppSandboxRole`'s
+            // `default_max_core_instances_per_component` doc comment.
+            (10, 128 * 1024 * 1024, 100, 100, 100)
         };
 
-        let engine = Self::build_wasm_engine(Some(max_instances), Some(max_memory))?;
+        let engine = Self::build_wasm_engine(
+            Some(max_instances),
+            Some(max_memory),
+            max_core_instances_per_component,
+            max_memories_per_component,
+            max_tables_per_component,
+        )?;
         let linker = Self::build_wasm_linker(&engine)?;
 
         // Component cache
@@ -471,10 +492,22 @@ impl AppSandboxEngine {
         Ok(app_engine)
     }
 
-    /// Helper to build the Wasmtime Engine
+    /// Helper to build the Wasmtime Engine. `max_core_instances_per_component`/
+    /// `max_memories_per_component`/`max_tables_per_component` bound how much
+    /// of each resource a *single* component may transitively use (Wasmtime
+    /// leaves these unbounded per component by default); the pool's global
+    /// totals are then `max_instances` times each of these, so a component
+    /// that stays within its declared per-component budget is always
+    /// guaranteed a slot regardless of how many other components are
+    /// concurrently live, and one that doesn't fails to instantiate with a
+    /// clear Wasmtime error rather than silently starving its neighbors'
+    /// share of an unbounded shared pool.
     pub fn build_wasm_engine(
         max_instances: Option<u32>,
         max_memory: Option<usize>,
+        max_core_instances_per_component: u32,
+        max_memories_per_component: u32,
+        max_tables_per_component: u32,
     ) -> Result<Engine> {
         let mut wasmtime_config = Config::new();
         wasmtime_config.wasm_component_model(true);
@@ -486,22 +519,48 @@ impl AppSandboxEngine {
             let mut pooling_config = PoolingAllocationConfig::default();
             pooling_config.total_component_instances(instances);
             pooling_config.max_memory_size(memory);
+            pooling_config.max_core_instances_per_component(max_core_instances_per_component);
+            pooling_config.max_memories_per_component(max_memories_per_component);
+            pooling_config.max_tables_per_component(max_tables_per_component);
             // `total_memories`/`total_core_instances`/`total_tables` are
             // *separate* pooling-allocator knobs from `total_component_instances`
-            // -- Wasmtime defaults each to 1000 regardless of it. The memory
-            // pool's actual address-space reservation is
+            // -- Wasmtime defaults each to 1000 regardless of it, and (unlike
+            // the `max_..._per_component` limits just above) bound the whole
+            // pool's aggregate, not any one component's share of it. The
+            // memory pool's actual address-space reservation is
             // `total_memories * slot_bytes` (`MemoryPool::new`), so leaving
             // `total_memories` at its default means `max_memory_size` above
             // never shrinks the real reservation -- it stays governed by
             // Wasmtime's own defaults (1000 slots) no matter how small
-            // `instances`/`memory` are configured. A component may embed a
-            // handful of core instances (guest module, WASI adapter shim),
-            // each with its own memory/table, so give some headroom above a
-            // strict 1:1 ratio with `instances`.
-            let pool_slots = instances.saturating_mul(4).max(instances);
-            pooling_config.total_memories(pool_slots);
-            pooling_config.total_core_instances(pool_slots);
-            pooling_config.total_tables(pool_slots);
+            // `instances`/`memory` are configured. Each total is exactly
+            // `instances * max_..._per_component`: enough for every
+            // concurrently-live component to use its full declared budget at
+            // once, and no more.
+            let total_core_instances =
+                instances.checked_mul(max_core_instances_per_component).with_context(|| {
+                    format!(
+                        "app_sandbox role: max_concurrent_instances ({instances}) * \
+                         max_core_instances_per_component ({max_core_instances_per_component}) \
+                         overflows u32"
+                    )
+                })?;
+            let total_memories =
+                instances.checked_mul(max_memories_per_component).with_context(|| {
+                    format!(
+                        "app_sandbox role: max_concurrent_instances ({instances}) * \
+                         max_memories_per_component ({max_memories_per_component}) overflows u32"
+                    )
+                })?;
+            let total_tables =
+                instances.checked_mul(max_tables_per_component).with_context(|| {
+                    format!(
+                        "app_sandbox role: max_concurrent_instances ({instances}) * \
+                         max_tables_per_component ({max_tables_per_component}) overflows u32"
+                    )
+                })?;
+            pooling_config.total_core_instances(total_core_instances);
+            pooling_config.total_memories(total_memories);
+            pooling_config.total_tables(total_tables);
             wasmtime_config
                 .allocation_strategy(InstanceAllocationStrategy::Pooling(pooling_config));
         }
@@ -2333,7 +2392,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_interfaces() {
-        let engine = AppSandboxEngine::build_wasm_engine(None, None).unwrap();
+        let engine = AppSandboxEngine::build_wasm_engine(None, None, 0, 0, 0).unwrap();
         let linker = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
 
         let key_store = Arc::new(KeyStore::new());
@@ -2440,7 +2499,8 @@ mod tests {
 )
 "#;
         let engine =
-            AppSandboxEngine::build_wasm_engine(Some(10), Some(128 * 1024 * 1024)).unwrap();
+            AppSandboxEngine::build_wasm_engine(Some(10), Some(128 * 1024 * 1024), 4, 4, 4)
+                .unwrap();
         let linker = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
 
         let app_engine = AppSandboxEngine {
@@ -2511,8 +2571,73 @@ mod tests {
         );
     }
 
+    /// Reviewer-requested boundary test (PR #136 review): a component that
+    /// uses *exactly* `max_core_instances_per_component` core-module
+    /// instantiations -- and, since each declares its own memory and table,
+    /// exactly `max_memories_per_component`/`max_tables_per_component` too
+    /// -- must still instantiate successfully, proving `build_wasm_engine`'s
+    /// per-component pooling limits don't spuriously reject a component that
+    /// stays within its declared budget. One core module over that limit
+    /// must fail clearly instead (not silently, and not by exhausting the
+    /// pool's global totals -- `max_instances` here is large enough that the
+    /// global budget alone could never be the reason), proving the ceiling
+    /// is a real, enforced contract and not just documentation.
+    #[tokio::test]
+    async fn a_component_at_the_configured_per_component_resource_max_still_instantiates() {
+        fn n_module_component_wat(n: u32) -> String {
+            let mut wat = String::from("(component\n");
+            for i in 0..n {
+                wat += &format!(
+                    "  (core module $m{i}\n    (memory (export \"mem\") 1)\n    (table (export \
+                     \"tbl\") 1 funcref)\n    (func (export \"noop\"))\n  )\n"
+                );
+            }
+            for i in 0..n {
+                wat += &format!("  (core instance $i{i} (instantiate $m{i}))\n");
+            }
+            wat += "  (func $noop (canon lift (core func $i0 \"noop\")))\n";
+            wat += "  (instance $interface (export \"noop\" (func $noop)))\n";
+            wat += "  (export \"test-interface\" (instance $interface))\n)";
+            wat
+        }
+
+        const PER_COMPONENT_MAX: u32 = 4;
+
+        // `max_instances: 10` keeps the pool's global totals (40 of each
+        // resource) far above what either component below needs, so a
+        // failure can only come from the per-component ceiling itself.
+        let engine = AppSandboxEngine::build_wasm_engine(
+            Some(10),
+            Some(16 * 1024 * 1024),
+            PER_COMPONENT_MAX,
+            PER_COMPONENT_MAX,
+            PER_COMPONENT_MAX,
+        )
+        .unwrap();
+        let linker = Linker::<()>::new(&engine);
+
+        let at_max = n_module_component_wat(PER_COMPONENT_MAX);
+        let component = Component::new(&engine, &at_max)
+            .expect("a component using exactly the declared per-component max must compile");
+        let mut store = Store::new(&engine, ());
+        linker
+            .instantiate_async(&mut store, &component)
+            .await
+            .expect("a component at the declared per-component max must still instantiate");
+
+        let over_max = n_module_component_wat(PER_COMPONENT_MAX + 1);
+        let msg = match Component::new(&engine, &over_max) {
+            Ok(_) => panic!("a component exceeding the declared per-component max must not fit"),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            msg.contains("exceeds the configured maximum"),
+            "expected a clear per-component-limit error, got: {msg}"
+        );
+    }
+
     fn test_app_engine(storage_provider: Arc<dyn StorageProvider>) -> AppSandboxEngine {
-        let engine = AppSandboxEngine::build_wasm_engine(None, None).unwrap();
+        let engine = AppSandboxEngine::build_wasm_engine(None, None, 0, 0, 0).unwrap();
         let linker = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
         AppSandboxEngine {
             blobs_dir: env::temp_dir(),
