@@ -99,7 +99,20 @@ would be coupled to unrelated behaviour).
 `deploy_svc_wasm` is unchanged, so none of its seven existing call sites
 needed editing). Only wired for `--wasm`: TCP/container services already run
 their own web server outside the substrate, which is exactly the thing A1
-exists to stop being the only way to serve a web app.
+exists to stop being the only way to serve a web app. **Enforced substrate-
+side, not just at this one CLI flag** (found in post-implementation review,
+2026-08-14): `deploy_with_context` (`crates/control_plane/src/service/
+orchestration.rs`) now rejects any manifest declaring `assets` for a `Tcp`/
+`Container` service before anything fallible runs. A `Tcp`/`Container`
+service's endpoint is `SubstrateEndpoint::TcpHostPort`, which the router's
+`dispatch.rs` unconditionally routes to raw `io::copy_bidirectional`
+passthrough regardless of what the client actually sends -- the
+asset-serving HTTP path is structurally unreachable for one, so accepting
+`assets` there previously meant silently unpacking and storing a bundle
+that could never be served. Every deploy path funnels through this one
+check (the single-service CLI, `roymctl supervisor submit`'s multi-service
+plans, and any other JSON-RPC caller), not only `roymctl svc deploy`'s own
+`requires = "wasm"` clap constraint.
 
 ### Scoped deviations from the plan (recorded, not silent)
 
@@ -158,15 +171,18 @@ All four are also documented inline where the deviation lives.
   still bounded by the unpacked cap, a duplicate-path rejection,
   quota-failure rollback, `written`-on-the-error-path, and `delete_hashes` as
   a pure set difference in both directions.
-- `crates/control_plane/src/service/orchestration.rs`: 3 integration tests —
+- `crates/control_plane/src/service/orchestration.rs`: 5 integration tests —
   deploy/undeploy round-trip (registry entry populated, blob readable back,
   manifest blob deleted on undeploy); a redeploy that shares some files
   with the prior generation (unchanged blob survives, dropped file's blob is
-  collected); and a redeploy that fails at TCP endpoint registration (after
-  the asset block has already written the new generation's blobs), proving
-  the backward rollback through a real failure rather than `delete_hashes`
-  called directly as pure set arithmetic — the still-live old generation's
-  manifest and blobs survive, the failed attempt's own blob does not.
+  collected); a redeploy that fails at WASM endpoint registration (after
+  the asset block has already written the new generation's blobs and the
+  component itself compiled), proving the backward rollback through a real
+  failure rather than `delete_hashes` called directly as pure set
+  arithmetic — the still-live old generation's manifest and blobs survive,
+  the failed attempt's own blob does not; and two tests asserting a `Tcp`
+  or `Container` service's deploy is rejected outright when it declares an
+  asset bundle, before anything fallible runs.
 - `crates/substrate/tests/static_assets_e2e.rs`: 5 end-to-end tests over a
   real Iroh QUIC connection — directory index / ETag / 304 / HEAD /
   Cache-Control-by-type / zero instantiation delta; cross-service isolation;

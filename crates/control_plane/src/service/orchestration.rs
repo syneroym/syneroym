@@ -1632,6 +1632,32 @@ impl ControlPlaneService {
             }
         }
 
+        // M06A A1: an asset bundle is only reachable through a `Wasm`
+        // service's `NativeService` HTTP path (`try_handle_asset`,
+        // `crates/router/src/route_handler/http.rs`) -- a `Tcp`/`Container`
+        // service's endpoint is registered as `SubstrateEndpoint::
+        // TcpHostPort`, which `dispatch.rs`'s `(_, TcpHostPort { .. })` arm
+        // unconditionally routes to raw `io::copy_bidirectional` passthrough
+        // regardless of what protocol the client actually speaks -- the
+        // asset-serving HTTP bridge is never reached for one, even when the
+        // client sends literal HTTP bytes. Without this check, a `Tcp`/
+        // `Container` deploy with `assets` set unpacked and stored a bundle
+        // that could never be served, silently: a wasted blob write with no
+        // signal to the caller. Also matches the CLI's existing
+        // `--asset-visibility requires --assets requires --wasm` chain
+        // (`apps/roymctl/src/commands/svc.rs`) and this fact from
+        // `status.md`: `Tcp`/`Container` services already run their own web
+        // server outside the substrate, which is exactly what A1 exists to
+        // stop being the only way to serve a web app -- they have no need
+        // for this feature, not just no support for it yet.
+        if manifest.config.assets.is_some() && service_type != AppServiceType::Wasm {
+            return Err(format!(
+                "service '{service_id}': an asset bundle is only servable for a 'Wasm' service; a \
+                 '{service_type:?}' service's endpoint is raw TCP passthrough, which never \
+                 reaches the asset-serving HTTP path"
+            ));
+        }
+
         // FDAE policy: independent of `custom_config` (unlike `schema`
         // above, which is only resolved when a `custom_config` is present) --
         // deliberately not nested inside the block above, since a policy has
@@ -8358,6 +8384,27 @@ mod tests {
         assert!(http_routes.get(&service_id).is_none());
     }
 
+    /// A real, trivial WASM component's WAT text, encoded as bytes -- the
+    /// same one `test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_policy`
+    /// uses, so `deploy_wasm_service` itself succeeds without needing the
+    /// `greeter`/`proxy-test` test-fixture artifacts (which may not be
+    /// built) for tests that only need *a* valid component, not any
+    /// particular one -- e.g. an asset-bundle test, where the component
+    /// itself is incidental to what's under test.
+    fn minimal_wasm_component() -> Vec<u8> {
+        r#"
+(component
+  (core module $m (func (export "noop")))
+  (core instance $i (instantiate $m))
+  (func $noop (canon lift (core func $i "noop")))
+  (instance $interface (export "greet" (func $noop)))
+  (export "test-interface" (instance $interface))
+)
+"#
+        .as_bytes()
+        .to_vec()
+    }
+
     /// A minimal gzip-compressed tar archive, one entry per `(path, bytes)`
     /// pair -- the same shape `syneroym_control_plane::assets`' own unit
     /// tests build, duplicated here rather than exposed as a `pub`
@@ -8450,7 +8497,16 @@ mod tests {
                     visibility: Some(WitVisibility::Public),
                 }),
             },
-            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            // An asset bundle is only servable for a `Wasm` service (a
+            // `Tcp`/`Container` endpoint is raw passthrough and never
+            // reaches the asset-serving HTTP path) -- `minimal_wasm_component`
+            // is a real, trivial component so `deploy_wasm_service` itself
+            // succeeds.
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(minimal_wasm_component()),
+                hash: None,
+                interfaces: vec!["asset-svc-interface".to_string()],
+            }),
             registry_certificate: None,
             instance_certificate: None,
         };
@@ -8550,7 +8606,11 @@ mod tests {
                     visibility: Some(WitVisibility::Public),
                 }),
             },
-            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(minimal_wasm_component()),
+                hash: None,
+                interfaces: vec!["asset-redeploy-svc-interface".to_string()],
+            }),
             registry_certificate: None,
             instance_certificate: None,
         };
@@ -8587,12 +8647,15 @@ mod tests {
     /// set arithmetic. `rollback_asset_bundle` is reached from five
     /// separate failure branches in `deploy_with_context`; this exercises
     /// the one already covered for FDAE-policy/config-generation rollback
-    /// by `test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy`
-    /// (same `FailingEndpointStorage` fixture, same failure point -- TCP
-    /// endpoint registration, which runs after the asset block has already
-    /// written the new generation's blobs), but proves the asset half: the
-    /// failed redeploy's own writes are gone, *and* every blob the
-    /// still-live previous generation references survives.
+    /// by `test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_policy`
+    /// (same `FailingEndpointStorage` fixture and `minimal_wasm_component`,
+    /// same failure point -- `register_wasm_endpoints`, which runs after
+    /// the asset block has already written the new generation's blobs, and
+    /// after the component itself compiled successfully), but proves the
+    /// asset half: the failed redeploy's own writes are gone, *and* every
+    /// blob the still-live previous generation references survives.
+    /// `Wasm`, not `Tcp`, since an asset bundle is only accepted for a
+    /// `Wasm` service as of the same review pass that added this test.
     #[tokio::test]
     async fn test_asset_bundle_rollback_on_a_real_deploy_failure_keeps_the_old_generation() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -8649,7 +8712,7 @@ mod tests {
         .await
         .unwrap();
 
-        let service_id = "asset-tcp-rollback-svc".to_string();
+        let service_id = "asset-wasm-rollback-svc".to_string();
         let caller = node_wide_caller("test-caller");
 
         let manifest = |archive: Vec<u8>, interface_name: &str| DeployManifest {
@@ -8668,12 +8731,10 @@ mod tests {
                     visibility: Some(WitVisibility::Public),
                 }),
             },
-            service_type: WitServiceType::Tcp(TcpManifest {
-                endpoints: vec![NetworkEndpoint {
-                    interface_name: interface_name.to_string(),
-                    host: "127.0.0.1".to_string(),
-                    port: 9002,
-                }],
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(minimal_wasm_component()),
+                hash: None,
+                interfaces: vec![interface_name.to_string()],
             }),
             registry_certificate: None,
             instance_certificate: None,
@@ -8696,13 +8757,13 @@ mod tests {
         // Redeploy with a *different* asset bundle (different content, so a
         // different blob hash) plus an interface name the registry is
         // rigged to reject -- the asset block runs and writes gen 1's blob
-        // successfully, then `deploy_tcp_service`'s endpoint registration
-        // fails, well after the asset write.
+        // successfully, the component itself compiles fine, and then
+        // `register_wasm_endpoints` fails, well after the asset write.
         let second_archive = make_asset_archive(&[("index.html", b"gen1 -- must not survive")]);
         let result = service
             .deploy(service_id.clone(), manifest(second_archive, "fails-to-register"), &caller)
             .await;
-        assert!(result.is_err(), "TCP endpoint registration must fail: {result:?}");
+        assert!(result.is_err(), "endpoint registration must fail: {result:?}");
         assert!(result.unwrap_err().contains("Endpoint registration failed"));
 
         let entry = asset_registry.get(&service_id).expect(
@@ -8740,6 +8801,192 @@ mod tests {
         );
 
         service.undeploy(service_id.clone(), 0, &caller).await.unwrap();
+    }
+
+    /// M06A A1: an asset bundle is only reachable through a `Wasm`
+    /// service's HTTP path -- a `Tcp`/`Container` endpoint is registered as
+    /// `SubstrateEndpoint::TcpHostPort`, which the router's `dispatch.rs`
+    /// unconditionally routes to raw passthrough regardless of what the
+    /// client actually sends, so an asset bundle attached to one is
+    /// silently unreachable dead data. Rejected at deploy instead, before
+    /// the asset block (or anything else fallible) has run -- asserted by
+    /// checking nothing was written, not just that the call errored.
+    #[tokio::test]
+    async fn test_asset_bundle_is_rejected_for_a_tcp_service() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+        let asset_registry: AssetRegistry = Arc::new(DashMap::new());
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider.clone(),
+            messaging_broker,
+            native_dispatch,
+            http_routes,
+            asset_registry.clone(),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "tcp-with-assets-svc".to_string();
+        let archive = make_asset_archive(&[("index.html", b"unreachable")]);
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+                assets: Some(WitAssetBundle {
+                    archive: ArtifactSource::Binary(archive),
+                    hash: None,
+                    visibility: Some(WitVisibility::Public),
+                }),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        let caller = node_wide_caller("test-caller");
+        let err = service
+            .deploy(service_id.clone(), manifest, &caller)
+            .await
+            .expect_err("a Tcp service must not accept an asset bundle");
+        assert!(err.contains("only servable for a 'Wasm' service"), "{err}");
+        assert!(
+            asset_registry.get(&service_id).is_none(),
+            "rejected at validation, before the asset registry is ever touched"
+        );
+    }
+
+    /// Same as `test_asset_bundle_is_rejected_for_a_tcp_service`, for a
+    /// `Container` service -- `deploy_container_service` also registers a
+    /// `SubstrateEndpoint::TcpHostPort` (`crates/control_plane/src/service/
+    /// orchestration.rs`'s own `deploy_container_service`), so it is raw
+    /// passthrough for the identical reason.
+    #[tokio::test]
+    async fn test_asset_bundle_is_rejected_for_a_container_service() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+        let asset_registry: AssetRegistry = Arc::new(DashMap::new());
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider.clone(),
+            messaging_broker,
+            native_dispatch,
+            http_routes,
+            asset_registry.clone(),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "container-with-assets-svc".to_string();
+        let archive = make_asset_archive(&[("index.html", b"unreachable")]);
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+                assets: Some(WitAssetBundle {
+                    archive: ArtifactSource::Binary(archive),
+                    hash: None,
+                    visibility: Some(WitVisibility::Public),
+                }),
+            },
+            service_type: WitServiceType::Container(ContainerManifest {
+                source: ArtifactSource::Url("docker.io/library/nginx:1.27".to_string()),
+                hash: None,
+                image: "docker.io/library/nginx:1.27".to_string(),
+                ports: vec![],
+                volumes: vec![],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        let caller = node_wide_caller("test-caller");
+        let err = service
+            .deploy(service_id.clone(), manifest, &caller)
+            .await
+            .expect_err("a Container service must not accept an asset bundle");
+        assert!(err.contains("only servable for a 'Wasm' service"), "{err}");
+        assert!(asset_registry.get(&service_id).is_none());
     }
 
     fn owner_test_manifest() -> DeployManifest {
