@@ -36,6 +36,15 @@ use tokio::{
 /// out of scope here) avoids it; cross-binary parallelism (separate
 /// `cargo test --test` processes, each with its own copy of this static) is
 /// unaffected.
+///
+/// The guard this returns is held by `SubstrateTestContext` for its whole
+/// lifetime (a struct field, dropped only at `teardown`/drop), not just
+/// through `setup` -- so, incidentally, no two tests in one binary ever
+/// have a substrate live at the same time either, not only never mid-setup.
+/// At least one consuming file (`static_assets_e2e.rs`'s `counter_value`)
+/// now depends on that full-lifetime property, not just the port race, to
+/// read a process-global metrics counter safely -- narrowing this lock back
+/// to just the setup race would silently reopen that.
 static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 pub struct SubstrateTestContext {

@@ -6,19 +6,21 @@ use std::{
 use syneroym_app_orchestration::{
     DEFAULT_BINDING_CACHE_TTL_MS,
     models::{
-        DeploymentPlan, DocumentRef, HealthCheck, LogicalServiceName, MemberRef, PlannedService,
-        RotationPolicy, ServiceId, ServiceType, TopologyMode,
+        AssetBundle, DeploymentPlan, DocumentRef, HealthCheck, LogicalServiceName, MemberRef,
+        PlannedService, RotationPolicy, ServiceId, ServiceType, TopologyMode,
+        Visibility as ModelVisibility,
     },
 };
 use syneroym_core::{deploy_docs, util};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    AppContext as WitAppContext, ArtifactSource, ContainerManifest, ContainerPortMapping,
-    ContainerVolumeFile, ContainerVolumeMapping, DependencyBinding as WitDependencyBinding,
-    DeployManifest, DeploymentPlan as WitDeploymentPlan, DocumentSource,
-    HealthCheck as WitHealthCheck, HttpProbe as WitHttpProbe, NetworkEndpoint,
+    AppContext as WitAppContext, ArtifactSource, AssetBundle as WitAssetBundle, ContainerManifest,
+    ContainerPortMapping, ContainerVolumeFile, ContainerVolumeMapping,
+    DependencyBinding as WitDependencyBinding, DeployManifest, DeploymentPlan as WitDeploymentPlan,
+    DocumentSource, HealthCheck as WitHealthCheck, HttpProbe as WitHttpProbe, NetworkEndpoint,
     PlannedService as WitPlannedService, ResourceQuota, RotationPolicy as WitRotationPolicy,
     RpcProbe as WitRpcProbe, ServiceConfig as WitServiceConfig, ServiceType as WitServiceType,
-    TcpManifest, TcpProbe as WitTcpProbe, TopologyMode as WitTopologyMode, WasmManifest,
+    TcpManifest, TcpProbe as WitTcpProbe, TopologyMode as WitTopologyMode,
+    Visibility as WitVisibility, WasmManifest,
 };
 
 /// Marks a `ServiceConfig.source` value as hex-encoded artifact bytes
@@ -80,6 +82,42 @@ fn map_document_ref(doc: &DocumentRef, field_name: &str) -> anyhow::Result<Docum
         }
         DocumentRef::Remote { remote_path } => Ok(DocumentSource::Path(remote_path.clone())),
     }
+}
+
+/// Resolves a `source`-shaped field into a wire `ArtifactSource`: a URL
+/// passes through, `INLINE_ARTIFACT_PREFIX`-prefixed content decodes as
+/// hex-encoded bytes (D-A5-7's remote-submit inlining), and anything else is
+/// read as a local path off this process's working directory. Shared by the
+/// Wasm component's `source` and M06A A1's asset bundle `archive` -- the two
+/// fields carrying this same three-way shape.
+fn resolve_artifact_source(source: &str, what: &str) -> anyhow::Result<ArtifactSource> {
+    if source.starts_with("http://") || source.starts_with("https://") {
+        Ok(ArtifactSource::Url(source.to_string()))
+    } else if let Some(hex_bytes) = source.strip_prefix(INLINE_ARTIFACT_PREFIX) {
+        let bytes = hex::decode(hex_bytes)
+            .map_err(|e| anyhow::anyhow!("invalid inline {what} encoding: {e}"))?;
+        Ok(ArtifactSource::Binary(bytes))
+    } else {
+        let path = PathBuf::from(source);
+        let bytes = util::read_local_artifact(&path)?;
+        Ok(ArtifactSource::Binary(bytes))
+    }
+}
+
+/// Maps the app model's `AssetBundle` (M06A A1) to the wire record. Absent
+/// `visibility` is never produced here -- the model field already defaults
+/// to `Private` at parse time (`#[serde(default)]`), so the wire always
+/// carries an explicit value.
+fn map_asset_bundle(bundle: &AssetBundle, what: &str) -> anyhow::Result<WitAssetBundle> {
+    Ok(WitAssetBundle {
+        archive: resolve_artifact_source(&bundle.archive, what)?,
+        hash: bundle.hash.clone(),
+        visibility: Some(match bundle.visibility {
+            ModelVisibility::Public => WitVisibility::Public,
+            ModelVisibility::Internal => WitVisibility::Internal,
+            ModelVisibility::Private => WitVisibility::Private,
+        }),
+    })
 }
 
 /// Maps the app model's `TopologyMode` to the wire `topology-mode` variant
@@ -188,36 +226,29 @@ pub fn map_deployment_plan_to_wit(
                 .map(|f| map_document_ref(&f.policy, "fdae policy"))
                 .transpose()?,
             health_check: svc.config.health_check.as_ref().map(map_health_check),
+            assets: svc
+                .config
+                .assets
+                .as_ref()
+                .map(|a| {
+                    map_asset_bundle(a, &format!("asset bundle archive for {}", svc.service_id))
+                })
+                .transpose()?,
         };
 
         let service_type = match svc.config.service_type {
             ServiceType::Wasm => {
-                let source = if svc.config.source.starts_with("http://")
-                    || svc.config.source.starts_with("https://")
-                {
-                    ArtifactSource::Url(svc.config.source.clone())
-                } else if let Some(hex_bytes) =
-                    svc.config.source.strip_prefix(INLINE_ARTIFACT_PREFIX)
-                {
-                    // A supervisor's `submit` runs on a remote substrate
-                    // with no access to the operator's local filesystem
-                    // (D-A5-7), so `roymctl supervisor submit` inlines the
-                    // artifact into `source` itself before sending the
-                    // plan -- this branch is what a *substrate-side*
-                    // mapping call (the supervisor's own apply path) then
-                    // decodes, never reading a local path at all.
-                    let bytes = hex::decode(hex_bytes).map_err(|e| {
-                        anyhow::anyhow!(
-                            "invalid inline artifact encoding for {}: {e}",
-                            svc.service_id
-                        )
-                    })?;
-                    ArtifactSource::Binary(bytes)
-                } else {
-                    let path = PathBuf::from(&svc.config.source);
-                    let bytes = util::read_local_artifact(&path)?;
-                    ArtifactSource::Binary(bytes)
-                };
+                // A supervisor's `submit` runs on a remote substrate with no
+                // access to the operator's local filesystem (D-A5-7), so
+                // `roymctl supervisor submit` inlines the artifact into
+                // `source` itself before sending the plan -- the
+                // `INLINE_ARTIFACT_PREFIX` arm below is what a
+                // *substrate-side* mapping call (the supervisor's own apply
+                // path) then decodes, never reading a local path at all.
+                let source = resolve_artifact_source(
+                    &svc.config.source,
+                    &format!("wasm artifact for {}", svc.service_id),
+                )?;
                 WitServiceType::Wasm(WasmManifest {
                     source,
                     hash: svc.config.hash.clone(),
@@ -397,6 +428,7 @@ mod tests {
             rotation_policy: Default::default(),
             fdae: None,
             health_check: None,
+            assets: None,
         }
     }
 

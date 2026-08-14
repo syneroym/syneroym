@@ -114,6 +114,7 @@ async fn test_route_handler(service_id: &str) -> RouteHandler {
         messaging_broker,
         native_dispatch: NativeDispatchRegistry::default(),
         http_routes,
+        assets: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
     };

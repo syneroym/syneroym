@@ -25,6 +25,7 @@ use syneroym_app_orchestration::{
     compensated_operation,
 };
 use syneroym_core::{
+    asset_manifest::ServiceAssets,
     deploy_docs,
     dht_registry::SignedEndpointInfo,
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
@@ -45,13 +46,13 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
     DeployManifest, DeployedService, DeploymentPlan, DocumentSource, HealthCheck as WitHealthCheck,
     InstanceIdentity, InstancePhase, NodeFacts, ProbeStatus, ServiceStatus,
     ServiceType as WitServiceType, SubstrateStatus, TcpManifest, TopologyMode as WitTopologyMode,
-    WasmManifest,
+    Visibility as WitVisibility, WasmManifest,
 };
 use tokio::task;
 use tracing::info;
 
 use super::{ControlPlaneService, SUPERVISOR_RESERVED_SERVICE_ID};
-use crate::{config_utils, http_routes, synsvc_native::SynSvcNativeService};
+use crate::{assets, config_utils, http_routes, synsvc_native::SynSvcNativeService};
 
 /// The ceiling `verify_installed_instance_cert` enforces on an installed
 /// instance certificate's lifetime (30 days). A backstop against an
@@ -417,6 +418,22 @@ async fn resolve_document(
     }
 }
 
+/// Resolves an `asset-bundle.archive` field (M06A A1) to raw bytes. `Binary`
+/// is the only real case -- the SDK's mapper (`resolve_artifact_source`)
+/// already turns a local path or an inlined hex artifact into `Binary` bytes
+/// before the manifest ever reaches the wire. `Url` is a dead branch here,
+/// exactly as it already is for the Wasm component's own `source` (nothing
+/// fetches it); reviving it is out of A1's scope (deferred-backlog.md), so
+/// it is rejected explicitly rather than silently accepted and ignored.
+fn resolve_asset_archive(source: &ArtifactSource) -> Result<Vec<u8>, String> {
+    match source {
+        ArtifactSource::Binary(bytes) => Ok(bytes.clone()),
+        ArtifactSource::Url(_) => Err("asset bundle archive via a URL artifact-source is not \
+                                       supported; provide it as inline bytes"
+            .to_string()),
+    }
+}
+
 /// D-04-02-c's deploy-time author-time warning: compares a deployed policy's
 /// `definitions:` against the service's actual collections (its own tables
 /// are the collection inventory -- a manifest declares no collection list of
@@ -673,6 +690,34 @@ impl ControlPlaneService {
                 generation,
                 service_id,
                 rollback_err
+            );
+        }
+    }
+
+    /// Rolls back an in-progress deploy's asset-bundle work (M06A D-A1-9,
+    /// R3-B backward direction): deletes every blob this attempt itself
+    /// wrote, keeping any hash the still-live previous generation (`old`)
+    /// still references. A no-op when `written` is empty, so calling this
+    /// unconditionally on every failure branch above the registry commit
+    /// costs nothing for a deploy that declares no assets at all.
+    /// Best-effort, same as `rollback_config_generation`.
+    async fn rollback_asset_bundle(
+        &self,
+        service_id: &str,
+        written: &BTreeSet<String>,
+        old: Option<&ServiceAssets>,
+    ) {
+        if written.is_empty() {
+            return;
+        }
+        let keep =
+            old.map(|a| assets::hashes_of(&a.manifest, Some(&a.manifest_hash))).unwrap_or_default();
+        if let Err(e) = assets::delete_hashes(service_id, written, &keep, &self.blob_provider).await
+        {
+            tracing::error!(
+                "Failed to roll back asset bundle blobs for service {} after deploy error: {}",
+                service_id,
+                e
             );
         }
     }
@@ -1587,6 +1632,32 @@ impl ControlPlaneService {
             }
         }
 
+        // M06A A1: an asset bundle is only reachable through a `Wasm`
+        // service's `NativeService` HTTP path (`try_handle_asset`,
+        // `crates/router/src/route_handler/http.rs`) -- a `Tcp`/`Container`
+        // service's endpoint is registered as `SubstrateEndpoint::
+        // TcpHostPort`, which `dispatch.rs`'s `(_, TcpHostPort { .. })` arm
+        // unconditionally routes to raw `io::copy_bidirectional` passthrough
+        // regardless of what protocol the client actually speaks -- the
+        // asset-serving HTTP bridge is never reached for one, even when the
+        // client sends literal HTTP bytes. Without this check, a `Tcp`/
+        // `Container` deploy with `assets` set unpacked and stored a bundle
+        // that could never be served, silently: a wasted blob write with no
+        // signal to the caller. Also matches the CLI's existing
+        // `--asset-visibility requires --assets requires --wasm` chain
+        // (`apps/roymctl/src/commands/svc.rs`) and this fact from
+        // `status.md`: `Tcp`/`Container` services already run their own web
+        // server outside the substrate, which is exactly what A1 exists to
+        // stop being the only way to serve a web app -- they have no need
+        // for this feature, not just no support for it yet.
+        if manifest.config.assets.is_some() && service_type != AppServiceType::Wasm {
+            return Err(format!(
+                "service '{service_id}': an asset bundle is only servable for a 'Wasm' service; a \
+                 '{service_type:?}' service's endpoint is raw TCP passthrough, which never \
+                 reaches the asset-serving HTTP path"
+            ));
+        }
+
         // FDAE policy: independent of `custom_config` (unlike `schema`
         // above, which is only resolved when a `custom_config` is present) --
         // deliberately not nested inside the block above, since a policy has
@@ -1669,39 +1740,189 @@ impl ControlPlaneService {
                 .map_err(|e| format!("Failed to clear FDAE policy: {}", e))?;
         }
 
+        // M06A A1: static asset bundle unpack, before the wasm/tcp/container
+        // dispatch below so a bad archive fails deploy the same way a bad
+        // FDAE policy does -- before anything guest-visible has started.
+        //
+        // `old_assets` is read now, before any mutation: it is the only
+        // point that can see the still-live previous generation, which the
+        // backward rollback below (any failure between here and the
+        // registry commit further down) must keep, and which the forward
+        // cleanup at the commit point must diff against (D-A1-9).
+        let old_assets = self.assets.get(&service_id).map(|entry| entry.value().clone());
+        let mut written_asset_hashes = BTreeSet::new();
+        let new_assets: Option<ServiceAssets> = if let Some(bundle) = &manifest.config.assets {
+            let archive = match resolve_asset_archive(&bundle.archive) {
+                Ok(a) => a,
+                Err(e) => {
+                    // Nothing has been written yet at this point, but the
+                    // FDAE policy and config generation above already have
+                    // been -- roll those back the same as every later
+                    // failure branch in this block, or a redeploy whose
+                    // manifest merely points at an unsupported archive
+                    // source silently drops the still-running previous
+                    // version's policy.
+                    self.rollback_asset_bundle(
+                        &service_id,
+                        &written_asset_hashes,
+                        old_assets.as_ref(),
+                    )
+                    .await;
+                    self.rollback_config_generation(&service_id, new_gen).await;
+                    self.rollback_fdae_policy(&service_id, &previous_fdae_policy).await;
+                    return Err(e);
+                }
+            };
+            let dek =
+                match self.storage_provider.load_service_dek(&service_id, &self.key_store).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        self.rollback_asset_bundle(
+                            &service_id,
+                            &written_asset_hashes,
+                            old_assets.as_ref(),
+                        )
+                        .await;
+                        self.rollback_config_generation(&service_id, new_gen).await;
+                        self.rollback_fdae_policy(&service_id, &previous_fdae_policy).await;
+                        return Err(format!("Failed to resolve service DEK: {e}"));
+                    }
+                };
+            let unpacked = assets::unpack_asset_bundle(
+                &service_id,
+                &archive,
+                bundle.hash.as_deref(),
+                &http_routes,
+                &self.blob_provider,
+                dek.clone(),
+                &mut written_asset_hashes,
+            )
+            .await;
+            let asset_manifest = match unpacked {
+                Ok(m) => m,
+                Err(e) => {
+                    self.rollback_asset_bundle(
+                        &service_id,
+                        &written_asset_hashes,
+                        old_assets.as_ref(),
+                    )
+                    .await;
+                    self.rollback_config_generation(&service_id, new_gen).await;
+                    self.rollback_fdae_policy(&service_id, &previous_fdae_policy).await;
+                    return Err(format!("Asset bundle unpack failed: {e}"));
+                }
+            };
+            let manifest_hash = match assets::store_manifest(
+                &service_id,
+                &asset_manifest,
+                &self.blob_provider,
+                dek,
+            )
+            .await
+            {
+                Ok(h) => h,
+                Err(e) => {
+                    self.rollback_asset_bundle(
+                        &service_id,
+                        &written_asset_hashes,
+                        old_assets.as_ref(),
+                    )
+                    .await;
+                    self.rollback_config_generation(&service_id, new_gen).await;
+                    self.rollback_fdae_policy(&service_id, &previous_fdae_policy).await;
+                    return Err(format!("Asset manifest storage failed: {e}"));
+                }
+            };
+            written_asset_hashes.insert(manifest_hash.clone());
+            let public = matches!(bundle.visibility.as_ref(), Some(WitVisibility::Public));
+            // D-A1-1: a caller who forgets to declare `public` gets 404s
+            // with no signal anywhere unless this is logged -- absence of
+            // an explicit `visibility` defaults to `private` by
+            // construction (the wire's `option<visibility>`), which is
+            // deliberately silent at the *serving* layer (D-A1-8: a miss
+            // and a non-public bundle look identical to a caller), so the
+            // one place left to say so is here, at deploy time.
+            info!(
+                "asset bundle for '{service_id}': {} entries, visibility {}",
+                asset_manifest.entries.len(),
+                match bundle.visibility.as_ref() {
+                    Some(WitVisibility::Public) => "public",
+                    Some(WitVisibility::Internal) => "internal",
+                    Some(WitVisibility::Private) | None => "private",
+                }
+            );
+            Some(ServiceAssets { manifest: Arc::new(asset_manifest), public, manifest_hash })
+        } else {
+            None
+        };
+
         let new_fdae_policy = fdae_policy.as_ref().map(|(_, policy)| policy.as_ref());
         match &manifest.service_type {
             WitServiceType::Wasm(wasm_manifest) => {
-                self.deploy_wasm_service(
-                    &service_id,
-                    &manifest,
-                    wasm_manifest,
-                    new_gen,
-                    &previous_fdae_policy,
-                    new_fdae_policy,
-                )
-                .await?;
+                if let Err(e) = self
+                    .deploy_wasm_service(
+                        &service_id,
+                        &manifest,
+                        wasm_manifest,
+                        new_gen,
+                        &previous_fdae_policy,
+                        new_fdae_policy,
+                    )
+                    .await
+                {
+                    // The wasm/tcp/container helpers already roll back the
+                    // config generation and FDAE policy themselves before
+                    // returning `Err` -- only the asset-bundle rollback is
+                    // new here, so it must not be duplicated inside them.
+                    self.rollback_asset_bundle(
+                        &service_id,
+                        &written_asset_hashes,
+                        old_assets.as_ref(),
+                    )
+                    .await;
+                    return Err(e);
+                }
             }
             WitServiceType::Tcp(tcp_manifest) => {
-                self.deploy_tcp_service(
-                    &service_id,
-                    tcp_manifest,
-                    new_gen,
-                    &previous_fdae_policy,
-                    new_fdae_policy,
-                )
-                .await?;
+                if let Err(e) = self
+                    .deploy_tcp_service(
+                        &service_id,
+                        tcp_manifest,
+                        new_gen,
+                        &previous_fdae_policy,
+                        new_fdae_policy,
+                    )
+                    .await
+                {
+                    self.rollback_asset_bundle(
+                        &service_id,
+                        &written_asset_hashes,
+                        old_assets.as_ref(),
+                    )
+                    .await;
+                    return Err(e);
+                }
             }
             WitServiceType::Container(container_manifest) => {
-                self.deploy_container_service(
-                    &service_id,
-                    &manifest,
-                    container_manifest,
-                    new_gen,
-                    &previous_fdae_policy,
-                    new_fdae_policy,
-                )
-                .await?;
+                if let Err(e) = self
+                    .deploy_container_service(
+                        &service_id,
+                        &manifest,
+                        container_manifest,
+                        new_gen,
+                        &previous_fdae_policy,
+                        new_fdae_policy,
+                    )
+                    .await
+                {
+                    self.rollback_asset_bundle(
+                        &service_id,
+                        &written_asset_hashes,
+                        old_assets.as_ref(),
+                    )
+                    .await;
+                    return Err(e);
+                }
             }
         }
 
@@ -1756,6 +1977,12 @@ impl ControlPlaneService {
                         undeploy_err
                     );
                 }
+                // `undeploy` above only cleans up whatever the registry
+                // already held (the *old* generation, if any) -- it knows
+                // nothing about this attempt's own writes, so they need
+                // their own rollback here too (D-A1-9, R3-B).
+                self.rollback_asset_bundle(&service_id, &written_asset_hashes, old_assets.as_ref())
+                    .await;
                 self.rollback_config_generation(&service_id, new_gen).await;
                 self.rollback_fdae_policy(&service_id, &previous_fdae_policy).await;
                 return Err(format!("Native capability registration failed: {e}"));
@@ -1790,6 +2017,35 @@ impl ControlPlaneService {
             self.http_routes.remove(&service_id);
         } else {
             self.http_routes.insert(service_id.clone(), http_routes);
+        }
+        match &new_assets {
+            Some(sa) => {
+                self.assets.insert(service_id.clone(), sa.clone());
+            }
+            None => {
+                self.assets.remove(&service_id);
+            }
+        }
+        // Forward cleanup (D-A1-9): remove whatever the *old* manifest held
+        // that the *new* one (if any) no longer references -- never a
+        // wholesale delete of the old bundle, since unchanged files share
+        // hashes across generations. Best-effort: a GC failure here must
+        // not fail an otherwise-successful deploy.
+        if let Some(old) = &old_assets {
+            let remove = assets::hashes_of(&old.manifest, Some(&old.manifest_hash));
+            let keep = new_assets
+                .as_ref()
+                .map(|sa| assets::hashes_of(&sa.manifest, Some(&sa.manifest_hash)))
+                .unwrap_or_default();
+            if let Err(e) =
+                assets::delete_hashes(&service_id, &remove, &keep, &self.blob_provider).await
+            {
+                tracing::warn!(
+                    "Failed to garbage-collect the previous asset bundle for service {}: {}",
+                    service_id,
+                    e
+                );
+            }
         }
 
         // M04A Slice B7a: record the owner last, after every other step
@@ -2268,6 +2524,23 @@ impl ControlPlaneService {
             );
         }
         self.http_routes.remove(&service_id);
+
+        // M06A A1: nothing survives an undeploy, so there is nothing to
+        // keep -- unlike the deploy-time forward cleanup, which diffs
+        // against a still-live new generation.
+        if let Some((_, old)) = self.assets.remove(&service_id) {
+            let remove = assets::hashes_of(&old.manifest, Some(&old.manifest_hash));
+            if let Err(e) =
+                assets::delete_hashes(&service_id, &remove, &BTreeSet::new(), &self.blob_provider)
+                    .await
+            {
+                tracing::warn!(
+                    "Failed to remove asset bundle blobs for service {}: {}",
+                    service_id,
+                    e
+                );
+            }
+        }
 
         // Warn-not-fail, matching every other teardown step above (endpoints,
         // subscriptions, http_routes are all best-effort).
@@ -3255,7 +3528,9 @@ mod tests {
     };
 
     use dashmap::DashMap;
+    use sha2::{Digest, Sha256};
     use syneroym_core::{
+        asset_manifest::AssetRegistry,
         config::SubstrateConfig,
         http_routes::HttpRouteRegistry,
         local_registry::EndpointRegistry,
@@ -3271,8 +3546,8 @@ mod tests {
     use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
     use syneroym_rpc::{NativeDispatchRegistry, ProxyError, ServiceProxy};
     use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-        HttpProbe as WitHttpProbe, NetworkEndpoint, PlannedService, RpcProbe as WitRpcProbe,
-        ServiceConfig, TcpProbe as WitTcpProbe,
+        AssetBundle as WitAssetBundle, HttpProbe as WitHttpProbe, NetworkEndpoint, PlannedService,
+        RpcProbe as WitRpcProbe, ServiceConfig, TcpProbe as WitTcpProbe,
     };
 
     use super::*;
@@ -3416,6 +3691,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -3440,6 +3716,7 @@ mod tests {
                         rotation_policy: None,
                         fdae_policy: None,
                         health_check: None,
+                        assets: None,
                     },
                     service_type: WitServiceType::Wasm(WasmManifest {
                         source: ArtifactSource::Url("../../../../../etc/passwd".to_string()),
@@ -3500,6 +3777,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -3523,6 +3801,7 @@ mod tests {
                         rotation_policy: None,
                         fdae_policy: None,
                         health_check: None,
+                        assets: None,
                     },
                     service_type: WitServiceType::Wasm(WasmManifest {
                         source: ArtifactSource::Url("/etc/passwd".to_string()),
@@ -3587,6 +3866,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -3611,6 +3891,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -3671,6 +3952,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -3698,6 +3980,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -3765,6 +4048,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -3782,6 +4066,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -5146,6 +5431,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -5286,6 +5572,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -5325,6 +5612,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -5375,6 +5663,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -5480,6 +5769,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -6011,6 +6301,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -6033,6 +6324,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6132,6 +6424,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -6148,6 +6441,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Inline(STAGE4_POLICY.to_string())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(
@@ -6224,6 +6518,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -6240,6 +6535,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Inline(STAGE4_POLICY.to_string())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6303,6 +6599,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -6319,6 +6616,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Inline(STAGE4_POLICY.to_string())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(
@@ -6386,6 +6684,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -6405,6 +6704,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wat.as_bytes().to_vec()),
@@ -6602,6 +6902,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -6621,6 +6922,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6682,6 +6984,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -6702,6 +7005,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6722,6 +7026,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6778,6 +7083,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -6799,6 +7105,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6831,6 +7138,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -6895,6 +7203,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -6916,6 +7225,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6946,6 +7256,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -7138,6 +7449,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -7160,6 +7472,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7207,6 +7520,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wat.as_bytes().to_vec()),
@@ -7294,6 +7608,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -7316,6 +7631,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -7357,6 +7673,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -7432,6 +7749,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -7452,6 +7770,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7521,6 +7840,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -7541,6 +7861,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7600,6 +7921,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -7617,6 +7939,7 @@ mod tests {
                     rotation_policy: None,
                     fdae_policy: Some(DocumentSource::Path(bad_path.to_string())),
                     health_check: None,
+                    assets: None,
                 },
                 service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
                 registry_certificate: None,
@@ -7677,6 +8000,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -7703,6 +8027,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: Some(DocumentSource::Path(symlink_name.clone())),
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7932,6 +8257,7 @@ mod tests {
             messaging_broker,
             native_dispatch,
             http_routes.clone(),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -7958,6 +8284,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -8025,6 +8352,7 @@ mod tests {
             messaging_broker,
             native_dispatch,
             http_routes.clone(),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -8042,6 +8370,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -8055,6 +8384,611 @@ mod tests {
         assert!(http_routes.get(&service_id).is_none());
     }
 
+    /// A real, trivial WASM component's WAT text, encoded as bytes -- the
+    /// same one `test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_policy`
+    /// uses, so `deploy_wasm_service` itself succeeds without needing the
+    /// `greeter`/`proxy-test` test-fixture artifacts (which may not be
+    /// built) for tests that only need *a* valid component, not any
+    /// particular one -- e.g. an asset-bundle test, where the component
+    /// itself is incidental to what's under test.
+    fn minimal_wasm_component() -> Vec<u8> {
+        r#"
+(component
+  (core module $m (func (export "noop")))
+  (core instance $i (instantiate $m))
+  (func $noop (canon lift (core func $i "noop")))
+  (instance $interface (export "greet" (func $noop)))
+  (export "test-interface" (instance $interface))
+)
+"#
+        .as_bytes()
+        .to_vec()
+    }
+
+    /// A minimal gzip-compressed tar archive, one entry per `(path, bytes)`
+    /// pair -- the same shape `syneroym_control_plane::assets`' own unit
+    /// tests build, duplicated here rather than exposed as a `pub`
+    /// test-only helper across the module boundary.
+    fn make_asset_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write;
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, data) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, path, *data).unwrap();
+        }
+        let tar_bytes = builder.into_inner().unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&tar_bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    /// M06A A1: a deploy declaring `assets` unpacks them into blobs,
+    /// registers a `ServiceAssets` entry the router can serve from, and
+    /// undeploy removes both the registry entry and the underlying blobs.
+    #[tokio::test]
+    async fn test_asset_bundle_populated_on_deploy_and_cleared_on_undeploy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+        let asset_registry: AssetRegistry = Arc::new(DashMap::new());
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider.clone(),
+            messaging_broker,
+            native_dispatch,
+            http_routes,
+            asset_registry.clone(),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "asset-svc".to_string();
+        let archive = make_asset_archive(&[("index.html", b"<html>hi</html>")]);
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+                assets: Some(WitAssetBundle {
+                    archive: ArtifactSource::Binary(archive),
+                    hash: None,
+                    visibility: Some(WitVisibility::Public),
+                }),
+            },
+            // An asset bundle is only servable for a `Wasm` service (a
+            // `Tcp`/`Container` endpoint is raw passthrough and never
+            // reaches the asset-serving HTTP path) -- `minimal_wasm_component`
+            // is a real, trivial component so `deploy_wasm_service` itself
+            // succeeds.
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(minimal_wasm_component()),
+                hash: None,
+                interfaces: vec!["asset-svc-interface".to_string()],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        let caller = node_wide_caller("test-caller");
+        service.deploy(service_id.clone(), manifest, &caller).await.unwrap();
+
+        let entry = asset_registry.get(&service_id).expect("asset bundle populated on deploy");
+        assert!(entry.public);
+        assert_eq!(entry.manifest.entries.len(), 1);
+        let asset = entry.manifest.entries.get("/index.html").unwrap();
+        let stored = blob_provider.get_blob(&service_id, &asset.hash, None).await.unwrap();
+        assert_eq!(stored, b"<html>hi</html>");
+        let manifest_hash = entry.manifest_hash.clone();
+        drop(entry);
+
+        service.undeploy(service_id.clone(), 0, &caller).await.unwrap();
+        assert!(
+            asset_registry.get(&service_id).is_none(),
+            "asset registry entry must be removed on undeploy"
+        );
+        assert!(
+            blob_provider.get_blob(&service_id, &manifest_hash, None).await.is_err(),
+            "the manifest blob itself must be deleted on undeploy"
+        );
+    }
+
+    /// M06A A1/D-A1-9: a redeploy that changes only some files keeps every
+    /// blob the new manifest still shares with the old one, and deletes
+    /// only what genuinely dropped out.
+    #[tokio::test]
+    async fn test_asset_bundle_redeploy_keeps_shared_blobs_and_drops_removed_ones() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+        let asset_registry: AssetRegistry = Arc::new(DashMap::new());
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider.clone(),
+            messaging_broker,
+            native_dispatch,
+            http_routes,
+            asset_registry.clone(),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "asset-redeploy-svc".to_string();
+        let caller = node_wide_caller("test-caller");
+
+        let bundle = |archive: Vec<u8>| DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+                assets: Some(WitAssetBundle {
+                    archive: ArtifactSource::Binary(archive),
+                    hash: None,
+                    visibility: Some(WitVisibility::Public),
+                }),
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(minimal_wasm_component()),
+                hash: None,
+                interfaces: vec!["asset-redeploy-svc-interface".to_string()],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+
+        let first_archive =
+            make_asset_archive(&[("shared.txt", b"unchanged"), ("old_only.txt", b"gone soon")]);
+        service.deploy(service_id.clone(), bundle(first_archive), &caller).await.unwrap();
+        let first_hashes = {
+            let entry = asset_registry.get(&service_id).unwrap();
+            (
+                entry.manifest.entries.get("/shared.txt").unwrap().hash.clone(),
+                entry.manifest.entries.get("/old_only.txt").unwrap().hash.clone(),
+            )
+        };
+        let (shared_hash, old_only_hash) = first_hashes;
+
+        let second_archive = make_asset_archive(&[("shared.txt", b"unchanged")]);
+        service.deploy(service_id.clone(), bundle(second_archive), &caller).await.unwrap();
+
+        assert!(
+            blob_provider.get_blob(&service_id, &shared_hash, None).await.is_ok(),
+            "unchanged file's blob must survive the redeploy"
+        );
+        assert!(
+            blob_provider.get_blob(&service_id, &old_only_hash, None).await.is_err(),
+            "the dropped file's blob must be garbage-collected"
+        );
+
+        service.undeploy(service_id.clone(), 0, &caller).await.unwrap();
+    }
+
+    /// M06A A1 (D-A1-9): the backward asset rollback, driven through a real
+    /// deploy failure rather than `delete_hashes` called directly as pure
+    /// set arithmetic. `rollback_asset_bundle` is reached from five
+    /// separate failure branches in `deploy_with_context`; this exercises
+    /// the one already covered for FDAE-policy/config-generation rollback
+    /// by `test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_policy`
+    /// (same `FailingEndpointStorage` fixture and `minimal_wasm_component`,
+    /// same failure point -- `register_wasm_endpoints`, which runs after
+    /// the asset block has already written the new generation's blobs, and
+    /// after the component itself compiled successfully), but proves the
+    /// asset half: the failed redeploy's own writes are gone, *and* every
+    /// blob the still-live previous generation references survives.
+    /// `Wasm`, not `Tcp`, since an asset bundle is only accepted for a
+    /// `Wasm` service as of the same review pass that added this test.
+    #[tokio::test]
+    async fn test_asset_bundle_rollback_on_a_real_deploy_failure_keeps_the_old_generation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new(Arc::new(FailingEndpointStorage {
+            inner: MockStorage::new(),
+            fail_interface: "fails-to-register".to_string(),
+        }))
+        .await
+        .unwrap();
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+        let asset_registry: AssetRegistry = Arc::new(DashMap::new());
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider.clone(),
+            messaging_broker,
+            native_dispatch,
+            http_routes,
+            asset_registry.clone(),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "asset-wasm-rollback-svc".to_string();
+        let caller = node_wide_caller("test-caller");
+
+        let manifest = |archive: Vec<u8>, interface_name: &str| DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+                assets: Some(WitAssetBundle {
+                    archive: ArtifactSource::Binary(archive),
+                    hash: None,
+                    visibility: Some(WitVisibility::Public),
+                }),
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(minimal_wasm_component()),
+                hash: None,
+                interfaces: vec![interface_name.to_string()],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+
+        // First deploy succeeds: generation 0's asset bundle is live.
+        let first_archive = make_asset_archive(&[("index.html", b"gen0")]);
+        service
+            .deploy(service_id.clone(), manifest(first_archive, "safe-interface"), &caller)
+            .await
+            .unwrap();
+        let (gen0_manifest_hash, gen0_asset_hash) = {
+            let entry = asset_registry.get(&service_id).unwrap();
+            (
+                entry.manifest_hash.clone(),
+                entry.manifest.entries.get("/index.html").unwrap().hash.clone(),
+            )
+        };
+
+        // Redeploy with a *different* asset bundle (different content, so a
+        // different blob hash) plus an interface name the registry is
+        // rigged to reject -- the asset block runs and writes gen 1's blob
+        // successfully, the component itself compiles fine, and then
+        // `register_wasm_endpoints` fails, well after the asset write.
+        let second_archive = make_asset_archive(&[("index.html", b"gen1 -- must not survive")]);
+        let result = service
+            .deploy(service_id.clone(), manifest(second_archive, "fails-to-register"), &caller)
+            .await;
+        assert!(result.is_err(), "endpoint registration must fail: {result:?}");
+        assert!(result.unwrap_err().contains("Endpoint registration failed"));
+
+        let entry = asset_registry.get(&service_id).expect(
+            "a failed redeploy must leave the still-live generation 0 asset registry entry in \
+             place",
+        );
+        assert_eq!(
+            entry.manifest_hash, gen0_manifest_hash,
+            "the registry must still point at generation 0's manifest, not a half-applied \
+             generation 1"
+        );
+        let gen0_entry = entry.manifest.entries.get("/index.html").unwrap();
+        assert_eq!(gen0_entry.hash, gen0_asset_hash);
+        drop(entry);
+
+        assert_eq!(
+            blob_provider.get_blob(&service_id, &gen0_asset_hash, None).await.unwrap(),
+            b"gen0",
+            "generation 0's blob, still referenced by the live manifest, must survive the failed \
+             redeploy's rollback"
+        );
+        assert!(
+            blob_provider.get_blob(&service_id, &gen0_manifest_hash, None).await.is_ok(),
+            "generation 0's manifest blob must survive too"
+        );
+
+        // The failed generation 1's own write must be gone -- find it by
+        // hashing the content directly, since nothing in the live manifest
+        // references it to look it up by.
+        let gen1_hash = hex::encode(Sha256::digest(b"gen1 -- must not survive"));
+        assert!(
+            blob_provider.get_blob(&service_id, &gen1_hash, None).await.is_err(),
+            "the failed redeploy's own blob write must have been rolled back, not orphaned \
+             alongside generation 0"
+        );
+
+        service.undeploy(service_id.clone(), 0, &caller).await.unwrap();
+    }
+
+    /// M06A A1: an asset bundle is only reachable through a `Wasm`
+    /// service's HTTP path -- a `Tcp`/`Container` endpoint is registered as
+    /// `SubstrateEndpoint::TcpHostPort`, which the router's `dispatch.rs`
+    /// unconditionally routes to raw passthrough regardless of what the
+    /// client actually sends, so an asset bundle attached to one is
+    /// silently unreachable dead data. Rejected at deploy instead, before
+    /// the asset block (or anything else fallible) has run -- asserted by
+    /// checking nothing was written, not just that the call errored.
+    #[tokio::test]
+    async fn test_asset_bundle_is_rejected_for_a_tcp_service() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+        let asset_registry: AssetRegistry = Arc::new(DashMap::new());
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider.clone(),
+            messaging_broker,
+            native_dispatch,
+            http_routes,
+            asset_registry.clone(),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "tcp-with-assets-svc".to_string();
+        let archive = make_asset_archive(&[("index.html", b"unreachable")]);
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+                assets: Some(WitAssetBundle {
+                    archive: ArtifactSource::Binary(archive),
+                    hash: None,
+                    visibility: Some(WitVisibility::Public),
+                }),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        let caller = node_wide_caller("test-caller");
+        let err = service
+            .deploy(service_id.clone(), manifest, &caller)
+            .await
+            .expect_err("a Tcp service must not accept an asset bundle");
+        assert!(err.contains("only servable for a 'Wasm' service"), "{err}");
+        assert!(
+            asset_registry.get(&service_id).is_none(),
+            "rejected at validation, before the asset registry is ever touched"
+        );
+    }
+
+    /// Same as `test_asset_bundle_is_rejected_for_a_tcp_service`, for a
+    /// `Container` service -- `deploy_container_service` also registers a
+    /// `SubstrateEndpoint::TcpHostPort` (`crates/control_plane/src/service/
+    /// orchestration.rs`'s own `deploy_container_service`), so it is raw
+    /// passthrough for the identical reason.
+    #[tokio::test]
+    async fn test_asset_bundle_is_rejected_for_a_container_service() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+        let asset_registry: AssetRegistry = Arc::new(DashMap::new());
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider.clone(),
+            messaging_broker,
+            native_dispatch,
+            http_routes,
+            asset_registry.clone(),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "container-with-assets-svc".to_string();
+        let archive = make_asset_archive(&[("index.html", b"unreachable")]);
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+                assets: Some(WitAssetBundle {
+                    archive: ArtifactSource::Binary(archive),
+                    hash: None,
+                    visibility: Some(WitVisibility::Public),
+                }),
+            },
+            service_type: WitServiceType::Container(ContainerManifest {
+                source: ArtifactSource::Url("docker.io/library/nginx:1.27".to_string()),
+                hash: None,
+                image: "docker.io/library/nginx:1.27".to_string(),
+                ports: vec![],
+                volumes: vec![],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        let caller = node_wide_caller("test-caller");
+        let err = service
+            .deploy(service_id.clone(), manifest, &caller)
+            .await
+            .expect_err("a Container service must not accept an asset bundle");
+        assert!(err.contains("only servable for a 'Wasm' service"), "{err}");
+        assert!(asset_registry.get(&service_id).is_none());
+    }
+
     fn owner_test_manifest() -> DeployManifest {
         DeployManifest {
             config: ServiceConfig {
@@ -8066,6 +9000,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -8129,6 +9064,7 @@ mod tests {
             blob_provider,
             messaging_broker,
             native_dispatch,
+            Arc::new(DashMap::new()),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
@@ -8225,6 +9161,7 @@ mod tests {
             blob_provider,
             messaging_broker,
             NativeDispatchRegistry::default(),
+            Arc::new(DashMap::new()),
             Arc::new(DashMap::new()),
             node_identity,
             syneroym_app_orchestration::empty_resolver(),
@@ -8540,6 +9477,7 @@ mod tests {
             blob_provider,
             messaging_broker,
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
             Arc::new(DashMap::new()),
             node_identity,
             syneroym_app_orchestration::empty_resolver(),
@@ -9060,6 +9998,7 @@ mod tests {
             messaging_broker,
             NativeDispatchRegistry::default(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -9082,6 +10021,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy,
                 health_check: None,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -9209,6 +10149,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check,
+                assets: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -9233,6 +10174,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check,
+                assets: None,
             },
             service_type: WitServiceType::Container(ContainerManifest {
                 source: ArtifactSource::Url("docker.io/library/nginx:1.27".to_string()),
@@ -9257,6 +10199,7 @@ mod tests {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check,
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(vec![]),
@@ -10481,6 +11424,7 @@ mod tests {
                     method: "greet".to_string(),
                     timeout_ms: 2000,
                 })),
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -10529,6 +11473,7 @@ mod tests {
                     method: "get-uploaded-content".to_string(),
                     timeout_ms: 2000,
                 })),
+                assets: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -10606,6 +11551,7 @@ mod tests {
                         method: "get-uploaded-content".to_string(),
                         timeout_ms: 2000,
                     })),
+                    assets: None,
                 },
                 service_type: WitServiceType::Wasm(WasmManifest {
                     source: ArtifactSource::Binary(wasm_bytes.clone()),

@@ -61,6 +61,31 @@ interface orchestrator {
         rpc(rpc-probe),
     }
 
+    /// Endpoint-record visibility (ADR-0018). Defined here by M06A A1 because
+    /// A1 is the first consumer; ADR-0018 adds the `service-config` field
+    /// that uses it for record publication, a different question from asset
+    /// readability below.
+    enum visibility {
+        public,
+        internal,
+        private,
+    }
+
+    /// A bundle of static assets served straight from blob storage without
+    /// instantiating the component. Unpacked at deploy; the router resolves
+    /// an exact request path to a blob hash and streams it.
+    record asset-bundle {
+        /// gzip-compressed tar archive of the site root.
+        archive: artifact-source,
+        /// Hex sha256 of the *compressed* archive, verified before
+        /// unpacking. Absent skips the check.
+        hash: option<string>,
+        /// `public` serves these bytes to any caller with no signature and
+        /// no delegation. `internal` and `private` both refuse, identically
+        /// to having no bundle. Absent means `private`.
+        visibility: option<visibility>,
+    }
+
     /// General configuration provided to the deployed service.
     record service-config {
         /// Environment variables represented as key-value pairs.
@@ -79,6 +104,8 @@ interface orchestrator {
         fdae-policy: option<document-source>,
         /// Author-declared readiness probe (M05A A4). Absent = liveness only.
         health-check: option<health-check>,
+        /// Static assets served directly from blob storage (M06A A1).
+        assets: option<asset-bundle>,
     }
 
     /// Manifest details for a Wasm component deployment.

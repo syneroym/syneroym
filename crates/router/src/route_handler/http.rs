@@ -10,10 +10,14 @@
 //! Route resolution order, per request:
 //! 1. `GET /blobs/{hash}` -- always intercepted (fixed, self-authorizing via
 //!    the signed-URL HMAC, not a per-service opt-in).
-//! 2. The connected service's `http_routes` table (method + path-with-
+//! 2. M06A A1's static assets: `GET`/`HEAD` only, exact path plus a
+//!    trailing-slash directory index, served straight from blob storage without
+//!    instantiating the component. Deploy-time collision detection (D-A1-4)
+//!    means this and step 3 below never actually contend for the same path.
+//! 3. The connected service's `http_routes` table (method + path-with-
 //!    `{param}` match) -- bridges onto `data-layer`/`messaging`/a registered
 //!    stream protocol.
-//! 3. Fallthrough, unchanged: the original `POST`+`application/json` JSON-RPC
+//! 4. Fallthrough, unchanged: the original `POST`+`application/json` JSON-RPC
 //!    bridge.
 
 use std::{
@@ -33,7 +37,10 @@ use http_body_util::{
 use hyper::{
     Method, Request, Response, StatusCode,
     body::{Frame, Incoming},
-    header::{ACCEPT, CACHE_CONTROL, CONTENT_TYPE},
+    header::{
+        ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderValue, IF_NONE_MATCH,
+        X_CONTENT_TYPE_OPTIONS,
+    },
     service,
 };
 use hyper_util::{
@@ -41,7 +48,11 @@ use hyper_util::{
     server::conn::auto::Builder as AutoBuilder,
 };
 use serde_json::Value;
-use syneroym_core::{http_routes::HttpRoute, streaming::StreamDirection};
+use syneroym_core::{
+    asset_manifest::AssetEntry,
+    http_routes::{HttpRoute, match_path},
+    streaming::StreamDirection,
+};
 use syneroym_data_blob::{
     crypto,
     native_types::{OpenDownloadResponse, ReadChunkResponse},
@@ -238,27 +249,41 @@ fn blob_hash_from_path(path: &str) -> Option<&str> {
     if hash.is_empty() || hash.contains('/') { None } else { Some(hash) }
 }
 
-/// Matches a single `{param}` path pattern (e.g. `/orders/{id}`) against a
-/// request path. Returns `None` if the pattern doesn't match at all,
-/// `Some(None)` if it matches with no captured parameter, `Some(Some(v))`
-/// if it matches and captured `v`. Only a single `{param}` segment is
-/// supported (sufficient for every route shape `task.md` specifies) -- no
-/// general globbing/regex.
-fn match_path(pattern: &str, path: &str) -> Option<Option<String>> {
-    let pattern_segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
-    let path_segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    if pattern_segs.len() != path_segs.len() {
-        return None;
+/// **Cache-Control is chosen by content type, not by path** (M06A A1
+/// §5.2): `text/html`'s name is stable while its content changes every
+/// deploy, so caching it immutably would pin a browser to a stale bundle
+/// indefinitely. Everything else gets long-lived immutable caching, correct
+/// for the bundler-hashed filenames a real asset pipeline produces.
+fn cache_control_for(content_type: &str) -> &'static str {
+    if content_type.starts_with("text/html") {
+        "no-cache"
+    } else {
+        "public, max-age=31536000, immutable"
     }
-    let mut captured = None;
-    for (p, s) in pattern_segs.iter().zip(path_segs.iter()) {
-        if p.starts_with('{') && p.ends_with('}') {
-            captured = Some((*s).to_string());
-        } else if p != s {
-            return None;
-        }
-    }
-    Some(captured)
+}
+
+/// Whether an `If-None-Match` header value matches `etag` (always a strong
+/// validator here -- the manifest's own content hash). Per RFC 9110
+/// §13.1.2: a bare `*` matches unconditionally (the entry was already
+/// resolved by the caller, so a representation does currently exist), and
+/// the header may otherwise carry a comma-separated list, each member
+/// optionally weak (`W/"..."`) -- a weak comparison ignores that prefix,
+/// same as a strong one, since this function is only ever asked "does the
+/// client already have exactly this content", not "byte-for-byte
+/// identical". A browser always echoes the token verbatim, so this is a
+/// pure widening: a proxy or `fetch` caller sending a list or a weak
+/// validator now gets a 304 instead of silently re-downloading the whole
+/// body.
+fn if_none_match_hits(header: Option<&HeaderValue>, etag: &str) -> bool {
+    let Some(value) = header.and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    let value = value.trim();
+    value == "*"
+        || value.split(',').any(|candidate| {
+            let candidate = candidate.trim();
+            candidate.strip_prefix("W/").unwrap_or(candidate) == etag
+        })
 }
 
 /// Parses an HTTP query string (`k=v&k2=v2`) leniently, matching
@@ -388,6 +413,16 @@ impl HttpHandler {
             return self.handle_blob_get(hash, &query).await;
         }
 
+        // M06A A1: static assets, exact-path plus a trailing-slash
+        // directory index. Placed before route resolution -- an asset path
+        // colliding with a declared route pattern is refused at deploy
+        // (D-A1-4), so this ordering is never actually ambiguous at
+        // request time; it exists to keep resolve_asset a cheap, sandbox-
+        // free check (D-06A-1) ahead of the route table lookup.
+        if let Some(resp) = self.try_handle_asset(&method, &path, &req).await? {
+            return Ok(resp);
+        }
+
         if let Some((route, path_param)) = self.resolve_route(&method, &path) {
             return self.dispatch_route(&route, path_param, req).await;
         }
@@ -401,6 +436,17 @@ impl HttpHandler {
     /// target is unaffected, matching pre-Slice-7 behavior.
     async fn handle_json_rpc_bridge(&self, req: Request<Incoming>) -> Result<Response<HttpBody>> {
         if req.method() != Method::POST {
+            // Also where a static-asset miss and a non-`public` bundle land
+            // (D-A1-8, `try_handle_asset` returning `Ok(None)` for a `GET`/
+            // `HEAD` falls all the way through to here): 405, not the
+            // failure matrix's originally-planned 404, since this bridge
+            // rejects every non-`POST` method uniformly, asset request or
+            // not, and special-casing `GET`/`HEAD` here would change
+            // behaviour for the ordinary JSON-RPC-bridge case too, not just
+            // assets. The property the matrix actually cares about --
+            // absence and refusal look identical from outside -- holds
+            // regardless of which 4xx it is; task.md/status.md record 405
+            // as the deliberate answer, not 404.
             return Ok(http_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST is supported".into()));
         }
 
@@ -474,6 +520,152 @@ impl HttpHandler {
             params,
         )
         .await
+    }
+
+    /// Percent-decodes `path`, then does an exact-path lookup plus
+    /// D-A1-11's one rewrite: a path ending in `/` resolves to
+    /// `<path>index.html`. This function owns both the decoding and the
+    /// rewrite -- callers pass the raw request path and do no
+    /// normalisation of their own, so there is exactly one place either
+    /// rule lives. Manifest keys come from raw archive entry names (never
+    /// encoded), but every browser percent-encodes a request path (a file
+    /// named `my file.js` is requested as `/my%20file.js`), so decoding
+    /// here -- not at `resolve_route`, which keeps its existing
+    /// non-decoding style for API routes -- is what makes such a file
+    /// reachable at all. No history-fallback, no prefix rules (D-A1-4):
+    /// `/api/comments` has no trailing slash, so it is never rewritten and
+    /// always falls through to route resolution.
+    ///
+    /// `None` when the service has no bundle, its declared visibility is
+    /// not `public`, `path` isn't valid percent-encoded UTF-8, or no entry
+    /// matches the (possibly rewritten) path -- deliberately
+    /// indistinguishable, so a miss and a non-public bundle both read as
+    /// "not found" to the caller (D-A1-8).
+    fn resolve_asset(&self, path: &str) -> Option<AssetEntry> {
+        let service_assets = self.route_handler.inner.assets.get(&self.preamble.service_id)?;
+        if !service_assets.public {
+            return None;
+        }
+        let decoded = percent_encoding::percent_decode_str(path).decode_utf8().ok()?;
+        let lookup_path = match decoded.strip_suffix('/') {
+            Some(prefix) => format!("{prefix}/index.html"),
+            None => decoded.into_owned(),
+        };
+        service_assets.manifest.entries.get(&lookup_path).cloned()
+    }
+
+    /// Serves one static asset (M06A A1). `Ok(None)` means "not an asset"
+    /// and the caller falls through to route resolution unchanged.
+    async fn try_handle_asset(
+        &self,
+        method: &Method,
+        path: &str,
+        req: &Request<Incoming>,
+    ) -> Result<Option<Response<HttpBody>>> {
+        if *method != Method::GET && *method != Method::HEAD {
+            return Ok(None);
+        }
+        let Some(entry) = self.resolve_asset(path) else {
+            return Ok(None);
+        };
+
+        let etag = format!("\"{}\"", entry.hash);
+        let cache_control = cache_control_for(&entry.content_type);
+        if if_none_match_hits(req.headers().get(IF_NONE_MATCH), &etag) {
+            let resp = Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header(ETAG, etag)
+                .header(CACHE_CONTROL, cache_control)
+                .body(full_body(Bytes::new()))
+                .map_err(|e| anyhow!("failed to build 304 response: {e}"))?;
+            return Ok(Some(resp));
+        }
+
+        // `mime_guess` (`crates/control_plane/src/assets.rs`) falls back to
+        // `application/octet-stream` for an unrecognised extension --
+        // `nosniff` stops a browser from content-sniffing that into
+        // something it will execute or render unexpectedly. `text/html`
+        // additionally needs an explicit charset: with none, encoding falls
+        // back to the browser's default, which mangles non-ASCII pages.
+        let content_type = if entry.content_type == "text/html" {
+            "text/html; charset=utf-8".to_string()
+        } else {
+            entry.content_type.clone()
+        };
+        // `entry.len` is promised here, before the body has streamed a
+        // single byte -- a mid-stream `read-chunk` error in
+        // `blob_download_step` below ends the body short of this declared
+        // length instead of surfacing as a clean error, so the client sees
+        // an aborted connection rather than a graceful failure. Pre-existing
+        // on the signed-URL blob-download path too, just not previously
+        // paired with a `Content-Length` for the mismatch to be assertable
+        // against.
+        let builder = Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, content_type)
+            .header(CONTENT_LENGTH, entry.len.to_string())
+            .header(ETAG, etag)
+            .header(CACHE_CONTROL, cache_control)
+            .header(X_CONTENT_TYPE_OPTIONS, "nosniff");
+
+        if *method == Method::HEAD {
+            let resp = builder
+                .body(full_body(Bytes::new()))
+                .map_err(|e| anyhow!("failed to build HEAD response: {e}"))?;
+            return Ok(Some(resp));
+        }
+
+        // F3: never instantiates the component -- the same
+        // `blob-store/open-download`+`read-chunk` native-dispatch streaming
+        // `handle_blob_get` uses, reached through the identical
+        // `NativeService` arm (D-06A-1). Deliberately bypasses `self.
+        // dispatch()` (bound to `self.caller`, which may be `None`): a
+        // public asset's authorization is D-A1-1's declared `visibility`,
+        // already checked in `resolve_asset`, not the connection's own
+        // delegation.
+        let system_caller = CallerContext::service_system(&self.preamble.service_id);
+        let open_params = serde_json::json!({"hash": entry.hash, "offset": 0});
+        let download_id = match dispatch_native(
+            &self.route_handler,
+            &self.pipeline,
+            &self.preamble,
+            Some(&system_caller),
+            "blob-store",
+            "open-download",
+            open_params,
+        )
+        .await?
+        {
+            DispatchOutcome::Success(value) => {
+                let resp: OpenDownloadResponse = serde_json::from_value(value)
+                    .map_err(|e| anyhow!("malformed open-download response: {e}"))?;
+                resp.download_id
+            }
+            DispatchOutcome::Error { code, message } => {
+                return Ok(Some(structured_rpc_error(
+                    status_for_rpc_error_code(code),
+                    code,
+                    message,
+                )));
+            }
+        };
+
+        let state = BlobDownloadState {
+            route_handler: self.route_handler.clone(),
+            pipeline: self.pipeline.clone(),
+            preamble: RoutePreamble {
+                interface: "blob-store".to_string(),
+                ..self.preamble.clone()
+            },
+            caller: system_caller,
+            download_id,
+            closed: false,
+        };
+        let stream = stream::unfold(state, blob_download_step);
+        let body = StreamBody::new(stream).boxed_unsync();
+        let resp =
+            builder.body(body).map_err(|e| anyhow!("failed to build asset response: {e}"))?;
+        Ok(Some(resp))
     }
 
     fn resolve_route(&self, method: &Method, path: &str) -> Option<(HttpRoute, Option<String>)> {
@@ -1091,27 +1283,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn match_path_captures_a_single_param() {
-        assert_eq!(match_path("/orders/{id}", "/orders/abc123"), Some(Some("abc123".to_string())));
-    }
-
-    #[test]
-    fn match_path_matches_exact_literal_with_no_param() {
-        assert_eq!(match_path("/orders", "/orders"), Some(None));
-    }
-
-    #[test]
-    fn match_path_rejects_different_segment_counts() {
-        assert_eq!(match_path("/orders", "/orders/abc123"), None);
-        assert_eq!(match_path("/orders/{id}", "/orders"), None);
-    }
-
-    #[test]
-    fn match_path_rejects_mismatched_literal_segments() {
-        assert_eq!(match_path("/orders/{id}", "/events/abc123"), None);
-    }
-
-    #[test]
     fn blob_hash_from_path_extracts_a_bare_hash() {
         assert_eq!(blob_hash_from_path("/blobs/deadbeef"), Some("deadbeef"));
     }
@@ -1121,6 +1292,37 @@ mod tests {
         assert_eq!(blob_hash_from_path("/orders/abc"), None);
         assert_eq!(blob_hash_from_path("/blobs/"), None);
         assert_eq!(blob_hash_from_path("/blobs/a/b"), None);
+    }
+
+    #[test]
+    fn if_none_match_hits_a_wildcard() {
+        let value = HeaderValue::from_static("*");
+        assert!(if_none_match_hits(Some(&value), "\"abc\""));
+    }
+
+    #[test]
+    fn if_none_match_hits_an_exact_strong_etag() {
+        let value = HeaderValue::from_static("\"abc\"");
+        assert!(if_none_match_hits(Some(&value), "\"abc\""));
+    }
+
+    #[test]
+    fn if_none_match_hits_one_entry_in_a_comma_separated_list() {
+        let value = HeaderValue::from_static("\"nope\", \"abc\", \"also-nope\"");
+        assert!(if_none_match_hits(Some(&value), "\"abc\""));
+    }
+
+    #[test]
+    fn if_none_match_hits_a_weak_validator_by_stripping_the_prefix() {
+        let value = HeaderValue::from_static("W/\"abc\"");
+        assert!(if_none_match_hits(Some(&value), "\"abc\""));
+    }
+
+    #[test]
+    fn if_none_match_misses_a_different_etag_or_a_missing_header() {
+        let value = HeaderValue::from_static("\"different\"");
+        assert!(!if_none_match_hits(Some(&value), "\"abc\""));
+        assert!(!if_none_match_hits(None, "\"abc\""));
     }
 
     #[test]

@@ -272,6 +272,7 @@ fn tcp_manifest(port: u16) -> DeployManifest {
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            assets: None,
         },
         service_type: ServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {
@@ -331,6 +332,7 @@ async fn test_service_with_registry(
         messaging_broker,
         native_dispatch,
         http_routes,
+        Arc::new(DashMap::new()),
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         syneroym_app_orchestration::empty_resolver(),
     )

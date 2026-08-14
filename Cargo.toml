@@ -71,6 +71,7 @@ hyper = { version = "1.10", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
 http-body-util = "0.1"
 bytes = "1.10"
+percent-encoding = "2.3"
 axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
 tower-service = "0.3"
@@ -132,6 +133,11 @@ jsonschema = { version = "0.46", default-features = false }
 hkdf = "0.12"
 hmac = "0.12"
 aead = "0.5"
+# M06A A1: asset-bundle unpacking (control-plane) and, pre-existing, the
+# WebRTC signaling coordinator's own gzip use.
+tar = "0.4.46"
+flate2 = "1.1.9"
+mime_guess = "2.0.5"
 # object_store 0.14 bumps its md-5 dependency to require digest ^0.11.0
 # (stable), which conflicts with the digest 0.11.0-rc.10 pin below required
 # by iroh-base's pre-release ed25519-dalek/pkcs8 chain. 0.13.x is the newest

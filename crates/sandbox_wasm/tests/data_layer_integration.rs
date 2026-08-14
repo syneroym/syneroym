@@ -67,6 +67,7 @@ fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            assets: None,
         },
         service_type: ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(bytes),

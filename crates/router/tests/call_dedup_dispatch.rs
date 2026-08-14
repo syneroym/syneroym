@@ -117,6 +117,7 @@ async fn harness() -> Harness {
         messaging_broker,
         native_dispatch: NativeDispatchRegistry::default(),
         http_routes,
+        assets: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
     };

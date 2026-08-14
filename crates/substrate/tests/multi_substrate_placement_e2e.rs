@@ -336,6 +336,7 @@ fn two_service_manifest() -> SynAppManifest {
                 rotation_policy: Default::default(),
                 fdae: None,
                 health_check: None,
+                assets: None,
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(BACKEND_ALIAS))),
@@ -360,6 +361,7 @@ fn two_service_manifest() -> SynAppManifest {
                 rotation_policy: Default::default(),
                 fdae: None,
                 health_check: None,
+                assets: None,
             },
             depends_on: vec![LogicalServiceName::new("backend")],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(FRONTEND_ALIAS))),
@@ -746,6 +748,7 @@ async fn a_certificate_minted_against_one_substrate_is_rejected_by_another() {
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            assets: None,
         },
         service_type: WitServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {

@@ -14,8 +14,8 @@ use clap::Subcommand;
 use syneroym_core::dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType};
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
 use syneroym_sdk::{
-    ContainerPortMapping, ContainerVolumeMapping, NetworkEndpoint, deploy,
-    mapper::DEFAULT_INTERFACE_NAME,
+    ArtifactSource, AssetBundle, ContainerPortMapping, ContainerVolumeMapping, NetworkEndpoint,
+    Visibility, deploy, mapper::DEFAULT_INTERFACE_NAME,
 };
 
 use super::member_identity;
@@ -105,6 +105,17 @@ pub enum SvcCommands {
         /// anchor exists some other way (`roymctl identity publish-anchor`).
         #[arg(long)]
         registry_url: Option<String>,
+        /// Path to a gzip-compressed tar archive of static assets (M06A
+        /// A1), served straight from blob storage without instantiating
+        /// the component. Only meaningful alongside `--wasm`.
+        #[arg(long, requires = "wasm")]
+        assets: Option<PathBuf>,
+        /// Who may fetch `--assets` with no signature or delegation:
+        /// "public", "internal", or "private" (default). `internal` and
+        /// `private` are identical to no `--assets` at all -- A1 has no
+        /// middle tier.
+        #[arg(long, default_value = "private", requires = "assets")]
+        asset_visibility: String,
     },
     /// Remove an installed `SynSvc` via API
     Remove {
@@ -184,6 +195,8 @@ pub async fn handle(
             master,
             instance_certificate,
             registry_url,
+            assets,
+            asset_visibility,
         } => {
             validate_container_flags(image, ports, volumes)?;
             let ifaces: Vec<String> = parse_interfaces(interfaces)?;
@@ -291,8 +304,31 @@ pub async fn handle(
 
             if let Some(wasm_path) = wasm {
                 let wasm_bytes = fs::read(wasm_path)?;
+                let asset_bundle = match assets {
+                    Some(assets_path) => {
+                        let archive = fs::read(assets_path).map_err(|e| {
+                            anyhow::anyhow!(
+                                "failed to read --assets at {}: {e}",
+                                assets_path.display()
+                            )
+                        })?;
+                        Some(AssetBundle {
+                            archive: ArtifactSource::Binary(archive),
+                            hash: None,
+                            visibility: Some(parse_asset_visibility(asset_visibility)?),
+                        })
+                    }
+                    None => None,
+                };
                 client
-                    .deploy_svc_wasm(svc_id.clone(), ifaces, wasm_bytes, cert, instance_cert)
+                    .deploy_svc_wasm_with_assets(
+                        svc_id.clone(),
+                        ifaces,
+                        wasm_bytes,
+                        cert,
+                        instance_cert,
+                        asset_bundle,
+                    )
                     .await?;
                 println!("Successfully deployed WASM svc {svc_id}");
             } else if let Some(tcp_addr) = tcp {
@@ -445,6 +481,20 @@ fn format_expiry(expires_at_secs: Option<u64>) -> String {
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_else(|| "-".to_string()),
         None => "-".to_string(),
+    }
+}
+
+/// Parses `--asset-visibility`'s value (M06A A1). `internal` is accepted for
+/// symmetry with the WIT enum even though it behaves identically to
+/// `private` in A1 (D-A1-8: no middle tier yet).
+fn parse_asset_visibility(value: &str) -> anyhow::Result<Visibility> {
+    match value {
+        "public" => Ok(Visibility::Public),
+        "internal" => Ok(Visibility::Internal),
+        "private" => Ok(Visibility::Private),
+        other => {
+            anyhow::bail!("--asset-visibility '{other}' is not one of: public, internal, private")
+        }
     }
 }
 

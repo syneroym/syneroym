@@ -242,6 +242,28 @@ pub async fn handle(
                 }
             }
 
+            // Same treatment for a declared asset bundle's archive (M06A
+            // A1, D-A1-1): resolved against `manifest_dir`, not this
+            // process's cwd, and inlined for the same reason as `source`
+            // above -- otherwise a remote submit reaches a substrate that
+            // cannot read the path.
+            for svc in &mut target_plan.services {
+                if let Some(assets) = &mut svc.config.assets
+                    && !assets.archive.starts_with("http://")
+                    && !assets.archive.starts_with("https://")
+                    && !assets.archive.starts_with(INLINE_ARTIFACT_PREFIX)
+                {
+                    let path = resolve_under(manifest_dir, Path::new(&assets.archive));
+                    let bytes = fs::read(&path).map_err(|e| {
+                        anyhow::anyhow!(
+                            "failed to read asset bundle archive at {}: {e}",
+                            path.display()
+                        )
+                    })?;
+                    assets.archive = format!("{INLINE_ARTIFACT_PREFIX}{}", hex::encode(bytes));
+                }
+            }
+
             let demand = placement_demand(&target_plan);
             let inv_path = inventory.clone().unwrap_or_else(|| dir.join("substrates.toml"));
             let supervisor_inventory = if demand.is_empty() {
