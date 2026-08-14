@@ -70,10 +70,12 @@ aws = ["syneroym-data-blob/aws"]
 
 [dev-dependencies]
 assert_cmd.workspace = true
+flate2.workspace = true
 httparse.workspace = true
 libc.workspace = true
 predicates.workspace = true
 semver.workspace = true
+tar.workspace = true
 tempfile.workspace = true
 iroh.workspace = true
 tracing-subscriber.workspace = true

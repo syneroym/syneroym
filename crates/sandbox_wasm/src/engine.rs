@@ -6,7 +6,10 @@
 use std::{
     fmt::{self, Debug, Formatter},
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock, Weak},
+    sync::{
+        Arc, OnceLock, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -240,6 +243,15 @@ pub struct AppSandboxEngine {
     /// Fuel ceiling for one stage-4 ABAC after-step invocation -- see
     /// `AppSandboxRole::abac_max_instructions`.
     abac_max_instructions: u64,
+    /// Total component instantiations this engine has performed, process-
+    /// lifetime (M06A A1, D-A1-7). Alongside the pre-existing
+    /// `substrate.wasm.instantiation_ms` histogram (a duration, not a
+    /// count) -- exit criterion 3 needs an in-process value a test can read
+    /// a **delta** across (an absolute count is meaningless on its own:
+    /// deploy-time lifecycle hooks instantiate the component too, so a test
+    /// asserting on an absolute value would be coupled to unrelated
+    /// deploy-time behaviour).
+    instantiations: AtomicU64,
 }
 
 /// Per-instantiation differences from an ordinary dispatch call. Bundled
@@ -424,6 +436,7 @@ impl AppSandboxEngine {
             lifecycle_hook_epoch_ticks,
             abac_epoch_ticks,
             abac_max_instructions,
+            instantiations: AtomicU64::new(0),
         };
 
         for (service_id, _interface_name, endpoint) in endpoints {
@@ -611,6 +624,15 @@ impl AppSandboxEngine {
     /// of the `host-environment` world -- a component only needs to
     /// implement it when a deployed policy opts in.
     const AUTHORIZER_INTERFACE: &str = "syneroym:data-layer/authorizer@0.1.0";
+
+    /// Total component instantiations this engine has performed,
+    /// process-lifetime (M06A A1, D-A1-7). Tests assert on a **delta**
+    /// measured around the request under test, never this absolute value --
+    /// deploy-time lifecycle hooks instantiate the component too.
+    #[must_use]
+    pub fn instantiations(&self) -> u64 {
+        self.instantiations.load(Ordering::Relaxed)
+    }
 
     /// Whether `service_id`'s compiled component exports `function` on
     /// `interface`. Cheap: reads the cached `InstancePre`'s static component
@@ -1038,6 +1060,8 @@ impl AppSandboxEngine {
         let instance = instance_pre.instantiate_async(&mut store).await?;
         metrics::histogram!("substrate.wasm.instantiation_ms")
             .record(inst_start.elapsed().as_secs_f64() * 1000.0);
+        metrics::counter!("substrate.wasm.instantiations_total").increment(1);
+        self.instantiations.fetch_add(1, Ordering::Relaxed);
 
         debug!("instantiated store and instance");
 
@@ -2447,6 +2471,7 @@ mod tests {
             lifecycle_hook_epoch_ticks: ticks_for_secs(30),
             abac_epoch_ticks: ticks_for_secs(2),
             abac_max_instructions: 50_000_000,
+            instantiations: AtomicU64::new(0),
         };
 
         // Cache the test component
@@ -2517,6 +2542,7 @@ mod tests {
             lifecycle_hook_epoch_ticks: ticks_for_secs(30),
             abac_epoch_ticks: ticks_for_secs(2),
             abac_max_instructions: 50_000_000,
+            instantiations: AtomicU64::new(0),
         }
     }
 

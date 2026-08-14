@@ -410,6 +410,7 @@ pub async fn handle(
                             rotation_policy: Default::default(),
                             fdae: None,
                             health_check: None,
+                            assets: None,
                         },
                         depends_on: vec![],
                         placement: None,
@@ -1434,6 +1435,7 @@ mod tests {
             rotation_policy: Default::default(),
             fdae: None,
             health_check: None,
+            assets: None,
         }
     }
 

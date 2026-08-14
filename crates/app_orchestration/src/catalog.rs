@@ -58,6 +58,7 @@ impl LocalFilesystemCatalog {
             rotation_policy: Default::default(),
             fdae: None,
             health_check: None,
+            assets: None,
         };
         services.insert(
             LogicalServiceName::new("legacy-main"),

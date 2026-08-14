@@ -37,7 +37,7 @@ httparse.workspace = true
 z32.workspace = true
 ed25519-dalek.workspace = true
 hex.workspace = true
-flate2 = "1.1.9"
+flate2.workspace = true
 
 [dev-dependencies]
 reqwest = { workspace = true, features = ["json"] }

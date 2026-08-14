@@ -109,6 +109,7 @@ async fn deployed_engine() -> Option<AppSandboxEngine> {
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            assets: None,
         },
         service_type: ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),

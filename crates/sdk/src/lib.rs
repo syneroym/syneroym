@@ -33,10 +33,10 @@ use syneroym_rpc::{
 };
 pub use syneroym_rpc::{DeadLetterInfo, QueuedCallInfo, SagaInfo, SagaState};
 pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, BindingWrite, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
-    DependencyBinding, DeployManifest, DeploymentPlan, HealthCheck, HttpProbe, InstanceIdentity,
-    NetworkEndpoint, PlannedService, RpcProbe, ServiceConfig, ServiceType, TcpManifest, TcpProbe,
-    TopologyMode, WasmManifest,
+    ArtifactSource, AssetBundle, BindingWrite, ContainerManifest, ContainerPortMapping,
+    ContainerVolumeMapping, DependencyBinding, DeployManifest, DeploymentPlan, HealthCheck,
+    HttpProbe, InstanceIdentity, NetworkEndpoint, PlannedService, RpcProbe, ServiceConfig,
+    ServiceType, TcpManifest, TcpProbe, TopologyMode, Visibility, WasmManifest,
 };
 use tokio::{io, net::TcpStream, sync::mpsc, task::JoinHandle, time};
 pub use topology::{RegistryTopologyFetcher, fetch_and_register};
@@ -135,6 +135,33 @@ pub struct SubstrateStatus {
 /// caller with no way to give up. Override via
 /// [`SyneroymClient::with_connect_timeout`].
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// M06A D-A1-5: the authoritative size check the asset-bundle deploy-time
+/// caps are only a "cheap early guard" ahead of
+/// (`crates/core/src/deploy_docs.rs`'s `MAX_ASSET_BUNDLE_BYTES` doc
+/// comment) -- every binary artifact in a request's `params` (a Wasm
+/// component, an asset bundle archive, a container volume file, ...)
+/// serializes as a JSON integer array, ~3.57x its raw byte length, and all
+/// of them share this one frame. Checking the real serialized length here
+/// -- called from `open_request_stream` before any network I/O for the
+/// call, not only before the send -- is exact (no estimated ratio to keep
+/// in sync with serde's actual encoding) and general: it catches *any*
+/// oversized request through this client, not only a deploy's asset
+/// bundle, and fails before wasting a stream open and a round trip on
+/// bytes the peer's own `framing::read_frame` would reject anyway with a
+/// bare byte count and no context about which call or field caused it.
+fn check_frame_size(method: &str, req_bytes: &[u8]) -> Result<()> {
+    if req_bytes.len() as u64 > framing::MAX_FRAME_SIZE as u64 {
+        return Err(anyhow::anyhow!(
+            "'{method}' request is {} bytes once serialized, exceeding the {} byte frame limit \
+             (MAX_FRAME_SIZE) -- reduce the size of any inline binary content (a Wasm component, \
+             an asset bundle archive, container volume files) in this call's params",
+            req_bytes.len(),
+            framing::MAX_FRAME_SIZE
+        ));
+    }
+    Ok(())
+}
 
 pub struct SyneroymClient {
     service_id: String,
@@ -536,6 +563,9 @@ impl SyneroymClient {
         interface_name: &str,
         request: &JsonRpcRequest,
     ) -> Result<(SendStream, RecvStream)> {
+        let req_bytes = serde_json::to_vec(request)?;
+        check_frame_size(&request.method, &req_bytes)?;
+
         let conn_wrapper = self.connection.as_ref().context("Not connected")?;
         match conn_wrapper {
             TransportConnection::Iroh { conn, .. } => {
@@ -550,7 +580,6 @@ impl SyneroymClient {
                 preamble.ucan = self.caller_ucan.clone();
                 send.write_all(preamble.to_preamble_line().as_bytes()).await?;
 
-                let req_bytes = serde_json::to_vec(request)?;
                 framing::write_frame(&mut send, &req_bytes).await?;
                 Ok((send, recv))
             }
@@ -657,6 +686,30 @@ impl SyneroymClient {
         registry_certificate: Option<SignedEndpointInfo>,
         instance_certificate: Option<DelegationCertificate>,
     ) -> Result<()> {
+        self.deploy_svc_wasm_with_assets(
+            service_id,
+            interfaces,
+            wasm_bytes,
+            registry_certificate,
+            instance_certificate,
+            None,
+        )
+        .await
+    }
+
+    /// [`deploy_svc_wasm`](Self::deploy_svc_wasm), plus a static asset
+    /// bundle (M06A A1) served straight from blob storage without
+    /// instantiating the component -- absent means what `deploy_svc_wasm`
+    /// already means, no assets.
+    pub async fn deploy_svc_wasm_with_assets(
+        &self,
+        service_id: String,
+        interfaces: Vec<String>,
+        wasm_bytes: Vec<u8>,
+        registry_certificate: Option<SignedEndpointInfo>,
+        instance_certificate: Option<DelegationCertificate>,
+        assets: Option<AssetBundle>,
+    ) -> Result<()> {
         let registry_certificate = registry_certificate
             .map(|c| serde_json::to_string(&c))
             .transpose()
@@ -675,6 +728,7 @@ impl SyneroymClient {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets,
             },
             service_type: ServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -718,6 +772,7 @@ impl SyneroymClient {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: ServiceType::Tcp(TcpManifest { endpoints }),
             registry_certificate,
@@ -759,6 +814,7 @@ impl SyneroymClient {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
+                assets: None,
             },
             service_type: ServiceType::Container(ContainerManifest {
                 source: ArtifactSource::Binary(vec![]),
@@ -1068,5 +1124,34 @@ impl Drop for SyneroymClient {
         {
             drop(spawn_background_close(endpoint));
         }
+    }
+}
+
+#[cfg(test)]
+mod frame_size_tests {
+    use super::*;
+
+    #[test]
+    fn a_request_within_the_frame_limit_is_accepted() {
+        check_frame_size("orchestrator.deploy", &vec![0u8; 1024]).unwrap();
+    }
+
+    #[test]
+    fn a_request_right_at_the_limit_is_accepted() {
+        check_frame_size("orchestrator.deploy", &vec![0u8; framing::MAX_FRAME_SIZE as usize])
+            .unwrap();
+    }
+
+    #[test]
+    fn a_request_one_byte_over_the_limit_is_refused_naming_the_method_and_both_sizes() {
+        let err = check_frame_size(
+            "orchestrator.deploy",
+            &vec![0u8; framing::MAX_FRAME_SIZE as usize + 1],
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("orchestrator.deploy"), "{msg}");
+        assert!(msg.contains(&(framing::MAX_FRAME_SIZE as usize + 1).to_string()), "{msg}");
+        assert!(msg.contains(&framing::MAX_FRAME_SIZE.to_string()), "{msg}");
     }
 }
