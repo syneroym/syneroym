@@ -4,6 +4,7 @@
 //! Exposes APIs for deploying apps, managing running services,
 //! and controlling the substrate environment.
 
+pub mod assets;
 pub mod config_utils;
 pub mod dummy_sandbox;
 pub mod http_routes;

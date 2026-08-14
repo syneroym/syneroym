@@ -41,6 +41,7 @@ zeroize.workspace = true
 tar.workspace = true
 flate2.workspace = true
 mime_guess.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 wit-parser.workspace = true
