@@ -53,7 +53,8 @@ pub async fn run_scenario() -> Result<()> {
     let wasm_bytes = fs::read(component_path)?;
 
     // 1. In-process Baseline
-    let engine = AppSandboxEngine::build_wasm_engine(None, None)?;
+    // The trailing 0s are unused: `None, None` disables pooling entirely.
+    let engine = AppSandboxEngine::build_wasm_engine(None, None, 0, 0, 0)?;
     let linker = AppSandboxEngine::build_wasm_linker(&engine)?;
     let component = Component::new(&engine, &wasm_bytes)?;
     // `greet`'s reply also echoes this instance's own `component_id` (M05A

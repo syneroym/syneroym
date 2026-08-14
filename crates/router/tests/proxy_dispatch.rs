@@ -62,19 +62,22 @@ impl NativeService for NoopControlPlane {
 }
 
 /// A `SubstrateConfig` whose `app_sandbox` role reserves a small,
-/// test-proportionate footprint. With no role configured, `AppSandboxEngine`
-/// falls back to production-scale pooling limits (10 instances x 128 MiB --
-/// `AppSandboxEngine::init`), and Wasmtime's pooling allocator reserves
-/// `instances * memory_limit` of address space up front, per `Engine`, per
-/// test. Every guest-fixture test file builds its own `AppSandboxEngine`, so
-/// under `cargo test`'s default parallel runner this reservation is
-/// duplicated across many concurrent test binaries -- a likely contributor
-/// to this file's flaky `cabi_realloc` trap (a wasm allocation failure,
-/// which the guest's Rust allocator turns into an abort trap) under
-/// full-workspace runs despite passing reliably with `--test-threads=1`
-/// (see `docs/planning/deferred-backlog.md`). None of these tests need more
-/// than a couple of concurrent instances or more than a few hundred KiB of
-/// guest memory.
+/// test-proportionate footprint instead of the production-scale fallback
+/// (`AppSandboxEngine::init`'s no-role branch). Investigated in depth as
+/// part of the `guest_self_proxy_put_attributes_...` flake (see
+/// `docs/planning/deferred-backlog.md`, "`crates/router` integration tests
+/// are flaky..."); the root cause of that specific trap was never confirmed,
+/// but this file's real fixtures (`proxy-test`/`greeter`) were measured at
+/// exactly 3 core-module instantiations each (`wasm-tools print ... | grep
+/// -c '(core module'`), so `max_core_instances_per_component`/
+/// `max_memories_per_component`/`max_tables_per_component` below are set to
+/// 4 -- one slot of headroom over the measured need, validated against
+/// `AppSandboxEngine`'s `a_component_at_the_configured_per_component_
+/// resource_max_still_instantiates` unit test, not an unvalidated guess.
+/// Deliberately narrower than `AppSandboxRole::default()`'s own per-component
+/// fields (100 each, chosen to reproduce Wasmtime's pool-wide default
+/// unchanged for any config that doesn't know its own component shape) --
+/// this test file does know its shape, so it uses it.
 fn test_substrate_config() -> SubstrateConfig {
     SubstrateConfig {
         roles: RolesConfig {
@@ -82,6 +85,9 @@ fn test_substrate_config() -> SubstrateConfig {
                 max_concurrent_instances: 4,
                 memory_limit: "16Mi".to_string(),
                 default_max_memory_bytes: Some(16 * 1024 * 1024),
+                max_core_instances_per_component: 4,
+                max_memories_per_component: 4,
+                max_tables_per_component: 4,
                 ..Default::default()
             }),
             ..Default::default()

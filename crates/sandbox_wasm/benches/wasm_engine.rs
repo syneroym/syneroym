@@ -61,7 +61,8 @@ fn bench_wasm_engine(c: &mut Criterion) {
     let blob_provider: Arc<dyn BlobProvider> =
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
 
-    let engine = AppSandboxEngine::build_wasm_engine(None, None).unwrap();
+    // The trailing 0s are unused: `None, None` disables pooling entirely.
+    let engine = AppSandboxEngine::build_wasm_engine(None, None, 0, 0, 0).unwrap();
     let linker: Linker<HostState> = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
     let component = Component::new(&engine, &wasm_bytes).unwrap();
 
