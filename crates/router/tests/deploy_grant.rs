@@ -186,6 +186,7 @@ async fn test_service_with_registry(
         messaging_broker,
         native_dispatch,
         http_routes,
+        Arc::new(DashMap::new()),
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         syneroym_app_orchestration::empty_resolver(),
     )

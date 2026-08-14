@@ -186,6 +186,7 @@ async fn test_route_handler_with_proxy_components() -> Option<RouteHandler> {
         messaging_broker,
         native_dispatch: NativeDispatchRegistry::default(),
         http_routes,
+        assets: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
     };
@@ -298,6 +299,7 @@ async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, A
         messaging_broker,
         native_dispatch: NativeDispatchRegistry::default(),
         http_routes,
+        assets: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
     };
@@ -631,6 +633,7 @@ async fn test_route_handler_with_self_native_data_layer(
         messaging_broker,
         native_dispatch,
         http_routes,
+        assets: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
     };
@@ -756,6 +759,7 @@ async fn test_route_handler_with_self_native_data_layer_and_stage4(
         messaging_broker,
         native_dispatch,
         http_routes,
+        assets: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
     };

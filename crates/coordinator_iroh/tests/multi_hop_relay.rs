@@ -19,6 +19,7 @@ use syneroym_community_registry::EcosystemRegistry;
 use syneroym_control_plane::ControlPlaneService;
 use syneroym_coordinator_iroh::{CoordinatorInfo, CoordinatorIroh};
 use syneroym_core::{
+    asset_manifest::AssetRegistry,
     config::{
         AccessControl, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig,
         ServiceRegistryRole, SubstrateConfig,
@@ -131,6 +132,7 @@ async fn build_test_route_handler_deps(
 
     let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+    let assets: AssetRegistry = Arc::new(DashMap::new());
 
     let control_plane_service = ControlPlaneService::init(
         service_id.to_string(),
@@ -145,6 +147,7 @@ async fn build_test_route_handler_deps(
         messaging_broker.clone(),
         native_dispatch.clone(),
         http_routes.clone(),
+        assets.clone(),
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         syneroym_app_orchestration::empty_resolver(),
     )
@@ -159,6 +162,7 @@ async fn build_test_route_handler_deps(
         messaging_broker,
         native_dispatch,
         http_routes,
+        assets,
         control_plane_service: control_plane_service.clone(),
         control_plane: Some(control_plane_service),
     })

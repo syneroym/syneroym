@@ -23,6 +23,7 @@ use syneroym_app_orchestration::LogicalResolver;
 use syneroym_async_queue::{DedupConfig, QueueConfig, SagaConfig};
 use syneroym_control_plane::ControlPlaneService;
 use syneroym_core::{
+    asset_manifest::AssetRegistry,
     config::{RetryPolicy, SubstrateConfig},
     dht_registry::RegistryClient,
     http_routes::HttpRouteRegistry,
@@ -115,6 +116,9 @@ pub struct RouteHandlerInner {
     /// `route_handler::http` to resolve `(service_id, method, path)` to a
     /// bridged `data-layer`/`messaging`/stream-protocol route.
     pub http_routes: HttpRouteRegistry,
+    /// Static asset manifests, per service (M06A A1). Same `Arc` and same
+    /// producer as `http_routes` above; a cache, not persistence (D-A1-2).
+    pub assets: AssetRegistry,
     /// `None` in coordinator mode (`new_coordinator`), `Some` for a real
     /// substrate node (`init`) -- mirrors `app_sandbox_engine`'s own
     /// coordinator-mode-is-absent pattern. Used only by the signed-URL blob
@@ -188,6 +192,10 @@ pub struct RouteHandlerDeps {
     pub messaging_broker: Arc<MqttBroker>,
     pub native_dispatch: NativeDispatchRegistry,
     pub http_routes: HttpRouteRegistry,
+    /// Static asset manifests, per service (M06A A1). Same `Arc`, same
+    /// registration path (`ControlPlaneService::deploy`/`undeploy`), and
+    /// same cache-not-persistence lifecycle as `http_routes` above.
+    pub assets: AssetRegistry,
     /// The node's control-plane service (deploy/undeploy/list, security
     /// ops), already registered against `native_dispatch`/`http_routes` by
     /// the caller during construction -- `RouteHandler::init` only needs to
@@ -363,6 +371,7 @@ impl RouteHandler {
             max_connections,
             messaging_broker: deps.messaging_broker,
             http_routes: deps.http_routes,
+            assets: deps.assets,
             key_store: Some(deps.key_store),
             storage_provider: Some(deps.storage_provider),
             admin_ucan_root: config.iam.admin_ucan_root.clone(),
@@ -403,6 +412,7 @@ impl RouteHandler {
                 MqttBroker::new(MqttBrokerConfig::default()).expect("coordinator mqtt broker"),
             ),
             http_routes: Arc::new(DashMap::new()),
+            assets: Arc::new(DashMap::new()),
             key_store: None,
             storage_provider: None,
             admin_ucan_root: None,

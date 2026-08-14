@@ -17,8 +17,8 @@ use dashmap::DashMap;
 use reqwest::{Client, redirect::Policy};
 use serde_json::Value;
 use syneroym_core::{
-    endpoint_publisher::EndpointPublisher, http_routes::HttpRouteRegistry,
-    local_registry::EndpointRegistry,
+    asset_manifest::AssetRegistry, endpoint_publisher::EndpointPublisher,
+    http_routes::HttpRouteRegistry, local_registry::EndpointRegistry,
 };
 use syneroym_data_blob::BlobProvider;
 use syneroym_data_db::traits::StorageProvider;
@@ -142,6 +142,11 @@ pub struct ControlPlaneService {
     // `syneroym_core::http_routes`) for lookup from
     // `crates/router/src/route_handler/http.rs`.
     http_routes: HttpRouteRegistry,
+    /// Static asset manifests, per service (M06A A1). Same `Arc`, same
+    /// producer/consumer split, and same cache-not-persistence lifecycle as
+    /// `http_routes` above -- `RouteHandlerInner` holds the identical `Arc`
+    /// for lookup from `crates/router/src/route_handler/http.rs`.
+    assets: AssetRegistry,
     /// Last probe result per service, `(checked_at_secs, ProbeStatus)` (M05A
     /// A4). A supervisor polling every few seconds must not turn into probe
     /// load on the target (the milestone's "health poll cost" budget), and a
@@ -181,6 +186,7 @@ impl ControlPlaneService {
         messaging_broker: Arc<MqttBroker>,
         native_dispatch: NativeDispatchRegistry,
         http_routes: HttpRouteRegistry,
+        assets: AssetRegistry,
         node_identity: Arc<Identity>,
         logical_resolver: Arc<syneroym_app_orchestration::LogicalResolver>,
     ) -> Result<Self> {
@@ -210,6 +216,7 @@ impl ControlPlaneService {
             republish_trigger: OnceLock::new(),
             native_dispatch: Arc::downgrade(&native_dispatch),
             http_routes,
+            assets,
             probe_cache: DashMap::new(),
             http_probe_client: Client::builder()
                 .redirect(Policy::none())
@@ -964,6 +971,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -1033,6 +1041,7 @@ mod tests {
             blob_provider.clone(),
             messaging_broker.clone(),
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
@@ -1126,6 +1135,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -1200,6 +1210,7 @@ mod tests {
             blob_provider,
             messaging_broker.clone(),
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
@@ -1470,6 +1481,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -1612,6 +1624,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -1726,6 +1739,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -1815,6 +1829,7 @@ mod tests {
             blob_provider,
             messaging_broker,
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
@@ -2067,6 +2082,7 @@ mod tests {
             messaging_broker,
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),
         )
@@ -2138,6 +2154,7 @@ mod tests {
             blob_provider,
             messaging_broker,
             native_dispatch,
+            Arc::new(DashMap::new()),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
             syneroym_app_orchestration::empty_resolver(),

@@ -25,6 +25,7 @@ use syneroym_community_registry::EcosystemRegistry;
 use syneroym_control_plane::ControlPlaneService;
 use syneroym_coordinator::EcosystemCoordinator;
 use syneroym_core::{
+    asset_manifest::AssetRegistry,
     config::{BlobBackend, SubstrateConfig},
     dht_registry::{
         DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMechanism, EndpointType,
@@ -989,6 +990,7 @@ async fn build_route_handler_deps(
     // handles.
     let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+    let assets: AssetRegistry = Arc::new(DashMap::new());
 
     // Cloning the `Arc`, not `node_identity` itself -- `Identity`
     // deliberately does not implement `Clone`, but a second handle to the
@@ -1010,6 +1012,7 @@ async fn build_route_handler_deps(
         messaging_broker.clone(),
         native_dispatch.clone(),
         http_routes.clone(),
+        assets.clone(),
         node_identity,
         logical_resolver.clone(),
     )
@@ -1033,6 +1036,7 @@ async fn build_route_handler_deps(
             messaging_broker,
             native_dispatch,
             http_routes,
+            assets,
             control_plane_service: control_plane_service.clone(),
             control_plane: Some(control_plane_service),
         },

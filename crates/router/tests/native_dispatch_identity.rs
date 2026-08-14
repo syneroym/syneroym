@@ -183,6 +183,7 @@ async fn test_route_handler() -> (RouteHandler, HttpRouteRegistry) {
         messaging_broker,
         native_dispatch: NativeDispatchRegistry::default(),
         http_routes: http_routes.clone(),
+        assets: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(RecordingNativeService::default()),
         control_plane: None,
     };
