@@ -30,6 +30,11 @@ pub mod svc;
 
 use security::{KekCommands, SecretCommands};
 
+// `Svc(SvcCommands)` carries `SvcCommands::Deploy`, itself already
+// `#[allow(clippy::large_enum_variant)]`'d for the same reason (a one-shot,
+// parsed-once CLI arg struct, not a value stored in bulk -- the perf lint's
+// concern doesn't apply here).
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug, Clone)]
 pub enum Commands {
     /// Manage the local substrate daemon

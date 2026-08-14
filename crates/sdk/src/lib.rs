@@ -33,10 +33,10 @@ use syneroym_rpc::{
 };
 pub use syneroym_rpc::{DeadLetterInfo, QueuedCallInfo, SagaInfo, SagaState};
 pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, BindingWrite, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
-    DependencyBinding, DeployManifest, DeploymentPlan, HealthCheck, HttpProbe, InstanceIdentity,
-    NetworkEndpoint, PlannedService, RpcProbe, ServiceConfig, ServiceType, TcpManifest, TcpProbe,
-    TopologyMode, WasmManifest,
+    ArtifactSource, AssetBundle, BindingWrite, ContainerManifest, ContainerPortMapping,
+    ContainerVolumeMapping, DependencyBinding, DeployManifest, DeploymentPlan, HealthCheck,
+    HttpProbe, InstanceIdentity, NetworkEndpoint, PlannedService, RpcProbe, ServiceConfig,
+    ServiceType, TcpManifest, TcpProbe, TopologyMode, Visibility, WasmManifest,
 };
 use tokio::{io, net::TcpStream, sync::mpsc, task::JoinHandle, time};
 pub use topology::{RegistryTopologyFetcher, fetch_and_register};
@@ -657,6 +657,30 @@ impl SyneroymClient {
         registry_certificate: Option<SignedEndpointInfo>,
         instance_certificate: Option<DelegationCertificate>,
     ) -> Result<()> {
+        self.deploy_svc_wasm_with_assets(
+            service_id,
+            interfaces,
+            wasm_bytes,
+            registry_certificate,
+            instance_certificate,
+            None,
+        )
+        .await
+    }
+
+    /// [`deploy_svc_wasm`](Self::deploy_svc_wasm), plus a static asset
+    /// bundle (M06A A1) served straight from blob storage without
+    /// instantiating the component -- absent means what `deploy_svc_wasm`
+    /// already means, no assets.
+    pub async fn deploy_svc_wasm_with_assets(
+        &self,
+        service_id: String,
+        interfaces: Vec<String>,
+        wasm_bytes: Vec<u8>,
+        registry_certificate: Option<SignedEndpointInfo>,
+        instance_certificate: Option<DelegationCertificate>,
+        assets: Option<AssetBundle>,
+    ) -> Result<()> {
         let registry_certificate = registry_certificate
             .map(|c| serde_json::to_string(&c))
             .transpose()
@@ -675,7 +699,7 @@ impl SyneroymClient {
                 rotation_policy: None,
                 fdae_policy: None,
                 health_check: None,
-                assets: None,
+                assets,
             },
             service_type: ServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),

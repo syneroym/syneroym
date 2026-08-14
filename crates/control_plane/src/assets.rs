@@ -83,7 +83,40 @@ pub async fn unpack_asset_bundle(
         .filter(|r| r.method.eq_ignore_ascii_case("GET") || r.method.eq_ignore_ascii_case("HEAD"))
         .collect();
 
+    // `tar::Archive`/`Entries` hold their reader behind a `RefCell`, so
+    // neither is `Send` -- this whole phase must stay synchronous, with the
+    // archive fully consumed and dropped before the first `.await` below,
+    // or every caller up to the JSON-RPC dispatch trait's `async_trait`
+    // bound stops compiling (its futures must be `Send`).
+    let collected = parse_and_validate_entries(archive, &get_head_routes)?;
+
     let mut entries = BTreeMap::new();
+    for (key, content, content_type) in collected {
+        let len = content.len() as u64;
+        let hash = blob
+            .put_blob(service_id, content, dek.clone())
+            .await
+            .map_err(|e| format!("failed to store asset {key:?}: {e}"))?;
+        // Recorded before any further fallible step in this iteration --
+        // the caller's rollback must see every blob this call actually
+        // wrote, even one whose entry is never inserted below.
+        written.insert(hash.clone());
+        entries.insert(key, AssetEntry { hash, len, content_type });
+    }
+
+    Ok(AssetManifest { entries })
+}
+
+/// The synchronous half of [`unpack_asset_bundle`]: decompresses, validates,
+/// and fully reads every accepted entry into memory, in path order. No I/O
+/// beyond the in-memory `archive` slice -- kept separate from the async
+/// blob-writing loop so the non-`Send` `tar::Archive` never lives across an
+/// `.await` point.
+fn parse_and_validate_entries(
+    archive: &[u8],
+    get_head_routes: &[&HttpRoute],
+) -> Result<Vec<(String, Vec<u8>, String)>, String> {
+    let mut collected = Vec::new();
     let mut total: u64 = 0;
 
     let mut tar = tar::Archive::new(GzDecoder::new(archive));
@@ -112,7 +145,7 @@ pub async fn unpack_asset_bundle(
                 "asset path {key:?} collides with the reserved {RESERVED_BLOBS_PREFIX} prefix"
             ));
         }
-        for route in &get_head_routes {
+        for route in get_head_routes {
             if match_path(&route.path, &key).is_some() {
                 return Err(format!(
                     "asset path {key:?} collides with declared route {} {}",
@@ -120,7 +153,7 @@ pub async fn unpack_asset_bundle(
                 ));
             }
         }
-        if entries.len() + 1 > MAX_ASSET_FILE_COUNT {
+        if collected.len() + 1 > MAX_ASSET_FILE_COUNT {
             return Err(format!("asset bundle contains more than {MAX_ASSET_FILE_COUNT} files"));
         }
 
@@ -141,22 +174,12 @@ pub async fn unpack_asset_bundle(
             }
             content.extend_from_slice(&buf[..n]);
         }
-        let len = content.len() as u64;
-
-        let hash = blob
-            .put_blob(service_id, content, dek.clone())
-            .await
-            .map_err(|e| format!("failed to store asset {key:?}: {e}"))?;
-        // Recorded before any further fallible step in this iteration --
-        // the caller's rollback must see every blob this call actually
-        // wrote, even one whose entry is never inserted below.
-        written.insert(hash.clone());
 
         let content_type = mime_guess::from_path(&key).first_or_octet_stream().to_string();
-        entries.insert(key, AssetEntry { hash, len, content_type });
+        collected.push((key, content, content_type));
     }
 
-    Ok(AssetManifest { entries })
+    Ok(collected)
 }
 
 /// Normalises an archive entry path already accepted by
