@@ -129,7 +129,7 @@ Nothing here is gated on M06B.
 
 | # | Scope | Gate |
 |---|---|---|
-| **A1** | **Blob-backed static serving.** Deploy carries an asset bundle; unpack into blobs; persist a path → hash manifest; router serves it without touching the sandbox; content type from the path; `ETag`/`Cache-Control` from the content hash; declared public readability (D-06A-3) | — |
+| **A1** | **Blob-backed static serving.** Deploy carries an asset bundle; unpack into blobs; persist a path → hash manifest; router serves it without touching the sandbox — exact-path serving plus a trailing-slash directory index, not SPA history fallback (that's A3's problem); content type from the path; `ETag`/`Cache-Control` from the content hash; declared public readability (D-06A-3) | **Complete** |
 | **A2** | **Guest HTTP route target.** A fourth `dispatch_route` target that hands method, path, params, headers, and body to the component and turns its return into an HTTP response; error and status mapping; body size caps; behaviour within the existing 5s `dispatch_epoch_timeout_secs` bound | — |
 | **A3** | **The demo app.** A WASM component providing the same functionality as `miniapp-demo1-web`: UI bundle via A1, REST endpoints via A2, upload/download via the existing `stream` target, live updates via SSE | A1 **and** A2 |
 | **A4** | **The Playwright suite.** The four cases from `webrtc.spec.ts` re-pointed at the demo app, with the echo/broadcast case rewritten over SSE | A3 |
@@ -141,17 +141,23 @@ router changes with their own tests; A3 is the first thing that needs both.
 
 - **Where the path → hash manifest lives.** `http_routes` rides in
   `custom_config` JSON, which suits a handful of entries and not a few hundred
-  files. Likely shape: deploy writes the manifest as its own blob and puts that
-  hash in the config, with the router loading and caching it per service. Slice
-  A1's plan decides.
+  files. **Resolved by slice A1's plan (D-A1-2):** deploy writes the manifest
+  as its own blob and puts that hash in the config-equivalent `asset-bundle`
+  record — but only the writing half. Router-side loading is a cache
+  (`AssetRegistry`, populated by `deploy()`/cleared by `undeploy()`), not a
+  boot-time restore from the stored manifest blob; nothing in this tree reads
+  it back after a restart. Recorded as a deliberate scope line, not an
+  oversight — see [deferred-backlog.md](../../planning/deferred-backlog.md)
+  §4.
 - **What a guest HTTP handler looks like in WIT.** A dedicated
   `handle-request`-style export, or a JSON-RPC method invoked by convention.
   The first is clearer at the boundary; the second adds no WIT surface. Slice
   A2's plan decides, and the choice affects M06C's Web entrypoint.
 - **Whether the demo app needs its own DEK-scoped bundle.** Static assets are
   public by D-06A-3, so encrypting them at rest buys nothing against the
-  stated threat model but keeps one storage path instead of two. Slice A1's plan
-  decides.
+  stated threat model but keeps one storage path instead of two. **Resolved
+  by slice A1's plan (D-A1-3):** assets use the service DEK like every other
+  blob — one storage path, not two.
 
 ---
 
@@ -162,8 +168,11 @@ router changes with their own tests; A3 is the first thing that needs both.
   already returns a clean 500 rather than misrouting.
 - **A new deploy-time artifact kind.** Additive, and absent means today's
   behaviour — a service with no asset bundle serves no static paths.
-- **No change to any existing WIT interface**, unless slice A2's plan chooses a
-  dedicated guest export, which would be an addition rather than a break.
+- **A1 does add WIT**, correcting this section's earlier claim that only A2
+  might: a `visibility` enum, an `asset-bundle` record, and
+  `service-config.assets: option<asset-bundle>` (all additive — an existing
+  manifest with no `assets` field keeps deploying unchanged). Slice A2's plan
+  may add further WIT surface if it chooses a dedicated guest export.
 - **No wire-format change** to endpoint records, topology documents, or gateway
   hostnames.
 
@@ -193,7 +202,7 @@ Step 4 is the one to watch: if the sandbox is instantiated, slice A1 is wrong.
 | # | Case | Expected |
 |---|---|---|
 | 1 | Asset bundle contains `../` or an absolute path | Rejected at deploy, before any blob is written |
-| 2 | Asset bundle exceeds the size cap | Rejected at deploy with a clear error, no partial state |
+| 2 | Asset bundle exceeds the size cap | Rejected at deploy with a clear error, no partial state. Slice A1's plan (D-A1-5) settles this as three caps, not one: a cheap `MAX_ASSET_BUNDLE_BYTES` (2 MiB) early guard, `MAX_ASSET_UNPACKED_BYTES` (64 MiB) against a decompression bomb, and the *authoritative* check — the combined `encoded(component) + encoded(bundle) + envelope` fitting the 16 MiB RPC frame, checked client-side, since both expand ~3.57× as JSON integer arrays and share one frame with the component binary |
 | 3 | Request for a path absent from the manifest | 404, no blob lookup, no sandbox instantiation |
 | 4 | A request tries to read another service's assets | Refused — the manifest is per service, resolved from the connection's own `service_id`, matching the existing blob GET's `svc` check |
 | 5 | Guest route handler traps or exceeds its epoch bound | 500 with a structured error; the connection stays usable; no partial response body |
