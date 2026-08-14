@@ -24,7 +24,7 @@ use syneroym_app_orchestration::{
 };
 use syneroym_control_plane::SynSvcNativeService;
 use syneroym_core::{
-    config::SubstrateConfig,
+    config::{AppSandboxRole, RolesConfig, SubstrateConfig},
     http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
     storage::MockStorage,
@@ -61,6 +61,35 @@ impl NativeService for NoopControlPlane {
     }
 }
 
+/// A `SubstrateConfig` whose `app_sandbox` role reserves a small,
+/// test-proportionate footprint. With no role configured, `AppSandboxEngine`
+/// falls back to production-scale pooling limits (10 instances x 128 MiB --
+/// `AppSandboxEngine::init`), and Wasmtime's pooling allocator reserves
+/// `instances * memory_limit` of address space up front, per `Engine`, per
+/// test. Every guest-fixture test file builds its own `AppSandboxEngine`, so
+/// under `cargo test`'s default parallel runner this reservation is
+/// duplicated across many concurrent test binaries -- a likely contributor
+/// to this file's flaky `cabi_realloc` trap (a wasm allocation failure,
+/// which the guest's Rust allocator turns into an abort trap) under
+/// full-workspace runs despite passing reliably with `--test-threads=1`
+/// (see `docs/planning/deferred-backlog.md`). None of these tests need more
+/// than a couple of concurrent instances or more than a few hundred KiB of
+/// guest memory.
+fn test_substrate_config() -> SubstrateConfig {
+    SubstrateConfig {
+        roles: RolesConfig {
+            app_sandbox: Some(AppSandboxRole {
+                max_concurrent_instances: 4,
+                memory_limit: "16Mi".to_string(),
+                default_max_memory_bytes: Some(16 * 1024 * 1024),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
     DeployManifest {
         config: ServiceConfig {
@@ -93,7 +122,7 @@ async fn test_route_handler_with_proxy_components() -> Option<RouteHandler> {
     let greeter_bytes = fs::read(test_constants::greeter_wasm_path()).ok()?;
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let config = SubstrateConfig::default();
+    let config = test_substrate_config();
     let key_store = Arc::new(KeyStore::new());
     let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =
@@ -186,7 +215,7 @@ async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, A
     let greeter_bytes = fs::read(test_constants::greeter_wasm_path()).ok()?;
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let config = SubstrateConfig::default();
+    let config = test_substrate_config();
     let key_store = Arc::new(KeyStore::new());
     let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =
@@ -514,7 +543,7 @@ async fn test_route_handler_with_self_native_data_layer(
     let greeter_bytes = fs::read(test_constants::greeter_wasm_path()).ok()?;
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let config = SubstrateConfig::default();
+    let config = test_substrate_config();
     let key_store = Arc::new(KeyStore::new());
     let storage_provider: Arc<dyn StorageProvider> =
         Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
@@ -634,7 +663,7 @@ async fn test_route_handler_with_self_native_data_layer_and_stage4(
     let greeter_bytes = fs::read(test_constants::greeter_wasm_path()).ok()?;
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let config = SubstrateConfig::default();
+    let config = test_substrate_config();
     let key_store = Arc::new(KeyStore::new());
     let storage_provider: Arc<dyn StorageProvider> =
         Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
