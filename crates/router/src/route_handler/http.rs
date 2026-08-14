@@ -10,10 +10,14 @@
 //! Route resolution order, per request:
 //! 1. `GET /blobs/{hash}` -- always intercepted (fixed, self-authorizing via
 //!    the signed-URL HMAC, not a per-service opt-in).
-//! 2. The connected service's `http_routes` table (method + path-with-
+//! 2. M06A A1's static assets: `GET`/`HEAD` only, exact path plus a
+//!    trailing-slash directory index, served straight from blob storage without
+//!    instantiating the component. Deploy-time collision detection (D-A1-4)
+//!    means this and step 3 below never actually contend for the same path.
+//! 3. The connected service's `http_routes` table (method + path-with-
 //!    `{param}` match) -- bridges onto `data-layer`/`messaging`/a registered
 //!    stream protocol.
-//! 3. Fallthrough, unchanged: the original `POST`+`application/json` JSON-RPC
+//! 4. Fallthrough, unchanged: the original `POST`+`application/json` JSON-RPC
 //!    bridge.
 
 use std::{
@@ -33,7 +37,7 @@ use http_body_util::{
 use hyper::{
     Method, Request, Response, StatusCode,
     body::{Frame, Incoming},
-    header::{ACCEPT, CACHE_CONTROL, CONTENT_TYPE},
+    header::{ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_NONE_MATCH},
     service,
 };
 use hyper_util::{
@@ -42,6 +46,7 @@ use hyper_util::{
 };
 use serde_json::Value;
 use syneroym_core::{
+    asset_manifest::AssetEntry,
     http_routes::{HttpRoute, match_path},
     streaming::StreamDirection,
 };
@@ -241,6 +246,19 @@ fn blob_hash_from_path(path: &str) -> Option<&str> {
     if hash.is_empty() || hash.contains('/') { None } else { Some(hash) }
 }
 
+/// **Cache-Control is chosen by content type, not by path** (M06A A1
+/// §5.2): `text/html`'s name is stable while its content changes every
+/// deploy, so caching it immutably would pin a browser to a stale bundle
+/// indefinitely. Everything else gets long-lived immutable caching, correct
+/// for the bundler-hashed filenames a real asset pipeline produces.
+fn cache_control_for(content_type: &str) -> &'static str {
+    if content_type.starts_with("text/html") {
+        "no-cache"
+    } else {
+        "public, max-age=31536000, immutable"
+    }
+}
+
 /// Parses an HTTP query string (`k=v&k2=v2`) leniently, matching
 /// `RoutePreamble::parse`'s own permissive, non-percent-decoding style
 /// elsewhere in this crate.
@@ -368,6 +386,16 @@ impl HttpHandler {
             return self.handle_blob_get(hash, &query).await;
         }
 
+        // M06A A1: static assets, exact-path plus a trailing-slash
+        // directory index. Placed before route resolution -- an asset path
+        // colliding with a declared route pattern is refused at deploy
+        // (D-A1-4), so this ordering is never actually ambiguous at
+        // request time; it exists to keep resolve_asset a cheap, sandbox-
+        // free check (D-06A-1) ahead of the route table lookup.
+        if let Some(resp) = self.try_handle_asset(&method, &path, &req).await? {
+            return Ok(resp);
+        }
+
         if let Some((route, path_param)) = self.resolve_route(&method, &path) {
             return self.dispatch_route(&route, path_param, req).await;
         }
@@ -454,6 +482,125 @@ impl HttpHandler {
             params,
         )
         .await
+    }
+
+    /// Exact-path lookup, plus D-A1-11's one rewrite: a `path` ending in
+    /// `/` resolves to `<path>index.html`. This function owns the
+    /// rewrite -- callers pass the raw request path and do no
+    /// normalisation of their own, so there is exactly one place the rule
+    /// lives. No history-fallback, no prefix rules (D-A1-4): `/api/comments`
+    /// has no trailing slash, so it is never rewritten and always falls
+    /// through to route resolution.
+    ///
+    /// `None` when the service has no bundle, its declared visibility is
+    /// not `public`, or no entry matches the (possibly rewritten) path --
+    /// deliberately indistinguishable, so a miss and a non-public bundle
+    /// both read as "not found" to the caller (D-A1-8).
+    fn resolve_asset(&self, path: &str) -> Option<AssetEntry> {
+        let service_assets = self.route_handler.inner.assets.get(&self.preamble.service_id)?;
+        if !service_assets.public {
+            return None;
+        }
+        let lookup_path = if let Some(prefix) = path.strip_suffix('/') {
+            format!("{prefix}/index.html")
+        } else {
+            path.to_string()
+        };
+        service_assets.manifest.entries.get(&lookup_path).cloned()
+    }
+
+    /// Serves one static asset (M06A A1). `Ok(None)` means "not an asset"
+    /// and the caller falls through to route resolution unchanged.
+    async fn try_handle_asset(
+        &self,
+        method: &Method,
+        path: &str,
+        req: &Request<Incoming>,
+    ) -> Result<Option<Response<HttpBody>>> {
+        if *method != Method::GET && *method != Method::HEAD {
+            return Ok(None);
+        }
+        let Some(entry) = self.resolve_asset(path) else {
+            return Ok(None);
+        };
+
+        let etag = format!("\"{}\"", entry.hash);
+        let cache_control = cache_control_for(&entry.content_type);
+        if req.headers().get(IF_NONE_MATCH).and_then(|v| v.to_str().ok()) == Some(etag.as_str()) {
+            let resp = Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header(ETAG, etag)
+                .header(CACHE_CONTROL, cache_control)
+                .body(full_body(Bytes::new()))
+                .map_err(|e| anyhow!("failed to build 304 response: {e}"))?;
+            return Ok(Some(resp));
+        }
+
+        let builder = Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, entry.content_type.clone())
+            .header(CONTENT_LENGTH, entry.len.to_string())
+            .header(ETAG, etag)
+            .header(CACHE_CONTROL, cache_control);
+
+        if *method == Method::HEAD {
+            let resp = builder
+                .body(full_body(Bytes::new()))
+                .map_err(|e| anyhow!("failed to build HEAD response: {e}"))?;
+            return Ok(Some(resp));
+        }
+
+        // F3: never instantiates the component -- the same
+        // `blob-store/open-download`+`read-chunk` native-dispatch streaming
+        // `handle_blob_get` uses, reached through the identical
+        // `NativeService` arm (D-06A-1). Deliberately bypasses `self.
+        // dispatch()` (bound to `self.caller`, which may be `None`): a
+        // public asset's authorization is D-A1-1's declared `visibility`,
+        // already checked in `resolve_asset`, not the connection's own
+        // delegation.
+        let system_caller = CallerContext::service_system(&self.preamble.service_id);
+        let open_params = serde_json::json!({"hash": entry.hash, "offset": 0});
+        let download_id = match dispatch_native(
+            &self.route_handler,
+            &self.pipeline,
+            &self.preamble,
+            Some(&system_caller),
+            "blob-store",
+            "open-download",
+            open_params,
+        )
+        .await?
+        {
+            DispatchOutcome::Success(value) => {
+                let resp: OpenDownloadResponse = serde_json::from_value(value)
+                    .map_err(|e| anyhow!("malformed open-download response: {e}"))?;
+                resp.download_id
+            }
+            DispatchOutcome::Error { code, message } => {
+                return Ok(Some(structured_rpc_error(
+                    status_for_rpc_error_code(code),
+                    code,
+                    message,
+                )));
+            }
+        };
+
+        let state = BlobDownloadState {
+            route_handler: self.route_handler.clone(),
+            pipeline: self.pipeline.clone(),
+            preamble: RoutePreamble {
+                interface: "blob-store".to_string(),
+                ..self.preamble.clone()
+            },
+            caller: system_caller,
+            download_id,
+            closed: false,
+        };
+        let stream = stream::unfold(state, blob_download_step);
+        let body = StreamBody::new(stream).boxed_unsync();
+        let resp =
+            builder.body(body).map_err(|e| anyhow!("failed to build asset response: {e}"))?;
+        Ok(Some(resp))
     }
 
     fn resolve_route(&self, method: &Method, path: &str) -> Option<(HttpRoute, Option<String>)> {
