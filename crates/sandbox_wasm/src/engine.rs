@@ -501,7 +501,11 @@ impl AppSandboxEngine {
     /// guaranteed a slot regardless of how many other components are
     /// concurrently live, and one that doesn't fails to instantiate with a
     /// clear Wasmtime error rather than silently starving its neighbors'
-    /// share of an unbounded shared pool.
+    /// share of an unbounded shared pool. All three are ignored -- safe to
+    /// pass `0` -- whenever `max_instances`/`max_memory` are `None`: that
+    /// disables the pooling allocator entirely (Wasmtime's on-demand
+    /// strategy, no resource caps of any kind), so there is no per-component
+    /// limit for them to configure.
     pub fn build_wasm_engine(
         max_instances: Option<u32>,
         max_memory: Option<usize>,
@@ -2392,6 +2396,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_interfaces() {
+        // The trailing 0s are unused: `None, None` disables pooling entirely.
         let engine = AppSandboxEngine::build_wasm_engine(None, None, 0, 0, 0).unwrap();
         let linker = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
 
@@ -2637,6 +2642,7 @@ mod tests {
     }
 
     fn test_app_engine(storage_provider: Arc<dyn StorageProvider>) -> AppSandboxEngine {
+        // The trailing 0s are unused: `None, None` disables pooling entirely.
         let engine = AppSandboxEngine::build_wasm_engine(None, None, 0, 0, 0).unwrap();
         let linker = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
         AppSandboxEngine {
