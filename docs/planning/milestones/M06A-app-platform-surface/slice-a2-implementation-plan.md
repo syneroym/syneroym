@@ -1478,7 +1478,10 @@ criteria 1, 2, 4, 6, 7 belong to A3/A4.
    visitor, and that A2 labels it `self-asserted` in the WIT precisely so a
    guest cannot mistake it for a user. R3-A: this correction belongs to A2, not
    to M06B.
-9. **`status.md`** names
+9. **`status.md` — done (2026-08-14).** It named
    [slice-a1-implementation-plan.md](slice-a1-implementation-plan.md) as *the*
-   design of record for the milestone; it should name this plan alongside it
-   once A2 starts, and A2's slice row should move off "Not started".
+   design of record for the milestone; it now names both, A2's slice row reads
+   "Planned" rather than "Not started", and an "A2 — Planned" section records
+   the two decisions that changed during review plus the two gaps A3 inherits
+   (§9.8, §9.10). The remaining eight corrections above are still owed, and
+   land with the implementation.

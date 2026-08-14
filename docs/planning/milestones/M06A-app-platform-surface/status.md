@@ -1,16 +1,19 @@
 # M06A App Platform Surface — Status
 
-**Milestone:** [task.md](task.md) · **Design of record:** [slice-a1-implementation-plan.md](slice-a1-implementation-plan.md)
+**Milestone:** [task.md](task.md) · **Designs of record:**
+[slice-a1-implementation-plan.md](slice-a1-implementation-plan.md) (A1),
+[slice-a2-implementation-plan.md](slice-a2-implementation-plan.md) (A2)
 
-**Overall:** Slice A1 complete (2026-08-14). A2–A4 not started.
+**Overall:** Slice A1 complete (2026-08-14). A2 planned (2026-08-14), no code
+written. A3–A4 not started.
 
 ## Slice status
 
 | Slice | Scope | Status | Gate |
 |---|---|---|---|
 | A1 | Blob-backed static serving | **Complete (2026-08-14)** — [implementation plan](slice-a1-implementation-plan.md), evidence below | None — independently mergeable |
-| A2 | Guest HTTP route target | Not started | None |
-| A3 | The demo app | Not started | A1 (Complete) and A2 |
+| A2 | Guest HTTP route target | **Planned (2026-08-14)** — [implementation plan](slice-a2-implementation-plan.md) revision 4, notes below. Implementation not started | None — independent of A1 |
+| A3 | The demo app | Not started | A1 (Complete) and A2 (Planned) |
 | A4 | The Playwright suite | Not started | A3 |
 
 ---
@@ -247,3 +250,51 @@ are A2/A3/A4's — the milestone's own criterion list says so explicitly):
 9. `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets
    --all-features`, `cargo test --workspace`, and `mise run test:e2e` are
    clean — see commands above.
+
+---
+
+## A2 — Planned (2026-08-14), no code written
+
+[slice-a2-implementation-plan.md](slice-a2-implementation-plan.md), revision 4
+after three review rounds. It settles task.md's open design point on what a
+guest HTTP handler looks like in WIT: a dedicated
+`syneroym:http/incoming-handler@0.1.0` export (`handle-request`), reached by
+calling the sandbox engine directly rather than through
+`dispatch_json_rpc_once` — an `http-native` connection resolves to a
+`NativeService` pipeline, so the JSON-RPC bridge can never reach a guest.
+
+**Two decisions worth knowing before reading the plan**, because both changed
+during review and the reversals are recorded rather than tidied away:
+
+- **A guest route is authenticated by default.** `HttpRoute` gains
+  `public: bool`, default `false`, mirroring A1's `D-A1-1` rather than the
+  dispatch-layer doctrine that WASM guests admit anonymous callers. What it
+  actually gates is narrow and stated as such: a *direct* anonymous connection
+  (WebRTC, raw QUIC). It gates nothing proxied by the client gateway, which
+  presents the node's own DID on every request.
+- **The guest sees its caller** (`caller: option<caller-identity>` on the
+  request record), with a `self-asserted` variant so the WIT cannot imply that
+  gateway traffic — or an unchallenged pubkey — is a verified identity.
+
+**Two things A3 inherits, neither of which any shipped slice provides.** Both
+are recorded in the A2 plan (§9.8, §9.10) so A3 does not discover them from a
+red test:
+
+1. **Every route A3's demo declares must set `public: true`**, or exit
+   criterion 2 (the four Playwright cases in the **direct WebRTC**
+   configuration) fails at the first request. The same routes would appear to
+   work through the local gateway.
+2. **SPA deep links have no mechanism.** `D-A1-11` left `/some/route` →
+   `index.html` as "A3's problem", and the route table cannot cover it either:
+   `match_path` requires equal segment counts and has no wildcard, so a deep
+   link of unknown depth cannot be declared as a route at all. A3 starts
+   blocked on this; the plan names the two candidate fixes.
+
+**No deferred-backlog rows yet.** The A2 plan's §9 marks each as "backlog row
+owed" at landing, the same way A1's plan did — those rows describe shipped
+behaviour, and nothing has shipped.
+
+**Corrections this plan owes other documents** (task.md's migration-impact
+bullet and failure-matrix rows 5, 6 and 8; `docs/system-architecture.md`'s
+"HTTP Passthrough" bullet; `client_gateway/src/gateway.rs`'s "harmless today"
+note) are listed in its §10 and are part of A2's own "done", not this file's.
