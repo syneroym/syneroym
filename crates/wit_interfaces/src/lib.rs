@@ -11,3 +11,6 @@ pub mod vault;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod host;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod http;

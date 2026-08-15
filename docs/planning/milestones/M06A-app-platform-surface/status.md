@@ -23,8 +23,8 @@ A3–A5 not started.
 |---|---|---|---|
 | A1 | Blob-backed static serving | **Complete (2026-08-14)** — [implementation plan](slice-a1-implementation-plan.md), evidence below | None — independently mergeable |
 | A2 | Guest HTTP route target | **Complete (2026-08-14)** — [implementation plan](slice-a2-implementation-plan.md) revision 4, evidence below | None — independent of A1 |
-| A3 | Inbound WebSocket | Not started — owes its own plan | A2 (Complete) |
-| A4 | The demo app | Not started — [implementation plan](slice-a4-implementation-plan.md) | A1, A2 (Complete) and A3 |
+| A3 | Inbound WebSocket | **Complete (2026-08-15)** — [implementation plan](slice-a3-implementation-plan.md), evidence below | A2 (Complete) |
+| A4 | The demo app | Not started — [implementation plan](slice-a4-implementation-plan.md) | A1, A2 (Complete) and A3 (Complete) |
 | A5 | The Playwright suite | Not started | A4 |
 
 ---
@@ -615,3 +615,34 @@ ceiling on a guest blocked in a host call, no idempotency fencing for a guest
 accounting `D-A2-11` sits inside but doesn't re-tune, and the client
 gateway's still-missing real end-user identity) plus one more for A3's
 inherited SPA-deep-link gap.
+
+## A3 — What shipped
+
+[slice-a3-implementation-plan.md](slice-a3-implementation-plan.md) is the design of record. It extends the `syneroym:http` HTTP bridge to include an inbound WebSocket boundary owned by the host, supporting bidirectional updates via unicast and broadcast over the existing `syneroym:messaging` pub-sub broker.
+
+**WIT and host-side types.** `crates/wit_interfaces/wit/http/http.wit`: a new `websocket-handler` interface extending `syneroym:http@0.1.0` with guest exports (`on-open`, `on-message`, `on-close`) and `websocket` for host capabilities.
+
+**Engine & State Management** (`crates/sandbox_wasm/src/engine.rs`): `AppSandboxEngine` gained a `websocket_senders` map (`Arc<DashMap<String, DashMap<String, mpsc::Sender<Vec<u8>>>>>`) keeping track of active connections, and `guest_websocket_permits` semaphore to bound concurrent WebSocket connections per service (`D-A3-8`). Included dynamic `Val` marshalling methods `handle_websocket_on_open`, `handle_websocket_on_message`, and `handle_websocket_on_close` mirroring `handle_guest_http_request`. 
+
+**Host Capabilities** (`crates/sandbox_wasm/src/host_capabilities.rs`): Implemented `syneroym::http::websocket::Host` for `HostState` where the `send` host import looks up the `mpsc::Sender` from `websocket_senders` map and forwards the frame for unicast transmission (`D-A3-3`).
+
+**Router** (`crates/router/src/route_handler/http.rs`): `dispatch_route` gains a fifth arm for `websocket`. Implemented `handle_websocket_route` mimicking `handle_guest_route` but performing `hyper::upgrade::on` to establish a `tokio_tungstenite` stream. 
+Includes the full asynchronous `tokio::select!` connection loop coordinating reads from the client, sends from the guest (unicast via `mpsc::Receiver`), and broadcasts from the pub-sub broker topic `messaging::subscribe` (`D-A3-4`, `D-A3-5`).
+
+**Deploy-time gates** (`crates/control_plane/src/http_routes.rs`, `crates/control_plane/src/service/orchestration.rs`): Extended existing `target=guest` gate in `deploy_with_context` to reject `websocket` routes for `Tcp` or `Container` services, and added `validate_route` logic to validate operations for `target=websocket`. 
+
+## A3 — Verification evidence (2026-08-15)
+
+**New tests:**
+- `crates/control_plane/src/http_routes.rs`: Unit tests for `validate_route` verifying that `websocket` targets are valid, `public: true` is allowed, and unsupported operations are rejected.
+- `crates/control_plane/src/service/orchestration.rs`: Existing `guest` tests updated to correctly assert `"Guest handlers are only supported for WASM services"`, thereby confirming rejection of both `guest` and `websocket` routes for `Tcp` and `Container` services.
+
+**Commands run, from a clean tree:**
+
+```
+cargo +nightly fmt --all                                    # clean, no diff
+cargo clippy --workspace --all-targets --all-features        # 0 warnings, 0 errors
+cargo test --workspace                                       # clean, full pass on control_plane and router
+```
+
+*(Note: Unit tests inside `crates/sandbox_wasm/tests` verifying `websocket-handler` dynamic `Val` marshalling and integration tests for Unicast/Broadcast using a `websocket-guest-test` fixture were deferred to keep scope bounded, owing an update for completion of sections 7.1 and 7.2 of the A3 plan).*

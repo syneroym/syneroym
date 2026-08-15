@@ -818,6 +818,17 @@ impl ControlPlaneService {
             ));
         }
 
+        if http_routes.iter().any(|r| r.target == "websocket")
+            && !self.app_sandbox_engine.exports_websocket_handler(service_id)
+        {
+            self.rollback_config_generation(service_id, new_gen).await;
+            self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
+            return Err(format!(
+                "service {service_id} declares an http_routes entry with target=websocket, but \
+                 the deployed component does not export syneroym:http/websocket-handler#on-open"
+            ));
+        }
+
         // One rule, over the interfaces the manifest already declares. Sound
         // only because `saga-undo-` is reserved (ADR-0023 §7, as amended): a
         // component that exports it is unambiguously claiming a saga
@@ -1678,18 +1689,17 @@ impl ControlPlaneService {
             ));
         }
 
-        // M06A D-A2-10a: same reasoning as the asset-bundle check above, for
-        // a `guest` route -- a `Tcp`/`Container` service's endpoint is
-        // `SubstrateEndpoint::TcpHostPort`, routed to raw
-        // `copy_bidirectional` passthrough regardless of what the client
-        // sends, so the guest HTTP bridge is structurally unreachable for
-        // one. Without this a declared `guest` route would be silent dead
-        // configuration.
-        if http_routes.iter().any(|r| r.target == "guest") && service_type != AppServiceType::Wasm {
+        // M06A D-A2-10a, A3: `target = "guest"` and `target = "websocket"` route into a
+        // Wasmtime instance's exports; a container or raw TCP service can't
+        // fulfill them, so deploying one that declares them is an un-routable
+        // configuration defect.
+        if http_routes.iter().any(|r| r.target == "guest" || r.target == "websocket")
+            && service_type != AppServiceType::Wasm
+        {
             return Err(format!(
-                "service '{service_id}': an http_routes entry with target=guest is only servable \
-                 for a 'Wasm' service; a '{service_type:?}' service's endpoint is raw TCP \
-                 passthrough, which never reaches the guest HTTP path"
+                "service {service_id} declares an http_routes entry with target=guest or \
+                 target=websocket, but is not a WASM component. Guest handlers are only supported \
+                 for WASM services."
             ));
         }
 
@@ -2552,6 +2562,7 @@ impl ControlPlaneService {
             // `unsubscribe_all` beside it -- a map that only ever grows is a
             // leak, however small.
             self.app_sandbox_engine.forget_guest_http_permits(&service_id);
+            self.app_sandbox_engine.forget_websocket_senders(&service_id);
         }
 
         // An `fdae_policies` row has no in-memory analogue that gets torn
@@ -9130,7 +9141,7 @@ mod tests {
             .deploy(service_id.clone(), manifest, &caller)
             .await
             .expect_err("a Tcp service must not accept a guest route");
-        assert!(err.contains("only servable for a 'Wasm' service"), "{err}");
+        assert!(err.contains("Guest handlers are only supported for WASM services"), "{err}");
         assert!(
             storage_provider.get_latest_config_generation(&service_id).await.unwrap().is_none(),
             "rejected before anything fallible runs -- no config generation saved"
@@ -9219,7 +9230,7 @@ mod tests {
             .deploy(service_id.clone(), manifest, &caller)
             .await
             .expect_err("a Container service must not accept a guest route");
-        assert!(err.contains("only servable for a 'Wasm' service"), "{err}");
+        assert!(err.contains("Guest handlers are only supported for WASM services"), "{err}");
         assert!(http_routes.get(&service_id).is_none());
     }
 

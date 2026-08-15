@@ -110,3 +110,27 @@ interface incoming-handler {
 world http-guest {
     export incoming-handler;
 }
+
+/// Optional WebSocket lifecycle handler (M06A A3). A component only exports
+/// this when it declares an `http_routes` entry with `target = "websocket"`.
+interface websocket-handler {
+    /// Invoked when a WebSocket connection is successfully upgraded.
+    on-open: func(conn: string);
+    
+    /// Invoked for every binary or text frame received from the client.
+    on-message: func(conn: string, frame: list<u8>);
+    
+    /// Invoked when the connection drops, cleanly or otherwise.
+    on-close: func(conn: string);
+}
+
+/// Host-provided WebSocket capabilities.
+interface websocket {
+    /// Unicast a frame to a specific active connection.
+    send: func(conn: string, frame: list<u8>) -> result<_, string>;
+}
+
+/// Dummy world for generating the host import bindings.
+world http-host {
+    import websocket;
+}
