@@ -21,9 +21,10 @@ use syneroym_core::{
 use syneroym_identity::{Identity, substrate};
 use syneroym_observability::MemoryRecorder;
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
+use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
 use syneroym_sdk::{
-    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, SyneroymClient,
-    TransportConnection, WasmManifest,
+    ArtifactSource, AssetBundle, DeployManifest, ServiceConfig, ServiceType, SyneroymClient,
+    TransportConnection, Visibility, WasmManifest,
 };
 use tokio::{
     io::{AsyncReadExt as TokioAsyncReadExt, AsyncWriteExt as TokioAsyncWriteExt},
@@ -55,6 +56,38 @@ fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: serde_json::Value) -> D
         registry_certificate: None,
         instance_certificate: None,
     }
+}
+
+fn guest_wasm_manifest_with_assets(
+    wasm_bytes: Vec<u8>,
+    http_routes: serde_json::Value,
+    archive: Vec<u8>,
+) -> DeployManifest {
+    let mut manifest = guest_wasm_manifest(wasm_bytes, http_routes);
+    manifest.config.assets = Some(AssetBundle {
+        archive: ArtifactSource::Binary(archive),
+        hash: None,
+        visibility: Some(Visibility::Public),
+    });
+    manifest
+}
+
+/// Same construction `static_assets_e2e.rs` (M06A A1) uses for its own
+/// fixture archives.
+fn make_asset_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write;
+    let mut builder = tar::Builder::new(Vec::new());
+    for (path, data) in files {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, path, *data).unwrap();
+    }
+    let tar_bytes = builder.into_inner().unwrap();
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&tar_bytes).unwrap();
+    encoder.finish().unwrap()
 }
 
 async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManifest) {
@@ -112,6 +145,53 @@ async fn open_http_stream(
     };
     send.write_all(preamble.to_preamble_line().as_bytes()).await.expect("write preamble failed");
     (send, recv)
+}
+
+/// F5b's attacker-controlled case: a UCAN token is attached, but it is not
+/// rooted at anything this node trusts, so `build_caller` fail-opens to
+/// dropping its capabilities rather than rejecting the connection. Same
+/// preamble as `open_http_stream` otherwise -- no `delegation`, so
+/// `D-A2-12` has nothing to report `delegated` from either.
+async fn open_http_stream_with_ucan(
+    conn: &TransportConnection,
+    service_id: &str,
+    pubkey: &Identity,
+    ucan: CapabilityToken,
+) -> (SendStream, RecvStream) {
+    let TransportConnection::Iroh { conn, .. } = conn;
+    let (mut send, recv) = conn.open_bi().await.expect("open_bi failed");
+    let preamble = RoutePreamble {
+        transport: RouteTransport::Http,
+        protocol: RouteProtocol::JsonRpc,
+        interface: "http-native".to_string(),
+        service_id: service_id.to_string(),
+        enc: None,
+        pubkey: Some(hex::encode(pubkey.public_key().to_bytes())),
+        delegation: None,
+        ucan: Some(ucan),
+        dir: None,
+    };
+    send.write_all(preamble.to_preamble_line().as_bytes()).await.expect("write preamble failed");
+    (send, recv)
+}
+
+async fn http_request_with_ucan(
+    conn: &TransportConnection,
+    service_id: &str,
+    pubkey: &Identity,
+    ucan: CapabilityToken,
+    method: &str,
+    path_and_query: &str,
+) -> HttpResponse {
+    let (mut send, mut recv) = open_http_stream_with_ucan(conn, service_id, pubkey, ucan).await;
+    let request = format!(
+        "{method} {path_and_query} HTTP/1.1\r\nHost: localhost\r\nConnection: \
+         close\r\nContent-Length: 0\r\n\r\n"
+    );
+    send.write_all(request.as_bytes()).await.expect("write request head failed");
+    let _ = send.finish();
+    let raw = recv.read_to_end(64 * 1024 * 1024).await.expect("read response failed");
+    parse_http_response(&raw)
 }
 
 async fn http_request(
@@ -548,6 +628,193 @@ async fn test_guest_http_concurrency_limit_returns_503_with_retry_after() {
 }
 
 // ---------------------------------------------------------------------
+// D-A2-4: the path-param name the host sends and the value `match_path`
+// captured describe the same segment, over the real wire.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_items_path_param_matches_the_captured_url_segment() {
+    let wasm_bytes = skip_if_missing!("test_items_path_param_matches_the_captured_url_segment");
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup(9227, 9228, 9229).await;
+    ctx.substrate_client.inject_kek("38".repeat(32)).await.expect("inject_kek failed");
+
+    let app_identity = Identity::generate().unwrap();
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
+    let routes = serde_json::json!({"http_routes": [
+        {"method": "GET", "path": "/items/{id}", "target": "guest", "operation": "handle-request", "public": false}
+    ]});
+    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+
+    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    peer.connect().await.expect("peer failed to connect");
+    let conn = peer.connection().expect("peer has no live connection");
+    let asserting = Identity::generate().unwrap();
+
+    let resp =
+        http_request(&conn, &app_service_id, Some(&asserting), "GET", "/items/42", &[]).await;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, b"42", "the id the guest echoed must be the id in the URL");
+
+    let _ = peer.shutdown().await;
+    ctx.teardown().await;
+}
+
+// ---------------------------------------------------------------------
+// D-A2-5: framing headers the guest sets are stripped, and `Content-Length`
+// is always the host's, over the real wire.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_framing_headers_are_stripped_and_content_length_is_the_hosts() {
+    let wasm_bytes =
+        skip_if_missing!("test_framing_headers_are_stripped_and_content_length_is_the_hosts");
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup(9230, 9231, 9232).await;
+    ctx.substrate_client.inject_kek("39".repeat(32)).await.expect("inject_kek failed");
+
+    let app_identity = Identity::generate().unwrap();
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
+    let routes = serde_json::json!({"http_routes": [
+        {"method": "GET", "path": "/framing", "target": "guest", "operation": "handle-request", "public": false}
+    ]});
+    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+
+    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    peer.connect().await.expect("peer failed to connect");
+    let conn = peer.connection().expect("peer has no live connection");
+    let asserting = Identity::generate().unwrap();
+
+    let resp = http_request(&conn, &app_service_id, Some(&asserting), "GET", "/framing", &[]).await;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, b"ok");
+    // The guest set `content-length: 999`, which would desync the response
+    // if it survived; the host strips it and computes its own from the real
+    // body. (`connection` is also stripped from the guest, but the test
+    // client sends `Connection: close` on its own request, so the server's
+    // own `Connection` header on the response isn't decisive proof either
+    // way -- `content-length` is the one value nothing else in the stack
+    // would coincidentally produce.)
+    assert_eq!(resp.headers.get("content-length").map(String::as_str), Some("2"));
+
+    let _ = peer.shutdown().await;
+    ctx.teardown().await;
+}
+
+// ---------------------------------------------------------------------
+// D-A2-12/F5b: a UCAN attacker-controlled and rooted at nothing this node
+// trusts must never be reported to the guest as `ucan:...` -- `build_caller`
+// fails open to dropping its capabilities, and `guest_caller_identity` must
+// carry that failure through rather than trusting `preamble.ucan.is_some()`
+// alone. Unit-tested against `guest_caller_identity` and `build_caller`
+// directly already; this is the one wire-level proof that the two compose
+// correctly end to end.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_rejected_ucan_reports_self_asserted_not_ucan() {
+    let wasm_bytes = skip_if_missing!("test_rejected_ucan_reports_self_asserted_not_ucan");
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup(9239, 9240, 9241).await;
+    ctx.substrate_client.inject_kek("3c".repeat(32)).await.expect("inject_kek failed");
+
+    let app_identity = Identity::generate().unwrap();
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
+    let routes = serde_json::json!({"http_routes": [
+        {"method": "GET", "path": "/whoami", "target": "guest", "operation": "handle-request", "public": false}
+    ]});
+    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+
+    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    peer.connect().await.expect("peer failed to connect");
+    let conn = peer.connection().expect("peer has no live connection");
+
+    // A self-asserted connection carrying a UCAN self-issued by an attacker
+    // identity that is nobody's admin root and owns nothing this node knows
+    // about -- exactly the token any caller can mint for themselves.
+    let asserting = Identity::generate().unwrap();
+    let asserting_did = substrate::derive_did_key(&asserting.public_key());
+    let attacker = Identity::generate().unwrap();
+    let token = CapabilityToken::issue(
+        &attacker,
+        &asserting_did,
+        vec![Capability {
+            with: ResourceUri::service(&app_service_id, &app_service_id),
+            can: Ability(Ability::DATA_LAYER_ADMIN.to_string()),
+            caveats: None,
+        }],
+        serde_json::Map::new(),
+        3600,
+        vec![],
+    )
+    .expect("issue attacker-controlled UCAN");
+
+    let resp =
+        http_request_with_ucan(&conn, &app_service_id, &asserting, token, "GET", "/whoami").await;
+    assert_eq!(resp.status, 200);
+    assert_eq!(
+        resp.body,
+        format!("self-asserted:{asserting_did}").into_bytes(),
+        "an untrusted UCAN must never be reported to the guest as a `ucan:` caller"
+    );
+
+    let _ = peer.shutdown().await;
+    ctx.teardown().await;
+}
+
+// The companion to the test above: within budget, concurrent requests queue
+// for a permit and all succeed -- the 503 case above is what happens when a
+// request outwaits the fixed admission timeout, not what queuing itself
+// looks like.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_guest_http_requests_within_budget_all_succeed_via_queuing() {
+    let wasm_bytes =
+        skip_if_missing!("test_guest_http_requests_within_budget_all_succeed_via_queuing");
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup_with(9236, 9237, 9238, |config| {
+        config.roles.app_sandbox =
+            Some(AppSandboxRole { max_concurrent_guest_http_per_service: 2, ..Default::default() });
+    })
+    .await;
+    ctx.substrate_client.inject_kek("3b".repeat(32)).await.expect("inject_kek failed");
+
+    let app_identity = Identity::generate().unwrap();
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
+    let routes = serde_json::json!({"http_routes": [
+        {"method": "GET", "path": "/slow", "target": "guest", "operation": "handle-request", "public": false}
+    ]});
+    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+
+    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    peer.connect().await.expect("peer failed to connect");
+    let conn = peer.connection().expect("peer has no live connection");
+
+    // Budget of 2, 4 concurrent callers each holding a permit for ~300ms:
+    // the 2 that don't get a permit immediately wait well under the fixed
+    // 2s admission timeout, so every one of the 4 must still land 200, not
+    // queue into a 503 or a 500.
+    let mut tasks = Vec::new();
+    for _ in 0..4 {
+        let conn = conn.clone();
+        let service_id = app_service_id.clone();
+        let asserting = Identity::generate().unwrap();
+        tasks.push(tokio::spawn(async move {
+            http_request(&conn, &service_id, Some(&asserting), "GET", "/slow?ms=300", &[]).await
+        }));
+    }
+    for task in tasks {
+        let resp = task.await.expect("guest HTTP request task panicked");
+        assert_eq!(
+            resp.status, 200,
+            "a request within the concurrency budget's queuing capacity must succeed, not 503/500"
+        );
+    }
+
+    let _ = peer.shutdown().await;
+    ctx.teardown().await;
+}
+
+// ---------------------------------------------------------------------
 // A guest route and other bridge targets/A1 assets coexist without either
 // shadowing the other.
 // ---------------------------------------------------------------------
@@ -586,6 +853,50 @@ async fn test_guest_route_and_data_layer_route_coexist() {
         http_request(&conn, &app_service_id, Some(&asserting), "GET", "/items/abc", &[]).await;
     let body: serde_json::Value = serde_json::from_slice(&route_resp.body).unwrap();
     assert_eq!(body["error"]["code"], serde_json::json!(-32011));
+
+    let _ = peer.shutdown().await;
+    ctx.teardown().await;
+}
+
+// A1's own coexistence test (`test_static_assets_and_http_routes_coexist`)
+// pairs an asset bundle with a `data-layer` route on a plain `greeter`
+// component. That never exercises a component deployed as *both* an asset
+// bundle and a guest HTTP handler at once, which is the combination this
+// test covers.
+#[tokio::test]
+async fn test_guest_route_and_asset_bundle_coexist() {
+    let wasm_bytes = skip_if_missing!("test_guest_route_and_asset_bundle_coexist");
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup(9233, 9234, 9235).await;
+    ctx.substrate_client.inject_kek("3a".repeat(32)).await.expect("inject_kek failed");
+
+    let app_identity = Identity::generate().unwrap();
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
+    let routes = serde_json::json!({"http_routes": [
+        {"method": "GET", "path": "/whoami", "target": "guest", "operation": "handle-request", "public": true}
+    ]});
+    let archive = make_asset_archive(&[("index.html", b"<html>hi</html>")]);
+    deploy(
+        &ctx.substrate_client,
+        &app_service_id,
+        guest_wasm_manifest_with_assets(wasm_bytes, routes, archive),
+    )
+    .await;
+
+    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    peer.connect().await.expect("peer failed to connect");
+    let conn = peer.connection().expect("peer has no live connection");
+
+    // The asset bundle still resolves.
+    let asset_resp = http_request(&conn, &app_service_id, None, "GET", "/", &[]).await;
+    assert_eq!(asset_resp.status, 200);
+    assert_eq!(asset_resp.body, b"<html>hi</html>");
+
+    // The declared guest route still reaches the guest handler, not the
+    // asset table.
+    let guest_resp = http_request(&conn, &app_service_id, None, "GET", "/whoami", &[]).await;
+    assert_eq!(guest_resp.status, 200);
+    assert_eq!(guest_resp.body, b"anonymous");
 
     let _ = peer.shutdown().await;
     ctx.teardown().await;

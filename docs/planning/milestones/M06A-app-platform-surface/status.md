@@ -422,10 +422,29 @@ populate it (F11).
   downcast-`Trap::OutOfFuel` sub-case from the string-matched
   `"all fuel consumed"`/`"out of fuel"` sub-case the way `authorize_rows`'s
   pre-refactor code did (a literal `"exceeded its fuel budget"` detail for
-  the first, the raw error string for the second). No existing test asserts
-  that exact string (only `matches!(err, AbacError::BudgetExceeded { .. })`),
-  so both sub-cases now uniformly use the literal — a simplification the
-  unified classifier buys, not a behavior change any test depended on.
+  the first, the raw error string for the second). Review finding F3
+  (2026-08-15) caught that the unified classifier's call site had kept the
+  literal for *both* sub-cases, silently dropping the real Wasmtime message
+  for the string-matched one. `authorize_rows_inner` now uses `err_str` for
+  both, so both sub-cases carry the real message — a deliberate
+  simplification, not a behavior any test depended on (no existing test
+  asserted the exact string, only `matches!(err, AbacError::BudgetExceeded
+  { .. })`).
+- **Two accepted cosmetic residuals from the F2/F11 fixes (2026-08-15),
+  neither worth the added complexity:** `response_from_results`'s
+  `Malformed` arms (`crates/sandbox_wasm/src/http.rs:139` and neighbors)
+  still `format!("{other:?}")` a `Val` in full before `truncate_detail`
+  bounds the result — a transient allocation, not a sustained one, and only
+  reachable by a component whose `handle-request` export already has the
+  wrong shape. Bounding it properly needs a size-capped `fmt::Write` sunk
+  into the `Debug` call itself, not a `format!`-then-slice; not worth that
+  machinery for a transient cost triggered only by a deliberately
+  nonconforming component. Separately, `AppSandboxEngine::init`'s
+  `else { 4 }` fallback (`crates/sandbox_wasm/src/engine.rs:507`) still
+  duplicates `default_max_concurrent_guest_http_per_service()` instead of
+  calling it — kept as is because all three neighboring `abac_*` config
+  fallbacks in the same function share this exact shape, and fixing one in
+  isolation would be *more* inconsistent, not less.
 
 ## A2 — Verification evidence (2026-08-14)
 
@@ -466,7 +485,7 @@ populate it (F11).
   service before anything fallible runs; a `guest` route whose component
   lacks the export fails deploy and rolls back the config generation, FDAE
   policy, and asset bundle.
-- `crates/substrate/tests/guest_http_e2e.rs`: 9 end-to-end tests over a real
+- `crates/substrate/tests/guest_http_e2e.rs`: 14 end-to-end tests over a real
   Iroh QUIC connection (plus one real client-gateway TCP proxy hop) —
   anonymous request to a non-`public` route → 401, zero instantiations; the
   same route declared `public` → the guest answers, `/whoami` reports
@@ -482,6 +501,20 @@ populate it (F11).
   `Retry-After: 1` for a request that can't get admitted in time, while the
   request holding the permit still succeeds; a `guest` route and a
   `data-layer` route on one service coexist, neither shadowing the other.
+  **Added for review finding F4/F9 (2026-08-15):** `/items/{id}` over the
+  wire matches the id the guest echoed (`D-A2-4`); `/framing`'s
+  `content-length: 999` never survives the strip; a self-issued UCAN rooted
+  at nothing this node trusts reports `self-asserted:...`, never `ucan:...`
+  (`D-A2-12`/F5b, the wire-level half `guest_caller_identity`'s own unit
+  tests couldn't reach); `max + 2` concurrent `/slow` requests against a
+  budget of 2 all succeed by queuing, not just the over-budget 503 case; a
+  `guest` route and an A1 asset bundle coexist on the *same* component
+  (the pre-existing coexistence test used a plain `greeter`, so a component
+  exporting both was never actually exercised). **Still not covered, by
+  deliberate choice (F4):** a real wire-level `delegated` connection needs a
+  published master anchor for an ad-hoc test identity first — see the
+  deviations note above; the branch stays covered at the
+  `guest_caller_identity` unit level only.
 
 **New test fixture:** `test-components/http-guest-test`
 (`syneroym-test-http-guest`) — exports
@@ -521,9 +554,11 @@ re-runs clean:
 - `cargo test -p syneroym-core --lib` (sandbox off): **89/89 passed**,
   including the new `param_name`/`HttpRoute` default tests.
 - `cargo test -p syneroym-sandbox-wasm --lib` (sandbox off): **78/78
-  passed** (67 pre-existing + 11 new `http.rs` tests), proving the
-  `classify_call_failure` refactor changed no observable behaviour at
-  either of its two pre-existing call sites.
+  passed** (67 pre-existing + 11 new `http.rs` tests) plus the
+  `classify_call_failure` unit tests added for review finding F3
+  (2026-08-15) — the passing pre-existing suite alone did not prove the
+  refactor was behaviour-preserving, since nothing asserted on the fuel
+  case's detail string; see the A2 deviations note above.
 - `cargo test -p syneroym-sandbox-wasm --test guest_http_integration`
   (sandbox off): **6/6 passed**.
 - `cargo test -p syneroym-router --lib` (sandbox off): **195/195 passed**

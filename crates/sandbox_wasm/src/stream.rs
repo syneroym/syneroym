@@ -146,7 +146,7 @@ pub(crate) fn val_list_to_bytes(val: &Val) -> Result<Vec<u8>> {
 /// that arity here rather than callers indexing `results[0]` directly -- a
 /// deployed component whose export declares a different arity (e.g. no
 /// results) must surface as a clean `Err`, not a host panic.
-pub(crate) fn extract_result<T>(
+fn extract_result<T>(
     results: &[Val],
     ok_extractor: impl FnOnce(Option<&Val>) -> Result<T>,
 ) -> Result<T> {

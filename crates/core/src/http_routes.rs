@@ -39,6 +39,13 @@ pub struct HttpRoute {
     /// an anonymous caller inside `dispatch_native`, and `stream` predates
     /// this field (M06A §9.5).
     ///
+    /// `true` does not just relax *reachability*: with no caller to
+    /// substitute, the handler runs as the service itself
+    /// (`CallerContext::service_system`, `AuthLevel::System`), so its
+    /// `data-layer` writes are attributed to and authorized as the service,
+    /// not as some lesser anonymous principal. Validate inputs inside the
+    /// guest; the host draws no line an anonymous caller can't cross.
+    ///
     /// A bool, not ADR-0018's `visibility` enum: this is neither
     /// endpoint-record publication nor byte readability, `syneroym-core`
     /// cannot see `syneroym_app_orchestration::Visibility`, and there is no

@@ -1899,7 +1899,8 @@ impl ControlPlaneService {
         for route in http_routes.iter().filter(|r| r.target == "guest" && r.public) {
             info!(
                 "guest HTTP route for '{service_id}': {} {} declared public -- reachable with no \
-                 verified caller identity (M06A D-A2-7)",
+                 verified caller identity, and its handler still runs with the service's own \
+                 storage rights (M06A D-A2-7)",
                 route.method, route.path
             );
         }

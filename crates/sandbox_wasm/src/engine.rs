@@ -510,6 +510,19 @@ impl AppSandboxEngine {
             } else {
                 4
             };
+        // A `0` config value builds a zero-permit semaphore: every guest
+        // HTTP request then waits the full admission timeout and 503s, with
+        // nothing at startup to explain why (review finding F11). Clamp
+        // loudly rather than let that be silently discovered in the field.
+        let max_concurrent_guest_http_per_service = if max_concurrent_guest_http_per_service == 0 {
+            warn!(
+                "max_concurrent_guest_http_per_service is 0, which would admit no guest HTTP \
+                 requests at all -- clamping to 1"
+            );
+            1
+        } else {
+            max_concurrent_guest_http_per_service
+        };
         // Fixed, not scaled by `max_concurrent_instances` (review residual
         // R2 -- an earlier version scaled this and, computed independently
         // of `stream_instance_budget`, let the two jointly oversubscribe
@@ -1994,17 +2007,19 @@ impl AppSandboxEngine {
         let service = service_id.to_string();
         if let Err(e) = call_result {
             // `classify_call_failure` (M06A D-A2-6) replaces this site's own
-            // hand-rolled copy of the trap taxonomy. Pinned mapping,
-            // preserving this function's pre-refactor behaviour exactly:
-            // this site has (and had) no memory-fault arm, so a memory
-            // fault still becomes `Trap`, not a budget error.
+            // hand-rolled copy of the trap taxonomy: this site has (and had)
+            // no memory-fault arm, so a memory fault still becomes `Trap`,
+            // not a budget error. The classifier does not distinguish a
+            // downcast `Trap::OutOfFuel` from a string-matched fuel error,
+            // so both now carry the real Wasmtime message (`err_str`)
+            // instead of the pre-refactor downcast arm's fixed
+            // `"exceeded its fuel budget"` -- a deliberate simplification,
+            // not a behaviour this site's callers depend on (see status.md).
             let err_str = truncate_detail(e.root_cause().to_string());
             return Err(match classify_call_failure(&e) {
-                CallFailure::OutOfFuel => AbacError::BudgetExceeded {
-                    service,
-                    detail: "exceeded its fuel budget".to_string(),
-                },
-                CallFailure::Deadline => AbacError::BudgetExceeded { service, detail: err_str },
+                CallFailure::OutOfFuel | CallFailure::Deadline => {
+                    AbacError::BudgetExceeded { service, detail: err_str }
+                }
                 CallFailure::MemoryFault | CallFailure::Other => {
                     AbacError::Trap { service, detail: err_str }
                 }
@@ -3004,5 +3019,36 @@ mod tests {
 
         assert!(app_engine.resolve_fdae_policy("svc-bad").await.is_none());
         assert!(app_engine.fdae_policies.get("svc-bad").unwrap().is_none());
+    }
+
+    /// Pins `classify_call_failure`'s taxonomy (M06A D-A2-6, review finding
+    /// F3): the downcast `Trap::OutOfFuel` and the two fuel substrings both
+    /// classify as `OutOfFuel`, memory/epoch substrings classify as
+    /// expected, and an unrelated error falls through to `Other`. §8's own
+    /// exit criterion for `D-A2-6` required this test; it did not exist
+    /// before, which is how the fuel-detail regression this same finding
+    /// caught went unnoticed.
+    #[test]
+    fn classify_call_failure_matches_taxonomy() {
+        let fuel_trap = wasmtime::Error::from(Trap::OutOfFuel);
+        assert!(matches!(classify_call_failure(&fuel_trap), CallFailure::OutOfFuel));
+
+        let fuel_string = wasmtime::Error::msg("all fuel consumed by WebAssembly code");
+        assert!(matches!(classify_call_failure(&fuel_string), CallFailure::OutOfFuel));
+
+        let fuel_string_alt = wasmtime::Error::msg("trap: out of fuel");
+        assert!(matches!(classify_call_failure(&fuel_string_alt), CallFailure::OutOfFuel));
+
+        let memory_string = wasmtime::Error::msg("instance exceeded its memory limits");
+        assert!(matches!(classify_call_failure(&memory_string), CallFailure::MemoryFault));
+
+        let memory_string_alt = wasmtime::Error::msg("host trap: MemoryFault");
+        assert!(matches!(classify_call_failure(&memory_string_alt), CallFailure::MemoryFault));
+
+        let epoch_string = wasmtime::Error::msg("epoch deadline reached while executing");
+        assert!(matches!(classify_call_failure(&epoch_string), CallFailure::Deadline));
+
+        let other = wasmtime::Error::msg("some unrelated wasm trap");
+        assert!(matches!(classify_call_failure(&other), CallFailure::Other));
     }
 }

@@ -12,7 +12,7 @@ use syneroym_core::guest_http::{
 use wasmtime::component::Val;
 
 use crate::{
-    engine::GuestHttpFailure,
+    engine::{self, GuestHttpFailure},
     stream::{bytes_to_val_list, val_list_to_bytes},
 };
 
@@ -92,19 +92,23 @@ fn response_from_record(fields: &[(String, Val)]) -> Result<GuestHttpResponse, G
     let status = match find_field(fields, "status") {
         Some(Val::U16(s)) => *s,
         other => {
-            return Err(GuestHttpFailure::Malformed(format!(
+            return Err(GuestHttpFailure::Malformed(engine::truncate_detail(format!(
                 "expected http-response.status: u16, got {other:?}"
-            )));
+            ))));
         }
     };
     let headers = match find_field(fields, "headers") {
-        Some(val) => decode_string_pairs(val)
-            .map_err(|e| GuestHttpFailure::Malformed(format!("http-response.headers: {e}")))?,
+        Some(val) => decode_string_pairs(val).map_err(|e| {
+            GuestHttpFailure::Malformed(engine::truncate_detail(format!(
+                "http-response.headers: {e}"
+            )))
+        })?,
         None => return Err(GuestHttpFailure::Malformed("http-response missing headers".into())),
     };
     let body = match find_field(fields, "body") {
-        Some(val) => val_list_to_bytes(val)
-            .map_err(|e| GuestHttpFailure::Malformed(format!("http-response.body: {e}")))?,
+        Some(val) => val_list_to_bytes(val).map_err(|e| {
+            GuestHttpFailure::Malformed(engine::truncate_detail(format!("http-response.body: {e}")))
+        })?,
         None => return Err(GuestHttpFailure::Malformed("http-response missing body".into())),
     };
     Ok(GuestHttpResponse { status, headers, body })
@@ -128,21 +132,21 @@ pub(crate) fn response_from_results(
     match val {
         Val::Result(Err(payload)) => {
             let msg = match payload.as_deref() {
-                Some(Val::String(s)) => crate::engine::truncate_detail(s.clone()),
-                Some(other) => crate::engine::truncate_detail(format!("{other:?}")),
+                Some(Val::String(s)) => engine::truncate_detail(s.clone()),
+                Some(other) => engine::truncate_detail(format!("{other:?}")),
                 None => "guest declined the request".to_string(),
             };
             Err(GuestHttpFailure::Declined(msg))
         }
         Val::Result(Ok(Some(boxed))) => match boxed.as_ref() {
             Val::Record(fields) => response_from_record(fields),
-            other => Err(GuestHttpFailure::Malformed(format!(
+            other => Err(GuestHttpFailure::Malformed(engine::truncate_detail(format!(
                 "expected an http-response record, got {other:?}"
-            ))),
+            )))),
         },
-        other => Err(GuestHttpFailure::Malformed(format!(
+        other => Err(GuestHttpFailure::Malformed(engine::truncate_detail(format!(
             "expected result<http-response, string>, got {other:?}"
-        ))),
+        )))),
     }
 }
 

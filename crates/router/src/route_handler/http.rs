@@ -67,7 +67,7 @@ use syneroym_rpc::{
 use syneroym_sandbox_wasm::{GuestHttpFailure, GuestHttpOutcome, StreamRequestOutcome};
 use tokio::io::{self as tokio_io, AsyncRead, AsyncWrite};
 use tokio_util::io::StreamReader;
-use tracing::error;
+use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 use super::RouteHandler;
@@ -530,6 +530,7 @@ fn build_guest_response(response: GuestHttpResponse) -> Response<HttpBody> {
     for (name, value) in response.headers {
         let lower = name.to_ascii_lowercase();
         if HOST_OWNED_HEADERS.contains(&lower.as_str()) {
+            debug!(header = %lower, "guest response header stripped -- host owns framing (D-A2-5)");
             continue;
         }
         let Ok(header_name) = HeaderName::from_bytes(lower.as_bytes()) else {
@@ -1384,12 +1385,27 @@ impl HttpHandler {
                 Ok(resp)
             }
             Ok(GuestHttpOutcome::Failed(failure)) => {
-                error!(
-                    service_id = %self.preamble.service_id,
-                    route = %route.path,
-                    ?failure,
-                    "guest HTTP handler failed"
-                );
+                // `Declined` is the guest's own `Err` return -- an ordinary
+                // application-level outcome, and on a `public: true` route
+                // one any anonymous caller can trigger at will. Logging it
+                // at `error!` would make the node's error log a rate the
+                // caller controls; every other variant is a genuine host or
+                // component-shape problem and stays at `error!`.
+                if matches!(failure, GuestHttpFailure::Declined(_)) {
+                    warn!(
+                        service_id = %self.preamble.service_id,
+                        route = %route.path,
+                        ?failure,
+                        "guest HTTP handler declined the request"
+                    );
+                } else {
+                    error!(
+                        service_id = %self.preamble.service_id,
+                        route = %route.path,
+                        ?failure,
+                        "guest HTTP handler failed"
+                    );
+                }
                 Ok(http_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     describe_guest_http_failure(&failure),
@@ -1903,6 +1919,13 @@ mod tests {
     fn build_guest_response_rejects_invalid_header_value_with_500() {
         let response =
             sample_guest_response(200, vec![("x-bad", "line1\r\nline2")], b"hi".to_vec());
+        let resp = build_guest_response(response);
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn build_guest_response_rejects_invalid_header_name_with_500() {
+        let response = sample_guest_response(200, vec![("x bad", "1")], b"hi".to_vec());
         let resp = build_guest_response(response);
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
