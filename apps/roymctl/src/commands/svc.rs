@@ -14,8 +14,8 @@ use clap::Subcommand;
 use syneroym_core::dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType};
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
 use syneroym_sdk::{
-    ArtifactSource, AssetBundle, ContainerPortMapping, ContainerVolumeMapping, NetworkEndpoint,
-    Visibility, deploy, mapper::DEFAULT_INTERFACE_NAME,
+    ArtifactSource, AssetBundle, ContainerPortMapping, ContainerVolumeMapping, DeploySvcOptions,
+    NetworkEndpoint, Visibility, deploy, mapper::DEFAULT_INTERFACE_NAME,
 };
 
 use super::member_identity;
@@ -116,6 +116,12 @@ pub enum SvcCommands {
         /// middle tier.
         #[arg(long, default_value = "private", requires = "assets")]
         asset_visibility: String,
+        /// Path to a JSON file used verbatim as the service's
+        /// `custom_config` -- the reserved `http_routes` key inside it is
+        /// what declares HTTP routes (M3B Slice 7, M06A A2). Only
+        /// meaningful alongside `--wasm`.
+        #[arg(long, requires = "wasm")]
+        custom_config: Option<PathBuf>,
     },
     /// Remove an installed `SynSvc` via API
     Remove {
@@ -197,6 +203,7 @@ pub async fn handle(
             registry_url,
             assets,
             asset_visibility,
+            custom_config,
         } => {
             validate_container_flags(image, ports, volumes)?;
             let ifaces: Vec<String> = parse_interfaces(interfaces)?;
@@ -320,14 +327,23 @@ pub async fn handle(
                     }
                     None => None,
                 };
+                let custom_config_json = match custom_config {
+                    Some(path) => Some(fs::read_to_string(path).map_err(|e| {
+                        anyhow::anyhow!("failed to read --custom-config at {}: {e}", path.display())
+                    })?),
+                    None => None,
+                };
                 client
-                    .deploy_svc_wasm_with_assets(
+                    .deploy_svc_wasm_with_options(
                         svc_id.clone(),
                         ifaces,
                         wasm_bytes,
-                        cert,
-                        instance_cert,
-                        asset_bundle,
+                        DeploySvcOptions {
+                            registry_certificate: cert,
+                            instance_certificate: instance_cert,
+                            assets: asset_bundle,
+                            custom_config: custom_config_json,
+                        },
                     )
                     .await?;
                 println!("Successfully deployed WASM svc {svc_id}");

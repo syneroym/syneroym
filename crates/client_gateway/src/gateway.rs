@@ -50,9 +50,20 @@ use tracing::{debug, error, info, warn};
 // the node can present on the wire -- provisioning a separate owner-signed
 // delegation for this purpose is still not built. B0 uses node DID.
 // Consequence, now that an unowned substrate fails closed: the gateway
-// proxies as a DID that holds nothing node-wide -- harmless today only
-// because it proxies to deployed services, never to `orchestrator`/
-// `security` (flagged, not fixed; see the deferred backlog).
+// proxies as a DID that holds nothing node-wide -- harmless *only* because
+// it proxies to deployed services, never to `orchestrator`/`security`
+// (flagged, not fixed; see the deferred backlog).
+//
+// That reasoning stopped being the whole story once M06A A2 shipped: a
+// "deployed service" can now mean **guest code that branches on
+// `caller.did`** (`syneroym:http/incoming-handler#handle-request`), not
+// only the storage-bridging `data-layer`/`messaging` targets that ignore
+// the caller entirely. A guest HTTP handler reached through this gateway
+// sees this DID -- the node's own, identical for every visitor, never an
+// end user's -- labelled `self-asserted` in the WIT (`D-A2-12`) precisely
+// so a guest cannot mistake it for a verified identity. See
+// `docs/planning/milestones/M06A-app-platform-surface/
+// slice-a2-implementation-plan.md` (F5a) for the mechanism and its e2e pin.
 
 /// Reads a `CapabilityToken` off disk, the same shape `roymctl`'s own
 /// `--ucan` loading uses.

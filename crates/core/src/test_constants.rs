@@ -113,3 +113,21 @@ pub fn saga_test_wasm_path() -> PathBuf {
         "../../test-components/saga-test/target/wasm32-wasip2/release/syneroym_test_saga.wasm",
     )
 }
+
+/// The `test-driver` interface name for the M06A A2 http-guest-test
+/// component.
+pub const HTTP_GUEST_TEST_DRIVER_INTERFACE: &str =
+    "syneroym-test:http-guest-test/test-driver@0.1.0";
+
+/// Returns the workspace-relative path to the http-guest-test component
+/// WASM module (imports `syneroym:data-layer/store`, exports
+/// `syneroym:http/incoming-handler#handle-request` and a `test-driver`
+/// interface -- `last-request` -- for reading back the shape of the most
+/// recently received request from a separate call. See
+/// `test-components/http-guest-test`).
+pub fn http_guest_test_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../test-components/http-guest-test/target/wasm32-wasip2/release/\
+         syneroym_test_http_guest.wasm",
+    )
+}

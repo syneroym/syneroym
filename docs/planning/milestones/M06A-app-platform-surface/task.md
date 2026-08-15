@@ -13,22 +13,22 @@
 > being a WASM component. `test-components/miniapp-demo1-web` — the fixture the
 > whole Playwright suite runs against — is a native axum binary deployed as a
 > TCP service, and M04A's status records that it "fails to build under
-> `wasm32-wasip2`". This milestone closes the two gaps that force that, then
+> `wasm32-wasip2`". This milestone closes the three gaps that force that, then
 > proves it by building the same app as a real WASM component and running the
 > same tests against it.
 >
 > **What it is deliberately not.** Not `wasi:http` — a component still does not
-> get a raw HTTP server, it gets a request handed to a function. Not WebSocket
-> support. Not the Roym product, and not Roym's messaging or identity work,
-> which is M06B.
+> get a raw HTTP server, it gets a request handed to a function, and a
+> WebSocket whose lifetime the host owns. Not the Roym product, and not Roym's
+> messaging or identity work, which is M06B.
 
 ## Goal
 
 By the end of M06A, a SynApp deployed as a pure WASM component serves a
 single-page web application — static assets, REST endpoints backed by guest
-logic, large uploads and downloads, and live server-to-client updates — reached
-through the client gateway by an ordinary browser, with the Playwright suite
-covering each part.
+logic, large uploads and downloads, and live updates in both directions (SSE
+and WebSocket) — reached through the client gateway by an ordinary browser,
+with the Playwright suite covering each part.
 
 ---
 
@@ -47,12 +47,12 @@ Three things, in order of how much each de-risks what follows.
    Every gap this finds is a gap Roym would have found later, with product code
    built on top of it.
 3. **It gives the foundation a runnable exit gate.** A foundation milestone
-   usually ends on "the interfaces exist". This one ends on "the same four
-   browser tests that pass against the native app pass against the WASM one."
+   usually ends on "the interfaces exist". This one ends on "every browser test
+   that passes against the native app passes against the WASM one."
 
 ---
 
-## The two gaps, verified against the tree
+## The gaps, verified against the tree
 
 **Gap 1 — inbound HTTP cannot reach guest logic.** `dispatch_route`
 ([http.rs:583](../../../../crates/router/src/route_handler/http.rs#L583)) has
@@ -76,19 +76,37 @@ bytes, `GET /blobs/<hash>?svc=&exp=&sig=`
 deliberately hash-addressed, HMAC-signed, and expiring — the opposite of what a
 public website needs.
 
+**Gap 3 — no inbound WebSocket, so one native-fixture test has no WASM
+counterpart.** Nothing anywhere handles an `Upgrade: websocket` request; the
+only `tokio-tungstenite` use is the WebRTC signalling *client* dialling out.
+This is narrower than it looks: the client gateway is already
+WebSocket-transparent, reading headers from the first request only and then
+handing the whole socket to one iroh stream for the connection's lifetime
+([gateway.rs:256-263](../../../../crates/client_gateway/src/gateway.rs#L256)),
+and `tokio-tungstenite` is already a dependency of `syneroym-router`. What is
+missing is the upgrade handshake in the HTTP bridge and a guest boundary for a
+connection the host owns — see `D-06A-2` and slice A3.
+
+The shaping constraint on that boundary is `dispatch_epoch_timeout_secs`,
+which defaults to **5 seconds** ([config.rs:449](../../../../crates/core/src/config.rs#L449))
+and bounds every guest entry point. A guest can therefore never hold a
+connection open; the host owns lifetime and calls the guest in short bursts.
+That is exactly the shape `stream-cursor`/`stream-sink` already have, which is
+why this is a wiring problem rather than a new execution model.
+
 ---
 
 ## Decisions
 
 > **On identifiers.** `D-06A-n` are milestone-level decisions, matching the
-> house `D-<scope>-<n>` shape. Bare `A1`–`A4` are **slices**, matching M05A's
+> house `D-<scope>-<n>` shape. Bare `A1`–`A5` are **slices**, matching M05A's
 > `A0`–`A7`. The two namespaces are separate; a reference to "A1" always means
 > the slice.
 
 | # | Decision | Why |
 |---|---|---|
 | D-06A-1 | **Static assets bypass the sandbox entirely.** The router resolves a path to a blob and streams it. The component is never instantiated. | A cold SPA load is tens of asset requests; none of them is a decision the guest should make. Content addressing also gives correct `ETag`/`Cache-Control` for free. |
-| D-06A-2 | **Live updates use SSE, not WebSocket.** The demo's echo/broadcast test is rewritten over `subscribe-sse`, which is already wired through the bridge. | There is no inbound WebSocket support anywhere — the only `tokio-tungstenite` use is the WebRTC signalling *client* dialling out. Adding an upgrade path is real router work that serves nothing later: Roym's own live needs (typing indicators, read receipts, new-message nudges) are all server-to-client. |
+| D-06A-2 | ~~**Live updates use SSE, not WebSocket.**~~ **Revised 2026-08-14: build both.** SSE stays, and inbound WebSocket is added as slice A3. The demo app exposes both, so each is exercised end to end. | **The original reasoning was weak and the cost estimate was wrong.** "WebSocket is HTTP-specific" is not a reason — the honest framing is that bidirectional streaming to a guest already exists substrate-side (ADR-0014 `raw://` routing, `stream-cursor`/`stream-sink`), and WebSocket is the *browser-edge compatibility shim* for the one client that cannot open a raw QUIC stream. Three things make it far cheaper than assumed: `tokio-tungstenite` is **already a dependency of `syneroym-router`**; the client gateway is already WebSocket-transparent, handing the whole socket to one iroh stream after reading the first request's headers ([gateway.rs:256-263](../../../../crates/client_gateway/src/gateway.rs#L256)); and A2 has since established the `syneroym:http` package this extends. Leaving it out would also have broken this milestone's own premise — the native fixture tests WebSocket, and *"a divergence between them is a finding"*. |
 | D-06A-3 | **Public readability is a declared property of the service, not a flag on the handler.** | The existing blob GET is signed and scoped on purpose. "Skip the HMAC" bolted onto it would be a security regression by accident. This is the same question ADR-0018 and [ADR-0022](../../../decisions/0022-two-tier-logical-service-discovery.md) §5 already need answered, so it is answered once. |
 | D-06A-4 | **The demo app is a fixture, not a product.** It lives beside `miniapp-demo1-web` in `test-components/` and stays excluded from the workspace build graph. | Its job is to fail loudly when a primitive is missing. |
 
@@ -99,8 +117,9 @@ public website needs.
 - **`wasi:http`.** A component gets a request handed to a function, not a
   socket. Adding the full WASI HTTP world is a much larger commitment and
   nothing here needs it.
-- **Inbound WebSocket upgrade.** See D-06A-2. Tracked in the backlog if it is ever
-  wanted.
+- **WebTransport and HTTP/3 datagrams.** Narrower browser support, a larger
+  lift, and QUIC-native apps already have raw streams (ADR-0014). WebSocket
+  (slice A3) covers the browser edge; this would be a second way to do it.
 - **Retiring `miniapp-demo1-web`.** It stays. Two fixtures exercising the same
   behaviour through different execution models is the point — a divergence
   between them is a finding.
@@ -129,15 +148,37 @@ Nothing here is gated on M06B.
 
 | # | Scope | Gate |
 |---|---|---|
-| **A1** | **Blob-backed static serving.** Deploy carries an asset bundle; unpack into blobs; persist a path → hash manifest; router serves it without touching the sandbox — exact-path serving plus a trailing-slash directory index, not SPA history fallback (that's A3's problem); content type from the path; `ETag`/`Cache-Control` from the content hash; declared public readability (D-06A-3) | **Complete** |
-| **A2** | **Guest HTTP route target.** A fourth `dispatch_route` target that hands method, path, params, headers, and body to the component and turns its return into an HTTP response; error and status mapping; body size caps; behaviour within the existing 5s `dispatch_epoch_timeout_secs` bound | — |
-| **A3** | **The demo app.** A WASM component providing the same functionality as `miniapp-demo1-web`: UI bundle via A1, REST endpoints via A2, upload/download via the existing `stream` target, live updates via SSE | A1 **and** A2 |
-| **A4** | **The Playwright suite.** The four cases from `webrtc.spec.ts` re-pointed at the demo app, with the echo/broadcast case rewritten over SSE | A3 |
+| **A1** | **Blob-backed static serving.** Deploy carries an asset bundle; unpack into blobs; persist a path → hash manifest; router serves it without touching the sandbox — exact-path serving plus a trailing-slash directory index, not SPA history fallback (that's A4's problem); content type from the path; `ETag`/`Cache-Control` from the content hash; declared public readability (D-06A-3) | **Complete** |
+| **A2** | **Guest HTTP route target.** A fourth `dispatch_route` target that hands method, path, params, headers, and body to the component and turns its return into an HTTP response; error and status mapping; body size caps; behaviour within the existing 5s `dispatch_epoch_timeout_secs` bound; a deploy-time export check (a declared `guest` route whose component doesn't export the handler fails the deploy) and a non-`Wasm`-service refusal, mirroring A1's asset-bundle gates; the route is authenticated by default, reachable by an anonymous caller only when explicitly declared `public` (D-A2-7) | **Complete** |
+| **A3** | **Inbound WebSocket.** `Upgrade` detection and the 101 handshake in the HTTP bridge; frame codec via the router's existing `tokio-tungstenite`; a `websocket-handler` interface extending `syneroym:http` with guest exports (`on-open`/`on-message`/`on-close`) plus the host side that owns connection lifetime. Unicast reply by host import; **broadcast reuses the pub-sub broker** rather than inventing a second fan-out (D-06A-2) | A2 |
+| **A4** | **The demo app.** A WASM component providing the same functionality as `miniapp-demo1-web`: UI bundle via A1, REST endpoints via A2, upload/download via the existing `stream` target, and live updates **both ways — over SSE and over WebSocket**, so each is exercised end to end | A1, A2 **and** A3 |
+| **A5** | **The Playwright suite.** The four cases from `webrtc.spec.ts` re-pointed at the demo app — including echo/broadcast over a real WebSocket, matching the native fixture — plus a fifth covering the SSE path | A4 |
 
-**Slices A1 and A2 are independent** and can run in parallel. Both are single-concern
-router changes with their own tests; A3 is the first thing that needs both.
+**Slices A1 and A2 are independent** and can run in parallel; both are complete.
+A3 needs A2's `syneroym:http` package to extend. A4 is the first thing needing
+all three.
+
+> **Why A3 precedes the demo app.** Pairing both directions of a long-lived
+> connection at the guest boundary is the one genuine unknown in the WebSocket
+> estimate, and it is a *design* question — what the guest-side API looks like.
+> Settling it while the demo app is still a blank page costs less than building
+> the app against SSE and retrofitting. A4 is the proof slice; running it once,
+> against everything, is the point.
 
 ### Open design points for the slice plans
+
+- **How a guest pushes on a WebSocket it does not own** (slice A3). The 5s
+  `dispatch_epoch_timeout_secs` bounds every guest entry point, so a guest can
+  never hold a connection open — the host owns lifetime and calls the guest in
+  short bursts. That settles the *inbound* direction (`on-message` per frame),
+  but not the outbound one, where a guest must be able to send without having
+  just been asked. Two mechanisms look right and A3's plan should confirm both:
+  a host import for **unicast** (`send(conn-id, frame)` — the echo case), and
+  **broadcast reusing the existing pub-sub broker**, where a connection
+  subscribes to a messaging topic at open and any ordinary `messaging.publish`
+  fans out to it. The second is what makes "all HTTP server functionality
+  through existing primitives" true rather than aspirational: broadcast stops
+  being a new mechanism and becomes pub-sub with a different egress.
 
 - **Where the path → hash manifest lives.** `http_routes` rides in
   `custom_config` JSON, which suits a handful of entries and not a few hundred
@@ -151,8 +192,14 @@ router changes with their own tests; A3 is the first thing that needs both.
   §4.
 - **What a guest HTTP handler looks like in WIT.** A dedicated
   `handle-request`-style export, or a JSON-RPC method invoked by convention.
-  The first is clearer at the boundary; the second adds no WIT surface. Slice
-  A2's plan decides, and the choice affects M06C's Web entrypoint.
+  The first is clearer at the boundary; the second adds no WIT surface.
+  **Resolved by slice A2's plan (D-A2-1):** a dedicated
+  `syneroym:http/incoming-handler@0.1.0` export, `handle-request` — reached by
+  calling the sandbox engine directly (`AppSandboxEngine::
+  handle_guest_http_request`), not through `dispatch_json_rpc_once`, since an
+  `http-native` connection always resolves to a `NativeService` pipeline and
+  can never reach a guest that way. No M06C document exists in the tree yet to
+  check the "affects M06C's Web entrypoint" note against.
 - **Whether the demo app needs its own DEK-scoped bundle.** Static assets are
   public by D-06A-3, so encrypting them at rest buys nothing against the
   stated threat model but keeps one storage path instead of two. **Resolved
@@ -171,8 +218,12 @@ router changes with their own tests; A3 is the first thing that needs both.
 - **A1 does add WIT**, correcting this section's earlier claim that only A2
   might: a `visibility` enum, an `asset-bundle` record, and
   `service-config.assets: option<asset-bundle>` (all additive — an existing
-  manifest with no `assets` field keeps deploying unchanged). Slice A2's plan
-  may add further WIT surface if it chooses a dedicated guest export.
+  manifest with no `assets` field keeps deploying unchanged). **A2 does too**:
+  a new standalone `syneroym:http@0.1.0` package (`incoming-handler`, two
+  records, one enum) — additive, and deliberately *not* added to the
+  `host-environment` world, so a component that doesn't export it deploys
+  exactly as before. `HttpRoute` also gains a `public: bool` field
+  (`#[serde(default)]`, defaulting `false`), additive for the same reason.
 - **No wire-format change** to endpoint records, topology documents, or gateway
   hostnames.
 
@@ -205,10 +256,10 @@ Step 4 is the one to watch: if the sandbox is instantiated, slice A1 is wrong.
 | 2 | Asset bundle exceeds the size cap | Rejected at deploy with a clear error, no partial state. Slice A1's plan (D-A1-5) settles this as three caps, not one: a cheap `MAX_ASSET_BUNDLE_BYTES` (2 MiB) early guard, `MAX_ASSET_UNPACKED_BYTES` (64 MiB) against a decompression bomb, and the *authoritative* check — the combined `encoded(component) + encoded(bundle) + envelope` fitting the 16 MiB RPC frame, checked client-side, since both expand ~3.57× as JSON integer arrays and share one frame with the component binary |
 | 3 | Request for a path absent from the manifest | 405 (falls through to the JSON-RPC bridge's uniform non-`POST` rejection — the same status any other unmatched `GET`/`HEAD` gets, asset or not), no blob lookup, no sandbox instantiation |
 | 4 | A request tries to read another service's assets | Refused — the manifest is per service, resolved from the connection's own `service_id`, matching the existing blob GET's `svc` check |
-| 5 | Guest route handler traps or exceeds its epoch bound | 500 with a structured error; the connection stays usable; no partial response body |
-| 6 | Guest returns a malformed or oversized response | Bounded and rejected, not streamed to the client |
+| 5 | Guest route handler traps or exceeds its epoch bound | 500 with a structured error; the connection stays usable; no partial response body. **A2 covers the guest-*wasm-execution* half only** — the epoch deadline does not interrupt a guest blocked inside a host call, and no guest-reachable host function in this tree blocks unboundedly today, so that half is deliberately untested rather than tested badly (backlog row owed, see [deferred-backlog.md](../../planning/deferred-backlog.md)) |
+| 6 | Guest returns a malformed or oversized response | Bounded and rejected, not streamed to the client. One word of precision: the host cannot bound the *allocation* — a guest's `list<u8>` return is fully materialised in host memory before its size is knowable; what `MAX_GUEST_RESPONSE_BODY_BYTES` bounds is what gets **sent**, and the allocation bound is the guest's own `max_memory_bytes` store limiter |
 | 7 | A service that never declared public assets is asked for one | Same 405 as row 3, not 403 — absence and refusal look the same from outside |
-| 8 | Many concurrent SSE subscribers on one service | Bounded; exhausting them degrades that service, not the node |
+| 8 | Many concurrent SSE subscribers on one service | Bounded; exhausting them degrades that service, not the node. The principle is general, not SSE-specific: A2's `D-A2-11` applies it to guest HTTP concurrency too, bounding it per service with a 503 past a fixed admission wait rather than the wasmtime pool's own hard instantiation failure |
 
 ---
 
@@ -216,8 +267,8 @@ Step 4 is the one to watch: if the sandbox is instantiated, slice A1 is wrong.
 
 1. The demo app deploys as a **single WASM component** — no container, no TCP
    service, no native helper binary.
-2. All four Playwright cases pass against it in the direct WebRTC
-   configuration.
+2. All five Playwright cases pass against it in the direct WebRTC
+   configuration — the four from `webrtc.spec.ts`, plus the SSE case.
 3. `GET /` and every asset request completes **without instantiating the
    component**, shown by a test that asserts on instantiation count, not by
    inspection.
@@ -229,8 +280,12 @@ Step 4 is the one to watch: if the sandbox is instantiated, slice A1 is wrong.
    complete and round-trip byte-identical.
 7. An SSE subscriber receives an update published by a different browser
    session.
-8. Every row of the failure and security matrix has a test.
-9. `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets
+8. **A WebSocket client echoes a frame off the guest, and a frame published by
+   a different browser session is broadcast to it** — the same behaviour the
+   native fixture's `WebSocket Echo and Broadcast` case tests, so the two
+   fixtures no longer diverge.
+9. Every row of the failure and security matrix has a test.
+10. `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets
    --all-features`, `cargo test --workspace`, and `mise run test:e2e` are clean.
 
 **Stretch, not required:** the same suite passing in the multi-hop

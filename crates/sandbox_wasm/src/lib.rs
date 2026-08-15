@@ -4,8 +4,11 @@
 pub mod conversions;
 mod engine;
 mod host_capabilities;
+mod http;
 mod stream;
 
-pub use engine::{AppSandboxEngine, StreamRequestOutcome, WasmResourceQuota};
+pub use engine::{
+    AppSandboxEngine, GuestHttpFailure, GuestHttpOutcome, StreamRequestOutcome, WasmResourceQuota,
+};
 pub use host_capabilities::{HostState, MessagingContext, empty_service_proxy};
 pub use stream::{GuestStreamCursor, GuestStreamSink, StreamContext, StreamRegistry};

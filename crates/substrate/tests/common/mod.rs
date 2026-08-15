@@ -66,6 +66,20 @@ pub struct SubstrateTestContext {
 
 impl SubstrateTestContext {
     pub async fn setup(iroh_port: u16, registry_port: u16, gateway_port: u16) -> Self {
+        Self::setup_with(iroh_port, registry_port, gateway_port, |_| {}).await
+    }
+
+    /// [`Self::setup`], plus a hook to mutate the `SubstrateConfig` before
+    /// the substrate boots (M06A A2) -- e.g. setting `roles.app_sandbox` to
+    /// exercise a non-default `AppSandboxRole` knob (`D-A2-11`'s
+    /// `max_concurrent_guest_http_per_service`). Additive: `setup` above is
+    /// unchanged for its existing callers.
+    pub async fn setup_with(
+        iroh_port: u16,
+        registry_port: u16,
+        gateway_port: u16,
+        configure: impl FnOnce(&mut SubstrateConfig),
+    ) -> Self {
         use syneroym_core::config::{CoordinatorIrohConfig, CoordinatorRole, ServiceRegistryRole};
 
         let lock_guard = SUBSTRATE_TEST_LOCK.lock().await;
@@ -102,6 +116,8 @@ impl SubstrateTestContext {
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
         config.roles.client_gateway =
             Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
+
+        configure(&mut config);
 
         // An unowned substrate now fails closed, so this
         // harness must own its own node -- mint an owner identity and

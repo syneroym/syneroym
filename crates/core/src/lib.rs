@@ -6,6 +6,7 @@ pub mod config;
 pub mod deploy_docs;
 pub mod dht_registry;
 pub mod endpoint_publisher;
+pub mod guest_http;
 pub mod http_routes;
 pub mod local_registry;
 pub mod protocol_utils;

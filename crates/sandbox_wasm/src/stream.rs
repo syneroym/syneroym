@@ -118,13 +118,14 @@ impl Drop for StreamRegistry {
 }
 
 /// Converts a `Vec<u8>` into the `Val::List(Vec<Val::U8>)` shape wasmtime's
-/// dynamic API uses to represent a WIT `list<u8>`.
-fn bytes_to_val_list(data: Vec<u8>) -> Val {
+/// dynamic API uses to represent a WIT `list<u8>`. `pub(crate)` (M06A A2):
+/// also used by `crate::http`'s guest HTTP request/response marshalling.
+pub(crate) fn bytes_to_val_list(data: Vec<u8>) -> Val {
     Val::List(data.into_iter().map(Val::U8).collect())
 }
 
 /// The inverse of [`bytes_to_val_list`].
-fn val_list_to_bytes(val: &Val) -> Result<Vec<u8>> {
+pub(crate) fn val_list_to_bytes(val: &Val) -> Result<Vec<u8>> {
     let Val::List(items) = val else {
         return Err(anyhow!("expected Val::List, got {val:?}"));
     };

@@ -765,6 +765,7 @@ async fn http_bridge_rejects_anonymous_caller_with_401() {
             collection: Some("items".to_string()),
             topic: None,
             protocol: None,
+            public: false,
         }],
     );
 

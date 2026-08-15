@@ -10,6 +10,7 @@ exclude = [
     "test-components/abac-test",
     "test-components/scheduled-test",
     "test-components/saga-test",
+    "test-components/http-guest-test",
 ]
 
 [profile.dev]

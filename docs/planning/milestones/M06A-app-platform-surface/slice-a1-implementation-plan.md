@@ -22,7 +22,7 @@ fix than the review implied, argued below.
 | 4 | Manifest blob written, never read; "persist" is really "cache" | **Accepted, different fix.** No boot-time deploy-state restore exists *anywhere* — nothing reads `hosted_apps_dir` at boot and it holds only the registry certificate. Building one is not A1. Taken as the review's own second option: explicit decision + backlog row — plus a fix for the orphan-blob half, which is **not** merely mirroring `http_routes` (`D-A1-2`, `D-A1-9`) |
 | 5 | Redeploy leaks the previous bundle | **Accepted.** `D-A1-9`, call site 6 |
 | 6 | `public: bool` is what ADR-0018 explicitly rejects | **Accepted, refined.** Verified the rejection by name at ADR-0018's *Alternatives considered*. Adopting its `visibility` enum — but on `asset-bundle`, not `service-config`, because ADR-0018 has claimed that field name for a different question. Argued in `D-A1-1` |
-| 7 | SPA fallback is unsanctioned scope | **Accepted.** Removed; moved to A3 where a consumer exists |
+| 7 | SPA fallback is unsanctioned scope | **Accepted.** Removed; moved to the demo app (slice A4 after the 2026-08-14 renumber) where a consumer exists |
 | 8 | §6 overclaims coverage | **Accepted.** Claim corrected, two mis-mapped tests fixed |
 | 9 | `supervisor.rs` inlining missed; two path-resolution rules | **Accepted.** Call site 4; `D-A1-1` now states one rule explicitly |
 | 10 | Wrong file for the control-plane field | **Accepted.** Verified `crates/control_plane/src/service.rs:144`, `init` at `:171` |
@@ -196,7 +196,7 @@ registry aliases, the KEK). `D-A1-2`.
 | **D-A1-3** | Assets use the service DEK like every other blob. | F9. One storage path; `storage.encryption = false` already covers operators wanting plaintext globally. |
 | **D-A1-4** | Static matching is **exact-path (plus `D-A1-11`'s directory index), `GET`/`HEAD` only**, placed before `resolve_route`. A deploy is **refused** when any asset path is matched by a declared **`GET`/`HEAD`** route *pattern* — evaluated with `match_path`, not set membership, and filtered by method first. | Revision-3 finding 3: `match_path` matches segment count then lets `{param}` capture anything, so `GET /docs/{slug}` and an asset at `/docs/intro.html` collide despite no literal equality. Requires R3-A's move of `match_path` into core. The method filter (revision-4 finding 4) avoids a false rejection: assets never answer `POST`, so a `POST /docs/{slug}` has no request-time conflict to prevent. |
 | **D-A1-5** | The **authoritative** check is client-side and combined: `encoded(component) + encoded(bundle) + envelope` must fit `MAX_FRAME_SIZE`, at 3.57 bytes per artifact byte, with an error naming both encoded sizes and the frame limit. `MAX_ASSET_BUNDLE_BYTES = 2 MiB` is retained as a cheap early guard, plus `MAX_ASSET_UNPACKED_BYTES = 64 MiB` and `MAX_ASSET_FILE_COUNT = 10_000`. | F2 as settled in revision 3, and R3-C: a fixed bundle cap is either too loose beside a big component or needlessly tight beside a small one, so the combined check is the real rule. 2 MiB fits alongside a 2 MiB component with headroom. Unpacked cap guards decompression bombs independently of both. |
-| **D-A1-11** | A request path ending in `/` resolves to `<path>index.html`, exactly. Nothing else falls back. | Revision-3 finding 1. task.md's reference scenario step 4 requires `GET /` → index.html, and a browser opening the gateway hostname asks for exactly that. This is a **directory index**, not SPA history fallback: it fires only on a trailing slash, so `/api/comments` is untouched and A1/A2 independence survives. `/some/route` → index.html remains A3's problem. |
+| **D-A1-11** | A request path ending in `/` resolves to `<path>index.html`, exactly. Nothing else falls back. | Revision-3 finding 1. task.md's reference scenario step 4 requires `GET /` → index.html, and a browser opening the gateway hostname asks for exactly that. This is a **directory index**, not SPA history fallback: it fires only on a trailing slash, so `/api/comments` is untouched and A1/A2 independence survives. `/some/route` → index.html remains the demo app's problem (slice A4). |
 | **D-A1-6** | Reuse the existing `dispatch_native` blob path; do not add a `BlobProvider` to `RouteHandlerInner`. | F4 is real but fixing it blind is premature. Self-contained follow-up; backlog row owed regardless (§7.1). |
 | **D-A1-7** | Add **both**: `metrics::counter!("substrate.wasm.instantiations_total")` and an `AtomicU64` on `AppSandboxEngine` with a getter. Tests assert on a **delta measured around the request**, never an absolute. | F5. The review is right that the two were inconsistent, and right that deploy-time lifecycle hooks instantiate the component — so an absolute assertion is wrong regardless of mechanism. |
 | **D-A1-8** | A miss returns **404, never 403**; a non-`public` bundle is byte-identical to no bundle. | Failure-matrix row 7. |
@@ -602,7 +602,7 @@ assumption is wrong somewhere, which is worth knowing in P1 rather than P4.
 ## §7 Tests
 
 Covering **A1's rows only**. Matrix rows 5, 6 and 8, and exit criteria 2, 5, 6,
-7, belong to A2/A3/A4 — revision 1's "every row is covered" was wrong.
+7, belong to A2/A4/A5 — revision 1's "every row is covered" was wrong.
 
 | Test | Covers |
 |---|---|
@@ -682,7 +682,8 @@ that did not test it.
    service") — the **loading** half is explicitly not built; `D-A1-2` and §8.2
    record why.
 5. A1's scope line should say **exact-path static serving plus a trailing-slash
-   directory index**, so SPA history fallback is visibly A3's problem while
+   directory index**, so SPA history fallback is visibly the demo app's problem
+   (slice A4) while
    `GET /` visibly is not.
 6. Failure-matrix row 2's cap wording should point at `D-A1-5`'s *combined*
    client-side check, not only at a fixed byte cap (R3-C).
