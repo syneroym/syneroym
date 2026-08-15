@@ -607,7 +607,12 @@ impl AppSandboxEngine {
             max_concurrent_guest_http_per_service,
             websocket_senders: Arc::new(DashMap::new()),
             guest_websocket_permits: Arc::new(DashMap::new()),
-            max_concurrent_websockets_per_service: 50,
+            max_concurrent_websockets_per_service: config
+                .roles
+                .app_sandbox
+                .as_ref()
+                .map(|r| r.max_concurrent_websockets_per_service)
+                .unwrap_or(50),
         };
 
         for (service_id, _interface_name, endpoint) in endpoints {
@@ -2235,6 +2240,7 @@ impl AppSandboxEngine {
     }
 
     pub async fn handle_websocket_on_open(&self, service_id: &str, conn_id: &str) {
+        let _active_guard = ActiveInstanceGuard::new();
         let (mut store, instance, _) = match self
             .build_store_and_instantiate(
                 service_id,
@@ -2269,6 +2275,7 @@ impl AppSandboxEngine {
         conn_id: &str,
         frame: Vec<u8>,
     ) {
+        let _active_guard = ActiveInstanceGuard::new();
         let (mut store, instance, _) = match self
             .build_store_and_instantiate(
                 service_id,
@@ -2299,6 +2306,7 @@ impl AppSandboxEngine {
     }
 
     pub async fn handle_websocket_on_close(&self, service_id: &str, conn_id: &str) {
+        let _active_guard = ActiveInstanceGuard::new();
         let (mut store, instance, _) = match self
             .build_store_and_instantiate(
                 service_id,

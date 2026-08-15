@@ -131,3 +131,10 @@ pub fn http_guest_test_wasm_path() -> PathBuf {
          syneroym_test_http_guest.wasm",
     )
 }
+
+/// Returns the workspace-relative path to the websocket-guest-test component
+/// WASM module.
+pub fn websocket_guest_test_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-wasip1/release/syneroym_test_websocket_guest.wasm")
+}

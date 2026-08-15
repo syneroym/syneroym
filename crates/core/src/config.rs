@@ -467,6 +467,10 @@ const fn default_max_concurrent_guest_http_per_service() -> u32 {
     4
 }
 
+const fn default_max_concurrent_websockets_per_service() -> u32 {
+    50
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSandboxRole {
@@ -530,6 +534,9 @@ pub struct AppSandboxRole {
     /// a request that outwaits `GUEST_HTTP_ADMISSION_TIMEOUT` for a permit
     /// gets a 503, never the pool's own hard instantiation error.
     pub max_concurrent_guest_http_per_service: u32,
+    /// Concurrent guest websockets one service may have in flight.
+    /// (M06A A3). Enforced per service by a semaphore, sized by this field.
+    pub max_concurrent_websockets_per_service: u32,
     /// The guest proxy outbox worker's own tick. Recovery after an
     /// unreachable target returns is bounded by this, and nothing finer
     /// helps when the wait is for a peer to come back.
@@ -639,6 +646,7 @@ impl Default for AppSandboxRole {
             abac_max_instructions: default_abac_max_instructions(),
             abac_epoch_timeout_secs: default_abac_epoch_timeout_secs(),
             max_concurrent_guest_http_per_service: default_max_concurrent_guest_http_per_service(),
+            max_concurrent_websockets_per_service: default_max_concurrent_websockets_per_service(),
             queue_tick_secs: default_proxy_queue_tick_secs(),
             queue_max_attempts: default_proxy_queue_max_attempts(),
             queue_max_backoff_secs: default_proxy_queue_max_backoff_secs(),

@@ -163,7 +163,7 @@ impl RouteHandler {
         // ones.
         builder.http1().half_close(true);
         builder
-            .serve_connection(
+            .serve_connection_with_upgrades(
                 io,
                 service::service_fn(move |req| {
                     let h = handler.clone();
@@ -1422,6 +1422,10 @@ impl HttpHandler {
         route: &HttpRoute,
         req: Request<Incoming>,
     ) -> Result<Response<HttpBody>> {
+        if self.caller.is_none() && !route.public {
+            return Ok(http_error(StatusCode::UNAUTHORIZED, "Unauthorized".into()));
+        }
+
         if route.operation != "handle-upgrade" {
             return Ok(http_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1473,18 +1477,23 @@ impl HttpHandler {
         };
 
         let service_id = self.preamble.service_id.clone();
-        let topic = route.topic.clone().unwrap_or_default();
-        let namespaced = syneroym_mqtt_broker::namespace_topic(&service_id, &topic);
-        let (_sub_handle, mut rx_broadcast) =
-            match self.route_handler.inner.messaging_broker.subscribe(namespaced).await {
-                Ok(res) => res,
-                Err(e) => {
-                    return Ok(http_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("failed to subscribe: {e}"),
-                    ));
-                }
-            };
+        let mut topic_rx = None;
+        let mut _sub_handle = None;
+        if let Some(topic) = &route.topic {
+            let namespaced = syneroym_mqtt_broker::namespace_topic(&service_id, topic);
+            let (handle, rx_broadcast) =
+                match self.route_handler.inner.messaging_broker.subscribe(namespaced).await {
+                    Ok(res) => res,
+                    Err(e) => {
+                        return Ok(http_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("failed to subscribe: {e}"),
+                        ));
+                    }
+                };
+            topic_rx = Some(rx_broadcast);
+            _sub_handle = Some(handle);
+        }
 
         let permits = {
             let entry = app_sandbox_engine
@@ -1523,6 +1532,7 @@ impl HttpHandler {
         }
 
         tokio::task::spawn(async move {
+            let _keep_alive = _sub_handle;
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
                     let io = hyper_util::rt::TokioIo::new(upgraded);
@@ -1533,7 +1543,14 @@ impl HttpHandler {
                     )
                     .await;
 
-                    engine.handle_websocket_on_open(&service_id, &conn_id).await;
+                    {
+                        let engine_clone = engine.clone();
+                        let sid = service_id.clone();
+                        let cid = conn_id.clone();
+                        tokio::task::spawn(async move {
+                            engine_clone.handle_websocket_on_open(&sid, &cid).await;
+                        });
+                    }
 
                     let _permit = permit;
                     use futures::{SinkExt, StreamExt};
@@ -1543,7 +1560,20 @@ impl HttpHandler {
                             msg = ws_stream.next() => {
                                 match msg {
                                     Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(bin))) => {
-                                        engine.handle_websocket_on_message(&service_id, &conn_id, bin.to_vec()).await;
+                                        let engine_clone = engine.clone();
+                                        let sid = service_id.clone();
+                                        let cid = conn_id.clone();
+                                        tokio::task::spawn(async move {
+                                            engine_clone.handle_websocket_on_message(&sid, &cid, bin.to_vec()).await;
+                                        });
+                                    }
+                                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(txt))) => {
+                                        let engine_clone = engine.clone();
+                                        let sid = service_id.clone();
+                                        let cid = conn_id.clone();
+                                        tokio::task::spawn(async move {
+                                            engine_clone.handle_websocket_on_message(&sid, &cid, txt.as_bytes().to_vec()).await;
+                                        });
                                     }
                                     Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => {
                                         break;
@@ -1552,7 +1582,13 @@ impl HttpHandler {
                                     _ => {}
                                 }
                             }
-                            broadcast = rx_broadcast.recv() => {
+                            broadcast = async {
+                                if let Some(rx) = &mut topic_rx {
+                                    rx.recv().await
+                                } else {
+                                    futures::future::pending().await
+                                }
+                            } => {
                                 match broadcast {
                                     Some((_, payload)) => {
                                         let _ = ws_stream.send(tokio_tungstenite::tungstenite::Message::Binary(payload.into())).await;
@@ -1571,7 +1607,15 @@ impl HttpHandler {
                         }
                     }
 
-                    engine.handle_websocket_on_close(&service_id, &conn_id).await;
+                    {
+                        let engine_clone = engine.clone();
+                        let sid = service_id.clone();
+                        let cid = conn_id.clone();
+                        tokio::task::spawn(async move {
+                            engine_clone.handle_websocket_on_close(&sid, &cid).await;
+                        });
+                    }
+
                     if let Some(map) = engine.websocket_senders.get(&service_id) {
                         map.remove(&conn_id);
                     }
