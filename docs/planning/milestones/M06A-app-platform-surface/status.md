@@ -2,10 +2,20 @@
 
 **Milestone:** [task.md](task.md) · **Designs of record:**
 [slice-a1-implementation-plan.md](slice-a1-implementation-plan.md) (A1),
-[slice-a2-implementation-plan.md](slice-a2-implementation-plan.md) (A2)
+[slice-a2-implementation-plan.md](slice-a2-implementation-plan.md) (A2),
+[slice-a4-implementation-plan.md](slice-a4-implementation-plan.md) (A4)
 
 **Overall:** Slice A1 complete (2026-08-14). Slice A2 complete (2026-08-14).
-A3–A4 not started.
+A3–A5 not started.
+
+> **Renumbered 2026-08-14.** `D-06A-2` was reversed — inbound WebSocket is
+> built rather than replaced by SSE — and the new WebSocket slice took **A3**,
+> because its guest-side API is a design question better settled before the
+> demo app is written than retrofitted after. The demo app moved A3 → **A4**
+> (its plan file renamed with it, decision ids `D-A3-n` → `D-A4-n`) and the
+> Playwright suite A4 → **A5**. A1 and A2 are unaffected; references to the
+> demo app in their plans and in the evidence below were updated with the
+> renumber.
 
 ## Slice status
 
@@ -13,8 +23,9 @@ A3–A4 not started.
 |---|---|---|---|
 | A1 | Blob-backed static serving | **Complete (2026-08-14)** — [implementation plan](slice-a1-implementation-plan.md), evidence below | None — independently mergeable |
 | A2 | Guest HTTP route target | **Complete (2026-08-14)** — [implementation plan](slice-a2-implementation-plan.md) revision 4, evidence below | None — independent of A1 |
-| A3 | The demo app | Not started | A1 (Complete) and A2 (Complete) |
-| A4 | The Playwright suite | Not started | A3 |
+| A3 | Inbound WebSocket | Not started — owes its own plan | A2 (Complete) |
+| A4 | The demo app | Not started — [implementation plan](slice-a4-implementation-plan.md) | A1, A2 (Complete) and A3 |
+| A5 | The Playwright suite | Not started | A4 |
 
 ---
 
@@ -70,8 +81,8 @@ down unconditionally, keeping nothing.
 is spliced between the fixed `GET /blobs/{hash}` route and the per-service
 `http_routes` table. `resolve_asset` does exact-path lookup plus D-A1-11's
 one rewrite (a path ending in `/` resolves to `<path>index.html` — a
-directory index, not SPA history fallback, which stays A3's problem) and
-returns `None` — indistinguishable — for a missing service, a non-`public`
+directory index, not SPA history fallback, which stays the demo app's problem,
+slice A4) and returns `None` — indistinguishable — for a missing service, a non-`public`
 bundle, or a genuine miss (D-A1-8). `GET`/`HEAD` only; `ETag`/`If-None-Match`
 304 handling; `Cache-Control` chosen by content type (`no-cache` for
 `text/html`, whose name is stable while its content changes every deploy;

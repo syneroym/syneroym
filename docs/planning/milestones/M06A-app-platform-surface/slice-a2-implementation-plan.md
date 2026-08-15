@@ -1388,11 +1388,12 @@ criteria 1, 2, 4, 6, 7 belong to A3/A4.
 7. **`HEAD` on a guest route.** `resolve_route` matches the method exactly, so
    a declared `GET /api/x` does not answer `HEAD /api/x`. The fix is a general
    route-table question, not a guest-target one.
-8. **SPA history fallback / deep links, which A3 needs and neither A1 nor A2
-   provides.** `D-A1-11` deliberately left `/some/route` → `index.html` as
-   "A3's problem", and F10 shows the route table cannot cover it either:
+8. **SPA history fallback / deep links, which the demo app needs and neither
+   A1 nor A2 provides.** `D-A1-11` deliberately left `/some/route` →
+   `index.html` as the demo app's problem (slice A4 after the 2026-08-14
+   renumber), and F10 shows the route table cannot cover it either:
    `match_path` requires equal segment counts and has no wildcard, so a deep
-   link of unknown depth cannot be declared as a route at all. So A3 starts
+   link of unknown depth cannot be declared as a route at all. So A4 starts
    blocked on a mechanism no shipped slice has. Recorded here because A2 is the
    only slice touching path matching, and the two candidate fixes both belong
    to whoever picks this up: a wildcard/prefix segment in `match_path` (which
