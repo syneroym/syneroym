@@ -13,45 +13,51 @@ fn main() {
     }
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    let component_dir = PathBuf::from(&manifest_dir).join("../../test-components/greeter");
 
-    // Tell Cargo to re-run this script if the component's source changes
-    println!("cargo:rerun-if-changed={}", component_dir.join("src").display());
-    println!("cargo:rerun-if-changed={}", component_dir.join("wit").display());
-    println!("cargo:rerun-if-changed={}", component_dir.join("Cargo.toml").display());
+    let components = ["greeter", "websocket-guest-test"];
 
-    // Build WASM component. Failure is non-fatal: print a warning and continue.
-    // This allows builds to succeed on environments without cargo-component
-    // installed.
-    let status = Command::new(env!("CARGO"))
-        .arg("component")
-        .arg("build")
-        .arg("--release")
-        .arg("--target")
-        .arg("wasm32-wasip2")
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env_remove("CARGO_MAKEFLAGS")
-        .env("CARGO_TARGET_DIR", component_dir.join("target"))
-        .current_dir(&component_dir)
-        .status();
+    for component in components {
+        let component_dir =
+            PathBuf::from(&manifest_dir).join(format!("../../test-components/{}", component));
 
-    match status {
-        Ok(s) if s.success() => {
-            println!("cargo:info=WASM component built successfully");
-        }
-        Ok(s) => {
-            println!(
-                "cargo:warning=Failed to build WASM component in {component_dir:?} : {s}. Install \
-                 cargo-component to rebuild: `cargo install cargo-component`. Continuing build \
-                 without updated WASM component."
-            );
-        }
-        Err(e) => {
-            println!(
-                "cargo:warning=Failed to execute WASM component build: {e}. Ensure 'cargo' is \
-                 available and cargo-component is installed. Continuing build without WASM \
-                 component."
-            );
+        // Tell Cargo to re-run this script if the component's source changes
+        println!("cargo:rerun-if-changed={}", component_dir.join("src").display());
+        println!("cargo:rerun-if-changed={}", component_dir.join("wit").display());
+        println!("cargo:rerun-if-changed={}", component_dir.join("Cargo.toml").display());
+
+        // Build WASM component. Failure is non-fatal: print a warning and continue.
+        // This allows builds to succeed on environments without cargo-component
+        // installed.
+        let status = Command::new(env!("CARGO"))
+            .arg("component")
+            .arg("build")
+            .arg("--release")
+            .arg("--target")
+            .arg("wasm32-wasip2")
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .env_remove("CARGO_MAKEFLAGS")
+            .env("CARGO_TARGET_DIR", component_dir.join("target"))
+            .current_dir(&component_dir)
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                println!("cargo:info=WASM component {} built successfully", component);
+            }
+            Ok(s) => {
+                println!(
+                    "cargo:warning=Failed to build WASM component in {component_dir:?} : {s}. \
+                     Install cargo-component to rebuild: `cargo install cargo-component`. \
+                     Continuing build without updated WASM component."
+                );
+            }
+            Err(e) => {
+                println!(
+                    "cargo:warning=Failed to execute WASM component build for {component}: {e}. \
+                     Ensure 'cargo' is available and cargo-component is installed. Continuing \
+                     build without WASM component."
+                );
+            }
         }
     }
 }
