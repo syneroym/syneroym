@@ -57,7 +57,7 @@ jobs:
           tool: cargo-component@0.21.1
 
       - name: Install mise
-        uses: jdx/mise-action@v2
+        uses: jdx/mise-action@v4
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
 
