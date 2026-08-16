@@ -27,8 +27,17 @@ run = [
   "cargo update 'pkcs8@0.11.0-rc.11'",
 ]
 
+[tasks."build:test-components"]
+description = "Build all WASM test fixtures required by the integration tests"
+run = """
+for component in greeter data-layer-test proxy-test stream-test messaging-pubsub-test abac-test scheduled-test saga-test http-guest-test websocket-guest-test; do
+  (cd "test-components/$component" && cargo component build --release --target wasm32-wasip2)
+done
+"""
+
 [tasks."test:rust"]
 description = "Run all Rust unit and integration tests"
+depends = ["build:test-components"]
 run = "cargo test --workspace"
 
 [tasks."test:e2e"]

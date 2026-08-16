@@ -136,5 +136,5 @@ pub fn http_guest_test_wasm_path() -> PathBuf {
 /// WASM module.
 pub fn websocket_guest_test_wasm_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/wasm32-wasip1/release/syneroym_test_websocket_guest.wasm")
+        .join("../../target/wasm32-wasip2/release/syneroym_test_websocket_guest.wasm")
 }

@@ -8,7 +8,7 @@
 //! `empty_row_authorizer()`.
 
 use std::{
-    env, fs,
+    fs,
     path::Path,
     sync::{Arc, Weak},
 };
@@ -308,20 +308,7 @@ async fn deploy_with_mode(dir: &Path, mode: &str) -> Option<Deployed> {
 /// skip there would mean a green run stopped proving what it claims to.
 macro_rules! skip_if_missing_artifact {
     ($test_name:expr) => {
-        if env::var_os("CI").is_some() {
-            panic!(
-                "{}: abac-test WASM artifact not found under CI, where it must have been built \
-                 (see .github/actions/ci-build-and-test/action.yml) -- a silent skip here would \
-                 mean this security-evidence test stopped running without the run going red",
-                $test_name
-            );
-        }
-        eprintln!(
-            "Skipping {}: abac-test WASM artifact not found (run `cargo component build --release \
-             --target wasm32-wasip2` in test-components/abac-test)",
-            $test_name
-        );
-        return;
+        panic!("{}: abac-test WASM artifact not found", $test_name);
     };
 }
 

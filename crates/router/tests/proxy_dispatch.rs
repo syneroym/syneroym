@@ -359,10 +359,8 @@ fn json_rpc_body(method: &str, params: Value) -> Vec<u8> {
 /// `ProxyRouter::invoke`.
 #[tokio::test]
 async fn guest_to_guest_same_node_proxy_call_returns_typed_result() {
-    let Some(route_handler) = test_route_handler_with_proxy_components().await else {
-        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
-        return;
-    };
+    let route_handler =
+        test_route_handler_with_proxy_components().await.expect("wasm artifacts not built");
 
     let params = json!({
         "service": "proxy-callee",
@@ -397,12 +395,8 @@ async fn guest_to_guest_same_node_proxy_call_returns_typed_result() {
 #[tokio::test]
 async fn guest_dependency_target_reaches_the_bound_member_and_a_re_registration_takes_effect_on_the_next_call()
  {
-    let Some((route_handler, logical_resolver)) =
-        test_route_handler_with_a_bound_dependency().await
-    else {
-        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
-        return;
-    };
+    let (route_handler, logical_resolver) =
+        test_route_handler_with_a_bound_dependency().await.expect("wasm artifacts not built");
 
     let params = json!({
         "service": "callee-dep",
@@ -468,10 +462,8 @@ async fn guest_dependency_target_reaches_the_bound_member_and_a_re_registration_
 /// need to exist: the gate fires before any registry lookup).
 #[tokio::test]
 async fn guest_cross_service_native_capability_through_proxy_is_permission_denied() {
-    let Some(route_handler) = test_route_handler_with_proxy_components().await else {
-        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
-        return;
-    };
+    let route_handler =
+        test_route_handler_with_proxy_components().await.expect("wasm artifacts not built");
 
     let params = json!({
         "service": "some-other-service",
@@ -817,12 +809,10 @@ async fn self_proxy_call(
 /// FDAE (a future tightening of the gate that broke it would fail this).
 #[tokio::test]
 async fn guest_self_proxy_data_layer_reads_normally_when_policy_absent() {
-    let Some((route_handler, _storage_provider, _key_store)) =
-        test_route_handler_with_self_native_data_layer(None).await
-    else {
-        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
-        return;
-    };
+    let (route_handler, _storage_provider, _key_store) =
+        test_route_handler_with_self_native_data_layer(None)
+            .await
+            .expect("wasm artifacts not built");
 
     let resp =
         self_proxy_call(&route_handler, "create-collection", json!({"name": "items"}), None).await;
@@ -858,12 +848,10 @@ async fn guest_self_proxy_data_layer_reads_normally_when_policy_absent() {
 /// pinned as an open inconsistency; now the settled spec, not a known gap.
 #[tokio::test]
 async fn guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_service() {
-    let Some((route_handler, _storage_provider, _key_store)) =
-        test_route_handler_with_self_native_data_layer(None).await
-    else {
-        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
-        return;
-    };
+    let (route_handler, _storage_provider, _key_store) =
+        test_route_handler_with_self_native_data_layer(None)
+            .await
+            .expect("wasm artifacts not built");
 
     const REAL_CALLER_DID: &str = "did:key:zSelfProxyWriterB35";
     let real_caller = CallerContext {
@@ -915,12 +903,10 @@ async fn guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_s
 #[tokio::test]
 async fn guest_self_proxy_data_layer_returns_empty_when_policy_present() {
     let policy = Arc::new(self_proxy_items_policy());
-    let Some((route_handler, storage_provider, key_store)) =
-        test_route_handler_with_self_native_data_layer(Some(policy)).await
-    else {
-        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
-        return;
-    };
+    let (route_handler, storage_provider, key_store) =
+        test_route_handler_with_self_native_data_layer(Some(policy))
+            .await
+            .expect("wasm artifacts not built");
 
     let resp =
         self_proxy_call(&route_handler, "create-collection", json!({"name": "items"}), None).await;
@@ -996,12 +982,10 @@ fn self_proxy_items_principal_column_policy() -> Policy {
 #[tokio::test]
 async fn guest_self_proxy_data_layer_filters_for_a_real_caller_d04_02_h_closed() {
     let policy = Arc::new(self_proxy_items_principal_column_policy());
-    let Some((route_handler, storage_provider, key_store)) =
-        test_route_handler_with_self_native_data_layer(Some(policy)).await
-    else {
-        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
-        return;
-    };
+    let (route_handler, storage_provider, key_store) =
+        test_route_handler_with_self_native_data_layer(Some(policy))
+            .await
+            .expect("wasm artifacts not built");
 
     let resp =
         self_proxy_call(&route_handler, "create-collection", json!({"name": "items"}), None).await;
@@ -1112,12 +1096,10 @@ fn self_proxy_items_principal_column_policy_with_stage4() -> Policy {
 #[tokio::test]
 async fn guest_self_proxy_data_layer_applies_stage4() {
     let policy = Arc::new(self_proxy_items_principal_column_policy_with_stage4());
-    let Some((route_handler, storage_provider, key_store)) =
-        test_route_handler_with_self_native_data_layer_and_stage4(policy).await
-    else {
-        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
-        return;
-    };
+    let (route_handler, storage_provider, key_store) =
+        test_route_handler_with_self_native_data_layer_and_stage4(policy)
+            .await
+            .expect("wasm artifacts not built");
 
     let resp =
         self_proxy_call(&route_handler, "create-collection", json!({"name": "items"}), None).await;

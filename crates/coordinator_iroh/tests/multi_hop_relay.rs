@@ -638,14 +638,10 @@ async fn test_outbound_relay() -> Result<()> {
 /// proxy.rs`) or the same-node guest-to-guest test (`proxy_dispatch.rs`).
 #[tokio::test]
 async fn test_cross_node_proxy_call() -> Result<()> {
-    let Ok(greeter_bytes) = std::fs::read(test_constants::greeter_wasm_path()) else {
-        eprintln!("skipping: greeter wasm artifact not built");
-        return Ok(());
-    };
-    let Ok(proxy_test_bytes) = std::fs::read(test_constants::proxy_test_wasm_path()) else {
-        eprintln!("skipping: proxy-test wasm artifact not built");
-        return Ok(());
-    };
+    let greeter_bytes =
+        std::fs::read(test_constants::greeter_wasm_path()).expect("wasm artifact not built");
+    let proxy_test_bytes =
+        std::fs::read(test_constants::proxy_test_wasm_path()).expect("wasm artifact not built");
 
     let temp_dir = tempfile::tempdir()?;
     let base_path = temp_dir.path();
