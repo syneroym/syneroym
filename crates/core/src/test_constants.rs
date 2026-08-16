@@ -140,3 +140,26 @@ pub fn websocket_guest_test_wasm_path() -> PathBuf {
          syneroym_test_websocket_guest.wasm",
     )
 }
+
+/// Returns the workspace-relative path to the miniapp-demo1-wasm component
+/// WASM module (M06A A4).
+pub fn miniapp_demo1_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../test-components/miniapp-demo1-wasm/target/wasm32-wasip2/release/\
+         syneroym_test_miniapp_demo1_wasm.wasm",
+    )
+}
+
+/// Default declared http_routes JSON for miniapp-demo1-wasm.
+pub const MINIAPP_DEMO1_WASM_ROUTES_JSON: &str = r#"{
+  "http_routes": [
+    {"method": "GET", "path": "/comments", "target": "guest", "operation": "handle-request", "public": true},
+    {"method": "GET", "path": "/api/comments", "target": "guest", "operation": "handle-request", "public": true},
+    {"method": "POST", "path": "/api/comments", "target": "guest", "operation": "handle-request", "public": true},
+    {"method": "GET", "path": "/api/files", "target": "guest", "operation": "handle-request", "public": true},
+    {"method": "GET", "path": "/api/files/{filename}", "target": "stream", "operation": "accept-download", "protocol": "file-download"},
+    {"method": "POST", "path": "/api/files", "target": "stream", "operation": "accept-upload", "protocol": "file-upload"},
+    {"method": "GET", "path": "/api/events", "target": "messaging", "operation": "subscribe-sse", "topic": "comment-updates"},
+    {"method": "GET", "path": "/ws", "target": "websocket", "operation": "handle-upgrade", "topic": "comment-updates", "public": true}
+  ]
+}"#;

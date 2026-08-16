@@ -7767,6 +7767,7 @@ dependencies = [
  "iroh",
  "iroh-relay",
  "metrics 0.23.1",
+ "mime_guess",
  "p256",
  "percent-encoding",
  "rand 0.9.5",

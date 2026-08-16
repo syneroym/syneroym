@@ -31,7 +31,7 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
-use futures::stream;
+use futures::{TryStreamExt, stream};
 use http_body_util::{
     BodyExt, Full, LengthLimitError, Limited, StreamBody, combinators::UnsyncBoxBody,
 };
@@ -40,7 +40,7 @@ use hyper::{
     body::{Frame, Incoming},
     header::{
         ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderName, HeaderValue,
-        IF_NONE_MATCH, X_CONTENT_TYPE_OPTIONS,
+        IF_NONE_MATCH, RETRY_AFTER, X_CONTENT_TYPE_OPTIONS,
     },
     service,
 };
@@ -65,7 +65,7 @@ use syneroym_rpc::{
     PROXY_TRANSPORT_RPC_CODE, UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
 };
 use syneroym_sandbox_wasm::{GuestHttpFailure, GuestHttpOutcome, StreamRequestOutcome};
-use tokio::io::{self as tokio_io, AsyncRead, AsyncWrite};
+use tokio::io::{self as tokio_io, AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio_tungstenite::{WebSocketStream, tungstenite::handshake::derive_accept_key};
 use tokio_util::io::StreamReader;
 use tracing::{debug, error, warn};
@@ -986,7 +986,7 @@ impl HttpHandler {
         match route.target.as_str() {
             "data-layer" => self.handle_data_layer_route(route, path_param, req).await,
             "messaging" => self.handle_messaging_route(route, req).await,
-            "stream" => self.handle_stream_route(route, req).await,
+            "stream" => self.handle_stream_route(route, path_param, req).await,
             "guest" => self.handle_guest_route(route, path_param, req).await,
             "websocket" => self.handle_websocket_route(route, req).await,
             other => Ok(http_error(
@@ -1160,6 +1160,28 @@ impl HttpHandler {
             ));
         }
 
+        let service_id = self.preamble.service_id.clone();
+        let permits = {
+            let entry = self
+                .route_handler
+                .inner
+                .sse_permits
+                .entry(service_id)
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(50)));
+            entry.value().clone()
+        };
+        let permit = match permits.try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                let mut resp = http_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "service is at its SSE subscriber concurrency limit".into(),
+                );
+                resp.headers_mut().insert(RETRY_AFTER, HeaderValue::from_static("1"));
+                return Ok(resp);
+            }
+        };
+
         let topic = route.topic.clone().unwrap_or_default();
         let namespaced = namespace_topic(&self.preamble.service_id, &topic);
         let (handle, receiver) = self
@@ -1171,17 +1193,19 @@ impl HttpHandler {
             .map_err(|e| anyhow!("SSE subscribe failed: {e}"))?;
 
         // Pull-based: each poll awaits the next broker message and formats
-        // it as one SSE frame. `handle` (the `SubscriptionHandle`) is
-        // carried inside the stream's own state, so it -- and the broker
-        // subscription it owns -- is dropped the moment hyper stops
-        // driving this response body, which is exactly what happens when
-        // the client disconnects (hyper's connection loop observes the
-        // write failing and drops the in-flight response future).
-        let stream = stream::unfold((receiver, handle), |(mut receiver, handle)| async move {
-            let (topic, payload) = receiver.recv().await?;
-            let frame = Frame::data(Bytes::from(format_sse_frame(&topic, &payload)));
-            Some((Ok::<_, Infallible>(frame), (receiver, handle)))
-        });
+        // it as one SSE frame. `handle` (the `SubscriptionHandle`) and
+        // `permit` are carried inside the stream's own state, so they -- and
+        // the broker subscription they own -- are dropped the moment hyper
+        // stops driving this response body, which is exactly what happens
+        // when the client disconnects.
+        let stream = stream::unfold(
+            (receiver, handle, permit),
+            |(mut receiver, handle, permit)| async move {
+                let (topic, payload) = receiver.recv().await?;
+                let frame = Frame::data(Bytes::from(format_sse_frame(&topic, &payload)));
+                Some((Ok::<_, Infallible>(frame), (receiver, handle, permit)))
+            },
+        );
 
         let body = StreamBody::new(stream).boxed_unsync();
         Response::builder()
@@ -1192,19 +1216,14 @@ impl HttpHandler {
             .map_err(|e| anyhow!("failed to build SSE response: {e}"))
     }
 
-    // -- stream / chunked upload -----------------------------------------
+    // -- stream / chunked upload and download ----------------------------
 
     async fn handle_stream_route(
         &self,
         route: &HttpRoute,
+        path_param: Option<String>,
         req: Request<Incoming>,
     ) -> Result<Response<HttpBody>> {
-        if route.operation != "accept-upload" {
-            return Ok(http_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("unsupported stream operation: {}", route.operation),
-            ));
-        }
         let Some(app_sandbox_engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
             return Ok(http_error(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1228,52 +1247,99 @@ impl HttpHandler {
             .unwrap_or_else(|| "unknown-peer".to_string());
 
         // `initial_payload` doubles as the guest's `metadata` parameter
-        // (`accept-stream-upload(protocol, peer-id, metadata)`) -- there is
-        // no equivalent "first framed frame" concept in a plain chunked
-        // HTTP body the way the raw-QUIC path has one, so it's taken from
-        // the request's `metadata` query parameter instead (e.g. `PUT
-        // /upload?metadata=x`), empty if absent. An HTTP-specific
-        // simplification vs. the raw-QUIC path's framed initial payload,
-        // but still lets a route's caller pass guest-meaningful metadata
-        // rather than always sending nothing.
-        let metadata = req
-            .uri()
-            .query()
-            .and_then(|q| parse_query(q).remove("metadata"))
-            .unwrap_or_default()
-            .into_bytes();
+        // (`accept-stream-upload(protocol, peer-id, metadata)`) or the
+        // download request parameter (`handle-stream-request(protocol, peer-id,
+        // request-data)`).
+        let initial_payload =
+            path_param.as_deref().map(|p| p.as_bytes().to_vec()).unwrap_or_else(|| {
+                req.uri()
+                    .query()
+                    .and_then(|q| parse_query(q).remove("metadata"))
+                    .unwrap_or_default()
+                    .into_bytes()
+            });
 
-        // Decision 5 of the Slice 7 plan: adapt the HTTP request body into
-        // the `AsyncRead` `handle_stream_protocol_request` already accepts
-        // (a trait object, no router-specific concrete type baked in).
-        // `hyper::Error` doesn't implement `Into<io::Error>`, hence the
-        // explicit `map_err`. The writer side is never used for data
-        // transfer on the upload path (only `.shutdown()` is called), so a
-        // plain sink suffices.
-        use futures::TryStreamExt;
-        let body_stream = req.into_body().into_data_stream().map_err(io::Error::other);
-        let reader: Box<dyn AsyncRead + Unpin + Send> = Box::new(StreamReader::new(body_stream));
-        let writer: Box<dyn AsyncWrite + Unpin + Send> = Box::new(tokio_io::sink());
+        match route.operation.as_str() {
+            "accept-upload" => {
+                let body_stream = req.into_body().into_data_stream().map_err(io::Error::other);
+                let reader: Box<dyn AsyncRead + Unpin + Send> =
+                    Box::new(StreamReader::new(body_stream));
+                let writer: Box<dyn AsyncWrite + Unpin + Send> = Box::new(tokio_io::sink());
 
-        match app_sandbox_engine
-            .handle_stream_protocol_request(
-                &self.preamble.service_id,
-                &protocol,
-                &peer_id,
-                StreamDirection::Upload,
-                metadata,
-                reader,
-                writer,
-            )
-            .await
-        {
-            Ok(StreamRequestOutcome::Completed) => {
-                Ok(json_response(StatusCode::OK, &serde_json::json!({"status": "uploaded"})))
+                match app_sandbox_engine
+                    .handle_stream_protocol_request(
+                        &self.preamble.service_id,
+                        &protocol,
+                        &peer_id,
+                        StreamDirection::Upload,
+                        initial_payload,
+                        reader,
+                        writer,
+                    )
+                    .await
+                {
+                    Ok(StreamRequestOutcome::Completed) => Ok(json_response(
+                        StatusCode::OK,
+                        &serde_json::json!({"status": "uploaded"}),
+                    )),
+                    Ok(StreamRequestOutcome::Declined) => {
+                        Ok(http_error(StatusCode::FORBIDDEN, "upload declined by guest".into()))
+                    }
+                    Err(e) => Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+                }
             }
-            Ok(StreamRequestOutcome::Declined) => {
-                Ok(http_error(StatusCode::FORBIDDEN, "upload declined by guest".into()))
+            "accept-download" => {
+                let (duplex_writer, duplex_reader) = tokio_io::duplex(64 * 1024);
+                let reader: Box<dyn AsyncRead + Unpin + Send> = Box::new(tokio_io::empty());
+                let writer: Box<dyn AsyncWrite + Unpin + Send> = Box::new(duplex_writer);
+
+                let service_id = self.preamble.service_id.clone();
+                let engine = app_sandbox_engine.clone();
+                let proto = protocol.clone();
+                let peer = peer_id.clone();
+
+                tokio::spawn(async move {
+                    let _ = engine
+                        .handle_stream_protocol_request(
+                            &service_id,
+                            &proto,
+                            &peer,
+                            StreamDirection::Download,
+                            initial_payload,
+                            reader,
+                            writer,
+                        )
+                        .await;
+                });
+
+                let stream = stream::unfold(duplex_reader, |mut reader| async move {
+                    let mut buf = vec![0u8; 64 * 1024];
+                    match reader.read(&mut buf).await {
+                        Ok(0) => None,
+                        Ok(n) => {
+                            buf.truncate(n);
+                            Some((Ok::<_, Infallible>(Frame::data(Bytes::from(buf))), reader))
+                        }
+                        Err(_) => None,
+                    }
+                });
+
+                let body = StreamBody::new(stream).boxed_unsync();
+                let mut resp_builder = Response::builder().status(StatusCode::OK);
+                if let Some(filename) = path_param.as_deref() {
+                    let mime = mime_guess::from_path(filename).first_or_octet_stream();
+                    resp_builder = resp_builder.header(CONTENT_TYPE, mime.as_ref());
+                } else {
+                    resp_builder = resp_builder.header(CONTENT_TYPE, "application/octet-stream");
+                }
+                resp_builder
+                    .body(body)
+                    .map_err(|e| anyhow!("failed to build download response: {e}"))
             }
-            Err(e) => Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+            other => Ok(http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("unsupported stream operation: {other}"),
+            )),
         }
     }
 
@@ -2198,5 +2264,14 @@ mod tests {
         let values: Vec<&str> =
             resp.headers().get_all("set-cookie").iter().map(|v| v.to_str().unwrap()).collect();
         assert_eq!(values, vec!["a=1", "b=2"]);
+    }
+
+    #[tokio::test]
+    async fn sse_permits_exhaustion_returns_503_service_unavailable() {
+        let permits = Arc::new(tokio::sync::Semaphore::new(1));
+        let p1 = permits.clone().try_acquire_owned().unwrap();
+        assert!(permits.clone().try_acquire_owned().is_err());
+        drop(p1);
+        assert!(permits.clone().try_acquire_owned().is_ok());
     }
 }

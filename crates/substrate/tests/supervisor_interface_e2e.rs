@@ -76,12 +76,12 @@ const PORTS_SUBMIT_AND_STATUS: PortBlock = PortBlock {
     managed_gateway: 11_102,
 };
 const PORTS_SECOND_SUPERVISOR_LOSES: PortBlock = PortBlock {
-    supervisor_iroh: 11_200,
-    supervisor_registry: 11_201,
-    supervisor_gateway: 11_202,
-    managed_iroh: 11_300,
-    managed_registry: 11_301,
-    managed_gateway: 11_302,
+    supervisor_iroh: 11_220,
+    supervisor_registry: 11_221,
+    supervisor_gateway: 11_222,
+    managed_iroh: 11_320,
+    managed_registry: 11_321,
+    managed_gateway: 11_322,
 };
 const PORTS_DEPLOYS_A_BOUND_APP: PortBlock = PortBlock {
     supervisor_iroh: 11_400,
@@ -164,11 +164,11 @@ impl Node {
             http_bind_address: format!("0.0.0.0:{registry_port}"),
             ..Default::default()
         });
-        let own_registry_url = format!("http://localhost:{registry_port}");
+        let own_registry_url = format!("http://127.0.0.1:{registry_port}");
         let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
         config.substrate.registry_url = Some(effective_registry_url.clone());
         config.substrate.enable_bep0044_dht = false;
-        let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
+        let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://127.0.0.1:{iroh_port}"));
         config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
         config.roles.client_gateway =
             Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
@@ -401,7 +401,7 @@ async fn boot_pair(
     )
     .await;
     let shared_registry = supervisor_node.registry_url.clone();
-    let shared_relay = format!("http://localhost:{}", ports.supervisor_iroh);
+    let shared_relay = format!("http://127.0.0.1:{}", ports.supervisor_iroh);
     let managed_node = Node::boot(
         ports.managed_iroh,
         ports.managed_registry,

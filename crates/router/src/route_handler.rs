@@ -119,6 +119,8 @@ pub struct RouteHandlerInner {
     /// Static asset manifests, per service (M06A A1). Same `Arc` and same
     /// producer as `http_routes` above; a cache, not persistence (D-A1-2).
     pub assets: AssetRegistry,
+    /// Bounded concurrent SSE subscriptions per service (M06A A4).
+    pub sse_permits: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
     /// `None` in coordinator mode (`new_coordinator`), `Some` for a real
     /// substrate node (`init`) -- mirrors `app_sandbox_engine`'s own
     /// coordinator-mode-is-absent pattern. Used only by the signed-URL blob
@@ -372,6 +374,7 @@ impl RouteHandler {
             messaging_broker: deps.messaging_broker,
             http_routes: deps.http_routes,
             assets: deps.assets,
+            sse_permits: Arc::new(DashMap::new()),
             key_store: Some(deps.key_store),
             storage_provider: Some(deps.storage_provider),
             admin_ucan_root: config.iam.admin_ucan_root.clone(),
@@ -413,6 +416,7 @@ impl RouteHandler {
             ),
             http_routes: Arc::new(DashMap::new()),
             assets: Arc::new(DashMap::new()),
+            sse_permits: Arc::new(DashMap::new()),
             key_store: None,
             storage_provider: None,
             admin_ucan_root: None,

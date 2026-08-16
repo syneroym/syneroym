@@ -12,6 +12,7 @@ exclude = [
     "test-components/saga-test",
     "test-components/http-guest-test",
     "test-components/websocket-guest-test",
+    "test-components/miniapp-demo1-wasm",
 ]
 
 [profile.dev]

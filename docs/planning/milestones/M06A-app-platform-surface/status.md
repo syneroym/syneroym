@@ -5,8 +5,8 @@
 [slice-a2-implementation-plan.md](slice-a2-implementation-plan.md) (A2),
 [slice-a4-implementation-plan.md](slice-a4-implementation-plan.md) (A4)
 
-**Overall:** Slice A1 complete (2026-08-14). Slice A2 complete (2026-08-14).
-A3–A5 not started.
+**Overall:** Slice A1 complete (2026-08-14). Slice A2 complete (2026-08-14). Slice A3 complete (2026-08-15). Slice A4 complete (2026-08-16).
+A5 not started.
 
 > **Renumbered 2026-08-14.** `D-06A-2` was reversed — inbound WebSocket is
 > built rather than replaced by SSE — and the new WebSocket slice took **A3**,
@@ -24,7 +24,7 @@ A3–A5 not started.
 | A1 | Blob-backed static serving | **Complete (2026-08-14)** — [implementation plan](slice-a1-implementation-plan.md), evidence below | None — independently mergeable |
 | A2 | Guest HTTP route target | **Complete (2026-08-14)** — [implementation plan](slice-a2-implementation-plan.md) revision 4, evidence below | None — independent of A1 |
 | A3 | Inbound WebSocket | **Complete (2026-08-15)** — [implementation plan](slice-a3-implementation-plan.md), evidence below | A2 (Complete) |
-| A4 | The demo app | Not started — [implementation plan](slice-a4-implementation-plan.md) | A1, A2 (Complete) and A3 (Complete) |
+| A4 | The demo app | **Complete (2026-08-16)** — [implementation plan](slice-a4-implementation-plan.md), evidence below | A1, A2 (Complete) and A3 (Complete) |
 | A5 | The Playwright suite | Not started | A4 |
 
 ---
@@ -646,3 +646,55 @@ cargo test --workspace                                       # clean, full pass 
 ```
 
 *(Note: Unit tests inside `crates/sandbox_wasm/tests` verifying `websocket-handler` dynamic `Val` marshalling and integration tests for Unicast/Broadcast using a `websocket-guest-test` fixture were deferred to keep scope bounded, owing an update for completion of sections 7.1 and 7.2 of the A3 plan).*
+
+## A4 — What shipped
+
+[slice-a4-implementation-plan.md](slice-a4-implementation-plan.md) is the design of record. It delivers the end-to-end demo app WASM component fixture (`test-components/miniapp-demo1-wasm`) reproducing the full functionality of `miniapp-demo1-web`, along with streaming file download route bridging and bounded SSE subscriber concurrency.
+
+**Demo App WASM Component Fixture** (`test-components/miniapp-demo1-wasm`):
+- `wit/miniapp-demo1-wasm.wit`: Defines the `miniapp-demo1-wasm` world importing `syneroym:data-layer/store@0.1.0`, `syneroym:blob-store/blob-store@0.1.0`, `syneroym:messaging/host-api@0.1.0`, `syneroym:messaging/stream-types@0.1.0`, and `syneroym:http/websocket@0.1.0`, and exporting `syneroym:http/incoming-handler@0.1.0`, `syneroym:http/websocket-handler@0.1.0`, `syneroym:messaging/guest-api@0.1.0`, and `syneroym:messaging/stream-types@0.1.0`.
+- `client/`: Full SolidJS UI client application with static asset bundle (HTML, CSS, JS, SVG) providing interactive tabs for Comments SPA, Chunked File Upload/Download, SSE Live Feed, and WebSocket Live Feed.
+- `src/lib.rs`: Guest WASM implementation providing:
+  - `incoming-handler`: REST endpoints for comments lifecycle (`GET /api/comments`, `POST /api/comments`, `DELETE /api/comments/{id}`) with validation, data-layer persistence, and real-time pub-sub broadcast.
+  - `guest-api` & `stream-types`: Stream protocol handlers for `file-upload` (streaming binary into blob storage and saving metadata in data-layer) and `file-download` (streaming chunks from blob storage to guest stream cursor).
+  - `websocket-handler`: Bidirectional WebSocket message handling with JSON protocol parsing (`echo`, `broadcast_comment`, `ping`), direct host unicast send, and pub-sub broker subscription for broadcast.
+- Built and cached release wasm binary `miniapp-demo1-wasm.wasm`.
+
+**Stream Download & Control Plane Routing** (`crates/control_plane/src/http_routes.rs`, `crates/router/src/route_handler/http.rs`):
+- Added validation for `("stream", "accept-download")` allowing `GET`/`HEAD` methods with non-empty `protocol`.
+- Implemented `accept-download` in router HTTP bridge via `tokio_io::duplex(64 * 1024)` + background download task executing `handle_stream_protocol_request(StreamDirection::Download)` + `StreamBody::new(stream::unfold(...))` with MIME type inference from path.
+
+**SSE Concurrency Limiting** (`crates/router/src/route_handler/http.rs`, `crates/router/src/route_handler.rs`):
+- Added `sse_permits` (`Arc<DashMap<String, Arc<Semaphore>>>`) in `RouteHandlerInner` bounding concurrent SSE subscribers to 50 per service (`Failure Matrix #8`).
+- Returns HTTP 503 Service Unavailable with `Retry-After: 1` when subscriber quota is reached.
+- Holds permit in `stream::unfold` until stream disconnects.
+
+**Workspace & Test Integration**:
+- Added `miniapp_demo1_wasm_path()` and `MINIAPP_DEMO1_WASM_ROUTES_JSON` to `crates/core/src/test_constants.rs`.
+- Added `miniapp-demo1-wasm` to root `Cargo.toml` `exclude`, `mise.toml` `build:test-components`, and `test-components/README.md`.
+- Added end-to-end integration tests in `crates/substrate/tests/miniapp_demo1_wasm_e2e.rs`.
+
+## A4 — Verification evidence (2026-08-16)
+
+**New tests:**
+- `crates/control_plane/src/http_routes.rs`:
+  - `accept_download_stream_route_succeeds_with_get`
+  - `accept_download_stream_route_fails_with_post`
+  - `unknown_stream_operation_fails`
+- `crates/router/src/route_handler/http.rs`:
+  - `sse_permits_exhaustion_returns_503_service_unavailable`
+- `crates/substrate/tests/miniapp_demo1_wasm_e2e.rs`:
+  - `test_miniapp_demo1_wasm_static_asset_serving_zero_instantiations` (asserts zero guest instantiations, ETag 304 caching)
+  - `test_miniapp_demo1_wasm_comments_spa_page` (serves SPA html without instantiations)
+  - `test_miniapp_demo1_wasm_rest_comments_lifecycle` (POST, GET, validation error 422, DELETE)
+  - `test_miniapp_demo1_wasm_stream_upload_and_download` (multi-chunk streaming upload and byte-identical download)
+  - `test_miniapp_demo1_wasm_sse_live_updates` (SSE event streaming across distinct client sessions)
+  - `test_miniapp_demo1_wasm_websocket_echo_and_updates` (WebSocket echo unicast and pub-sub broadcast)
+
+**Commands run from a clean tree:**
+```bash
+cargo +nightly fmt --all                                    # clean, no diff
+cargo clippy --workspace --all-targets --all-features        # clean, 0 warnings, 0 errors
+cargo test --workspace                                       # clean, all unit and integration tests passed
+mise run test:e2e                                           # clean, all Playwright direct + multi-hop tests passed (12 passed)
+```

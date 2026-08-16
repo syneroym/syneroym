@@ -1,0 +1,12 @@
+{
+  "http_routes": [
+    {"method": "GET", "path": "/comments", "target": "guest", "operation": "handle-request", "public": true},
+    {"method": "GET", "path": "/api/comments", "target": "guest", "operation": "handle-request", "public": true},
+    {"method": "POST", "path": "/api/comments", "target": "guest", "operation": "handle-request", "public": true},
+    {"method": "GET", "path": "/api/files", "target": "guest", "operation": "handle-request", "public": true},
+    {"method": "GET", "path": "/api/files/{filename}", "target": "stream", "operation": "accept-download", "protocol": "file-download"},
+    {"method": "POST", "path": "/api/files", "target": "stream", "operation": "accept-upload", "protocol": "file-upload"},
+    {"method": "GET", "path": "/api/events", "target": "messaging", "operation": "subscribe-sse", "topic": "comment-updates"},
+    {"method": "GET", "path": "/ws", "target": "websocket", "operation": "handle-upgrade", "topic": "comment-updates", "public": true}
+  ]
+}
