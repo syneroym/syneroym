@@ -58,9 +58,17 @@ use tokio::{
     time,
 };
 
+// This file only uses `common::alloc_ports`, not the rest of the shared
+// full-substrate-instance harness `common` also provides (it predates
+// `common` and boots its own two-node topology directly) -- silences the
+// resulting dead-code warnings on the unused parts rather than pulling in
+// machinery this file doesn't need.
+#[allow(dead_code)]
+mod common;
+
 /// Every test in this binary boots 2+ full substrate instances (real iroh
-/// QUIC socket, self-hosted relay, wasmtime). Distinct port blocks per test
-/// (below) avoid a bind collision, but running every test's own full stack
+/// QUIC socket, self-hosted relay, wasmtime). `PortBlock::alloc` (below)
+/// avoids a bind collision, but running every test's own full stack
 /// concurrently still means many simultaneous substrate processes' worth of
 /// sockets/fds -- CPU starvation and, on a low `ulimit -n`, real fd
 /// exhaustion. Same fix as `tests/common/mod.rs`'s `SUBSTRATE_TEST_LOCK`.
@@ -76,41 +84,35 @@ struct PortBlock {
     managed_gateway: u16,
 }
 
-// The next free block after `topology_document_e2e.rs`'s 15_400-16_502,
-// the highest claimed at the time this file was written -- one block of
-// six per test, since cargo runs every test in this binary concurrently.
-const PORTS_HOSTNAME_ALONE: PortBlock = PortBlock {
-    supervisor_iroh: 16_600,
-    supervisor_registry: 16_601,
-    supervisor_gateway: 16_602,
-    managed_iroh: 16_700,
-    managed_registry: 16_701,
-    managed_gateway: 16_702,
-};
-const PORTS_ROUTING_KEY: PortBlock = PortBlock {
-    supervisor_iroh: 16_800,
-    supervisor_registry: 16_801,
-    supervisor_gateway: 16_802,
-    managed_iroh: 16_900,
-    managed_registry: 16_901,
-    managed_gateway: 16_902,
-};
-const PORTS_NO_GRANT_REFUSED: PortBlock = PortBlock {
-    supervisor_iroh: 17_000,
-    supervisor_registry: 17_001,
-    supervisor_gateway: 17_002,
-    managed_iroh: 17_100,
-    managed_registry: 17_101,
-    managed_gateway: 17_102,
-};
-const PORTS_SAME_NODE_NO_CREDENTIAL: PortBlock = PortBlock {
-    supervisor_iroh: 17_200,
-    supervisor_registry: 17_201,
-    supervisor_gateway: 17_202,
-    managed_iroh: 17_300,
-    managed_registry: 17_301,
-    managed_gateway: 17_302,
-};
+impl PortBlock {
+    /// Reserves six distinct free ports below the OS ephemeral range via
+    /// `common::alloc_ports` rather than a hand-tracked constant -- see
+    /// that function's doc comment for why a probe bind is reliable down
+    /// there. Replaces this file's old per-test `const PORTS_*: PortBlock`
+    /// literals (`16_600..17_302`), which required every new test in every
+    /// file in this crate to hand-pick the next free block and never
+    /// collide with any other file's -- exactly the discipline that missed
+    /// this file's own backend-port literals (`42_600` et al., inside the
+    /// ephemeral range) landing on an intermittent CI failure.
+    fn alloc() -> Self {
+        let [
+            supervisor_iroh,
+            supervisor_registry,
+            supervisor_gateway,
+            managed_iroh,
+            managed_registry,
+            managed_gateway,
+        ] = common::alloc_ports();
+        Self {
+            supervisor_iroh,
+            supervisor_registry,
+            supervisor_gateway,
+            managed_iroh,
+            managed_registry,
+            managed_gateway,
+        }
+    }
+}
 
 const MANAGED_ALIAS: &str = "managed";
 
@@ -560,7 +562,8 @@ async fn an_http_client_reaches_an_apps_logical_service_by_hostname_alone() {
     let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let backend_port = 42_600u16;
+    let ports = PortBlock::alloc();
+    let [backend_port] = common::alloc_ports();
     let _backend = spawn_tcp_backend(backend_port, "hostname-alone").await;
 
     // The managed node's own DID (its client gateway's caller identity,
@@ -576,9 +579,9 @@ async fn an_http_client_reaches_an_apps_logical_service_by_hostname_alone() {
     // `substrate:` resource, so it must boot first.
     let _ = ring::default_provider().install_default();
     let supervisor_node = Node::boot(
-        PORTS_HOSTNAME_ALONE.supervisor_iroh,
-        PORTS_HOSTNAME_ALONE.supervisor_registry,
-        PORTS_HOSTNAME_ALONE.supervisor_gateway,
+        ports.supervisor_iroh,
+        ports.supervisor_registry,
+        ports.supervisor_gateway,
         None,
         None,
         &supervisor_owner,
@@ -592,11 +595,11 @@ async fn an_http_client_reaches_an_apps_logical_service_by_hostname_alone() {
         resolve_grant_for_node(&supervisor_owner, &managed_node_did, supervisor_node.did());
 
     let shared_registry = supervisor_node.registry_url.clone();
-    let shared_relay = format!("http://localhost:{}", PORTS_HOSTNAME_ALONE.supervisor_iroh);
+    let shared_relay = format!("http://localhost:{}", ports.supervisor_iroh);
     let managed_node = Node::boot(
-        PORTS_HOSTNAME_ALONE.managed_iroh,
-        PORTS_HOSTNAME_ALONE.managed_registry,
-        PORTS_HOSTNAME_ALONE.managed_gateway,
+        ports.managed_iroh,
+        ports.managed_registry,
+        ports.managed_gateway,
         Some(shared_registry),
         Some(shared_relay),
         &managed_owner,
@@ -663,13 +666,13 @@ async fn a_routing_key_header_crosses_the_gateway_to_the_backend_per_request() {
     let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let backend_port = 42_610u16;
+    let [backend_port] = common::alloc_ports();
     let _backend = spawn_tcp_backend(backend_port, "keyed").await;
 
     let (supervisor_node, managed_node, inventory_json) = boot_pair(
         &supervisor_owner,
         &managed_owner,
-        PORTS_ROUTING_KEY,
+        PortBlock::alloc(),
         true, // same-node gate: the supervisor's own gateway resolves its own app
         None,
         false,
@@ -731,13 +734,13 @@ async fn an_app_scoped_hostname_for_an_app_this_gateway_holds_no_grant_for_is_re
     let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let backend_port = 42_620u16;
+    let [backend_port] = common::alloc_ports();
     let _backend = spawn_tcp_backend(backend_port, "no-grant").await;
 
     let (supervisor_node, managed_node, inventory_json) = boot_pair(
         &supervisor_owner,
         &managed_owner,
-        PORTS_NO_GRANT_REFUSED,
+        PortBlock::alloc(),
         false,
         None,
         false, // no same-node gate
@@ -779,13 +782,13 @@ async fn a_same_node_gateway_resolves_with_no_credential_file() {
     let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let backend_port = 42_630u16;
+    let [backend_port] = common::alloc_ports();
     let _backend = spawn_tcp_backend(backend_port, "same-node").await;
 
     let (supervisor_node, managed_node, inventory_json) = boot_pair(
         &supervisor_owner,
         &managed_owner,
-        PORTS_SAME_NODE_NO_CREDENTIAL,
+        PortBlock::alloc(),
         true, // the supervisor node's own gateway gets the same-node grant
         None, // no resolve_ucan anywhere
         false,
