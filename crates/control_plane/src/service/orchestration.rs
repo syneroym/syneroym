@@ -9336,6 +9336,101 @@ mod tests {
         assert!(asset_registry.get(&service_id).is_none(), "asset bundle must be rolled back");
     }
 
+    #[tokio::test]
+    async fn test_websocket_route_without_the_export_fails_deploy_and_rolls_back() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+        let asset_registry: AssetRegistry = Arc::new(DashMap::new());
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker,
+            native_dispatch,
+            http_routes.clone(),
+            asset_registry.clone(),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "ws-route-missing-export-svc".to_string();
+        let custom_config = serde_json::json!({
+            "http_routes": [
+                {"method": "GET", "path": "/ws", "target": "websocket", "operation": "handle-upgrade"}
+            ]
+        })
+        .to_string();
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: Some(custom_config),
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+                assets: None,
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(
+                    WASM_WITHOUT_AUTHORIZE_ROWS_EXPORT.as_bytes().to_vec(),
+                ),
+                hash: None,
+                interfaces: vec![],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        let caller = node_wide_caller("test-caller");
+        let err = service.deploy(service_id.clone(), manifest, &caller).await.expect_err(
+            "a component without the websocket export must not deploy with a websocket route",
+        );
+        assert!(
+            err.contains("target=websocket") && err.contains("does not export"),
+            "expected websocket export error, got: {err}"
+        );
+        assert!(
+            storage_provider.get_latest_config_generation(&service_id).await.unwrap().is_none(),
+            "config generation must be rolled back"
+        );
+    }
+
     fn owner_test_manifest() -> DeployManifest {
         DeployManifest {
             config: ServiceConfig {

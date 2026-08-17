@@ -621,6 +621,66 @@ async fn test_sse_receives_message_published_via_http() {
     ctx.teardown().await;
 }
 
+#[tokio::test]
+async fn test_sse_rejects_missing_accept_header() {
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup(7943, 7944, 7945).await;
+
+    let app_identity = Identity::generate().unwrap();
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
+    let http_routes = serde_json::json!({
+        "http_routes": [
+            {"method": "GET", "path": "/events", "target": "messaging",
+             "operation": "subscribe-sse", "topic": "events"},
+        ]
+    });
+    deploy(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes)).await;
+
+    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    peer.connect().await.expect("peer failed to connect");
+    let conn = peer.connection().expect("peer has no live connection");
+
+    let response =
+        http_request(&conn, &app_service_id, "GET", "/events", &[("Accept", "text/plain")], b"")
+            .await;
+    assert_eq!(
+        response.status, 406,
+        "GET SSE without text/event-stream accept header must return 406 Not Acceptable"
+    );
+
+    let _ = peer.shutdown().await;
+    ctx.teardown().await;
+}
+
+#[tokio::test]
+async fn test_sse_concurrent_subscriptions() {
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup(7946, 7947, 7948).await;
+
+    let app_identity = Identity::generate().unwrap();
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
+    let http_routes = serde_json::json!({
+        "http_routes": [
+            {"method": "GET", "path": "/events", "target": "messaging",
+             "operation": "subscribe-sse", "topic": "events"},
+        ]
+    });
+    deploy(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes)).await;
+
+    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    peer.connect().await.expect("peer failed to connect");
+    let conn = peer.connection().expect("peer has no live connection");
+
+    let (_sse_send1, mut _sse_recv1) = open_sse_stream(&conn, &app_service_id, "/events").await;
+    let (_sse_send2, mut _sse_recv2) = open_sse_stream(&conn, &app_service_id, "/events").await;
+    time::sleep(Duration::from_millis(100)).await;
+
+    drop(_sse_send1);
+    drop(_sse_send2);
+    let _ = peer.shutdown().await;
+    ctx.teardown().await;
+}
+
 // ---------------------------------------------------------------------
 // Chunked upload
 // ---------------------------------------------------------------------

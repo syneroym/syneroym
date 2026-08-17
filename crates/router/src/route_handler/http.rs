@@ -324,14 +324,17 @@ fn if_none_match_hits(header: Option<&HeaderValue>, etag: &str) -> bool {
         })
 }
 
-/// Parses an HTTP query string (`k=v&k2=v2`) leniently, matching
-/// `RoutePreamble::parse`'s own permissive, non-percent-decoding style
-/// elsewhere in this crate.
+/// Parses an HTTP query string (`k=v&k2=v2`) and percent-decodes keys and
+/// values.
 fn parse_query(query: &str) -> HashMap<String, String> {
     query
         .split('&')
         .filter_map(|part| part.split_once('='))
-        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .map(|(k, v)| {
+            let key = percent_encoding::percent_decode_str(k).decode_utf8_lossy().to_string();
+            let val = percent_encoding::percent_decode_str(v).decode_utf8_lossy().to_string();
+            (key, val)
+        })
         .collect()
 }
 
@@ -1168,11 +1171,20 @@ impl HttpHandler {
         }
 
         let service_id = self.preamble.service_id.clone();
+        let max_subscribers = self
+            .route_handler
+            .inner
+            .app_sandbox_engine
+            .as_ref()
+            .map(|e| e.max_sse_subscribers_per_service())
+            .unwrap_or(DEFAULT_MAX_SSE_SUBSCRIBERS_PER_SERVICE);
         let permits = {
-            let entry =
-                self.route_handler.inner.sse_permits.entry(service_id).or_insert_with(|| {
-                    Arc::new(tokio::sync::Semaphore::new(DEFAULT_MAX_SSE_SUBSCRIBERS_PER_SERVICE))
-                });
+            let entry = self
+                .route_handler
+                .inner
+                .sse_permits
+                .entry(service_id)
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_subscribers)));
             entry.value().clone()
         };
         let permit = match permits.try_acquire_owned() {
@@ -1255,15 +1267,16 @@ impl HttpHandler {
         // (`accept-stream-upload(protocol, peer-id, metadata)`) or the
         // download request parameter (`handle-stream-request(protocol, peer-id,
         // request-data)`).
-        let raw_payload =
-            path_param.as_deref().map(|p| p.as_bytes().to_vec()).unwrap_or_else(|| {
+        let initial_payload = path_param
+            .as_ref()
+            .map(|p| percent_encoding::percent_decode_str(p).collect::<Vec<u8>>())
+            .unwrap_or_else(|| {
                 req.uri()
                     .query()
                     .and_then(|q| parse_query(q).remove("metadata"))
+                    .map(String::into_bytes)
                     .unwrap_or_default()
-                    .into_bytes()
             });
-        let initial_payload = percent_encoding::percent_decode(&raw_payload).collect::<Vec<u8>>();
 
         match route.operation.as_str() {
             "accept-upload" => {
@@ -1656,7 +1669,7 @@ impl HttpHandler {
         }
 
         let permit = match app_sandbox_engine
-            .acquire_websocket_permit(&service_id, Duration::from_secs(5))
+            .acquire_websocket_permit(&service_id, Duration::from_secs(2))
             .await
         {
             Some(p) => p,
@@ -2075,11 +2088,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_query_parses_ampersand_separated_pairs() {
-        let parsed = parse_query("svc=abc&exp=123&sig=deadbeef");
+    fn parse_query_parses_ampersand_separated_pairs_and_percent_decodes() {
+        let parsed = parse_query("svc=abc&exp=123&sig=deadbeef&name=hello%20world&tag=a%26b");
         assert_eq!(parsed.get("svc"), Some(&"abc".to_string()));
         assert_eq!(parsed.get("exp"), Some(&"123".to_string()));
         assert_eq!(parsed.get("sig"), Some(&"deadbeef".to_string()));
+        assert_eq!(parsed.get("name"), Some(&"hello world".to_string()));
+        assert_eq!(parsed.get("tag"), Some(&"a&b".to_string()));
     }
 
     #[test]

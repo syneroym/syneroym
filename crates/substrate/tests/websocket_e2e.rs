@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use httparse::{EMPTY_HEADER, Response as HttparseResponse, Status};
 use iroh::endpoint::{RecvStream, SendStream};
 use rustls::crypto::ring;
-use syneroym_core::test_constants;
+use syneroym_core::{config::AppSandboxRole, test_constants};
 use syneroym_identity::Identity;
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
 use syneroym_sdk::{
@@ -44,7 +44,65 @@ async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManif
     let params = serde_json::to_value((service_id.to_string(), manifest)).unwrap();
     let res =
         client.request("orchestrator", "deploy", params).await.expect("deploy request failed");
-    assert_eq!(res.result, serde_json::json!({"status": "deployed"}), "deploy did not succeed");
+    assert_eq!(res.result, serde_json::json!({"status": "deployed"}));
+}
+
+#[tokio::test]
+async fn test_websocket_concurrency_limit_returns_503_with_retry_after() {
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup_with(7953, 7954, 7955, |config| {
+        config.roles.app_sandbox =
+            Some(AppSandboxRole { max_concurrent_websockets_per_service: 1, ..Default::default() });
+    })
+    .await;
+
+    let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
+        .expect("websocket_guest_test.wasm not built");
+
+    let routes = serde_json::json!({
+        "http_routes": [
+            { "method": "GET", "path": "/ws", "public": true, "target": "websocket", "operation": "handle-upgrade" }
+        ]
+    });
+
+    deploy(&ctx.substrate_client, "test-ws-limit", guest_wasm_manifest(wasm_bytes, routes)).await;
+
+    // First connection acquires the sole permit
+    let (mut send1, mut recv1) = open_http_stream(
+        ctx.substrate_client.connection().as_ref().unwrap(),
+        "test-ws-limit",
+        None,
+    )
+    .await;
+    let upgrade_req1 = build_websocket_upgrade_request("/ws");
+    send1.write_all(&upgrade_req1).await.unwrap();
+
+    let mut buf1 = vec![0u8; 4096];
+    let n1 = recv1.read(&mut buf1).await.unwrap().unwrap();
+    let resp1 = parse_http_response(&buf1[..n1]);
+    assert_eq!(resp1.status, 101);
+
+    // Second connection cannot acquire a permit and returns 503 + Retry-After
+    let (mut send2, mut recv2) = open_http_stream(
+        ctx.substrate_client.connection().as_ref().unwrap(),
+        "test-ws-limit",
+        None,
+    )
+    .await;
+    let upgrade_req2 = build_websocket_upgrade_request("/ws");
+    send2.write_all(&upgrade_req2).await.unwrap();
+
+    let mut buf2 = vec![0u8; 4096];
+    let n2 = recv2.read(&mut buf2).await.unwrap().unwrap();
+    let resp2 = parse_http_response(&buf2[..n2]);
+    assert_eq!(
+        resp2.status, 503,
+        "a websocket upgrade that cannot get an admission permit within timeout must return 503"
+    );
+    assert_eq!(resp2.headers.get("retry-after").map(String::as_str), Some("1"));
+
+    drop(send1);
+    drop(send2);
 }
 
 struct HttpResponse {
@@ -281,4 +339,83 @@ async fn test_websocket_broadcast_pubsub() {
     let mut payload = vec![0u8; 12];
     read_exact_buffered(&mut recv, &mut unconsumed, &mut payload).await;
     assert_eq!(&payload, b"pubsub_hello");
+}
+
+#[tokio::test]
+async fn test_websocket_upgrade_rejects_unauthenticated_anonymous_on_private_route() {
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup(7950, 7951, 7952).await;
+
+    let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
+        .expect("websocket_guest_test.wasm not built");
+
+    // Private route (public: false)
+    let routes = serde_json::json!({
+        "http_routes": [
+            { "method": "GET", "path": "/private-ws", "public": false, "target": "websocket", "operation": "handle-upgrade" }
+        ]
+    });
+
+    deploy(&ctx.substrate_client, "test-ws-auth", guest_wasm_manifest(wasm_bytes, routes)).await;
+
+    // Anonymous caller (no delegation/identity)
+    let (mut send, mut recv) =
+        open_http_stream(ctx.substrate_client.connection().as_ref().unwrap(), "test-ws-auth", None)
+            .await;
+
+    let upgrade_req = build_websocket_upgrade_request("/private-ws");
+    send.write_all(&upgrade_req).await.unwrap();
+
+    let mut buf = vec![0u8; 4096];
+    let n = recv.read(&mut buf).await.unwrap().unwrap();
+    let resp = parse_http_response(&buf[..n]);
+    assert_eq!(
+        resp.status, 401,
+        "anonymous request to private websocket route must return 401 Unauthorized"
+    );
+}
+
+#[tokio::test]
+async fn test_websocket_teardown_on_undeploy() {
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup(7956, 7957, 7958).await;
+
+    let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
+        .expect("websocket_guest_test.wasm not built");
+
+    let routes = serde_json::json!({
+        "http_routes": [
+            { "method": "GET", "path": "/ws", "public": true, "target": "websocket", "operation": "handle-upgrade" }
+        ]
+    });
+
+    deploy(&ctx.substrate_client, "test-ws-undeploy", guest_wasm_manifest(wasm_bytes, routes))
+        .await;
+
+    let (mut send, mut recv) = open_http_stream(
+        ctx.substrate_client.connection().as_ref().unwrap(),
+        "test-ws-undeploy",
+        None,
+    )
+    .await;
+
+    let upgrade_req = build_websocket_upgrade_request("/ws");
+    send.write_all(&upgrade_req).await.unwrap();
+
+    let mut buf = vec![0u8; 4096];
+    let n = recv.read(&mut buf).await.unwrap().unwrap();
+    let resp = parse_http_response(&buf[..n]);
+    assert_eq!(resp.status, 101);
+
+    // Undeploy the service while the websocket connection is active
+    let params = serde_json::json!(["test-ws-undeploy", 1]);
+    let res = ctx
+        .substrate_client
+        .request("orchestrator", "undeploy", params)
+        .await
+        .expect("undeploy request failed");
+    assert_eq!(res.result, serde_json::json!({"status": "undeployed"}));
+
+    // Drop send to close connection
+    drop(send);
 }

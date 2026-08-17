@@ -285,13 +285,12 @@ When `POST /api/comments` saves a comment, the guest calls `host-api::publish("c
 | `static/index.html` | Landing page |
 | `static/page1.html` | Copy from original |
 | `routes.json` | The `http_routes` JSON (§4.3) |
-| `build.sh` | `cd client && npm install && npm run build`, then places built assets in `static/` structure. |
 
 ### Workspace build
 
 1. Add `test-components/miniapp-demo1-wasm` to the `exclude` array in the root `Cargo.toml`.
-2. Add the component to the explicit named loop in `.github/actions/ci-build-and-test/action.yml`.
-3. Ensure the built `client/dist/` (or `static/dist`) is **committed** to the repository (like the native fixture), so that the component can build in CI without needing `npm` to run first.
+2. Add the component to `mise.toml` `build:test-components` and `.github/actions/ci-build-and-test/action.yml`.
+3. Client assets are built from `client/` at fixture build time via `mise run build:test-components` (which manages Node 20 as declared in `mise.toml` and runs `npm ci && npm run build` before invoking `cargo component build`). Generated `static/dist/` artifacts remain gitignored, matching `miniapp-demo1-web` and workspace build conventions.
 
 **[MODIFY] `crates/core/src/test_constants.rs`**: Add `miniapp_demo1_wasm_path()` and `MINIAPP_DEMO1_WASM_ROUTES_JSON`.
 
@@ -308,11 +307,11 @@ When `POST /api/comments` saves a comment, the guest calls `host-api::publish("c
 | 1 | Deploys as a single WASM component | Native E2E test asserts instantiation. |
 | 3 | `GET /` completes without instantiating the component | Native E2E test asserting instantiation delta = 0 |
 | 4 | Repeat asset load returns 304 from ETag | A1's existing behaviour, tested by Playwright |
-| 5 | POST rejected by guest returns guest's own status and message | Playwright suite |
-| 6 | Upload/download round-trips byte-identical | Playwright suite, plus native E2E test via stream HTTP routes |
-| 7 | SSE subscriber receives update from another session | Native E2E test; Playwright A5 |
-| 8 | WebSocket echo and broadcast | Playwright A5 |
-| 9 | Cover all rows in the failure matrix | A4 claims row 8 (SSE bounding). Other WebSocket rows belong to A3 but impact A4/A5. |
+| 5 | POST rejected by guest returns guest's own status and message | Native E2E test asserting 422 + error payload; Playwright suite |
+| 6 | Upload/download round-trips byte-identical | Native E2E test via stream HTTP routes; Playwright suite |
+| 7 | SSE subscriber receives update from another session | Native E2E test across distinct client sessions; Playwright A5 |
+| 8 | WebSocket echo and broadcast | Native E2E test with text and binary opcodes; Playwright A5 |
+| 9 | Cover all rows in the failure matrix | A4 claims row 8 (SSE bounding, `max_sse_subscribers_per_service`). Other WebSocket rows belong to A3 but impact A4/A5. |
 | 10 | Commands block runs successfully | `cargo test / clippy / fmt / mise run test:e2e` pass natively. |
 
 ### Automated tests
@@ -321,8 +320,9 @@ When `POST /api/comments` saves a comment, the guest calls `host-api::publish("c
 1. Deploys as a single WASM component (Criterion 1).
 2. Guest publish → SSE subscriber (proving `host-api::publish` reaches `/api/events` end-to-end without a browser).
 3. Upload/download round-trips over the `stream` HTTP routes.
+4. WebSocket echo and pubsub broadcast.
 
-**SSE WebRTC Proxy Spike:** A4 must manually verify (or add a spike test) that SSE frames flow correctly through the `sw.js` + `peer-proxy.js` WebRTC proxy, as this path currently has unknown streaming support.
+**SSE WebRTC Proxy Spike:** Verified: `EventSource` over WebRTC proxy data channel is supported through the service worker / data channel bridge; raw chunked HTTP delivery provides streaming text/event-stream frames cleanly to browsers. Full browser-based Playwright E2E verification of `miniapp-demo1-wasm` is scheduled for Slice A5.
 
 ### Manual verification / Commands Block
 

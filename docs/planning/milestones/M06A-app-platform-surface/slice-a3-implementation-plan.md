@@ -69,8 +69,11 @@ Task.md specifies that WebSocket broadcasts should reuse the pub-sub broker. `ha
 | **D-A3-5** | **Broadcast reuses `HttpRoute.topic` natively.** If `route.topic` is provided, the router's connection loop subscribes to the `messaging_broker` and automatically forwards messages to the WebSocket. | F5: This avoids needing a separate `subscribe(conn, topic)` host import, keeping the guest blind to pub-sub mechanics and perfectly mirroring the existing SSE behaviour. |
 | **D-A3-6** | **Guest invocations use dynamic `Val` marshalling.** `on-open`, `on-message`, and `on-close` are invoked via `get_wasm_func` and `call_async` exactly like A2's `handle-request`. | Follows D-A2-2's precedent. No `bindgen!` typed accessor is generated for the guest exports. |
 | **D-A3-7** | **Undeploy cleanup drops sender maps.** `forget_websocket_senders` removes the `service_id` key from the registry. | Dropping the map drops the `Sender`s for that service. This safely causes the `rx.recv()` in the router's connection loops to return `None`, unblocking them to perform a clean teardown of the WebSocket without hanging tasks. |
-| **D-A3-8** | **Concurrency bounded per service.** Added `guest_websocket_permits: Arc<DashMap<String, Arc<Semaphore>>>` to `AppSandboxEngine`, sized by `max_concurrent_websockets_per_service` (default 50). | Protects the node from connection exhaustion (FD limits/memory) caused by a single service, mirroring D-A2-11. |
+| **D-A3-8** | **Concurrency bounded per service.** Added `guest_websocket_permits: Arc<DashMap<String, Arc<Semaphore>>>` to `AppSandboxEngine`, sized by `max_concurrent_websockets_per_service` (default 50) on `AppSandboxRole`. | Protects the node from connection exhaustion (FD limits/memory) caused by a single service, mirroring D-A2-11. |
 | **D-A3-9** | **Topic is optional.** If `route.topic` is missing, the connection operates as unicast-only. | Allows flexibility for routes that don't need pub-sub fan-out. |
+| **D-A3-10** | **Explicit `FrameKind` typing (`text`, `binary`).** Added `websocket-types` interface in WIT with `enum frame-kind { text, binary }`. Guest and host handlers specify `kind: frame-kind` to preserve WebSocket opcode fidelity (`0x81` vs `0x82`). | Browser and standard WebSocket clients distinguish text frames from binary frames; preserving opcode fidelity avoids client deserialization failures. |
+| **D-A3-11** | **Caller identity forwarding.** Forward `CallerContext` through `handle_websocket_on_open/message/close`. | Allows guest handlers to inspect authenticated session identity. |
+| **D-A3-12** | **Sequential lifecycle dispatch.** `on-open` is awaited before entering the frame reader loop; `on-close` is awaited after the stream terminates. | Prevents `on-message` frames from racing ahead of initialization logic in `on-open`. |
 
 ---
 
@@ -81,14 +84,23 @@ Task.md specifies that WebSocket broadcasts should reuse the pub-sub broker. `ha
 Append the following to the existing file:
 
 ```wit
+interface websocket-types {
+    enum frame-kind {
+        text,
+        binary,
+    }
+}
+
 /// Optional WebSocket lifecycle handler (M06A A3). A component only exports
 /// this when it declares an `http_routes` entry with `target = "websocket"`.
 interface websocket-handler {
+    use websocket-types.{frame-kind};
+
     /// Invoked when a WebSocket connection is successfully upgraded.
     on-open: func(conn: string);
     
     /// Invoked for every binary or text frame received from the client.
-    on-message: func(conn: string, frame: list<u8>);
+    on-message: func(conn: string, frame: list<u8>, kind: frame-kind);
     
     /// Invoked when the connection drops, cleanly or otherwise.
     on-close: func(conn: string);
@@ -96,8 +108,10 @@ interface websocket-handler {
 
 /// Host-provided WebSocket capabilities.
 interface websocket {
+    use websocket-types.{frame-kind};
+
     /// Unicast a frame to a specific active connection.
-    send: func(conn: string, frame: list<u8>) -> result<_, string>;
+    send: func(conn: string, frame: list<u8>, kind: frame-kind) -> result<_, string>;
 }
 
 /// Dummy world for generating the host import bindings.
@@ -192,8 +206,10 @@ Add teardown method:
 | `crates/control_plane/src/http_routes.rs` | `fn validate_route` (~L82) | Allow `("websocket", "handle-upgrade")`. Add explicit rejection: `("websocket", other) => Err("...unsupported operation...")`. Update L94 to `if route.public && (route.target != "guest" && route.target != "websocket")`. Note: A4 depends on this `public: true` allowance. |
 | `crates/control_plane/src/service/orchestration.rs` | `fn deploy_wasm_service` (~L809) | Mirror the `exports_http_handler` check: if any route has `target == "websocket"`, ensure `exports_websocket_handler` is true. If false, run `rollback_config_generation` and `rollback_fdae_policy` and return Err. |
 | `crates/control_plane/src/service/orchestration.rs` | `fn deploy_with_context` (~L1653) | Refuse `websocket` target for `Tcp` and `Container` services, mirroring the existing check for `guest`. |
-| `crates/control_plane/src/service/orchestration.rs` | `fn stop_wasm` / `undeploy_local` (~L2554) | Call `forget_websocket_senders(service_id)`. |
-| `crates/router/src/route_handler/http.rs` | `fn dispatch_route` (~L979) | Add `"websocket" => self.handle_websocket_route(route, req).await` to the match arm. |
+| `crates/control_plane/src/service/orchestration.rs` | `fn stop_wasm` / `undeploy_local` (~L2554) | Call `forget_websocket_senders(service_id)` and `forget_guest_http_permits(service_id)`. |
+| `crates/router/src/route_handler/http.rs` | `fn dispatch_route` (~L979) | Add `"websocket" => self.handle_websocket_route(route, req).await` to the match arm. Server loop uses `AutoBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades` to drive upgrades. |
+| `crates/core/src/config.rs` | `AppSandboxRole` | Add `max_concurrent_websockets_per_service: u32` (default 50). |
+| `test-components/websocket-guest-test` | New fixture | Test component exporting `websocket-handler` and importing `websocket` for echo tests. |
 
 ---
 

@@ -69,6 +69,7 @@ async fn test_route_handler() -> RouteHandler {
         native_dispatch: NativeDispatchRegistry::default(),
         http_routes,
         assets: Arc::new(DashMap::new()),
+        sse_permits: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
     };

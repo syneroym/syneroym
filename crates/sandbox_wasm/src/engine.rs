@@ -318,6 +318,7 @@ pub struct AppSandboxEngine {
     /// concurrently.
     guest_websocket_permits: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
     max_concurrent_websockets_per_service: u32,
+    max_sse_subscribers_per_service: u32,
 }
 
 /// Per-instantiation differences from an ordinary dispatch call. Bundled
@@ -617,6 +618,12 @@ impl AppSandboxEngine {
                 .as_ref()
                 .map(|r| r.max_concurrent_websockets_per_service)
                 .unwrap_or(50),
+            max_sse_subscribers_per_service: config
+                .roles
+                .app_sandbox
+                .as_ref()
+                .map(|r| r.max_sse_subscribers_per_service)
+                .unwrap_or(100),
         };
 
         for (service_id, _interface_name, endpoint) in endpoints {
@@ -1484,6 +1491,12 @@ impl AppSandboxEngine {
             })
             .clone();
         time::timeout(timeout, sem.acquire_owned()).await.ok().and_then(Result::ok)
+    }
+
+    /// Maximum SSE subscribers allowed per service from config.
+    #[must_use]
+    pub fn max_sse_subscribers_per_service(&self) -> usize {
+        self.max_sse_subscribers_per_service as usize
     }
 
     /// Registers a unicast sender channel for an active WebSocket connection,
@@ -2996,6 +3009,7 @@ mod tests {
             default_max_memory_bytes: Some(1024 * 1024), // 1MB
             guest_websocket_permits: Arc::new(DashMap::new()),
             max_concurrent_websockets_per_service: 10,
+            max_sse_subscribers_per_service: 100,
             websocket_senders: Arc::new(DashMap::new()),
             _shutdown_tx: None,
             key_store: Arc::new(KeyStore::new()),
@@ -3138,6 +3152,7 @@ mod tests {
             default_max_memory_bytes: Some(1024 * 1024),
             guest_websocket_permits: Arc::new(DashMap::new()),
             max_concurrent_websockets_per_service: 10,
+            max_sse_subscribers_per_service: 100,
             websocket_senders: Arc::new(DashMap::new()),
             _shutdown_tx: None,
             key_store: Arc::new(KeyStore::new()),

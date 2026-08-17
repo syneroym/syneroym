@@ -198,6 +198,8 @@ pub struct RouteHandlerDeps {
     /// registration path (`ControlPlaneService::deploy`/`undeploy`), and
     /// same cache-not-persistence lifecycle as `http_routes` above.
     pub assets: AssetRegistry,
+    /// Bounded concurrent SSE subscriptions per service.
+    pub sse_permits: SsePermitRegistry,
     /// The node's control-plane service (deploy/undeploy/list, security
     /// ops), already registered against `native_dispatch`/`http_routes` by
     /// the caller during construction -- `RouteHandler::init` only needs to
@@ -374,7 +376,7 @@ impl RouteHandler {
             messaging_broker: deps.messaging_broker,
             http_routes: deps.http_routes,
             assets: deps.assets,
-            sse_permits: Arc::new(DashMap::new()),
+            sse_permits: deps.sse_permits,
             key_store: Some(deps.key_store),
             storage_provider: Some(deps.storage_provider),
             admin_ucan_root: config.iam.admin_ucan_root.clone(),
