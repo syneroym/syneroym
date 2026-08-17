@@ -34,6 +34,7 @@ use syneroym_rpc::{
     AbacAuthContext, AbacError, AuthLevel, CallerContext, CandidateRow, JsonRpcRequest,
     RowAuthorizer, RowDecision, ServiceProxy,
 };
+pub use syneroym_wit_interfaces::http::syneroym::http::websocket_types::FrameKind;
 use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceType,
@@ -69,6 +70,10 @@ use crate::{
     http,
     stream::{self, GuestStreamCursor, GuestStreamSink, StreamContext, StreamRegistry},
 };
+
+pub type WebSocketSender = tokio::sync::mpsc::Sender<(Vec<u8>, FrameKind)>;
+pub type WebSocketReceiver = tokio::sync::mpsc::Receiver<(Vec<u8>, FrameKind)>;
+type WebSocketSenders = DashMap<String, Arc<DashMap<String, WebSocketSender>>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmResourceQuota {
@@ -305,15 +310,15 @@ pub struct AppSandboxEngine {
     /// the size each per-service semaphore above is created at.
     max_concurrent_guest_http_per_service: u32,
     /// Registry for routing guest unicast sends back to active WebSocket
-    /// connections (M06A A3). Grouped by service_id to allow clean bulk
+    /// connections. Grouped by service_id to allow clean bulk
     /// teardown on undeploy.
-    pub websocket_senders:
-        Arc<DashMap<String, Arc<DashMap<String, tokio::sync::mpsc::Sender<Vec<u8>>>>>>,
+    pub(crate) websocket_senders: Arc<WebSocketSenders>,
 
     /// Pool slots this node will let active WebSocket connections hold
     /// concurrently.
-    pub guest_websocket_permits: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
-    pub max_concurrent_websockets_per_service: u32,
+    guest_websocket_permits: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
+    max_concurrent_websockets_per_service: u32,
+    max_sse_subscribers_per_service: u32,
 }
 
 /// Per-instantiation differences from an ordinary dispatch call. Bundled
@@ -613,6 +618,12 @@ impl AppSandboxEngine {
                 .as_ref()
                 .map(|r| r.max_concurrent_websockets_per_service)
                 .unwrap_or(50),
+            max_sse_subscribers_per_service: config
+                .roles
+                .app_sandbox
+                .as_ref()
+                .map(|r| r.max_sse_subscribers_per_service)
+                .unwrap_or(100),
         };
 
         for (service_id, _interface_name, endpoint) in endpoints {
@@ -902,10 +913,20 @@ impl AppSandboxEngine {
     }
 
     /// Whether `service_id`'s compiled component exports the guest WebSocket
-    /// handler (M06A A3).
+    /// handler (on-open, on-message, on-close).
     #[must_use]
     pub fn exports_websocket_handler(&self, service_id: &str) -> bool {
         self.exports_function(service_id, "syneroym:http/websocket-handler@0.1.0", "on-open")
+            && self.exports_function(
+                service_id,
+                "syneroym:http/websocket-handler@0.1.0",
+                "on-message",
+            )
+            && self.exports_function(
+                service_id,
+                "syneroym:http/websocket-handler@0.1.0",
+                "on-close",
+            )
     }
 
     /// Whether a compiled component is loaded for `service_id` -- the only
@@ -1445,13 +1466,62 @@ impl AppSandboxEngine {
     /// Called from the same undeploy path as `unsubscribe_all`; in-flight
     /// requests keep their own `OwnedSemaphorePermit` and finish, they just
     /// stop sharing a budget with a service that no longer exists.
+    /// Drops `service_id`'s guest HTTP admission semaphore.
+    /// Called from the same undeploy path as `unsubscribe_all`; in-flight
+    /// requests keep their own `OwnedSemaphorePermit` and finish, they just
+    /// stop sharing a budget with a service that no longer exists.
     pub fn forget_guest_http_permits(&self, service_id: &str) {
         self.guest_http_permits.remove(service_id);
     }
 
-    /// Drops all WebSocket senders for a service (M06A A3).
-    /// Called from undeploy. Dropping the senders unblocks any active rx.recv()
-    /// loops in the router, terminating the WebSockets cleanly.
+    /// Acquires a connection permit for an incoming WebSocket connection,
+    /// bounded by the per-service semaphore.
+    pub async fn acquire_websocket_permit(
+        &self,
+        service_id: &str,
+        timeout: Duration,
+    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let sem = self
+            .guest_websocket_permits
+            .entry(service_id.to_string())
+            .or_insert_with(|| {
+                Arc::new(tokio::sync::Semaphore::new(
+                    self.max_concurrent_websockets_per_service as usize,
+                ))
+            })
+            .clone();
+        time::timeout(timeout, sem.acquire_owned()).await.ok().and_then(Result::ok)
+    }
+
+    /// Maximum SSE subscribers allowed per service from config.
+    #[must_use]
+    pub fn max_sse_subscribers_per_service(&self) -> usize {
+        self.max_sse_subscribers_per_service as usize
+    }
+
+    /// Registers a unicast sender channel for an active WebSocket connection,
+    /// returning the receiver to drain in the router's connection loop.
+    pub fn register_websocket_sender(&self, service_id: &str, conn_id: &str) -> WebSocketReceiver {
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        let service_map = self
+            .websocket_senders
+            .entry(service_id.to_string())
+            .or_insert_with(|| Arc::new(DashMap::new()))
+            .clone();
+        service_map.insert(conn_id.to_string(), tx);
+        rx
+    }
+
+    /// Removes a unicast sender channel for a closed WebSocket connection.
+    pub fn deregister_websocket_sender(&self, service_id: &str, conn_id: &str) {
+        if let Some(service_map) = self.websocket_senders.get(service_id) {
+            service_map.remove(conn_id);
+        }
+    }
+
+    /// Drops all WebSocket senders for a service.
+    /// Called from undeploy/stop. Dropping the senders unblocks any active
+    /// rx.recv() loops in the router, terminating the WebSockets cleanly.
     pub fn forget_websocket_senders(&self, service_id: &str) {
         self.websocket_senders.remove(service_id);
         self.guest_websocket_permits.remove(service_id);
@@ -1604,6 +1674,8 @@ impl AppSandboxEngine {
         self.fdae_policies.remove(service_id);
         self.bump_fdae_policy_generation(service_id);
         self.abort_streams(service_id);
+        self.forget_websocket_senders(service_id);
+        self.forget_guest_http_permits(service_id);
         metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
         Ok(())
     }
@@ -2239,12 +2311,18 @@ impl AppSandboxEngine {
         })
     }
 
-    pub async fn handle_websocket_on_open(&self, service_id: &str, conn_id: &str) {
+    pub async fn handle_websocket_on_open(
+        &self,
+        service_id: &str,
+        conn_id: &str,
+        caller: Option<CallerContext>,
+    ) {
         let _active_guard = ActiveInstanceGuard::new();
+        let caller = caller.unwrap_or_else(|| CallerContext::service_system(service_id));
         let (mut store, instance, _) = match self
             .build_store_and_instantiate(
                 service_id,
-                CallerContext::service_system(service_id),
+                caller,
                 self.dispatch_epoch_ticks,
                 InstanceOptions::default(),
             )
@@ -2252,21 +2330,27 @@ impl AppSandboxEngine {
         {
             Ok(v) => v,
             Err(e) => {
-                tracing::error!("WebSocket on-open failed to instantiate: {}", e);
+                warn!(service_id, error = %e, "WebSocket on-open failed to instantiate component");
                 return;
             }
         };
 
-        let Ok((func, _, _)) = Self::get_wasm_func(
+        let (func, _, _) = match Self::get_wasm_func(
             &mut store,
             &instance,
             Some("syneroym:http/websocket-handler@0.1.0"),
             "on-open",
-        ) else {
-            return;
+        ) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!(service_id, error = %e, "WebSocket on-open export not found");
+                return;
+            }
         };
         let conn_val = Val::String(conn_id.to_string());
-        let _ = func.call_async(&mut store, &[conn_val], &mut []).await;
+        if let Err(e) = func.call_async(&mut store, &[conn_val], &mut []).await {
+            warn!(service_id, error = %e, "WebSocket on-open invocation error");
+        }
     }
 
     pub async fn handle_websocket_on_message(
@@ -2274,12 +2358,15 @@ impl AppSandboxEngine {
         service_id: &str,
         conn_id: &str,
         frame: Vec<u8>,
+        kind: FrameKind,
+        caller: Option<CallerContext>,
     ) {
         let _active_guard = ActiveInstanceGuard::new();
+        let caller = caller.unwrap_or_else(|| CallerContext::service_system(service_id));
         let (mut store, instance, _) = match self
             .build_store_and_instantiate(
                 service_id,
-                CallerContext::service_system(service_id),
+                caller,
                 self.dispatch_epoch_ticks,
                 InstanceOptions::default(),
             )
@@ -2287,30 +2374,47 @@ impl AppSandboxEngine {
         {
             Ok(v) => v,
             Err(e) => {
-                tracing::error!("WebSocket on-message failed to instantiate: {}", e);
+                warn!(service_id, error = %e, "WebSocket on-message failed to instantiate component");
                 return;
             }
         };
 
-        let Ok((func, _, _)) = Self::get_wasm_func(
+        let (func, _, _) = match Self::get_wasm_func(
             &mut store,
             &instance,
             Some("syneroym:http/websocket-handler@0.1.0"),
             "on-message",
-        ) else {
-            return;
+        ) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!(service_id, error = %e, "WebSocket on-message export not found");
+                return;
+            }
         };
         let conn_val = Val::String(conn_id.to_string());
         let frame_val = crate::stream::bytes_to_val_list(frame);
-        let _ = func.call_async(&mut store, &[conn_val, frame_val], &mut []).await;
+        let kind_val = match kind {
+            FrameKind::Text => Val::Enum("text".to_string()),
+            FrameKind::Binary => Val::Enum("binary".to_string()),
+        };
+        if let Err(e) = func.call_async(&mut store, &[conn_val, frame_val, kind_val], &mut []).await
+        {
+            warn!(service_id, error = %e, "WebSocket on-message invocation error");
+        }
     }
 
-    pub async fn handle_websocket_on_close(&self, service_id: &str, conn_id: &str) {
+    pub async fn handle_websocket_on_close(
+        &self,
+        service_id: &str,
+        conn_id: &str,
+        caller: Option<CallerContext>,
+    ) {
         let _active_guard = ActiveInstanceGuard::new();
+        let caller = caller.unwrap_or_else(|| CallerContext::service_system(service_id));
         let (mut store, instance, _) = match self
             .build_store_and_instantiate(
                 service_id,
-                CallerContext::service_system(service_id),
+                caller,
                 self.dispatch_epoch_ticks,
                 InstanceOptions::default(),
             )
@@ -2318,21 +2422,27 @@ impl AppSandboxEngine {
         {
             Ok(v) => v,
             Err(e) => {
-                tracing::error!("WebSocket on-close failed to instantiate: {}", e);
+                warn!(service_id, error = %e, "WebSocket on-close failed to instantiate component");
                 return;
             }
         };
 
-        let Ok((func, _, _)) = Self::get_wasm_func(
+        let (func, _, _) = match Self::get_wasm_func(
             &mut store,
             &instance,
             Some("syneroym:http/websocket-handler@0.1.0"),
             "on-close",
-        ) else {
-            return;
+        ) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!(service_id, error = %e, "WebSocket on-close export not found");
+                return;
+            }
         };
         let conn_val = Val::String(conn_id.to_string());
-        let _ = func.call_async(&mut store, &[conn_val], &mut []).await;
+        if let Err(e) = func.call_async(&mut store, &[conn_val], &mut []).await {
+            warn!(service_id, error = %e, "WebSocket on-close invocation error");
+        }
     }
 }
 
@@ -2899,6 +3009,7 @@ mod tests {
             default_max_memory_bytes: Some(1024 * 1024), // 1MB
             guest_websocket_permits: Arc::new(DashMap::new()),
             max_concurrent_websockets_per_service: 10,
+            max_sse_subscribers_per_service: 100,
             websocket_senders: Arc::new(DashMap::new()),
             _shutdown_tx: None,
             key_store: Arc::new(KeyStore::new()),
@@ -3041,6 +3152,7 @@ mod tests {
             default_max_memory_bytes: Some(1024 * 1024),
             guest_websocket_permits: Arc::new(DashMap::new()),
             max_concurrent_websockets_per_service: 10,
+            max_sse_subscribers_per_service: 100,
             websocket_senders: Arc::new(DashMap::new()),
             _shutdown_tx: None,
             key_store: Arc::new(KeyStore::new()),

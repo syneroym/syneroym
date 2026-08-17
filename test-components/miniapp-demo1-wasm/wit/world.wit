@@ -1,0 +1,19 @@
+package syneroym-test:miniapp-demo1-wasm@0.1.0;
+
+world miniapp-demo1-wasm {
+    // Imports
+    import syneroym:data-layer/store@0.1.0;
+    import syneroym:blob-store/blob-store@0.1.0;
+    import syneroym:messaging/host-api@0.1.0;
+    import syneroym:http/websocket@0.1.0;
+
+    // Exports
+    export syneroym:http/incoming-handler@0.1.0;
+    export syneroym:http/websocket-handler@0.1.0;
+    export syneroym:messaging/guest-api@0.1.0;
+    export syneroym:messaging/stream-types@0.1.0;
+
+    // Lifecycle
+    export init: func() -> result<_, string>;
+    export migrate: func() -> result<_, string>;
+}

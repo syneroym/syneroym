@@ -17,8 +17,10 @@ use dashmap::DashMap;
 use reqwest::{Client, redirect::Policy};
 use serde_json::Value;
 use syneroym_core::{
-    asset_manifest::AssetRegistry, endpoint_publisher::EndpointPublisher,
-    http_routes::HttpRouteRegistry, local_registry::EndpointRegistry,
+    asset_manifest::AssetRegistry,
+    endpoint_publisher::EndpointPublisher,
+    http_routes::{HttpRouteRegistry, SsePermitRegistry},
+    local_registry::EndpointRegistry,
 };
 use syneroym_data_blob::BlobProvider;
 use syneroym_data_db::traits::StorageProvider;
@@ -147,6 +149,8 @@ pub struct ControlPlaneService {
     /// `http_routes` above -- `RouteHandlerInner` holds the identical `Arc`
     /// for lookup from `crates/router/src/route_handler/http.rs`.
     assets: AssetRegistry,
+    /// Bounded concurrent SSE subscriptions per service.
+    sse_permits: SsePermitRegistry,
     /// Last probe result per service, `(checked_at_secs, ProbeStatus)` (M05A
     /// A4). A supervisor polling every few seconds must not turn into probe
     /// load on the target (the milestone's "health poll cost" budget), and a
@@ -217,12 +221,19 @@ impl ControlPlaneService {
             native_dispatch: Arc::downgrade(&native_dispatch),
             http_routes,
             assets,
+            sse_permits: Arc::new(DashMap::new()),
             probe_cache: DashMap::new(),
             http_probe_client: Client::builder()
                 .redirect(Policy::none())
                 .build()
                 .context("failed to build the HTTP probe client")?,
         })
+    }
+
+    /// Access to the per-service SSE subscription permit registry.
+    #[must_use]
+    pub fn sse_permits(&self) -> SsePermitRegistry {
+        self.sse_permits.clone()
     }
 
     /// Wires in the substrate's `EndpointPublisher` so `deploy` can publish

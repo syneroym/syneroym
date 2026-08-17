@@ -18,7 +18,7 @@ use std::{collections::HashMap, fs, str, time::Duration};
 use httparse::{EMPTY_HEADER, Response as HttparseResponse, Status};
 use iroh::endpoint::{RecvStream, SendStream};
 use rustls::crypto::ring;
-use syneroym_core::{dht_registry::EndpointMechanism, test_constants};
+use syneroym_core::{config::AppSandboxRole, dht_registry::EndpointMechanism, test_constants};
 use syneroym_identity::{Identity, substrate};
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
 use syneroym_sdk::{
@@ -617,6 +617,91 @@ async fn test_sse_receives_message_published_via_http() {
     assert!(received, "SSE subscriber must receive the message published via HTTP");
 
     drop(_sse_send);
+    let _ = peer.shutdown().await;
+    ctx.teardown().await;
+}
+
+#[tokio::test]
+async fn test_sse_rejects_missing_accept_header() {
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup(7943, 7944, 7945).await;
+
+    let app_identity = Identity::generate().unwrap();
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
+    let http_routes = serde_json::json!({
+        "http_routes": [
+            {"method": "GET", "path": "/events", "target": "messaging",
+             "operation": "subscribe-sse", "topic": "events"},
+        ]
+    });
+    deploy(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes)).await;
+
+    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    peer.connect().await.expect("peer failed to connect");
+    let conn = peer.connection().expect("peer has no live connection");
+
+    let response =
+        http_request(&conn, &app_service_id, "GET", "/events", &[("Accept", "text/plain")], b"")
+            .await;
+    assert_eq!(
+        response.status, 406,
+        "GET SSE without text/event-stream accept header must return 406 Not Acceptable"
+    );
+
+    let _ = peer.shutdown().await;
+    ctx.teardown().await;
+}
+
+#[tokio::test]
+async fn test_sse_permit_exhaustion_returns_503_service_unavailable() {
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup_with(7946, 7947, 7948, |config| {
+        config.roles.app_sandbox =
+            Some(AppSandboxRole { max_sse_subscribers_per_service: 1, ..Default::default() });
+    })
+    .await;
+
+    let app_identity = Identity::generate().unwrap();
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
+    let http_routes = serde_json::json!({
+        "http_routes": [
+            {"method": "GET", "path": "/events", "target": "messaging",
+             "operation": "subscribe-sse", "topic": "events"},
+        ]
+    });
+    deploy(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes)).await;
+
+    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    peer.connect().await.expect("peer failed to connect");
+    let conn = peer.connection().expect("peer has no live connection");
+
+    // First SSE subscriber occupies the sole permit
+    let (_sse_send1, mut _sse_recv1) = open_sse_stream(&conn, &app_service_id, "/events").await;
+    time::sleep(Duration::from_millis(200)).await;
+
+    // Second SSE subscriber exceeds the quota and gets 503 + Retry-After: 1
+    // immediately
+    let second = http_request(
+        &conn,
+        &app_service_id,
+        "GET",
+        "/events",
+        &[("Accept", "text/event-stream")],
+        b"",
+    )
+    .await;
+
+    assert_eq!(
+        second.status, 503,
+        "an SSE request exceeding the service subscriber quota must return 503 Service Unavailable"
+    );
+    assert_eq!(
+        second.headers.get("retry-after").map(String::as_str),
+        Some("1"),
+        "503 response must include Retry-After header"
+    );
+
+    drop(_sse_send1);
     let _ = peer.shutdown().await;
     ctx.teardown().await;
 }

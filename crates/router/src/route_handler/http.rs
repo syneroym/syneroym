@@ -26,12 +26,12 @@ use std::{
     convert::Infallible,
     io, result,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
-use futures::stream;
+use futures::{TryStreamExt, stream};
 use http_body_util::{
     BodyExt, Full, LengthLimitError, Limited, StreamBody, combinators::UnsyncBoxBody,
 };
@@ -40,7 +40,7 @@ use hyper::{
     body::{Frame, Incoming},
     header::{
         ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderName, HeaderValue,
-        IF_NONE_MATCH, X_CONTENT_TYPE_OPTIONS,
+        IF_NONE_MATCH, RETRY_AFTER, X_CONTENT_TYPE_OPTIONS,
     },
     service,
 };
@@ -52,7 +52,7 @@ use serde_json::Value;
 use syneroym_core::{
     asset_manifest::AssetEntry,
     guest_http::{GuestCallerAuth, GuestCallerIdentity, GuestHttpRequest, GuestHttpResponse},
-    http_routes::{HttpRoute, match_path, param_name},
+    http_routes::{DEFAULT_MAX_SSE_SUBSCRIBERS_PER_SERVICE, HttpRoute, match_path, param_name},
     streaming::StreamDirection,
 };
 use syneroym_data_blob::{
@@ -64,9 +64,16 @@ use syneroym_rpc::{
     AuthLevel, CallerContext, JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest,
     PROXY_TRANSPORT_RPC_CODE, UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
 };
-use syneroym_sandbox_wasm::{GuestHttpFailure, GuestHttpOutcome, StreamRequestOutcome};
-use tokio::io::{self as tokio_io, AsyncRead, AsyncWrite};
-use tokio_tungstenite::{WebSocketStream, tungstenite::handshake::derive_accept_key};
+use syneroym_sandbox_wasm::{FrameKind, GuestHttpFailure, GuestHttpOutcome, StreamRequestOutcome};
+use tokio::io::{self as tokio_io, AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio_tungstenite::{
+    WebSocketStream,
+    tungstenite::{
+        Message,
+        handshake::derive_accept_key,
+        protocol::{Role, WebSocketConfig},
+    },
+};
 use tokio_util::io::StreamReader;
 use tracing::{debug, error, warn};
 use uuid::Uuid;
@@ -317,14 +324,17 @@ fn if_none_match_hits(header: Option<&HeaderValue>, etag: &str) -> bool {
         })
 }
 
-/// Parses an HTTP query string (`k=v&k2=v2`) leniently, matching
-/// `RoutePreamble::parse`'s own permissive, non-percent-decoding style
-/// elsewhere in this crate.
+/// Parses an HTTP query string (`k=v&k2=v2`) and percent-decodes keys and
+/// values.
 fn parse_query(query: &str) -> HashMap<String, String> {
     query
         .split('&')
         .filter_map(|part| part.split_once('='))
-        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .map(|(k, v)| {
+            let key = percent_encoding::percent_decode_str(k).decode_utf8_lossy().to_string();
+            let val = percent_encoding::percent_decode_str(v).decode_utf8_lossy().to_string();
+            (key, val)
+        })
         .collect()
 }
 
@@ -986,7 +996,7 @@ impl HttpHandler {
         match route.target.as_str() {
             "data-layer" => self.handle_data_layer_route(route, path_param, req).await,
             "messaging" => self.handle_messaging_route(route, req).await,
-            "stream" => self.handle_stream_route(route, req).await,
+            "stream" => self.handle_stream_route(route, path_param, req).await,
             "guest" => self.handle_guest_route(route, path_param, req).await,
             "websocket" => self.handle_websocket_route(route, req).await,
             other => Ok(http_error(
@@ -1160,6 +1170,35 @@ impl HttpHandler {
             ));
         }
 
+        let service_id = self.preamble.service_id.clone();
+        let max_subscribers = self
+            .route_handler
+            .inner
+            .app_sandbox_engine
+            .as_ref()
+            .map(|e| e.max_sse_subscribers_per_service())
+            .unwrap_or(DEFAULT_MAX_SSE_SUBSCRIBERS_PER_SERVICE);
+        let permits = {
+            let entry = self
+                .route_handler
+                .inner
+                .sse_permits
+                .entry(service_id)
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_subscribers)));
+            entry.value().clone()
+        };
+        let permit = match permits.try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                let mut resp = http_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "service is at its SSE subscriber concurrency limit".into(),
+                );
+                resp.headers_mut().insert(RETRY_AFTER, HeaderValue::from_static("1"));
+                return Ok(resp);
+            }
+        };
+
         let topic = route.topic.clone().unwrap_or_default();
         let namespaced = namespace_topic(&self.preamble.service_id, &topic);
         let (handle, receiver) = self
@@ -1171,17 +1210,19 @@ impl HttpHandler {
             .map_err(|e| anyhow!("SSE subscribe failed: {e}"))?;
 
         // Pull-based: each poll awaits the next broker message and formats
-        // it as one SSE frame. `handle` (the `SubscriptionHandle`) is
-        // carried inside the stream's own state, so it -- and the broker
-        // subscription it owns -- is dropped the moment hyper stops
-        // driving this response body, which is exactly what happens when
-        // the client disconnects (hyper's connection loop observes the
-        // write failing and drops the in-flight response future).
-        let stream = stream::unfold((receiver, handle), |(mut receiver, handle)| async move {
-            let (topic, payload) = receiver.recv().await?;
-            let frame = Frame::data(Bytes::from(format_sse_frame(&topic, &payload)));
-            Some((Ok::<_, Infallible>(frame), (receiver, handle)))
-        });
+        // it as one SSE frame. `handle` (the `SubscriptionHandle`) and
+        // `permit` are carried inside the stream's own state, so they -- and
+        // the broker subscription they own -- are dropped the moment hyper
+        // stops driving this response body, which is exactly what happens
+        // when the client disconnects.
+        let stream = stream::unfold(
+            (receiver, handle, permit),
+            |(mut receiver, handle, permit)| async move {
+                let (topic, payload) = receiver.recv().await?;
+                let frame = Frame::data(Bytes::from(format_sse_frame(&topic, &payload)));
+                Some((Ok::<_, Infallible>(frame), (receiver, handle, permit)))
+            },
+        );
 
         let body = StreamBody::new(stream).boxed_unsync();
         Response::builder()
@@ -1192,19 +1233,14 @@ impl HttpHandler {
             .map_err(|e| anyhow!("failed to build SSE response: {e}"))
     }
 
-    // -- stream / chunked upload -----------------------------------------
+    // -- stream / chunked upload and download ----------------------------
 
     async fn handle_stream_route(
         &self,
         route: &HttpRoute,
+        path_param: Option<String>,
         req: Request<Incoming>,
     ) -> Result<Response<HttpBody>> {
-        if route.operation != "accept-upload" {
-            return Ok(http_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("unsupported stream operation: {}", route.operation),
-            ));
-        }
         let Some(app_sandbox_engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
             return Ok(http_error(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1228,52 +1264,172 @@ impl HttpHandler {
             .unwrap_or_else(|| "unknown-peer".to_string());
 
         // `initial_payload` doubles as the guest's `metadata` parameter
-        // (`accept-stream-upload(protocol, peer-id, metadata)`) -- there is
-        // no equivalent "first framed frame" concept in a plain chunked
-        // HTTP body the way the raw-QUIC path has one, so it's taken from
-        // the request's `metadata` query parameter instead (e.g. `PUT
-        // /upload?metadata=x`), empty if absent. An HTTP-specific
-        // simplification vs. the raw-QUIC path's framed initial payload,
-        // but still lets a route's caller pass guest-meaningful metadata
-        // rather than always sending nothing.
-        let metadata = req
-            .uri()
-            .query()
-            .and_then(|q| parse_query(q).remove("metadata"))
-            .unwrap_or_default()
-            .into_bytes();
+        // (`accept-stream-upload(protocol, peer-id, metadata)`) or the
+        // download request parameter (`handle-stream-request(protocol, peer-id,
+        // request-data)`).
+        let initial_payload = path_param
+            .as_ref()
+            .map(|p| percent_encoding::percent_decode_str(p).collect::<Vec<u8>>())
+            .unwrap_or_else(|| {
+                req.uri()
+                    .query()
+                    .and_then(|q| parse_query(q).remove("metadata"))
+                    .map(String::into_bytes)
+                    .unwrap_or_default()
+            });
 
-        // Decision 5 of the Slice 7 plan: adapt the HTTP request body into
-        // the `AsyncRead` `handle_stream_protocol_request` already accepts
-        // (a trait object, no router-specific concrete type baked in).
-        // `hyper::Error` doesn't implement `Into<io::Error>`, hence the
-        // explicit `map_err`. The writer side is never used for data
-        // transfer on the upload path (only `.shutdown()` is called), so a
-        // plain sink suffices.
-        use futures::TryStreamExt;
-        let body_stream = req.into_body().into_data_stream().map_err(io::Error::other);
-        let reader: Box<dyn AsyncRead + Unpin + Send> = Box::new(StreamReader::new(body_stream));
-        let writer: Box<dyn AsyncWrite + Unpin + Send> = Box::new(tokio_io::sink());
+        match route.operation.as_str() {
+            "accept-upload" => {
+                let body_stream = req.into_body().into_data_stream().map_err(io::Error::other);
+                let reader: Box<dyn AsyncRead + Unpin + Send> =
+                    Box::new(StreamReader::new(body_stream));
+                let writer: Box<dyn AsyncWrite + Unpin + Send> = Box::new(tokio_io::sink());
 
-        match app_sandbox_engine
-            .handle_stream_protocol_request(
-                &self.preamble.service_id,
-                &protocol,
-                &peer_id,
-                StreamDirection::Upload,
-                metadata,
-                reader,
-                writer,
-            )
-            .await
-        {
-            Ok(StreamRequestOutcome::Completed) => {
-                Ok(json_response(StatusCode::OK, &serde_json::json!({"status": "uploaded"})))
+                match app_sandbox_engine
+                    .handle_stream_protocol_request(
+                        &self.preamble.service_id,
+                        &protocol,
+                        &peer_id,
+                        StreamDirection::Upload,
+                        initial_payload,
+                        reader,
+                        writer,
+                    )
+                    .await
+                {
+                    Ok(StreamRequestOutcome::Completed) => Ok(json_response(
+                        StatusCode::OK,
+                        &serde_json::json!({"status": "uploaded"}),
+                    )),
+                    Ok(StreamRequestOutcome::Declined) => {
+                        Ok(http_error(StatusCode::FORBIDDEN, "upload declined by guest".into()))
+                    }
+                    Err(e) => Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+                }
             }
-            Ok(StreamRequestOutcome::Declined) => {
-                Ok(http_error(StatusCode::FORBIDDEN, "upload declined by guest".into()))
+            "accept-download" => {
+                let (duplex_writer, mut duplex_reader) = tokio_io::duplex(64 * 1024);
+                let reader: Box<dyn AsyncRead + Unpin + Send> = Box::new(tokio_io::empty());
+                let writer: Box<dyn AsyncWrite + Unpin + Send> = Box::new(duplex_writer);
+
+                let service_id = self.preamble.service_id.clone();
+                let engine = app_sandbox_engine.clone();
+                let proto = protocol.clone();
+                let peer = peer_id.clone();
+
+                let join_handle = tokio::spawn(async move {
+                    engine
+                        .handle_stream_protocol_request(
+                            &service_id,
+                            &proto,
+                            &peer,
+                            StreamDirection::Download,
+                            initial_payload,
+                            reader,
+                            writer,
+                        )
+                        .await
+                });
+
+                let mut first_buf = vec![0u8; 64 * 1024];
+                let first_chunk = match duplex_reader.read(&mut first_buf).await {
+                    Ok(0) => match join_handle.await {
+                        Ok(Ok(StreamRequestOutcome::Declined)) => {
+                            return Ok(http_error(
+                                StatusCode::NOT_FOUND,
+                                "stream download declined or file not found".into(),
+                            ));
+                        }
+                        Ok(Err(e)) => {
+                            return Ok(http_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                e.to_string(),
+                            ));
+                        }
+                        _ => {
+                            return Ok(http_error(
+                                StatusCode::NOT_FOUND,
+                                "stream download produced no data".into(),
+                            ));
+                        }
+                    },
+                    Ok(n) => {
+                        first_buf.truncate(n);
+                        Some(Bytes::from(first_buf))
+                    }
+                    Err(e) => {
+                        return Ok(http_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("failed to read stream download: {e}"),
+                        ));
+                    }
+                };
+
+                let stream = stream::unfold(
+                    (duplex_reader, first_chunk, Some(join_handle)),
+                    |(mut reader, first, mut handle)| async move {
+                        if let Some(chunk) = first {
+                            return Some((
+                                Ok::<_, Infallible>(Frame::data(chunk)),
+                                (reader, None, handle),
+                            ));
+                        }
+                        let mut buf = vec![0u8; 64 * 1024];
+                        match reader.read(&mut buf).await {
+                            Ok(0) => {
+                                if let Some(h) = handle.take() {
+                                    match h.await {
+                                        Ok(Ok(StreamRequestOutcome::Completed)) => {}
+                                        Ok(Ok(StreamRequestOutcome::Declined)) => {
+                                            warn!(
+                                                "stream download declined by guest after partial \
+                                                 transfer"
+                                            );
+                                        }
+                                        Ok(Err(e)) => {
+                                            error!(
+                                                "stream download task failed after partial \
+                                                 transfer: {e}"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            error!("stream download task panicked: {e}");
+                                        }
+                                    }
+                                }
+                                None
+                            }
+                            Ok(n) => {
+                                buf.truncate(n);
+                                Some((
+                                    Ok::<_, Infallible>(Frame::data(Bytes::from(buf))),
+                                    (reader, None, handle),
+                                ))
+                            }
+                            Err(e) => {
+                                error!("stream download read error: {e}");
+                                None
+                            }
+                        }
+                    },
+                );
+
+                let body = StreamBody::new(stream).boxed_unsync();
+                let mut resp_builder = Response::builder().status(StatusCode::OK);
+                if let Some(filename) = path_param.as_deref() {
+                    let mime = mime_guess::from_path(filename).first_or_octet_stream();
+                    resp_builder = resp_builder.header(CONTENT_TYPE, mime.as_ref());
+                } else {
+                    resp_builder = resp_builder.header(CONTENT_TYPE, "application/octet-stream");
+                }
+                resp_builder
+                    .body(body)
+                    .map_err(|e| anyhow!("failed to build download response: {e}"))
             }
-            Err(e) => Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+            other => Ok(http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("unsupported stream operation: {other}"),
+            )),
         }
     }
 
@@ -1417,6 +1573,28 @@ impl HttpHandler {
         }
     }
 
+    fn validate_websocket_upgrade_headers(headers: &HeaderMap) -> Result<&str, &'static str> {
+        let is_upgrade = headers
+            .get(hyper::header::UPGRADE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+        let is_conn_upgrade = headers
+            .get(hyper::header::CONNECTION)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.to_ascii_lowercase().contains("upgrade"));
+        let has_version_13 = headers
+            .get("sec-websocket-version")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v == "13");
+        let req_key =
+            headers.get("sec-websocket-key").and_then(|v| v.to_str().ok()).unwrap_or_default();
+
+        if !is_upgrade || !is_conn_upgrade || !has_version_13 || req_key.is_empty() {
+            return Err("Invalid WebSocket upgrade request headers");
+        }
+        Ok(req_key)
+    }
+
     async fn handle_websocket_route(
         &self,
         route: &HttpRoute,
@@ -1446,17 +1624,12 @@ impl HttpHandler {
             ));
         }
 
-        let req_key = req
-            .headers()
-            .get("sec-websocket-key")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default();
-        if req_key.is_empty() {
-            return Ok(http_error(
-                StatusCode::BAD_REQUEST,
-                "Missing sec-websocket-key header".into(),
-            ));
-        }
+        let req_key = match Self::validate_websocket_upgrade_headers(req.headers()) {
+            Ok(k) => k,
+            Err(msg) => {
+                return Ok(http_error(StatusCode::BAD_REQUEST, msg.into()));
+            }
+        };
 
         let accept_key = derive_accept_key(req_key.as_bytes());
         let response = Response::builder()
@@ -1495,136 +1668,146 @@ impl HttpHandler {
             _sub_handle = Some(handle);
         }
 
-        let permits = {
-            let entry = app_sandbox_engine
-                .guest_websocket_permits
-                .entry(service_id.clone())
-                .or_insert_with(|| {
-                    Arc::new(tokio::sync::Semaphore::new(
-                        app_sandbox_engine.max_concurrent_websockets_per_service as usize,
-                    ))
-                });
-            entry.value().clone()
+        let permit = match app_sandbox_engine
+            .acquire_websocket_permit(&service_id, Duration::from_secs(2))
+            .await
+        {
+            Some(p) => p,
+            None => {
+                let mut resp = http_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "websocket concurrency limit reached".into(),
+                );
+                resp.headers_mut().insert(RETRY_AFTER, HeaderValue::from_static("1"));
+                return Ok(resp);
+            }
         };
-        let permit =
-            match tokio::time::timeout(std::time::Duration::from_secs(5), permits.acquire_owned())
-                .await
-            {
-                Ok(Ok(p)) => p,
-                _ => {
-                    return Ok(http_error(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "websocket concurrency limit reached".into(),
-                    ));
-                }
-            };
 
         let conn_id = uuid::Uuid::new_v4().to_string();
-        let (tx, mut rx_internal) = tokio::sync::mpsc::channel(16);
+        let mut rx_internal = app_sandbox_engine.register_websocket_sender(&service_id, &conn_id);
         let engine = app_sandbox_engine.clone();
-
-        {
-            let service_map = engine
-                .websocket_senders
-                .entry(service_id.clone())
-                .or_insert_with(|| Arc::new(dashmap::DashMap::new()));
-            service_map.insert(conn_id.clone(), tx);
-        }
+        let caller = self.caller.clone();
 
         tokio::task::spawn(async move {
             let _keep_alive = _sub_handle;
+            let _permit = permit;
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
                     let io = hyper_util::rt::TokioIo::new(upgraded);
-                    let mut ws_stream = WebSocketStream::from_raw_socket(
-                        io,
-                        tokio_tungstenite::tungstenite::protocol::Role::Server,
-                        None,
-                    )
-                    .await;
+                    let mut ws_config = WebSocketConfig::default();
+                    ws_config.max_message_size = Some(1024 * 1024);
+                    ws_config.max_frame_size = Some(1024 * 1024);
 
-                    {
-                        let engine_clone = engine.clone();
-                        let sid = service_id.clone();
-                        let cid = conn_id.clone();
-                        tokio::task::spawn(async move {
-                            engine_clone.handle_websocket_on_open(&sid, &cid).await;
-                        });
-                    }
+                    let ws_stream =
+                        WebSocketStream::from_raw_socket(io, Role::Server, Some(ws_config)).await;
 
-                    let _permit = permit;
                     use futures::{SinkExt, StreamExt};
+                    let (mut ws_sink, mut ws_stream) = ws_stream.split();
+
+                    let (writer_shutdown_tx, mut writer_shutdown_rx) =
+                        tokio::sync::oneshot::channel::<()>();
+                    let (session_stop_tx, mut session_stop_rx) =
+                        tokio::sync::oneshot::channel::<()>();
+                    let writer_task = tokio::spawn(async move {
+                        loop {
+                            tokio::select! {
+                                _ = &mut writer_shutdown_rx => break,
+                                broadcast = async {
+                                    if let Some(rx) = &mut topic_rx {
+                                        rx.recv().await
+                                    } else {
+                                        futures::future::pending().await
+                                    }
+                                } => {
+                                    match broadcast {
+                                        Some((_, payload)) => {
+                                            let msg = if let Ok(text) = String::from_utf8(payload.clone()) {
+                                                Message::Text(text.into())
+                                            } else {
+                                                Message::Binary(payload.into())
+                                            };
+                                            if ws_sink.send(msg).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        None => break,
+                                    }
+                                }
+                                internal_msg = rx_internal.recv() => {
+                                    match internal_msg {
+                                        Some((frame, kind)) => {
+                                            let msg = match kind {
+                                                FrameKind::Text => {
+                                                    let text = String::from_utf8_lossy(&frame).to_string();
+                                                    Message::Text(text.into())
+                                                }
+                                                FrameKind::Binary => Message::Binary(frame.into()),
+                                            };
+                                            if ws_sink.send(msg).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        None => break,
+                                    }
+                                }
+                            }
+                        }
+                        let _ = session_stop_tx.send(());
+                    });
+
+                    // Sequential dispatch: await on-open before frame loop
+                    engine.handle_websocket_on_open(&service_id, &conn_id, caller.clone()).await;
 
                     loop {
                         tokio::select! {
-                            msg = ws_stream.next() => {
-                                match msg {
-                                    Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(bin))) => {
-                                        let engine_clone = engine.clone();
-                                        let sid = service_id.clone();
-                                        let cid = conn_id.clone();
-                                        tokio::task::spawn(async move {
-                                            engine_clone.handle_websocket_on_message(&sid, &cid, bin.to_vec()).await;
-                                        });
+                            _ = &mut session_stop_rx => break,
+                            msg_opt = ws_stream.next() => {
+                                let Some(msg_res) = msg_opt else { break; };
+                                match msg_res {
+                                    Ok(Message::Text(txt)) => {
+                                        engine
+                                            .handle_websocket_on_message(
+                                                &service_id,
+                                                &conn_id,
+                                                txt.as_bytes().to_vec(),
+                                                FrameKind::Text,
+                                                caller.clone(),
+                                            )
+                                            .await;
                                     }
-                                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(txt))) => {
-                                        let engine_clone = engine.clone();
-                                        let sid = service_id.clone();
-                                        let cid = conn_id.clone();
-                                        tokio::task::spawn(async move {
-                                            engine_clone.handle_websocket_on_message(&sid, &cid, txt.as_bytes().to_vec()).await;
-                                        });
+                                    Ok(Message::Binary(bin)) => {
+                                        engine
+                                            .handle_websocket_on_message(
+                                                &service_id,
+                                                &conn_id,
+                                                bin.to_vec(),
+                                                FrameKind::Binary,
+                                                caller.clone(),
+                                            )
+                                            .await;
                                     }
-                                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => {
+                                    Ok(Message::Close(_)) => break,
+                                    Ok(Message::Ping(_)) => {}
+                                    Ok(Message::Pong(_)) => {}
+                                    Ok(Message::Frame(_)) => {}
+                                    Err(e) => {
+                                        debug!(service_id, conn_id, error = %e, "WebSocket stream error");
                                         break;
                                     }
-                                    Some(Err(_)) => break,
-                                    _ => {}
-                                }
-                            }
-                            broadcast = async {
-                                if let Some(rx) = &mut topic_rx {
-                                    rx.recv().await
-                                } else {
-                                    futures::future::pending().await
-                                }
-                            } => {
-                                match broadcast {
-                                    Some((_, payload)) => {
-                                        let _ = ws_stream.send(tokio_tungstenite::tungstenite::Message::Binary(payload.into())).await;
-                                    }
-                                    None => break,
-                                }
-                            }
-                            internal_msg = rx_internal.recv() => {
-                                match internal_msg {
-                                    Some(bin) => {
-                                        let _ = ws_stream.send(tokio_tungstenite::tungstenite::Message::Binary(bin.into())).await;
-                                    }
-                                    None => break,
                                 }
                             }
                         }
                     }
 
-                    {
-                        let engine_clone = engine.clone();
-                        let sid = service_id.clone();
-                        let cid = conn_id.clone();
-                        tokio::task::spawn(async move {
-                            engine_clone.handle_websocket_on_close(&sid, &cid).await;
-                        });
-                    }
-
-                    if let Some(map) = engine.websocket_senders.get(&service_id) {
-                        map.remove(&conn_id);
-                    }
+                    drop(ws_stream);
+                    let _ = writer_shutdown_tx.send(());
+                    let _ = writer_task.await;
+                    engine.deregister_websocket_sender(&service_id, &conn_id);
+                    engine.handle_websocket_on_close(&service_id, &conn_id, caller).await;
                 }
                 Err(e) => {
                     tracing::error!("WebSocket upgrade error: {}", e);
-                    if let Some(map) = engine.websocket_senders.get(&service_id) {
-                        map.remove(&conn_id);
-                    }
+                    engine.deregister_websocket_sender(&service_id, &conn_id);
                 }
             }
         });
@@ -1914,11 +2097,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_query_parses_ampersand_separated_pairs() {
-        let parsed = parse_query("svc=abc&exp=123&sig=deadbeef");
+    fn parse_query_parses_ampersand_separated_pairs_and_percent_decodes() {
+        let parsed = parse_query("svc=abc&exp=123&sig=deadbeef&name=hello%20world&tag=a%26b");
         assert_eq!(parsed.get("svc"), Some(&"abc".to_string()));
         assert_eq!(parsed.get("exp"), Some(&"123".to_string()));
         assert_eq!(parsed.get("sig"), Some(&"deadbeef".to_string()));
+        assert_eq!(parsed.get("name"), Some(&"hello world".to_string()));
+        assert_eq!(parsed.get("tag"), Some(&"a&b".to_string()));
     }
 
     #[test]
@@ -2198,5 +2383,43 @@ mod tests {
         let values: Vec<&str> =
             resp.headers().get_all("set-cookie").iter().map(|v| v.to_str().unwrap()).collect();
         assert_eq!(values, vec!["a=1", "b=2"]);
+    }
+
+    #[test]
+    fn websocket_upgrade_headers_validation_accepts_valid_and_rejects_invalid() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Upgrade", HeaderValue::from_static("websocket"));
+        headers.insert("Connection", HeaderValue::from_static("Upgrade"));
+        headers.insert("Sec-WebSocket-Version", HeaderValue::from_static("13"));
+        headers.insert("Sec-WebSocket-Key", HeaderValue::from_static("dGhlIHNhbXBsZSBub25jZQ=="));
+        assert_eq!(
+            HttpHandler::validate_websocket_upgrade_headers(&headers),
+            Ok("dGhlIHNhbXBsZSBub25jZQ==")
+        );
+
+        // Missing Sec-WebSocket-Key
+        let mut bad_headers = headers.clone();
+        bad_headers.remove("Sec-WebSocket-Key");
+        assert!(HttpHandler::validate_websocket_upgrade_headers(&bad_headers).is_err());
+
+        // Empty Sec-WebSocket-Key
+        let mut empty_key = headers.clone();
+        empty_key.insert("Sec-WebSocket-Key", HeaderValue::from_static(""));
+        assert!(HttpHandler::validate_websocket_upgrade_headers(&empty_key).is_err());
+
+        // Wrong version
+        let mut bad_ver = headers.clone();
+        bad_ver.insert("Sec-WebSocket-Version", HeaderValue::from_static("12"));
+        assert!(HttpHandler::validate_websocket_upgrade_headers(&bad_ver).is_err());
+
+        // Wrong connection
+        let mut bad_conn = headers.clone();
+        bad_conn.insert("Connection", HeaderValue::from_static("keep-alive"));
+        assert!(HttpHandler::validate_websocket_upgrade_headers(&bad_conn).is_err());
+
+        // Wrong upgrade
+        let mut bad_up = headers.clone();
+        bad_up.insert("Upgrade", HeaderValue::from_static("http2"));
+        assert!(HttpHandler::validate_websocket_upgrade_headers(&bad_up).is_err());
     }
 }

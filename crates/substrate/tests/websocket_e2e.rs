@@ -1,18 +1,19 @@
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
-//! M06A A3 end-to-end tests: WebSocket route target.
+//! End-to-end tests for the WebSocket route target.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use httparse::{EMPTY_HEADER, Response as HttparseResponse, Status};
 use iroh::endpoint::{RecvStream, SendStream};
 use rustls::crypto::ring;
-use syneroym_core::test_constants;
+use syneroym_core::{config::AppSandboxRole, test_constants};
 use syneroym_identity::Identity;
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
 use syneroym_sdk::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, SyneroymClient,
     TransportConnection, WasmManifest,
 };
+use tokio::time;
 
 mod common;
 use common::SubstrateTestContext;
@@ -44,7 +45,68 @@ async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManif
     let params = serde_json::to_value((service_id.to_string(), manifest)).unwrap();
     let res =
         client.request("orchestrator", "deploy", params).await.expect("deploy request failed");
-    assert_eq!(res.result, serde_json::json!({"status": "deployed"}), "deploy did not succeed");
+    assert_eq!(res.result, serde_json::json!({"status": "deployed"}));
+}
+
+#[tokio::test]
+async fn test_websocket_concurrency_limit_returns_503_with_retry_after() {
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup_with(23150, 23151, 23152, |config| {
+        config.roles.app_sandbox =
+            Some(AppSandboxRole { max_concurrent_websockets_per_service: 1, ..Default::default() });
+    })
+    .await;
+
+    let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
+        .expect("websocket_guest_test.wasm not built");
+
+    let routes = serde_json::json!({
+        "http_routes": [
+            { "method": "GET", "path": "/ws", "public": true, "target": "websocket", "operation": "handle-upgrade" }
+        ]
+    });
+
+    deploy(&ctx.substrate_client, "test-ws-limit", guest_wasm_manifest(wasm_bytes, routes)).await;
+
+    // First connection acquires the sole permit
+    let (mut send1, mut recv1) = open_http_stream(
+        ctx.substrate_client.connection().as_ref().unwrap(),
+        "test-ws-limit",
+        None,
+    )
+    .await;
+    let upgrade_req1 = build_websocket_upgrade_request("/ws");
+    send1.write_all(&upgrade_req1).await.unwrap();
+
+    let mut buf1 = vec![0u8; 4096];
+    let n1 = recv1.read(&mut buf1).await.unwrap().unwrap();
+    let resp1 = parse_http_response(&buf1[..n1]);
+    assert_eq!(resp1.status, 101);
+
+    // Second connection cannot acquire a permit and returns 503 + Retry-After
+    let (mut send2, mut recv2) = open_http_stream(
+        ctx.substrate_client.connection().as_ref().unwrap(),
+        "test-ws-limit",
+        None,
+    )
+    .await;
+    let upgrade_req2 = build_websocket_upgrade_request("/ws");
+    send2.write_all(&upgrade_req2).await.unwrap();
+
+    let mut buf2 = vec![0u8; 4096];
+    let n2 = recv2.read(&mut buf2).await.unwrap().unwrap();
+    let resp2 = parse_http_response(&buf2[..n2]);
+    assert_eq!(
+        resp2.status, 503,
+        "a websocket upgrade that cannot get an admission permit within timeout must return 503"
+    );
+    assert_eq!(resp2.headers.get("retry-after").map(String::as_str), Some("1"));
+
+    drop(send1);
+    drop(recv1);
+    drop(send2);
+    drop(recv2);
+    ctx.teardown().await;
 }
 
 struct HttpResponse {
@@ -67,6 +129,22 @@ fn parse_http_response(raw: &[u8]) -> HttpResponse {
     }
     let body = raw[offset..].to_vec();
     HttpResponse { status, headers, body }
+}
+
+async fn read_exact_buffered(recv: &mut RecvStream, unconsumed: &mut Vec<u8>, out: &mut [u8]) {
+    let mut out_idx = 0;
+    while out_idx < out.len() {
+        if !unconsumed.is_empty() {
+            let take = (out.len() - out_idx).min(unconsumed.len());
+            out[out_idx..out_idx + take].copy_from_slice(&unconsumed[..take]);
+            unconsumed.drain(..take);
+            out_idx += take;
+        } else {
+            let mut tmp = [0u8; 1024];
+            let n = recv.read(&mut tmp).await.unwrap().expect("unexpected EOF");
+            unconsumed.extend_from_slice(&tmp[..n]);
+        }
+    }
 }
 
 async fn open_http_stream(
@@ -115,14 +193,10 @@ fn build_masked_text_frame(payload: &[u8]) -> Vec<u8> {
     frame
 }
 
-const IROH_PORT: u16 = 7934;
-const REGISTRY_PORT: u16 = 7931;
-const GATEWAY_PORT: u16 = 7930;
-
 #[tokio::test]
 async fn test_websocket_echo_unicast() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(IROH_PORT, REGISTRY_PORT, GATEWAY_PORT).await;
+    let ctx = SubstrateTestContext::setup(23200, 23201, 23202).await;
 
     let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
         .expect("websocket_guest_test.wasm not built");
@@ -153,41 +227,56 @@ async fn test_websocket_echo_unicast() {
     assert_eq!(resp.status, 101);
     assert_eq!(resp.headers.get("upgrade").map(|s| s.as_str()), Some("websocket"));
 
-    // Test on-open welcome message (unmasked binary frame)
-    // 0x82 = FIN + BINARY, 0x07 = length 7 ("welcome")
+    let mut unconsumed = resp.body;
+
+    // Test on-open welcome message (unmasked text frame)
+    // 0x81 = FIN + TEXT, 0x07 = length 7 ("welcome")
     let mut frame_header = [0u8; 2];
-    recv.read_exact(&mut frame_header).await.unwrap();
-    assert_eq!(frame_header[0], 0x82);
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut frame_header).await;
+    assert_eq!(frame_header[0], 0x81);
     assert_eq!(frame_header[1], 0x07);
 
     let mut payload = vec![0u8; 7];
-    recv.read_exact(&mut payload).await.unwrap();
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut payload).await;
     assert_eq!(&payload, b"welcome");
 
-    // Send a masked "hello" text frame, but it will be echoed as binary frame!
-    // Wait, if I send a TEXT frame, does the server's `on_message` receive it and
-    // echo it? Let's send a masked binary frame to be clean.
-    let mut masked_hello = build_masked_text_frame(b"hello");
-    masked_hello[0] = 0x82; // Make it BINARY instead of TEXT
+    // Send a masked "hello" text frame
+    let masked_hello = build_masked_text_frame(b"hello");
     send.write_all(&masked_hello).await.unwrap();
 
-    // Read unmasked "hello" response
-    recv.read_exact(&mut frame_header).await.unwrap();
-    assert_eq!(frame_header[0], 0x82);
+    // Read unmasked "hello" text response
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut frame_header).await;
+    assert_eq!(frame_header[0], 0x81);
     assert_eq!(frame_header[1], 0x05); // length 5
 
     let mut payload = vec![0u8; 5];
-    recv.read_exact(&mut payload).await.unwrap();
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut payload).await;
     assert_eq!(&payload, b"hello");
+
+    // Send a masked binary frame
+    let mut masked_bin = build_masked_text_frame(&[10, 20, 30, 40]);
+    masked_bin[0] = 0x82; // BINARY opcode
+    send.write_all(&masked_bin).await.unwrap();
+
+    // Read unmasked binary response
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut frame_header).await;
+    assert_eq!(frame_header[0], 0x82);
+    assert_eq!(frame_header[1], 0x04);
+
+    let mut bin_payload = vec![0u8; 4];
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut bin_payload).await;
+    assert_eq!(&bin_payload, &[10, 20, 30, 40]);
 
     // Close cleanly
     drop(send);
+    drop(recv);
+    ctx.teardown().await;
 }
 
 #[tokio::test]
 async fn test_websocket_broadcast_pubsub() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(7924, 7921, 7920).await;
+    let ctx = SubstrateTestContext::setup(23250, 23251, 23252).await;
 
     let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
         .expect("websocket_guest_test.wasm not built");
@@ -215,12 +304,14 @@ async fn test_websocket_broadcast_pubsub() {
     let resp = parse_http_response(&buf[..n]);
     assert_eq!(resp.status, 101);
 
-    // Read on-open welcome message
+    let mut unconsumed = resp.body;
+
+    // Read on-open welcome message (Text frame)
     let mut frame_header = [0u8; 2];
-    recv.read_exact(&mut frame_header).await.unwrap();
-    assert_eq!(frame_header[0], 0x82); // BINARY frame
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut frame_header).await;
+    assert_eq!(frame_header[0], 0x81); // TEXT frame
     let mut payload = vec![0u8; 7];
-    recv.read_exact(&mut payload).await.unwrap();
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut payload).await;
 
     // Publish a message to the topic via SyneroymClient
     let mut publisher = SyneroymClient::new_with_mechanisms(
@@ -242,12 +333,107 @@ async fn test_websocket_broadcast_pubsub() {
         .await
         .unwrap();
 
-    // Read the pushed frame from WebSocket
-    recv.read_exact(&mut frame_header).await.unwrap();
-    assert_eq!(frame_header[0], 0x82); // Binary frame
+    // Read the pushed frame from WebSocket (valid UTF-8 sent as Text frame)
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut frame_header).await;
+    assert_eq!(frame_header[0], 0x81); // TEXT frame
     assert_eq!(frame_header[1], 12); // length of "pubsub_hello"
 
     let mut payload = vec![0u8; 12];
-    recv.read_exact(&mut payload).await.unwrap();
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut payload).await;
     assert_eq!(&payload, b"pubsub_hello");
+    drop(send);
+    drop(recv);
+    drop(publisher);
+    ctx.teardown().await;
+}
+
+#[tokio::test]
+async fn test_websocket_upgrade_rejects_unauthenticated_anonymous_on_private_route() {
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup(23300, 23301, 23302).await;
+
+    let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
+        .expect("websocket_guest_test.wasm not built");
+
+    // Private route (public: false)
+    let routes = serde_json::json!({
+        "http_routes": [
+            { "method": "GET", "path": "/private-ws", "public": false, "target": "websocket", "operation": "handle-upgrade" }
+        ]
+    });
+
+    deploy(&ctx.substrate_client, "test-ws-auth", guest_wasm_manifest(wasm_bytes, routes)).await;
+
+    // Anonymous caller (no delegation/identity)
+    let (mut send, mut recv) =
+        open_http_stream(ctx.substrate_client.connection().as_ref().unwrap(), "test-ws-auth", None)
+            .await;
+
+    let upgrade_req = build_websocket_upgrade_request("/private-ws");
+    send.write_all(&upgrade_req).await.unwrap();
+
+    let mut buf = vec![0u8; 4096];
+    let n = recv.read(&mut buf).await.unwrap().unwrap();
+    let resp = parse_http_response(&buf[..n]);
+    assert_eq!(
+        resp.status, 401,
+        "anonymous request to private websocket route must return 401 Unauthorized"
+    );
+    drop(send);
+    drop(recv);
+    ctx.teardown().await;
+}
+
+#[tokio::test]
+async fn test_websocket_teardown_on_undeploy() {
+    let _ = ring::default_provider().install_default();
+    let ctx = SubstrateTestContext::setup(23350, 23351, 23352).await;
+
+    let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
+        .expect("websocket_guest_test.wasm not built");
+
+    let routes = serde_json::json!({
+        "http_routes": [
+            { "method": "GET", "path": "/ws", "public": true, "target": "websocket", "operation": "handle-upgrade" }
+        ]
+    });
+
+    deploy(&ctx.substrate_client, "test-ws-undeploy", guest_wasm_manifest(wasm_bytes, routes))
+        .await;
+
+    let (mut send, mut recv) = open_http_stream(
+        ctx.substrate_client.connection().as_ref().unwrap(),
+        "test-ws-undeploy",
+        None,
+    )
+    .await;
+
+    let upgrade_req = build_websocket_upgrade_request("/ws");
+    send.write_all(&upgrade_req).await.unwrap();
+
+    let mut buf = vec![0u8; 4096];
+    let n = recv.read(&mut buf).await.unwrap().unwrap();
+    let resp = parse_http_response(&buf[..n]);
+    assert_eq!(resp.status, 101);
+
+    // Undeploy the service while the websocket connection is active
+    let params = serde_json::json!(["test-ws-undeploy", 1]);
+    let res = ctx
+        .substrate_client
+        .request("orchestrator", "undeploy", params)
+        .await
+        .expect("undeploy request failed");
+    assert_eq!(res.result, serde_json::json!({"status": "undeployed"}));
+
+    // Verify the server closed the websocket stream
+    let closed = time::timeout(Duration::from_secs(5), recv.read(&mut buf)).await;
+    assert!(
+        matches!(closed, Ok(Ok(None)) | Ok(Ok(Some(0))) | Ok(Err(_))),
+        "websocket stream must be closed upon service undeploy"
+    );
+
+    // Drop send and recv to clean up client half
+    drop(send);
+    drop(recv);
+    ctx.teardown().await;
 }

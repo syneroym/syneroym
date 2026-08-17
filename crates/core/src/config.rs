@@ -471,6 +471,10 @@ const fn default_max_concurrent_websockets_per_service() -> u32 {
     50
 }
 
+const fn default_max_sse_subscribers_per_service() -> u32 {
+    100
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSandboxRole {
@@ -525,18 +529,19 @@ pub struct AppSandboxRole {
     /// would expect. A plain `u64` makes that fallback unreachable.
     pub abac_max_instructions: u64,
     /// Wall-clock budget for one after-step. Tighter than
-    /// `dispatch_epoch_timeout_secs` for the same reason: the after-step
-    /// runs on the hot read path, not once per deploy. A starting point, to
-    /// be re-tuned against a measured `criterion` bench.
     pub abac_epoch_timeout_secs: u64,
-    /// Concurrent guest HTTP requests one service may have in flight
-    /// (M06A A2). Enforced per service by a semaphore, sized by this field;
+    /// Concurrent guest HTTP requests one service may have in flight.
+    /// Enforced per service by a semaphore, sized by this field;
     /// a request that outwaits `GUEST_HTTP_ADMISSION_TIMEOUT` for a permit
     /// gets a 503, never the pool's own hard instantiation error.
     pub max_concurrent_guest_http_per_service: u32,
     /// Concurrent guest websockets one service may have in flight.
-    /// (M06A A3). Enforced per service by a semaphore, sized by this field.
+    /// Enforced per service by a semaphore, sized by this field.
     pub max_concurrent_websockets_per_service: u32,
+    /// Concurrent SSE subscribers one service may have in flight.
+    /// Enforced per service by a semaphore, sized by this field;
+    /// an immediate try_acquire failure yields a 503 with Retry-After: 1.
+    pub max_sse_subscribers_per_service: u32,
     /// The guest proxy outbox worker's own tick. Recovery after an
     /// unreachable target returns is bounded by this, and nothing finer
     /// helps when the wait is for a peer to come back.
@@ -647,6 +652,7 @@ impl Default for AppSandboxRole {
             abac_epoch_timeout_secs: default_abac_epoch_timeout_secs(),
             max_concurrent_guest_http_per_service: default_max_concurrent_guest_http_per_service(),
             max_concurrent_websockets_per_service: default_max_concurrent_websockets_per_service(),
+            max_sse_subscribers_per_service: default_max_sse_subscribers_per_service(),
             queue_tick_secs: default_proxy_queue_tick_secs(),
             queue_max_attempts: default_proxy_queue_max_attempts(),
             queue_max_backoff_secs: default_proxy_queue_max_backoff_secs(),

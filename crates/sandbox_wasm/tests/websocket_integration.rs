@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! M06A A3 integration tests: `syneroym:http/websocket-handler` dynamic
+//! Integration tests for `syneroym:http/websocket-handler` dynamic
 //! marshalling.
 
 use std::{fs, path::Path, sync::Arc};
@@ -11,7 +11,7 @@ use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
-use syneroym_sandbox_wasm::AppSandboxEngine;
+use syneroym_sandbox_wasm::{AppSandboxEngine, FrameKind};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
 };
@@ -78,55 +78,46 @@ fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
     }
 }
 
-fn read_websocket_guest_test_wasm() -> Option<Vec<u8>> {
-    fs::read(test_constants::websocket_guest_test_wasm_path()).ok()
-}
-
-macro_rules! skip_if_missing {
-    ($test_name:literal) => {
-        match read_websocket_guest_test_wasm() {
-            Some(bytes) => bytes,
-            None => {
-                eprintln!(
-                    "{} skipped: websocket-guest-test.wasm not built. Run `mise run build:wasm`.",
-                    $test_name
-                );
-                return;
-            }
-        }
-    };
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_websocket_marshalling() {
-    let wasm_bytes = skip_if_missing!("test_websocket_marshalling");
+    let wasm_bytes = fs::read(test_constants::websocket_guest_test_wasm_path()).expect(
+        "websocket-guest-test.wasm not built. Run `mise run build:test-components` to build test \
+         fixtures.",
+    );
     let temp_dir = tempfile::tempdir().unwrap();
     let engine = make_engine(temp_dir.path()).await;
 
     let manifest = wasm_deploy_manifest(wasm_bytes);
     engine.deploy_wasm(SERVICE_ID, &manifest).await.unwrap();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-    let conn_id = "test-conn-1".to_string();
+    let conn_id = "test-conn-1";
+    let mut rx = engine.register_websocket_sender(SERVICE_ID, conn_id);
 
-    {
-        let service_map = engine
-            .websocket_senders
-            .entry(SERVICE_ID.to_string())
-            .or_insert_with(|| Arc::new(dashmap::DashMap::new()));
-        service_map.insert(conn_id.clone(), tx);
-    }
-
-    // Call on-open, should send "welcome"
-    engine.handle_websocket_on_open(SERVICE_ID, &conn_id).await;
-    let welcome = rx.recv().await.unwrap();
+    // Call on-open, should send "welcome" as Text frame
+    engine.handle_websocket_on_open(SERVICE_ID, conn_id, None).await;
+    let (welcome, kind) = rx.recv().await.unwrap();
     assert_eq!(welcome, b"welcome");
+    assert_eq!(kind, FrameKind::Text);
 
-    // Call on-message, should echo back
-    engine.handle_websocket_on_message(SERVICE_ID, &conn_id, b"hello".to_vec()).await;
-    let echo = rx.recv().await.unwrap();
+    // Call on-message with Text frame, should echo back as Text frame
+    engine
+        .handle_websocket_on_message(SERVICE_ID, conn_id, b"hello".to_vec(), FrameKind::Text, None)
+        .await;
+    let (echo, kind) = rx.recv().await.unwrap();
     assert_eq!(echo, b"hello");
+    assert_eq!(kind, FrameKind::Text);
+
+    // Call on-message with Binary frame, should echo back as Binary frame
+    engine
+        .handle_websocket_on_message(SERVICE_ID, conn_id, vec![1, 2, 3, 4], FrameKind::Binary, None)
+        .await;
+    let (echo_bin, kind_bin) = rx.recv().await.unwrap();
+    assert_eq!(echo_bin, vec![1, 2, 3, 4]);
+    assert_eq!(kind_bin, FrameKind::Binary);
 
     // Call on-close, does nothing
-    engine.handle_websocket_on_close(SERVICE_ID, &conn_id).await;
+    engine.handle_websocket_on_close(SERVICE_ID, conn_id, None).await;
+
+    // Deregister sender
+    engine.deregister_websocket_sender(SERVICE_ID, conn_id);
 }

@@ -5,8 +5,8 @@
 [slice-a2-implementation-plan.md](slice-a2-implementation-plan.md) (A2),
 [slice-a4-implementation-plan.md](slice-a4-implementation-plan.md) (A4)
 
-**Overall:** Slice A1 complete (2026-08-14). Slice A2 complete (2026-08-14).
-A3–A5 not started.
+**Overall:** Slice A1 complete (2026-08-14). Slice A2 complete (2026-08-14). Slice A3 complete (2026-08-15). Slice A4 complete (2026-08-16).
+A5 not started.
 
 > **Renumbered 2026-08-14.** `D-06A-2` was reversed — inbound WebSocket is
 > built rather than replaced by SSE — and the new WebSocket slice took **A3**,
@@ -24,7 +24,7 @@ A3–A5 not started.
 | A1 | Blob-backed static serving | **Complete (2026-08-14)** — [implementation plan](slice-a1-implementation-plan.md), evidence below | None — independently mergeable |
 | A2 | Guest HTTP route target | **Complete (2026-08-14)** — [implementation plan](slice-a2-implementation-plan.md) revision 4, evidence below | None — independent of A1 |
 | A3 | Inbound WebSocket | **Complete (2026-08-15)** — [implementation plan](slice-a3-implementation-plan.md), evidence below | A2 (Complete) |
-| A4 | The demo app | Not started — [implementation plan](slice-a4-implementation-plan.md) | A1, A2 (Complete) and A3 (Complete) |
+| A4 | The demo app | **Complete (2026-08-16)** — [implementation plan](slice-a4-implementation-plan.md), evidence below | A1, A2 (Complete) and A3 (Complete) |
 | A5 | The Playwright suite | Not started | A4 |
 
 ---
@@ -635,14 +635,77 @@ Includes the full asynchronous `tokio::select!` connection loop coordinating rea
 
 **New tests:**
 - `crates/control_plane/src/http_routes.rs`: Unit tests for `validate_route` verifying that `websocket` targets are valid, `public: true` is allowed, and unsupported operations are rejected.
-- `crates/control_plane/src/service/orchestration.rs`: Existing `guest` tests updated to correctly assert `"Guest handlers are only supported for WASM services"`, thereby confirming rejection of both `guest` and `websocket` routes for `Tcp` and `Container` services.
+- `crates/control_plane/src/service/orchestration.rs`: `guest` and `websocket` deploy target validation tests (`test_websocket_route_without_the_export_fails_deploy_and_rolls_back`) confirming rejection and rollback when the WASM component lacks required exports or is deployed for `Tcp`/`Container` services.
+- `crates/router/src/route_handler/http.rs`: Unit tests for `websocket_upgrade_headers_validation_accepts_valid_and_rejects_invalid`.
+- `crates/sandbox_wasm/tests/websocket_integration.rs`: Integration test `test_websocket_marshalling` driving `AppSandboxEngine`'s `handle_websocket_on_open`, `handle_websocket_on_message` with `FrameKind::Text` and `FrameKind::Binary`, and `handle_websocket_on_close`.
+- `crates/substrate/tests/websocket_e2e.rs`: 5 end-to-end tests over real Iroh QUIC connections:
+  - `test_websocket_echo_unicast` (HTTP 101 upgrade, text frame 0x81, binary frame 0x82)
+  - `test_websocket_broadcast_pubsub` (topic broadcast delivery)
+  - `test_websocket_upgrade_rejects_unauthenticated_anonymous_on_private_route` (401 Unauthorized)
+  - `test_websocket_concurrency_limit_returns_503_with_retry_after` (503 Service Unavailable + Retry-After: 1 on permit exhaustion)
+  - `test_websocket_teardown_on_undeploy` (clean connection teardown on undeploy)
 
 **Commands run, from a clean tree:**
 
-```
+```bash
 cargo +nightly fmt --all                                    # clean, no diff
 cargo clippy --workspace --all-targets --all-features        # 0 warnings, 0 errors
-cargo test --workspace                                       # clean, full pass on control_plane and router
+mise run test:rust                                          # builds fixtures & runs cargo test --workspace
 ```
 
-*(Note: Unit tests inside `crates/sandbox_wasm/tests` verifying `websocket-handler` dynamic `Val` marshalling and integration tests for Unicast/Broadcast using a `websocket-guest-test` fixture were deferred to keep scope bounded, owing an update for completion of sections 7.1 and 7.2 of the A3 plan).*
+## A4 — What shipped
+
+[slice-a4-implementation-plan.md](slice-a4-implementation-plan.md) is the design of record. It delivers the end-to-end demo app WASM component fixture (`test-components/miniapp-demo1-wasm`) reproducing the functionality of `miniapp-demo1-web`, along with streaming file download route bridging and bounded SSE subscriber concurrency.
+
+**Demo App WASM Component Fixture** (`test-components/miniapp-demo1-wasm`):
+- `wit/world.wit`: Defines the `miniapp-demo1-wasm` world importing `syneroym:data-layer/store@0.1.0`, `syneroym:blob-store/blob-store@0.1.0`, `syneroym:messaging/host-api@0.1.0`, `syneroym:messaging/stream-types@0.1.0`, and `syneroym:http/websocket@0.1.0`, and exporting `syneroym:http/incoming-handler@0.1.0`, `syneroym:http/websocket-handler@0.1.0`, `syneroym:messaging/guest-api@0.1.0`, and `syneroym:messaging/stream-types@0.1.0`.
+- `client/`: Single-page SolidJS application providing UI sections for Comments SPA, Chunked File Upload/Download, SSE Live Feed, and WebSocket Live Feed (built to `static/dist/` at test fixture build time via `mise run build:test-components`).
+- `src/lib.rs`: Guest WASM implementation providing:
+  - `incoming-handler`: REST endpoints for comments lifecycle (`GET /api/comments`, `POST /api/comments`) with input validation (returning `422` with guest error payload on invalid body), data-layer persistence, and real-time pub-sub broadcast with RFC3339 timestamps.
+  - `guest-api` & `stream-types`: Stream protocol handlers for `file-upload` (streaming binary into blob storage and saving metadata in data-layer with filename sanitization) and `file-download` (streaming chunks from blob storage to guest stream cursor).
+  - `websocket-handler`: Bidirectional WebSocket message handling with direct host unicast send and host-driven pub-sub broker subscription for broadcast.
+- Built as WASM fixture `syneroym_test_miniapp_demo1_wasm.wasm` (built via `mise run build:test-components`).
+
+**Stream Download & Control Plane Routing** (`crates/control_plane/src/http_routes.rs`, `crates/router/src/route_handler/http.rs`):
+- Added validation for `("stream", "accept-download")` allowing `GET`/`HEAD` methods with non-empty `protocol`.
+- Implemented `accept-download` in router HTTP bridge via `tokio_io::duplex(64 * 1024)` + background download task executing `handle_stream_protocol_request(StreamDirection::Download)` + `StreamBody::new(stream::unfold(...))` with MIME type inference from path, percent-decoding on metadata/path parameters, and returning `404 Not Found` if stream download declines or file is not found.
+
+**SSE Concurrency Limiting** (`crates/core/src/config.rs`, `crates/core/src/http_routes.rs`, `crates/router/src/route_handler/http.rs`, `crates/control_plane/src/service/orchestration.rs`):
+- Added configurable `max_sse_subscribers_per_service` in `AppSandboxRole` (default 100), with shared `SsePermitRegistry` (`Arc<DashMap<String, Arc<Semaphore>>>`) passed through `RouteHandlerDeps`.
+- Cleans up permits on service undeployment in `ControlPlaneService::undeploy_impl`.
+- Returns HTTP 503 Service Unavailable with `Retry-After: 1` when subscriber quota is reached, and returns HTTP 406 Not Acceptable when `Accept: text/event-stream` header is missing.
+- Holds permit in `stream::unfold` until client disconnects.
+
+**Workspace & Test Integration**:
+- Added `miniapp_demo1_wasm_path()` and `MINIAPP_DEMO1_WASM_ROUTES_JSON` (`include_str!`) to `crates/core/src/test_constants.rs`.
+- Added `miniapp-demo1-wasm` to root `Cargo.toml` `exclude`, `mise.toml` `build:test-components`, and `test-components/README.md`.
+- Added end-to-end integration tests in `crates/substrate/tests/miniapp_demo1_wasm_e2e.rs` and `crates/substrate/tests/http_passthrough_e2e.rs`.
+
+## A4 — Verification evidence (2026-08-16)
+
+**New tests:**
+- `crates/control_plane/src/http_routes.rs`:
+  - `stream_accept_download_with_get_or_head_is_accepted`
+  - `stream_accept_download_with_post_is_rejected`
+  - `stream_unsupported_operation_is_rejected`
+- `crates/router/src/route_handler/http.rs`:
+  - `parse_query_parses_ampersand_separated_pairs_and_percent_decodes`
+- `crates/substrate/tests/http_passthrough_e2e.rs`:
+  - `test_sse_receives_message_published_via_http`
+  - `test_sse_rejects_missing_accept_header`
+  - `test_sse_permit_exhaustion_returns_503_service_unavailable`
+- `crates/substrate/tests/miniapp_demo1_wasm_e2e.rs`:
+  - `test_miniapp_demo1_wasm_static_asset_serving_zero_instantiations` (asserts zero guest instantiations, ETag 304 caching)
+  - `test_miniapp_demo1_wasm_comments_spa_page` (serves SPA html root container)
+  - `test_miniapp_demo1_wasm_rest_comments_lifecycle` (POST, GET, and guest validation error 422)
+  - `test_miniapp_demo1_wasm_stream_upload_and_download` (multi-chunk 64 KiB streaming upload, byte-identical download, and 404 on missing download)
+  - `test_miniapp_demo1_wasm_sse_live_updates` (SSE event streaming across distinct client sessions)
+  - `test_miniapp_demo1_wasm_websocket_echo_and_updates` (WebSocket echo unicast and pub-sub broadcast)
+
+**Commands run from a clean tree:**
+```bash
+cargo +nightly fmt --all                                    # clean, no diff
+cargo clippy --workspace --all-targets --all-features        # clean, 0 warnings, 0 errors
+mise run test:rust                                          # clean, builds fixtures & passes full test suite
+mise run test:e2e                                           # clean, all 12 WebRTC multi-hop tests passed (browser demo app suite in A5)
+```

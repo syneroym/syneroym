@@ -79,6 +79,24 @@ fn validate_route(route: &HttpRoute) -> Result<(), String> {
             }
             Ok(())
         }
+        ("stream", "accept-download") => {
+            field_required("protocol", &route.protocol)?;
+            if !route.method.eq_ignore_ascii_case("GET")
+                && !route.method.eq_ignore_ascii_case("HEAD")
+            {
+                return Err(format!(
+                    "http_routes entry `{} {}` (target=stream, operation=accept-download) must \
+                     use GET or HEAD, not {}",
+                    route.method, route.path, route.method
+                ));
+            }
+            Ok(())
+        }
+        ("stream", other) => Err(format!(
+            "http_routes entry `{} {}` has target=stream with unsupported operation `{other}`; \
+             supported stream operations are `accept-upload` and `accept-download`",
+            route.method, route.path
+        )),
         ("guest", "handle-request") => Ok(()),
         ("guest", other) => Err(format!(
             "http_routes entry `{} {}` has target=guest with unsupported operation `{other}`; the \
@@ -202,6 +220,43 @@ mod tests {
             ]
         });
         assert!(parse_http_routes(&json).unwrap_err().contains("PUT or POST"));
+    }
+
+    #[test]
+    fn stream_accept_download_with_get_or_head_is_accepted() {
+        let json = serde_json::json!({
+            "http_routes": [
+                {"method": "GET", "path": "/api/files/{filename}", "target": "stream",
+                 "operation": "accept-download", "protocol": "file-download"},
+                {"method": "HEAD", "path": "/api/files/{filename}", "target": "stream",
+                 "operation": "accept-download", "protocol": "file-download"}
+            ]
+        });
+        let routes = parse_http_routes(&json).unwrap();
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].operation, "accept-download");
+    }
+
+    #[test]
+    fn stream_accept_download_with_post_is_rejected() {
+        let json = serde_json::json!({
+            "http_routes": [
+                {"method": "POST", "path": "/download", "target": "stream",
+                 "operation": "accept-download", "protocol": "test"}
+            ]
+        });
+        assert!(parse_http_routes(&json).unwrap_err().contains("GET or HEAD"));
+    }
+
+    #[test]
+    fn stream_unsupported_operation_is_rejected() {
+        let json = serde_json::json!({
+            "http_routes": [
+                {"method": "GET", "path": "/stream", "target": "stream",
+                 "operation": "unknown-op", "protocol": "test"}
+            ]
+        });
+        assert!(parse_http_routes(&json).unwrap_err().contains("unsupported operation"));
     }
 
     #[test]

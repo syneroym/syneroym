@@ -1,0 +1,19 @@
+[package]
+name = "syneroym-test-miniapp-demo1-wasm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wit-bindgen = "0.55.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.component.target.dependencies]
+"syneroym:data-layer" = { path = "wit/deps/data-layer" }
+"syneroym:blob-store" = { path = "wit/deps/blob-store" }
+"syneroym:messaging" = { path = "wit/deps/messaging" }
+"syneroym:http" = { path = "wit/deps/http" }

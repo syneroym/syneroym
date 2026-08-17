@@ -163,6 +163,7 @@ async fn build_test_route_handler_deps(
         native_dispatch,
         http_routes,
         assets,
+        sse_permits: control_plane_service.sse_permits(),
         control_plane_service: control_plane_service.clone(),
         control_plane: Some(control_plane_service),
     })
