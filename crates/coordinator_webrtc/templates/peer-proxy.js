@@ -121,6 +121,58 @@ class WSFrameDecoder {
     }
 }
 
+// HTTP/1.1 chunked-transfer decoder. The substrate answers every streaming
+// body (SSE, stream-protocol download) with `Transfer-Encoding: chunked`,
+// since neither has a length to declare up front. Without this the chunk
+// size lines land in the body the page sees.
+class ChunkedDecoder {
+    constructor(onData, onEnd) {
+        this.onData = onData; this.onEnd = onEnd;
+        this.buf = new Uint8Array(0);
+        this.state = 'size';   // 'size' | 'data' | 'crlf' | 'trailer' | 'done'
+        this.remaining = 0;
+    }
+
+    addBytes(bytes) {
+        const newBuf = new Uint8Array(this.buf.length + bytes.length);
+        newBuf.set(this.buf, 0);
+        newBuf.set(bytes, this.buf.length);
+        this.buf = newBuf;
+
+        for (;;) {
+            if (this.state === 'done') return;
+            if (this.state === 'size') {
+                const i = indexOfCRLF(this.buf);            // -1 => need more
+                if (i === -1) return;
+                const line = decodeAscii(this.buf.slice(0, i));
+                this.buf = this.buf.slice(i + 2);
+                const size = parseInt(line.split(';')[0].trim(), 16);
+                if (!Number.isFinite(size)) { this.state = 'done'; this.onEnd(); return; }
+                if (size === 0) { this.state = 'trailer'; continue; }
+                this.remaining = size; this.state = 'data';
+            } else if (this.state === 'data') {
+                if (this.buf.length === 0) return;
+                const n = Math.min(this.remaining, this.buf.length);
+                this.onData(this.buf.slice(0, n));
+                this.buf = this.buf.slice(n);
+                this.remaining -= n;
+                if (this.remaining === 0) this.state = 'crlf';
+            } else if (this.state === 'crlf') {
+                if (this.buf.length < 2) return;
+                this.buf = this.buf.slice(2);               // discard chunk CRLF
+                this.state = 'size';
+            } else if (this.state === 'trailer') {
+                // Trailers are not used by anything this substrate sends;
+                // wait for the terminating CRLF, then finish.
+                const i = indexOfCRLF(this.buf);
+                if (i === -1) return;
+                this.buf = this.buf.slice(i + 2);
+                this.state = 'done'; this.onEnd(); return;
+            }
+        }
+    }
+}
+
 // ------------------ End-to-End Cryptography Helpers ------------------
 
 async function encryptChunk(key, plaintext) {
@@ -506,9 +558,18 @@ class SynWebSocket extends EventTarget {
         // always redundant anyway, since the page's own origin does not
         // change between fetches, and re-parsing here would make this a
         // second (now stale) implementation of the grammar.
+        // `http://`, not `raw://`: the substrate answers an inbound
+        // WebSocket upgrade inside its HTTP bridge, and no `raw://`
+        // pipeline reaches it. Against the native-capability endpoint a
+        // sandboxed app is served through, `raw://` has no pipeline arm
+        // at all and is refused as an unsupported service stage; against
+        // an app-declared interface it lands in the ADR-0014
+        // stream-protocol path, which demands a `dir=` parameter a
+        // WebSocket has no answer for. A TCP passthrough service is
+        // unaffected either way -- its endpoint forces raw byte copying
+        // regardless of the scheme.
         let serviceId = TARGET_SERVICE_ID;
-
-        const preamble = `raw://${TARGET_INTERFACE}|${serviceId}?enc=ecdh-p256&pubkey=placeholder\n`;
+        const preamble = `http://${TARGET_INTERFACE}|${serviceId}?enc=ecdh-p256&pubkey=placeholder\n`;
 
         let headerBuffer = new Uint8Array(0);
         let handshakeComplete = false;
@@ -581,6 +642,7 @@ class SynWebSocket extends EventTarget {
 
         connectTunnel(preamble, true, onData, onClose).then((tunnel) => {
             this.tunnel = tunnel;
+            console.debug(`[SynWebSocket] Tunnel connected, sending HTTP upgrade request for ${url.pathname}`);
 
             const secKey = btoa(Array.from(window.crypto.getRandomValues(new Uint8Array(16))).map(b => String.fromCharCode(b)).join(''));
             let req = `GET ${url.pathname}${url.search} HTTP/1.1\r\n`;
@@ -870,6 +932,10 @@ async function handleSWRequest(reqData, port) {
 
         let headerBuffer = new Uint8Array(0);
         let headersParsed = false;
+        let chunkDecoder = null;
+        let isChunked = false;
+        let contentLength = null;
+        let receivedBodyBytes = 0;
 
         const onData = async (bytes) => {
             if (!headersParsed) {
@@ -887,8 +953,29 @@ async function handleSWRequest(reqData, port) {
                     const { status, headers } = parseHeaders(headerStr);
                     console.debug(`[Page][SW] Response headers received: status=${status}`);
 
+                    isChunked = (headers.get('transfer-encoding') || '').toLowerCase().includes('chunked');
+                    const clHeader = headers.get('content-length');
+                    if (clHeader !== null && !isChunked) {
+                        const parsedCl = parseInt(clHeader, 10);
+                        if (Number.isFinite(parsedCl)) {
+                            contentLength = parsedCl;
+                        }
+                    }
+
+                    if (isChunked) {
+                        chunkDecoder = new ChunkedDecoder(
+                            (b) => responseWriter.write(b),
+                            () => { try { responseWriter.close(); } catch (_) { } }
+                        );
+                    }
+
                     const headerList = [];
-                    headers.forEach((v, k) => headerList.push([k, v]));
+                    headers.forEach((v, k) => {
+                        const low = k.toLowerCase();
+                        if (low === 'transfer-encoding') return;
+                        if (isChunked && low === 'content-length') return;
+                        headerList.push([k, v]);
+                    });
 
                     port.postMessage({
                         type: 'RESPONSE',
@@ -899,12 +986,30 @@ async function handleSWRequest(reqData, port) {
 
                     headersParsed = true;
 
-                    if (bodyBytes.length > 0) {
-                        responseWriter.write(bodyBytes);
+                    if (contentLength === 0) {
+                        try { responseWriter.close(); } catch (_) { }
+                    } else if (bodyBytes.length > 0) {
+                        if (isChunked) {
+                            chunkDecoder.addBytes(bodyBytes);
+                        } else {
+                            responseWriter.write(bodyBytes);
+                            receivedBodyBytes += bodyBytes.length;
+                            if (contentLength !== null && receivedBodyBytes >= contentLength) {
+                                try { responseWriter.close(); } catch (_) { }
+                            }
+                        }
                     }
                 }
             } else {
-                responseWriter.write(bytes);
+                if (isChunked) {
+                    chunkDecoder.addBytes(bytes);
+                } else {
+                    responseWriter.write(bytes);
+                    receivedBodyBytes += bytes.length;
+                    if (contentLength !== null && receivedBodyBytes >= contentLength) {
+                        try { responseWriter.close(); } catch (_) { }
+                    }
+                }
             }
         };
 
@@ -946,17 +1051,28 @@ async function handleSWRequest(reqData, port) {
 
         if (reqData.body) {
             const reader = reqData.body.getReader();
+            const CHUNK_SIZE = 16384;
             try {
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
                     if (useChunkedEncoding) {
-                        const len = value.byteLength.toString(16);
-                        await tunnel.send(new TextEncoder().encode(`${len}\r\n`));
-                        await tunnel.send(value);
-                        await tunnel.send(new TextEncoder().encode('\r\n'));
+                        for (let offset = 0; offset < value.byteLength; offset += CHUNK_SIZE) {
+                            const slice = value.slice(offset, offset + CHUNK_SIZE);
+                            const hexLen = slice.byteLength.toString(16);
+                            const chunkHeader = new TextEncoder().encode(`${hexLen}\r\n`);
+                            const chunkFooter = new TextEncoder().encode('\r\n');
+                            const combined = new Uint8Array(chunkHeader.length + slice.byteLength + chunkFooter.length);
+                            combined.set(chunkHeader, 0);
+                            combined.set(slice, chunkHeader.length);
+                            combined.set(chunkFooter, chunkHeader.length + slice.byteLength);
+                            await tunnel.send(combined);
+                        }
                     } else {
-                        await tunnel.send(value);
+                        for (let offset = 0; offset < value.byteLength; offset += CHUNK_SIZE) {
+                            const slice = value.slice(offset, offset + CHUNK_SIZE);
+                            await tunnel.send(slice);
+                        }
                     }
                 }
                 if (useChunkedEncoding) {
@@ -1053,6 +1169,19 @@ async function reloadContent() {
         console.error('[Page] Content Load Failed:', err);
         document.body.innerHTML = `<h3>Connection Failed</h3><p>Failed to load content.</p><p>${err.message}</p>`;
     }
+}
+
+function indexOfCRLF(buffer) {
+    for (let i = 0; i < buffer.length - 1; i++) {
+        if (buffer[i] === 13 && buffer[i + 1] === 10) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+function decodeAscii(bytes) {
+    return new TextDecoder('ascii').decode(bytes);
 }
 
 function findDoubleCRLF(buffer) {

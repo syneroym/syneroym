@@ -535,6 +535,7 @@ async fn test_miniapp_demo1_wasm_sse_live_updates() {
         .unwrap()
         .unwrap();
     let raw_sse = String::from_utf8_lossy(&sse_buf[..n_sse]);
+    assert!(raw_sse.contains("event: comment-updates\n"), "SSE event name missing: {raw_sse}");
     assert!(raw_sse.contains("commentUpdateTimestamp"), "SSE stream received: {raw_sse}");
 }
 

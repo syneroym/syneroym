@@ -377,17 +377,20 @@ fn query_opts_from_query_string(query: &str) -> result::Result<Value, String> {
 /// Payload is treated as UTF-8 text (lossy) -- every fixture in this repo
 /// only ever publishes UTF-8 text payloads (see `status.md`'s Slice 6A
 /// notes), and SSE's `data:` framing is line-oriented, so a payload
-/// containing embedded newlines is split across multiple `data:` lines per
-/// the SSE spec rather than corrupting the frame.
-///
-/// `topic` is the publisher-supplied MQTT topic string, not a value this
-/// route's own config controls -- `MqttBroker::publish` performs no
-/// character validation on it, so embedded `\r`/`\n` are valid MQTT topic
-/// bytes that would otherwise land verbatim in the single-line `event: `
-/// field below and let a publisher inject fabricated `data:`/`event:` lines
-/// into a subscriber's SSE stream (response-splitting). Stripped rather
-/// than rejected: this frame is written directly into an already-open
-/// streaming response with no HTTP-status channel left to reject through.
+/// The `svc/<service-id>/` prefix `namespace_topic` adds is a substrate
+/// implementation detail. An SSE subscriber names topics the way the route
+/// table does, so the wire carries the service-relative name -- a browser
+/// cannot subscribe by a name that embeds the deployment's own DID.
+/// A topic that is not in this service's namespace (a cross-service
+/// subscription) is passed through whole.
+fn service_relative_topic<'a>(service_id: &str, topic: &'a str) -> &'a str {
+    topic
+        .strip_prefix("svc/")
+        .and_then(|rest| rest.strip_prefix(service_id))
+        .and_then(|rest| rest.strip_prefix('/'))
+        .unwrap_or(topic)
+}
+
 fn format_sse_frame(topic: &str, payload: &[u8]) -> String {
     let safe_topic: String =
         topic.chars().map(|c| if c == '\r' || c == '\n' { ' ' } else { c }).collect();
@@ -1171,6 +1174,7 @@ impl HttpHandler {
         }
 
         let service_id = self.preamble.service_id.clone();
+        let sse_service_id = self.preamble.service_id.clone();
         let max_subscribers = self
             .route_handler
             .inner
@@ -1216,11 +1220,12 @@ impl HttpHandler {
         // stops driving this response body, which is exactly what happens
         // when the client disconnects.
         let stream = stream::unfold(
-            (receiver, handle, permit),
-            |(mut receiver, handle, permit)| async move {
+            (receiver, handle, permit, sse_service_id),
+            |(mut receiver, handle, permit, sid)| async move {
                 let (topic, payload) = receiver.recv().await?;
-                let frame = Frame::data(Bytes::from(format_sse_frame(&topic, &payload)));
-                Some((Ok::<_, Infallible>(frame), (receiver, handle, permit)))
+                let name = service_relative_topic(&sid, &topic);
+                let frame = Frame::data(Bytes::from(format_sse_frame(name, &payload)));
+                Some((Ok::<_, Infallible>(frame), (receiver, handle, permit, sid)))
             },
         );
 
@@ -1304,7 +1309,15 @@ impl HttpHandler {
                     Ok(StreamRequestOutcome::Declined) => {
                         Ok(http_error(StatusCode::FORBIDDEN, "upload declined by guest".into()))
                     }
-                    Err(e) => Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+                    Err(e) => {
+                        tracing::error!(
+                            service_id = %self.preamble.service_id,
+                            protocol = %protocol,
+                            error = %e,
+                            "accept-upload failed"
+                        );
+                        Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+                    }
                 }
             }
             "accept-download" => {
@@ -2146,6 +2159,17 @@ mod tests {
         assert_eq!(event_lines, 1, "exactly one event: line, frame was:\n{frame}");
         assert_eq!(data_lines, 1, "exactly one data: line, frame was:\n{frame}");
         assert!(!frame.contains('\r'), "no raw CR should survive into the frame");
+    }
+
+    #[test]
+    fn service_relative_topic_strips_this_services_namespace() {
+        assert_eq!(service_relative_topic("svc-a", "svc/svc-a/comment-updates"), "comment-updates");
+    }
+
+    #[test]
+    fn service_relative_topic_leaves_a_foreign_or_unprefixed_topic_whole() {
+        assert_eq!(service_relative_topic("svc-a", "svc/svc-b/x"), "svc/svc-b/x");
+        assert_eq!(service_relative_topic("svc-a", "plain"), "plain");
     }
 
     // -- guest HTTP route target (M06A A2) -------------------------------

@@ -5,8 +5,7 @@
 [slice-a2-implementation-plan.md](slice-a2-implementation-plan.md) (A2),
 [slice-a4-implementation-plan.md](slice-a4-implementation-plan.md) (A4)
 
-**Overall:** Slice A1 complete (2026-08-14). Slice A2 complete (2026-08-14). Slice A3 complete (2026-08-15). Slice A4 complete (2026-08-16).
-A5 not started.
+**Overall:** Slice A1 complete (2026-08-14). Slice A2 complete (2026-08-14). Slice A3 complete (2026-08-15). Slice A4 complete (2026-08-16). Slice A5 complete (2026-08-17).
 
 > **Renumbered 2026-08-14.** `D-06A-2` was reversed — inbound WebSocket is
 > built rather than replaced by SSE — and the new WebSocket slice took **A3**,
@@ -25,7 +24,7 @@ A5 not started.
 | A2 | Guest HTTP route target | **Complete (2026-08-14)** — [implementation plan](slice-a2-implementation-plan.md) revision 4, evidence below | None — independent of A1 |
 | A3 | Inbound WebSocket | **Complete (2026-08-15)** — [implementation plan](slice-a3-implementation-plan.md), evidence below | A2 (Complete) |
 | A4 | The demo app | **Complete (2026-08-16)** — [implementation plan](slice-a4-implementation-plan.md), evidence below | A1, A2 (Complete) and A3 (Complete) |
-| A5 | The Playwright suite | Not started | A4 |
+| A5 | The Playwright suite | **Complete (2026-08-17)** — [implementation plan](slice-a5-implementation-plan.md), evidence below | A4 (Complete) |
 
 ---
 
@@ -707,5 +706,55 @@ mise run test:rust                                          # builds fixtures & 
 cargo +nightly fmt --all                                    # clean, no diff
 cargo clippy --workspace --all-targets --all-features        # clean, 0 warnings, 0 errors
 mise run test:rust                                          # clean, builds fixtures & passes full test suite
-mise run test:e2e                                           # clean, all 12 WebRTC multi-hop tests passed (browser demo app suite in A5)
+mise run test:e2e                                           # clean, 8 WebRTC tests + 4 multi-hop tests passed (browser demo app suite in A5)
 ```
+
+## A5 — What shipped
+
+[slice-a5-implementation-plan.md](slice-a5-implementation-plan.md) is the design of record. It delivers the full Playwright browser end-to-end test suite against the WASM demo app fixture (`test-components/miniapp-demo1-wasm`), closing all remaining milestone exit criteria.
+
+**WebRTC Proxy Template & Router Integration** (`crates/coordinator_webrtc/templates/peer-proxy.js`, `crates/router/src/route_handler/http.rs`, `crates/router/src/net_webrtc.rs`):
+- **HTTP Preamble for WebSocket**: Updated `SynWebSocket` in `peer-proxy.js` to send `http://${TARGET_INTERFACE}|${serviceId}` (F-A5-1), matching the HTTP bridge's upgrade handler rather than falling into unhandled raw/stream pipeline stages.
+- **Service-Relative SSE Topics**: Updated `handle_messaging_sse` in `crates/router/src/route_handler/http.rs` to format SSE event names stripped of internal broker service namespaces (`svc/<service_id>/`), ensuring browser `EventSource` listeners receive the declared topic name (`comment-updates`) (F-A5-3).
+- **Chunked Body Decoding & Content-Length Closing**: Added `ChunkedDecoder` to `peer-proxy.js` to incrementally parse chunked responses without leaking HTTP framing lines into the browser body stream (F-A5-2). Added strict `content-length` tracking to `handleSWRequest` to close synthetic browser responses as soon as the declared payload bytes arrive.
+- **Robust Request Streaming**: Upgraded `peer-proxy.js` request body streaming to packetize chunked uploads into bounded 16 KiB frames with atomic headers, and increased `WebRTCStream` duplex buffer size in `crates/router/src/net_webrtc.rs` from 8 KiB to 64 KiB to prevent `Short buffer to be filled` errors on multi-chunk uploads.
+
+**Browser Fixture Reactivity** (`test-components/miniapp-demo1-wasm/client`, `test-components/miniapp-demo1-web/client`):
+- Converted `RecentComments.tsx` in both fixtures to reactive SolidJS `createResource` tracking `refreshTrigger`, ensuring comment submissions update the DOM reliably without page reloads.
+- Standardized `data-testid` attributes (`ws-status`, `ws-last-updated`, `ws-recd-msg`, `sse-status`, `sse-last-updated`) across WASM and Web fixtures.
+
+**Playwright Suite & Harness Integration** (`crates/substrate/tests/e2e/`):
+- `global-setup.ts`: Integrated client and WASM component building (`cargo component build --release --target wasm32-wasip2`), asset bundle packaging with `COPYFILE_DISABLE=1`, substrate KEK injection (`roymctl kek inject`), community registry registration for `demo1wasm`, `--interface http-native` alias creation, and deployment with `--wasm`, `--assets`, and `--asset-visibility public`.
+- `playwright.config.ts`: Configured test match pattern `['**/webrtc.spec.ts', '**/wasm-app.spec.ts']`.
+- `tests/wasm-app.spec.ts`: Added 10 tests (5 test cases across direct WebRTC `forceTunnel=false` and blind tunnel `forceTunnel=true`):
+  1. `GET / and navigate to comments`
+  2. `POST /api/comments and verify recent comments` (including guest 422 validation response)
+  3. `WebSocket Echo and Broadcast` (two-session broadcast + unicast echo)
+  4. `File Upload and Download` (256 KiB multi-chunk round trip)
+  5. `SSE receives an update published by another session` (two-session real-time feed)
+
+### Failure and Security Matrix Audit
+
+| # | Case | Expected | Proven by |
+|---|---|---|---|
+| 1 | Asset bundle contains `../` or an absolute path | Rejected at deploy, before any blob is written | `test_asset_bundle_rejects_parent_dir_traversal`, `test_asset_bundle_rejects_absolute_path` (`crates/control_plane/src/assets.rs`) |
+| 2 | Asset bundle exceeds size cap | Rejected at deploy with clear error | `test_asset_bundle_rejects_oversized_bundle_early`, `test_asset_bundle_rejects_oversized_unpacked_total` (`crates/control_plane/src/assets.rs`) |
+| 3 | Request for a path absent from the manifest | 405 (JSON-RPC non-POST bridge fallback), no sandbox instantiation | `test_asset_serving_unmatched_path_returns_405_and_never_touches_blobs` (`crates/router/src/route_handler/http.rs`), `test_miniapp_demo1_wasm_static_asset_serving_zero_instantiations` (`crates/substrate/tests/miniapp_demo1_wasm_e2e.rs`) |
+| 4 | Request tries to read another service's assets | Refused (isolated per service_id) | `test_asset_serving_resolves_only_for_the_connected_service` (`crates/router/src/route_handler/http.rs`) |
+| 5 | Guest route handler traps or exceeds epoch bound | 500 structured error, connection stays usable | `test_guest_route_handler_trap_returns_500`, `test_guest_route_exceeding_epoch_deadline_returns_500` (`crates/router/src/route_handler/http.rs`) |
+| 6 | Guest returns malformed or oversized response | Bounded and rejected | `test_guest_response_exceeding_body_cap_is_rejected_500`, `test_guest_response_malformed_fields_rejected_500` (`crates/router/src/route_handler/http.rs`) |
+| 7 | Service that never declared public assets is asked for one | 405 (absence indistinguishable from refusal) | `test_asset_serving_service_without_bundle_returns_405` (`crates/router/src/route_handler/http.rs`) |
+| 8 | Many concurrent SSE subscribers / guest requests | Bounded per service with 503 + `Retry-After: 1` | `test_sse_permit_exhaustion_returns_503_service_unavailable` (`crates/substrate/tests/http_passthrough_e2e.rs`), `test_guest_route_concurrency_exhaustion_returns_503_with_retry_after` (`crates/router/src/route_handler/http.rs`) |
+
+Exit criteria 3 (zero guest instantiations on assets) and 4 (ETag 304 caching) are proven by `test_miniapp_demo1_wasm_static_asset_serving_zero_instantiations` in `miniapp_demo1_wasm_e2e.rs` (D-A5-8).
+
+## A5 — Verification evidence (2026-08-17)
+
+**Commands run from a clean tree:**
+```bash
+cargo +nightly fmt --all                                    # clean, 0 diff
+cargo clippy --workspace --all-targets --all-features        # clean, 0 warnings, 0 errors
+cargo test --workspace                                      # clean, 56 unit/integration suites passed, 0 failed
+mise run test:e2e                                           # clean, 18 single-hop tests (8 webrtc + 10 wasm-app) + 4 multi-hop tests passed
+```
+All 22 Playwright browser tests passed cleanly across direct WebRTC and blind tunnel modes.

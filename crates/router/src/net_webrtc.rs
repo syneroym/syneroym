@@ -10,10 +10,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use tokio::{
-    io,
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf},
-};
+use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
 use tracing::{debug, error};
 use webrtc::data::data_channel::DataChannel as DetachedDataChannel;
 
@@ -43,7 +40,7 @@ impl WebRTCStream {
         tokio::spawn(async move {
             // Task 1: Read from WebRTC -> Write to Duplex
             let inbound = tokio::spawn(async move {
-                let mut buf_in = vec![0u8; 8192];
+                let mut buf_in = vec![0u8; 65536];
                 loop {
                     match channel_read.read(&mut buf_in).await {
                         Ok(0) => break, // EOF
@@ -65,7 +62,7 @@ impl WebRTCStream {
 
             // Task 2: Read from Duplex -> Write to WebRTC
             let outbound = tokio::spawn(async move {
-                let mut buf_out = vec![0u8; 8192];
+                let mut buf_out = vec![0u8; 65536];
                 loop {
                     match remote_read.read(&mut buf_out).await {
                         Ok(0) => break, // EOF
