@@ -130,14 +130,14 @@ async function postComment(page: Page, text: string) {
           const buf = new Uint8Array(await res.arrayBuffer());
           let hash = 2166136261;
           for (const b of buf) {
-            hash = ((hash ^ b) * 16777619) >>> 0;
+            hash = Math.imul(hash ^ b, 16777619) >>> 0;
           }
           return { status: res.status, length: buf.length, hash };
         }, fileName);
 
         let expectedHash = 2166136261;
         for (const b of bytes) {
-          expectedHash = ((expectedHash ^ b) * 16777619) >>> 0;
+          expectedHash = Math.imul(expectedHash ^ b, 16777619) >>> 0;
         }
         expect(result.status).toBe(200);
         expect(result.length).toBe(bytes.length);

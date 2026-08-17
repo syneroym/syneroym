@@ -599,9 +599,13 @@ class SynWebSocket extends EventTarget {
             } else if (frame.opcode === 1 || frame.opcode === 2) {
                 let data = frame.payload;
                 if (frame.opcode === 1) {
-                    data = new TextDecoder().decode(data);
+                    data = new TextDecoder().decode(frame.payload);
+                } else if (this.binaryType === 'blob') {
+                    data = new Blob([frame.payload]);
+                } else if (this.binaryType === 'arraybuffer') {
+                    data = frame.payload.buffer;
                 }
-                const event = new MessageEvent('message', { data: data });
+                const event = new MessageEvent('message', { data, origin: url.origin });
                 if (this.onmessage) this.onmessage(event);
                 this.dispatchEvent(event);
             }

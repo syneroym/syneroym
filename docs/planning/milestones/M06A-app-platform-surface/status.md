@@ -733,18 +733,18 @@ mise run test:e2e                                           # clean, 8 WebRTC te
   4. `File Upload and Download` (256 KiB multi-chunk round trip)
   5. `SSE receives an update published by another session` (two-session real-time feed)
 
-### Failure and Security Matrix Audit
+### Failure and Security Matrix Audit (Exit Criterion 9)
 
-| # | Case | Expected | Proven by |
-|---|---|---|---|
-| 1 | Asset bundle contains `../` or an absolute path | Rejected at deploy, before any blob is written | `test_asset_bundle_rejects_parent_dir_traversal`, `test_asset_bundle_rejects_absolute_path` (`crates/control_plane/src/assets.rs`) |
-| 2 | Asset bundle exceeds size cap | Rejected at deploy with clear error | `test_asset_bundle_rejects_oversized_bundle_early`, `test_asset_bundle_rejects_oversized_unpacked_total` (`crates/control_plane/src/assets.rs`) |
-| 3 | Request for a path absent from the manifest | 405 (JSON-RPC non-POST bridge fallback), no sandbox instantiation | `test_asset_serving_unmatched_path_returns_405_and_never_touches_blobs` (`crates/router/src/route_handler/http.rs`), `test_miniapp_demo1_wasm_static_asset_serving_zero_instantiations` (`crates/substrate/tests/miniapp_demo1_wasm_e2e.rs`) |
-| 4 | Request tries to read another service's assets | Refused (isolated per service_id) | `test_asset_serving_resolves_only_for_the_connected_service` (`crates/router/src/route_handler/http.rs`) |
-| 5 | Guest route handler traps or exceeds epoch bound | 500 structured error, connection stays usable | `test_guest_route_handler_trap_returns_500`, `test_guest_route_exceeding_epoch_deadline_returns_500` (`crates/router/src/route_handler/http.rs`) |
-| 6 | Guest returns malformed or oversized response | Bounded and rejected | `test_guest_response_exceeding_body_cap_is_rejected_500`, `test_guest_response_malformed_fields_rejected_500` (`crates/router/src/route_handler/http.rs`) |
-| 7 | Service that never declared public assets is asked for one | 405 (absence indistinguishable from refusal) | `test_asset_serving_service_without_bundle_returns_405` (`crates/router/src/route_handler/http.rs`) |
-| 8 | Many concurrent SSE subscribers / guest requests | Bounded per service with 503 + `Retry-After: 1` | `test_sse_permit_exhaustion_returns_503_service_unavailable` (`crates/substrate/tests/http_passthrough_e2e.rs`), `test_guest_route_concurrency_exhaustion_returns_503_with_retry_after` (`crates/router/src/route_handler/http.rs`) |
+| Row | Case | Covering test |
+|---|---|---|
+| 1 | `../` or absolute path in the bundle | `control_plane::assets::tests::traversal_entry_is_rejected_with_nothing_written` |
+| 2 | Bundle over a size cap | `over_compressed_bundle_cap_is_rejected_before_any_read`, `over_unpacked_cap_aborts_mid_read_and_stops_writing`, `over_file_count_cap_is_rejected`, `oversized_non_file_entry_is_still_bounded_by_the_unpacked_cap` (all `assets.rs`); the authoritative combined-frame check by `sdk::frame_size_tests`'s three unit tests (`lib.rs:1149-1173`) — `a_request_within_the_frame_limit_is_accepted`, `a_request_right_at_the_limit_is_accepted`, `a_request_one_byte_over_the_limit_is_refused_naming_the_method_and_both_sizes` |
+| 3 | Path absent from the manifest → 405, no blob lookup, no instantiation | `static_assets_e2e::test_static_asset_serving_index_etag_and_directory_rewrite` (the miss assertion at `static_assets_e2e.rs:259-264`, plus the zero-instantiation delta in the same test) |
+| 4 | One service asking for another's assets | `static_assets_e2e::test_static_asset_cross_service_isolation` |
+| 5 | Guest handler traps or exceeds its epoch bound | `guest_http_e2e::test_trap_and_spin_return_500_and_a_new_stream_still_succeeds`. **Known open half:** a guest blocked *inside a host call* is not interrupted by the epoch deadline — task.md's own row 5 scopes this out ("deliberately untested rather than tested badly") and it already has a `deferred-backlog.md` row. A5 does not close it |
+| 6 | Malformed or oversized guest response | `guest_http_e2e::test_huge_and_bad_header_return_500_with_no_partial_body`, plus `build_guest_response`'s seven unit tests in `route_handler/http.rs` |
+| 7 | A service that never declared public assets is asked for one | `static_assets_e2e::test_static_asset_private_visibility_matches_no_bundle` |
+| 8 | Many concurrent subscribers bounded per service | SSE: `http_passthrough_e2e::test_sse_permit_exhaustion_returns_503_service_unavailable`; guest HTTP: `guest_http_e2e::test_guest_http_concurrency_limit_returns_503_with_retry_after` and `test_guest_http_requests_within_budget_all_succeed_via_queuing`; WebSocket: `websocket_e2e::test_websocket_concurrency_limit_returns_503_with_retry_after` |
 
 Exit criteria 3 (zero guest instantiations on assets) and 4 (ETag 304 caching) are proven by `test_miniapp_demo1_wasm_static_asset_serving_zero_instantiations` in `miniapp_demo1_wasm_e2e.rs` (D-A5-8).
 
