@@ -11,6 +11,7 @@ exclude = [
     "test-components/scheduled-test",
     "test-components/saga-test",
     "test-components/http-guest-test",
+    "test-components/websocket-guest-test",
 ]
 
 [profile.dev]

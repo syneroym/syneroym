@@ -85,16 +85,23 @@ fn validate_route(route: &HttpRoute) -> Result<(), String> {
              only guest operation is `handle-request`",
             route.method, route.path
         )),
+        ("websocket", "handle-upgrade") => Ok(()),
+        ("websocket", other) => Err(format!(
+            "http_routes entry `{} {}` has target=websocket with unsupported operation `{other}`; \
+             the only websocket operation is `handle-upgrade`",
+            route.method, route.path
+        )),
         _ => Ok(()),
     }?;
 
-    // M06A D-A2-7: `public` does nothing outside a guest route, so accepting
-    // it there would be exactly the silently-dead configuration this
-    // module's duplicate-route check already exists to prevent.
-    if route.public && route.target != "guest" {
+    // M06A D-A2-7, A3, A4: `public` does nothing outside a guest or websocket
+    // route, so accepting it there would be exactly the silently-dead
+    // configuration this module's duplicate-route check already exists to
+    // prevent.
+    if route.public && (route.target != "guest" && route.target != "websocket") {
         return Err(format!(
             "http_routes entry `{} {}` sets `public` on target={}; `public` is only meaningful \
-             for target=guest",
+             for target=guest or target=websocket",
             route.method, route.path, route.target
         ));
     }
@@ -191,11 +198,48 @@ mod tests {
     fn stream_upload_route_with_get_method_is_rejected() {
         let json = serde_json::json!({
             "http_routes": [
-                {"method": "GET", "path": "/upload", "target": "stream",
-                 "operation": "accept-upload", "protocol": "file-transfer"}
+                {"method": "GET", "path": "/upload", "target": "stream", "operation": "accept-upload", "protocol": "test"}
             ]
         });
         assert!(parse_http_routes(&json).unwrap_err().contains("PUT or POST"));
+    }
+
+    #[test]
+    fn websocket_target_valid() {
+        let json = serde_json::json!({
+            "http_routes": [
+                {"method": "GET", "path": "/ws", "target": "websocket", "operation": "handle-upgrade"}
+            ]
+        });
+        let routes = parse_http_routes(&json).unwrap();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].target, "websocket");
+        assert_eq!(routes[0].operation, "handle-upgrade");
+    }
+
+    #[test]
+    fn websocket_target_invalid_operation() {
+        let json = serde_json::json!({
+            "http_routes": [
+                {"method": "GET", "path": "/ws", "target": "websocket", "operation": "invalid-op"}
+            ]
+        });
+        assert!(
+            parse_http_routes(&json)
+                .unwrap_err()
+                .contains("the only websocket operation is `handle-upgrade`")
+        );
+    }
+
+    #[test]
+    fn public_true_allowed_for_websocket() {
+        let json = serde_json::json!({
+            "http_routes": [
+                {"method": "GET", "path": "/ws", "target": "websocket", "operation": "handle-upgrade", "public": true}
+            ]
+        });
+        let routes = parse_http_routes(&json).unwrap();
+        assert!(routes[0].public);
     }
 
     #[test]
@@ -219,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn public_true_on_a_non_guest_target_is_rejected() {
+    fn public_true_on_a_non_guest_or_websocket_target_is_rejected() {
         let json = serde_json::json!({
             "http_routes": [
                 {"method": "GET", "path": "/orders/{id}", "target": "data-layer",

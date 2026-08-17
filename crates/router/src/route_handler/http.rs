@@ -66,6 +66,7 @@ use syneroym_rpc::{
 };
 use syneroym_sandbox_wasm::{GuestHttpFailure, GuestHttpOutcome, StreamRequestOutcome};
 use tokio::io::{self as tokio_io, AsyncRead, AsyncWrite};
+use tokio_tungstenite::{WebSocketStream, tungstenite::handshake::derive_accept_key};
 use tokio_util::io::StreamReader;
 use tracing::{debug, error, warn};
 use uuid::Uuid;
@@ -162,7 +163,7 @@ impl RouteHandler {
         // ones.
         builder.http1().half_close(true);
         builder
-            .serve_connection(
+            .serve_connection_with_upgrades(
                 io,
                 service::service_fn(move |req| {
                     let h = handler.clone();
@@ -987,6 +988,7 @@ impl HttpHandler {
             "messaging" => self.handle_messaging_route(route, req).await,
             "stream" => self.handle_stream_route(route, req).await,
             "guest" => self.handle_guest_route(route, path_param, req).await,
+            "websocket" => self.handle_websocket_route(route, req).await,
             other => Ok(http_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("http_routes entry has unknown target: {other}"),
@@ -1413,6 +1415,221 @@ impl HttpHandler {
             }
             Err(e) => Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
         }
+    }
+
+    async fn handle_websocket_route(
+        &self,
+        route: &HttpRoute,
+        req: Request<Incoming>,
+    ) -> Result<Response<HttpBody>> {
+        if self.caller.is_none() && !route.public {
+            return Ok(http_error(StatusCode::UNAUTHORIZED, "Unauthorized".into()));
+        }
+
+        if route.operation != "handle-upgrade" {
+            return Ok(http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("unsupported websocket operation: {}", route.operation),
+            ));
+        }
+
+        let Some(app_sandbox_engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
+            return Ok(http_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "app sandbox engine not available (coordinator mode)".into(),
+            ));
+        };
+        if !app_sandbox_engine.is_deployed(&self.preamble.service_id) {
+            return Ok(http_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service has no deployed WASM component".into(),
+            ));
+        }
+
+        let req_key = req
+            .headers()
+            .get("sec-websocket-key")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        if req_key.is_empty() {
+            return Ok(http_error(
+                StatusCode::BAD_REQUEST,
+                "Missing sec-websocket-key header".into(),
+            ));
+        }
+
+        let accept_key = derive_accept_key(req_key.as_bytes());
+        let response = Response::builder()
+            .status(StatusCode::SWITCHING_PROTOCOLS)
+            .header(hyper::header::UPGRADE, "websocket")
+            .header(hyper::header::CONNECTION, "upgrade")
+            .header("Sec-WebSocket-Accept", accept_key)
+            .body(full_body(Bytes::new()));
+
+        let response = match response {
+            Ok(r) => r,
+            Err(_) => {
+                return Ok(http_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to build response".into(),
+                ));
+            }
+        };
+
+        let service_id = self.preamble.service_id.clone();
+        let mut topic_rx = None;
+        let mut _sub_handle = None;
+        if let Some(topic) = &route.topic {
+            let namespaced = syneroym_mqtt_broker::namespace_topic(&service_id, topic);
+            let (handle, rx_broadcast) =
+                match self.route_handler.inner.messaging_broker.subscribe(namespaced).await {
+                    Ok(res) => res,
+                    Err(e) => {
+                        return Ok(http_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("failed to subscribe: {e}"),
+                        ));
+                    }
+                };
+            topic_rx = Some(rx_broadcast);
+            _sub_handle = Some(handle);
+        }
+
+        let permits = {
+            let entry = app_sandbox_engine
+                .guest_websocket_permits
+                .entry(service_id.clone())
+                .or_insert_with(|| {
+                    Arc::new(tokio::sync::Semaphore::new(
+                        app_sandbox_engine.max_concurrent_websockets_per_service as usize,
+                    ))
+                });
+            entry.value().clone()
+        };
+        let permit =
+            match tokio::time::timeout(std::time::Duration::from_secs(5), permits.acquire_owned())
+                .await
+            {
+                Ok(Ok(p)) => p,
+                _ => {
+                    return Ok(http_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "websocket concurrency limit reached".into(),
+                    ));
+                }
+            };
+
+        let conn_id = uuid::Uuid::new_v4().to_string();
+        let (tx, mut rx_internal) = tokio::sync::mpsc::channel(16);
+        let engine = app_sandbox_engine.clone();
+
+        {
+            let service_map = engine
+                .websocket_senders
+                .entry(service_id.clone())
+                .or_insert_with(|| Arc::new(dashmap::DashMap::new()));
+            service_map.insert(conn_id.clone(), tx);
+        }
+
+        tokio::task::spawn(async move {
+            let _keep_alive = _sub_handle;
+            match hyper::upgrade::on(req).await {
+                Ok(upgraded) => {
+                    let io = hyper_util::rt::TokioIo::new(upgraded);
+                    let mut ws_stream = WebSocketStream::from_raw_socket(
+                        io,
+                        tokio_tungstenite::tungstenite::protocol::Role::Server,
+                        None,
+                    )
+                    .await;
+
+                    {
+                        let engine_clone = engine.clone();
+                        let sid = service_id.clone();
+                        let cid = conn_id.clone();
+                        tokio::task::spawn(async move {
+                            engine_clone.handle_websocket_on_open(&sid, &cid).await;
+                        });
+                    }
+
+                    let _permit = permit;
+                    use futures::{SinkExt, StreamExt};
+
+                    loop {
+                        tokio::select! {
+                            msg = ws_stream.next() => {
+                                match msg {
+                                    Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(bin))) => {
+                                        let engine_clone = engine.clone();
+                                        let sid = service_id.clone();
+                                        let cid = conn_id.clone();
+                                        tokio::task::spawn(async move {
+                                            engine_clone.handle_websocket_on_message(&sid, &cid, bin.to_vec()).await;
+                                        });
+                                    }
+                                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(txt))) => {
+                                        let engine_clone = engine.clone();
+                                        let sid = service_id.clone();
+                                        let cid = conn_id.clone();
+                                        tokio::task::spawn(async move {
+                                            engine_clone.handle_websocket_on_message(&sid, &cid, txt.as_bytes().to_vec()).await;
+                                        });
+                                    }
+                                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => {
+                                        break;
+                                    }
+                                    Some(Err(_)) => break,
+                                    _ => {}
+                                }
+                            }
+                            broadcast = async {
+                                if let Some(rx) = &mut topic_rx {
+                                    rx.recv().await
+                                } else {
+                                    futures::future::pending().await
+                                }
+                            } => {
+                                match broadcast {
+                                    Some((_, payload)) => {
+                                        let _ = ws_stream.send(tokio_tungstenite::tungstenite::Message::Binary(payload.into())).await;
+                                    }
+                                    None => break,
+                                }
+                            }
+                            internal_msg = rx_internal.recv() => {
+                                match internal_msg {
+                                    Some(bin) => {
+                                        let _ = ws_stream.send(tokio_tungstenite::tungstenite::Message::Binary(bin.into())).await;
+                                    }
+                                    None => break,
+                                }
+                            }
+                        }
+                    }
+
+                    {
+                        let engine_clone = engine.clone();
+                        let sid = service_id.clone();
+                        let cid = conn_id.clone();
+                        tokio::task::spawn(async move {
+                            engine_clone.handle_websocket_on_close(&sid, &cid).await;
+                        });
+                    }
+
+                    if let Some(map) = engine.websocket_senders.get(&service_id) {
+                        map.remove(&conn_id);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("WebSocket upgrade error: {}", e);
+                    if let Some(map) = engine.websocket_senders.get(&service_id) {
+                        map.remove(&conn_id);
+                    }
+                }
+            }
+        });
+
+        Ok(response)
     }
 
     // -- signed-URL blob GET ---------------------------------------------

@@ -132,6 +132,7 @@ pub enum GuestHttpFailure {
 
 /// Engine: Passive code module that wraps low-level OS operations
 /// to spin up Wasmtime or Podman instances.
+#[allow(clippy::type_complexity)]
 pub struct AppSandboxEngine {
     blobs_dir: PathBuf,
     engine: Engine,
@@ -303,6 +304,16 @@ pub struct AppSandboxEngine {
     /// Snapshot of `AppSandboxRole::max_concurrent_guest_http_per_service`,
     /// the size each per-service semaphore above is created at.
     max_concurrent_guest_http_per_service: u32,
+    /// Registry for routing guest unicast sends back to active WebSocket
+    /// connections (M06A A3). Grouped by service_id to allow clean bulk
+    /// teardown on undeploy.
+    pub websocket_senders:
+        Arc<DashMap<String, Arc<DashMap<String, tokio::sync::mpsc::Sender<Vec<u8>>>>>>,
+
+    /// Pool slots this node will let active WebSocket connections hold
+    /// concurrently.
+    pub guest_websocket_permits: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
+    pub max_concurrent_websockets_per_service: u32,
 }
 
 /// Per-instantiation differences from an ordinary dispatch call. Bundled
@@ -594,6 +605,14 @@ impl AppSandboxEngine {
             instantiations: AtomicU64::new(0),
             guest_http_permits: Arc::new(DashMap::new()),
             max_concurrent_guest_http_per_service,
+            websocket_senders: Arc::new(DashMap::new()),
+            guest_websocket_permits: Arc::new(DashMap::new()),
+            max_concurrent_websockets_per_service: config
+                .roles
+                .app_sandbox
+                .as_ref()
+                .map(|r| r.max_concurrent_websockets_per_service)
+                .unwrap_or(50),
         };
 
         for (service_id, _interface_name, endpoint) in endpoints {
@@ -720,6 +739,10 @@ impl AppSandboxEngine {
         host_api::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         proxy::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         saga::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
+        syneroym_wit_interfaces::http::syneroym::http::websocket::add_to_linker::<
+            _,
+            HasSelf<HostState>,
+        >(&mut linker, |state| state)?;
         Ok(linker)
     }
 
@@ -876,6 +899,13 @@ impl AppSandboxEngine {
     #[must_use]
     pub fn exports_http_handler(&self, service_id: &str) -> bool {
         self.exports_function(service_id, http::HTTP_HANDLER_INTERFACE, "handle-request")
+    }
+
+    /// Whether `service_id`'s compiled component exports the guest WebSocket
+    /// handler (M06A A3).
+    #[must_use]
+    pub fn exports_websocket_handler(&self, service_id: &str) -> bool {
+        self.exports_function(service_id, "syneroym:http/websocket-handler@0.1.0", "on-open")
     }
 
     /// Whether a compiled component is loaded for `service_id` -- the only
@@ -1417,6 +1447,14 @@ impl AppSandboxEngine {
     /// stop sharing a budget with a service that no longer exists.
     pub fn forget_guest_http_permits(&self, service_id: &str) {
         self.guest_http_permits.remove(service_id);
+    }
+
+    /// Drops all WebSocket senders for a service (M06A A3).
+    /// Called from undeploy. Dropping the senders unblocks any active rx.recv()
+    /// loops in the router, terminating the WebSockets cleanly.
+    pub fn forget_websocket_senders(&self, service_id: &str) {
+        self.websocket_senders.remove(service_id);
+        self.guest_websocket_permits.remove(service_id);
     }
 
     /// Invokes the deployed component's exported `guest-api::handle-message`
@@ -2200,6 +2238,102 @@ impl AppSandboxEngine {
             Err(failure) => GuestHttpOutcome::Failed(failure),
         })
     }
+
+    pub async fn handle_websocket_on_open(&self, service_id: &str, conn_id: &str) {
+        let _active_guard = ActiveInstanceGuard::new();
+        let (mut store, instance, _) = match self
+            .build_store_and_instantiate(
+                service_id,
+                CallerContext::service_system(service_id),
+                self.dispatch_epoch_ticks,
+                InstanceOptions::default(),
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("WebSocket on-open failed to instantiate: {}", e);
+                return;
+            }
+        };
+
+        let Ok((func, _, _)) = Self::get_wasm_func(
+            &mut store,
+            &instance,
+            Some("syneroym:http/websocket-handler@0.1.0"),
+            "on-open",
+        ) else {
+            return;
+        };
+        let conn_val = Val::String(conn_id.to_string());
+        let _ = func.call_async(&mut store, &[conn_val], &mut []).await;
+    }
+
+    pub async fn handle_websocket_on_message(
+        &self,
+        service_id: &str,
+        conn_id: &str,
+        frame: Vec<u8>,
+    ) {
+        let _active_guard = ActiveInstanceGuard::new();
+        let (mut store, instance, _) = match self
+            .build_store_and_instantiate(
+                service_id,
+                CallerContext::service_system(service_id),
+                self.dispatch_epoch_ticks,
+                InstanceOptions::default(),
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("WebSocket on-message failed to instantiate: {}", e);
+                return;
+            }
+        };
+
+        let Ok((func, _, _)) = Self::get_wasm_func(
+            &mut store,
+            &instance,
+            Some("syneroym:http/websocket-handler@0.1.0"),
+            "on-message",
+        ) else {
+            return;
+        };
+        let conn_val = Val::String(conn_id.to_string());
+        let frame_val = crate::stream::bytes_to_val_list(frame);
+        let _ = func.call_async(&mut store, &[conn_val, frame_val], &mut []).await;
+    }
+
+    pub async fn handle_websocket_on_close(&self, service_id: &str, conn_id: &str) {
+        let _active_guard = ActiveInstanceGuard::new();
+        let (mut store, instance, _) = match self
+            .build_store_and_instantiate(
+                service_id,
+                CallerContext::service_system(service_id),
+                self.dispatch_epoch_ticks,
+                InstanceOptions::default(),
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("WebSocket on-close failed to instantiate: {}", e);
+                return;
+            }
+        };
+
+        let Ok((func, _, _)) = Self::get_wasm_func(
+            &mut store,
+            &instance,
+            Some("syneroym:http/websocket-handler@0.1.0"),
+            "on-close",
+        ) else {
+            return;
+        };
+        let conn_val = Val::String(conn_id.to_string());
+        let _ = func.call_async(&mut store, &[conn_val], &mut []).await;
+    }
 }
 
 #[cfg(test)]
@@ -2763,6 +2897,9 @@ mod tests {
             fdae_policy_generation: DashMap::new(),
             default_max_instructions: Some(10_000),
             default_max_memory_bytes: Some(1024 * 1024), // 1MB
+            guest_websocket_permits: Arc::new(DashMap::new()),
+            max_concurrent_websockets_per_service: 10,
+            websocket_senders: Arc::new(DashMap::new()),
             _shutdown_tx: None,
             key_store: Arc::new(KeyStore::new()),
             storage_provider: Arc::new(SqliteStorageProvider::new(env::temp_dir(), false).unwrap()),
@@ -2902,6 +3039,9 @@ mod tests {
             fdae_policy_generation: DashMap::new(),
             default_max_instructions: Some(10_000),
             default_max_memory_bytes: Some(1024 * 1024),
+            guest_websocket_permits: Arc::new(DashMap::new()),
+            max_concurrent_websockets_per_service: 10,
+            websocket_senders: Arc::new(DashMap::new()),
             _shutdown_tx: None,
             key_store: Arc::new(KeyStore::new()),
             storage_provider,

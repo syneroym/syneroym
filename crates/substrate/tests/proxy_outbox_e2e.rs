@@ -425,10 +425,8 @@ fn artifacts() -> Option<(Vec<u8>, Vec<u8>)> {
 async fn a_queued_guest_call_to_an_offline_node_lands_after_it_returns() {
     let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();
-    let Some((proxy_wasm, greeter_wasm)) = artifacts() else {
-        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
-        return;
-    };
+    let (proxy_wasm, greeter_wasm) =
+        artifacts().expect("proxy-test/greeter wasm artifacts not built");
     let (a_iroh, a_reg, a_gw, b_iroh, b_reg, b_gw) = DELIVERS_PORTS;
 
     let caller_dir = tempfile::tempdir().unwrap();
@@ -680,10 +678,8 @@ async fn a_queued_guest_call_to_an_offline_node_lands_after_it_returns() {
 async fn a_permanently_unreachable_target_lands_in_the_dlq_and_replays() {
     let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();
-    let Some((proxy_wasm, greeter_wasm)) = artifacts() else {
-        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
-        return;
-    };
+    let (proxy_wasm, greeter_wasm) =
+        artifacts().expect("proxy-test/greeter wasm artifacts not built");
     let (a_iroh, a_reg, a_gw, b_iroh, b_reg, b_gw) = DLQ_PORTS;
 
     let caller_dir = tempfile::tempdir().unwrap();

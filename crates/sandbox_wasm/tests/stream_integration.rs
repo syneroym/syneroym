@@ -162,18 +162,8 @@ fn read_stream_test_wasm() -> Option<Vec<u8>> {
 
 macro_rules! skip_if_missing {
     ($test_name:literal) => {
-        match read_stream_test_wasm() {
-            Some(bytes) => bytes,
-            None => {
-                eprintln!(
-                    "Skipping {}: stream-test WASM artifact not found (build \
-                     test-components/stream-test with `cargo build --release --target \
-                     wasm32-wasip2`)",
-                    $test_name
-                );
-                return;
-            }
-        }
+        read_stream_test_wasm()
+            .unwrap_or_else(|| panic!("WASM artifact not found for {}", $test_name))
     };
 }
 

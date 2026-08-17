@@ -1008,10 +1008,8 @@ mod tests {
 
     #[test]
     fn json_to_val_roundtrip_heap_composites_via_data_layer() {
-        let Ok(bytes) = fs::read(test_constants::data_layer_test_wasm_path()) else {
-            eprintln!("skipping: data-layer-test wasm artifact not built");
-            return;
-        };
+        let bytes =
+            fs::read(test_constants::data_layer_test_wasm_path()).expect("wasm artifact not built");
         let engine = sync_engine();
         let component = Component::new(&engine, &bytes).expect("load data-layer-test");
         let ct = component.component_type();

@@ -94,18 +94,8 @@ fn read_http_guest_test_wasm() -> Option<Vec<u8>> {
 
 macro_rules! skip_if_missing {
     ($test_name:literal) => {
-        match read_http_guest_test_wasm() {
-            Some(bytes) => bytes,
-            None => {
-                eprintln!(
-                    "Skipping {}: http-guest-test WASM artifact not found (build \
-                     test-components/http-guest-test with `cargo component build --release \
-                     --target wasm32-wasip2`)",
-                    $test_name
-                );
-                return;
-            }
-        }
+        read_http_guest_test_wasm()
+            .unwrap_or_else(|| panic!("WASM artifact not found for {}", $test_name))
     };
 }
 

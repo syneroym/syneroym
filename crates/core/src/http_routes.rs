@@ -32,12 +32,12 @@ pub struct HttpRoute {
     #[serde(default)]
     pub protocol: Option<String>,
     /// Whether a caller with no verified identity may reach this route
-    /// (M06A D-A2-7). Only meaningful for `target = "guest"`, where `false`
-    /// -- the default -- answers an anonymous request with 401 before the
-    /// component is instantiated. Refused at deploy on any other target,
-    /// where it would do nothing: `data-layer`/`messaging` already reject
-    /// an anonymous caller inside `dispatch_native`, and `stream` predates
-    /// this field (M06A §9.5).
+    /// (M06A D-A2-7). Only meaningful for `target = "guest"` and `target =
+    /// "websocket"`, where `false` -- the default -- answers an anonymous
+    /// request with 401 before the component is instantiated. Refused at
+    /// deploy on any other target, where it would do nothing:
+    /// `data-layer`/`messaging` already reject an anonymous caller inside
+    /// `dispatch_native`, and `stream` predates this field (M06A §9.5).
     ///
     /// `true` does not just relax *reachability*: with no caller to
     /// substitute, the handler runs as the service itself

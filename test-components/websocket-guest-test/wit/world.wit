@@ -1,0 +1,9 @@
+package syneroym-test:websocket-guest-test@0.1.0;
+
+world websocket-guest-test {
+    export syneroym:http/websocket-handler@0.1.0;
+    import syneroym:http/websocket@0.1.0;
+
+    export init: func() -> result<_, string>;
+    export migrate: func() -> result<_, string>;
+}

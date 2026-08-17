@@ -437,15 +437,8 @@ fn component_id_from_reply(reply: &str) -> String {
 
 #[tokio::test]
 async fn the_reference_scenario_runs_end_to_end_over_two_substrates() {
-    if !test_constants::greeter_wasm_path().exists()
-        || !test_constants::proxy_test_wasm_path().exists()
-    {
-        eprintln!(
-            "skipping: greeter/proxy-test wasm artifacts not built (cargo build --target \
-             wasm32-wasip2 --release in test-components/greeter and test-components/proxy-test)"
-        );
-        return;
-    }
+    assert!(test_constants::greeter_wasm_path().exists(), "greeter wasm artifact not built");
+    assert!(test_constants::proxy_test_wasm_path().exists(), "proxy-test wasm artifact not built");
     let _ = ring::default_provider().install_default();
 
     let supervisor_owner = Identity::generate().unwrap();
