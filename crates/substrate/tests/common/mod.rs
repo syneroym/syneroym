@@ -9,7 +9,11 @@
 //! started drifting (`http_passthrough_e2e.rs`'s copy added the DHT-port
 //! lock guard below; the other two didn't have it).
 
-use std::time::Duration;
+use std::{
+    net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
+    sync::atomic::{AtomicU16, Ordering},
+    time::Duration,
+};
 
 use syneroym_core::{
     config::{ClientGatewayRole, IrohParentConfig, LogTarget, SubstrateConfig},
@@ -46,6 +50,70 @@ use tokio::{
 /// read a process-global metrics counter safely -- narrowing this lock back
 /// to just the setup race would silently reopen that.
 static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
+
+/// Ports below 32_768 sit outside the OS's ephemeral range on Linux and
+/// macOS (`net.ipv4.ip_local_port_range` defaults to roughly 32768-60999 on
+/// Linux, the default on GitHub Actions runners). The kernel never hands a
+/// port down here to an unrelated outbound socket on its own -- the only
+/// way something else holds one is another explicit bind, i.e. another test
+/// binary (within one binary, `SUBSTRATE_TEST_LOCK` above already
+/// serializes tests, so there's no same-binary contention to race against).
+/// A probe bind -- try it, keep it if it succeeds, move on if it doesn't --
+/// is therefore a reliable free-port check in this range. It would not be
+/// inside the ephemeral one, where a bind can lose a race to a transient
+/// outbound connection that releases the port moments later; that's what
+/// made a hardcoded port in that range (`gateway_hostname_e2e.rs`'s old
+/// `42_600`) an intermittent CI failure.
+const PORT_POOL_START: u16 = 12_000;
+const PORT_POOL_END: u16 = 32_000;
+
+static NEXT_PORT_HINT: AtomicU16 = AtomicU16::new(0);
+
+fn probe_bind(port: u16) -> Option<StdTcpListener> {
+    StdTcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).ok()
+}
+
+/// Reserve `N` distinct free ports below the OS ephemeral range, each
+/// verified by an actual bind (immediately released) rather than trusting a
+/// hand-tracked constant. Self-correcting against both leftover local
+/// sockets and other test binaries racing for the same numbers: a losing
+/// probe just moves the search on to the next candidate block instead of
+/// failing the caller. There's a small window between the probe release
+/// here and the caller's own real bind; outside the ephemeral range the
+/// only realistic contender is another test binary doing the same probe at
+/// the same instant, which is rare enough in practice that this hasn't
+/// needed a stronger guarantee (e.g. the OS reporting its own resolved
+/// port back to the caller instead of pre-allocating one).
+pub fn alloc_ports<const N: usize>() -> [u16; N] {
+    let span = PORT_POOL_END - PORT_POOL_START;
+    loop {
+        let offset = NEXT_PORT_HINT.fetch_add(N as u16, Ordering::Relaxed) % span;
+        let start = PORT_POOL_START + offset;
+        if start as u32 + N as u32 > PORT_POOL_END as u32 {
+            continue; // wrapped mid-block; the next fetch_add tries elsewhere
+        }
+
+        let mut listeners = Vec::with_capacity(N);
+        let mut all_free = true;
+        for port in start..start + N as u16 {
+            match probe_bind(port) {
+                Some(listener) => listeners.push(listener),
+                None => {
+                    all_free = false;
+                    break;
+                }
+            }
+        }
+        if !all_free {
+            continue;
+        }
+
+        let ports: Vec<u16> =
+            listeners.iter().map(|l| l.local_addr().expect("bound listener").port()).collect();
+        drop(listeners);
+        return ports.try_into().expect("exactly N ports collected");
+    }
+}
 
 pub struct SubstrateTestContext {
     #[allow(dead_code)]
