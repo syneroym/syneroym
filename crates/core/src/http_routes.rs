@@ -62,7 +62,7 @@ pub struct HttpRoute {
 pub type HttpRouteRegistry = Arc<DashMap<String, Vec<HttpRoute>>>;
 
 /// Default maximum concurrent SSE subscriptions allowed per service.
-pub const DEFAULT_MAX_SSE_SUBSCRIBERS_PER_SERVICE: usize = 50;
+pub const DEFAULT_MAX_SSE_SUBSCRIBERS_PER_SERVICE: usize = 100;
 
 /// Shared, keyed-by-`service_id` SSE permits table. Bounded per service to
 /// prevent subscriber starvation or unbounded resource usage.

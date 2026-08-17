@@ -1,7 +1,7 @@
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
 //! End-to-end tests for the WebSocket route target.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use httparse::{EMPTY_HEADER, Response as HttparseResponse, Status};
 use iroh::endpoint::{RecvStream, SendStream};
@@ -13,6 +13,7 @@ use syneroym_sdk::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, SyneroymClient,
     TransportConnection, WasmManifest,
 };
+use tokio::time;
 
 mod common;
 use common::SubstrateTestContext;
@@ -50,7 +51,7 @@ async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManif
 #[tokio::test]
 async fn test_websocket_concurrency_limit_returns_503_with_retry_after() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup_with(7953, 7954, 7955, |config| {
+    let ctx = SubstrateTestContext::setup_with(23150, 23151, 23152, |config| {
         config.roles.app_sandbox =
             Some(AppSandboxRole { max_concurrent_websockets_per_service: 1, ..Default::default() });
     })
@@ -102,7 +103,10 @@ async fn test_websocket_concurrency_limit_returns_503_with_retry_after() {
     assert_eq!(resp2.headers.get("retry-after").map(String::as_str), Some("1"));
 
     drop(send1);
+    drop(recv1);
     drop(send2);
+    drop(recv2);
+    ctx.teardown().await;
 }
 
 struct HttpResponse {
@@ -189,14 +193,10 @@ fn build_masked_text_frame(payload: &[u8]) -> Vec<u8> {
     frame
 }
 
-const IROH_PORT: u16 = 7934;
-const REGISTRY_PORT: u16 = 7931;
-const GATEWAY_PORT: u16 = 7930;
-
 #[tokio::test]
 async fn test_websocket_echo_unicast() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(IROH_PORT, REGISTRY_PORT, GATEWAY_PORT).await;
+    let ctx = SubstrateTestContext::setup(23200, 23201, 23202).await;
 
     let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
         .expect("websocket_guest_test.wasm not built");
@@ -269,12 +269,14 @@ async fn test_websocket_echo_unicast() {
 
     // Close cleanly
     drop(send);
+    drop(recv);
+    ctx.teardown().await;
 }
 
 #[tokio::test]
 async fn test_websocket_broadcast_pubsub() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(7924, 7921, 7920).await;
+    let ctx = SubstrateTestContext::setup(23250, 23251, 23252).await;
 
     let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
         .expect("websocket_guest_test.wasm not built");
@@ -339,12 +341,16 @@ async fn test_websocket_broadcast_pubsub() {
     let mut payload = vec![0u8; 12];
     read_exact_buffered(&mut recv, &mut unconsumed, &mut payload).await;
     assert_eq!(&payload, b"pubsub_hello");
+    drop(send);
+    drop(recv);
+    drop(publisher);
+    ctx.teardown().await;
 }
 
 #[tokio::test]
 async fn test_websocket_upgrade_rejects_unauthenticated_anonymous_on_private_route() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(7950, 7951, 7952).await;
+    let ctx = SubstrateTestContext::setup(23300, 23301, 23302).await;
 
     let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
         .expect("websocket_guest_test.wasm not built");
@@ -373,12 +379,15 @@ async fn test_websocket_upgrade_rejects_unauthenticated_anonymous_on_private_rou
         resp.status, 401,
         "anonymous request to private websocket route must return 401 Unauthorized"
     );
+    drop(send);
+    drop(recv);
+    ctx.teardown().await;
 }
 
 #[tokio::test]
 async fn test_websocket_teardown_on_undeploy() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(7956, 7957, 7958).await;
+    let ctx = SubstrateTestContext::setup(23350, 23351, 23352).await;
 
     let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
         .expect("websocket_guest_test.wasm not built");
@@ -416,6 +425,15 @@ async fn test_websocket_teardown_on_undeploy() {
         .expect("undeploy request failed");
     assert_eq!(res.result, serde_json::json!({"status": "undeployed"}));
 
-    // Drop send to close connection
+    // Verify the server closed the websocket stream
+    let closed = time::timeout(Duration::from_secs(5), recv.read(&mut buf)).await;
+    assert!(
+        matches!(closed, Ok(Ok(None)) | Ok(Ok(Some(0))) | Ok(Err(_))),
+        "websocket stream must be closed upon service undeploy"
+    );
+
+    // Drop send and recv to clean up client half
     drop(send);
+    drop(recv);
+    ctx.teardown().await;
 }

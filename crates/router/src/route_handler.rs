@@ -471,11 +471,6 @@ impl RouteHandler {
     pub fn active_connections(&self) -> Arc<AtomicUsize> {
         self.inner.active_connections.clone()
     }
-
-    /// Drops any SSE permit semaphore for a service on undeploy/stop.
-    pub fn forget_sse_permits(&self, service_id: &str) {
-        self.inner.sse_permits.remove(service_id);
-    }
 }
 
 impl IrohProtocolHandler for RouteHandler {

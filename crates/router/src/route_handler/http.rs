@@ -1706,6 +1706,8 @@ impl HttpHandler {
 
                     let (writer_shutdown_tx, mut writer_shutdown_rx) =
                         tokio::sync::oneshot::channel::<()>();
+                    let (session_stop_tx, mut session_stop_rx) =
+                        tokio::sync::oneshot::channel::<()>();
                     let writer_task = tokio::spawn(async move {
                         loop {
                             tokio::select! {
@@ -1750,42 +1752,49 @@ impl HttpHandler {
                                 }
                             }
                         }
+                        let _ = session_stop_tx.send(());
                     });
 
                     // Sequential dispatch: await on-open before frame loop
                     engine.handle_websocket_on_open(&service_id, &conn_id, caller.clone()).await;
 
-                    while let Some(msg_res) = ws_stream.next().await {
-                        match msg_res {
-                            Ok(Message::Text(txt)) => {
-                                engine
-                                    .handle_websocket_on_message(
-                                        &service_id,
-                                        &conn_id,
-                                        txt.as_bytes().to_vec(),
-                                        FrameKind::Text,
-                                        caller.clone(),
-                                    )
-                                    .await;
-                            }
-                            Ok(Message::Binary(bin)) => {
-                                engine
-                                    .handle_websocket_on_message(
-                                        &service_id,
-                                        &conn_id,
-                                        bin.to_vec(),
-                                        FrameKind::Binary,
-                                        caller.clone(),
-                                    )
-                                    .await;
-                            }
-                            Ok(Message::Close(_)) => break,
-                            Ok(Message::Ping(_)) => {}
-                            Ok(Message::Pong(_)) => {}
-                            Ok(Message::Frame(_)) => {}
-                            Err(e) => {
-                                debug!(service_id, conn_id, error = %e, "WebSocket stream error");
-                                break;
+                    loop {
+                        tokio::select! {
+                            _ = &mut session_stop_rx => break,
+                            msg_opt = ws_stream.next() => {
+                                let Some(msg_res) = msg_opt else { break; };
+                                match msg_res {
+                                    Ok(Message::Text(txt)) => {
+                                        engine
+                                            .handle_websocket_on_message(
+                                                &service_id,
+                                                &conn_id,
+                                                txt.as_bytes().to_vec(),
+                                                FrameKind::Text,
+                                                caller.clone(),
+                                            )
+                                            .await;
+                                    }
+                                    Ok(Message::Binary(bin)) => {
+                                        engine
+                                            .handle_websocket_on_message(
+                                                &service_id,
+                                                &conn_id,
+                                                bin.to_vec(),
+                                                FrameKind::Binary,
+                                                caller.clone(),
+                                            )
+                                            .await;
+                                    }
+                                    Ok(Message::Close(_)) => break,
+                                    Ok(Message::Ping(_)) => {}
+                                    Ok(Message::Pong(_)) => {}
+                                    Ok(Message::Frame(_)) => {}
+                                    Err(e) => {
+                                        debug!(service_id, conn_id, error = %e, "WebSocket stream error");
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }
@@ -2412,17 +2421,5 @@ mod tests {
         let mut bad_up = headers.clone();
         bad_up.insert("Upgrade", HeaderValue::from_static("http2"));
         assert!(HttpHandler::validate_websocket_upgrade_headers(&bad_up).is_err());
-    }
-
-    #[test]
-    fn sse_permit_exhaustion_limits_to_semaphore_budget() {
-        let sem = Arc::new(tokio::sync::Semaphore::new(1));
-        let p1 = sem.clone().try_acquire_owned();
-        assert!(p1.is_ok());
-        let p2 = sem.clone().try_acquire_owned();
-        assert!(p2.is_err());
-        drop(p1);
-        let p3 = sem.clone().try_acquire_owned();
-        assert!(p3.is_ok());
     }
 }

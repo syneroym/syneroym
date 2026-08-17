@@ -639,7 +639,7 @@ Includes the full asynchronous `tokio::select!` connection loop coordinating rea
 - `crates/router/src/route_handler/http.rs`: Unit tests for `websocket_upgrade_headers_validation_accepts_valid_and_rejects_invalid`.
 - `crates/sandbox_wasm/tests/websocket_integration.rs`: Integration test `test_websocket_marshalling` driving `AppSandboxEngine`'s `handle_websocket_on_open`, `handle_websocket_on_message` with `FrameKind::Text` and `FrameKind::Binary`, and `handle_websocket_on_close`.
 - `crates/substrate/tests/websocket_e2e.rs`: 5 end-to-end tests over real Iroh QUIC connections:
-  - `test_websocket_direct_echo_text_and_binary` (HTTP 101 upgrade, text frame 0x81, binary frame 0x82)
+  - `test_websocket_echo_unicast` (HTTP 101 upgrade, text frame 0x81, binary frame 0x82)
   - `test_websocket_broadcast_pubsub` (topic broadcast delivery)
   - `test_websocket_upgrade_rejects_unauthenticated_anonymous_on_private_route` (401 Unauthorized)
   - `test_websocket_concurrency_limit_returns_503_with_retry_after` (503 Service Unavailable + Retry-After: 1 on permit exhaustion)
@@ -647,10 +647,10 @@ Includes the full asynchronous `tokio::select!` connection loop coordinating rea
 
 **Commands run, from a clean tree:**
 
-```
+```bash
 cargo +nightly fmt --all                                    # clean, no diff
 cargo clippy --workspace --all-targets --all-features        # 0 warnings, 0 errors
-cargo test --workspace                                       # clean, full pass
+mise run test:rust                                          # builds fixtures & runs cargo test --workspace
 ```
 
 ## A4 — What shipped
@@ -693,7 +693,7 @@ cargo test --workspace                                       # clean, full pass
 - `crates/substrate/tests/http_passthrough_e2e.rs`:
   - `test_sse_receives_message_published_via_http`
   - `test_sse_rejects_missing_accept_header`
-  - `test_sse_concurrent_subscriptions`
+  - `test_sse_permit_exhaustion_returns_503_service_unavailable`
 - `crates/substrate/tests/miniapp_demo1_wasm_e2e.rs`:
   - `test_miniapp_demo1_wasm_static_asset_serving_zero_instantiations` (asserts zero guest instantiations, ETag 304 caching)
   - `test_miniapp_demo1_wasm_comments_spa_page` (serves SPA html root container)
@@ -706,6 +706,6 @@ cargo test --workspace                                       # clean, full pass
 ```bash
 cargo +nightly fmt --all                                    # clean, no diff
 cargo clippy --workspace --all-targets --all-features        # clean, 0 warnings, 0 errors
-cargo test --workspace                                       # clean, all unit and integration tests passed
+mise run test:rust                                          # clean, builds fixtures & passes full test suite
 mise run test:e2e                                           # clean, all 12 WebRTC multi-hop tests passed (browser demo app suite in A5)
 ```

@@ -322,7 +322,7 @@ When `POST /api/comments` saves a comment, the guest calls `host-api::publish("c
 3. Upload/download round-trips over the `stream` HTTP routes.
 4. WebSocket echo and pubsub broadcast.
 
-**SSE WebRTC Proxy Spike:** Verified: `EventSource` over WebRTC proxy data channel is supported through the service worker / data channel bridge; raw chunked HTTP delivery provides streaming text/event-stream frames cleanly to browsers. Full browser-based Playwright E2E verification of `miniapp-demo1-wasm` is scheduled for Slice A5.
+**SSE WebRTC Proxy Spike:** Streaming `EventSource` over the browser WebRTC proxy (`sw.js` + `peer-proxy.js`) remains an open integration point to be proven end-to-end by the Playwright browser suite in Slice A5 (the native E2E tests in A4 prove SSE streaming over Iroh QUIC).
 
 ### Manual verification / Commands Block
 
