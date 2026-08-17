@@ -52,7 +52,7 @@ use serde_json::Value;
 use syneroym_core::{
     asset_manifest::AssetEntry,
     guest_http::{GuestCallerAuth, GuestCallerIdentity, GuestHttpRequest, GuestHttpResponse},
-    http_routes::{HttpRoute, match_path, param_name},
+    http_routes::{DEFAULT_MAX_SSE_SUBSCRIBERS_PER_SERVICE, HttpRoute, match_path, param_name},
     streaming::StreamDirection,
 };
 use syneroym_data_blob::{
@@ -1161,13 +1161,15 @@ impl HttpHandler {
         }
 
         let service_id = self.preamble.service_id.clone();
+        self.route_handler.inner.sse_permits.retain(|k, v| {
+            self.route_handler.inner.http_routes.contains_key(k)
+                || v.available_permits() < DEFAULT_MAX_SSE_SUBSCRIBERS_PER_SERVICE
+        });
         let permits = {
-            let entry = self
-                .route_handler
-                .inner
-                .sse_permits
-                .entry(service_id)
-                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(50)));
+            let entry =
+                self.route_handler.inner.sse_permits.entry(service_id).or_insert_with(|| {
+                    Arc::new(tokio::sync::Semaphore::new(DEFAULT_MAX_SSE_SUBSCRIBERS_PER_SERVICE))
+                });
             entry.value().clone()
         };
         let permit = match permits.try_acquire_owned() {
@@ -1250,7 +1252,7 @@ impl HttpHandler {
         // (`accept-stream-upload(protocol, peer-id, metadata)`) or the
         // download request parameter (`handle-stream-request(protocol, peer-id,
         // request-data)`).
-        let initial_payload =
+        let raw_payload =
             path_param.as_deref().map(|p| p.as_bytes().to_vec()).unwrap_or_else(|| {
                 req.uri()
                     .query()
@@ -1258,6 +1260,7 @@ impl HttpHandler {
                     .unwrap_or_default()
                     .into_bytes()
             });
+        let initial_payload = percent_encoding::percent_decode(&raw_payload).collect::<Vec<u8>>();
 
         match route.operation.as_str() {
             "accept-upload" => {
@@ -1289,7 +1292,7 @@ impl HttpHandler {
                 }
             }
             "accept-download" => {
-                let (duplex_writer, duplex_reader) = tokio_io::duplex(64 * 1024);
+                let (duplex_writer, mut duplex_reader) = tokio_io::duplex(64 * 1024);
                 let reader: Box<dyn AsyncRead + Unpin + Send> = Box::new(tokio_io::empty());
                 let writer: Box<dyn AsyncWrite + Unpin + Send> = Box::new(duplex_writer);
 
@@ -1298,8 +1301,8 @@ impl HttpHandler {
                 let proto = protocol.clone();
                 let peer = peer_id.clone();
 
-                tokio::spawn(async move {
-                    let _ = engine
+                let join_handle = tokio::spawn(async move {
+                    engine
                         .handle_stream_protocol_request(
                             &service_id,
                             &proto,
@@ -1309,20 +1312,63 @@ impl HttpHandler {
                             reader,
                             writer,
                         )
-                        .await;
+                        .await
                 });
 
-                let stream = stream::unfold(duplex_reader, |mut reader| async move {
-                    let mut buf = vec![0u8; 64 * 1024];
-                    match reader.read(&mut buf).await {
-                        Ok(0) => None,
-                        Ok(n) => {
-                            buf.truncate(n);
-                            Some((Ok::<_, Infallible>(Frame::data(Bytes::from(buf))), reader))
+                let mut first_buf = vec![0u8; 64 * 1024];
+                let first_chunk = match duplex_reader.read(&mut first_buf).await {
+                    Ok(0) => match join_handle.await {
+                        Ok(Ok(StreamRequestOutcome::Declined)) => {
+                            return Ok(http_error(
+                                StatusCode::NOT_FOUND,
+                                "stream download declined or file not found".into(),
+                            ));
                         }
-                        Err(_) => None,
+                        Ok(Err(e)) => {
+                            return Ok(http_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                e.to_string(),
+                            ));
+                        }
+                        _ => {
+                            return Ok(http_error(
+                                StatusCode::NOT_FOUND,
+                                "stream download produced no data".into(),
+                            ));
+                        }
+                    },
+                    Ok(n) => {
+                        first_buf.truncate(n);
+                        Some(Bytes::from(first_buf))
                     }
-                });
+                    Err(e) => {
+                        return Ok(http_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("failed to read stream download: {e}"),
+                        ));
+                    }
+                };
+
+                let stream = stream::unfold(
+                    (duplex_reader, first_chunk),
+                    |(mut reader, first)| async move {
+                        if let Some(chunk) = first {
+                            return Some((Ok::<_, Infallible>(Frame::data(chunk)), (reader, None)));
+                        }
+                        let mut buf = vec![0u8; 64 * 1024];
+                        match reader.read(&mut buf).await {
+                            Ok(0) => None,
+                            Ok(n) => {
+                                buf.truncate(n);
+                                Some((
+                                    Ok::<_, Infallible>(Frame::data(Bytes::from(buf))),
+                                    (reader, None),
+                                ))
+                            }
+                            Err(_) => None,
+                        }
+                    },
+                );
 
                 let body = StreamBody::new(stream).boxed_unsync();
                 let mut resp_builder = Response::builder().status(StatusCode::OK);

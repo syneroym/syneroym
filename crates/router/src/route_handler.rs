@@ -26,7 +26,7 @@ use syneroym_core::{
     asset_manifest::AssetRegistry,
     config::{RetryPolicy, SubstrateConfig},
     dht_registry::RegistryClient,
-    http_routes::HttpRouteRegistry,
+    http_routes::{HttpRouteRegistry, SsePermitRegistry},
     local_registry::EndpointRegistry,
     storage::MockStorage,
 };
@@ -120,7 +120,7 @@ pub struct RouteHandlerInner {
     /// producer as `http_routes` above; a cache, not persistence (D-A1-2).
     pub assets: AssetRegistry,
     /// Bounded concurrent SSE subscriptions per service (M06A A4).
-    pub sse_permits: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
+    pub sse_permits: SsePermitRegistry,
     /// `None` in coordinator mode (`new_coordinator`), `Some` for a real
     /// substrate node (`init`) -- mirrors `app_sandbox_engine`'s own
     /// coordinator-mode-is-absent pattern. Used only by the signed-URL blob

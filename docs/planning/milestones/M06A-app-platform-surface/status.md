@@ -652,25 +652,25 @@ cargo test --workspace                                       # clean, full pass 
 [slice-a4-implementation-plan.md](slice-a4-implementation-plan.md) is the design of record. It delivers the end-to-end demo app WASM component fixture (`test-components/miniapp-demo1-wasm`) reproducing the full functionality of `miniapp-demo1-web`, along with streaming file download route bridging and bounded SSE subscriber concurrency.
 
 **Demo App WASM Component Fixture** (`test-components/miniapp-demo1-wasm`):
-- `wit/miniapp-demo1-wasm.wit`: Defines the `miniapp-demo1-wasm` world importing `syneroym:data-layer/store@0.1.0`, `syneroym:blob-store/blob-store@0.1.0`, `syneroym:messaging/host-api@0.1.0`, `syneroym:messaging/stream-types@0.1.0`, and `syneroym:http/websocket@0.1.0`, and exporting `syneroym:http/incoming-handler@0.1.0`, `syneroym:http/websocket-handler@0.1.0`, `syneroym:messaging/guest-api@0.1.0`, and `syneroym:messaging/stream-types@0.1.0`.
+- `wit/world.wit`: Defines the `miniapp-demo1-wasm` world importing `syneroym:data-layer/store@0.1.0`, `syneroym:blob-store/blob-store@0.1.0`, `syneroym:messaging/host-api@0.1.0`, `syneroym:messaging/stream-types@0.1.0`, and `syneroym:http/websocket@0.1.0`, and exporting `syneroym:http/incoming-handler@0.1.0`, `syneroym:http/websocket-handler@0.1.0`, `syneroym:messaging/guest-api@0.1.0`, and `syneroym:messaging/stream-types@0.1.0`.
 - `client/`: Full SolidJS UI client application with static asset bundle (HTML, CSS, JS, SVG) providing interactive tabs for Comments SPA, Chunked File Upload/Download, SSE Live Feed, and WebSocket Live Feed.
 - `src/lib.rs`: Guest WASM implementation providing:
-  - `incoming-handler`: REST endpoints for comments lifecycle (`GET /api/comments`, `POST /api/comments`, `DELETE /api/comments/{id}`) with validation, data-layer persistence, and real-time pub-sub broadcast.
-  - `guest-api` & `stream-types`: Stream protocol handlers for `file-upload` (streaming binary into blob storage and saving metadata in data-layer) and `file-download` (streaming chunks from blob storage to guest stream cursor).
-  - `websocket-handler`: Bidirectional WebSocket message handling with JSON protocol parsing (`echo`, `broadcast_comment`, `ping`), direct host unicast send, and pub-sub broker subscription for broadcast.
-- Built and cached release wasm binary `miniapp-demo1-wasm.wasm`.
+  - `incoming-handler`: REST endpoints for comments lifecycle (`GET /api/comments`, `POST /api/comments`) with input validation (returning `422` with guest error payload on invalid body), data-layer persistence, and real-time pub-sub broadcast with RFC3339 timestamps.
+  - `guest-api` & `stream-types`: Stream protocol handlers for `file-upload` (streaming binary into blob storage and saving metadata in data-layer with filename sanitization) and `file-download` (streaming chunks from blob storage to guest stream cursor).
+  - `websocket-handler`: Bidirectional WebSocket message handling with direct host unicast send and pub-sub broker subscription for broadcast.
+- Release wasm binary `miniapp-demo1-wasm.wasm` built automatically via `mise run build:test-components`.
 
 **Stream Download & Control Plane Routing** (`crates/control_plane/src/http_routes.rs`, `crates/router/src/route_handler/http.rs`):
 - Added validation for `("stream", "accept-download")` allowing `GET`/`HEAD` methods with non-empty `protocol`.
-- Implemented `accept-download` in router HTTP bridge via `tokio_io::duplex(64 * 1024)` + background download task executing `handle_stream_protocol_request(StreamDirection::Download)` + `StreamBody::new(stream::unfold(...))` with MIME type inference from path.
+- Implemented `accept-download` in router HTTP bridge via `tokio_io::duplex(64 * 1024)` + background download task executing `handle_stream_protocol_request(StreamDirection::Download)` + `StreamBody::new(stream::unfold(...))` with MIME type inference from path, percent-decoding on metadata/path parameters, and returning `404 Not Found` if stream download declines or file is not found.
 
-**SSE Concurrency Limiting** (`crates/router/src/route_handler/http.rs`, `crates/router/src/route_handler.rs`):
-- Added `sse_permits` (`Arc<DashMap<String, Arc<Semaphore>>>`) in `RouteHandlerInner` bounding concurrent SSE subscribers to 50 per service (`Failure Matrix #8`).
-- Returns HTTP 503 Service Unavailable with `Retry-After: 1` when subscriber quota is reached.
+**SSE Concurrency Limiting** (`crates/core/src/http_routes.rs`, `crates/router/src/route_handler/http.rs`, `crates/router/src/route_handler.rs`):
+- Added `SsePermitRegistry` (`Arc<DashMap<String, Arc<Semaphore>>>`) and `DEFAULT_MAX_SSE_SUBSCRIBERS_PER_SERVICE` (50) in `RouteHandlerInner` bounding concurrent SSE subscribers per service (`Failure Matrix #8`).
+- Prunes stale permits on each request and returns HTTP 503 Service Unavailable with `Retry-After: 1` when subscriber quota is reached.
 - Holds permit in `stream::unfold` until stream disconnects.
 
 **Workspace & Test Integration**:
-- Added `miniapp_demo1_wasm_path()` and `MINIAPP_DEMO1_WASM_ROUTES_JSON` to `crates/core/src/test_constants.rs`.
+- Added `miniapp_demo1_wasm_path()` and `MINIAPP_DEMO1_WASM_ROUTES_JSON` (`include_str!`) to `crates/core/src/test_constants.rs`.
 - Added `miniapp-demo1-wasm` to root `Cargo.toml` `exclude`, `mise.toml` `build:test-components`, and `test-components/README.md`.
 - Added end-to-end integration tests in `crates/substrate/tests/miniapp_demo1_wasm_e2e.rs`.
 
@@ -678,16 +678,16 @@ cargo test --workspace                                       # clean, full pass 
 
 **New tests:**
 - `crates/control_plane/src/http_routes.rs`:
-  - `accept_download_stream_route_succeeds_with_get`
-  - `accept_download_stream_route_fails_with_post`
-  - `unknown_stream_operation_fails`
+  - `stream_accept_download_with_get_or_head_is_accepted`
+  - `stream_accept_download_with_post_is_rejected`
+  - `stream_unsupported_operation_is_rejected`
 - `crates/router/src/route_handler/http.rs`:
   - `sse_permits_exhaustion_returns_503_service_unavailable`
 - `crates/substrate/tests/miniapp_demo1_wasm_e2e.rs`:
   - `test_miniapp_demo1_wasm_static_asset_serving_zero_instantiations` (asserts zero guest instantiations, ETag 304 caching)
-  - `test_miniapp_demo1_wasm_comments_spa_page` (serves SPA html without instantiations)
-  - `test_miniapp_demo1_wasm_rest_comments_lifecycle` (POST, GET, validation error 422, DELETE)
-  - `test_miniapp_demo1_wasm_stream_upload_and_download` (multi-chunk streaming upload and byte-identical download)
+  - `test_miniapp_demo1_wasm_comments_spa_page` (serves SPA html root container)
+  - `test_miniapp_demo1_wasm_rest_comments_lifecycle` (POST, GET, and guest validation error 422)
+  - `test_miniapp_demo1_wasm_stream_upload_and_download` (multi-chunk 64 KiB streaming upload, byte-identical download, and 404 on missing download)
   - `test_miniapp_demo1_wasm_sse_live_updates` (SSE event streaming across distinct client sessions)
   - `test_miniapp_demo1_wasm_websocket_echo_and_updates` (WebSocket echo unicast and pub-sub broadcast)
 

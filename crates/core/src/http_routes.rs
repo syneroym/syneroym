@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use serde::Deserialize;
+use tokio::sync::Semaphore;
 
 /// One `http_routes` entry. `target` selects which native capability the
 /// route bridges onto; the optional fields are only meaningful for the
@@ -59,6 +60,13 @@ pub struct HttpRoute {
 /// holds the same `Arc` for lookup from
 /// `crates/router/src/route_handler/http.rs`.
 pub type HttpRouteRegistry = Arc<DashMap<String, Vec<HttpRoute>>>;
+
+/// Default maximum concurrent SSE subscriptions allowed per service.
+pub const DEFAULT_MAX_SSE_SUBSCRIBERS_PER_SERVICE: usize = 50;
+
+/// Shared, keyed-by-`service_id` SSE permits table. Bounded per service to
+/// prevent subscriber starvation or unbounded resource usage.
+pub type SsePermitRegistry = Arc<DashMap<String, Arc<Semaphore>>>;
 
 /// Matches a single `{param}` path pattern (e.g. `/orders/{id}`) against a
 /// request path. Returns `None` if the pattern doesn't match at all,

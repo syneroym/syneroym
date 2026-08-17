@@ -30,6 +30,9 @@ run = [
 [tasks."build:test-components"]
 description = "Build all WASM test fixtures required by the integration tests"
 run = """
+if [ -d "test-components/miniapp-demo1-wasm/client" ]; then
+  (cd "test-components/miniapp-demo1-wasm/client" && npm ci || npm install && npm run build)
+fi
 for component in greeter data-layer-test proxy-test stream-test messaging-pubsub-test abac-test scheduled-test saga-test http-guest-test websocket-guest-test miniapp-demo1-wasm; do
   (cd "test-components/$component" && cargo component build --release --target wasm32-wasip2)
 done

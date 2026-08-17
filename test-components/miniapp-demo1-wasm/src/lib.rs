@@ -181,11 +181,28 @@ impl IncomingHandlerGuest for MiniappDemo1WasmComponent {
             ("POST", "/api/comments") => {
                 #[derive(serde::Deserialize)]
                 struct CreateComment {
+                    #[serde(default)]
                     text: String,
                 }
 
-                let payload: CreateComment = serde_json::from_slice(&request.body)
-                    .map_err(|e| format!("invalid comment json: {e}"))?;
+                let payload: CreateComment = match serde_json::from_slice(&request.body) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return Ok(HttpResponse {
+                            status: 422,
+                            headers: vec![("content-type".to_string(), "application/json".to_string())],
+                            body: format!(r#"{{"error":"invalid json payload: {e}"}}"#).into_bytes(),
+                        });
+                    }
+                };
+
+                if payload.text.trim().is_empty() {
+                    return Ok(HttpResponse {
+                        status: 422,
+                        headers: vec![("content-type".to_string(), "application/json".to_string())],
+                        body: br#"{"error":"invalid payload: text is required"}"#.to_vec(),
+                    });
+                }
 
                 let now_ms = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -208,7 +225,7 @@ impl IncomingHandlerGuest for MiniappDemo1WasmComponent {
                 .map_err(|e| format!("{e:?}"))?;
 
                 let update_msg = serde_json::json!({
-                    "commentUpdateTimestamp": format!("2026-08-16T12:00:00.{now_ms:03}Z"),
+                    "commentUpdateTimestamp": chrono::Utc::now().to_rfc3339(),
                 });
                 let update_bytes = serde_json::to_vec(&update_msg).unwrap_or_default();
                 let _ = host_api::publish(COMMENT_UPDATES_TOPIC, &update_bytes);
@@ -281,7 +298,20 @@ impl GuestApiGuest for MiniappDemo1WasmComponent {
         if protocol != FILE_DOWNLOAD_PROTOCOL {
             return Err(format!("unknown stream protocol: {protocol}"));
         }
-        let filename = String::from_utf8_lossy(&request_data).to_string();
+        let raw_filename = String::from_utf8_lossy(&request_data).to_string();
+        let sanitized = raw_filename
+            .replace('\\', "/")
+            .split('/')
+            .last()
+            .unwrap_or_default()
+            .trim_matches('.')
+            .to_string();
+        let filename = if sanitized.is_empty() {
+            raw_filename
+        } else {
+            sanitized
+        };
+
         let record = store::get(FILES_COLLECTION, &filename)
             .map_err(|e| format!("{e:?}"))?
             .ok_or_else(|| "file not found".to_string())?;
@@ -309,10 +339,17 @@ impl GuestApiGuest for MiniappDemo1WasmComponent {
         if protocol != FILE_UPLOAD_PROTOCOL {
             return Err(format!("unknown stream protocol: {protocol}"));
         }
-        let filename = if metadata.is_empty() {
+        let sanitized = metadata
+            .replace('\\', "/")
+            .split('/')
+            .last()
+            .unwrap_or_default()
+            .trim_matches('.')
+            .to_string();
+        let filename = if sanitized.is_empty() {
             "uploaded.dat".to_string()
         } else {
-            metadata
+            sanitized
         };
 
         Ok(StreamSink::new(FileUploadSink {

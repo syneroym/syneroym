@@ -268,6 +268,7 @@ async fn test_miniapp_demo1_wasm_static_asset_serving_zero_instantiations() {
     assert_eq!(resp.status, 200);
     assert!(resp.headers.get("content-type").unwrap().starts_with("text/html"));
     assert!(String::from_utf8_lossy(&resp.body).contains("Hello world from demo1-instance0"));
+    let etag = resp.headers.get("etag").expect("expected ETag header").clone();
 
     // 2. GET /page1.html
     let (mut send2, mut recv2) =
@@ -277,6 +278,15 @@ async fn test_miniapp_demo1_wasm_static_asset_serving_zero_instantiations() {
     let resp2 = read_full_http_response(&mut recv2).await;
     assert_eq!(resp2.status, 200);
     assert!(String::from_utf8_lossy(&resp2.body).contains("Static page 1"));
+
+    // 3. Repeat GET / with If-None-Match -> 304 Not Modified
+    let (mut send3, mut recv3) =
+        open_http_stream(ctx.substrate_client.connection().as_ref().unwrap(), "demo-app", None)
+            .await;
+    let req3 = format!("GET / HTTP/1.1\r\nHost: localhost\r\nIf-None-Match: {etag}\r\n\r\n");
+    send3.write_all(req3.as_bytes()).await.unwrap();
+    let resp3 = read_full_http_response(&mut recv3).await;
+    assert_eq!(resp3.status, 304);
 
     // Zero guest instantiations for static assets
     assert_eq!(counter_value("syneroym_wasm_instances_total"), baseline);
@@ -343,7 +353,26 @@ async fn test_miniapp_demo1_wasm_rest_comments_lifecycle() {
     let comments: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
     assert_eq!(comments, serde_json::json!([]));
 
-    // 2. POST /api/comments -> 201 Created
+    // 2. POST /api/comments with invalid payload -> 422 Unprocessable Entity
+    let (mut send_err, mut recv_err) = open_http_stream(
+        ctx.substrate_client.connection().as_ref().unwrap(),
+        "demo-comments",
+        None,
+    )
+    .await;
+    let post_err_body = b"{\"invalid\":123}";
+    let post_err_req = format!(
+        "POST /api/comments HTTP/1.1\r\nHost: localhost\r\nContent-Type: \
+         application/json\r\nContent-Length: {}\r\n\r\n{}",
+        post_err_body.len(),
+        std::str::from_utf8(post_err_body).unwrap()
+    );
+    send_err.write_all(post_err_req.as_bytes()).await.unwrap();
+    let resp_err = read_full_http_response(&mut recv_err).await;
+    assert_eq!(resp_err.status, 422);
+    assert!(String::from_utf8_lossy(&resp_err.body).contains("text is required"));
+
+    // 3. POST /api/comments -> 201 Created
     let (mut send2, mut recv2) = open_http_stream(
         ctx.substrate_client.connection().as_ref().unwrap(),
         "demo-comments",
@@ -361,7 +390,7 @@ async fn test_miniapp_demo1_wasm_rest_comments_lifecycle() {
     let resp2 = read_full_http_response(&mut recv2).await;
     assert_eq!(resp2.status, 201);
 
-    // 3. GET /api/comments -> list containing "First comment from test"
+    // 4. GET /api/comments -> list containing "First comment from test"
     let (mut send3, mut recv3) = open_http_stream(
         ctx.substrate_client.connection().as_ref().unwrap(),
         "demo-comments",
@@ -396,18 +425,19 @@ async fn test_miniapp_demo1_wasm_stream_upload_and_download() {
     )
     .await;
 
-    // 1. Upload file via POST /api/files?metadata=greeting.txt
-    let file_content = b"Hello, this is a streamed file round-trip test!";
+    // 1. Upload multi-chunk file (64 KiB > 8 chunks of 8 KiB) via POST
+    //    /api/files?metadata=large_doc.bin
+    let file_content = vec![0x42u8; 64 * 1024];
     let (mut send, mut recv) =
         open_http_stream(ctx.substrate_client.connection().as_ref().unwrap(), "demo-files", None)
             .await;
     let post_req = format!(
-        "POST /api/files?metadata=greeting.txt HTTP/1.1\r\nHost: localhost\r\nContent-Length: \
-         {}\r\n\r\n{}",
-        file_content.len(),
-        std::str::from_utf8(file_content).unwrap()
+        "POST /api/files?metadata=large_doc.bin HTTP/1.1\r\nHost: localhost\r\nContent-Length: \
+         {}\r\n\r\n",
+        file_content.len()
     );
     send.write_all(post_req.as_bytes()).await.unwrap();
+    send.write_all(&file_content).await.unwrap();
     let resp = read_full_http_response(&mut recv).await;
     assert_eq!(resp.status, 200);
     let upload_json: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
@@ -423,20 +453,32 @@ async fn test_miniapp_demo1_wasm_stream_upload_and_download() {
     let files_json: serde_json::Value = serde_json::from_slice(&resp2.body).unwrap();
     let files_arr = files_json.as_array().expect("expected json array");
     assert_eq!(files_arr.len(), 1);
-    assert_eq!(files_arr[0]["name"], "greeting.txt");
+    assert_eq!(files_arr[0]["name"], "large_doc.bin");
     assert_eq!(files_arr[0]["size"], file_content.len() as u64);
 
-    // 3. Download file via GET /api/files/greeting.txt
+    // 3. Download file via GET /api/files/large_doc.bin
     let (mut send3, mut recv3) =
         open_http_stream(ctx.substrate_client.connection().as_ref().unwrap(), "demo-files", None)
             .await;
     send3
-        .write_all(b"GET /api/files/greeting.txt HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .write_all(b"GET /api/files/large_doc.bin HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .await
         .unwrap();
     let resp3 = read_full_http_response(&mut recv3).await;
     assert_eq!(resp3.status, 200);
+    assert_eq!(resp3.body.len(), file_content.len());
     assert_eq!(resp3.body, file_content);
+
+    // 4. Download non-existent file via GET /api/files/missing.bin -> 404 Not Found
+    let (mut send4, mut recv4) =
+        open_http_stream(ctx.substrate_client.connection().as_ref().unwrap(), "demo-files", None)
+            .await;
+    send4
+        .write_all(b"GET /api/files/missing.bin HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let resp4 = read_full_http_response(&mut recv4).await;
+    assert_eq!(resp4.status, 404);
 }
 
 #[tokio::test]
