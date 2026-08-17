@@ -116,10 +116,10 @@ pub struct RouteHandlerInner {
     /// `route_handler::http` to resolve `(service_id, method, path)` to a
     /// bridged `data-layer`/`messaging`/stream-protocol route.
     pub http_routes: HttpRouteRegistry,
-    /// Static asset manifests, per service (M06A A1). Same `Arc` and same
-    /// producer as `http_routes` above; a cache, not persistence (D-A1-2).
+    /// Static asset manifests, per service. Same `Arc` and same
+    /// producer as `http_routes` above; a cache, not persistence.
     pub assets: AssetRegistry,
-    /// Bounded concurrent SSE subscriptions per service (M06A A4).
+    /// Bounded concurrent SSE subscriptions per service.
     pub sse_permits: SsePermitRegistry,
     /// `None` in coordinator mode (`new_coordinator`), `Some` for a real
     /// substrate node (`init`) -- mirrors `app_sandbox_engine`'s own
@@ -468,6 +468,11 @@ impl RouteHandler {
 
     pub fn active_connections(&self) -> Arc<AtomicUsize> {
         self.inner.active_connections.clone()
+    }
+
+    /// Drops any SSE permit semaphore for a service on undeploy/stop.
+    pub fn forget_sse_permits(&self, service_id: &str) {
+        self.inner.sse_permits.remove(service_id);
     }
 }
 

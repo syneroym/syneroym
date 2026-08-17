@@ -308,7 +308,11 @@ async fn deploy_with_mode(dir: &Path, mode: &str) -> Option<Deployed> {
 /// skip there would mean a green run stopped proving what it claims to.
 macro_rules! skip_if_missing_artifact {
     ($test_name:expr) => {
-        panic!("{}: abac-test WASM artifact not found", $test_name);
+        panic!(
+            "{}: abac-test WASM artifact not found. Run `mise run build:test-components` to build \
+             test fixtures.",
+            $test_name
+        );
     };
 }
 

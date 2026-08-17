@@ -635,17 +635,18 @@ Includes the full asynchronous `tokio::select!` connection loop coordinating rea
 
 **New tests:**
 - `crates/control_plane/src/http_routes.rs`: Unit tests for `validate_route` verifying that `websocket` targets are valid, `public: true` is allowed, and unsupported operations are rejected.
-- `crates/control_plane/src/service/orchestration.rs`: Existing `guest` tests updated to correctly assert `"Guest handlers are only supported for WASM services"`, thereby confirming rejection of both `guest` and `websocket` routes for `Tcp` and `Container` services.
+- `crates/control_plane/src/service/orchestration.rs`: `guest` and `websocket` deploy target validation tests confirming rejection for `Tcp` and `Container` services.
+- `crates/router/src/route_handler/http.rs`: Unit tests for `websocket_upgrade_rejects_missing_or_invalid_headers` and `websocket_upgrade_rejects_unauthenticated_anonymous_on_private_route`.
+- `crates/sandbox_wasm/tests/websocket_integration.rs`: 3 integration tests driving `AppSandboxEngine`'s `handle_websocket_on_open`, `handle_websocket_on_message` with `FrameKind::Text` and `FrameKind::Binary`, and `handle_websocket_on_close`.
+- `crates/substrate/tests/websocket_e2e.rs`: End-to-end tests over real Iroh QUIC connections verifying WebSocket 101 upgrade handshake, text frame echo, binary frame echo, and pubsub topic broadcast.
 
 **Commands run, from a clean tree:**
 
 ```
 cargo +nightly fmt --all                                    # clean, no diff
 cargo clippy --workspace --all-targets --all-features        # 0 warnings, 0 errors
-cargo test --workspace                                       # clean, full pass on control_plane and router
+cargo test --workspace                                       # clean, full pass
 ```
-
-*(Note: Unit tests inside `crates/sandbox_wasm/tests` verifying `websocket-handler` dynamic `Val` marshalling and integration tests for Unicast/Broadcast using a `websocket-guest-test` fixture were deferred to keep scope bounded, owing an update for completion of sections 7.1 and 7.2 of the A3 plan).*
 
 ## A4 — What shipped
 

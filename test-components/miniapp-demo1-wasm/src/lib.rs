@@ -29,7 +29,7 @@ use bindings::{
     syneroym::{
         blob_store::blob_store,
         data_layer::store,
-        http::websocket,
+        http::{websocket, websocket_types::FrameKind},
         messaging::host_api,
     },
 };
@@ -44,6 +44,7 @@ mod bindings {
             "syneroym:messaging/host-api@0.1.0": generate,
             "syneroym:messaging/stream-types@0.1.0": generate,
             "syneroym:http/websocket@0.1.0": generate,
+            "syneroym:http/websocket-types@0.1.0": generate,
             "syneroym:http/incoming-handler@0.1.0": generate,
             "syneroym:http/websocket-handler@0.1.0": generate,
             "syneroym:messaging/guest-api@0.1.0": generate,
@@ -273,13 +274,17 @@ impl IncomingHandlerGuest for MiniappDemo1WasmComponent {
 impl WebsocketHandlerGuest for MiniappDemo1WasmComponent {
     fn on_open(_conn: String) {}
 
-    fn on_message(conn: String, frame: Vec<u8>) {
+    fn on_message(conn: String, frame: Vec<u8>, _kind: FrameKind) {
         let text = String::from_utf8_lossy(&frame);
         let ws_msg = serde_json::json!({
             "commentUpdateTimestamp": serde_json::Value::Null,
             "recdMsg": format!("Received: {text}"),
         });
-        let _ = websocket::send(&conn, &serde_json::to_vec(&ws_msg).unwrap_or_default());
+        let _ = websocket::send(
+            &conn,
+            &serde_json::to_vec(&ws_msg).unwrap_or_default(),
+            FrameKind::Text,
+        );
     }
 
     fn on_close(_conn: String) {}

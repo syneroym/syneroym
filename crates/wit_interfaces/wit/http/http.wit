@@ -1,10 +1,9 @@
 package syneroym:http@0.1.0;
 
-/// Inbound HTTP handed to a component as an ordinary request/response
-/// (M06A A2). Deliberately **not** `wasi:http`: a component gets a request
-/// handed to a function, never a socket. Static assets never reach here --
-/// they are served straight from blob storage without instantiating the
-/// component (M06A A1).
+/// Inbound HTTP handed to a component as an ordinary request/response.
+/// Deliberately **not** `wasi:http`: a component gets a request handed to a
+/// function, never a socket. Static assets never reach here -- they are served
+/// straight from blob storage without instantiating the component.
 ///
 /// Optional, like `syneroym:data-layer/authorizer`: a component only
 /// exports this when it declares an `http_routes` entry with
@@ -111,23 +110,36 @@ world http-guest {
     export incoming-handler;
 }
 
-/// Optional WebSocket lifecycle handler (M06A A3). A component only exports
+/// Types shared across WebSocket interfaces.
+interface websocket-types {
+    /// Frame opcode kind: text or binary.
+    enum frame-kind {
+        text,
+        binary,
+    }
+}
+
+/// Optional WebSocket lifecycle handler. A component only exports
 /// this when it declares an `http_routes` entry with `target = "websocket"`.
 interface websocket-handler {
+    use websocket-types.{frame-kind};
+
     /// Invoked when a WebSocket connection is successfully upgraded.
     on-open: func(conn: string);
-    
+
     /// Invoked for every binary or text frame received from the client.
-    on-message: func(conn: string, frame: list<u8>);
-    
+    on-message: func(conn: string, frame: list<u8>, kind: frame-kind);
+
     /// Invoked when the connection drops, cleanly or otherwise.
     on-close: func(conn: string);
 }
 
 /// Host-provided WebSocket capabilities.
 interface websocket {
+    use websocket-types.{frame-kind};
+
     /// Unicast a frame to a specific active connection.
-    send: func(conn: string, frame: list<u8>) -> result<_, string>;
+    send: func(conn: string, frame: list<u8>, kind: frame-kind) -> result<_, string>;
 }
 
 /// Dummy world for generating the host import bindings.

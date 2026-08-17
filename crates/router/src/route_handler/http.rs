@@ -26,7 +26,7 @@ use std::{
     convert::Infallible,
     io, result,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Result, anyhow};
@@ -64,9 +64,16 @@ use syneroym_rpc::{
     AuthLevel, CallerContext, JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest,
     PROXY_TRANSPORT_RPC_CODE, UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
 };
-use syneroym_sandbox_wasm::{GuestHttpFailure, GuestHttpOutcome, StreamRequestOutcome};
+use syneroym_sandbox_wasm::{FrameKind, GuestHttpFailure, GuestHttpOutcome, StreamRequestOutcome};
 use tokio::io::{self as tokio_io, AsyncRead, AsyncReadExt, AsyncWrite};
-use tokio_tungstenite::{WebSocketStream, tungstenite::handshake::derive_accept_key};
+use tokio_tungstenite::{
+    WebSocketStream,
+    tungstenite::{
+        Message,
+        handshake::derive_accept_key,
+        protocol::{Role, WebSocketConfig},
+    },
+};
 use tokio_util::io::StreamReader;
 use tracing::{debug, error, warn};
 use uuid::Uuid;
@@ -1161,10 +1168,6 @@ impl HttpHandler {
         }
 
         let service_id = self.preamble.service_id.clone();
-        self.route_handler.inner.sse_permits.retain(|k, v| {
-            self.route_handler.inner.http_routes.contains_key(k)
-                || v.available_permits() < DEFAULT_MAX_SSE_SUBSCRIBERS_PER_SERVICE
-        });
         let permits = {
             let entry =
                 self.route_handler.inner.sse_permits.entry(service_id).or_insert_with(|| {
@@ -1350,22 +1353,50 @@ impl HttpHandler {
                 };
 
                 let stream = stream::unfold(
-                    (duplex_reader, first_chunk),
-                    |(mut reader, first)| async move {
+                    (duplex_reader, first_chunk, Some(join_handle)),
+                    |(mut reader, first, mut handle)| async move {
                         if let Some(chunk) = first {
-                            return Some((Ok::<_, Infallible>(Frame::data(chunk)), (reader, None)));
+                            return Some((
+                                Ok::<_, Infallible>(Frame::data(chunk)),
+                                (reader, None, handle),
+                            ));
                         }
                         let mut buf = vec![0u8; 64 * 1024];
                         match reader.read(&mut buf).await {
-                            Ok(0) => None,
+                            Ok(0) => {
+                                if let Some(h) = handle.take() {
+                                    match h.await {
+                                        Ok(Ok(StreamRequestOutcome::Completed)) => {}
+                                        Ok(Ok(StreamRequestOutcome::Declined)) => {
+                                            warn!(
+                                                "stream download declined by guest after partial \
+                                                 transfer"
+                                            );
+                                        }
+                                        Ok(Err(e)) => {
+                                            error!(
+                                                "stream download task failed after partial \
+                                                 transfer: {e}"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            error!("stream download task panicked: {e}");
+                                        }
+                                    }
+                                }
+                                None
+                            }
                             Ok(n) => {
                                 buf.truncate(n);
                                 Some((
                                     Ok::<_, Infallible>(Frame::data(Bytes::from(buf))),
-                                    (reader, None),
+                                    (reader, None, handle),
                                 ))
                             }
-                            Err(_) => None,
+                            Err(e) => {
+                                error!("stream download read error: {e}");
+                                None
+                            }
                         }
                     },
                 );
@@ -1529,6 +1560,28 @@ impl HttpHandler {
         }
     }
 
+    fn validate_websocket_upgrade_headers(headers: &HeaderMap) -> Result<&str, &'static str> {
+        let is_upgrade = headers
+            .get(hyper::header::UPGRADE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+        let is_conn_upgrade = headers
+            .get(hyper::header::CONNECTION)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.to_ascii_lowercase().contains("upgrade"));
+        let has_version_13 = headers
+            .get("sec-websocket-version")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v == "13");
+        let req_key =
+            headers.get("sec-websocket-key").and_then(|v| v.to_str().ok()).unwrap_or_default();
+
+        if !is_upgrade || !is_conn_upgrade || !has_version_13 || req_key.is_empty() {
+            return Err("Invalid WebSocket upgrade request headers");
+        }
+        Ok(req_key)
+    }
+
     async fn handle_websocket_route(
         &self,
         route: &HttpRoute,
@@ -1558,17 +1611,12 @@ impl HttpHandler {
             ));
         }
 
-        let req_key = req
-            .headers()
-            .get("sec-websocket-key")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default();
-        if req_key.is_empty() {
-            return Ok(http_error(
-                StatusCode::BAD_REQUEST,
-                "Missing sec-websocket-key header".into(),
-            ));
-        }
+        let req_key = match Self::validate_websocket_upgrade_headers(req.headers()) {
+            Ok(k) => k,
+            Err(msg) => {
+                return Ok(http_error(StatusCode::BAD_REQUEST, msg.into()));
+            }
+        };
 
         let accept_key = derive_accept_key(req_key.as_bytes());
         let response = Response::builder()
@@ -1607,136 +1655,137 @@ impl HttpHandler {
             _sub_handle = Some(handle);
         }
 
-        let permits = {
-            let entry = app_sandbox_engine
-                .guest_websocket_permits
-                .entry(service_id.clone())
-                .or_insert_with(|| {
-                    Arc::new(tokio::sync::Semaphore::new(
-                        app_sandbox_engine.max_concurrent_websockets_per_service as usize,
-                    ))
-                });
-            entry.value().clone()
+        let permit = match app_sandbox_engine
+            .acquire_websocket_permit(&service_id, Duration::from_secs(5))
+            .await
+        {
+            Some(p) => p,
+            None => {
+                let mut resp = http_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "websocket concurrency limit reached".into(),
+                );
+                resp.headers_mut().insert(RETRY_AFTER, HeaderValue::from_static("1"));
+                return Ok(resp);
+            }
         };
-        let permit =
-            match tokio::time::timeout(std::time::Duration::from_secs(5), permits.acquire_owned())
-                .await
-            {
-                Ok(Ok(p)) => p,
-                _ => {
-                    return Ok(http_error(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "websocket concurrency limit reached".into(),
-                    ));
-                }
-            };
 
         let conn_id = uuid::Uuid::new_v4().to_string();
-        let (tx, mut rx_internal) = tokio::sync::mpsc::channel(16);
+        let mut rx_internal = app_sandbox_engine.register_websocket_sender(&service_id, &conn_id);
         let engine = app_sandbox_engine.clone();
-
-        {
-            let service_map = engine
-                .websocket_senders
-                .entry(service_id.clone())
-                .or_insert_with(|| Arc::new(dashmap::DashMap::new()));
-            service_map.insert(conn_id.clone(), tx);
-        }
+        let caller = self.caller.clone();
 
         tokio::task::spawn(async move {
             let _keep_alive = _sub_handle;
+            let _permit = permit;
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
                     let io = hyper_util::rt::TokioIo::new(upgraded);
-                    let mut ws_stream = WebSocketStream::from_raw_socket(
-                        io,
-                        tokio_tungstenite::tungstenite::protocol::Role::Server,
-                        None,
-                    )
-                    .await;
+                    let mut ws_config = WebSocketConfig::default();
+                    ws_config.max_message_size = Some(1024 * 1024);
+                    ws_config.max_frame_size = Some(1024 * 1024);
 
-                    {
-                        let engine_clone = engine.clone();
-                        let sid = service_id.clone();
-                        let cid = conn_id.clone();
-                        tokio::task::spawn(async move {
-                            engine_clone.handle_websocket_on_open(&sid, &cid).await;
-                        });
-                    }
+                    let ws_stream =
+                        WebSocketStream::from_raw_socket(io, Role::Server, Some(ws_config)).await;
 
-                    let _permit = permit;
                     use futures::{SinkExt, StreamExt};
+                    let (mut ws_sink, mut ws_stream) = ws_stream.split();
 
-                    loop {
-                        tokio::select! {
-                            msg = ws_stream.next() => {
-                                match msg {
-                                    Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(bin))) => {
-                                        let engine_clone = engine.clone();
-                                        let sid = service_id.clone();
-                                        let cid = conn_id.clone();
-                                        tokio::task::spawn(async move {
-                                            engine_clone.handle_websocket_on_message(&sid, &cid, bin.to_vec()).await;
-                                        });
+                    let (writer_shutdown_tx, mut writer_shutdown_rx) =
+                        tokio::sync::oneshot::channel::<()>();
+                    let writer_task = tokio::spawn(async move {
+                        loop {
+                            tokio::select! {
+                                _ = &mut writer_shutdown_rx => break,
+                                broadcast = async {
+                                    if let Some(rx) = &mut topic_rx {
+                                        rx.recv().await
+                                    } else {
+                                        futures::future::pending().await
                                     }
-                                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(txt))) => {
-                                        let engine_clone = engine.clone();
-                                        let sid = service_id.clone();
-                                        let cid = conn_id.clone();
-                                        tokio::task::spawn(async move {
-                                            engine_clone.handle_websocket_on_message(&sid, &cid, txt.as_bytes().to_vec()).await;
-                                        });
+                                } => {
+                                    match broadcast {
+                                        Some((_, payload)) => {
+                                            let msg = if let Ok(text) = String::from_utf8(payload.clone()) {
+                                                Message::Text(text.into())
+                                            } else {
+                                                Message::Binary(payload.into())
+                                            };
+                                            if ws_sink.send(msg).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        None => break,
                                     }
-                                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => {
-                                        break;
+                                }
+                                internal_msg = rx_internal.recv() => {
+                                    match internal_msg {
+                                        Some((frame, kind)) => {
+                                            let msg = match kind {
+                                                FrameKind::Text => {
+                                                    let text = String::from_utf8_lossy(&frame).to_string();
+                                                    Message::Text(text.into())
+                                                }
+                                                FrameKind::Binary => Message::Binary(frame.into()),
+                                            };
+                                            if ws_sink.send(msg).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        None => break,
                                     }
-                                    Some(Err(_)) => break,
-                                    _ => {}
                                 }
                             }
-                            broadcast = async {
-                                if let Some(rx) = &mut topic_rx {
-                                    rx.recv().await
-                                } else {
-                                    futures::future::pending().await
-                                }
-                            } => {
-                                match broadcast {
-                                    Some((_, payload)) => {
-                                        let _ = ws_stream.send(tokio_tungstenite::tungstenite::Message::Binary(payload.into())).await;
-                                    }
-                                    None => break,
-                                }
+                        }
+                    });
+
+                    // Sequential dispatch: await on-open before frame loop
+                    engine.handle_websocket_on_open(&service_id, &conn_id, caller.clone()).await;
+
+                    while let Some(msg_res) = ws_stream.next().await {
+                        match msg_res {
+                            Ok(Message::Text(txt)) => {
+                                engine
+                                    .handle_websocket_on_message(
+                                        &service_id,
+                                        &conn_id,
+                                        txt.as_bytes().to_vec(),
+                                        FrameKind::Text,
+                                        caller.clone(),
+                                    )
+                                    .await;
                             }
-                            internal_msg = rx_internal.recv() => {
-                                match internal_msg {
-                                    Some(bin) => {
-                                        let _ = ws_stream.send(tokio_tungstenite::tungstenite::Message::Binary(bin.into())).await;
-                                    }
-                                    None => break,
-                                }
+                            Ok(Message::Binary(bin)) => {
+                                engine
+                                    .handle_websocket_on_message(
+                                        &service_id,
+                                        &conn_id,
+                                        bin.to_vec(),
+                                        FrameKind::Binary,
+                                        caller.clone(),
+                                    )
+                                    .await;
+                            }
+                            Ok(Message::Close(_)) => break,
+                            Ok(Message::Ping(_)) => {}
+                            Ok(Message::Pong(_)) => {}
+                            Ok(Message::Frame(_)) => {}
+                            Err(e) => {
+                                debug!(service_id, conn_id, error = %e, "WebSocket stream error");
+                                break;
                             }
                         }
                     }
 
-                    {
-                        let engine_clone = engine.clone();
-                        let sid = service_id.clone();
-                        let cid = conn_id.clone();
-                        tokio::task::spawn(async move {
-                            engine_clone.handle_websocket_on_close(&sid, &cid).await;
-                        });
-                    }
-
-                    if let Some(map) = engine.websocket_senders.get(&service_id) {
-                        map.remove(&conn_id);
-                    }
+                    drop(ws_stream);
+                    let _ = writer_shutdown_tx.send(());
+                    let _ = writer_task.await;
+                    engine.deregister_websocket_sender(&service_id, &conn_id);
+                    engine.handle_websocket_on_close(&service_id, &conn_id, caller).await;
                 }
                 Err(e) => {
                     tracing::error!("WebSocket upgrade error: {}", e);
-                    if let Some(map) = engine.websocket_senders.get(&service_id) {
-                        map.remove(&conn_id);
-                    }
+                    engine.deregister_websocket_sender(&service_id, &conn_id);
                 }
             }
         });
@@ -2312,12 +2361,53 @@ mod tests {
         assert_eq!(values, vec!["a=1", "b=2"]);
     }
 
-    #[tokio::test]
-    async fn sse_permits_exhaustion_returns_503_service_unavailable() {
-        let permits = Arc::new(tokio::sync::Semaphore::new(1));
-        let p1 = permits.clone().try_acquire_owned().unwrap();
-        assert!(permits.clone().try_acquire_owned().is_err());
+    #[test]
+    fn websocket_upgrade_headers_validation_accepts_valid_and_rejects_invalid() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Upgrade", HeaderValue::from_static("websocket"));
+        headers.insert("Connection", HeaderValue::from_static("Upgrade"));
+        headers.insert("Sec-WebSocket-Version", HeaderValue::from_static("13"));
+        headers.insert("Sec-WebSocket-Key", HeaderValue::from_static("dGhlIHNhbXBsZSBub25jZQ=="));
+        assert_eq!(
+            HttpHandler::validate_websocket_upgrade_headers(&headers),
+            Ok("dGhlIHNhbXBsZSBub25jZQ==")
+        );
+
+        // Missing Sec-WebSocket-Key
+        let mut bad_headers = headers.clone();
+        bad_headers.remove("Sec-WebSocket-Key");
+        assert!(HttpHandler::validate_websocket_upgrade_headers(&bad_headers).is_err());
+
+        // Empty Sec-WebSocket-Key
+        let mut empty_key = headers.clone();
+        empty_key.insert("Sec-WebSocket-Key", HeaderValue::from_static(""));
+        assert!(HttpHandler::validate_websocket_upgrade_headers(&empty_key).is_err());
+
+        // Wrong version
+        let mut bad_ver = headers.clone();
+        bad_ver.insert("Sec-WebSocket-Version", HeaderValue::from_static("12"));
+        assert!(HttpHandler::validate_websocket_upgrade_headers(&bad_ver).is_err());
+
+        // Wrong connection
+        let mut bad_conn = headers.clone();
+        bad_conn.insert("Connection", HeaderValue::from_static("keep-alive"));
+        assert!(HttpHandler::validate_websocket_upgrade_headers(&bad_conn).is_err());
+
+        // Wrong upgrade
+        let mut bad_up = headers.clone();
+        bad_up.insert("Upgrade", HeaderValue::from_static("http2"));
+        assert!(HttpHandler::validate_websocket_upgrade_headers(&bad_up).is_err());
+    }
+
+    #[test]
+    fn sse_permit_exhaustion_limits_to_semaphore_budget() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let p1 = sem.clone().try_acquire_owned();
+        assert!(p1.is_ok());
+        let p2 = sem.clone().try_acquire_owned();
+        assert!(p2.is_err());
         drop(p1);
-        assert!(permits.clone().try_acquire_owned().is_ok());
+        let p3 = sem.clone().try_acquire_owned();
+        assert!(p3.is_ok());
     }
 }

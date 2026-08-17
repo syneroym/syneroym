@@ -52,7 +52,7 @@ function FilesManager() {
       <ul style="margin-top: 20px;">
         <For each={files()}>{(file) =>
           <li>
-            <a href={`/api/files/${file.name}`} target="_blank">{file.name}</a>
+            <a href={`/api/files/${encodeURIComponent(file.name)}`} target="_blank">{file.name}</a>
             <span style="margin-left: 10px; color: #666;">({file.size} bytes)</span>
           </li>
         }</For>

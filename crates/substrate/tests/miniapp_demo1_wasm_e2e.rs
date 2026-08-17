@@ -575,10 +575,10 @@ async fn test_miniapp_demo1_wasm_websocket_echo_and_updates() {
     let frame = build_masked_text_frame(msg);
     ws_send.write_all(&frame).await.unwrap();
 
-    // 3. Receive unicast echo frame (binary frame: 0x82 or text frame: 0x81)
+    // 3. Receive unicast echo frame (text frame: 0x81)
     let mut header = [0u8; 2];
     ws_recv.read_exact(&mut header).await.unwrap();
-    assert!(header[0] == 0x81 || header[0] == 0x82);
+    assert_eq!(header[0], 0x81);
     let payload_len = (header[1] & 0x7F) as usize;
     let mut echo_body = vec![0u8; payload_len];
     ws_recv.read_exact(&mut echo_body).await.unwrap();
@@ -600,13 +600,13 @@ async fn test_miniapp_demo1_wasm_websocket_echo_and_updates() {
     let post_resp = read_full_http_response(&mut recv_post).await;
     assert_eq!(post_resp.status, 201);
 
-    // Read broadcast frame from ws_recv
+    // Read broadcast frame from ws_recv (text frame: 0x81)
     let mut bcast_header = [0u8; 2];
     timeout(Duration::from_secs(5), ws_recv.read_exact(&mut bcast_header))
         .await
         .expect("timed out waiting for WS broadcast frame")
         .unwrap();
-    assert!(bcast_header[0] == 0x81 || bcast_header[0] == 0x82);
+    assert_eq!(bcast_header[0], 0x81);
     let bcast_len = (bcast_header[1] & 0x7F) as usize;
     let mut bcast_body = vec![0u8; bcast_len];
     ws_recv.read_exact(&mut bcast_body).await.unwrap();

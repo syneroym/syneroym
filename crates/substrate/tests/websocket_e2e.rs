@@ -1,5 +1,5 @@
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
-//! M06A A3 end-to-end tests: WebSocket route target.
+//! End-to-end tests for the WebSocket route target.
 
 use std::collections::HashMap;
 
@@ -67,6 +67,22 @@ fn parse_http_response(raw: &[u8]) -> HttpResponse {
     }
     let body = raw[offset..].to_vec();
     HttpResponse { status, headers, body }
+}
+
+async fn read_exact_buffered(recv: &mut RecvStream, unconsumed: &mut Vec<u8>, out: &mut [u8]) {
+    let mut out_idx = 0;
+    while out_idx < out.len() {
+        if !unconsumed.is_empty() {
+            let take = (out.len() - out_idx).min(unconsumed.len());
+            out[out_idx..out_idx + take].copy_from_slice(&unconsumed[..take]);
+            unconsumed.drain(..take);
+            out_idx += take;
+        } else {
+            let mut tmp = [0u8; 1024];
+            let n = recv.read(&mut tmp).await.unwrap().expect("unexpected EOF");
+            unconsumed.extend_from_slice(&tmp[..n]);
+        }
+    }
 }
 
 async fn open_http_stream(
@@ -153,32 +169,45 @@ async fn test_websocket_echo_unicast() {
     assert_eq!(resp.status, 101);
     assert_eq!(resp.headers.get("upgrade").map(|s| s.as_str()), Some("websocket"));
 
-    // Test on-open welcome message (unmasked binary frame)
-    // 0x82 = FIN + BINARY, 0x07 = length 7 ("welcome")
+    let mut unconsumed = resp.body;
+
+    // Test on-open welcome message (unmasked text frame)
+    // 0x81 = FIN + TEXT, 0x07 = length 7 ("welcome")
     let mut frame_header = [0u8; 2];
-    recv.read_exact(&mut frame_header).await.unwrap();
-    assert_eq!(frame_header[0], 0x82);
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut frame_header).await;
+    assert_eq!(frame_header[0], 0x81);
     assert_eq!(frame_header[1], 0x07);
 
     let mut payload = vec![0u8; 7];
-    recv.read_exact(&mut payload).await.unwrap();
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut payload).await;
     assert_eq!(&payload, b"welcome");
 
-    // Send a masked "hello" text frame, but it will be echoed as binary frame!
-    // Wait, if I send a TEXT frame, does the server's `on_message` receive it and
-    // echo it? Let's send a masked binary frame to be clean.
-    let mut masked_hello = build_masked_text_frame(b"hello");
-    masked_hello[0] = 0x82; // Make it BINARY instead of TEXT
+    // Send a masked "hello" text frame
+    let masked_hello = build_masked_text_frame(b"hello");
     send.write_all(&masked_hello).await.unwrap();
 
-    // Read unmasked "hello" response
-    recv.read_exact(&mut frame_header).await.unwrap();
-    assert_eq!(frame_header[0], 0x82);
+    // Read unmasked "hello" text response
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut frame_header).await;
+    assert_eq!(frame_header[0], 0x81);
     assert_eq!(frame_header[1], 0x05); // length 5
 
     let mut payload = vec![0u8; 5];
-    recv.read_exact(&mut payload).await.unwrap();
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut payload).await;
     assert_eq!(&payload, b"hello");
+
+    // Send a masked binary frame
+    let mut masked_bin = build_masked_text_frame(&[10, 20, 30, 40]);
+    masked_bin[0] = 0x82; // BINARY opcode
+    send.write_all(&masked_bin).await.unwrap();
+
+    // Read unmasked binary response
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut frame_header).await;
+    assert_eq!(frame_header[0], 0x82);
+    assert_eq!(frame_header[1], 0x04);
+
+    let mut bin_payload = vec![0u8; 4];
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut bin_payload).await;
+    assert_eq!(&bin_payload, &[10, 20, 30, 40]);
 
     // Close cleanly
     drop(send);
@@ -215,12 +244,14 @@ async fn test_websocket_broadcast_pubsub() {
     let resp = parse_http_response(&buf[..n]);
     assert_eq!(resp.status, 101);
 
-    // Read on-open welcome message
+    let mut unconsumed = resp.body;
+
+    // Read on-open welcome message (Text frame)
     let mut frame_header = [0u8; 2];
-    recv.read_exact(&mut frame_header).await.unwrap();
-    assert_eq!(frame_header[0], 0x82); // BINARY frame
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut frame_header).await;
+    assert_eq!(frame_header[0], 0x81); // TEXT frame
     let mut payload = vec![0u8; 7];
-    recv.read_exact(&mut payload).await.unwrap();
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut payload).await;
 
     // Publish a message to the topic via SyneroymClient
     let mut publisher = SyneroymClient::new_with_mechanisms(
@@ -242,12 +273,12 @@ async fn test_websocket_broadcast_pubsub() {
         .await
         .unwrap();
 
-    // Read the pushed frame from WebSocket
-    recv.read_exact(&mut frame_header).await.unwrap();
-    assert_eq!(frame_header[0], 0x82); // Binary frame
+    // Read the pushed frame from WebSocket (valid UTF-8 sent as Text frame)
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut frame_header).await;
+    assert_eq!(frame_header[0], 0x81); // TEXT frame
     assert_eq!(frame_header[1], 12); // length of "pubsub_hello"
 
     let mut payload = vec![0u8; 12];
-    recv.read_exact(&mut payload).await.unwrap();
+    read_exact_buffered(&mut recv, &mut unconsumed, &mut payload).await;
     assert_eq!(&payload, b"pubsub_hello");
 }

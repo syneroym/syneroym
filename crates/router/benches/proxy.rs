@@ -97,10 +97,6 @@ fn bench_proxy_local_native(c: &mut Criterion) {
 fn bench_proxy_local_wasm(c: &mut Criterion) {
     let component_path = test_constants::greeter_wasm_path();
     let wasm_bytes = fs::read(&component_path).expect("wasm artifact not built");
-    eprintln!(
-        "Warning: {} not found, skipping proxy_local_wasm benchmark",
-        component_path.display()
-    );
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
 

@@ -1682,12 +1682,17 @@ impl wasmtime::ResourceLimiter for HostState {
 }
 
 impl syneroym_wit_interfaces::http::syneroym::http::websocket::Host for HostState {
-    async fn send(&mut self, conn: String, frame: Vec<u8>) -> Result<(), String> {
+    async fn send(
+        &mut self,
+        conn: String,
+        frame: Vec<u8>,
+        kind: syneroym_wit_interfaces::http::syneroym::http::websocket_types::FrameKind,
+    ) -> Result<(), String> {
         if let Some(engine) = self.messaging.engine.upgrade()
             && let Some(service_map) = engine.websocket_senders.get(&self.component_id)
             && let Some(sender) = service_map.get(&conn)
         {
-            match sender.send(frame).await {
+            match sender.send((frame, kind)).await {
                 Ok(_) => return Ok(()),
                 Err(_) => return Err("Connection closed".to_string()),
             }
