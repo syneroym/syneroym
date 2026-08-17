@@ -720,7 +720,7 @@ mise run test:e2e                                           # clean, 8 WebRTC te
 - **Robust Request Streaming**: Upgraded `peer-proxy.js` request body streaming to packetize chunked uploads into bounded 16 KiB frames with atomic headers, and increased `WebRTCStream` duplex buffer size in `crates/router/src/net_webrtc.rs` from 8 KiB to 64 KiB to prevent `Short buffer to be filled` errors on multi-chunk uploads.
 
 **Browser Fixture Reactivity** (`test-components/miniapp-demo1-wasm/client`, `test-components/miniapp-demo1-web/client`):
-- Converted `RecentComments.tsx` in both fixtures to reactive SolidJS `createResource` tracking `refreshTrigger`, ensuring comment submissions update the DOM reliably without page reloads.
+- Converted `RecentComments.tsx` in both fixtures from uncoordinated `onMount` + `createEffect` fetch triggers to reactive SolidJS `createResource` tracking `refreshTrigger ?? 0`. This eliminates out-of-order resolution races on mount that caused flaky test assertions, ensuring both WASM and native web fixtures maintain equivalent, deterministic behavior.
 - Standardized `data-testid` attributes (`ws-status`, `ws-last-updated`, `ws-recd-msg`, `sse-status`, `sse-last-updated`) across WASM and Web fixtures.
 
 **Playwright Suite & Harness Integration** (`crates/substrate/tests/e2e/`):

@@ -126,8 +126,10 @@ class WSFrameDecoder {
 // since neither has a length to declare up front. Without this the chunk
 // size lines land in the body the page sees.
 class ChunkedDecoder {
-    constructor(onData, onEnd) {
-        this.onData = onData; this.onEnd = onEnd;
+    constructor(onData, onEnd, onError) {
+        this.onData = onData;
+        this.onEnd = onEnd;
+        this.onError = onError;
         this.buf = new Uint8Array(0);
         this.state = 'size';   // 'size' | 'data' | 'crlf' | 'trailer' | 'done'
         this.remaining = 0;
@@ -146,8 +148,17 @@ class ChunkedDecoder {
                 if (i === -1) return;
                 const line = decodeAscii(this.buf.slice(0, i));
                 this.buf = this.buf.slice(i + 2);
-                const size = parseInt(line.split(';')[0].trim(), 16);
-                if (!Number.isFinite(size)) { this.state = 'done'; this.onEnd(); return; }
+                const hexStr = line.split(';')[0].trim();
+                if (!/^[0-9a-fA-F]+$/.test(hexStr)) {
+                    this.state = 'done';
+                    if (this.onError) {
+                        this.onError(new Error(`Invalid chunk size: ${line}`));
+                    } else {
+                        this.onEnd();
+                    }
+                    return;
+                }
+                const size = parseInt(hexStr, 16);
                 if (size === 0) { this.state = 'trailer'; continue; }
                 this.remaining = size; this.state = 'data';
             } else if (this.state === 'data') {
@@ -184,6 +195,9 @@ async function encryptChunk(key, plaintext) {
     );
     const ciphertextBytes = new Uint8Array(ciphertext);
     const payloadLen = 12 + ciphertextBytes.byteLength;
+    if (payloadLen > 65535) {
+        throw new Error(`Payload length (${payloadLen}) exceeds 16-bit framing limit`);
+    }
 
     const chunk = new Uint8Array(2 + payloadLen);
     chunk[0] = (payloadLen >> 8) & 0xFF;
@@ -558,6 +572,8 @@ class SynWebSocket extends EventTarget {
         // always redundant anyway, since the page's own origin does not
         // change between fetches, and re-parsing here would make this a
         // second (now stale) implementation of the grammar.
+        let serviceId = TARGET_SERVICE_ID;
+
         // `http://`, not `raw://`: the substrate answers an inbound
         // WebSocket upgrade inside its HTTP bridge, and no `raw://`
         // pipeline reaches it. Against the native-capability endpoint a
@@ -568,7 +584,6 @@ class SynWebSocket extends EventTarget {
         // WebSocket has no answer for. A TCP passthrough service is
         // unaffected either way -- its endpoint forces raw byte copying
         // regardless of the scheme.
-        let serviceId = TARGET_SERVICE_ID;
         const preamble = `http://${TARGET_INTERFACE}|${serviceId}?enc=ecdh-p256&pubkey=placeholder\n`;
 
         let headerBuffer = new Uint8Array(0);
@@ -584,13 +599,9 @@ class SynWebSocket extends EventTarget {
             } else if (frame.opcode === 1 || frame.opcode === 2) {
                 let data = frame.payload;
                 if (frame.opcode === 1) {
-                    data = new TextDecoder().decode(frame.payload);
-                } else if (this.binaryType === 'blob') {
-                    data = new Blob([frame.payload]);
-                } else if (this.binaryType === 'arraybuffer') {
-                    data = frame.payload.buffer;
+                    data = new TextDecoder().decode(data);
                 }
-                const event = new MessageEvent('message', { data, origin: url.origin });
+                const event = new MessageEvent('message', { data: data });
                 if (this.onmessage) this.onmessage(event);
                 this.dispatchEvent(event);
             }
@@ -605,22 +616,20 @@ class SynWebSocket extends EventTarget {
 
                 const doubleCRLF = findDoubleCRLF(headerBuffer);
                 if (doubleCRLF !== -1) {
-                    const responseHeader = new TextDecoder().decode(headerBuffer.slice(0, doubleCRLF));
-                    if (responseHeader.includes("101 Switching Protocols")) {
-                        console.debug("[SynWebSocket] Upgrade handshake complete!");
+                    const headerStr = new TextDecoder().decode(headerBuffer.slice(0, doubleCRLF));
+                    if (headerStr.startsWith("HTTP/1.1 101")) {
                         handshakeComplete = true;
                         this.readyState = 1;
-
                         const event = new Event('open');
                         if (this.onopen) this.onopen(event);
                         this.dispatchEvent(event);
 
-                        const leftovers = headerBuffer.slice(doubleCRLF + 4);
-                        if (leftovers.length > 0) {
-                            decoder.addBytes(leftovers);
+                        const remaining = headerBuffer.slice(doubleCRLF + 4);
+                        if (remaining.length > 0) {
+                            decoder.addBytes(remaining);
                         }
                     } else {
-                        console.error("[SynWebSocket] Bad upgrade response:", responseHeader);
+                        console.error("[SynWebSocket] Upgrade rejected:\n" + headerStr);
                         this.readyState = 3;
                         const event = new Event('error');
                         if (this.onerror) this.onerror(event);
@@ -634,19 +643,19 @@ class SynWebSocket extends EventTarget {
         };
 
         const onClose = () => {
-            this.readyState = 3;
-            const event = new CloseEvent('close', { code: 1006, reason: "Abrupt closure" });
-            if (this.onclose) this.onclose(event);
-            this.dispatchEvent(event);
+            if (this.readyState !== 3) {
+                this.readyState = 3;
+                const event = new CloseEvent('close', { code: 1006, reason: "Abnormal closure" });
+                if (this.onclose) this.onclose(event);
+                this.dispatchEvent(event);
+            }
         };
 
-        connectTunnel(preamble, true, onData, onClose).then((tunnel) => {
-            this.tunnel = tunnel;
-            console.debug(`[SynWebSocket] Tunnel connected, sending HTTP upgrade request for ${url.pathname}`);
-
+        connectTunnel(preamble, false, onData, onClose).then(t => {
+            this.tunnel = t;
             const secKey = btoa(Array.from(window.crypto.getRandomValues(new Uint8Array(16))).map(b => String.fromCharCode(b)).join(''));
             let req = `GET ${url.pathname}${url.search} HTTP/1.1\r\n`;
-            req += `Host: ${url.host}\r\n`;
+            req += `Host: ${url.host || window.location.host}\r\n`;
             req += `Upgrade: websocket\r\n`;
             req += `Connection: Upgrade\r\n`;
             req += `Sec-WebSocket-Key: ${secKey}\r\n`;
@@ -669,7 +678,11 @@ class SynWebSocket extends EventTarget {
         }
         const opcode = (typeof data === 'string') ? 1 : 2;
         const frame = encodeWSFrame(data, opcode);
-        this.tunnel.send(frame);
+        const CHUNK_SIZE = 16384;
+        for (let offset = 0; offset < frame.byteLength; offset += CHUNK_SIZE) {
+            const slice = frame.slice(offset, offset + CHUNK_SIZE);
+            this.tunnel.send(slice);
+        }
     }
 
     close(code = 1000, reason = "") {
@@ -936,6 +949,26 @@ async function handleSWRequest(reqData, port) {
         let isChunked = false;
         let contentLength = null;
         let receivedBodyBytes = 0;
+        let bodyClosed = false;
+        let tunnel = null;
+
+        const closeBody = (err = null) => {
+            if (bodyClosed) return;
+            bodyClosed = true;
+            if (err) {
+                responseWriter.abort(err).catch(() => {});
+            } else {
+                responseWriter.close().catch(() => {});
+            }
+            if (tunnel) {
+                try { tunnel.close(); } catch (_) {}
+            }
+        };
+
+        const writeChunk = (bytes) => {
+            if (bodyClosed) return;
+            responseWriter.write(bytes).catch(() => {});
+        };
 
         const onData = async (bytes) => {
             if (!headersParsed) {
@@ -956,16 +989,17 @@ async function handleSWRequest(reqData, port) {
                     isChunked = (headers.get('transfer-encoding') || '').toLowerCase().includes('chunked');
                     const clHeader = headers.get('content-length');
                     if (clHeader !== null && !isChunked) {
-                        const parsedCl = parseInt(clHeader, 10);
-                        if (Number.isFinite(parsedCl)) {
-                            contentLength = parsedCl;
+                        const trimmed = clHeader.trim();
+                        if (/^\d+$/.test(trimmed)) {
+                            contentLength = parseInt(trimmed, 10);
                         }
                     }
 
                     if (isChunked) {
                         chunkDecoder = new ChunkedDecoder(
-                            (b) => responseWriter.write(b),
-                            () => { try { responseWriter.close(); } catch (_) { } }
+                            (b) => writeChunk(b),
+                            () => closeBody(),
+                            (err) => closeBody(err)
                         );
                     }
 
@@ -987,15 +1021,15 @@ async function handleSWRequest(reqData, port) {
                     headersParsed = true;
 
                     if (contentLength === 0) {
-                        try { responseWriter.close(); } catch (_) { }
+                        closeBody();
                     } else if (bodyBytes.length > 0) {
                         if (isChunked) {
                             chunkDecoder.addBytes(bodyBytes);
                         } else {
-                            responseWriter.write(bodyBytes);
+                            writeChunk(bodyBytes);
                             receivedBodyBytes += bodyBytes.length;
                             if (contentLength !== null && receivedBodyBytes >= contentLength) {
-                                try { responseWriter.close(); } catch (_) { }
+                                closeBody();
                             }
                         }
                     }
@@ -1004,22 +1038,27 @@ async function handleSWRequest(reqData, port) {
                 if (isChunked) {
                     chunkDecoder.addBytes(bytes);
                 } else {
-                    responseWriter.write(bytes);
+                    writeChunk(bytes);
                     receivedBodyBytes += bytes.length;
                     if (contentLength !== null && receivedBodyBytes >= contentLength) {
-                        try { responseWriter.close(); } catch (_) { }
+                        closeBody();
                     }
                 }
             }
         };
 
         const onClose = () => {
-            try {
-                responseWriter.close();
-            } catch (_) { }
+            if (isChunked && chunkDecoder && chunkDecoder.state !== 'done') {
+                closeBody(new Error("Truncated chunked response stream"));
+            } else {
+                closeBody();
+            }
         };
 
-        const tunnel = await connectTunnel(preamble, false, onData, onClose);
+        tunnel = await connectTunnel(preamble, false, onData, onClose);
+        if (bodyClosed) {
+            try { tunnel.close(); } catch (_) {}
+        }
         console.debug(`[Page][SW] Tunnel established; sending HTTP request header`);
 
         const headersMap = new Map();

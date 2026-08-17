@@ -128,16 +128,20 @@ async function postComment(page: Page, text: string) {
         const result = await page.evaluate(async (name) => {
           const res = await fetch(`/api/files/${encodeURIComponent(name)}`);
           const buf = new Uint8Array(await res.arrayBuffer());
-          let sum = 0;
-          for (const b of buf) sum = (sum + b) % 4294967296;
-          return { status: res.status, length: buf.length, sum };
+          let hash = 2166136261;
+          for (const b of buf) {
+            hash = ((hash ^ b) * 16777619) >>> 0;
+          }
+          return { status: res.status, length: buf.length, hash };
         }, fileName);
 
-        let expectedSum = 0;
-        for (const b of bytes) expectedSum = (expectedSum + b) % 4294967296;
+        let expectedHash = 2166136261;
+        for (const b of bytes) {
+          expectedHash = ((expectedHash ^ b) * 16777619) >>> 0;
+        }
         expect(result.status).toBe(200);
         expect(result.length).toBe(bytes.length);
-        expect(result.sum).toBe(expectedSum);
+        expect(result.hash).toBe(expectedHash);
       } finally {
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       }
@@ -147,7 +151,7 @@ async function postComment(page: Page, text: string) {
       await page.click('text=Comments etc.');
       await expect(page.locator('h2')).toContainText('Comments', { timeout: 35000 });
       await expect(page.getByTestId('sse-status')).toHaveText('Connected', { timeout: 15000 });
-      await expect(page.getByTestId('sse-last-updated')).toHaveText('Never');
+      await expect(page.getByTestId('sse-last-updated')).toHaveText('Never', { timeout: 15000 });
 
       const other = await openSecondSession(browser, forceTunnel);
       try {

@@ -373,10 +373,6 @@ fn query_opts_from_query_string(query: &str) -> result::Result<Value, String> {
     Ok(serde_json::json!({"filter": filter, "limit": limit, "cursor": cursor}))
 }
 
-/// Formats one broker-delivered `(topic, payload)` message as an SSE frame.
-/// Payload is treated as UTF-8 text (lossy) -- every fixture in this repo
-/// only ever publishes UTF-8 text payloads (see `status.md`'s Slice 6A
-/// notes), and SSE's `data:` framing is line-oriented, so a payload
 /// The `svc/<service-id>/` prefix `namespace_topic` adds is a substrate
 /// implementation detail. An SSE subscriber names topics the way the route
 /// table does, so the wire carries the service-relative name -- a browser
@@ -391,6 +387,17 @@ fn service_relative_topic<'a>(service_id: &str, topic: &'a str) -> &'a str {
         .unwrap_or(topic)
 }
 
+/// Formats one broker-delivered `(topic, payload)` message as an SSE frame.
+///
+/// Payload is treated as UTF-8 text (lossy) -- every fixture in this repo
+/// only ever publishes UTF-8 text payloads (see `status.md`'s Slice 6A
+/// notes), and SSE's `data:` framing is line-oriented, so a payload
+/// containing newlines emits multiple `data:` lines.
+///
+/// Topic replaces `\r` and `\n` with spaces: publisher-supplied topics from
+/// `MqttBroker` do not validate characters, and unescaped CR/LF in a
+/// single-line `event:` field would allow a publisher to inject fabricated
+/// `data:` or `event:` lines into another subscriber's stream.
 fn format_sse_frame(topic: &str, payload: &[u8]) -> String {
     let safe_topic: String =
         topic.chars().map(|c| if c == '\r' || c == '\n' { ' ' } else { c }).collect();
@@ -1310,7 +1317,7 @@ impl HttpHandler {
                         Ok(http_error(StatusCode::FORBIDDEN, "upload declined by guest".into()))
                     }
                     Err(e) => {
-                        tracing::error!(
+                        error!(
                             service_id = %self.preamble.service_id,
                             protocol = %protocol,
                             error = %e,
@@ -1819,7 +1826,7 @@ impl HttpHandler {
                     engine.handle_websocket_on_close(&service_id, &conn_id, caller).await;
                 }
                 Err(e) => {
-                    tracing::error!("WebSocket upgrade error: {}", e);
+                    error!("WebSocket upgrade error: {}", e);
                     engine.deregister_websocket_sender(&service_id, &conn_id);
                 }
             }

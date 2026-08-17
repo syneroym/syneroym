@@ -40,6 +40,10 @@ impl WebRTCStream {
         tokio::spawn(async move {
             // Task 1: Read from WebRTC -> Write to Duplex
             let inbound = tokio::spawn(async move {
+                // 64 KiB read buffer matches max SCTP packet/data channel message size (65536
+                // bytes). Browsers chunk streaming uploads into <= 16 KiB
+                // slices, so 64 KiB provides ample headroom and prevents
+                // `webrtc_sctp::ErrShortBuffer` from tearing down the data channel.
                 let mut buf_in = vec![0u8; 65536];
                 loop {
                     match channel_read.read(&mut buf_in).await {
@@ -51,7 +55,19 @@ impl WebRTCStream {
                             }
                         }
                         Err(e) => {
-                            error!("WebRTCStream bridge: WebRTC read error: {}", e);
+                            let err_str = e.to_string();
+                            if err_str.contains("Short buffer")
+                                || err_str.contains("buffer too small")
+                            {
+                                error!(
+                                    "WebRTCStream bridge: incoming message exceeds read buffer \
+                                     capacity ({} bytes): {}",
+                                    buf_in.len(),
+                                    e
+                                );
+                            } else {
+                                error!("WebRTCStream bridge: WebRTC read error: {}", e);
+                            }
                             break;
                         }
                     }

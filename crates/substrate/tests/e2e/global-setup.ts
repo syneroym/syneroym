@@ -38,6 +38,10 @@ export default async function globalSetup() {
   execSync('cargo component build --release --target wasm32-wasip2',
            { cwd: WASM_FIXTURE_DIR, stdio: 'inherit' });
 
+  if (!fs.existsSync(WASM_ARTIFACT)) {
+    throw new Error(`WASM artifact was not found at expected path: ${WASM_ARTIFACT}`);
+  }
+
   const assetsArchive = path.join(TEST_DIR, 'miniapp-demo1-wasm-assets.tar.gz');
   // COPYFILE_DISABLE stops macOS tar from adding ._ AppleDouble entries, which
   // would land in the manifest as junk paths.
@@ -155,9 +159,13 @@ registry_url = "http://127.0.0.1:7661"
   console.log('Waiting for components to be ready...');
   await new Promise(r => setTimeout(r, 4000));
 
+  // Fixed 32-byte Key Encryption Key (KEK). Required for WASM services because
+  // static asset unpacking, the data-layer store, and the blob store wrap their
+  // Data Encryption Keys (DEKs) with the node's KEK before persisting blobs.
+  const TEST_KEK = '21'.repeat(32);
   console.log('Injecting substrate KEK...');
   execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 ` +
-           `--substrate ${substrateDid} --as owner kek inject ${'21'.repeat(32)}`,
+           `--substrate ${substrateDid} --as owner kek inject ${TEST_KEK}`,
            { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   // Generate Identity for the App

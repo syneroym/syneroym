@@ -1,4 +1,4 @@
-import { createResource, For, createEffect, Accessor } from 'solid-js';
+import { createResource, For, Accessor } from 'solid-js';
 
 interface Comment {
   id: number;
@@ -23,7 +23,7 @@ const fetchComments = async () => {
 
 export default function RecentComments(props: RecentCommentsProps) {
   const [recentComments, { refetch }] = createResource(
-    () => props.refreshTrigger?.(),
+    () => props.refreshTrigger?.() ?? 0,
     fetchComments,
     { initialValue: [] }
   );
@@ -49,4 +49,3 @@ export default function RecentComments(props: RecentCommentsProps) {
     </div>
   );
 }
-
