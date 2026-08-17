@@ -233,9 +233,9 @@ async fn open_sse_stream(
     (send, recv)
 }
 
-/// Polls `recv` until the accumulated bytes contain `needle`, or `timeout`
-/// elapses.
-async fn wait_for_sse_event(recv: &mut RecvStream, needle: &str, timeout: Duration) -> bool {
+/// Polls `recv` until the accumulated bytes contain all strings in `needles`,
+/// or `timeout` elapses.
+async fn wait_for_sse_event(recv: &mut RecvStream, needles: &[&str], timeout: Duration) -> bool {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     let deadline = time::Instant::now() + timeout;
@@ -243,7 +243,8 @@ async fn wait_for_sse_event(recv: &mut RecvStream, needle: &str, timeout: Durati
         match time::timeout(Duration::from_millis(300), recv.read(&mut chunk)).await {
             Ok(Ok(Some(n))) if n > 0 => {
                 buf.extend_from_slice(&chunk[..n]);
-                if String::from_utf8_lossy(&buf).contains(needle) {
+                let text = String::from_utf8_lossy(&buf);
+                if needles.iter().all(|needle| text.contains(needle)) {
                     return true;
                 }
             }
@@ -612,9 +613,17 @@ async fn test_sse_receives_message_published_via_http() {
     let response = http_request(&conn, &app_service_id, "POST", "/events", &[], publish_body).await;
     assert_eq!(response.status, 200, "POST /events (publish) must succeed");
 
-    let received =
-        wait_for_sse_event(&mut sse_recv, "profiles updated", Duration::from_secs(5)).await;
-    assert!(received, "SSE subscriber must receive the message published via HTTP");
+    let received = wait_for_sse_event(
+        &mut sse_recv,
+        &["event: events\n", "profiles updated"],
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        received,
+        "SSE subscriber must receive the message published via HTTP with service-relative event \
+         name"
+    );
 
     drop(_sse_send);
     let _ = peer.shutdown().await;

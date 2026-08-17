@@ -1,4 +1,4 @@
-import { createSignal, onMount, For, createEffect, Accessor } from 'solid-js';
+import { createResource, For, Accessor } from 'solid-js';
 
 interface Comment {
   id: number;
@@ -9,47 +9,34 @@ interface RecentCommentsProps {
   refreshTrigger?: Accessor<any>;
 }
 
+const fetchComments = async () => {
+  try {
+    const response = await fetch('/api/comments');
+    if (response.ok) {
+      return (await response.json()) as Comment[];
+    }
+  } catch (err) {
+    console.error('Error fetching comments:', err);
+  }
+  return [];
+};
+
 export default function RecentComments(props: RecentCommentsProps) {
-  const [recentComments, setRecentComments] = createSignal<Comment[]>([]);
-  const [loading, setLoading] = createSignal(false);
-
-  const fetchComments = async () => {
-    setLoading(true);
-    try {
-      const response = await fetch('/api/comments');
-      if (response.ok) {
-        const data = await response.json();
-        setRecentComments(data);
-      } else {
-        console.error('Failed to fetch comments');
-      }
-    } catch (err) {
-      console.error('Error fetching comments:', err);
-    } finally {
-        setLoading(false);
-    }
-  };
-
-  onMount(() => {
-    fetchComments();
-  });
-  
-  createEffect(() => {
-    if (props.refreshTrigger) {
-        props.refreshTrigger(); // track dependency
-        fetchComments();
-    }
-  });
+  const [recentComments, { refetch }] = createResource(
+    () => props.refreshTrigger?.() ?? 0,
+    fetchComments,
+    { initialValue: [] }
+  );
 
   return (
     <div>
       <div style="display: flex; justify-content: space-between; align-items: center;">
         <h3>Recent Comments</h3>
-        <button onClick={fetchComments} disabled={loading()}>
-            {loading() ? 'Refreshing...' : 'Refresh'}
+        <button onClick={() => refetch()} disabled={recentComments.loading}>
+          {recentComments.loading ? 'Refreshing...' : 'Refresh'}
         </button>
       </div>
-      
+
       <ul style="list-style: none; padding: 0;">
         <For each={recentComments()} fallback={<p>No comments yet.</p>}>
           {(item) => (

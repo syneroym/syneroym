@@ -121,6 +121,69 @@ class WSFrameDecoder {
     }
 }
 
+// HTTP/1.1 chunked-transfer decoder. The substrate answers every streaming
+// body (SSE, stream-protocol download) with `Transfer-Encoding: chunked`,
+// since neither has a length to declare up front. Without this the chunk
+// size lines land in the body the page sees.
+class ChunkedDecoder {
+    constructor(onData, onEnd, onError) {
+        this.onData = onData;
+        this.onEnd = onEnd;
+        this.onError = onError;
+        this.buf = new Uint8Array(0);
+        this.state = 'size';   // 'size' | 'data' | 'crlf' | 'trailer' | 'done'
+        this.remaining = 0;
+    }
+
+    addBytes(bytes) {
+        const newBuf = new Uint8Array(this.buf.length + bytes.length);
+        newBuf.set(this.buf, 0);
+        newBuf.set(bytes, this.buf.length);
+        this.buf = newBuf;
+
+        for (;;) {
+            if (this.state === 'done') return;
+            if (this.state === 'size') {
+                const i = indexOfCRLF(this.buf);            // -1 => need more
+                if (i === -1) return;
+                const line = decodeAscii(this.buf.slice(0, i));
+                this.buf = this.buf.slice(i + 2);
+                const hexStr = line.split(';')[0].trim();
+                if (!/^[0-9a-fA-F]+$/.test(hexStr)) {
+                    this.state = 'done';
+                    if (this.onError) {
+                        this.onError(new Error(`Invalid chunk size: ${line}`));
+                    } else {
+                        this.onEnd();
+                    }
+                    return;
+                }
+                const size = parseInt(hexStr, 16);
+                if (size === 0) { this.state = 'trailer'; continue; }
+                this.remaining = size; this.state = 'data';
+            } else if (this.state === 'data') {
+                if (this.buf.length === 0) return;
+                const n = Math.min(this.remaining, this.buf.length);
+                this.onData(this.buf.slice(0, n));
+                this.buf = this.buf.slice(n);
+                this.remaining -= n;
+                if (this.remaining === 0) this.state = 'crlf';
+            } else if (this.state === 'crlf') {
+                if (this.buf.length < 2) return;
+                this.buf = this.buf.slice(2);               // discard chunk CRLF
+                this.state = 'size';
+            } else if (this.state === 'trailer') {
+                // Trailers are not used by anything this substrate sends;
+                // wait for the terminating CRLF, then finish.
+                const i = indexOfCRLF(this.buf);
+                if (i === -1) return;
+                this.buf = this.buf.slice(i + 2);
+                this.state = 'done'; this.onEnd(); return;
+            }
+        }
+    }
+}
+
 // ------------------ End-to-End Cryptography Helpers ------------------
 
 async function encryptChunk(key, plaintext) {
@@ -132,6 +195,9 @@ async function encryptChunk(key, plaintext) {
     );
     const ciphertextBytes = new Uint8Array(ciphertext);
     const payloadLen = 12 + ciphertextBytes.byteLength;
+    if (payloadLen > 65535) {
+        throw new Error(`Payload length (${payloadLen}) exceeds 16-bit framing limit`);
+    }
 
     const chunk = new Uint8Array(2 + payloadLen);
     chunk[0] = (payloadLen >> 8) & 0xFF;
@@ -508,7 +574,17 @@ class SynWebSocket extends EventTarget {
         // second (now stale) implementation of the grammar.
         let serviceId = TARGET_SERVICE_ID;
 
-        const preamble = `raw://${TARGET_INTERFACE}|${serviceId}?enc=ecdh-p256&pubkey=placeholder\n`;
+        // `http://`, not `raw://`: the substrate answers an inbound
+        // WebSocket upgrade inside its HTTP bridge, and no `raw://`
+        // pipeline reaches it. Against the native-capability endpoint a
+        // sandboxed app is served through, `raw://` has no pipeline arm
+        // at all and is refused as an unsupported service stage; against
+        // an app-declared interface it lands in the ADR-0014
+        // stream-protocol path, which demands a `dir=` parameter a
+        // WebSocket has no answer for. A TCP passthrough service is
+        // unaffected either way -- its endpoint forces raw byte copying
+        // regardless of the scheme.
+        const preamble = `http://${TARGET_INTERFACE}|${serviceId}?enc=ecdh-p256&pubkey=placeholder\n`;
 
         let headerBuffer = new Uint8Array(0);
         let handshakeComplete = false;
@@ -544,22 +620,20 @@ class SynWebSocket extends EventTarget {
 
                 const doubleCRLF = findDoubleCRLF(headerBuffer);
                 if (doubleCRLF !== -1) {
-                    const responseHeader = new TextDecoder().decode(headerBuffer.slice(0, doubleCRLF));
-                    if (responseHeader.includes("101 Switching Protocols")) {
-                        console.debug("[SynWebSocket] Upgrade handshake complete!");
+                    const headerStr = new TextDecoder().decode(headerBuffer.slice(0, doubleCRLF));
+                    if (headerStr.startsWith("HTTP/1.1 101")) {
                         handshakeComplete = true;
                         this.readyState = 1;
-
                         const event = new Event('open');
                         if (this.onopen) this.onopen(event);
                         this.dispatchEvent(event);
 
-                        const leftovers = headerBuffer.slice(doubleCRLF + 4);
-                        if (leftovers.length > 0) {
-                            decoder.addBytes(leftovers);
+                        const remaining = headerBuffer.slice(doubleCRLF + 4);
+                        if (remaining.length > 0) {
+                            decoder.addBytes(remaining);
                         }
                     } else {
-                        console.error("[SynWebSocket] Bad upgrade response:", responseHeader);
+                        console.error("[SynWebSocket] Upgrade rejected:\n" + headerStr);
                         this.readyState = 3;
                         const event = new Event('error');
                         if (this.onerror) this.onerror(event);
@@ -573,18 +647,19 @@ class SynWebSocket extends EventTarget {
         };
 
         const onClose = () => {
-            this.readyState = 3;
-            const event = new CloseEvent('close', { code: 1006, reason: "Abrupt closure" });
-            if (this.onclose) this.onclose(event);
-            this.dispatchEvent(event);
+            if (this.readyState !== 3) {
+                this.readyState = 3;
+                const event = new CloseEvent('close', { code: 1006, reason: "Abnormal closure" });
+                if (this.onclose) this.onclose(event);
+                this.dispatchEvent(event);
+            }
         };
 
-        connectTunnel(preamble, true, onData, onClose).then((tunnel) => {
-            this.tunnel = tunnel;
-
+        connectTunnel(preamble, false, onData, onClose).then(t => {
+            this.tunnel = t;
             const secKey = btoa(Array.from(window.crypto.getRandomValues(new Uint8Array(16))).map(b => String.fromCharCode(b)).join(''));
             let req = `GET ${url.pathname}${url.search} HTTP/1.1\r\n`;
-            req += `Host: ${url.host}\r\n`;
+            req += `Host: ${url.host || window.location.host}\r\n`;
             req += `Upgrade: websocket\r\n`;
             req += `Connection: Upgrade\r\n`;
             req += `Sec-WebSocket-Key: ${secKey}\r\n`;
@@ -607,7 +682,11 @@ class SynWebSocket extends EventTarget {
         }
         const opcode = (typeof data === 'string') ? 1 : 2;
         const frame = encodeWSFrame(data, opcode);
-        this.tunnel.send(frame);
+        const CHUNK_SIZE = 16384;
+        for (let offset = 0; offset < frame.byteLength; offset += CHUNK_SIZE) {
+            const slice = frame.slice(offset, offset + CHUNK_SIZE);
+            this.tunnel.send(slice);
+        }
     }
 
     close(code = 1000, reason = "") {
@@ -870,6 +949,30 @@ async function handleSWRequest(reqData, port) {
 
         let headerBuffer = new Uint8Array(0);
         let headersParsed = false;
+        let chunkDecoder = null;
+        let isChunked = false;
+        let contentLength = null;
+        let receivedBodyBytes = 0;
+        let bodyClosed = false;
+        let tunnel = null;
+
+        const closeBody = (err = null) => {
+            if (bodyClosed) return;
+            bodyClosed = true;
+            if (err) {
+                responseWriter.abort(err).catch(() => {});
+            } else {
+                responseWriter.close().catch(() => {});
+            }
+            if (tunnel) {
+                try { tunnel.close(); } catch (_) {}
+            }
+        };
+
+        const writeChunk = (bytes) => {
+            if (bodyClosed) return;
+            responseWriter.write(bytes).catch(() => {});
+        };
 
         const onData = async (bytes) => {
             if (!headersParsed) {
@@ -887,8 +990,30 @@ async function handleSWRequest(reqData, port) {
                     const { status, headers } = parseHeaders(headerStr);
                     console.debug(`[Page][SW] Response headers received: status=${status}`);
 
+                    isChunked = (headers.get('transfer-encoding') || '').toLowerCase().includes('chunked');
+                    const clHeader = headers.get('content-length');
+                    if (clHeader !== null && !isChunked) {
+                        const trimmed = clHeader.trim();
+                        if (/^\d+$/.test(trimmed)) {
+                            contentLength = parseInt(trimmed, 10);
+                        }
+                    }
+
+                    if (isChunked) {
+                        chunkDecoder = new ChunkedDecoder(
+                            (b) => writeChunk(b),
+                            () => closeBody(),
+                            (err) => closeBody(err)
+                        );
+                    }
+
                     const headerList = [];
-                    headers.forEach((v, k) => headerList.push([k, v]));
+                    headers.forEach((v, k) => {
+                        const low = k.toLowerCase();
+                        if (low === 'transfer-encoding') return;
+                        if (isChunked && low === 'content-length') return;
+                        headerList.push([k, v]);
+                    });
 
                     port.postMessage({
                         type: 'RESPONSE',
@@ -899,22 +1024,45 @@ async function handleSWRequest(reqData, port) {
 
                     headersParsed = true;
 
-                    if (bodyBytes.length > 0) {
-                        responseWriter.write(bodyBytes);
+                    if (contentLength === 0) {
+                        closeBody();
+                    } else if (bodyBytes.length > 0) {
+                        if (isChunked) {
+                            chunkDecoder.addBytes(bodyBytes);
+                        } else {
+                            writeChunk(bodyBytes);
+                            receivedBodyBytes += bodyBytes.length;
+                            if (contentLength !== null && receivedBodyBytes >= contentLength) {
+                                closeBody();
+                            }
+                        }
                     }
                 }
             } else {
-                responseWriter.write(bytes);
+                if (isChunked) {
+                    chunkDecoder.addBytes(bytes);
+                } else {
+                    writeChunk(bytes);
+                    receivedBodyBytes += bytes.length;
+                    if (contentLength !== null && receivedBodyBytes >= contentLength) {
+                        closeBody();
+                    }
+                }
             }
         };
 
         const onClose = () => {
-            try {
-                responseWriter.close();
-            } catch (_) { }
+            if (isChunked && chunkDecoder && chunkDecoder.state !== 'done') {
+                closeBody(new Error("Truncated chunked response stream"));
+            } else {
+                closeBody();
+            }
         };
 
-        const tunnel = await connectTunnel(preamble, false, onData, onClose);
+        tunnel = await connectTunnel(preamble, false, onData, onClose);
+        if (bodyClosed) {
+            try { tunnel.close(); } catch (_) {}
+        }
         console.debug(`[Page][SW] Tunnel established; sending HTTP request header`);
 
         const headersMap = new Map();
@@ -946,17 +1094,28 @@ async function handleSWRequest(reqData, port) {
 
         if (reqData.body) {
             const reader = reqData.body.getReader();
+            const CHUNK_SIZE = 16384;
             try {
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
                     if (useChunkedEncoding) {
-                        const len = value.byteLength.toString(16);
-                        await tunnel.send(new TextEncoder().encode(`${len}\r\n`));
-                        await tunnel.send(value);
-                        await tunnel.send(new TextEncoder().encode('\r\n'));
+                        for (let offset = 0; offset < value.byteLength; offset += CHUNK_SIZE) {
+                            const slice = value.slice(offset, offset + CHUNK_SIZE);
+                            const hexLen = slice.byteLength.toString(16);
+                            const chunkHeader = new TextEncoder().encode(`${hexLen}\r\n`);
+                            const chunkFooter = new TextEncoder().encode('\r\n');
+                            const combined = new Uint8Array(chunkHeader.length + slice.byteLength + chunkFooter.length);
+                            combined.set(chunkHeader, 0);
+                            combined.set(slice, chunkHeader.length);
+                            combined.set(chunkFooter, chunkHeader.length + slice.byteLength);
+                            await tunnel.send(combined);
+                        }
                     } else {
-                        await tunnel.send(value);
+                        for (let offset = 0; offset < value.byteLength; offset += CHUNK_SIZE) {
+                            const slice = value.slice(offset, offset + CHUNK_SIZE);
+                            await tunnel.send(slice);
+                        }
                     }
                 }
                 if (useChunkedEncoding) {
@@ -1053,6 +1212,19 @@ async function reloadContent() {
         console.error('[Page] Content Load Failed:', err);
         document.body.innerHTML = `<h3>Connection Failed</h3><p>Failed to load content.</p><p>${err.message}</p>`;
     }
+}
+
+function indexOfCRLF(buffer) {
+    for (let i = 0; i < buffer.length - 1; i++) {
+        if (buffer[i] === 13 && buffer[i + 1] === 10) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+function decodeAscii(bytes) {
+    return new TextDecoder('ascii').decode(bytes);
 }
 
 function findDoubleCRLF(buffer) {

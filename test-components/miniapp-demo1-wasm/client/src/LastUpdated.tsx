@@ -15,6 +15,7 @@ export default function LastUpdated() {
 
     socket.onopen = () => {
       setStatus('Connected');
+      socket?.send('Hi from client');
 
       const intervalId = setInterval(() => {
         if (socket?.readyState === WebSocket.OPEN) {
@@ -57,11 +58,11 @@ export default function LastUpdated() {
 
   return (
     <div style="background: #e6f7ff; padding: 10px; margin-bottom: 20px; border: 1px solid #91d5ff; border-radius: 4px;">
-      <strong>Live Updates:</strong> {status()}
+      <strong>Live Updates:</strong> <span data-testid="ws-status">{status()}</span>
       <br />
-      Last comment added at: <span>{lastUpdated()}</span>
+      Last comment added at: <span data-testid="ws-last-updated">{lastUpdated()}</span>
       <br />
-      Received Msg: <span>{recdMsg()}</span>
+      Received Msg: <span data-testid="ws-recd-msg">{recdMsg()}</span>
     </div>
   );
 }

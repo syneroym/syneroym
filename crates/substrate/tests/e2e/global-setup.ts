@@ -20,10 +20,33 @@ export default async function globalSetup() {
   const SUBSTRATE_BIN = path.join(WORKSPACE_DIR, targetDir, 'syneroym-substrate');
   const ROYMCTL_BIN = path.join(WORKSPACE_DIR, targetDir, 'roymctl');
   const MINIAPP_BIN = path.join(WORKSPACE_DIR, targetDir, 'miniapp-demo1-web');
+  const WASM_FIXTURE_DIR = path.join(WORKSPACE_DIR, 'test-components/miniapp-demo1-wasm');
+  const WASM_ARTIFACT = path.join(
+    WASM_FIXTURE_DIR, 'target/wasm32-wasip2/release/syneroym_test_miniapp_demo1_wasm.wasm');
   
   console.log('Building miniapp SolidJS client...');
   const clientDir = path.join(WORKSPACE_DIR, 'test-components/miniapp-demo1-web/client');
   execSync('npm install && npm run build', { cwd: clientDir, stdio: 'inherit' });
+
+  console.log('Building miniapp-demo1-wasm client + component...');
+  // Order matters: src/lib.rs include_str!s static/dist/index.html, which the
+  // client build regenerates with a fresh hashed bundle name.
+  execSync('npm ci || npm install', { cwd: path.join(WASM_FIXTURE_DIR, 'client'), stdio: 'inherit' });
+  execSync('npm run build', { cwd: path.join(WASM_FIXTURE_DIR, 'client'), stdio: 'inherit' });
+  // Always --release: that is the path crates/core/src/test_constants.rs names,
+  // and the fixture is excluded from the workspace build graph.
+  execSync('cargo component build --release --target wasm32-wasip2',
+           { cwd: WASM_FIXTURE_DIR, stdio: 'inherit' });
+
+  if (!fs.existsSync(WASM_ARTIFACT)) {
+    throw new Error(`WASM artifact was not found at expected path: ${WASM_ARTIFACT}`);
+  }
+
+  const assetsArchive = path.join(TEST_DIR, 'miniapp-demo1-wasm-assets.tar.gz');
+  // COPYFILE_DISABLE stops macOS tar from adding ._ AppleDouble entries, which
+  // would land in the manifest as junk paths.
+  execSync(`COPYFILE_DISABLE=1 tar -czf "${assetsArchive}" -C "${path.join(WASM_FIXTURE_DIR, 'static')}" .`,
+           { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   console.log('Building Cargo binaries...');
   execSync(`cargo build ${buildFlag} --bin roymctl`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
@@ -136,6 +159,15 @@ registry_url = "http://127.0.0.1:7661"
   console.log('Waiting for components to be ready...');
   await new Promise(r => setTimeout(r, 4000));
 
+  // Fixed 32-byte Key Encryption Key (KEK). Required for WASM services because
+  // static asset unpacking, the data-layer store, and the blob store wrap their
+  // Data Encryption Keys (DEKs) with the node's KEK before persisting blobs.
+  const TEST_KEK = '21'.repeat(32);
+  console.log('Injecting substrate KEK...');
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 ` +
+           `--substrate ${substrateDid} --as owner kek inject ${TEST_KEK}`,
+           { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+
   // Generate Identity for the App
   console.log('Creating app identity...');
   execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity create --name demo1`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
@@ -167,10 +199,54 @@ registry_url = "http://127.0.0.1:7661"
     throw err;
   }
 
+  // WASM App Setup
+  console.log('Creating WASM app identity...');
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity create --name demo1wasm`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+
+  const wasmIdentityOutput = execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity show --name demo1wasm`, { cwd: WORKSPACE_DIR }).toString();
+  const wasmDidMatch = wasmIdentityOutput.match(/(did:key:[a-z0-9]+)/);
+  if (!wasmDidMatch) throw new Error("Could not find WASM app DID in roymctl output");
+  const wasmDid = wasmDidMatch[1];
+  console.log('WASM App DID:', wasmDid);
+
+  console.log('Registering WASM service in Community Registry...');
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 registry register --identity demo1wasm --substrate ${substrateDid} --nickname demo1wasm`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+
+  console.log('Calculating WASM app alias...');
+  // `--interface http-native`: the HTTP bridge (assets, guest routes, SSE,
+  // WebSocket) is reached through the reserved native-capability interface, the
+  // same one crates/substrate/tests/*_e2e.rs put in their preamble. An
+  // app-declared interface would resolve to a WasmChannel pipeline and break
+  // static-asset serving, which reaches blob bytes through native dispatch.
+  const wasmAliasOutput = execSync(
+    `"${ROYMCTL_BIN}" alias ${wasmDid} --nickname demo1wasm --interface http-native`,
+    { cwd: WORKSPACE_DIR }
+  ).toString().trim();
+  const wasmAlias = wasmAliasOutput.split('\n').pop()?.trim();
+  if (!wasmAlias) throw new Error("Could not calculate WASM app alias");
+  console.log('WASM App Alias:', wasmAlias);
+
+  const WASM_IFACES = [
+    'syneroym:http/incoming-handler@0.1.0',
+    'syneroym:http/websocket-handler@0.1.0',
+    'syneroym:messaging/guest-api@0.1.0',
+    'syneroym:messaging/stream-types@0.1.0',
+  ].join(',');
+
+  console.log('Deploying WASM Service...');
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 ` +
+    `--substrate ${substrateDid} --as owner svc deploy --svc-id ${wasmDid} ` +
+    `--interfaces ${WASM_IFACES} --wasm "${WASM_ARTIFACT}" ` +
+    `--assets "${assetsArchive}" --asset-visibility public ` +
+    `--custom-config "${path.join(WASM_FIXTURE_DIR, 'routes.json')}"`,
+    { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+
   // Set environment variables for tests
   process.env.SUBSTRATE_DID = substrateDid;
   process.env.APP_DID = appDid;
   process.env.APP_ALIAS = appAlias;
+  process.env.WASM_APP_DID = wasmDid;
+  process.env.WASM_APP_ALIAS = wasmAlias;
 
   console.log('--- E2E Global Setup Complete ---\n');
 }

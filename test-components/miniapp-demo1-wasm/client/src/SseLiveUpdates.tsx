@@ -13,7 +13,7 @@ export default function SseLiveUpdates() {
       setStatus('Connected');
     };
 
-    eventSource.onmessage = (event) => {
+    eventSource.addEventListener('comment-updates', (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data);
         if (data.commentUpdateTimestamp) {
@@ -22,7 +22,7 @@ export default function SseLiveUpdates() {
       } catch (e) {
         console.error('Failed to parse SSE message', e);
       }
-    };
+    });
 
     eventSource.onerror = (error) => {
       console.error('SSE error:', error);
@@ -38,9 +38,9 @@ export default function SseLiveUpdates() {
 
   return (
     <div style="background: #f6ffed; padding: 10px; margin-bottom: 20px; border: 1px solid #b7eb8f; border-radius: 4px;">
-      <strong>SSE Updates:</strong> {status()}
+      <strong>SSE Updates:</strong> <span data-testid="sse-status">{status()}</span>
       <br />
-      Last comment added at (SSE): <span>{lastUpdated()}</span>
+      Last comment added at (SSE): <span data-testid="sse-last-updated">{lastUpdated()}</span>
     </div>
   );
 }
