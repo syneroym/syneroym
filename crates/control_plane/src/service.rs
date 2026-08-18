@@ -798,7 +798,11 @@ mod tests {
     use std::{path::Path, time::Duration};
 
     use dashmap::DashMap;
-    use syneroym_core::{config::SubstrateConfig, storage::MockStorage, test_constants};
+    use syneroym_core::{
+        config::{AppSandboxRole, SubstrateConfig},
+        storage::MockStorage,
+        test_constants,
+    };
     use syneroym_data_blob::ObjectStoreBlobProvider;
     use syneroym_data_db::SqliteStorageProvider;
     use syneroym_mqtt_broker::MqttBrokerConfig;
@@ -1912,7 +1916,17 @@ mod tests {
         };
 
         let temp_dir = tempfile::tempdir().unwrap();
-        let config = SubstrateConfig::default();
+        let mut config = SubstrateConfig::default();
+        // This test drives two full engine boots plus several sequential
+        // guest calls in one test function; on a CPU-contended CI runner
+        // (many test binaries' tokio workers competing for few cores) the
+        // wall-clock scheduling delay alone can exceed the production
+        // `dispatch_epoch_timeout_secs` default (5s) even though the guest
+        // does negligible work, tripping a spurious epoch-interrupt trap.
+        // Widen just this test's budget rather than the shared default,
+        // which stays tight on purpose as a guest DoS guard.
+        config.roles.app_sandbox =
+            Some(AppSandboxRole { dispatch_epoch_timeout_secs: 60, ..Default::default() });
         let key_store = Arc::new(KeyStore::new());
         let storage_provider: Arc<dyn StorageProvider> =
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());

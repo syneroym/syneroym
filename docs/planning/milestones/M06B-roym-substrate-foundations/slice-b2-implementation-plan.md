@@ -126,6 +126,13 @@ every struct literal. Counted by construction shape:
 None uses `..Default::default()`. Both edits are one added line per literal;
 the compiler enumerates every site. See §4 for the mechanical recipe.
 
+A raw `grep -c 'ServiceConfig {'` answers **129**, not 123: six of those are
+`fn … -> ServiceConfig {` signature lines, which need no edit. Excluding them
+(`grep -v -- '-> ServiceConfig {'`) gives exactly 123 = 85 + 38. Same cause
+for `sdk/src/mapper.rs`, which a raw grep credits with 4 literals and actually
+has one production WIT literal ([:204](../../../../crates/sdk/src/mapper.rs#L204))
+plus two test-only model helpers behind `-> ServiceConfig` signatures.
+
 ### F5 — the supervisor already reads the plan before it authorizes, so an "open" check fits with no reordering
 
 `handle_resolve`
@@ -192,15 +199,55 @@ which that comment argues is not a version ladder. Reuse it (`D-B2-6`).
 
 ### F10 — tests and fixtures that will fail on the new validation
 
-Every site that supplies a `registry_certificate` while declaring no
-visibility becomes a **deploy error** under ADR-0018 §4. Found:
+**Three distinct failure modes**, and a `registry_certificate` grep finds only
+the first. (A) is a deploy refusal; (B) is a refusal inside `compile()`,
+triggered by *placement plus `depends_on`* in manifests that never mention a
+certificate; (C) is **not a refusal at all** — nothing complains, the member's
+record simply stops being published and a later dial fails. **Enumerated
+exhaustively**, by grepping `PlacementSelector::Substrate`, `depends_on`, and
+member-DID dials across `crates/substrate/tests` rather than by following
+certificates.
 
-| Site | What breaks | Fix |
+**(A) Refused by `validate_publication` — a certificate supplied with no declaration:**
+
+| Site | Fix |
+|---|---|
+| [master_endpoint_record_e2e.rs:224](../../../../crates/substrate/tests/master_endpoint_record_e2e.rs#L224) (`bare_tcp_manifest`, used at :366 and :479) | `visibility: Some(Internal)` in the helper's `ServiceConfig` |
+| [multi_substrate_placement_e2e.rs:515-545](../../../../crates/substrate/tests/multi_substrate_placement_e2e.rs#L515) (`certify_and_publish` — a private copy of `certify_placed_members`) | declare `visibility = "internal"` on the fixture manifest's two `ServiceSpec`s, and have the copy skip private members like the real one |
+| [multi_substrate_placement_e2e.rs:760](../../../../crates/substrate/tests/multi_substrate_placement_e2e.rs#L760) (direct `registry_certificate: Some(…)`) | `visibility: Some(Internal)` on that manifest |
+| [binding_push_e2e.rs:420-450](../../../../crates/substrate/tests/binding_push_e2e.rs#L420) (`certify_and_publish` — a **third** private copy, feeding `ApplyRequest.registry_certificates` at [:498](../../../../crates/substrate/tests/binding_push_e2e.rs#L498)) | same as `multi_substrate_placement_e2e`'s copy |
+
+**(B) Refused by `D-B2-14`(a) — explicit cross-substrate `depends_on` with an undeclared (therefore `private`) dependency.** These fail **inside `compile()`**, before any deploy, and a certificate grep never finds them:
+
+| Site | Placement | Fix |
 |---|---|---|
-| [master_endpoint_record_e2e.rs:224](../../../../crates/substrate/tests/master_endpoint_record_e2e.rs#L224) (`bare_tcp_manifest`, used at :366 and :479) | cert supplied, visibility undeclared → deploy fails | set `visibility: Some(Public)` in the helper's `ServiceConfig` |
-| [multi_substrate_placement_e2e.rs:515-545](../../../../crates/substrate/tests/multi_substrate_placement_e2e.rs#L515) (`certify_and_publish`, its own copy of `certify_placed_members`) | same | declare `visibility = "public"` on the fixture manifest's two `ServiceSpec`s, and have the local copy skip private members like the real one |
-| [multi_substrate_placement_e2e.rs:760](../../../../crates/substrate/tests/multi_substrate_placement_e2e.rs#L760) (direct `registry_certificate: Some(...)`) | same | `visibility: Some(Public)` on that manifest |
-| Every app-deploy fixture that relies on a member's record resolving cross-node | after `certify_placed_members` honours visibility, an undeclared member is no longer published, so `resolve_iroh_addr` for its DID fails ([:683](../../../../crates/substrate/tests/multi_substrate_placement_e2e.rs#L683)) | declare `visibility = "public"` in the fixture manifest |
+| [reference_scenario_e2e.rs:276-326](../../../../crates/substrate/tests/reference_scenario_e2e.rs#L276) | `backend` on `managed-b`, `frontend` on `managed-a` with `depends_on: ["backend"]` | `visibility = "internal"` on `backend`. **Also needed for the test to pass at all**: its cross-node dependency call needs `backend`'s record |
+| [binding_push_e2e.rs:259-285](../../../../crates/substrate/tests/binding_push_e2e.rs#L259) | `backend` on `BACKEND_ALIAS`, `frontend` on `FRONTEND_ALIAS`, depends on it | same |
+| [durable_outbox_e2e.rs:303-329](../../../../crates/substrate/tests/durable_outbox_e2e.rs#L303) | `backend` on `managed-a`, `frontend` on `managed-b`, depends on it | same |
+| [multi_substrate_placement_e2e.rs:341-367](../../../../crates/substrate/tests/multi_substrate_placement_e2e.rs#L341) | same shape | already covered by (A)'s fix |
+
+**(C) Nothing is refused — the record simply stops existing.** One alias, no
+`depends_on`, no certificate, so neither (A) nor (B) fires; but a **gateway or
+caller on another node dials the member by DID through the registry**, and
+after `D-B2-7` there is no record to find. This is the class F10's old
+catch-all row gestured at, and both files in it are fixtures B2's own new
+tests extend:
+
+| Site | Why it needs the record | Fix |
+|---|---|---|
+| [gateway_hostname_e2e.rs:300-352, 556-565](../../../../crates/substrate/tests/gateway_hostname_e2e.rs#L556) — test 99, *"the managed node's own gateway (a different node from the one supervising the app)"* | `resolve_target` returns the member DID as the connect target ([gateway.rs:611-617](../../../../crates/client_gateway/src/gateway.rs#L611)), and the gateway dials it with `SyneroymClient::new_with_identity(service_id, registry_url, …)` ([gateway.rs:418](../../../../crates/client_gateway/src/gateway.rs#L418)) — a registry lookup, even for a same-node member: the gateway holds no `EndpointRegistry` | `visibility = "internal"` on the fixture's one service. **Test 43 extends this fixture** |
+| [topology_document_e2e.rs:482-500](../../../../crates/substrate/tests/topology_document_e2e.rs#L482) — `an_outside_caller_resolves_an_apps_members_and_calls_one` | Reference-scenario steps 3 and 5: the caller fetches the document, then routes to a member — Tier 3, through the registry (F13) | same. **Tests 41 and 42 extend this fixture** |
+
+**(D) Checked and *not* affected** — recorded so the next reader does not
+re-check them:
+
+- [supervisor_interface_e2e.rs:294-360](../../../../crates/substrate/tests/supervisor_interface_e2e.rs#L294) — three services, all on `MANAGED_ALIAS`, and **no cross-node dial**: the test drives the supervisor's own RPCs, never a member.
+- [supervisor_loop_e2e.rs:258-284](../../../../crates/substrate/tests/supervisor_loop_e2e.rs#L258) — two services on two aliases, but **both `depends_on` are empty** and nothing dials a member by DID.
+
+`reference_scenario_e2e` is the one to run first: it is the M05A reference
+scenario, it deploys through `submit` rather than `ApplyRequest`, and it fails
+at `compiled_plan_json`'s unwrap rather than at a deploy — a failure mode
+none of the other rows produce.
 
 **Verified unaffected**: the Playwright suites — `global-setup.ts:196` and
 `global-setup-multihop.ts:285,299` deploy with **no** `--identity`, and publish
@@ -247,14 +294,37 @@ registry lookup of that DID. So for an outside caller to actually *reach* an
 `lookup_endpoint` ([registry.rs:306-314](../../../../crates/community_registry/src/registry.rs#L306))
 serves every admitted record regardless of it. So cross-node resolution inside
 one registry costs nothing beyond "registered here", which is exactly what
-`internal` means.
+`internal` means — **once F15 is fixed.**
+
+### F15 — `internal` does not mean "registered here only" today: DHT publication ignores `is_private`
+
+`RegistryClient::register`
+([dht_registry.rs:289-336](../../../../crates/core/src/dht_registry.rs#L289))
+publishes the pkarr packet to the Mainline DHT whenever `dht_client` is
+present. **`is_private` is never read on that path.** `EndpointPublisher::
+publish_service` goes through this function
+([endpoint_publisher.rs:58](../../../../crates/core/src/endpoint_publisher.rs#L58)),
+so with `substrate.enable_bep0044_dht = true` an `internal` record is
+globally resolvable by anyone — the opposite of the tier's own definition.
+
+This is not a documentation problem to caveat. `internal` means "registered
+with this substrate's registry only; **not** propagated upward"
+(ADR-0018 §1). A global DHT is strictly wider than a parent registry, so
+publishing there is the same violation the relay gate already prevents,
+through a second door nobody closed. ADR-0018 §4's table names only the
+relay, which is how the gap survived the ADR (§9.6).
+
+Nothing in the tree relies on the current behaviour: every code path
+hardcodes `is_private: false`, and the only producer of a `true` is `roymctl
+registry register --private` (F11), whose whole point is not to publish
+widely. `D-B2-16` closes it.
 
 This is why the two declarations are independent rather than one four-valued
 field (`D-B2-1`): the useful pairs are three of the four above, and `(open,
 private)` is a real, detectable operator mistake rather than a value the
 type system should hide.
 
-### F14 — dependency and shape state
+### F16 — dependency and shape state
 
 - `syneroym-control-plane` already imports `SignedEndpointInfo` from
   `syneroym_core::dht_registry` (used by `stable_registry_certificate_for_hash`,
@@ -293,11 +363,14 @@ type system should hide.
 | **D-B2-8** | **B2 implements ADR-0018 §1 and §4 in full. ADR-0018 §2 (record export/import) ships as `roymctl svc deploy --record-out` plus `SyneroymClient::new_with_record`; §3 (the peer-substrate known-records store) is deferred with a backlog row.** Confirmed 2026-08-18. | §3 is a persisted, verified-on-load store threaded into `net_iroh::resolve_iroh_addr`, and it has **no exit criterion and no failure-matrix row** in this milestone. The ADR's own scope note shrinks it further: same-node siblings already resolve through the local registry first ([proxy.rs:422-426](../../../../crates/router/src/proxy.rs#L422)) and a `DeploymentPlan` deploys to one substrate, so the store is needed only for genuinely cross-node private targets, which nothing in the tree has today. §2 is ~70 lines and closes the real user-visible half ("I made it private and now my own client cannot reach it"). Shipping §2 without §3 is a defensible line; shipping neither is not, because then `private` means "unreachable" rather than "unlisted". |
 | **D-B2-9** | **`D-B1-10` re-opened and re-affirmed: the Tier-2 fetcher keeps the node identity.** The `[iam].grant_resolve_to_node_did` gate stays exactly as it is; `open` is added **beside** it, not in place of it. | Now a choice, not an inheritance. Three reasons it stays: (1) the same-node gate answers a case `open` deliberately does not — an app's *own* operator resolving their *own* `restricted` services with no token; (2) switching the fetcher to the person's identity would make every app-scoped hostname depend on that person holding a grant, breaking F8's two components for the unauthenticated-browser case M06A A5 already proves; (3) `open` is per logical service, so it cannot replace a node-wide operator convenience. The gate's config doc gets one sentence saying `open` is now the other way in. |
 | **D-B2-10** | **An `open` service is answered to any verified caller; an unknown app, a retired instance, an unknown service name, and a `restricted` service are all still refused identically.** The visibility read happens **before** the capability check and **cannot** widen any other refusal. | ADR-0022 §5 plus `handle_resolve`'s existing anti-enumeration property. An `open` declaration does leak the existence of *that* service to anyone who guesses its name — that is what "open to all" means, and it is the owner's declaration. Everything else stays indistinguishable. |
-| **D-B2-11** | **`roymctl svc deploy` gains `--visibility <public\|internal\|private>` (default `private`) and `--record-out <path>`, and validates that `--identity`'s `did:key` equals `--svc-id` before building anything.** | ADR-0018 §1, §2, and its "Do first" note. `--visibility` is required because `svc deploy` builds a `DeployManifest` directly with no `SynAppManifest` to read a declaration from. `--asset-visibility` keeps its own name and meaning; the two are separate questions on one command and must not be merged. |
+| **D-B2-11** | **`roymctl svc deploy` gains `--visibility <public\|internal\|private>` (default `private`) and `--record-out <path>`, and validates that `--identity`'s `did:key` equals `--svc-id` before building anything.** The new refusal reaches **`--master` too**, not only `--identity`: `signing_identity` falls back to the master ([svc.rs:237-238](../../../../apps/roymctl/src/commands/svc.rs#L237)), so a `--master` deploy with no `--visibility` now fails the same way. `--master` needs no DID check added — it already has one ([svc.rs:274-285](../../../../apps/roymctl/src/commands/svc.rs#L274)); that is why the new check is `--identity`-only. | ADR-0018 §1, §2, and its "Do first" note. `--visibility` is required because `svc deploy` builds a `DeployManifest` directly with no `SynAppManifest` to read a declaration from. `--asset-visibility` keeps its own name and meaning; the two are separate questions on one command and must not be merged. |
 | **D-B2-12** | **The SDK pairs certificate and declaration in one type: `Publication { Private, Public(SignedEndpointInfo), Internal(SignedEndpointInfo) }`, replacing `registry_certificate: Option<SignedEndpointInfo>` on `DeploySvcOptions`, `deploy_svc_wasm`, `deploy_svc_tcp`, and `deploy_container`.** | The same 17 call sites have to be edited either way (they all pass `None` today). This shape makes ADR-0018 §4's three-row table unrepresentable-wrong at the client edge, and makes the substrate's validation a genuine second check rather than the only one. Fallback if the reviewer prefers minimal churn: an added `visibility: Option<Visibility>` parameter beside the existing certificate — same edit count, weaker invariant. |
-| **D-B2-14** | **The deploy client refuses a plan whose declarations contradict its own placement**, in `compile`'s `validate()`, with two checks: (a) a service placed on a **different substrate** from a service that `depends_on` it, while declaring `visibility = private`; (b) a service declaring `topology_visibility = open` while declaring `visibility = private`. Both name the offending service, the contradiction, and the fix. | This is the whole answer to §9.1's *"is the silence a problem?"* On the `svc deploy` path `D-B2-3`'s behaviour change is loud — the deploy fails. On the **app** path it would not be: the deploy succeeds and the *first cross-node call* fails, much later, with `"No valid Iroh mechanism found for service <did>"` — a message that names neither visibility nor the manifest. Both contradictions are statically detectable from the plan alone (placement and `depends_on` are both compiled), so the loudness `D-B2-3` promises can be delivered on this path too, at deploy time, in the client, before anything is installed. (b) is F13's `(open, private)` row: a document naming members nobody can dial. |
-| **D-B2-15** | **`internal`, not `public`, is the documented answer for a multi-substrate app's members.** The `--visibility` help text, the developer guide, and every fixture in §4.3 say so. | F13: `is_private` gates only the parent-registry relay; `lookup` serves every admitted record. So cross-node resolution inside one community registry needs "registered here", which is exactly `internal`. Defaulting the *guidance* to `public` would push operators into propagating records upward for a reachability property `internal` already gives them — re-creating, in documentation, the over-publication this ADR exists to remove. |
 | **D-B2-13** | **No new WIT enum, no new WIT package, and no change to `supervisor.wit`.** The only WIT edits are two added record fields (`service-config.visibility`, `deployed-service.visibility`). | F3, F6. `control-plane.wit` is absent from `wit/host/deps/` and is not imported by `host.wit`, so it drives no `wasm32-wasip2` guest build — this is the orchestrator's JSON-RPC contract, one file, two additive fields. Still verify the `wasm32-wasip2` build per the milestone gate. |
+| **D-B2-14** | **A plan whose declarations contradict its own placement is refused, by one shared function over a `&DeploymentPlan`, called from two entry points**: `compile()` (the deploy client) **and** `handle_submit` (the supervisor). Two checks: (a) a service placed on a **different, explicitly named** substrate from a service that `depends_on` it, while that dependency declares `visibility = private`; (b) a service declaring `topology_visibility = open` while declaring `visibility = private`. | This is the whole answer to §9.1's *"is the silence a problem?"* On the `svc deploy` path `D-B2-3`'s change is loud — the deploy fails. On the app path it would not be: the deploy succeeds and the *first cross-node call* fails much later with `"No valid Iroh mechanism found for service <did>"`, naming neither visibility nor the manifest. **Over a plan, not a manifest, and at both entry points**: a supervisor receiving `plan-json` through `submit` never runs manifest validation (F6 makes the point for `topology_visibility`, and it cuts the other way here), so a manifest-only check would protect `roymctl app deploy` and leave the `submit` path — the one `reference_scenario_e2e` and `topology_document_e2e` use — silent. (b) is F13's `(open, private)` row: a document naming members nobody can dial. |
+| **D-B2-15** | **`internal`, not `public`, is the documented answer for a multi-substrate app's members.** The `--visibility` help text, the developer guide, and every fixture in §4.3 say so. | F13: `is_private` gates only the parent-registry relay; `lookup` serves every admitted record. So cross-node resolution inside one community registry needs "registered here", which is exactly `internal`. Defaulting the *guidance* to `public` would push operators into propagating records upward for a reachability property `internal` already gives them — re-creating, in documentation, the over-publication this ADR exists to remove. |
+| **D-B2-16** | **DHT publication is gated on `!is_private`**, in `RegistryClient::register` — one condition on the `if let Some(dht)` arm ([dht_registry.rs:324](../../../../crates/core/src/dht_registry.rs#L324)), covering every caller at once. | F15: today an `internal` record is published to the global Mainline DHT, so the tier `D-B2-15` recommends means the opposite of its own definition whenever `enable_bep0044_dht` is on. Gating in `register` rather than in `EndpointPublisher` is deliberate: it is the single function every publish path crosses, so no future caller can forget it, and `is_private` is already inside the signed payload it is handed. Blast radius nil — every code path hardcodes `is_private: false`, and the only producer of a `true` is `roymctl registry register --private`, for which this is a fix. |
+
+| **D-B2-17** | **`register` reports failure when it published to no channel at all.** Today `http_success` starts as `self.registry_url.is_none()`, so a node with no HTTP registry returns `Ok(())` on the strength of the DHT arm — which `D-B2-16` now skips for a private record. Track whether *any* channel actually published, and return `Err` naming the cause when none did. | Without it, `D-B2-16` turns a supported configuration (`registry_url: None` + DHT, pinned by `a_self_signed_record_registers_to_the_dht_with_no_http_registry_configured`, [dht_registry.rs:1074](../../../../crates/core/src/dht_registry.rs#L1074)) into a **silent** no-op for exactly the tier `D-B2-15` tells operators to use. "Blast radius nil" was true of today's tree, where nothing produces `is_private: true`, and false of B2's own output. This also **gives `D-B2-16` its test** (§7.32): `dht_client` is a concrete `Option<pkarr::Client>` built inside `RegistryClient::new` ([:266](../../../../crates/core/src/dht_registry.rs#L266)) with no seam to inject a fake — which is why the existing DHT test can only assert `is_ok()` and says so. An `Err` on the registry-less private path is an **observable consequence of the gate itself**, so the wiring is proven without extracting a trait for one condition. Deliberately **not** made fatal at deploy: `deploy`'s publish is warn-only on purpose ([orchestration.rs:2233-2240](../../../../crates/control_plane/src/service/orchestration.rs#L2233)) — *"a registry that is down must not fail a deploy"* — and a missing registry gets the same treatment, surfacing at deploy and on every heartbeat sweep as a named warning rather than as silence. |
 
 ---
 
@@ -703,21 +776,112 @@ client whose lookups resolve **that** DID through the registry. The raw
 `new_with_mechanisms` constructor stays for genuinely registry-less bootstrap
 use, as the ADR requires.
 
-### 3.16 `crates/app_orchestration/src/models.rs` — two checks in `SynAppManifest::validate` (`D-B2-14`)
+### 3.16 `crates/app_orchestration` — one plan-level check, two entry points (`D-B2-14`)
 
-Appended as steps 4 and 5 of the existing `validate()`
-([:667](../../../../crates/app_orchestration/src/models.rs#L667)), after the
-`depends_on` and cycle checks it already runs. Pseudo-code in §5.6.
+**One function**, in `compiler.rs` beside `compile`:
 
-Both checks are **conservative by construction**: they fire only on a
-contradiction that is certain from the manifest alone. Placement is
-`Option<PlacementSelector>` where `None` means "the substrate this deploy was
-aimed at" ([:834-839](../../../../crates/app_orchestration/src/models.rs#L834)),
-which `validate()` cannot know — so check (a) compares two aliases only when
-**both** are explicitly named and differ. A `None`-versus-`Some` pair may or
-may not be cross-node, and a false refusal of a working manifest is worse than
-a missed warning: the runtime failure is still there as the backstop, and
-`D-B2-15`'s documentation is the other half of the answer.
+```rust
+/// Refuses a plan whose visibility declarations contradict its own
+/// placement (ADR-0018 + ADR-0022 §5). Operates on the **plan**, not the
+/// manifest: a supervisor receives `plan-json` through `submit` and never
+/// sees a `SynAppManifest`, so a manifest-level check would leave that
+/// whole path silent.
+pub fn validate_plan_visibility(plan: &DeploymentPlan) -> Result<()>
+```
+
+**Two call sites**, which are the two places a plan is accepted:
+
+| Call site | Why here |
+|---|---|
+| `compile()`, on each produced `DeploymentPlan` before it is returned ([compiler.rs:180-186](../../../../crates/app_orchestration/src/compiler.rs#L180)) | The client-side, early failure: `roymctl app deploy` and `roymctl supervisor submit` both compile locally first, so an operator sees the contradiction before anything is sent |
+| `AppSupervisor::handle_submit`, immediately after `DeploymentPlan::from_json` ([service.rs:3897](../../../../crates/app_supervisor/src/service.rs#L3897)) | The backstop. A plan built programmatically, or by a client that is not `roymctl`, reaches the supervisor without ever having been compiled here. Failing the `submit` — rather than the reconcile that follows it — puts the error in front of the caller who can fix it |
+
+Deliberately **not** called from `certify_placed_members`: by the time a plan
+reaches it, both entry points have already run, and a third copy would be a
+third thing to keep in sync. A hand-built plan in a test bypasses both — which
+is exactly what test 34a needs in order to assert the runtime behaviour the
+checks exist to prevent.
+
+Both checks are **conservative by construction**. `PlannedService.substrate`
+is `Option<SubstrateAlias>`, where `None` means "the substrate this deploy was
+aimed at" ([models.rs:834-839](../../../../crates/app_orchestration/src/models.rs#L834))
+— unknowable here. So check (a) compares two aliases only when **both** are
+explicitly named and differ. A `None`-versus-`Some` pair may or may not be
+cross-node, and falsely refusing a working plan is worse than a missed
+warning: the runtime failure is still there as the backstop, and `D-B2-15`'s
+documentation is the other half of the answer.
+
+### 3.17 `crates/core/src/dht_registry.rs` — the gate and the honest result (`D-B2-16`, `D-B2-17`)
+
+```rust
+// register(), rewritten around one added local. `http_success`'s existing
+// meaning is unchanged; `published` is what the return value now rests on.
+let mut published = false;
+
+if let Some(url) = &self.registry_url {
+    …unchanged… // on success: http_success = true; published = true;
+}
+if !http_success {
+    return Err(anyhow!("Failed to register endpoint via HTTP registry"));
+}
+
+// ADR-0018 §4: `is_private` means "not propagated beyond this registry".
+// The Mainline DHT is a *wider* channel than a parent registry, so the same
+// flag has to gate it -- otherwise `internal` means "global" on any node
+// with `enable_bep0044_dht` on, which is the opposite of what it declares.
+if let Some(dht) = &self.dht_client
+    && !signed_info.info.is_private
+{
+    …unchanged… // publish_dht_packet(…); published = true;
+}
+
+// D-B2-17: every channel was either absent or excluded, so nothing was
+// published and saying `Ok` would be a lie. Names both halves of the cause,
+// because the fix is one or the other.
+if !published {
+    // Name the channel that is actually absent. Both branches are reachable
+    // by configuration: the private one whenever `registry_url` is unset,
+    // and the second on a node with `registry_url: None` AND
+    // `enable_bep0044_dht: false` -- unusual, since the config default is
+    // `!cfg!(test)` (config.rs:1141), but a node can be written that way,
+    // and telling that operator their public record is "marked private"
+    // would send them to fix the one thing that is correct.
+    return Err(if signed_info.info.is_private {
+        anyhow!(
+            "nothing published for '{}': this node has no HTTP registry configured, \
+             and a record marked private is deliberately not published to the DHT. \
+             Configure `substrate.registry_url`, or declare this service `public`",
+            signed_info.info.service_id
+        )
+    } else {
+        anyhow!(
+            "nothing published for '{}': this node has no HTTP registry configured \
+             and no DHT client. Set `substrate.registry_url` or enable \
+             `substrate.enable_bep0044_dht`",
+            signed_info.info.service_id
+        )
+    });
+}
+Ok(())
+```
+
+Gated inside `register` rather than in `EndpointPublisher` because this is the
+single function every publish path crosses (`publish_service`, `roymctl
+registry register`, `roymctl app deploy`'s anchor refresh), so no future caller
+can forget it, and `is_private` is already inside the payload it is handed.
+
+The master-anchor path (`register_master`) is **not** gated: an anchor is not
+an endpoint record, carries no `is_private`, and must stay resolvable — every
+delegation-bearing connection resolves it (B1's F7).
+
+**Where the `Err` surfaces**: `deploy`'s publish call warns and continues
+([orchestration.rs:2233-2240](../../../../crates/control_plane/src/service/orchestration.rs#L2233)),
+and `publish_all_services` warns per service on each hourly sweep
+([endpoint_publisher.rs:70-73](../../../../crates/core/src/endpoint_publisher.rs#L70)).
+So a misconfigured node warns at deploy and keeps warning — the same treatment
+a permanently unreachable registry already gets, which is the right comparison:
+both are "this record is not where you think it is".
+
 
 ---
 
@@ -738,6 +902,7 @@ a missed warning: the runtime failure is still there as the backstop, and
 
 | Site | Change |
 |---|---|
+| [dht_registry.rs:324](../../../../crates/core/src/dht_registry.rs#L324) `register` | Gate DHT publication on `!is_private` (§3.17). |
 | [sdk/src/deploy.rs:727](../../../../crates/sdk/src/deploy.rs#L727) `certify_placed_members` | Skip the record for `private`; `is_private` from the declaration (§5.1). |
 | [orchestration.rs:~1415](../../../../crates/control_plane/src/service/orchestration.rs#L1415) `deploy` | Call `validate_publication`; fail early (§5.2). |
 | [orchestration.rs:1589](../../../../crates/control_plane/src/service/orchestration.rs#L1589) | Delete a stale record file on `private` (§5.3). |
@@ -748,12 +913,33 @@ a missed warning: the runtime failure is still there as the backstop, and
 
 ### 4.3 Fixtures that must declare visibility to keep passing
 
-Listed in F10. Each is a manifest or a helper, not production code:
-`master_endpoint_record_e2e.rs` (`bare_tcp_manifest`),
-`multi_substrate_placement_e2e.rs` (`certify_and_publish`, its two-service
-manifest, and the direct-certificate deploy at :760). Run these three files
-first after the sdk/orchestration changes — they fail loudly and early, which
-is the intended behaviour of `D-B2-3`.
+**F10's full set — seven distinct files across three groups, plus two
+checked-clean.** `binding_push_e2e` and `multi_substrate_placement_e2e` each
+appear in two groups, which is why the rows below add to more than seven. Do
+not shorten this list to the certificate-bearing ones: each group fails
+differently, and only (A) is findable by grepping for certificates.
+
+- **(A) certificate with no declaration** — refused by `validate_publication`
+  at deploy: `master_endpoint_record_e2e.rs`,
+  `multi_substrate_placement_e2e.rs` (×2 sites), `binding_push_e2e.rs`.
+- **(B) cross-substrate `depends_on` with an undeclared dependency** —
+  refused by `D-B2-14`(a) inside `compile()`, before any deploy:
+  `reference_scenario_e2e.rs`, `binding_push_e2e.rs`, `durable_outbox_e2e.rs`,
+  `multi_substrate_placement_e2e.rs`.
+- **(C) nothing refused; the record just stops existing** — the dial fails at
+  runtime: `gateway_hostname_e2e.rs`, `topology_document_e2e.rs`. **Repaired
+  in P4 like every other group** — §3.5 is what breaks them, and P4's gate is
+  a green full suite. Tests 41–44, which are *written on* these two fixtures,
+  are P5's.
+- **Checked, not affected** (do not re-check): `supervisor_interface_e2e.rs`,
+  `supervisor_loop_e2e.rs` — neither dials a member by DID.
+
+Run [reference_scenario_e2e.rs](../../../../crates/substrate/tests/reference_scenario_e2e.rs)
+**first**: it is the M05A reference scenario, it deploys through `submit`
+rather than `ApplyRequest`, and it is the only one that dies at
+`compiled_plan_json`'s unwrap instead of at a deploy — so it exercises both
+`D-B2-14`'s entry point and the record it needs for its own cross-node call.
+Every fixture in all three groups declares `internal`, not `public` (`D-B2-15`).
 
 ---
 
@@ -893,8 +1079,13 @@ if let Ok(plan) = DeploymentPlan::from_json(&state.plan_json):
                           .map(|v| v == TopologyVisibility::Open)
                           .unwrap_or(False)
 
-# `retired` is checked before this in the existing code and stays there: a
-# retired instance answers nothing, open or not.
+# NOTE the real order, which is not the obvious one: `state.retired` is
+# checked AFTER `has_capability` today ([:5350] then [:5361]), not before.
+# Leave it there -- do not reorder. The bypass below can let an ungranted
+# caller past the capability check on a retired instance, and the retired
+# check three lines later still refuses it, so test 20 holds with a
+# minimal diff. Reordering would be a behaviour-neutral churn in a function
+# whose ordering carries several other deliberate properties.
 
 if not open_to_all and not caller.has_capability(
         ResourceUri(f"synapp:{app_did}"),
@@ -954,42 +1145,52 @@ Note `--record-out` writes the record whenever one is signed, including for
 service with `--record-out` and an identity is the interesting case and it
 works: the record is signed and written, and nothing is sent to the substrate.
 
-### 5.6 `SynAppManifest::validate`'s two new checks (`D-B2-14`)
+### 5.6 `validate_plan_visibility` (`D-B2-14`)
 
 ```python
-# --- 4. A private dependency on another substrate can never be dialled ---
-#
-# Only fires when BOTH placements are explicitly named and differ. A `None`
-# placement means "wherever this deploy was aimed", which this function
-# cannot resolve -- refusing on a maybe would reject working manifests.
-for (name, spec) in &self.services:
-    here = spec.placement.or(self.placement)            # may be None
-    for dep_name in &spec.depends_on:
-        dep = &self.services[dep_name]                  # step 1 proved it exists
-        there = dep.placement.or(self.placement)
+# Index once: `resolved_dependencies` names member ServiceIds, and the
+# placement being compared belongs to the member those ids point at.
+by_id = { svc.service_id: svc for svc in &plan.services }
 
-        if here.is_some() and there.is_some() and here.alias() != there.alias()
-           and dep.config.visibility == Visibility::Private:
-            return Err("service '{name}' on substrate '{here}' depends on
-                        '{dep_name}' on substrate '{there}', but '{dep_name}'
-                        declares visibility 'private' -- its endpoint record is
-                        never registered, so '{name}' could never resolve its
-                        address. Declare 'internal' (registered with the
-                        community registry, not propagated upward), which is
-                        what a cross-substrate member needs")
+for svc in &plan.services:
+    # --- (a) a private dependency on another substrate can never be dialled ---
+    #
+    # Only fires when BOTH placements are explicitly named and differ. `None`
+    # means "wherever this deploy was aimed", which this function cannot
+    # resolve -- refusing on a maybe would reject working plans.
+    for (dep_name, members) in &svc.resolved_dependencies:
+        for member_id in members:
+            dep = by_id.get(member_id)
+            if dep is None:
+                continue          # a cross-app member; not this check's business
+            if svc.substrate.is_some() and dep.substrate.is_some()
+               and svc.substrate != dep.substrate
+               and dep.config.visibility == Visibility::Private:
+                return Err("'{svc.logical_ref}' on substrate '{svc.substrate}'
+                            depends on '{dep_name}' on substrate
+                            '{dep.substrate}', but '{dep_name}' declares
+                            visibility 'private' -- its endpoint record is never
+                            registered, so this dependency could never resolve to
+                            an address. Declare 'internal': registered with the
+                            community registry, not propagated upward, which is
+                            what a cross-substrate member needs")
 
-# --- 5. `open` topology over unpublished members names nobody dialable ---
-#
-# F13's (open, private) row: the caller gets a signed document listing member
-# DIDs and then fails Tier 3 on every one of them.
-for (name, spec) in &self.services:
-    if spec.topology_visibility == Open and spec.config.visibility == Private:
-        return Err("service '{name}' declares topology_visibility 'open' but
+    # --- (b) `open` topology over unpublished members names nobody dialable ---
+    #
+    # F13's (open, private) row: the caller receives a signed member list and
+    # then fails Tier 3 on every entry.
+    if svc.topology_visibility == Open and svc.config.visibility == Private:
+        return Err("'{svc.logical_ref}' declares topology_visibility 'open' but
                     visibility 'private' -- an outside caller would receive its
                     member list and then be unable to resolve any member to an
                     address, because a private member is never registered.
                     Declare visibility 'internal' alongside it")
 ```
+
+Note (a) walks `resolved_dependencies` rather than the manifest's
+`depends_on`: the plan is what both entry points hold, and the compiler has
+already expanded each declared dependency into its member list, so a scaled
+dependency is checked per member with no extra logic.
 
 Deliberately **not** checked here: a service declaring `open` in an app that
 is never deployed to more than one substrate. That is not a contradiction —
@@ -1008,8 +1209,8 @@ publication half; P5 is the resolution half and depends on nothing in P1–P4.
 | **P1** | **The declarations** | §3.1 (model fields + `TopologyVisibility`), §3.2 (two WIT fields), §3.3 (mapper), §3.4 (compiler), plus the 123 mechanical literal edits (§4.1). Nothing reads the new fields yet. Green build is the gate. |
 | **P2** | **Substrate validation and the record file** | §3.7(a)(b)(f), §5.2, §5.3. The four refusals and the stale-file delete. `roymctl` and the sdk still send `None`, so this phase is exercised only by new unit tests. |
 | **P3** | **Storage and reporting** | §3.8, §3.9, §3.7(c)(d)(e), plus `roymctl svc list`'s column. |
-| **P4** | **The client side** | §3.5 (`certify_placed_members`), §3.6 (`Publication`), §3.14 (`roymctl` flags), §3.16 (`validate`'s two contradiction checks), §4.3 (fixtures). **This is the phase that changes behaviour** — land §3.16 *before* §3.5 within the phase, so the loud failure exists before the silent one becomes possible. Then run the three e2e files in F10, then the full suite. |
-| **P5** | **Resolution: "open to all"** | §3.10, §3.11, §3.12, §3.13. Independent of P1–P4 except for `TopologyVisibility` itself, which lands in P1. |
+| **P4** | **The client side** | §3.5 (`certify_placed_members`), §3.6 (`Publication`), §3.14 (`roymctl` flags), §3.16 (`validate_plan_visibility` and its two entry points), §3.17 (the DHT gate), §4.3 (**all three fixture groups, group (C) included**). **This is the phase that changes behaviour** — land §3.16 *before* §3.5 within the phase, so the loud failure exists before the silent one becomes possible. §3.17 is independent of the rest of P4 and can land first. Group (C) is broken by §3.5, which lands here, so its two `visibility = "internal"` declarations land here too — this phase's gate is a green **full suite**, which it cannot be otherwise. Only the new tests *written on* those fixtures (41–44) wait for P5. |
+| **P5** | **Resolution: "open to all"** | §3.10, §3.11, §3.12, §3.13, plus tests 41–44 — written on the two group-(C) fixtures P4 has already repaired. Independent of P1–P4 except for `TopologyVisibility` (P1) and those repairs (P4). |
 | **P6** | **ADR-0018 §2's export/import** (gated on `D-B2-8`) | §3.15 (`new_with_record`), `--record-out`'s consumer test. |
 | **P7** | **Documentation and completion pass** | §8's document edits, deferred-backlog rows, `status.md`, the import cleanup pass, `cargo +nightly fmt --all`, clippy, `cargo test --workspace`, `mise run test:e2e`, and a `wasm32-wasip2` build check (§3.2's WIT edit is not guest-facing, but the milestone gate asks for it). |
 
@@ -1040,50 +1241,56 @@ is B2's alone.
 12. An `internal` member's record carries `is_private: true`; a `public` member's carries `false`.
 13. Every member's **instance** certificate is minted regardless of visibility.
 
-### Unit — `SynAppManifest::validate` (`app_orchestration`, `D-B2-14`)
+### Unit — `validate_plan_visibility` (`app_orchestration`, `D-B2-14`)
 
-13a. Two services on explicitly different aliases, the dependency `private` → `Err`, and the message names both services and `internal`.
-13b. The same pair with the dependency `internal` → `Ok`.
-13c. The same pair with **no** explicit placement on either → `Ok` (no false positive on an unresolvable `None`).
-13d. One `Some(a)`, one `None`, dependency `private` → `Ok` (conservative; the runtime failure is the backstop).
-13e. `topology_visibility = open` with `visibility = private` → `Err`, message names both fields. *(F13's (open, private) row)*
-13f. `topology_visibility = open` with `visibility = internal` → `Ok`.
+14. Two services on explicitly different aliases, the dependency `private` → `Err`, and the message names both services and `internal`.
+15. The same pair with the dependency `internal` → `Ok`.
+16. The same pair with **no** explicit placement on either → `Ok` (no false positive on an unresolvable `None`).
+17. One `Some(a)`, one `None`, dependency `private` → `Ok` (conservative; the runtime failure is the backstop).
+18. `topology_visibility = open` with `visibility = private` → `Err`, message names both fields. *(F13's (open, private) row)*
+19. `topology_visibility = open` with `visibility = internal` → `Ok`.
+
+20. The same contradiction inside a plan handed to **`handle_submit`** is refused there too — the backstop entry point, since a plan reaching a supervisor was never compiled here (`D-B2-14`).
 
 ### Unit — `service_topology_visibility` (`app_supervisor`)
 
-14. A plan declaring `open` returns `Open`; an undeclared plan returns `Restricted`.
-15. Members disagreeing returns `Err(InconsistentPlan)` — and the caller treats it as `Restricted` (§5.4's `unwrap_or(False)`).
-16. A `short_hash`-resolved name reaches the same answer as the exact name.
+21. A plan declaring `open` returns `Open`; an undeclared plan returns `Restricted`.
+22. Members disagreeing returns `Err(InconsistentPlan)` — and the caller treats it as `Restricted` (§5.4's `unwrap_or(False)`).
+23. A `short_hash`-resolved name reaches the same answer as the exact name.
 
 ### Unit — `handle_resolve` (`app_supervisor`, existing harness)
 
-17. An ungranted caller resolving an `open` service receives the signed document.
-18. An ungranted caller resolving a `restricted` service is refused — **unchanged**, the existing test.
-19. An ungranted caller naming a service that does not exist gets the same refusal as 18 (no enumeration).
-20. An ungranted caller resolving an `open` service on a **retired** instance is refused.
-21. A granted caller naming a non-existent service still gets `InvalidParams`, not `denied` — today's behaviour, pinned so §5.4's `unwrap_or` cannot silently coarsen it.
-22. The document served to an ungranted `open` caller is byte-identical to the one served to a granted caller (ADR-0022 §5's no-filtering rule).
+24. An ungranted caller resolving an `open` service receives the signed document.
+25. An ungranted caller resolving a `restricted` service is refused — **unchanged**, the existing test.
+26. An ungranted caller naming a service that does not exist gets the same refusal as 25 (no enumeration).
+27. An ungranted caller resolving an `open` service on a **retired** instance is refused — the check that runs *after* the bypass (§5.4).
+28. A granted caller naming a non-existent service still gets `InvalidParams`, not `denied` — today's behaviour, pinned so §5.4's `unwrap_or` cannot silently coarsen it.
+29. The document served to an ungranted `open` caller is byte-identical to the one served to a granted caller (ADR-0022 §5's no-filtering rule).
 
-### Unit — storage (`data_db`, `core`)
+### Unit — storage and DHT gating (`data_db`, `core`)
 
-23. `save_deploy_facts` with a visibility, reopen the file, `load_all_deploy_facts` returns it.
-24. A row written before the column exists loads as `None` (the `ALTER TABLE` path).
+30. `save_deploy_facts` with a visibility, reopen the file, `load_all_deploy_facts` returns it.
+31. A row written before the column exists loads as `None` (the `ALTER TABLE` path).
+32. **The DHT gate, proven without a fake** (`D-B2-16`/`D-B2-17`). `dht_client` is a concrete `Option<pkarr::Client>` with no injection seam, so the gate is asserted through its observable consequence, in three cases against `RegistryClient::new(true, None)` — DHT enabled, no HTTP registry:
+    - a record with `is_private: false` → `Ok` (this is the existing `a_self_signed_record_registers_to_the_dht_with_no_http_registry_configured`, unchanged — proving the gate discriminates on `is_private` and nothing else);
+    - a record with `is_private: true` → **`Err`**, and the message names both the missing registry and the private flag;
+    - the same private record against `RegistryClient::new(true, Some(url))` with a live test registry → `Ok`, and the record is retrievable by `lookup` (so `internal` still publishes where it is supposed to).
 
 ### Integration / e2e
 
-25. **`svc deploy` with no `--visibility` and no `--identity`** deploys and publishes nothing — `hosted_apps_dir` has no file and a registry lookup misses. *(exit criterion 10, first half; failure-matrix row 11)*
-26. **`svc deploy --identity X` with no `--visibility`** fails, loudly, naming `--visibility`. *(ADR-0018 §5's one intended behaviour change)*
-27. **`svc deploy --identity X --visibility public`** publishes, and the record resolves through the registry.
-28. **A public service redeployed as private** stops being published: the stored file is gone and the next heartbeat sweep publishes nothing for it. *(`D-B2-5` — the case F2 found)*
-29. **An app deployed with no declaration publishes no member records**, and a cross-node call to one of its members fails to resolve — the honest consequence of `D-B2-3`, asserted rather than discovered. Built by placing both services on the **same** alias (so `D-B2-14`'s check does not fire) and then dialling the member DID directly, which is the shape that isolates "not published" from "manifest refused". *(new test in `multi_substrate_placement_e2e.rs`)*
-30. **The same app with `visibility = "internal"` on both services** resolves cross-node exactly as it does today. *(the existing test, re-pointed — `internal`, not `public`, per `D-B2-15`, which also proves F13's claim that `is_private` does not affect `lookup`)*
-30a. **The same app with `visibility = "public"`** also resolves, and its records additionally reach a parent registry — pinning that the two tiers stay distinguishable.
-31. **`svc list` distinguishes a private service from a public one.** *(ADR-0018 §4's `list` requirement)*
-32. **A caller on an unaffiliated installation, holding no token and no grant, resolves an `open` logical service** — the caller identity is freshly generated, and the supervisor node has `grant_resolve_to_node_did = false` and no `admin_ucan_root` grant for it. *(exit criterion 10, second half; reference-scenario step 13)* — new test in [topology_document_e2e.rs](../../../../crates/substrate/tests/topology_document_e2e.rs), which already boots two independent nodes and already builds an outside-caller identity; the new test is that fixture **minus** the `supervisor/resolve` grant its helper issues today ([:278-281](../../../../crates/substrate/tests/topology_document_e2e.rs#L278)).
-33. **The same caller is refused for a `restricted` service on the same app** — one app, two services, two answers, proving the declaration is per logical service and not per app.
-34. **Through the client gateway**: an app-scoped hostname for an app this gateway holds no grant for **succeeds** when the service is `open`, and still fails when it is `restricted`. The existing `an_app_scoped_hostname_for_an_app_this_gateway_holds_no_grant_for_is_refused` ([gateway_hostname_e2e.rs:736](../../../../crates/substrate/tests/gateway_hostname_e2e.rs#L736)) becomes the negative half and keeps passing unchanged.
-34a. **Both declarations are needed and each is load-bearing** (F13): the same fixture as 34, with the service `open` but `private`, resolves the document and then **fails to reach any member**. This is the one test that proves the two fields are not redundant, and it is the reason `D-B2-14`(b) refuses the pairing at compile — so this test asserts against a plan constructed directly, bypassing `validate()`, and says so in a comment.
-35. *(gated on `D-B2-8`)* **A `private` service deployed with `--record-out`** is unreachable through a registry lookup, and reachable by `SyneroymClient::new_with_record` holding the exported file.
+33. **`svc deploy` with no `--visibility` and no `--identity`** deploys and publishes nothing — `hosted_apps_dir` has no file and a registry lookup misses. *(exit criterion 10, first half; failure-matrix row 11)*
+34. **`svc deploy --identity X` with no `--visibility`** fails, loudly, naming `--visibility`. *(ADR-0018 §5's one intended behaviour change)*
+35. **`svc deploy --identity X --visibility public`** publishes, and the record resolves through the registry.
+36. **A public service redeployed as private** stops being published: the stored file is gone and the next heartbeat sweep publishes nothing for it. *(`D-B2-5` — the case F2 found)*
+37. **An app deployed with no declaration publishes no member records**, and a cross-node call to one of its members fails to resolve — the honest consequence of `D-B2-3`, asserted rather than discovered. Built by placing both services on the **same** alias (so `D-B2-14`'s check does not fire) and then dialling the member DID directly, which is the shape that isolates "not published" from "manifest refused". *(new test in `multi_substrate_placement_e2e.rs`)*
+38. **The same app with `visibility = "internal"` on both services** resolves cross-node exactly as it does today. *(the existing test, re-pointed — `internal`, not `public`, per `D-B2-15`, which also proves F13's claim that `is_private` does not affect `lookup`)*
+39. **The same app with `visibility = "public"`** also resolves, and its records additionally reach a parent registry — pinning that the two tiers stay distinguishable.
+40. **`svc list` distinguishes a private service from a public one.** *(ADR-0018 §4's `list` requirement)*
+41. **A caller on an unaffiliated installation, holding no token and no grant, resolves an `open` logical service** — the caller identity is freshly generated, and the supervisor node has `grant_resolve_to_node_did = false` and no `admin_ucan_root` grant for it. *(exit criterion 10, second half; reference-scenario step 13)* — new test in [topology_document_e2e.rs](../../../../crates/substrate/tests/topology_document_e2e.rs), which already boots two independent nodes and already builds an outside-caller identity; the new test is that fixture **minus** the `supervisor/resolve` grant its helper issues today ([:278-281](../../../../crates/substrate/tests/topology_document_e2e.rs#L278)).
+42. **The same caller is refused for a `restricted` service on the same app** — one app, two services, two answers, proving the declaration is per logical service and not per app.
+43. **Through the client gateway**: an app-scoped hostname for an app this gateway holds no grant for **succeeds** when the service is `open`, and still fails when it is `restricted`. The existing `an_app_scoped_hostname_for_an_app_this_gateway_holds_no_grant_for_is_refused` ([gateway_hostname_e2e.rs:736](../../../../crates/substrate/tests/gateway_hostname_e2e.rs#L736)) becomes the negative half and keeps passing unchanged.
+44. **Both declarations are needed and each is load-bearing** (F13): the same fixture as 43, with the service `open` but `private`, resolves the document and then **fails to reach any member**. This is the one test that proves the two fields are not redundant, and it is the reason `D-B2-14`(b) refuses the pairing at compile — so this test asserts against a plan constructed directly, bypassing both of `D-B2-14`'s entry points, and says so in a comment.
+45. *(gated on `D-B2-8`)* **A `private` service deployed with `--record-out`** is unreachable through a registry lookup, and reachable by `SyneroymClient::new_with_record` holding the exported file.
 
 ---
 
@@ -1091,9 +1298,9 @@ is B2's alone.
 
 | Document | Edit |
 |---|---|
-| [ADR-0018](../../../decisions/0018-service-record-visibility.md) | **Owed by task.md.** Status note: "Implemented by M06B slice B2" → the shipped state, which under `D-B2-8` reads *"§1 and §4 implemented by M06B B2 (date); §2's export/import shipped with it; §3's known-records store deferred — see deferred-backlog"*. Also: correct the Context section, which describes only the `svc deploy` path (F1/§9.1); correct §1's `snake_case` to the shipped `lowercase` (§9.4); correct §5's "verified blast radius: nil", which is true of `svc deploy` and false of the app path (§9.1); add one line noting `roymctl registry register` is a separate, unaffected publication path (F11). |
+| [ADR-0018](../../../decisions/0018-service-record-visibility.md) | **Owed by task.md.** Status note: "Implemented by M06B slice B2" → the shipped state, which under `D-B2-8` reads *"§1 and §4 implemented by M06B B2 (date); §2's export/import shipped with it; §3's known-records store deferred — see deferred-backlog"*. Also: correct the Context section, which describes only the `svc deploy` path (F1/§9.1); correct §1's `snake_case` to the shipped `lowercase` (§9.4); correct §5's "verified blast radius: nil", which is true of `svc deploy` and false of the app path (§9.1); add one line noting `roymctl registry register` is a separate, unaffected publication path (F11); and **correct §4's table, which defines `internal` against the parent-registry relay alone and does not mention the Mainline DHT** — a second, wider publication channel that ignored `is_private` entirely until `D-B2-16` (F15, §9.6). |
 | [ADR-0022](../../../decisions/0022-two-tier-logical-service-discovery.md) | §5 gains an implementation note naming the field, its default, and the slice — the same treatment §1 and §7's amendments already carry. Status stays `Proposed` (that is a whole-ADR question, not B2's). |
-| [task.md](task.md) | B2's row → Complete, with links to this plan and `status.md`. **Exit criterion 10's wording split into its two declarations** (§9.3): "a service that declares no visibility is not published, and not reachable across installations; one that declares `topology_visibility = open` *and* a registered visibility is resolvable by a caller on an unaffiliated installation with no pre-installed token". The Migration-impact bullet gains the app-path consequence (§9.1). |
+| [task.md](task.md) | B2's row → Complete, with links to this plan and `status.md`. **Exit criterion 10's wording split into its two declarations** (§9.3): "a service that declares no visibility is not published, and not reachable across installations; one that declares `topology_visibility = open` *and* a registered visibility is resolvable by a caller on an unaffiliated installation with no pre-installed token". **Reference-scenario step 13 carries the identical conflation** — *"A service declares `visibility: open`"* ([task.md:272](task.md)) — and gets the same split. The Migration-impact bullet gains the app-path consequence (§9.1). |
 | [status.md](status.md) | A `B2 — What shipped` section and its evidence, in B1's format. |
 | [deferred-backlog.md](../../deferred-backlog.md) | **To "Recently resolved"**: *"Declared service-record visibility is still only Proposed"* (line 130), *"`resolve`'s visibility is a capability check with no manifest declaration"* (line 268), *"A gateway or coordinator can only resolve a *remote* app whose operator issued it a grant"* (line 274), *"M05C S4 bundles two halves on a gate only one of them clears"* (line 129 — its visibility half is now shipped; the `Bind` half stays, so this row is **split**, not moved), and *"How `asset-bundle.visibility` reconciles with ADR-0018's `service-config.visibility`"* (line 147, answered by `D-B2-1`). **New rows**: §10's four. **Unchanged**: the Tier-1 `is_private` row (F12) and the `ServiceAssets` `public: bool` row (line 146). |
 | [developer-guide.md](../../../developer-guide.md) | The `svc deploy` section gains `--visibility`/`--record-out`; the ports/config section's `grant_resolve_to_node_did` note gains the `open` alternative. |
@@ -1182,14 +1389,30 @@ this plan already applies.
    door, and a reader auditing "can a record be published without a
    declaration" will find this and be right. One sentence in the ADR.
 
-6. **ADR-0022 §5 says the declaration is "part of the desired state submitted
+6. **ADR-0018 §4's table defines `internal` against one publication channel
+   and there are two.** The table's middle row reads "registered here, not
+   propagated upward", which is exactly what `is_private` does at the
+   parent-registry relay — and nothing at all at the Mainline DHT, where
+   `RegistryClient::register` publishes unconditionally (F15). So `internal`
+   has meant "globally resolvable" on any node with
+   `enable_bep0044_dht = true` since the flag existed. `D-B2-16` closes it in
+   code; the ADR still needs the sentence, because the table as written is
+   what a future reader will trust. **This is a fifth correction owed to
+   ADR-0018**, alongside the four §8 already carries.
+
+   Worth stating plainly: the fix is not a caveat on `internal`. A caveat
+   would leave the tier meaning two different things depending on a node's
+   transport configuration, which is precisely the kind of incidental
+   behaviour this ADR exists to replace with a declaration.
+
+7. **ADR-0022 §5 says the declaration is "part of the desired state submitted
    through `submit`" and says nothing about where it lives in the manifest.**
    This plan puts it on `ServiceSpec` (per logical service, cloned to each
    member, `D-B2-2`), which is the only place that satisfies both "per logical
    service" and "survives a handover". Recording the choice because the ADR
    does not make it.
 
-7. **ADR-0022 §5's anti-enumeration cost is unstated.** Declaring a service
+8. **ADR-0022 §5's anti-enumeration cost is unstated.** Declaring a service
    `open` makes its existence discoverable to anyone who guesses the app DID
    and service name, weakening the "an unknown app and an unauthorized caller
    are refused identically" property that `handle_resolve`'s doc comment calls
@@ -1198,7 +1421,7 @@ this plan already applies.
    and this slice deliberately narrows, so it belongs in the ADR's
    consequences, not only in a code comment.
 
-8. **The deferred-backlog row *"An `-i`-less gateway host's meaning depends on
+9. **The deferred-backlog row *"An `-i`-less gateway host's meaning depends on
    the app"*** (line 275) says its fix is "a manifest-declared default
    interface, stable across adding a second one — a surface S4 is already
    opening for per-service visibility". B2 opens that surface
@@ -1218,6 +1441,7 @@ New rows for [deferred-backlog.md](../../deferred-backlog.md):
 | **A privately-shared endpoint record cannot be imported by a peer *substrate*, only by a client — so `private` means "not reachable across nodes", not merely "not listed"** | `D-B2-8`/§9.2: ADR-0018 §3's `known_records` store, verified on import and on load and threaded into `net_iroh::resolve_iroh_addr`, is not built. A `private` service is reachable by a client holding its record (§2, shipped) but **not** by a peer substrate's `ProxyRouter::invoke_remote`. Same-node siblings are unaffected — `ProxyRouter` tries the local `EndpointRegistry` first, and a `DeploymentPlan` deploys to one substrate. This is a deliberate, documented narrowing of an **Accepted** ADR, and it is why `D-B2-14`(a) refuses a cross-substrate `private` dependency at compile rather than letting it fail at runtime. | TBD (M06C if a cross-node private target appears) |
 | **A visibility change is only honoured at deploy time; there is no verb to change it in place** | Flipping a service from `public` to `private` means a redeploy, which reinstalls the service. `renew_cert` is the precedent for a narrow in-place update verb, and no equivalent exists for the record. Not needed for any B2 criterion. | TBD |
 | **`topology_visibility` has no per-caller middle tier** | ADR-0022 §5 is binary by decision, and `D-B2-1` implements exactly that. A service that wants "these three DIDs, and nobody else" still needs a `supervisor/resolve` UCAN per caller — which works, but has no manifest surface and no issuing verb. | TBD |
+| **DHT publication has no test seam, so `D-B2-16`'s gate is proven only through its side effects** | `RegistryClient.dht_client` is a concrete `Option<pkarr::Client>` built inside `RegistryClient::new` ([dht_registry.rs:266](../../../../crates/core/src/dht_registry.rs#L266)); the existing DHT test already records that this is why it can only assert `is_ok()`. Test 32 works around it via `D-B2-17`'s `Err` rather than extracting a trait — right for one condition, wrong the moment a second behaviour depends on *what* was published. A `DhtPublisher` trait is the fix when that day comes. | TBD |
 | **A published record's `not_after` still has no renewal verb** | Pre-existing (`EndpointPublisher::warn_on_near_expiry_records`'s own doc comment says so), and B2 makes it more visible by making publication deliberate: an operator who declared `public` now has a 30-day clock and a `warn!` as their only tooling. Not created here. | TBD |
 
 Explicitly **not** decided here: whether the Tier-1 app record gains an
