@@ -9,6 +9,7 @@ use std::{
     path::Path,
     str,
     sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -34,6 +35,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{Mutex, oneshot, oneshot::Sender},
+    time,
 };
 use tracing::{debug, error, info, warn};
 
@@ -176,8 +178,9 @@ impl ClientGateway {
         info!("running client gateway on port {}", self.port);
         let state = self.state.clone();
 
-        // TODO: For now, basic security via access from local machine only instead of
-        // 0.0.0.0 interface
+        // Loopback bind: the client gateway operates on 127.0.0.1 for local machine
+        // security under the local person session model, rather than an internet-facing
+        // multi-tenant gateway.
         let addr = format!("127.0.0.1:{}", self.port);
         let listener = TcpListener::bind(&addr).await?;
 
@@ -219,6 +222,8 @@ impl ClientGateway {
     }
 }
 
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
 async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> Result<()> {
     // Limit header reads to 8 KB — the conventional maximum for HTTP/1.1 headers.
     // Requests with larger headers (e.g. very large JWTs) will receive a 400
@@ -229,7 +234,13 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
 
     // Read enough to find the end of the HTTP headers
     loop {
-        let n = stream.read(&mut buf[bytes_read..]).await?;
+        let n = match time::timeout(READ_TIMEOUT, stream.read(&mut buf[bytes_read..])).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                return Err(anyhow::anyhow!("Timed out reading HTTP request headers"));
+            }
+        };
         if n == 0 {
             return Err(anyhow::anyhow!("Connection closed before headers finished"));
         }
@@ -278,7 +289,19 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
                     let mut body = buf[header_len..bytes_read].to_vec();
                     let mut chunk = [0u8; 1024];
                     while body.len() < content_length {
-                        let n = stream.read(&mut chunk).await?;
+                        let n = match time::timeout(READ_TIMEOUT, stream.read(&mut chunk)).await {
+                            Ok(Ok(n)) => n,
+                            Ok(Err(e)) => return Err(e.into()),
+                            Err(_) => {
+                                return write_json(
+                                    &mut stream,
+                                    408,
+                                    &serde_json::json!({"error": "timed out reading request body"}),
+                                    None,
+                                )
+                                .await;
+                            }
+                        };
                         if n == 0 {
                             return write_json(
                                 &mut stream,
@@ -376,15 +399,15 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
                     )
                 };
 
-                let session =
-                    credential.and_then(|(t, src)| state.sessions.lookup(&t).map(|s| (s, t, src)));
-
-                let (forwarded_bytes, delegation) = match session {
-                    Some((s, token, src)) => {
+                let (forwarded_bytes, delegation) = match credential {
+                    Some((token, src)) => {
                         let stripped =
                             session::strip_credential(&buf[..bytes_read], header_len, &token, src);
-                        debug!(person = %s.person_did, "gateway proxying under a person session");
-                        (stripped, Some(s.delegation))
+                        let s_opt = state.sessions.lookup(&token);
+                        if let Some(ref s) = s_opt {
+                            debug!(person = %s.person_did, "gateway proxying under a person session");
+                        }
+                        (stripped, s_opt.map(|s| s.delegation))
                     }
                     None => (None, None),
                 };
@@ -427,7 +450,7 @@ async fn handle_session_request(
     route: SessionRoute,
     credential: Option<&str>,
     body: &[u8],
-    ttl_secs: u64,
+    _ttl_secs: u64,
 ) -> Result<()> {
     match route {
         SessionRoute::Challenge => {
@@ -450,9 +473,14 @@ async fn handle_session_request(
             };
             match state.sessions.login(&req, state.anchor_lookup.as_ref()).await {
                 Ok(grant) => {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let remaining_ttl = grant.expires_at_secs.saturating_sub(now);
                     let cookie = format!(
                         "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Strict",
-                        SESSION_COOKIE_NAME, grant.token, ttl_secs
+                        SESSION_COOKIE_NAME, grant.token, remaining_ttl
                     );
                     let body_val = serde_json::to_value(&grant)?;
                     write_json(stream, 200, &body_val, Some(&cookie)).await

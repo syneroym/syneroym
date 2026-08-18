@@ -1062,9 +1062,9 @@ impl SyneroymClient {
             TransportConnection::Iroh { conn, .. } => {
                 let (mut send, recv) = conn.open_bi().await?;
 
-                // Use HTTP transport for passthrough of raw requests. A
-                // self-asserted pubkey (no delegation) is set so this
-                // connection is not anonymous (M04A Slice B0, ADR-0016 §0.5).
+                // Use HTTP transport for passthrough of raw requests. The node
+                // pubkey is set along with any optional routing delegation so this
+                // connection presents caller identity to the downstream service.
                 let preamble = RoutePreamble {
                     transport: RouteTransport::Http,
                     protocol: RouteProtocol::JsonRpc,

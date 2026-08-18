@@ -1,9 +1,12 @@
 use std::{
-    cmp, fmt, str,
+    cmp,
+    error::Error,
+    fmt, str,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use dashmap::DashMap;
+use httparse::Header;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 pub use syneroym_core::protocol_utils::gateway_session_assertion as assertion_value;
@@ -106,7 +109,7 @@ impl fmt::Display for SessionError {
     }
 }
 
-impl std::error::Error for SessionError {}
+impl Error for SessionError {}
 
 fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -262,34 +265,36 @@ pub enum CredentialSource {
 }
 
 #[must_use]
-pub fn extract_credential(headers: &[httparse::Header<'_>]) -> Option<(String, CredentialSource)> {
-    // Authorization: Bearer takes precedence over Cookie (D-B1-18)
-    for h in headers {
-        if h.name.eq_ignore_ascii_case("authorization")
-            && let Ok(val) = str::from_utf8(h.value)
-        {
-            let trimmed = val.trim();
-            if trimmed.len() >= 7 && trimmed[..7].eq_ignore_ascii_case("bearer ") {
-                let token = trimmed[7..].trim();
-                if !token.is_empty() {
-                    return Some((token.to_string(), CredentialSource::Bearer));
-                }
-            }
-        }
-    }
-
+pub fn extract_credential(headers: &[Header<'_>]) -> Option<(String, CredentialSource)> {
+    // Cookie takes precedence over Authorization: Bearer (Plan §5.5, D-B1-7)
     for h in headers {
         if h.name.eq_ignore_ascii_case("cookie")
             && let Ok(val) = str::from_utf8(h.value)
         {
             for pair in val.split(';') {
                 if let Some((k, v)) = pair.trim().split_once('=')
-                    && k == SESSION_COOKIE_NAME
+                    && k.trim() == SESSION_COOKIE_NAME
                 {
                     let token = v.trim().to_string();
                     if !token.is_empty() {
                         return Some((token, CredentialSource::Cookie));
                     }
+                }
+            }
+        }
+    }
+
+    for h in headers {
+        if h.name.eq_ignore_ascii_case("authorization")
+            && let Ok(val) = str::from_utf8(h.value)
+        {
+            let trimmed = val.trim();
+            if let Some(prefix) = trimmed.get(..7)
+                && prefix.eq_ignore_ascii_case("bearer ")
+            {
+                let token = trimmed[7..].trim();
+                if !token.is_empty() {
+                    return Some((token.to_string(), CredentialSource::Bearer));
                 }
             }
         }
@@ -316,47 +321,44 @@ pub fn strip_credential(
         if line.is_empty() {
             break;
         }
-        match source {
-            CredentialSource::Cookie
-                if line.len() >= 7 && line[..7].eq_ignore_ascii_case("cookie:") =>
-            {
-                let value = &line[7..];
-                let pairs: Vec<&str> = value
-                    .split(';')
-                    .map(str::trim)
-                    .filter(|p| {
-                        if let Some((k, v)) = p.split_once('=')
-                            && k.trim() == SESSION_COOKIE_NAME
-                            && v.trim() == token
-                        {
-                            return false;
-                        }
-                        true
-                    })
-                    .collect();
-                if pairs.is_empty() {
-                    changed = true;
-                } else {
-                    changed = true;
-                    out_lines.push(format!("Cookie: {}", pairs.join("; ")));
-                }
-            }
-            CredentialSource::Bearer
-                if line.len() >= 14 && line[..14].eq_ignore_ascii_case("authorization:") =>
-            {
-                let value = line[14..].trim();
-                if value.len() >= 7 && value[..7].eq_ignore_ascii_case("bearer ") {
-                    let bearer_tok = value[7..].trim();
-                    if bearer_tok == token {
+        if let Some(prefix) = line.get(..7)
+            && prefix.eq_ignore_ascii_case("cookie:")
+        {
+            let value = &line[7..];
+            let pairs: Vec<&str> = value
+                .split(';')
+                .map(str::trim)
+                .filter(|p| {
+                    if let Some((k, _v)) = p.split_once('=')
+                        && k.trim() == SESSION_COOKIE_NAME
+                    {
                         changed = true;
-                        continue;
+                        return false;
                     }
+                    true
+                })
+                .collect();
+            if pairs.is_empty() {
+                changed = true;
+            } else {
+                out_lines.push(format!("Cookie: {}", pairs.join("; ")));
+            }
+        } else if let Some(prefix) = line.get(..14)
+            && prefix.eq_ignore_ascii_case("authorization:")
+        {
+            let value = line[14..].trim();
+            if let Some(bearer_prefix) = value.get(..7)
+                && bearer_prefix.eq_ignore_ascii_case("bearer ")
+            {
+                let bearer_tok = value[7..].trim();
+                if source == CredentialSource::Bearer && bearer_tok == token {
+                    changed = true;
+                    continue;
                 }
-                out_lines.push(line.to_string());
             }
-            _ => {
-                out_lines.push(line.to_string());
-            }
+            out_lines.push(line.to_string());
+        } else {
+            out_lines.push(line.to_string());
         }
     }
 
@@ -640,14 +642,12 @@ mod tests {
         let store = SessionStore::new(node_did.clone(), 3600);
 
         let ch = store.issue_challenge();
-        let mut cert = DelegationCertificate::issue(
-            &person,
-            node.public_key(),
-            3600,
-            SCOPE_ROUTING.to_string(),
-        )
-        .unwrap();
-        cert.expires_at_secs = now_secs() - 10;
+        // Issue a certificate with 1s expiry and wait until it is expired,
+        // so the signature remains valid and the expiry handling is truly verified.
+        let cert =
+            DelegationCertificate::issue(&person, node.public_key(), 1, SCOPE_ROUTING.to_string())
+                .unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
 
         let sig = person.sign_json(&assertion_value(&node_did, &ch.nonce, &person_did)).unwrap();
 
@@ -872,18 +872,24 @@ mod tests {
             Some(("tok456".to_string(), CredentialSource::Bearer))
         );
 
+        // Cookie takes priority over Bearer when both are present (Plan §5.5)
         let headers_both = [
             httparse::Header { name: "Authorization", value: b"Bearer tok456" },
             httparse::Header { name: "Cookie", value: b"syneroym_session=tok123" },
         ];
         assert_eq!(
             extract_credential(&headers_both),
-            Some(("tok456".to_string(), CredentialSource::Bearer))
+            Some(("tok123".to_string(), CredentialSource::Cookie))
         );
 
         let headers_basic =
             [httparse::Header { name: "Authorization", value: b"Basic dXNlcjpwYXNz" }];
         assert_eq!(extract_credential(&headers_basic), None);
+
+        // Multi-byte UTF-8 in Authorization header does not panic (HIGH-2)
+        let headers_utf8 =
+            [httparse::Header { name: "Authorization", value: "€€€".as_bytes() }];
+        assert_eq!(extract_credential(&headers_utf8), None);
 
         let headers_empty: [httparse::Header; 0] = [];
         assert_eq!(extract_credential(&headers_empty), None);
@@ -918,9 +924,43 @@ mod tests {
             "GET / HTTP/1.1\r\nHost: localhost\r\n\r\nbody"
         );
 
+        // When source is Cookie, unrelated Authorization header is preserved (HIGH-1)
+        let raw_both = b"GET / HTTP/1.1\r\nHost: localhost\r\nCookie: syneroym_session=tok\r\nAuthorization: Bearer app_token\r\n\r\nbody";
+        let header_len_both = raw_both.len() - 4;
+        let stripped_both =
+            strip_credential(raw_both, header_len_both, "tok", CredentialSource::Cookie).unwrap();
+        assert_eq!(
+            str::from_utf8(&stripped_both).unwrap(),
+            "GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer app_token\r\n\r\nbody"
+        );
+
+        // When source is Bearer, cookie is also stripped unconditionally (HIGH-1)
+        let raw_both_bearer = b"GET / HTTP/1.1\r\nHost: localhost\r\nCookie: syneroym_session=tok1\r\nAuthorization: Bearer tok2\r\n\r\nbody";
+        let header_len_both_bearer = raw_both_bearer.len() - 4;
+        let stripped_both_bearer = strip_credential(
+            raw_both_bearer,
+            header_len_both_bearer,
+            "tok2",
+            CredentialSource::Bearer,
+        )
+        .unwrap();
+        assert_eq!(
+            str::from_utf8(&stripped_both_bearer).unwrap(),
+            "GET / HTTP/1.1\r\nHost: localhost\r\n\r\nbody"
+        );
+
         let raw4 = b"GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer other\r\n\r\nbody";
         let header_len4 = raw4.len() - 4;
         assert_eq!(strip_credential(raw4, header_len4, "tok", CredentialSource::Bearer), None);
+
+        // Multi-byte UTF-8 in headers does not panic during stripping (HIGH-2)
+        let raw_utf8 =
+            "GET /€ HTTP/1.1\r\nHost: localhost\r\nAuthorization: €€€\r\n\r\nbody".as_bytes();
+        let header_len_utf8 = raw_utf8.len() - 4;
+        assert_eq!(
+            strip_credential(raw_utf8, header_len_utf8, "tok", CredentialSource::Bearer),
+            None
+        );
     }
 
     // 15. classify tests.
