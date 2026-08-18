@@ -68,7 +68,7 @@ overturned an ADR is kept at the end, under
 | D3 | **The native build must not touch host crates directly.** It goes through the same host interfaces as the WASM build, via an in-process shim. Existing native services (such as the control plane) call `syneroym-data-db` directly; Roym must not. | If the native build could take shortcuts, the two builds would drift and the WASM build would quietly become second-class. |
 | D4 | **No third-party mailboxes.** A message waits in the sender's own outbox until one of the recipient's substrates is reachable. | This is [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §3, already decided. Mailboxes would need their own ADR covering encryption, retention, abuse, deletion, and operator-visible metadata. That is not first-release work. |
 | D5 | **Group chat uses an owner-distributed group key over a Gossip DAG, ordered by raw sender timestamps.** The group owner generates one symmetric key per epoch and sends it to each member over the existing 1:1 channel, then generates a new one on every join, every removal, and on a schedule. Not MLS. | **Revised 2026-08-13**, amending [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §6. MLS assumes a Delivery Service that gives every member the same order of Commits. We have no server, and a DAG sort does not supply that: a member can apply the only Commit it has seen, advance its epoch, then receive one that sorts earlier — and MLS epochs are forward-only. The ordering rule from §5 is unchanged and still correct. See [O1](#resolved-o1--group-key-management) for the full reasoning. |
-| D6 | **Clients talk to Roym as JSON-RPC through the client gateway.** The HTML UI is one such client, served by a thin Web entrypoint service that is also the single API origin. The API is the product boundary, not the UI. | Any other client — a different UI, a script, a CLI — can be written against the same API. The entrypoint exists because a WASM component cannot serve HTTP today and because five services would otherwise mean five browser origins. See [Client contract](#client-contract). |
+| D6 | **Clients talk to Roym as JSON-RPC through the client gateway.** The HTML UI is one such client, served by a thin Web entrypoint service that is also the single API origin. The API is the product boundary, not the UI. | Any other client — a different UI, a script, a CLI — can be written against the same API. **Revised 2026-08-18:** the entrypoint originally existed for two reasons, and only one survives. Five services would still mean five browser origins, so a single API origin is still worth a service. But "a WASM component cannot serve HTTP" stopped being true when [M06A](planning/milestones/M06A-app-platform-surface/task.md) completed (2026-08-17), so **the entrypoint is now an ordinary WASM component and is no longer exempt from D2 and D3** (M06B `D-06B-1`). See [Client contract](#client-contract). |
 | D7 | **The substrate signs on the person's behalf under delegation.** The user's Master DID delegates to the Substrate Node DID; Roym signs with the delegated key. Private user keys do not go into browser storage. | [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §1 already defines this delegation. It also means the gateway must learn which person is asking — see [gap G3](#substrate-work-required). |
 | D8 | **Every participant installs a substrate, including consumers.** There is no browser-only consumer path in the first release. | The client gateway binds `127.0.0.1` and authenticates no client. A hosted gateway serving browser consumers needs remote binding plus client authentication — see [gap G3](#substrate-work-required). The lightweight device identity from the requirements still applies; the person just runs it on their own machine. |
 | D9 | **The Transaction service runs on the provider's substrate.** | It makes the provider the single writer for a transaction, which the requirements demand. Putting it on the SynOrg would make the group a required intermediary and would break providers who belong to no group. |
@@ -127,20 +127,24 @@ The UI is served with the app, from the Web entrypoint. Deploying the Roym
 SynApp gives you its UI; there is no separate install and no version skew
 between the UI and the API it speaks to.
 
-**Why a separate service rather than the Conversation service serving it.** Two
-independent reasons:
+**Why a separate service rather than the Conversation service serving it.** This
+originally rested on two independent reasons. **Only the second survives**
+(revised 2026-08-18):
 
-1. **A WASM component cannot serve HTTP.** There is no `wasi:http` in the WIT
-   surface, and the gateway is a raw byte passthrough, so whatever it routes to
-   must speak HTTP itself. The proven pattern in this tree is
-   `test-components/miniapp-demo1-web`: a native binary deployed as a TCP
-   service, bundle embedded with `rust-embed`, reached through the gateway. The
-   Web entrypoint follows it.
+1. ~~**A WASM component cannot serve HTTP.**~~ **No longer true.**
+   [M06A](planning/milestones/M06A-app-platform-surface/task.md) closed this on
+   2026-08-17: a component now serves static assets straight from blob storage
+   without being instantiated (A1), handles an inbound HTTP request in guest
+   code (A2), and answers a WebSocket upgrade (A3) — proven end to end from a
+   real browser against `test-components/miniapp-demo1-wasm` (A4, A5). The
+   native `miniapp-demo1-web` pattern this bullet pointed at is now one of two
+   options, not the only one.
 2. **One browser origin.** The gateway routes by `Host:`, so each service is a
    different hostname and therefore a different origin. A UI served from one
    hostname that called the other four directly would need CORS headers on
    every service and a preflight on every call. Routing through one entrypoint
-   removes that entirely.
+   removes that entirely. This reason is untouched by M06A and still holds, so
+   the entrypoint stays — as a WASM component.
 
 The entrypoint reaches the other four services by declared dependency, which is
 intra-app and works today.
@@ -149,9 +153,12 @@ intra-app and works today.
   needs something the API cannot do, the API is wrong, not the UI.
 - The UI holds no user private key and no business logic it cannot recompute
   from the API.
-- The entrypoint is the **only** part of Roym exempt from D2 and D3, and only
-  because it holds no business logic. If logic moves into it, the WASM build
-  stops being a complete Roym and the rule stops meaning anything.
+- ~~The entrypoint is the **only** part of Roym exempt from D2 and D3.~~
+  **Exemption retired 2026-08-18** (M06B `D-06B-1`). It existed only because a
+  component could not serve HTTP; M06A removed that, so **no part of Roym is
+  exempt from D2 and D3**. The original caveat still applies in spirit: the
+  entrypoint holds no business logic, and if logic moves into it the WASM build
+  stops being a complete Roym.
 - The bundle is embedded in the entrypoint for the first release, so it versions
   with the app automatically. Serving it from `blob-store` instead would allow a
   UI update without redeploying the service; that is a later convenience, not
@@ -667,6 +674,21 @@ rule above, which is why building the directory first does not create rework.
 These do not exist today. Implementation planning must schedule them before,
 or alongside, the Roym services themselves.
 
+> **Scheduled 2026-08-18.** All four are
+> [M06B](planning/milestones/M06B-roym-substrate-foundations/task.md), which
+> exists to close exactly this section. Owners:
+>
+> | Gap | Slice |
+> |---|---|
+> | G1 — durable messaging host interface | **B4** (interface + 1:1 delivery), **B5** (group DAG, ordering, group key) |
+> | G2 — guest-reachable outbox | **B4** — folded into G1's interface rather than given its own, per this section's own reasoning (M06B `D-06B-2`) |
+> | G3 — person identity at the client gateway | **B1** |
+> | G4 — declared service visibility | **B2**, both layers: publication ([ADR-0018](decisions/0018-service-record-visibility.md), Accepted 2026-08-18) and resolution ([ADR-0022](decisions/0022-two-tier-logical-service-discovery.md) §5). The resolution half was previously M05C S4; it moved (M06B `D-06B-4`) |
+>
+> M06B adds a fifth item this section does not number: the **dual-build shim**
+> that D2 and D3 require, as slice **B3**. It ships before B4 so the largest new
+> interface is designed against both builds from the start.
+
 ### G1 — A durable messaging host interface
 
 `syneroym:messaging` today is `publish` / `subscribe` / `unsubscribe` plus raw
@@ -713,15 +735,20 @@ supervised by this node"
 reaching a provider's Roym app, or querying a SynOrg's Directory on another
 node, is cleanly refused unless an operator installed a token in advance. The
 fix is [ADR-0022](decisions/0022-two-tier-logical-service-discovery.md) §5's
-per-logical-service "open to all" declaration, scheduled as **M05C slice S4**.
-**This blocks R1's directory search and all of R3.**
+per-logical-service "open to all" declaration. **Rescheduled 2026-08-18** from
+M05C slice S4 to **M06B slice B2**, so that one slice owns both layers of this
+question; S4 keeps cross-app `Bind` only. **This blocks R1's directory search
+and all of R3.**
 
-**Does this service's record get published?** [ADR-0018](decisions/0018-service-record-visibility.md)
-is still *Proposed*. It records that no visibility flag exists at any layer and
-that nothing exports or imports a service record privately, so publication is a
-side effect of whether a certificate flag was passed. Roym needs this for a
-provider being live but unlisted (P5) and for publishing to a chosen directory
-(S7).
+**Does this service's record get published?** [ADR-0018](decisions/0018-service-record-visibility.md),
+**Accepted 2026-08-18**. It records that publication is a side effect of whether
+a certificate flag was passed, so "deployed but deliberately private" and
+"undiscoverable by accident" are the same state from outside. Roym needs this
+for a provider being live but unlisted (P5) and for publishing to a chosen
+directory (S7). Its three-valued `visibility` enum already exists on both sides
+of the WIT boundary — M06A slice A1 defined it for asset readability, a
+different question — so **B2 owes the `service-config` field and the
+publication path that honours it**, not the enum.
 
 These are adjacent but not the same: one governs *resolution by a caller*, the
 other *publication of a record*. Whether they should stay two mechanisms or

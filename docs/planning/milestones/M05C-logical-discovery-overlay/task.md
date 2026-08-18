@@ -93,7 +93,7 @@ S0 landed as M05A slice A7. S5 is M7 work and is listed for completeness only.
 | **S1** | Tier 1: the app-DID registry record, published and refreshed by the supervisor, carrying a generation a reader can compare. Manifest surface for `ShardingStrategy` | **Complete 2026-08-08** |
 | **S2** | Tier 2: the signed topology document, the supervisor `resolve` RPC, and the client-side verify/cache path feeding `LogicalResolver::register`. Ships `epoch` unenforced | **Complete 2026-08-08** |
 | **S3** | Gateway hostname scheme (`-a…-s…-i…`) plus the routing-key request header; coordinator relay of the document in the WebRTC bootstrap page | **Substantially complete 2026-08-10** — Playwright tests 103-104 blocked, see [status.md](status.md) |
-| **S4** | Cross-app `Bind`: manifest surface, UCAN-scoped per-service exposure declared in the submitted plan, and replacing `prepare_binding`'s intra-app refusal with an authorization check | S2 **and** a first real cross-app dependency exists |
+| **S4** | Cross-app `Bind`: manifest surface, UCAN-scoped per-service exposure declared in the submitted plan, and replacing `prepare_binding`'s intra-app refusal with an authorization check. **Scope narrowed 2026-08-18** — [ADR-0022](../../../decisions/0022-two-tier-logical-service-discovery.md) §5's per-logical-service "open to all" declaration is **no longer part of S4**; it moved to [M06B](../M06B-roym-substrate-foundations/task.md) slice **B2** | S2 **and** a first real cross-app dependency exists |
 | **S5** | Shard rebalancing, and enforcing the epoch fence on the data path | **M7** `[PLT-RED]`. Executed there, not here |
 
 **S1 inherits an ordering constraint from A7, not just a key.** `import-master`

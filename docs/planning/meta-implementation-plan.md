@@ -644,11 +644,13 @@ and the reason would otherwise be lost.
 >   blobs without instantiating the sandbox, and a route target that puts guest
 >   logic in an inbound HTTP request. Proven by building a WASM equivalent of
 >   `miniapp-demo1-web` and running the existing browser suite against it.
->   Slices **A1–A4**. Nothing in it is Roym-specific.
-> - **M06B** — Roym's own substrate foundations: the dual-build shim, person
->   identity at the client gateway, the durable messaging host interface and
->   Layer 3 delivery, outbox delivery state, and service-record visibility.
->   These are gaps **G1–G4** in the experience spec. Directory not yet created.
+>   Slices **A1–A5**, all Complete (2026-08-17). Nothing in it is
+>   Roym-specific.
+> - **M06B** — [Roym Substrate Foundations](./milestones/M06B-roym-substrate-foundations/task.md).
+>   The dual-build shim, person identity at the client gateway, the durable
+>   messaging host interface and Layer 3 delivery, outbox delivery state, and
+>   service-record visibility. These are gaps **G1–G4** in the experience spec.
+>   Slices **B1–B5**, `task.md` written 2026-08-18, none started.
 > - **M06C** — the Roym product itself, following the spec's four releases (a
 >   usable local guild, the transaction vertical, cross-installation trust,
 >   private group chat). Directory not yet created.
@@ -693,6 +695,13 @@ and the reason would otherwise be lost.
 > no client and presents the node's DID). All three are rows in
 > [deferred-backlog.md](./deferred-backlog.md); see
 > [roym-integrated-experience-spec.md](../roym-integrated-experience-spec.md) G1-G3.
+>
+> **Scheduled 2026-08-18.** All three are now
+> [M06B](./milestones/M06B-roym-substrate-foundations/task.md) slices — the
+> messaging interface and 1:1 delivery as **B4**, the group DAG as **B5**, the
+> outbox folded into B4's interface rather than given its own, and gateway person
+> identity as **B1**. M06B adds two more the note above did not name: the D2/D3
+> dual-build shim (**B3**) and declared service visibility (**B2**).
 
 ---
 

@@ -1,9 +1,23 @@
 # ADR-0018: Declared Service Record Visibility
 
-**Status**: Proposed — design note for agreement before implementation. Surfaced
-during M04A Slice B7 planning; see
+**Status**: Accepted (2026-08-18). Surfaced during M04A Slice B7 planning; see
 [plans/B7.md](../planning/milestones/M04A-proxy-and-auth-foundation/plans/B7.md)
-flag F9 and §6.2 for the findings this builds on.
+flag F9 and §6.2 for the findings this builds on. Implemented by
+[M06B](../planning/milestones/M06B-roym-substrate-foundations/task.md) slice
+**B2**, which also carries [ADR-0022](0022-two-tier-logical-service-discovery.md)
+§5's resolution-side declaration — the same question at the other layer
+(M06B `D-06B-4`).
+
+> **Partly landed ahead of acceptance.** §1's three-valued enum already exists
+> on both sides of the boundary — `visibility` in
+> [control-plane.wit:64-72](../../crates/wit_interfaces/wit/control-plane/control-plane.wit#L64)
+> and `Visibility` in
+> [app_orchestration/src/models.rs:534-543](../../crates/app_orchestration/src/models.rs#L534),
+> both defaulting to `private` as argued in §5. M06A slice A1 defined it because
+> it was the first consumer, for a *different* question: whether a static asset
+> bundle is readable without a signature. What B2 still owes is
+> `service-config.visibility` — the field this ADR is actually about — and the
+> publication path that honours it.
 
 **Context**:
 
