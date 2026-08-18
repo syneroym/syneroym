@@ -1,0 +1,955 @@
+use std::{
+    cmp, fmt, str,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use dashmap::DashMap;
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
+pub use syneroym_core::protocol_utils::gateway_session_assertion as assertion_value;
+use syneroym_core::{
+    dht_registry::MasterAnchorResolver,
+    protocol_utils::{GATEWAY_RESERVED_PATH_PREFIX, SESSION_COOKIE_NAME},
+};
+use syneroym_identity::{DelegationCertificate, delegation::SCOPE_ROUTING, substrate};
+use tokio::time;
+
+pub const NONCE_TTL_SECS: u64 = 60;
+pub const MAX_PENDING_CHALLENGES: usize = 64;
+pub const MAX_ACTIVE_SESSIONS: usize = 64;
+pub const MAX_SESSION_BODY_BYTES: usize = 4096;
+pub const TOKEN_BYTES: usize = 32;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChallengeResponse {
+    pub nonce: String,
+    pub node_did: String,
+    pub expires_at_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoginRequest {
+    pub person_did: String,
+    pub nonce: String,
+    pub signature: String,
+    pub delegation: DelegationCertificate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoginResponse {
+    pub token: String,
+    pub person_did: String,
+    pub expires_at_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhoamiResponse {
+    pub person_did: String,
+    pub auth: &'static str,
+    pub expires_at_secs: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PersonSession {
+    pub person_did: String,
+    pub delegation: DelegationCertificate,
+    pub expires_at_secs: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SessionError {
+    UnknownOrUsedNonce,
+    ExpiredNonce,
+    BadSignature,
+    BadDelegation(String),
+    WrongDelegate,
+    DelegationExpired,
+    AnchorUnresolvable,
+    TooManySessions,
+}
+
+impl SessionError {
+    #[must_use]
+    pub const fn http_status(&self) -> u16 {
+        match self {
+            Self::UnknownOrUsedNonce
+            | Self::ExpiredNonce
+            | Self::BadSignature
+            | Self::BadDelegation(_)
+            | Self::WrongDelegate
+            | Self::DelegationExpired => 401,
+            Self::AnchorUnresolvable => 409,
+            Self::TooManySessions => 503,
+        }
+    }
+
+    #[must_use]
+    pub const fn message(&self) -> &'static str {
+        match self {
+            Self::UnknownOrUsedNonce => "unknown or already used nonce",
+            Self::ExpiredNonce => "expired nonce",
+            Self::BadSignature => "invalid signature",
+            Self::BadDelegation(_) => "invalid delegation certificate",
+            Self::WrongDelegate => "delegation certificate was not issued to this node",
+            Self::DelegationExpired => "delegation certificate has expired",
+            Self::AnchorUnresolvable => {
+                "person master anchor is not resolvable; publish the anchor first"
+            }
+            Self::TooManySessions => "too many active sessions",
+        }
+    }
+}
+
+impl fmt::Display for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message())
+    }
+}
+
+impl std::error::Error for SessionError {}
+
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+#[derive(Debug)]
+pub struct SessionStore {
+    node_did: String,
+    ttl_secs: u64,
+    challenges: DashMap<String, u64>,
+    sessions: DashMap<String, PersonSession>,
+}
+
+impl SessionStore {
+    #[must_use]
+    pub fn new(node_did: String, ttl_secs: u64) -> Self {
+        Self { node_did, ttl_secs, challenges: DashMap::new(), sessions: DashMap::new() }
+    }
+
+    fn sweep(&self, now: u64) {
+        self.challenges.retain(|_, expires_at| *expires_at > now);
+        self.sessions.retain(|_, session| session.expires_at_secs > now);
+    }
+
+    pub fn issue_challenge(&self) -> ChallengeResponse {
+        let now = now_secs();
+        self.sweep(now);
+
+        if self.challenges.len() >= MAX_PENDING_CHALLENGES {
+            let oldest = self
+                .challenges
+                .iter()
+                .min_by_key(|entry| *entry.value())
+                .map(|entry| entry.key().clone());
+            if let Some(key) = oldest {
+                self.challenges.remove(&key);
+            }
+        }
+
+        let mut nonce_bytes = [0u8; TOKEN_BYTES];
+        rand::rng().fill_bytes(&mut nonce_bytes);
+        let nonce = hex::encode(nonce_bytes);
+        let expires = now.saturating_add(NONCE_TTL_SECS);
+        self.challenges.insert(nonce.clone(), expires);
+
+        ChallengeResponse { nonce, node_did: self.node_did.clone(), expires_at_secs: expires }
+    }
+
+    pub async fn login(
+        &self,
+        req: &LoginRequest,
+        anchor_lookup: &dyn MasterAnchorResolver,
+    ) -> Result<LoginResponse, SessionError> {
+        let now = now_secs();
+        self.sessions.retain(|_, session| session.expires_at_secs > now);
+
+        // 1. Single-use nonce. Consumed before verification.
+        let expires = self
+            .challenges
+            .remove(&req.nonce)
+            .map(|(_, exp)| exp)
+            .ok_or(SessionError::UnknownOrUsedNonce)?;
+        if now >= expires {
+            return Err(SessionError::ExpiredNonce);
+        }
+
+        // 2. Proof of possession of the person's master key.
+        let value = assertion_value(&self.node_did, &req.nonce, &req.person_did);
+        substrate::verify_json_signature(&req.person_did, &value, &req.signature)
+            .map_err(|_| SessionError::BadSignature)?;
+
+        // 3. The authorization: this person delegated THIS node, for routing.
+        if req.delegation.expires_at_secs <= now {
+            return Err(SessionError::DelegationExpired);
+        }
+        req.delegation.verify(&req.person_did, &[SCOPE_ROUTING]).map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("expired") {
+                SessionError::DelegationExpired
+            } else {
+                SessionError::BadDelegation(msg)
+            }
+        })?;
+        if req.delegation.temporary_did != self.node_did {
+            return Err(SessionError::WrongDelegate);
+        }
+
+        // 4. The anchor must be resolvable NOW (D-B1-14 / F7).
+        let anchor_res = time::timeout(
+            Duration::from_secs(5),
+            anchor_lookup.resolve_master_anchor(&req.person_did),
+        )
+        .await;
+
+        match anchor_res {
+            Ok(Ok(_payload)) => {}
+            _ => return Err(SessionError::AnchorUnresolvable),
+        }
+
+        // 5. Mint.
+        if self.sessions.len() >= MAX_ACTIVE_SESSIONS {
+            let oldest = self
+                .sessions
+                .iter()
+                .min_by_key(|entry| entry.value().expires_at_secs)
+                .map(|entry| entry.key().clone());
+            if let Some(key) = oldest {
+                self.sessions.remove(&key);
+            }
+            if self.sessions.len() >= MAX_ACTIVE_SESSIONS {
+                return Err(SessionError::TooManySessions);
+            }
+        }
+
+        let expires_at =
+            cmp::min(now.saturating_add(self.ttl_secs), req.delegation.expires_at_secs);
+        let mut token_bytes = [0u8; TOKEN_BYTES];
+        rand::rng().fill_bytes(&mut token_bytes);
+        let token = hex::encode(token_bytes);
+
+        self.sessions.insert(
+            token.clone(),
+            PersonSession {
+                person_did: req.person_did.clone(),
+                delegation: req.delegation.clone(),
+                expires_at_secs: expires_at,
+            },
+        );
+
+        Ok(LoginResponse { token, person_did: req.person_did.clone(), expires_at_secs: expires_at })
+    }
+
+    #[must_use]
+    pub fn lookup(&self, token: &str) -> Option<PersonSession> {
+        let entry = self.sessions.get(token)?;
+        if now_secs() >= entry.expires_at_secs {
+            drop(entry);
+            self.sessions.remove(token);
+            return None;
+        }
+        Some(entry.clone())
+    }
+
+    pub fn logout(&self, token: &str) -> bool {
+        self.sessions.remove(token).is_some()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialSource {
+    Cookie,
+    Bearer,
+}
+
+#[must_use]
+pub fn extract_credential(headers: &[httparse::Header<'_>]) -> Option<(String, CredentialSource)> {
+    // Authorization: Bearer takes precedence over Cookie (D-B1-18)
+    for h in headers {
+        if h.name.eq_ignore_ascii_case("authorization")
+            && let Ok(val) = str::from_utf8(h.value)
+        {
+            let trimmed = val.trim();
+            if trimmed.len() >= 7 && trimmed[..7].eq_ignore_ascii_case("bearer ") {
+                let token = trimmed[7..].trim();
+                if !token.is_empty() {
+                    return Some((token.to_string(), CredentialSource::Bearer));
+                }
+            }
+        }
+    }
+
+    for h in headers {
+        if h.name.eq_ignore_ascii_case("cookie")
+            && let Ok(val) = str::from_utf8(h.value)
+        {
+            for pair in val.split(';') {
+                if let Some((k, v)) = pair.trim().split_once('=')
+                    && k == SESSION_COOKIE_NAME
+                {
+                    let token = v.trim().to_string();
+                    if !token.is_empty() {
+                        return Some((token, CredentialSource::Cookie));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[must_use]
+pub fn strip_credential(
+    raw: &[u8],
+    header_len: usize,
+    token: &str,
+    source: CredentialSource,
+) -> Option<Vec<u8>> {
+    let head_bytes = &raw[..header_len];
+    let tail_bytes = &raw[header_len..];
+    let head_str = str::from_utf8(head_bytes).ok()?;
+
+    let mut out_lines = Vec::new();
+    let mut changed = false;
+
+    for line in head_str.split("\r\n") {
+        if line.is_empty() {
+            break;
+        }
+        match source {
+            CredentialSource::Cookie
+                if line.len() >= 7 && line[..7].eq_ignore_ascii_case("cookie:") =>
+            {
+                let value = &line[7..];
+                let pairs: Vec<&str> = value
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|p| {
+                        if let Some((k, v)) = p.split_once('=')
+                            && k.trim() == SESSION_COOKIE_NAME
+                            && v.trim() == token
+                        {
+                            return false;
+                        }
+                        true
+                    })
+                    .collect();
+                if pairs.is_empty() {
+                    changed = true;
+                } else {
+                    changed = true;
+                    out_lines.push(format!("Cookie: {}", pairs.join("; ")));
+                }
+            }
+            CredentialSource::Bearer
+                if line.len() >= 14 && line[..14].eq_ignore_ascii_case("authorization:") =>
+            {
+                let value = line[14..].trim();
+                if value.len() >= 7 && value[..7].eq_ignore_ascii_case("bearer ") {
+                    let bearer_tok = value[7..].trim();
+                    if bearer_tok == token {
+                        changed = true;
+                        continue;
+                    }
+                }
+                out_lines.push(line.to_string());
+            }
+            _ => {
+                out_lines.push(line.to_string());
+            }
+        }
+    }
+
+    if !changed {
+        return None;
+    }
+
+    let mut result = Vec::with_capacity(head_str.len() + tail_bytes.len());
+    let new_head = out_lines.join("\r\n") + "\r\n\r\n";
+    result.extend_from_slice(new_head.as_bytes());
+    result.extend_from_slice(tail_bytes);
+    Some(result)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RequestKind {
+    Session(SessionRoute),
+    Proxy,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SessionRoute {
+    Challenge,
+    Login,
+    Logout,
+    Whoami,
+    Unknown,
+}
+
+#[must_use]
+pub fn classify(method: &str, path: &str) -> RequestKind {
+    let mut clean_path = path;
+    if let Some(idx) = clean_path.find("://") {
+        if let Some(slash_idx) = clean_path[idx + 3..].find('/') {
+            clean_path = &clean_path[idx + 3 + slash_idx..];
+        } else {
+            clean_path = "/";
+        }
+    }
+    let path_no_query = clean_path.split('?').next().unwrap_or(clean_path);
+    if !path_no_query.starts_with(GATEWAY_RESERVED_PATH_PREFIX) {
+        return RequestKind::Proxy;
+    }
+    match (method, path_no_query) {
+        ("POST", "/_syneroym/session/challenge") => RequestKind::Session(SessionRoute::Challenge),
+        ("POST", "/_syneroym/session/login") => RequestKind::Session(SessionRoute::Login),
+        ("POST", "/_syneroym/session/logout") => RequestKind::Session(SessionRoute::Logout),
+        ("GET", "/_syneroym/session/whoami") => RequestKind::Session(SessionRoute::Whoami),
+        _ => RequestKind::Session(SessionRoute::Unknown),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use syneroym_core::dht_registry::MasterAnchorPayload;
+    use syneroym_identity::Identity;
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct OkAnchorResolver;
+
+    #[async_trait::async_trait]
+    impl MasterAnchorResolver for OkAnchorResolver {
+        async fn resolve_master_anchor(
+            &self,
+            _master_id: &str,
+        ) -> anyhow::Result<MasterAnchorPayload> {
+            Ok(MasterAnchorPayload::default())
+        }
+    }
+
+    #[derive(Debug)]
+    struct ErrAnchorResolver;
+
+    #[async_trait::async_trait]
+    impl MasterAnchorResolver for ErrAnchorResolver {
+        async fn resolve_master_anchor(
+            &self,
+            _master_id: &str,
+        ) -> anyhow::Result<MasterAnchorPayload> {
+            Err(anyhow::anyhow!("Master anchor not found"))
+        }
+    }
+
+    fn setup_test_actors() -> (Identity, Identity, String, String) {
+        let person = Identity::generate().unwrap();
+        let node = Identity::generate().unwrap();
+        let person_did = substrate::derive_did_key(&person.public_key());
+        let node_did = substrate::derive_did_key(&node.public_key());
+        (person, node, person_did, node_did)
+    }
+
+    // 1. challenge -> sign -> login -> lookup returns the person's DID and cert.
+    #[tokio::test]
+    async fn test_session_login_lookup_success() {
+        let (person, node, person_did, node_did) = setup_test_actors();
+        let store = SessionStore::new(node_did.clone(), 3600);
+
+        let ch = store.issue_challenge();
+        assert_eq!(ch.node_did, node_did);
+
+        let cert = DelegationCertificate::issue(
+            &person,
+            node.public_key(),
+            3600,
+            SCOPE_ROUTING.to_string(),
+        )
+        .unwrap();
+        let sig = person.sign_json(&assertion_value(&node_did, &ch.nonce, &person_did)).unwrap();
+
+        let req = LoginRequest {
+            person_did: person_did.clone(),
+            nonce: ch.nonce,
+            signature: sig,
+            delegation: cert.clone(),
+        };
+
+        let resolver = OkAnchorResolver;
+        let login_res = store.login(&req, &resolver).await.unwrap();
+        assert_eq!(login_res.person_did, person_did);
+
+        let session = store.lookup(&login_res.token).expect("session found");
+        assert_eq!(session.person_did, person_did);
+        assert_eq!(session.delegation.master_did, cert.master_did);
+    }
+
+    // 2. a signature made by a different key, claiming Alice's DID -> BadSignature.
+    #[tokio::test]
+    async fn test_session_bad_signature() {
+        let (person, node, person_did, node_did) = setup_test_actors();
+        let attacker = Identity::generate().unwrap();
+        let store = SessionStore::new(node_did.clone(), 3600);
+
+        let ch = store.issue_challenge();
+        let cert = DelegationCertificate::issue(
+            &person,
+            node.public_key(),
+            3600,
+            SCOPE_ROUTING.to_string(),
+        )
+        .unwrap();
+        let sig = attacker.sign_json(&assertion_value(&node_did, &ch.nonce, &person_did)).unwrap();
+
+        let req = LoginRequest { person_did, nonce: ch.nonce, signature: sig, delegation: cert };
+
+        let resolver = OkAnchorResolver;
+        let err = store.login(&req, &resolver).await.unwrap_err();
+        assert_eq!(err, SessionError::BadSignature);
+    }
+
+    // 3. the same nonce used twice -> second attempt UnknownOrUsedNonce.
+    #[tokio::test]
+    async fn test_session_nonce_single_use() {
+        let (person, node, person_did, node_did) = setup_test_actors();
+        let store = SessionStore::new(node_did.clone(), 3600);
+
+        let ch = store.issue_challenge();
+        let cert = DelegationCertificate::issue(
+            &person,
+            node.public_key(),
+            3600,
+            SCOPE_ROUTING.to_string(),
+        )
+        .unwrap();
+        let sig = person.sign_json(&assertion_value(&node_did, &ch.nonce, &person_did)).unwrap();
+
+        let req = LoginRequest { person_did, nonce: ch.nonce, signature: sig, delegation: cert };
+
+        let resolver = OkAnchorResolver;
+        store.login(&req, &resolver).await.unwrap();
+
+        let err = store.login(&req, &resolver).await.unwrap_err();
+        assert_eq!(err, SessionError::UnknownOrUsedNonce);
+    }
+
+    // 4. a nonce older than NONCE_TTL_SECS -> ExpiredNonce.
+    #[tokio::test]
+    async fn test_session_expired_nonce() {
+        let (person, node, person_did, node_did) = setup_test_actors();
+        let store = SessionStore::new(node_did.clone(), 3600);
+
+        let ch = store.issue_challenge();
+        store.challenges.insert(ch.nonce.clone(), now_secs() - 1);
+
+        let cert = DelegationCertificate::issue(
+            &person,
+            node.public_key(),
+            3600,
+            SCOPE_ROUTING.to_string(),
+        )
+        .unwrap();
+        let sig = person.sign_json(&assertion_value(&node_did, &ch.nonce, &person_did)).unwrap();
+
+        let req = LoginRequest { person_did, nonce: ch.nonce, signature: sig, delegation: cert };
+
+        let resolver = OkAnchorResolver;
+        let err = store.login(&req, &resolver).await.unwrap_err();
+        assert_eq!(err, SessionError::ExpiredNonce);
+    }
+
+    // 5. a certificate delegating to some other node's DID -> WrongDelegate.
+    #[tokio::test]
+    async fn test_session_wrong_delegate() {
+        let (person, _node, person_did, node_did) = setup_test_actors();
+        let other_node = Identity::generate().unwrap();
+        let store = SessionStore::new(node_did.clone(), 3600);
+
+        let ch = store.issue_challenge();
+        let cert = DelegationCertificate::issue(
+            &person,
+            other_node.public_key(),
+            3600,
+            SCOPE_ROUTING.to_string(),
+        )
+        .unwrap();
+        let sig = person.sign_json(&assertion_value(&node_did, &ch.nonce, &person_did)).unwrap();
+
+        let req = LoginRequest { person_did, nonce: ch.nonce, signature: sig, delegation: cert };
+
+        let resolver = OkAnchorResolver;
+        let err = store.login(&req, &resolver).await.unwrap_err();
+        assert_eq!(err, SessionError::WrongDelegate);
+    }
+
+    // 6. a certificate whose master_did is not the claimed person_did ->
+    //    BadDelegation.
+    #[tokio::test]
+    async fn test_session_bad_delegation_mismatched_master() {
+        let (_person, node, _person_did, node_did) = setup_test_actors();
+        let bob = Identity::generate().unwrap();
+        let alice = Identity::generate().unwrap();
+        let alice_did = substrate::derive_did_key(&alice.public_key());
+        let store = SessionStore::new(node_did.clone(), 3600);
+
+        let ch = store.issue_challenge();
+        let cert =
+            DelegationCertificate::issue(&bob, node.public_key(), 3600, SCOPE_ROUTING.to_string())
+                .unwrap();
+        let sig = alice.sign_json(&assertion_value(&node_did, &ch.nonce, &alice_did)).unwrap();
+
+        let req = LoginRequest {
+            person_did: alice_did,
+            nonce: ch.nonce,
+            signature: sig,
+            delegation: cert,
+        };
+
+        let resolver = OkAnchorResolver;
+        let err = store.login(&req, &resolver).await.unwrap_err();
+        assert!(matches!(err, SessionError::BadDelegation(_)));
+    }
+
+    // 7. a certificate with scope = "service-instance" -> BadDelegation.
+    #[tokio::test]
+    async fn test_session_bad_delegation_wrong_scope() {
+        let (person, node, person_did, node_did) = setup_test_actors();
+        let store = SessionStore::new(node_did.clone(), 3600);
+
+        let ch = store.issue_challenge();
+        let cert = DelegationCertificate::issue(
+            &person,
+            node.public_key(),
+            3600,
+            "service-instance".to_string(),
+        )
+        .unwrap();
+        let sig = person.sign_json(&assertion_value(&node_did, &ch.nonce, &person_did)).unwrap();
+
+        let req = LoginRequest { person_did, nonce: ch.nonce, signature: sig, delegation: cert };
+
+        let resolver = OkAnchorResolver;
+        let err = store.login(&req, &resolver).await.unwrap_err();
+        assert!(matches!(err, SessionError::BadDelegation(_)));
+    }
+
+    // 8. an already-expired certificate -> DelegationExpired.
+    #[tokio::test]
+    async fn test_session_delegation_expired() {
+        let (person, node, person_did, node_did) = setup_test_actors();
+        let store = SessionStore::new(node_did.clone(), 3600);
+
+        let ch = store.issue_challenge();
+        let mut cert = DelegationCertificate::issue(
+            &person,
+            node.public_key(),
+            3600,
+            SCOPE_ROUTING.to_string(),
+        )
+        .unwrap();
+        cert.expires_at_secs = now_secs() - 10;
+
+        let sig = person.sign_json(&assertion_value(&node_did, &ch.nonce, &person_did)).unwrap();
+
+        let req = LoginRequest { person_did, nonce: ch.nonce, signature: sig, delegation: cert };
+
+        let resolver = OkAnchorResolver;
+        let err = store.login(&req, &resolver).await.unwrap_err();
+        assert_eq!(err, SessionError::DelegationExpired);
+    }
+
+    // 8a. an unresolvable master anchor -> AnchorUnresolvable (409) and no session
+    // created.
+    #[tokio::test]
+    async fn test_session_anchor_unresolvable() {
+        let (person, node, person_did, node_did) = setup_test_actors();
+        let store = SessionStore::new(node_did.clone(), 3600);
+
+        let ch = store.issue_challenge();
+        let cert = DelegationCertificate::issue(
+            &person,
+            node.public_key(),
+            3600,
+            SCOPE_ROUTING.to_string(),
+        )
+        .unwrap();
+        let sig = person.sign_json(&assertion_value(&node_did, &ch.nonce, &person_did)).unwrap();
+
+        let req = LoginRequest { person_did, nonce: ch.nonce, signature: sig, delegation: cert };
+
+        let resolver = ErrAnchorResolver;
+        let err = store.login(&req, &resolver).await.unwrap_err();
+        assert_eq!(err, SessionError::AnchorUnresolvable);
+        assert_eq!(err.http_status(), 409);
+        assert_eq!(store.sessions.len(), 0);
+    }
+
+    // 9. expires_at is min(ttl, cert expiry).
+    #[tokio::test]
+    async fn test_session_expiry_clamped_to_min() {
+        let (person, node, person_did, node_did) = setup_test_actors();
+        let resolver = OkAnchorResolver;
+
+        let store_a = SessionStore::new(node_did.clone(), 3600);
+        let ch_a = store_a.issue_challenge();
+        let cert_a = DelegationCertificate::issue(
+            &person,
+            node.public_key(),
+            600,
+            SCOPE_ROUTING.to_string(),
+        )
+        .unwrap();
+        let sig_a =
+            person.sign_json(&assertion_value(&node_did, &ch_a.nonce, &person_did)).unwrap();
+        let res_a = store_a
+            .login(
+                &LoginRequest {
+                    person_did: person_did.clone(),
+                    nonce: ch_a.nonce,
+                    signature: sig_a,
+                    delegation: cert_a.clone(),
+                },
+                &resolver,
+            )
+            .await
+            .unwrap();
+        assert_eq!(res_a.expires_at_secs, cert_a.expires_at_secs);
+
+        let store_b = SessionStore::new(node_did.clone(), 300);
+        let ch_b = store_b.issue_challenge();
+        let cert_b = DelegationCertificate::issue(
+            &person,
+            node.public_key(),
+            3600,
+            SCOPE_ROUTING.to_string(),
+        )
+        .unwrap();
+        let sig_b =
+            person.sign_json(&assertion_value(&node_did, &ch_b.nonce, &person_did)).unwrap();
+        let now = now_secs();
+        let res_b = store_b
+            .login(
+                &LoginRequest {
+                    person_did: person_did.clone(),
+                    nonce: ch_b.nonce,
+                    signature: sig_b,
+                    delegation: cert_b,
+                },
+                &resolver,
+            )
+            .await
+            .unwrap();
+        assert!(res_b.expires_at_secs <= now + 300 + 1);
+        assert!(res_b.expires_at_secs >= now + 300 - 1);
+    }
+
+    // 10. lookup of a token past its expiry -> None and entry removed.
+    #[tokio::test]
+    async fn test_session_lookup_expired() {
+        let (person, node, person_did, node_did) = setup_test_actors();
+        let store = SessionStore::new(node_did.clone(), 3600);
+
+        let ch = store.issue_challenge();
+        let cert = DelegationCertificate::issue(
+            &person,
+            node.public_key(),
+            3600,
+            SCOPE_ROUTING.to_string(),
+        )
+        .unwrap();
+        let sig = person.sign_json(&assertion_value(&node_did, &ch.nonce, &person_did)).unwrap();
+
+        let resolver = OkAnchorResolver;
+        let res = store
+            .login(
+                &LoginRequest { person_did, nonce: ch.nonce, signature: sig, delegation: cert },
+                &resolver,
+            )
+            .await
+            .unwrap();
+
+        if let Some(mut session) = store.sessions.get_mut(&res.token) {
+            session.expires_at_secs = now_secs() - 1;
+        }
+
+        assert!(store.lookup(&res.token).is_none());
+        assert!(!store.sessions.contains_key(&res.token));
+    }
+
+    // 11. MAX_PENDING_CHALLENGES + 10 challenges -> map never exceeds cap.
+    #[test]
+    fn test_max_pending_challenges_bound() {
+        let store = SessionStore::new("did:key:zNode".to_string(), 3600);
+        for _ in 0..(MAX_PENDING_CHALLENGES + 10) {
+            store.issue_challenge();
+        }
+        assert!(store.challenges.len() <= MAX_PENDING_CHALLENGES);
+    }
+
+    // 12. MAX_ACTIVE_SESSIONS reached -> oldest evicted, newest usable.
+    #[tokio::test]
+    async fn test_max_active_sessions_eviction() {
+        let (person, node, person_did, node_did) = setup_test_actors();
+        let store = SessionStore::new(node_did.clone(), 3600);
+        let resolver = OkAnchorResolver;
+
+        let mut first_token = String::new();
+        for i in 0..MAX_ACTIVE_SESSIONS {
+            let ch = store.issue_challenge();
+            let cert = DelegationCertificate::issue(
+                &person,
+                node.public_key(),
+                3600,
+                SCOPE_ROUTING.to_string(),
+            )
+            .unwrap();
+            let sig =
+                person.sign_json(&assertion_value(&node_did, &ch.nonce, &person_did)).unwrap();
+            let res = store
+                .login(
+                    &LoginRequest {
+                        person_did: person_did.clone(),
+                        nonce: ch.nonce,
+                        signature: sig,
+                        delegation: cert,
+                    },
+                    &resolver,
+                )
+                .await
+                .unwrap();
+            if i == 0 {
+                first_token = res.token.clone();
+                if let Some(mut sess) = store.sessions.get_mut(&first_token) {
+                    sess.expires_at_secs = now_secs() + 10;
+                }
+            }
+        }
+
+        assert_eq!(store.sessions.len(), MAX_ACTIVE_SESSIONS);
+
+        let ch = store.issue_challenge();
+        let cert = DelegationCertificate::issue(
+            &person,
+            node.public_key(),
+            3600,
+            SCOPE_ROUTING.to_string(),
+        )
+        .unwrap();
+        let sig = person.sign_json(&assertion_value(&node_did, &ch.nonce, &person_did)).unwrap();
+        let newest_res = store
+            .login(
+                &LoginRequest {
+                    person_did: person_did.clone(),
+                    nonce: ch.nonce,
+                    signature: sig,
+                    delegation: cert,
+                },
+                &resolver,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(store.sessions.len(), MAX_ACTIVE_SESSIONS);
+        assert!(store.lookup(&first_token).is_none());
+        assert!(store.lookup(&newest_res.token).is_some());
+    }
+
+    // 13. extract_credential tests.
+    #[test]
+    fn test_extract_credential() {
+        let headers_cookie = [httparse::Header {
+            name: "Cookie",
+            value: b"foo=bar; syneroym_session=tok123; baz=qux",
+        }];
+        assert_eq!(
+            extract_credential(&headers_cookie),
+            Some(("tok123".to_string(), CredentialSource::Cookie))
+        );
+
+        let headers_bearer = [httparse::Header { name: "Authorization", value: b"Bearer tok456" }];
+        assert_eq!(
+            extract_credential(&headers_bearer),
+            Some(("tok456".to_string(), CredentialSource::Bearer))
+        );
+
+        let headers_both = [
+            httparse::Header { name: "Authorization", value: b"Bearer tok456" },
+            httparse::Header { name: "Cookie", value: b"syneroym_session=tok123" },
+        ];
+        assert_eq!(
+            extract_credential(&headers_both),
+            Some(("tok456".to_string(), CredentialSource::Bearer))
+        );
+
+        let headers_basic =
+            [httparse::Header { name: "Authorization", value: b"Basic dXNlcjpwYXNz" }];
+        assert_eq!(extract_credential(&headers_basic), None);
+
+        let headers_empty: [httparse::Header; 0] = [];
+        assert_eq!(extract_credential(&headers_empty), None);
+    }
+
+    // 14. strip_credential tests.
+    #[test]
+    fn test_strip_credential() {
+        let raw = b"GET / HTTP/1.1\r\nHost: localhost\r\nCookie: a=1; syneroym_session=tok; b=2\r\n\r\nbody";
+        let header_len = raw.len() - 4;
+        let stripped = strip_credential(raw, header_len, "tok", CredentialSource::Cookie).unwrap();
+        assert_eq!(
+            str::from_utf8(&stripped).unwrap(),
+            "GET / HTTP/1.1\r\nHost: localhost\r\nCookie: a=1; b=2\r\n\r\nbody"
+        );
+
+        let raw2 = b"GET / HTTP/1.1\r\nHost: localhost\r\nCookie: syneroym_session=tok\r\n\r\nbody";
+        let header_len2 = raw2.len() - 4;
+        let stripped2 =
+            strip_credential(raw2, header_len2, "tok", CredentialSource::Cookie).unwrap();
+        assert_eq!(
+            str::from_utf8(&stripped2).unwrap(),
+            "GET / HTTP/1.1\r\nHost: localhost\r\n\r\nbody"
+        );
+
+        let raw3 = b"GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer tok\r\n\r\nbody";
+        let header_len3 = raw3.len() - 4;
+        let stripped3 =
+            strip_credential(raw3, header_len3, "tok", CredentialSource::Bearer).unwrap();
+        assert_eq!(
+            str::from_utf8(&stripped3).unwrap(),
+            "GET / HTTP/1.1\r\nHost: localhost\r\n\r\nbody"
+        );
+
+        let raw4 = b"GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer other\r\n\r\nbody";
+        let header_len4 = raw4.len() - 4;
+        assert_eq!(strip_credential(raw4, header_len4, "tok", CredentialSource::Bearer), None);
+    }
+
+    // 15. classify tests.
+    #[test]
+    fn test_classify() {
+        assert_eq!(
+            classify("POST", "/_syneroym/session/challenge"),
+            RequestKind::Session(SessionRoute::Challenge)
+        );
+        assert_eq!(
+            classify("POST", "/_syneroym/session/login"),
+            RequestKind::Session(SessionRoute::Login)
+        );
+        assert_eq!(
+            classify("POST", "/_syneroym/session/logout"),
+            RequestKind::Session(SessionRoute::Logout)
+        );
+        assert_eq!(
+            classify("GET", "/_syneroym/session/whoami"),
+            RequestKind::Session(SessionRoute::Whoami)
+        );
+        assert_eq!(
+            classify("GET", "/_syneroym/session/whoami?query=1"),
+            RequestKind::Session(SessionRoute::Whoami)
+        );
+        assert_eq!(
+            classify("GET", "/_syneroym/other"),
+            RequestKind::Session(SessionRoute::Unknown)
+        );
+        assert_eq!(classify("GET", "/index.html"), RequestKind::Proxy);
+    }
+}

@@ -3518,6 +3518,7 @@ mod tests {
         );
     }
 
+    #[derive(Debug)]
     struct EmptyAnchorResolver;
     #[async_trait::async_trait]
     impl MasterAnchorResolver for EmptyAnchorResolver {

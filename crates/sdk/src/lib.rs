@@ -1034,6 +1034,7 @@ impl SyneroymClient {
         interface_name: &str,
         initial_bytes: &[u8],
         tcp_stream: &mut TcpStream,
+        delegation: Option<&DelegationCertificate>,
     ) -> Result<()> {
         let conn_wrapper = self.connection.as_ref().context("Not connected")?.clone();
         Self::passthrough_with_conn(
@@ -1043,6 +1044,7 @@ impl SyneroymClient {
             initial_bytes,
             tcp_stream,
             &self.identity,
+            delegation,
         )
         .await
     }
@@ -1054,6 +1056,7 @@ impl SyneroymClient {
         initial_bytes: &[u8],
         tcp_stream: &mut TcpStream,
         identity: &Identity,
+        delegation: Option<&DelegationCertificate>,
     ) -> Result<()> {
         match conn_wrapper {
             TransportConnection::Iroh { conn, .. } => {
@@ -1069,7 +1072,7 @@ impl SyneroymClient {
                     service_id: service_id.to_string(),
                     enc: None,
                     pubkey: Some(hex::encode(identity.public_key().to_bytes())),
-                    delegation: None,
+                    delegation: delegation.cloned(),
                     ucan: None,
                     dir: None,
                 }

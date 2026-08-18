@@ -15,9 +15,12 @@ syneroym-app-orchestration.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 dashmap.workspace = true
 httparse.workspace = true
+hex.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true

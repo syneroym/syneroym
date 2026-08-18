@@ -1360,6 +1360,61 @@ curl http://localhost:7960/api/data \
   -H "Host: my-tcp-service-s<APP_DID_HASH>-i<INTERFACE_HASH>.localhost"
 ```
 
+#### Person Sessions at the Client Gateway (ADR-0016 §0.5)
+
+By default, unauthenticated requests arriving at the client gateway are proxied presenting the **node's own DID** as caller, which downstream handlers and WASM guests see as `self-asserted`.
+
+To act as a verified person identity, a client opens a session with the gateway:
+
+1. **Login with `roymctl`**:
+   ```bash
+   roymctl session login --as alice --gateway-url http://localhost:7960 --registry-url http://localhost:7961
+   ```
+   This issues a challenge to the gateway, signs a delegation certificate from Alice's master identity to the gateway's node identity (with `routing` scope), publishes Alice's master anchor, and saves the session token to `~/.syneroym/sessions/`.
+
+2. **Inspect Session Status**:
+   ```bash
+   roymctl session status --gateway-url http://localhost:7960
+   ```
+
+3. **Use Session with `curl`**:
+   Present the session token via either the `syneroym_session` cookie or `Authorization: Bearer`:
+   ```bash
+   # Via Authorization Bearer (takes priority over cookie)
+   curl http://localhost:7960/echo \
+     -H "Host: $(roymctl alias <SERVICE_DID>)" \
+     -H "Authorization: Bearer $(roymctl session token --gateway-url http://localhost:7960)"
+
+   # Or via Cookie
+   curl http://localhost:7960/echo \
+     -H "Host: $(roymctl alias <SERVICE_DID>)" \
+     -H "Cookie: syneroym_session=$(roymctl session token --gateway-url http://localhost:7960)"
+   ```
+   The gateway strips the session credential before proxying to the destination service, attaching the delegation certificate so downstream services see `auth = delegated` and `did = alice_did`.
+
+4. **Logout**:
+   ```bash
+   roymctl session logout --gateway-url http://localhost:7960
+   ```
+
+##### Reserved Endpoints (`/_syneroym/session/*`)
+
+The gateway intercepts paths beginning with `/_syneroym/` locally and never proxies them:
+- `POST /_syneroym/session/challenge`: Returns a cryptographic nonce, the gateway's node DID, and challenge expiry.
+- `POST /_syneroym/session/login`: Validates the signed challenge and delegation certificate, returning a session token and setting `Set-Cookie: syneroym_session=...; HttpOnly; SameSite=Strict`.
+- `GET /_syneroym/session/whoami`: Returns the active session's person DID and expiration.
+- `POST /_syneroym/session/logout`: Terminates the session and clears the cookie (`Max-Age=0`).
+
+##### Configuration
+
+```toml
+[roles.client_gateway]
+http_port = 7960
+# Session lifetime in seconds (defaults to 28800 = 8 hours)
+session_ttl_secs = 28800
+```
+
+
 ### Health and Metrics
 
 #### Health Check

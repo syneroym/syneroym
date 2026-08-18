@@ -6,29 +6,11 @@
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use syneroym_core::dht_registry::{MasterAnchorPayload, RegistryClient};
+pub use syneroym_core::dht_registry::MasterAnchorResolver;
 use syneroym_identity::{delegation::TRANSPORT_SCOPES, substrate};
 use tokio::time;
 
 use crate::RoutePreamble;
-
-#[async_trait::async_trait]
-pub trait MasterAnchorResolver: Send + Sync {
-    async fn resolve_master_anchor(
-        &self,
-        master_id: &str,
-    ) -> Result<MasterAnchorPayload, anyhow::Error>;
-}
-
-#[async_trait::async_trait]
-impl MasterAnchorResolver for RegistryClient {
-    async fn resolve_master_anchor(
-        &self,
-        master_id: &str,
-    ) -> Result<MasterAnchorPayload, anyhow::Error> {
-        self.resolve_master_anchor(master_id, None).await
-    }
-}
 
 #[derive(Debug)]
 pub struct VerifiedIdentity {
@@ -105,11 +87,13 @@ impl HandshakeVerifier {
 mod tests {
     use std::sync::RwLock;
 
+    use syneroym_core::dht_registry::MasterAnchorPayload;
     use syneroym_identity::{DelegationCertificate, Identity};
 
     use super::*;
     use crate::RoutePreamble;
 
+    #[derive(Debug)]
     struct MockResolver {
         anchor: RwLock<MasterAnchorPayload>,
     }

@@ -704,6 +704,24 @@ impl RegistryClient {
     }
 }
 
+#[async_trait::async_trait]
+pub trait MasterAnchorResolver: std::fmt::Debug + Send + Sync {
+    async fn resolve_master_anchor(
+        &self,
+        master_id: &str,
+    ) -> Result<MasterAnchorPayload, anyhow::Error>;
+}
+
+#[async_trait::async_trait]
+impl MasterAnchorResolver for RegistryClient {
+    async fn resolve_master_anchor(
+        &self,
+        master_id: &str,
+    ) -> Result<MasterAnchorPayload, anyhow::Error> {
+        self.resolve_master_anchor(master_id, None).await
+    }
+}
+
 fn default_schema() -> String {
     MASTER_ANCHOR_SCHEMA_V1.to_string()
 }
