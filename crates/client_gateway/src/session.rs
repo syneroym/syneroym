@@ -276,7 +276,9 @@ pub fn extract_credential(headers: &[Header<'_>]) -> Option<(String, CredentialS
                     let k = trim_ascii_whitespace(&trimmed[..pos]);
                     if k == SESSION_COOKIE_NAME.as_bytes() {
                         let v = trim_ascii_whitespace(&trimmed[pos + 1..]);
-                        if let Ok(token) = str::from_utf8(v) {
+                        if let Ok(token) = str::from_utf8(v)
+                            && !token.is_empty()
+                        {
                             return Some((token.to_string(), CredentialSource::Cookie));
                         }
                     }
@@ -290,7 +292,9 @@ pub fn extract_credential(headers: &[Header<'_>]) -> Option<(String, CredentialS
             let val = trim_ascii_whitespace(h.value);
             if val.len() >= 7 && val[..7].eq_ignore_ascii_case(b"bearer ") {
                 let bearer_tok = trim_ascii_whitespace(&val[7..]);
-                if let Ok(token) = str::from_utf8(bearer_tok) {
+                if let Ok(token) = str::from_utf8(bearer_tok)
+                    && !token.is_empty()
+                {
                     return Some((token.to_string(), CredentialSource::Bearer));
                 }
             }
@@ -919,6 +923,20 @@ mod tests {
         let headers_invalid_utf8 =
             [httparse::Header { name: "Authorization", value: b"\xff\xfe\xfd" }];
         assert_eq!(extract_credential(&headers_invalid_utf8), None);
+
+        // Empty cookie value does not shadow a valid Authorization header
+        let headers_empty_cookie = [
+            httparse::Header { name: "Cookie", value: b"syneroym_session=" },
+            httparse::Header { name: "Authorization", value: b"Bearer tok456" },
+        ];
+        assert_eq!(
+            extract_credential(&headers_empty_cookie),
+            Some(("tok456".to_string(), CredentialSource::Bearer))
+        );
+
+        // Empty bearer token returns None
+        let headers_empty_bearer = [httparse::Header { name: "Authorization", value: b"Bearer " }];
+        assert_eq!(extract_credential(&headers_empty_bearer), None);
 
         let headers_empty: [httparse::Header; 0] = [];
         assert_eq!(extract_credential(&headers_empty), None);

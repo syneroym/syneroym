@@ -27,6 +27,7 @@
 //!   `logout`), file verification, and permissions (0600 on Unix).
 //! - `roymctl session` CLI error handling (missing `--as`, unresolvable
 //!   anchor).
+//! - Oversized headers (>8KB) and invalid HTTP requests return HTTP 400.
 
 use std::{
     fs, str,
@@ -1105,6 +1106,38 @@ async fn test_30_roymctl_session_cli_error_handling() {
     assert!(
         err_409.to_string().contains("409") || err_409.to_string().contains("master anchor"),
         "error must surface 409 unresolvable master anchor: {err_409}"
+    );
+
+    ctx.teardown().await;
+}
+
+/// Test 31: Oversized headers (>8KB) and invalid HTTP requests return HTTP 400.
+#[tokio::test]
+async fn test_31_oversized_and_invalid_http_requests_return_400() {
+    let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
+    let (ctx, gateway_port, _reg_url, _svc_did, _host) = setup_gateway_test_node(None).await;
+
+    // 1. Invalid HTTP request line returns 400
+    let mut tcp_invalid = TcpStream::connect(format!("127.0.0.1:{gateway_port}")).await.unwrap();
+    tcp_invalid.write_all(b"NOT_A_VALID_HTTP_REQUEST\r\n\r\n").await.unwrap();
+    let mut buf = [0u8; 1024];
+    let n = tcp_invalid.read(&mut buf).await.unwrap();
+    let resp = str::from_utf8(&buf[..n]).unwrap();
+    assert!(resp.starts_with("HTTP/1.1 400"), "expected 400 response, got: {resp}");
+    assert!(resp.contains("Invalid HTTP request"), "body must describe invalid request: {resp}");
+
+    // 2. Headers exceeding 8KB return 400 "Headers too large"
+    let mut tcp_large = TcpStream::connect(format!("127.0.0.1:{gateway_port}")).await.unwrap();
+    let large_header =
+        format!("GET / HTTP/1.1\r\nHost: localhost\r\nX-Large: {}\r\n\r\n", "a".repeat(9000));
+    tcp_large.write_all(large_header.as_bytes()).await.unwrap();
+    let mut buf_large = [0u8; 1024];
+    let n_large = tcp_large.read(&mut buf_large).await.unwrap();
+    let resp_large = str::from_utf8(&buf_large[..n_large]).unwrap();
+    assert!(resp_large.starts_with("HTTP/1.1 400"), "expected 400 response, got: {resp_large}");
+    assert!(
+        resp_large.contains("Headers too large"),
+        "body must mention Headers too large: {resp_large}"
     );
 
     ctx.teardown().await;

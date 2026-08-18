@@ -46,7 +46,7 @@ Slice B1 enables local person identity at the client gateway, binding an authent
 - Reject any guest HTTP route or static asset bundle containing a path starting with `/_syneroym/` at deploy time (validation error from `parse_http_routes` / `unpack_asset_bundle` surfaced as a deploy failure, D-B1-13).
 
 ### 5. Roymctl CLI Session Commands (`apps/roymctl/src/commands/session.rs`)
-- Added `roymctl session login`, `roymctl session status`, `roymctl session token`, `roymctl session logout` (D-B1-15).
+- Added `roymctl session login`, `roymctl session status`, `roymctl session token`, `roymctl session logout` (D-B1-9).
 - Saves session token locally under `<config-dir>/sessions/<sanitized-gateway-url>.json` with secure file permissions (0600 on Unix, D-B1-15).
 
 ---
@@ -69,8 +69,8 @@ Slice B1 enables local person identity at the client gateway, binding an authent
    - `test_session_lookup_expired`: Expired session lookup returns `None` and purges entry.
    - `test_max_pending_challenges_bound`: Verifies challenge store capacity bound.
    - `test_max_active_sessions_eviction`: Verifies active session capacity bound and oldest-expiry eviction.
-   - `test_extract_credential`: Verifies Cookie priority over Bearer and UTF-8 safety.
-   - `test_strip_credential`: Verifies unconditional session cookie stripping and bearer stripping.
+   - `test_extract_credential`: Verifies Cookie priority over Bearer, empty cookie fallback, and UTF-8 safety.
+   - `test_strip_credential`: Verifies unconditional session cookie stripping, bearer stripping, and non-UTF-8 header preservation.
    - `test_classify`: Verifies routing classification for proxy and session endpoints.
 
 2. **Control Plane Reserved Prefix Unit Tests**:
@@ -93,18 +93,41 @@ Slice B1 enables local person identity at the client gateway, binding an authent
    - `test_28_reserved_path_is_never_proxied_to_guest`: Reserved path `/_syneroym/*` returns 404 from gateway and is never proxied to guest.
    - `test_29_roymctl_session_cli_lifecycle`: `roymctl session` login, status, token, logout lifecycle, file existence, and 0600 permissions.
    - `test_30_roymctl_session_cli_error_handling`: `roymctl session` missing `--as` flag, nonexistent identity, and unresolvable anchor error handling.
+   - `test_31_oversized_and_invalid_http_requests_return_400`: Oversized headers (>8KB) and invalid HTTP requests return HTTP 400.
 
 ### Run Evidence
 
 ```
 $ cargo test -p syneroym-client-gateway
-running 20 tests ... ok. 20 passed; 0 failed; 0 ignored
+running 20 tests
+test gateway::tests::a_gateway_with_neither_credential_warns_at_init_naming_both_config_keys ... ok
+test session::tests::test_classify ... ok
+test session::tests::test_extract_credential ... ok
+test gateway::tests::resolve_target_passes_an_unscoped_host_through_unresolved ... ok
+test gateway::tests::resolve_target_routes_an_app_scoped_host_through_the_resolver_and_surfaces_its_error ... ok
+test session::tests::test_session_anchor_unresolvable ... ok
+test gateway::tests::parsing_an_unscoped_host_yields_the_expected_alias_and_interface ... ok
+test session::tests::test_max_pending_challenges_bound ... ok
+test session::tests::test_session_bad_delegation_wrong_scope ... ok
+test session::tests::test_session_bad_delegation_mismatched_master ... ok
+test session::tests::test_session_bad_signature ... ok
+test session::tests::test_session_expired_nonce ... ok
+test session::tests::test_session_nonce_single_use ... ok
+test session::tests::test_session_login_lookup_success ... ok
+test session::tests::test_session_lookup_expired ... ok
+test session::tests::test_strip_credential ... ok
+test session::tests::test_session_wrong_delegate ... ok
+test session::tests::test_session_expiry_clamped_to_min ... ok
+test session::tests::test_max_active_sessions_eviction ... ok
+test session::tests::test_session_delegation_expired ... ok
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.11s
 
 $ cargo test -p syneroym-control-plane
-running 26 tests ... ok. 26 passed; 0 failed; 0 ignored
+running 219 tests
+test result: ok. 219 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.92s
 
 $ cargo test -p syneroym-substrate --test gateway_session_e2e
-running 15 tests
+running 16 tests
 test test_16_anonymous_request_sees_self_asserted_node_did ... ok
 test test_17_logged_in_request_via_cookie_sees_delegated_person_did ... ok
 test test_18_two_people_logged_in_each_whoami_and_echo_returns_own_did ... ok
@@ -120,5 +143,6 @@ test test_27_reserved_path_challenge_login_whoami_logout_lifecycle ... ok
 test test_28_reserved_path_is_never_proxied_to_guest ... ok
 test test_29_roymctl_session_cli_lifecycle ... ok
 test test_30_roymctl_session_cli_error_handling ... ok
-test result: ok. 15 passed; 0 failed; 0 ignored; finished in 28.5s
+test test_31_oversized_and_invalid_http_requests_return_400 ... ok
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 146.46s
 ```

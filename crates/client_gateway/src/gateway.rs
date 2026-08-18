@@ -230,32 +230,60 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
     let mut buf = [0u8; MAX_HEADER_BYTES];
     let mut bytes_read = 0;
 
+    enum HeaderRead {
+        Complete(usize),
+        TooLarge,
+        ParseError(String),
+        Closed,
+    }
+
     // Read headers with an overall deadline to mitigate slowloris attacks
-    let header_len = time::timeout(READ_TIMEOUT, async {
-        loop {
-            let n = stream.read(&mut buf[bytes_read..]).await?;
-            if n == 0 {
-                return Err(anyhow::anyhow!("Connection closed before headers finished"));
-            }
-            bytes_read += n;
-            debug!("gateway read {} bytes, total {}", n, bytes_read);
-
-            let mut headers = [EMPTY_HEADER; 64];
-            let mut req = Request::new(&mut headers);
-
-            match req.parse(&buf[..bytes_read]) {
-                Ok(Status::Complete(len)) => return Ok(len),
-                Ok(Status::Partial) => {
-                    if bytes_read >= MAX_HEADER_BYTES {
-                        return Err(anyhow::anyhow!("HTTP request headers exceed maximum size"));
-                    }
+    let read_res: Result<Result<HeaderRead, anyhow::Error>, _> =
+        time::timeout(READ_TIMEOUT, async {
+            loop {
+                let n = stream.read(&mut buf[bytes_read..]).await?;
+                if n == 0 {
+                    return Ok(HeaderRead::Closed);
                 }
-                Err(e) => return Err(anyhow::anyhow!("Failed to parse HTTP request: {e}")),
+                bytes_read += n;
+                debug!("gateway read {} bytes, total {}", n, bytes_read);
+
+                let mut headers = [EMPTY_HEADER; 64];
+                let mut req = Request::new(&mut headers);
+
+                match req.parse(&buf[..bytes_read]) {
+                    Ok(Status::Complete(len)) => return Ok(HeaderRead::Complete(len)),
+                    Ok(Status::Partial) => {
+                        if bytes_read >= MAX_HEADER_BYTES {
+                            return Ok(HeaderRead::TooLarge);
+                        }
+                    }
+                    Err(e) => return Ok(HeaderRead::ParseError(e.to_string())),
+                }
             }
+        })
+        .await;
+
+    let header_len = match read_res {
+        Ok(Ok(HeaderRead::Complete(len))) => len,
+        Ok(Ok(HeaderRead::TooLarge)) => {
+            return write_json_rpc_error(&mut stream, 400, "Headers too large").await;
         }
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("Timed out reading HTTP request headers"))??;
+        Ok(Ok(HeaderRead::ParseError(e))) => {
+            return write_json_rpc_error(&mut stream, 400, &format!("Invalid HTTP request: {e}"))
+                .await;
+        }
+        Ok(Ok(HeaderRead::Closed)) => return Ok(()),
+        Ok(Err(e)) => return Err(e),
+        Err(_) => {
+            return write_json_rpc_error(
+                &mut stream,
+                408,
+                "Timed out reading HTTP request headers",
+            )
+            .await;
+        }
+    };
 
     let mut headers = [EMPTY_HEADER; 64];
     let mut req = Request::new(&mut headers);
