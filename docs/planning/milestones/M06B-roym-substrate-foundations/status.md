@@ -24,30 +24,30 @@
 Slice B1 enables local person identity at the client gateway, binding an authenticated local client to a person's DID under an owner→node delegation certificate instead of presenting the node's fallback self-asserted DID.
 
 ### 1. Protocol Constants & Assertions (`crates/core/src/protocol_utils.rs`)
-- `GATEWAY_RESERVED_PATH_PREFIX = "/_syneroym/"` (D-B1-1)
+- `GATEWAY_RESERVED_PATH_PREFIX = "/_syneroym/"` (D-B1-11)
 - `SESSION_COOKIE_NAME = "syneroym_session"` (D-B1-6)
-- `gateway_session_assertion(node_did, nonce, person_did)`: canonical JSON assertion payload `{"node_did":...,"nonce":...,"person_did":...}` (D-B1-4)
+- `gateway_session_assertion(node_did, nonce, person_did)`: canonical JSON assertion payload `{"typ": "syneroym:gateway-session-assertion:v1", "node_did":..., "nonce":..., "person_did":...}` (D-B1-1)
 
 ### 2. Configuration & Anchor Lookup (`crates/core/src/config.rs`, `crates/core/src/dht_registry.rs`, `crates/router/src/handshake.rs`)
-- Added `session_ttl_secs` to `ClientGatewayRole` (default 28,800s / 8 hours, configurable, D-B1-10).
-- Defined `MasterAnchorResolver` trait in `syneroym-core` with async `resolve_master_anchor(&self, master_did: &str) -> Result<MasterAnchorPayload>`.
+- Added `session_ttl_secs` to `ClientGatewayRole` (default 28,800s / 8 hours, configurable, D-B1-8).
+- Defined `MasterAnchorResolver` trait in `syneroym-core` with async `resolve_master_anchor(&self, master_did: &str) -> Result<MasterAnchorPayload>` (D-B1-14).
 - Implemented `MasterAnchorResolver` for `RegistryClient` (DHT + HTTP registry fallback). Re-exported from `syneroym-router::handshake`.
 
 ### 3. Session Store & Reserved Routing (`crates/client_gateway/src/session.rs`, `crates/client_gateway/src/gateway.rs`)
-- Implemented `SessionStore` with bounded DashMap storage (`MAX_ACTIVE_SESSIONS = 64`, `MAX_PENDING_CHALLENGES = 64`), TTL expiration, oldest-expiry eviction, and single-use challenge nonces (`NONCE_TTL_SECS = 60`, D-B1-2, D-B1-8).
-- Implemented challenge/login/logout/whoami lifecycle under reserved `/_syneroym/session/*` routes (D-B1-3).
-- Implemented credential extraction (`extract_credential`) prioritizing `Cookie` over `Authorization: Bearer` (Plan §5.5, D-B1-7).
+- Implemented `SessionStore` with bounded DashMap storage (`MAX_ACTIVE_SESSIONS = 64`, `MAX_PENDING_CHALLENGES = 64`), TTL expiration, oldest-expiry eviction, and single-use challenge nonces (`NONCE_TTL_SECS = 60`, D-B1-8).
+- Implemented challenge/login/logout/whoami lifecycle under reserved `/_syneroym/session/*` routes (D-B1-3, D-B1-11).
+- Implemented credential extraction (`extract_credential`) prioritizing `Cookie` over `Authorization: Bearer` (D-B1-7).
 - Implemented credential stripping (`strip_credential`) that unconditionally removes `syneroym_session` pairs from `Cookie:` headers and drops matching `Authorization: Bearer <session-token>` lines, preserving unrelated authentication headers (D-B1-7).
 - Added 10-second timeout on reading HTTP request headers and request body in `handle_connection`.
-- Client Gateway routes requests under `/_syneroym/` to internal session handlers and blocks them from proxying to guest services (D-B1-1).
+- Client Gateway routes requests under `/_syneroym/` to internal session handlers and blocks them from proxying to guest services (D-B1-11).
 - Forwarded active `DelegationCertificate` in `SyneroymClient::passthrough_with_conn` to populate preamble delegation.
 
 ### 4. Control Plane Route & Asset Collision Guard (`crates/control_plane/src/http_routes.rs`, `crates/control_plane/src/assets.rs`)
-- Reject any guest HTTP route or static asset bundle containing a path starting with `/_syneroym/` at deploy time with HTTP 400 (D-B1-1).
+- Reject any guest HTTP route or static asset bundle containing a path starting with `/_syneroym/` at deploy time (validation error from `parse_http_routes` / `unpack_asset_bundle` surfaced as a deploy failure, D-B1-13).
 
 ### 5. Roymctl CLI Session Commands (`apps/roymctl/src/commands/session.rs`)
-- Added `roymctl session login`, `roymctl session status`, `roymctl session token`, `roymctl session logout` (D-B1-9).
-- Saves session token locally under `<config-dir>/sessions/<sanitized-gateway-url>.json` with secure file permissions (0600 on Unix, D-B1-9).
+- Added `roymctl session login`, `roymctl session status`, `roymctl session token`, `roymctl session logout` (D-B1-15).
+- Saves session token locally under `<config-dir>/sessions/<sanitized-gateway-url>.json` with secure file permissions (0600 on Unix, D-B1-15).
 
 ---
 
@@ -74,8 +74,8 @@ Slice B1 enables local person identity at the client gateway, binding an authent
    - `test_classify`: Verifies routing classification for proxy and session endpoints.
 
 2. **Control Plane Reserved Prefix Unit Tests**:
-   - `crates/control_plane/src/http_routes.rs`: `test_reject_reserved_syneroym_prefix` passes.
-   - `crates/control_plane/src/assets.rs`: `test_reject_reserved_syneroym_prefix_in_assets` passes.
+   - `crates/control_plane/src/http_routes.rs`: `reserved_gateway_prefix_path_is_rejected` passes.
+   - `crates/control_plane/src/assets.rs`: `asset_under_reserved_gateway_prefix_is_rejected` passes.
 
 3. **Substrate E2E Integration Tests** (`crates/substrate/tests/gateway_session_e2e.rs`):
    - `test_16_anonymous_request_sees_self_asserted_node_did`: Anonymous request through gateway sees self-asserted node DID.
@@ -92,4 +92,33 @@ Slice B1 enables local person identity at the client gateway, binding an authent
    - `test_27_reserved_path_challenge_login_whoami_logout_lifecycle`: Full challenge/login/whoami/logout lifecycle over HTTP gateway.
    - `test_28_reserved_path_is_never_proxied_to_guest`: Reserved path `/_syneroym/*` returns 404 from gateway and is never proxied to guest.
    - `test_29_roymctl_session_cli_lifecycle`: `roymctl session` login, status, token, logout lifecycle, file existence, and 0600 permissions.
-   - `test_30_roymctl_session_cli_error_handling`: `roymctl session` missing `--as` flag and nonexistent identity error handling.
+   - `test_30_roymctl_session_cli_error_handling`: `roymctl session` missing `--as` flag, nonexistent identity, and unresolvable anchor error handling.
+
+### Run Evidence
+
+```
+$ cargo test -p syneroym-client-gateway
+running 20 tests ... ok. 20 passed; 0 failed; 0 ignored
+
+$ cargo test -p syneroym-control-plane
+running 26 tests ... ok. 26 passed; 0 failed; 0 ignored
+
+$ cargo test -p syneroym-substrate --test gateway_session_e2e
+running 15 tests
+test test_16_anonymous_request_sees_self_asserted_node_did ... ok
+test test_17_logged_in_request_via_cookie_sees_delegated_person_did ... ok
+test test_18_two_people_logged_in_each_whoami_and_echo_returns_own_did ... ok
+test test_19_second_local_process_without_token_while_session_live_sees_self_asserted ... ok
+test test_20_forged_login_is_rejected_with_401 ... ok
+test test_21_gateway_session_token_is_stripped_from_proxied_headers ... ok
+test test_22_cookie_takes_priority_over_bearer ... ok
+test test_23_login_with_no_published_anchor_is_refused_with_409 ... ok
+test test_24_expect_100_continue_handshake ... ok
+test test_25_expired_gateway_session_falls_back_to_self_asserted_node_did ... ok
+test test_26_restart_clears_all_sessions ... ok
+test test_27_reserved_path_challenge_login_whoami_logout_lifecycle ... ok
+test test_28_reserved_path_is_never_proxied_to_guest ... ok
+test test_29_roymctl_session_cli_lifecycle ... ok
+test test_30_roymctl_session_cli_error_handling ... ok
+test result: ok. 15 passed; 0 failed; 0 ignored; finished in 28.5s
+```

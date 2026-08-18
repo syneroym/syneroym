@@ -197,7 +197,7 @@ impl SessionStore {
             return Err(SessionError::WrongDelegate);
         }
 
-        // 4. The anchor must be resolvable NOW (D-B1-14 / F7).
+        // 4. The anchor must be resolvable when the session is opened.
         let anchor_res = time::timeout(
             Duration::from_secs(5),
             anchor_lookup.resolve_master_anchor(&req.person_did),
@@ -224,7 +224,7 @@ impl SessionStore {
             }
         }
 
-        let expires_at =
+        let expires_at_secs =
             cmp::min(now.saturating_add(self.ttl_secs), req.delegation.expires_at_secs);
         let mut token_bytes = [0u8; TOKEN_BYTES];
         rand::rng().fill_bytes(&mut token_bytes);
@@ -235,17 +235,18 @@ impl SessionStore {
             PersonSession {
                 person_did: req.person_did.clone(),
                 delegation: req.delegation.clone(),
-                expires_at_secs: expires_at,
+                expires_at_secs,
             },
         );
 
-        Ok(LoginResponse { token, person_did: req.person_did.clone(), expires_at_secs: expires_at })
+        Ok(LoginResponse { token, person_did: req.person_did.clone(), expires_at_secs })
     }
 
     #[must_use]
     pub fn lookup(&self, token: &str) -> Option<PersonSession> {
+        let now = now_secs();
         let entry = self.sessions.get(token)?;
-        if now_secs() >= entry.expires_at_secs {
+        if entry.value().expires_at_secs <= now {
             drop(entry);
             self.sessions.remove(token);
             return None;
@@ -266,18 +267,18 @@ pub enum CredentialSource {
 
 #[must_use]
 pub fn extract_credential(headers: &[Header<'_>]) -> Option<(String, CredentialSource)> {
-    // Cookie takes precedence over Authorization: Bearer (Plan §5.5, D-B1-7)
+    // Cookie takes precedence over Authorization: Bearer
     for h in headers {
-        if h.name.eq_ignore_ascii_case("cookie")
-            && let Ok(val) = str::from_utf8(h.value)
-        {
-            for pair in val.split(';') {
-                if let Some((k, v)) = pair.trim().split_once('=')
-                    && k.trim() == SESSION_COOKIE_NAME
-                {
-                    let token = v.trim().to_string();
-                    if !token.is_empty() {
-                        return Some((token, CredentialSource::Cookie));
+        if h.name.eq_ignore_ascii_case("cookie") {
+            for pair in h.value.split(|&b| b == b';') {
+                let trimmed = trim_ascii_whitespace(pair);
+                if let Some(pos) = trimmed.iter().position(|&b| b == b'=') {
+                    let k = trim_ascii_whitespace(&trimmed[..pos]);
+                    if k == SESSION_COOKIE_NAME.as_bytes() {
+                        let v = trim_ascii_whitespace(&trimmed[pos + 1..]);
+                        if let Ok(token) = str::from_utf8(v) {
+                            return Some((token.to_string(), CredentialSource::Cookie));
+                        }
                     }
                 }
             }
@@ -285,15 +286,11 @@ pub fn extract_credential(headers: &[Header<'_>]) -> Option<(String, CredentialS
     }
 
     for h in headers {
-        if h.name.eq_ignore_ascii_case("authorization")
-            && let Ok(val) = str::from_utf8(h.value)
-        {
-            let trimmed = val.trim();
-            if let Some(prefix) = trimmed.get(..7)
-                && prefix.eq_ignore_ascii_case("bearer ")
-            {
-                let token = trimmed[7..].trim();
-                if !token.is_empty() {
+        if h.name.eq_ignore_ascii_case("authorization") {
+            let val = trim_ascii_whitespace(h.value);
+            if val.len() >= 7 && val[..7].eq_ignore_ascii_case(b"bearer ") {
+                let bearer_tok = trim_ascii_whitespace(&val[7..]);
+                if let Ok(token) = str::from_utf8(bearer_tok) {
                     return Some((token.to_string(), CredentialSource::Bearer));
                 }
             }
@@ -312,53 +309,68 @@ pub fn strip_credential(
 ) -> Option<Vec<u8>> {
     let head_bytes = &raw[..header_len];
     let tail_bytes = &raw[header_len..];
-    let head_str = str::from_utf8(head_bytes).ok()?;
 
-    let mut out_lines = Vec::new();
+    let mut out_head = Vec::with_capacity(head_bytes.len());
     let mut changed = false;
 
-    for line in head_str.split("\r\n") {
+    let mut remaining = head_bytes;
+    while !remaining.is_empty() {
+        let (line, rest) = match remaining.windows(2).position(|w| w == b"\r\n") {
+            Some(pos) => (&remaining[..pos], &remaining[pos + 2..]),
+            None => (remaining, &[][..]),
+        };
+        remaining = rest;
+
         if line.is_empty() {
             break;
         }
-        if let Some(prefix) = line.get(..7)
-            && prefix.eq_ignore_ascii_case("cookie:")
-        {
+
+        let is_cookie = line.len() >= 7 && line[..7].eq_ignore_ascii_case(b"cookie:");
+        let is_auth = line.len() >= 14 && line[..14].eq_ignore_ascii_case(b"authorization:");
+
+        if is_cookie {
             let value = &line[7..];
-            let pairs: Vec<&str> = value
-                .split(';')
-                .map(str::trim)
-                .filter(|p| {
-                    if let Some((k, _v)) = p.split_once('=')
-                        && k.trim() == SESSION_COOKIE_NAME
-                    {
+            let mut remaining_pairs = Vec::new();
+            for pair in value.split(|&b| b == b';') {
+                let trimmed = trim_ascii_whitespace(pair);
+                if let Some(pos) = trimmed.iter().position(|&b| b == b'=') {
+                    let key = trim_ascii_whitespace(&trimmed[..pos]);
+                    if key == SESSION_COOKIE_NAME.as_bytes() {
                         changed = true;
-                        return false;
+                        continue;
                     }
-                    true
-                })
-                .collect();
-            if pairs.is_empty() {
+                }
+                if !trimmed.is_empty() {
+                    remaining_pairs.push(trimmed);
+                }
+            }
+
+            if remaining_pairs.is_empty() {
                 changed = true;
             } else {
-                out_lines.push(format!("Cookie: {}", pairs.join("; ")));
+                out_head.extend_from_slice(b"Cookie: ");
+                for (i, p) in remaining_pairs.iter().enumerate() {
+                    if i > 0 {
+                        out_head.extend_from_slice(b"; ");
+                    }
+                    out_head.extend_from_slice(p);
+                }
+                out_head.extend_from_slice(b"\r\n");
             }
-        } else if let Some(prefix) = line.get(..14)
-            && prefix.eq_ignore_ascii_case("authorization:")
-        {
-            let value = line[14..].trim();
-            if let Some(bearer_prefix) = value.get(..7)
-                && bearer_prefix.eq_ignore_ascii_case("bearer ")
-            {
-                let bearer_tok = value[7..].trim();
-                if source == CredentialSource::Bearer && bearer_tok == token {
+        } else if is_auth {
+            let value = trim_ascii_whitespace(&line[14..]);
+            if value.len() >= 7 && value[..7].eq_ignore_ascii_case(b"bearer ") {
+                let bearer_tok = trim_ascii_whitespace(&value[7..]);
+                if source == CredentialSource::Bearer && bearer_tok == token.as_bytes() {
                     changed = true;
                     continue;
                 }
             }
-            out_lines.push(line.to_string());
+            out_head.extend_from_slice(line);
+            out_head.extend_from_slice(b"\r\n");
         } else {
-            out_lines.push(line.to_string());
+            out_head.extend_from_slice(line);
+            out_head.extend_from_slice(b"\r\n");
         }
     }
 
@@ -366,11 +378,23 @@ pub fn strip_credential(
         return None;
     }
 
-    let mut result = Vec::with_capacity(head_str.len() + tail_bytes.len());
-    let new_head = out_lines.join("\r\n") + "\r\n\r\n";
-    result.extend_from_slice(new_head.as_bytes());
+    out_head.extend_from_slice(b"\r\n");
+    let mut result = Vec::with_capacity(out_head.len() + tail_bytes.len());
+    result.extend_from_slice(&out_head);
     result.extend_from_slice(tail_bytes);
     Some(result)
+}
+
+fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
+    let mut start = 0;
+    while start < bytes.len() && (bytes[start] == b' ' || bytes[start] == b'\t') {
+        start += 1;
+    }
+    let mut end = bytes.len();
+    while end > start && (bytes[end - 1] == b' ' || bytes[end - 1] == b'\t') {
+        end -= 1;
+    }
+    &bytes[start..end]
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -872,7 +896,7 @@ mod tests {
             Some(("tok456".to_string(), CredentialSource::Bearer))
         );
 
-        // Cookie takes priority over Bearer when both are present (Plan §5.5)
+        // Cookie takes priority over Bearer when both are present
         let headers_both = [
             httparse::Header { name: "Authorization", value: b"Bearer tok456" },
             httparse::Header { name: "Cookie", value: b"syneroym_session=tok123" },
@@ -886,10 +910,15 @@ mod tests {
             [httparse::Header { name: "Authorization", value: b"Basic dXNlcjpwYXNz" }];
         assert_eq!(extract_credential(&headers_basic), None);
 
-        // Multi-byte UTF-8 in Authorization header does not panic (HIGH-2)
+        // Multi-byte UTF-8 in Authorization header does not panic
         let headers_utf8 =
             [httparse::Header { name: "Authorization", value: "€€€".as_bytes() }];
         assert_eq!(extract_credential(&headers_utf8), None);
+
+        // Invalid non-UTF8 byte sequence does not panic
+        let headers_invalid_utf8 =
+            [httparse::Header { name: "Authorization", value: b"\xff\xfe\xfd" }];
+        assert_eq!(extract_credential(&headers_invalid_utf8), None);
 
         let headers_empty: [httparse::Header; 0] = [];
         assert_eq!(extract_credential(&headers_empty), None);
@@ -924,7 +953,7 @@ mod tests {
             "GET / HTTP/1.1\r\nHost: localhost\r\n\r\nbody"
         );
 
-        // When source is Cookie, unrelated Authorization header is preserved (HIGH-1)
+        // When source is Cookie, unrelated Authorization header is preserved
         let raw_both = b"GET / HTTP/1.1\r\nHost: localhost\r\nCookie: syneroym_session=tok\r\nAuthorization: Bearer app_token\r\n\r\nbody";
         let header_len_both = raw_both.len() - 4;
         let stripped_both =
@@ -934,7 +963,7 @@ mod tests {
             "GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer app_token\r\n\r\nbody"
         );
 
-        // When source is Bearer, cookie is also stripped unconditionally (HIGH-1)
+        // When source is Bearer, cookie is also stripped unconditionally
         let raw_both_bearer = b"GET / HTTP/1.1\r\nHost: localhost\r\nCookie: syneroym_session=tok1\r\nAuthorization: Bearer tok2\r\n\r\nbody";
         let header_len_both_bearer = raw_both_bearer.len() - 4;
         let stripped_both_bearer = strip_credential(
@@ -953,13 +982,25 @@ mod tests {
         let header_len4 = raw4.len() - 4;
         assert_eq!(strip_credential(raw4, header_len4, "tok", CredentialSource::Bearer), None);
 
-        // Multi-byte UTF-8 in headers does not panic during stripping (HIGH-2)
+        // Multi-byte UTF-8 in headers does not panic during stripping
         let raw_utf8 =
             "GET /€ HTTP/1.1\r\nHost: localhost\r\nAuthorization: €€€\r\n\r\nbody".as_bytes();
         let header_len_utf8 = raw_utf8.len() - 4;
         assert_eq!(
             strip_credential(raw_utf8, header_len_utf8, "tok", CredentialSource::Bearer),
             None
+        );
+
+        // Request head with invalid non-UTF-8 bytes strips session cookie and preserves
+        // raw bytes
+        let raw_invalid_utf8 = b"GET / HTTP/1.1\r\nHost: localhost\r\nCookie: syneroym_session=tok\r\nX-Custom: \xff\xfe\r\n\r\nbody";
+        let header_len_invalid = raw_invalid_utf8.len() - 4;
+        let stripped_invalid =
+            strip_credential(raw_invalid_utf8, header_len_invalid, "tok", CredentialSource::Cookie)
+                .expect("must strip cookie even with non-UTF8 header bytes present");
+        assert_eq!(
+            stripped_invalid,
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nX-Custom: \xff\xfe\r\n\r\nbody"
         );
     }
 

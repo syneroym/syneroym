@@ -80,7 +80,6 @@ struct GatewayState {
     /// Used at login only to resolve the person's master anchor once and
     /// refuse a session that could never have worked.
     anchor_lookup: Arc<dyn MasterAnchorResolver>,
-    session_ttl_secs: u64,
 }
 
 /// `ClientGateway`: Acts as an entry point for local HTTP/WebSocket clients to
@@ -168,7 +167,6 @@ impl ClientGateway {
             app_host_resolver,
             sessions,
             anchor_lookup,
-            session_ttl_secs,
         });
 
         Ok(Self { port, state, shutdown_tx: None })
@@ -232,216 +230,208 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
     let mut buf = [0u8; MAX_HEADER_BYTES];
     let mut bytes_read = 0;
 
-    // Read enough to find the end of the HTTP headers
-    loop {
-        let n = match time::timeout(READ_TIMEOUT, stream.read(&mut buf[bytes_read..])).await {
-            Ok(Ok(n)) => n,
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => {
-                return Err(anyhow::anyhow!("Timed out reading HTTP request headers"));
+    // Read headers with an overall deadline to mitigate slowloris attacks
+    let header_len = time::timeout(READ_TIMEOUT, async {
+        loop {
+            let n = stream.read(&mut buf[bytes_read..]).await?;
+            if n == 0 {
+                return Err(anyhow::anyhow!("Connection closed before headers finished"));
             }
-        };
-        if n == 0 {
-            return Err(anyhow::anyhow!("Connection closed before headers finished"));
+            bytes_read += n;
+            debug!("gateway read {} bytes, total {}", n, bytes_read);
+
+            let mut headers = [EMPTY_HEADER; 64];
+            let mut req = Request::new(&mut headers);
+
+            match req.parse(&buf[..bytes_read]) {
+                Ok(Status::Complete(len)) => return Ok(len),
+                Ok(Status::Partial) => {
+                    if bytes_read >= MAX_HEADER_BYTES {
+                        return Err(anyhow::anyhow!("HTTP request headers exceed maximum size"));
+                    }
+                }
+                Err(e) => return Err(anyhow::anyhow!("Failed to parse HTTP request: {e}")),
+            }
         }
-        bytes_read += n;
-        debug!("gateway read {} bytes, total {}", n, bytes_read);
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("Timed out reading HTTP request headers"))??;
 
-        let mut headers = [EMPTY_HEADER; 64];
-        let mut req = Request::new(&mut headers);
+    let mut headers = [EMPTY_HEADER; 64];
+    let mut req = Request::new(&mut headers);
+    let _ = req.parse(&buf[..bytes_read]);
 
-        match req.parse(&buf[..bytes_read]) {
-            Ok(Status::Complete(header_len)) => {
-                let method = req.method.unwrap_or("");
-                let path = req.path.unwrap_or("");
-                let kind = session::classify(method, path);
-                let credential = session::extract_credential(req.headers);
+    let method = req.method.unwrap_or("");
+    let path = req.path.unwrap_or("");
+    let kind = session::classify(method, path);
+    let credential = session::extract_credential(req.headers);
 
-                if let RequestKind::Session(route) = kind {
-                    let has_expect_100 = req.headers.iter().any(|h| {
-                        h.name.eq_ignore_ascii_case("expect")
-                            && str::from_utf8(h.value)
-                                .map(|v| v.trim().eq_ignore_ascii_case("100-continue"))
-                                .unwrap_or(false)
-                    });
-                    if has_expect_100 {
-                        stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await?;
-                    }
+    if let RequestKind::Session(route) = kind {
+        let has_expect_100 = req.headers.iter().any(|h| {
+            h.name.eq_ignore_ascii_case("expect")
+                && str::from_utf8(h.value)
+                    .map(|v| v.trim().eq_ignore_ascii_case("100-continue"))
+                    .unwrap_or(false)
+        });
+        if has_expect_100 {
+            stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await?;
+        }
 
-                    let content_length: usize = req
-                        .headers
-                        .iter()
-                        .find(|h| h.name.eq_ignore_ascii_case("content-length"))
-                        .and_then(|h| str::from_utf8(h.value).ok())
-                        .and_then(|v| v.trim().parse().ok())
-                        .unwrap_or(0);
+        let content_length: usize = req
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("content-length"))
+            .and_then(|h| str::from_utf8(h.value).ok())
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
 
-                    if content_length > MAX_SESSION_BODY_BYTES {
-                        return write_json(
-                            &mut stream,
-                            413,
-                            &serde_json::json!({"error": "request body too large"}),
-                            None,
-                        )
-                        .await;
-                    }
+        if content_length > MAX_SESSION_BODY_BYTES {
+            return write_json(
+                &mut stream,
+                413,
+                &serde_json::json!({"error": "request body too large"}),
+                None,
+            )
+            .await;
+        }
 
-                    let mut body = buf[header_len..bytes_read].to_vec();
-                    let mut chunk = [0u8; 1024];
-                    while body.len() < content_length {
-                        let n = match time::timeout(READ_TIMEOUT, stream.read(&mut chunk)).await {
-                            Ok(Ok(n)) => n,
-                            Ok(Err(e)) => return Err(e.into()),
-                            Err(_) => {
-                                return write_json(
-                                    &mut stream,
-                                    408,
-                                    &serde_json::json!({"error": "timed out reading request body"}),
-                                    None,
-                                )
-                                .await;
-                            }
-                        };
-                        if n == 0 {
-                            return write_json(
-                                &mut stream,
-                                400,
-                                &serde_json::json!({"error": "truncated body"}),
-                                None,
-                            )
-                            .await;
-                        }
-                        body.extend_from_slice(&chunk[..n]);
-                    }
-                    body.truncate(content_length);
-
-                    return handle_session_request(
-                        &mut stream,
-                        &state,
-                        route,
-                        credential.as_ref().map(|(t, _)| t.as_str()),
-                        &body,
-                        state.session_ttl_secs,
-                    )
-                    .await;
+        let mut body = buf[header_len..bytes_read].to_vec();
+        let mut chunk = [0u8; 1024];
+        let body_read_res = time::timeout(READ_TIMEOUT, async {
+            while body.len() < content_length {
+                let n = stream.read(&mut chunk).await?;
+                if n == 0 {
+                    return Err(anyhow::anyhow!("truncated body"));
                 }
-
-                let host_header = req
-                    .headers
-                    .iter()
-                    .find(|h| h.name.eq_ignore_ascii_case("host"))
-                    .map_or("", |h| str::from_utf8(h.value).unwrap_or(""));
-                let target = match parse_target_host(host_header) {
-                    Some(t) => t,
-                    None => {
-                        return write_json_rpc_error(
-                            &mut stream,
-                            400,
-                            "Missing or invalid Host header",
-                        )
-                        .await;
-                    }
-                };
-                // Read once, from the first request on this TCP connection.
-                // `passthrough_with_conn` below hands the whole socket to
-                // one iroh stream for the connection's lifetime, so the
-                // member this key selects covers every later request an
-                // HTTP keep-alive reuses the connection for too -- a
-                // per-connection decision, not a per-request one. Tracked
-                // in `deferred-backlog.md`; see the developer guide's
-                // gateway-hostname section for the caller-facing note.
-                let routing_key: Option<Vec<u8>> = req
-                    .headers
-                    .iter()
-                    .find(|h| h.name.eq_ignore_ascii_case(ROUTING_KEY_HEADER))
-                    .map(|h| h.value.to_vec());
-
-                let (service_id, interface) =
-                    match resolve_target(&state, target, routing_key.as_deref()).await {
-                        Ok(pair) => pair,
-                        Err(e) => {
-                            error!("gateway failed to resolve logical host '{host_header}': {e:#}");
-                            return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
-                        }
-                    };
-
-                debug!(
-                    "Proxying to interface (hash): {}, service_id (alias): {}",
-                    interface, service_id
-                );
-
-                let client_arc = state
-                    .clients
-                    .entry(service_id.clone())
-                    .or_insert_with(|| {
-                        // Reconstructed from the same key bytes rather than
-                        // shared, since `Identity` is deliberately not
-                        // `Clone` -- every downstream client presents the
-                        // same node DID.
-                        let identity = Identity::from_bytes(&state.identity.to_bytes());
-                        Arc::new(Mutex::new(SyneroymClient::new_with_identity(
-                            service_id.clone(),
-                            state.registry_url.clone(),
-                            identity,
-                        )))
-                    })
-                    .clone();
-
-                let (conn, service_id) = {
-                    let mut client = client_arc.lock().await;
-                    if let Err(e) = client.connect().await {
-                        error!("Gateway failed to connect to service {}: {}", service_id, e);
-                        return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
-                    }
-                    (
-                        client.connection().ok_or_else(|| anyhow::anyhow!("Connection lost"))?,
-                        client.service_id().to_string(),
-                    )
-                };
-
-                let (forwarded_bytes, delegation) = match credential {
-                    Some((token, src)) => {
-                        let stripped =
-                            session::strip_credential(&buf[..bytes_read], header_len, &token, src);
-                        let s_opt = state.sessions.lookup(&token);
-                        if let Some(ref s) = s_opt {
-                            debug!(person = %s.person_did, "gateway proxying under a person session");
-                        }
-                        (stripped, s_opt.map(|s| s.delegation))
-                    }
-                    None => (None, None),
-                };
-                let bytes_to_forward = forwarded_bytes.as_deref().unwrap_or(&buf[..bytes_read]);
-
-                let passthrough_identity = Identity::from_bytes(&state.identity.to_bytes());
-                SyneroymClient::passthrough_with_conn(
-                    conn,
-                    &service_id,
-                    &interface,
-                    bytes_to_forward,
-                    &mut stream,
-                    &passthrough_identity,
-                    delegation.as_ref(),
-                )
-                .await?;
-                return Ok(());
+                body.extend_from_slice(&chunk[..n]);
             }
-            Ok(Status::Partial) => {
-                if bytes_read >= buf.len() {
-                    return write_json_rpc_error(&mut stream, 400, "Headers too large").await;
-                }
-                continue;
-            }
-            Err(e) => {
-                return write_json_rpc_error(
+            Ok::<(), anyhow::Error>(())
+        })
+        .await;
+
+        match body_read_res {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                return write_json(
                     &mut stream,
                     400,
-                    &format!("Invalid HTTP request: {e}"),
+                    &serde_json::json!({"error": "truncated body"}),
+                    None,
+                )
+                .await;
+            }
+            Err(_) => {
+                return write_json(
+                    &mut stream,
+                    408,
+                    &serde_json::json!({"error": "timed out reading request body"}),
+                    None,
                 )
                 .await;
             }
         }
+        body.truncate(content_length);
+
+        return handle_session_request(
+            &mut stream,
+            &state,
+            route,
+            credential.as_ref().map(|(t, _)| t.as_str()),
+            &body,
+        )
+        .await;
     }
+
+    let host_header = req
+        .headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("host"))
+        .map_or("", |h| str::from_utf8(h.value).unwrap_or(""));
+    let target = match parse_target_host(host_header) {
+        Some(t) => t,
+        None => {
+            return write_json_rpc_error(&mut stream, 400, "Missing or invalid Host header").await;
+        }
+    };
+    // Read once, from the first request on this TCP connection.
+    // `passthrough_with_conn` below hands the whole socket to
+    // one iroh stream for the connection's lifetime, so the
+    // member this key selects covers every later request an
+    // HTTP keep-alive reuses the connection for too -- a
+    // per-connection decision, not a per-request one. Tracked
+    // in `deferred-backlog.md`; see the developer guide's
+    // gateway-hostname section for the caller-facing note.
+    let routing_key: Option<Vec<u8>> = req
+        .headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case(ROUTING_KEY_HEADER))
+        .map(|h| h.value.to_vec());
+
+    let (service_id, interface) = match resolve_target(&state, target, routing_key.as_deref()).await
+    {
+        Ok(pair) => pair,
+        Err(e) => {
+            error!("gateway failed to resolve logical host '{host_header}': {e:#}");
+            return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
+        }
+    };
+
+    debug!("Proxying to interface (hash): {}, service_id (alias): {}", interface, service_id);
+
+    let client_arc = state
+        .clients
+        .entry(service_id.clone())
+        .or_insert_with(|| {
+            // Reconstructed from the same key bytes rather than
+            // shared, since `Identity` is deliberately not
+            // `Clone` -- every downstream client presents the
+            // same node DID.
+            let identity = Identity::from_bytes(&state.identity.to_bytes());
+            Arc::new(Mutex::new(SyneroymClient::new_with_identity(
+                service_id.clone(),
+                state.registry_url.clone(),
+                identity,
+            )))
+        })
+        .clone();
+
+    let (conn, service_id) = {
+        let mut client = client_arc.lock().await;
+        if let Err(e) = client.connect().await {
+            error!("Gateway failed to connect to service {}: {}", service_id, e);
+            return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
+        }
+        (
+            client.connection().ok_or_else(|| anyhow::anyhow!("Connection lost"))?,
+            client.service_id().to_string(),
+        )
+    };
+
+    let (forwarded_bytes, delegation) = match credential {
+        Some((token, src)) => {
+            let stripped = session::strip_credential(&buf[..bytes_read], header_len, &token, src);
+            let s_opt = state.sessions.lookup(&token);
+            if let Some(ref s) = s_opt {
+                debug!(person = %s.person_did, "gateway proxying under a person session");
+            }
+            (stripped, s_opt.map(|s| s.delegation))
+        }
+        None => (None, None),
+    };
+    let bytes_to_forward = forwarded_bytes.as_deref().unwrap_or(&buf[..bytes_read]);
+
+    let passthrough_identity = Identity::from_bytes(&state.identity.to_bytes());
+    SyneroymClient::passthrough_with_conn(
+        conn,
+        &service_id,
+        &interface,
+        bytes_to_forward,
+        &mut stream,
+        &passthrough_identity,
+        delegation.as_ref(),
+    )
+    .await?;
+    Ok(())
 }
 
 async fn handle_session_request(
@@ -450,7 +440,6 @@ async fn handle_session_request(
     route: SessionRoute,
     credential: Option<&str>,
     body: &[u8],
-    _ttl_secs: u64,
 ) -> Result<()> {
     match route {
         SessionRoute::Challenge => {
@@ -682,7 +671,6 @@ mod tests {
             ),
             sessions: SessionStore::new(node_did, 3600),
             anchor_lookup: Arc::new(UnreachableMasterAnchorResolver),
-            session_ttl_secs: 3600,
         }
     }
 

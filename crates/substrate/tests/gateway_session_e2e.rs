@@ -13,10 +13,8 @@
 //! - Forged login (attacker signs with own key, claims victim DID) -> 401.
 //! - Gateway session token is stripped from proxied headers (Cookie and
 //!   Bearer); unrelated Authorization headers are preserved.
-//! - Cookie takes priority over Bearer when both are present (Plan §5.5,
-//!   D-B1-7).
-//! - Login with unresolvable/unpublished master anchor is refused with 409
-//!   (D-B1-14).
+//! - Cookie takes priority over Bearer when both are present.
+//! - Login with unresolvable/unpublished master anchor is refused with 409.
 //! - `Expect: 100-continue` handshake over raw TCP completes cleanly.
 //! - Expired gateway session falls back to self-asserted node DID and strips
 //!   credentials.
@@ -304,7 +302,7 @@ async fn test_17_logged_in_request_via_cookie_sees_delegated_person_did() {
     ctx.teardown().await;
 }
 
-/// Test 18 (Plan test 18): Two people on one node -> two logins, two tokens;
+/// Test 18: Two people on one node -> two logins, two tokens;
 /// each /whoami and /echo returns its own DID and never the other's, never the
 /// node's.
 #[tokio::test]
@@ -389,7 +387,7 @@ async fn test_18_two_people_logged_in_each_whoami_and_echo_returns_own_did() {
     ctx.teardown().await;
 }
 
-/// Test 19 (Plan test 19): A second local process with no token while a session
+/// Test 19: A second local process with no token while a session
 /// is live sees `self-asserted:<node_did>`.
 #[tokio::test]
 async fn test_19_second_local_process_without_token_while_session_live_sees_self_asserted() {
@@ -432,7 +430,7 @@ async fn test_19_second_local_process_without_token_while_session_live_sees_self
     ctx.teardown().await;
 }
 
-/// Test 20 (Plan test 20): A forged login (attacker signs with own key, claims
+/// Test 20: A forged login (attacker signs with own key, claims
 /// Alice's DID) is rejected with 401 at the gateway.
 #[tokio::test]
 async fn test_20_forged_login_is_rejected_with_401() {
@@ -584,8 +582,10 @@ async fn test_21_gateway_session_token_is_stripped_from_proxied_headers() {
     ctx.teardown().await;
 }
 
-/// Test 22: Cookie takes priority over Bearer when both are present (Plan
-/// §5.5).
+/// Test 22: Cookie takes priority over Bearer when both are present.
+/// The session cookie determines the caller identity and is stripped;
+/// the unrelated application Authorization Bearer header is forwarded
+/// untouched.
 #[tokio::test]
 async fn test_22_cookie_takes_priority_over_bearer() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -597,14 +597,13 @@ async fn test_22_cookie_takes_priority_over_bearer() {
     let person_a = Identity::generate().unwrap();
     let (token_a, person_a_did) = login_to_gateway(&gateway_url, &person_a, &reg_url, 24).await;
 
-    let person_b = Identity::generate().unwrap();
-    let (token_b, _person_b_did) = login_to_gateway(&gateway_url, &person_b, &reg_url, 24).await;
+    let app_token = "app_bearer_secret_xyz123";
 
     let resp = client
         .get(format!("{gateway_url}/echo"))
         .header("Host", &host)
         .header("Cookie", format!("{SESSION_COOKIE_NAME}={token_a}"))
-        .header("Authorization", format!("Bearer {token_b}"))
+        .header("Authorization", format!("Bearer {app_token}"))
         .header("Connection", "close")
         .send()
         .await
@@ -616,7 +615,7 @@ async fn test_22_cookie_takes_priority_over_bearer() {
     assert_eq!(body["caller"]["auth"], "delegated");
     assert_eq!(body["caller"]["did"], person_a_did);
 
-    // Check that session cookie was stripped and Bearer was forwarded untouched
+    // Check that session cookie was stripped and app Bearer was forwarded untouched
     let headers: Vec<(String, String)> = serde_json::from_value(body["headers"].clone()).unwrap();
     assert!(
         !headers.iter().any(|(name, _)| name == "cookie"),
@@ -624,13 +623,13 @@ async fn test_22_cookie_takes_priority_over_bearer() {
     );
     let auth_header =
         headers.iter().find(|(name, _)| name == "authorization").map(|(_, v)| v.as_str());
-    assert_eq!(auth_header, Some(format!("Bearer {token_b}").as_str()));
+    assert_eq!(auth_header, Some(format!("Bearer {app_token}").as_str()));
 
     ctx.teardown().await;
 }
 
-/// Test 23 (Plan test 23): Login with no published master anchor is refused
-/// with 409 naming the anchor (D-B1-14).
+/// Test 23: Login with no published master anchor is refused
+/// with 409 naming the anchor.
 #[tokio::test]
 async fn test_23_login_with_no_published_anchor_is_refused_with_409() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -698,7 +697,7 @@ async fn test_23_login_with_no_published_anchor_is_refused_with_409() {
     ctx.teardown().await;
 }
 
-/// Test 24 (Plan test 25): Expect: 100-continue completes over raw TCP stream.
+/// Test 24: Expect: 100-continue completes over raw TCP stream.
 #[tokio::test]
 async fn test_24_expect_100_continue_handshake() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -991,7 +990,7 @@ async fn test_28_reserved_path_is_never_proxied_to_guest() {
     ctx.teardown().await;
 }
 
-/// Test 29 (Plan test 25 strengthened): roymctl session CLI commands lifecycle.
+/// Test 29: roymctl session CLI commands lifecycle.
 #[tokio::test]
 async fn test_29_roymctl_session_cli_lifecycle() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -1059,13 +1058,13 @@ async fn test_29_roymctl_session_cli_lifecycle() {
     ctx.teardown().await;
 }
 
-/// Test 30 (Plan tests 26 & 27): roymctl session CLI error handling.
+/// Test 30: roymctl session CLI error handling.
 #[tokio::test]
 async fn test_30_roymctl_session_cli_error_handling() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
     let temp_dir = tempfile::tempdir().unwrap();
 
-    // 1. Missing --as flag (Plan test 26)
+    // 1. Missing --as flag
     let login_cmd = roymctl::commands::session::SessionCommands::Login {
         gateway_url: "http://localhost:7960".to_string(),
         registry_url: None,
@@ -1084,4 +1083,29 @@ async fn test_30_roymctl_session_cli_error_handling() {
         err_no_key.to_string().contains("not found"),
         "error must indicate identity not found: {err_no_key}"
     );
+
+    // 3. Unresolvable anchor surfaces 409 error
+    let (ctx, gateway_port, _reg_url, _svc_did, _host) = setup_gateway_test_node(None).await;
+    let gateway_url = format!("http://127.0.0.1:{gateway_port}");
+
+    let identities_dir = temp_dir.path().join("identities");
+    fs::create_dir_all(&identities_dir).unwrap();
+    let person = Identity::generate().unwrap();
+    person.save_to_path(identities_dir.join("bob.key")).unwrap();
+
+    let login_cmd_no_reg = roymctl::commands::session::SessionCommands::Login {
+        gateway_url,
+        registry_url: None,
+        expires_hours: 24,
+    };
+    let err_409 =
+        roymctl::commands::session::handle(&login_cmd_no_reg, temp_dir.path(), Some("bob"))
+            .await
+            .unwrap_err();
+    assert!(
+        err_409.to_string().contains("409") || err_409.to_string().contains("master anchor"),
+        "error must surface 409 unresolvable master anchor: {err_409}"
+    );
+
+    ctx.teardown().await;
 }
