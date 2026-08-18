@@ -24,6 +24,7 @@ pub mod identity;
 pub mod member_identity;
 pub mod registry;
 pub mod security;
+pub mod session;
 pub mod substrate;
 pub mod supervisor;
 pub mod svc;
@@ -109,6 +110,11 @@ pub enum Commands {
     Supervisor {
         #[command(subcommand)]
         command: supervisor::SupervisorCommands,
+    },
+    /// Manage local person sessions at the client gateway
+    Session {
+        #[command(subcommand)]
+        command: session::SessionCommands,
     },
 }
 
@@ -294,6 +300,9 @@ pub async fn run(
                 ucan_path.as_deref(),
             )
             .await?;
+        }
+        Commands::Session { command } => {
+            session::handle(&command, &dir, run_as.as_deref()).await?;
         }
     }
     Ok(())

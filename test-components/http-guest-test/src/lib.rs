@@ -65,6 +65,7 @@ fn describe_request(request: &HttpRequest) -> serde_json::Value {
         "route": request.route,
         "path_params": request.path_params,
         "header_count": request.headers.len(),
+        "headers": request.headers,
         "body_len": request.body.len(),
         "caller": caller,
     })

@@ -3,5 +3,6 @@
 //! appropriate substrate within ecosystem
 
 mod gateway;
+mod session;
 
 pub use gateway::ClientGateway;

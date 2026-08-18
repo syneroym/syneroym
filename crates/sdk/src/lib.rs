@@ -1034,6 +1034,7 @@ impl SyneroymClient {
         interface_name: &str,
         initial_bytes: &[u8],
         tcp_stream: &mut TcpStream,
+        delegation: Option<&DelegationCertificate>,
     ) -> Result<()> {
         let conn_wrapper = self.connection.as_ref().context("Not connected")?.clone();
         Self::passthrough_with_conn(
@@ -1043,6 +1044,7 @@ impl SyneroymClient {
             initial_bytes,
             tcp_stream,
             &self.identity,
+            delegation,
         )
         .await
     }
@@ -1054,14 +1056,15 @@ impl SyneroymClient {
         initial_bytes: &[u8],
         tcp_stream: &mut TcpStream,
         identity: &Identity,
+        delegation: Option<&DelegationCertificate>,
     ) -> Result<()> {
         match conn_wrapper {
             TransportConnection::Iroh { conn, .. } => {
                 let (mut send, recv) = conn.open_bi().await?;
 
-                // Use HTTP transport for passthrough of raw requests. A
-                // self-asserted pubkey (no delegation) is set so this
-                // connection is not anonymous (M04A Slice B0, ADR-0016 §0.5).
+                // Use HTTP transport for passthrough of raw requests. The node
+                // pubkey is set along with any optional routing delegation so this
+                // connection presents caller identity to the downstream service.
                 let preamble = RoutePreamble {
                     transport: RouteTransport::Http,
                     protocol: RouteProtocol::JsonRpc,
@@ -1069,7 +1072,7 @@ impl SyneroymClient {
                     service_id: service_id.to_string(),
                     enc: None,
                     pubkey: Some(hex::encode(identity.public_key().to_bytes())),
-                    delegation: None,
+                    delegation: delegation.cloned(),
                     ucan: None,
                     dir: None,
                 }

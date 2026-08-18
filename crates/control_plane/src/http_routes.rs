@@ -16,7 +16,7 @@
 //! `syneroym:http/incoming-handler#handle-request` export.
 
 use serde::Deserialize;
-use syneroym_core::http_routes::HttpRoute;
+use syneroym_core::{http_routes::HttpRoute, protocol_utils::GATEWAY_RESERVED_PATH_PREFIX};
 
 #[derive(Debug, Default, Deserialize)]
 struct HttpRoutesConfig {
@@ -50,6 +50,14 @@ pub fn parse_http_routes(custom_json: &serde_json::Value) -> Result<Vec<HttpRout
 /// route wired to `accept-upload` would otherwise attempt to read an
 /// upload stream from a body-less request.
 fn validate_route(route: &HttpRoute) -> Result<(), String> {
+    if route.path.starts_with(GATEWAY_RESERVED_PATH_PREFIX) {
+        return Err(format!(
+            "http_routes entry `{} {}` declares a path under the reserved `{}` prefix, which the \
+             client gateway answers itself and never proxies",
+            route.method, route.path, GATEWAY_RESERVED_PATH_PREFIX
+        ));
+    }
+
     let field_required = |field: &str, value: &Option<String>| -> Result<(), String> {
         if value.as_deref().unwrap_or_default().is_empty() {
             Err(format!(
@@ -350,5 +358,17 @@ mod tests {
             ]
         });
         assert!(parse_http_routes(&json).unwrap_err().contains("duplicate"));
+    }
+
+    #[test]
+    fn reserved_gateway_prefix_path_is_rejected() {
+        let json = serde_json::json!({
+            "http_routes": [
+                {"method": "POST", "path": "/_syneroym/session/login", "target": "guest",
+                 "operation": "handle-request"}
+            ]
+        });
+        let err = parse_http_routes(&json).unwrap_err();
+        assert!(err.contains("reserved `/_syneroym/` prefix"), "{err}");
     }
 }

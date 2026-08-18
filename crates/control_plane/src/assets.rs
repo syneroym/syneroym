@@ -23,6 +23,7 @@ use syneroym_core::{
         reject_archive_entry_path,
     },
     http_routes::{HttpRoute, match_path},
+    protocol_utils::GATEWAY_RESERVED_PATH_PREFIX,
 };
 use syneroym_data_blob::BlobProvider;
 use zeroize::Zeroizing;
@@ -177,6 +178,12 @@ fn parse_and_validate_entries(
             if key.starts_with(RESERVED_BLOBS_PREFIX) {
                 return Err(format!(
                     "asset path {key:?} collides with the reserved {RESERVED_BLOBS_PREFIX} prefix"
+                ));
+            }
+            if key.starts_with(GATEWAY_RESERVED_PATH_PREFIX) {
+                return Err(format!(
+                    "asset path {key:?} is under the reserved {GATEWAY_RESERVED_PATH_PREFIX} \
+                     prefix, which the client gateway answers itself and never proxies"
                 ));
             }
             // D-A1-11's directory-index rewrite makes an `.../index.html`
@@ -773,5 +780,16 @@ mod tests {
             blob.get_blob("svc", &newly_written, None).await.is_err(),
             "the failed deploy's own write must be gone"
         );
+    }
+
+    #[tokio::test]
+    async fn asset_under_reserved_gateway_prefix_is_rejected() {
+        let archive = make_archive(&[("_syneroym/session/login", b"fake")]);
+        let blob = provider();
+        let mut written = BTreeSet::new();
+        let err = unpack_asset_bundle("svc", &archive, None, &[], &blob, None, &mut written)
+            .await
+            .unwrap_err();
+        assert!(err.contains("is under the reserved /_syneroym/ prefix"), "{err}");
     }
 }

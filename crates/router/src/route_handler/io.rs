@@ -580,6 +580,7 @@ mod tests {
 
     /// A `MasterAnchorResolver` double whose `revoked_keys` are configured
     /// per-issuer, mirroring `handshake.rs`'s own test `MockResolver`.
+    #[derive(Debug)]
     struct MockResolver {
         revoked: HashMap<String, Vec<String>>,
     }
@@ -601,7 +602,7 @@ mod tests {
     /// A `MasterAnchorResolver` double that counts calls, used to verify
     /// `ucan_chain_not_revoked` de-duplicates identical `(issuer, audience)`
     /// edges rather than resolving each occurrence independently.
-    #[derive(Default)]
+    #[derive(Debug, Default)]
     struct CountingResolver {
         calls: AtomicUsize,
     }

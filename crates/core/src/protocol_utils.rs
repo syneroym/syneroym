@@ -70,6 +70,41 @@ pub fn extract_host_from_http(buf: &[u8]) -> Result<String> {
 /// privilege boundary.
 pub const ROUTING_KEY_HEADER: &str = "X-Syneroym-Routing-Key";
 
+/// Request-path prefix the client gateway answers itself instead of
+/// proxying. Reserved on every gateway hostname, so a deployed service can
+/// never own a path under it -- the gateway must be reachable with no
+/// service hostname at all, and a browser page on an app's own origin must
+/// be able to reach it without a cross-origin request.
+pub const GATEWAY_RESERVED_PATH_PREFIX: &str = "/_syneroym/";
+
+/// Cookie carrying a local gateway session token. Consumed and removed by
+/// the gateway; it is never forwarded to the target service.
+pub const SESSION_COOKIE_NAME: &str = "syneroym_session";
+
+/// The statement a person signs to open a local gateway session. Domain-
+/// separated by `typ` so a signature harvested here can never be replayed
+/// as a delegation certificate or a UCAN payload, and bound to `node_did`
+/// so it cannot be replayed to a different substrate.
+///
+/// **The exact object matters.** `roymctl` signs it and the gateway
+/// re-derives it; RFC-8785 canonicalization sorts keys, so field order in
+/// the literal is free, but every key name and the `typ` string must match
+/// byte for byte or verification fails with a bare `BadSignature`. Both
+/// sides call THIS function -- neither hand-builds the object.
+#[must_use]
+pub fn gateway_session_assertion(
+    node_did: &str,
+    nonce: &str,
+    person_did: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "typ": "syneroym:gateway-session-assertion:v1",
+        "node_did": node_did,
+        "nonce": nonce,
+        "person_did": person_did,
+    })
+}
+
 /// The exact character width of a `short_hash` (`z32::encode` of a 5-byte
 /// SHA-256 prefix), used to tell an `-a`/`-s` segment apart from a nickname
 /// segment that merely starts with the same letter (§0.12).

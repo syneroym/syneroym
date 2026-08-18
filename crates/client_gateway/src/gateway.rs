@@ -5,8 +5,11 @@
 
 use std::{
     fmt::{self, Debug, Formatter},
-    fs, str,
+    fs,
+    path::Path,
+    str,
     sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -14,11 +17,13 @@ use dashmap::DashMap;
 use httparse::{EMPTY_HEADER, Request, Status};
 use syneroym_app_orchestration::{LogicalResolver, StaticInventory};
 use syneroym_core::{
-    config::SubstrateConfig,
-    protocol_utils::{ROUTING_KEY_HEADER, TargetHost, parse_target_host},
+    config::{SubstrateConfig, default_session_ttl_secs},
+    dht_registry::{MasterAnchorResolver, RegistryClient},
+    protocol_utils::{ROUTING_KEY_HEADER, SESSION_COOKIE_NAME, TargetHost, parse_target_host},
     util::load_or_generate_node_identity,
 };
-use syneroym_identity::Identity;
+use syneroym_identity::{Identity, substrate};
+use syneroym_rpc::CapabilityToken;
 use syneroym_sdk::{
     SyneroymClient,
     topology::{
@@ -30,44 +35,24 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{Mutex, oneshot, oneshot::Sender},
+    time,
 };
 use tracing::{debug, error, info, warn};
 
-// The node identity this gateway presents as caller DID (M04A Slice B0,
-// ADR-0016 §0.5) is loaded by
-// `syneroym_core::util::load_or_generate_node_identity` -- the same key file
-// `syneroym_substrate::identity::setup_substrate_identity` loads, by the same
-// path-resolution rule, so whichever of the gateway or the connection router
-// runs first creates the on-disk key and the other loads the same one back.
-// Lifted there in S3 (D-S3-6) rather than kept as a private copy here, since
-// the WebRTC coordinator needs the identical node identity to satisfy
-// `[iam].grant_resolve_to_node_did`.
-//
-// TODO(post-B0): present the substrate-owner (controller) DID as caller by
-// carrying an owner->node DelegationCertificate here (verify_preamble
-// already resolves master_did from it). `ControllerAgreement` now exists,
-// but that is a mutual attestation binding the two DIDs, not a delegation
-// the node can present on the wire -- provisioning a separate owner-signed
-// delegation for this purpose is still not built. B0 uses node DID.
-// Consequence, now that an unowned substrate fails closed: the gateway
-// proxies as a DID that holds nothing node-wide -- harmless *only* because
-// it proxies to deployed services, never to `orchestrator`/`security`
-// (flagged, not fixed; see the deferred backlog).
-//
-// That reasoning stopped being the whole story once M06A A2 shipped: a
-// "deployed service" can now mean **guest code that branches on
-// `caller.did`** (`syneroym:http/incoming-handler#handle-request`), not
-// only the storage-bridging `data-layer`/`messaging` targets that ignore
-// the caller entirely. A guest HTTP handler reached through this gateway
-// sees this DID -- the node's own, identical for every visitor, never an
-// end user's -- labelled `self-asserted` in the WIT (`D-A2-12`) precisely
-// so a guest cannot mistake it for a verified identity. See
-// `docs/planning/milestones/M06A-app-platform-surface/
-// slice-a2-implementation-plan.md` (F5a) for the mechanism and its e2e pin.
+use crate::session::{
+    self, MAX_SESSION_BODY_BYTES, RequestKind, SessionRoute, SessionStore, WhoamiResponse,
+};
+
+// When no local person session is attached, the gateway presents the node DID
+// as the caller DID (ADR-0016 §0.5), which downstream handlers see as
+// `self-asserted`. When a client presents an active person session token, the
+// gateway attaches the owner->node delegation certificate to the route
+// preamble, which downstream handlers see as `delegated` and resolve to the
+// person's master DID.
 
 /// Reads a `CapabilityToken` off disk, the same shape `roymctl`'s own
 /// `--ucan` loading uses.
-fn read_capability_token(path: &std::path::Path) -> Result<syneroym_rpc::CapabilityToken> {
+fn read_capability_token(path: &Path) -> Result<CapabilityToken> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read UCAN token at {}", path.display()))?;
     serde_json::from_str(&raw)
@@ -78,19 +63,23 @@ fn read_capability_token(path: &std::path::Path) -> Result<syneroym_rpc::Capabil
 struct GatewayState {
     registry_url: String,
     clients: DashMap<String, Arc<Mutex<SyneroymClient>>>,
-    /// The node's own identity (M04A Slice B0, ADR-0016 §0.5) -- presented
-    /// as the caller DID for every proxied request. Reconstructed per
-    /// downstream `SyneroymClient` from the same key bytes (`Identity` is
-    /// deliberately not `Clone`), rather than shared as a single instance.
+    /// The node's own identity (ADR-0016 §0.5) -- used for establishing
+    /// connections and as the fallback self-asserted caller identity when
+    /// no person session is active.
     identity: Identity,
-    /// The app-scoped (`-a…-s…`) host resolver (S3, D-S3-7, D-S3-11):
+    /// The app-scoped (`-a…-s…`) host resolver:
     /// `sdk::topology::AppHostResolver`, shared with the WebRTC coordinator
     /// rather than reimplemented, since the two are the pair most likely
-    /// to drift subtly apart on its D-S3-5 binding checks. Deliberately
+    /// to drift subtly apart on binding checks. Deliberately
     /// not the node's own `LogicalResolver`: `ClientGateway::init` runs
     /// before `setup_connection_router` builds that one, and the two key
     /// spaces are disjoint by type (`AppScope`) anyway.
     app_host_resolver: AppHostResolver,
+    /// Local person sessions. Empty at boot and after every restart by design.
+    sessions: SessionStore,
+    /// Used at login only to resolve the person's master anchor once and
+    /// refuse a session that could never have worked.
+    anchor_lookup: Arc<dyn MasterAnchorResolver>,
 }
 
 /// `ClientGateway`: Acts as an entry point for local HTTP/WebSocket clients to
@@ -122,7 +111,20 @@ impl ClientGateway {
         let registry_url = config.substrate.registry_url.clone().unwrap_or_default();
         let identity = load_or_generate_node_identity(config)?;
 
-        // D-S3-7: the gateway owns its own resolver and fetcher. It cannot
+        let session_ttl_secs = config
+            .roles
+            .client_gateway
+            .as_ref()
+            .map_or_else(default_session_ttl_secs, |g| g.session_ttl_secs);
+        let node_did = substrate::derive_did_key(&identity.public_key());
+        let sessions = SessionStore::new(node_did, session_ttl_secs);
+
+        let anchor_lookup: Arc<dyn MasterAnchorResolver> = Arc::new(RegistryClient::new(
+            config.substrate.enable_bep0044_dht,
+            config.substrate.registry_url.clone(),
+        ));
+
+        // The gateway owns its own resolver and fetcher. It cannot
         // share the node's own `LogicalResolver` -- `ClientGateway::init`
         // runs before `setup_connection_router` constructs that one, an
         // order with a measured startup cost attached -- and the two key
@@ -163,6 +165,8 @@ impl ClientGateway {
             clients: DashMap::new(),
             identity,
             app_host_resolver,
+            sessions,
+            anchor_lookup,
         });
 
         Ok(Self { port, state, shutdown_tx: None })
@@ -172,8 +176,9 @@ impl ClientGateway {
         info!("running client gateway on port {}", self.port);
         let state = self.state.clone();
 
-        // TODO: For now, basic security via access from local machine only instead of
-        // 0.0.0.0 interface
+        // Loopback bind: the client gateway operates on 127.0.0.1 for local machine
+        // security under the local person session model, rather than an internet-facing
+        // multi-tenant gateway.
         let addr = format!("127.0.0.1:{}", self.port);
         let listener = TcpListener::bind(&addr).await?;
 
@@ -215,6 +220,8 @@ impl ClientGateway {
     }
 }
 
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
 async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> Result<()> {
     // Limit header reads to 8 KB — the conventional maximum for HTTP/1.1 headers.
     // Requests with larger headers (e.g. very large JWTs) will receive a 400
@@ -223,121 +230,368 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
     let mut buf = [0u8; MAX_HEADER_BYTES];
     let mut bytes_read = 0;
 
-    // Read enough to find the end of the HTTP headers
-    loop {
-        let n = stream.read(&mut buf[bytes_read..]).await?;
-        if n == 0 {
-            return Err(anyhow::anyhow!("Connection closed before headers finished"));
-        }
-        bytes_read += n;
-        debug!("gateway read {} bytes, total {}", n, bytes_read);
+    enum HeaderRead {
+        Complete(usize),
+        TooLarge,
+        ParseError(String),
+        Closed,
+    }
 
-        let mut headers = [EMPTY_HEADER; 64];
-        let mut req = Request::new(&mut headers);
-
-        match req.parse(&buf[..bytes_read]) {
-            Ok(Status::Complete(_header_len)) => {
-                let host_header = req
-                    .headers
-                    .iter()
-                    .find(|h| h.name.eq_ignore_ascii_case("host"))
-                    .map_or("", |h| str::from_utf8(h.value).unwrap_or(""));
-                let target = match parse_target_host(host_header) {
-                    Some(t) => t,
-                    None => {
-                        return write_json_rpc_error(
-                            &mut stream,
-                            400,
-                            "Missing or invalid Host header",
-                        )
-                        .await;
-                    }
-                };
-                // Read once, from the first request on this TCP connection.
-                // `passthrough_with_conn` below hands the whole socket to
-                // one iroh stream for the connection's lifetime, so the
-                // member this key selects covers every later request an
-                // HTTP keep-alive reuses the connection for too -- a
-                // per-connection decision, not a per-request one. Tracked
-                // in `deferred-backlog.md`; see the developer guide's
-                // gateway-hostname section for the caller-facing note.
-                let routing_key: Option<Vec<u8>> = req
-                    .headers
-                    .iter()
-                    .find(|h| h.name.eq_ignore_ascii_case(ROUTING_KEY_HEADER))
-                    .map(|h| h.value.to_vec());
-
-                let (service_id, interface) =
-                    match resolve_target(&state, target, routing_key.as_deref()).await {
-                        Ok(pair) => pair,
-                        Err(e) => {
-                            error!("gateway failed to resolve logical host '{host_header}': {e:#}");
-                            return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
-                        }
-                    };
-
-                debug!(
-                    "Proxying to interface (hash): {}, service_id (alias): {}",
-                    interface, service_id
-                );
-
-                let client_arc = state
-                    .clients
-                    .entry(service_id.clone())
-                    .or_insert_with(|| {
-                        // Reconstructed from the same key bytes rather than
-                        // shared, since `Identity` is deliberately not
-                        // `Clone` -- every downstream client presents the
-                        // same node DID.
-                        let identity = Identity::from_bytes(&state.identity.to_bytes());
-                        Arc::new(Mutex::new(SyneroymClient::new_with_identity(
-                            service_id.clone(),
-                            state.registry_url.clone(),
-                            identity,
-                        )))
-                    })
-                    .clone();
-
-                let (conn, service_id) = {
-                    let mut client = client_arc.lock().await;
-                    if let Err(e) = client.connect().await {
-                        error!("Gateway failed to connect to service {}: {}", service_id, e);
-                        return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
-                    }
-                    (
-                        client.connection().ok_or_else(|| anyhow::anyhow!("Connection lost"))?,
-                        client.service_id().to_string(),
-                    )
-                };
-
-                let passthrough_identity = Identity::from_bytes(&state.identity.to_bytes());
-                SyneroymClient::passthrough_with_conn(
-                    conn,
-                    &service_id,
-                    &interface,
-                    &buf[..bytes_read],
-                    &mut stream,
-                    &passthrough_identity,
-                )
-                .await?;
-                return Ok(());
-            }
-            Ok(Status::Partial) => {
-                if bytes_read >= buf.len() {
-                    return write_json_rpc_error(&mut stream, 400, "Headers too large").await;
+    // Read headers with an overall deadline to mitigate slowloris attacks
+    let read_res: Result<Result<HeaderRead, anyhow::Error>, _> =
+        time::timeout(READ_TIMEOUT, async {
+            loop {
+                let n = stream.read(&mut buf[bytes_read..]).await?;
+                if n == 0 {
+                    return Ok(HeaderRead::Closed);
                 }
-                continue;
+                bytes_read += n;
+                debug!("gateway read {} bytes, total {}", n, bytes_read);
+
+                let mut headers = [EMPTY_HEADER; 64];
+                let mut req = Request::new(&mut headers);
+
+                match req.parse(&buf[..bytes_read]) {
+                    Ok(Status::Complete(len)) => return Ok(HeaderRead::Complete(len)),
+                    Ok(Status::Partial) => {
+                        if bytes_read >= MAX_HEADER_BYTES {
+                            return Ok(HeaderRead::TooLarge);
+                        }
+                    }
+                    Err(e) => return Ok(HeaderRead::ParseError(e.to_string())),
+                }
             }
-            Err(e) => {
-                return write_json_rpc_error(
+        })
+        .await;
+
+    let header_len = match read_res {
+        Ok(Ok(HeaderRead::Complete(len))) => len,
+        Ok(Ok(HeaderRead::TooLarge)) => {
+            return write_json_rpc_error(&mut stream, 400, "Headers too large").await;
+        }
+        Ok(Ok(HeaderRead::ParseError(e))) => {
+            return write_json_rpc_error(&mut stream, 400, &format!("Invalid HTTP request: {e}"))
+                .await;
+        }
+        Ok(Ok(HeaderRead::Closed)) => return Ok(()),
+        Ok(Err(e)) => return Err(e),
+        Err(_) => {
+            return write_json_rpc_error(
+                &mut stream,
+                408,
+                "Timed out reading HTTP request headers",
+            )
+            .await;
+        }
+    };
+
+    let mut headers = [EMPTY_HEADER; 64];
+    let mut req = Request::new(&mut headers);
+    let _ = req.parse(&buf[..bytes_read]);
+
+    let method = req.method.unwrap_or("");
+    let path = req.path.unwrap_or("");
+    let kind = session::classify(method, path);
+    let credential = session::extract_credential(req.headers);
+
+    if let RequestKind::Session(route) = kind {
+        let has_expect_100 = req.headers.iter().any(|h| {
+            h.name.eq_ignore_ascii_case("expect")
+                && str::from_utf8(h.value)
+                    .map(|v| v.trim().eq_ignore_ascii_case("100-continue"))
+                    .unwrap_or(false)
+        });
+        if has_expect_100 {
+            stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await?;
+        }
+
+        let content_length: usize = req
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("content-length"))
+            .and_then(|h| str::from_utf8(h.value).ok())
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
+
+        if content_length > MAX_SESSION_BODY_BYTES {
+            return write_json(
+                &mut stream,
+                413,
+                &serde_json::json!({"error": "request body too large"}),
+                None,
+            )
+            .await;
+        }
+
+        let mut body = buf[header_len..bytes_read].to_vec();
+        let mut chunk = [0u8; 1024];
+        let body_read_res = time::timeout(READ_TIMEOUT, async {
+            while body.len() < content_length {
+                let n = stream.read(&mut chunk).await?;
+                if n == 0 {
+                    return Err(anyhow::anyhow!("truncated body"));
+                }
+                body.extend_from_slice(&chunk[..n]);
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .await;
+
+        match body_read_res {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                return write_json(
                     &mut stream,
                     400,
-                    &format!("Invalid HTTP request: {e}"),
+                    &serde_json::json!({"error": "truncated body"}),
+                    None,
+                )
+                .await;
+            }
+            Err(_) => {
+                return write_json(
+                    &mut stream,
+                    408,
+                    &serde_json::json!({"error": "timed out reading request body"}),
+                    None,
                 )
                 .await;
             }
         }
+        body.truncate(content_length);
+
+        return handle_session_request(
+            &mut stream,
+            &state,
+            route,
+            credential.as_ref().map(|(t, _)| t.as_str()),
+            &body,
+        )
+        .await;
     }
+
+    let host_header = req
+        .headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("host"))
+        .map_or("", |h| str::from_utf8(h.value).unwrap_or(""));
+    let target = match parse_target_host(host_header) {
+        Some(t) => t,
+        None => {
+            return write_json_rpc_error(&mut stream, 400, "Missing or invalid Host header").await;
+        }
+    };
+    // Read once, from the first request on this TCP connection.
+    // `passthrough_with_conn` below hands the whole socket to
+    // one iroh stream for the connection's lifetime, so the
+    // member this key selects covers every later request an
+    // HTTP keep-alive reuses the connection for too -- a
+    // per-connection decision, not a per-request one. Tracked
+    // in `deferred-backlog.md`; see the developer guide's
+    // gateway-hostname section for the caller-facing note.
+    let routing_key: Option<Vec<u8>> = req
+        .headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case(ROUTING_KEY_HEADER))
+        .map(|h| h.value.to_vec());
+
+    let (service_id, interface) = match resolve_target(&state, target, routing_key.as_deref()).await
+    {
+        Ok(pair) => pair,
+        Err(e) => {
+            error!("gateway failed to resolve logical host '{host_header}': {e:#}");
+            return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
+        }
+    };
+
+    debug!("Proxying to interface (hash): {}, service_id (alias): {}", interface, service_id);
+
+    let client_arc = state
+        .clients
+        .entry(service_id.clone())
+        .or_insert_with(|| {
+            // Reconstructed from the same key bytes rather than
+            // shared, since `Identity` is deliberately not
+            // `Clone` -- every downstream client presents the
+            // same node DID.
+            let identity = Identity::from_bytes(&state.identity.to_bytes());
+            Arc::new(Mutex::new(SyneroymClient::new_with_identity(
+                service_id.clone(),
+                state.registry_url.clone(),
+                identity,
+            )))
+        })
+        .clone();
+
+    let (conn, service_id) = {
+        let mut client = client_arc.lock().await;
+        if let Err(e) = client.connect().await {
+            error!("Gateway failed to connect to service {}: {}", service_id, e);
+            return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
+        }
+        (
+            client.connection().ok_or_else(|| anyhow::anyhow!("Connection lost"))?,
+            client.service_id().to_string(),
+        )
+    };
+
+    let (forwarded_bytes, delegation) = match credential {
+        Some((token, src)) => {
+            let stripped = session::strip_credential(&buf[..bytes_read], header_len, &token, src);
+            let s_opt = state.sessions.lookup(&token);
+            if let Some(ref s) = s_opt {
+                debug!(person = %s.person_did, "gateway proxying under a person session");
+            }
+            (stripped, s_opt.map(|s| s.delegation))
+        }
+        None => (None, None),
+    };
+    let bytes_to_forward = forwarded_bytes.as_deref().unwrap_or(&buf[..bytes_read]);
+
+    let passthrough_identity = Identity::from_bytes(&state.identity.to_bytes());
+    SyneroymClient::passthrough_with_conn(
+        conn,
+        &service_id,
+        &interface,
+        bytes_to_forward,
+        &mut stream,
+        &passthrough_identity,
+        delegation.as_ref(),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn handle_session_request(
+    stream: &mut TcpStream,
+    state: &GatewayState,
+    route: SessionRoute,
+    credential: Option<&str>,
+    body: &[u8],
+) -> Result<()> {
+    match route {
+        SessionRoute::Challenge => {
+            let ch = state.sessions.issue_challenge();
+            let body_val = serde_json::to_value(&ch)?;
+            write_json(stream, 200, &body_val, None).await
+        }
+        SessionRoute::Login => {
+            let req: session::LoginRequest = match serde_json::from_slice(body) {
+                Ok(r) => r,
+                Err(_) => {
+                    return write_json(
+                        stream,
+                        400,
+                        &serde_json::json!({"error": "malformed login request"}),
+                        None,
+                    )
+                    .await;
+                }
+            };
+            match state.sessions.login(&req, state.anchor_lookup.as_ref()).await {
+                Ok(grant) => {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let remaining_ttl = grant.expires_at_secs.saturating_sub(now);
+                    let cookie = format!(
+                        "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Strict",
+                        SESSION_COOKIE_NAME, grant.token, remaining_ttl
+                    );
+                    let body_val = serde_json::to_value(&grant)?;
+                    write_json(stream, 200, &body_val, Some(&cookie)).await
+                }
+                Err(e) => {
+                    write_json(
+                        stream,
+                        e.http_status(),
+                        &serde_json::json!({"error": e.message()}),
+                        None,
+                    )
+                    .await
+                }
+            }
+        }
+        SessionRoute::Logout => {
+            let token = match credential {
+                Some(t) => t,
+                None => {
+                    return write_json(
+                        stream,
+                        401,
+                        &serde_json::json!({"error": "no session"}),
+                        None,
+                    )
+                    .await;
+                }
+            };
+            state.sessions.logout(token);
+            let cookie =
+                format!("{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict", SESSION_COOKIE_NAME);
+            write_json(stream, 200, &serde_json::json!({"status": "ended"}), Some(&cookie)).await
+        }
+        SessionRoute::Whoami => {
+            let token = match credential {
+                Some(t) => t,
+                None => {
+                    return write_json(
+                        stream,
+                        401,
+                        &serde_json::json!({"error": "no session"}),
+                        None,
+                    )
+                    .await;
+                }
+            };
+            let session = match state.sessions.lookup(token) {
+                Some(s) => s,
+                None => {
+                    return write_json(
+                        stream,
+                        401,
+                        &serde_json::json!({"error": "no session"}),
+                        None,
+                    )
+                    .await;
+                }
+            };
+            let resp = WhoamiResponse {
+                person_did: session.person_did,
+                auth: "delegated",
+                expires_at_secs: session.expires_at_secs,
+            };
+            let body_val = serde_json::to_value(&resp)?;
+            write_json(stream, 200, &body_val, None).await
+        }
+        SessionRoute::Unknown => {
+            write_json(stream, 404, &serde_json::json!({"error": "unknown gateway endpoint"}), None)
+                .await
+        }
+    }
+}
+
+/// Writes a JSON body with an explicit status, optionally with one
+/// `Set-Cookie`. Always `Connection: close`.
+async fn write_json(
+    stream: &mut TcpStream,
+    status: u16,
+    body: &serde_json::Value,
+    set_cookie: Option<&str>,
+) -> Result<()> {
+    let body_bytes = serde_json::to_vec(body)?;
+    let mut response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: \
+         close\r\n",
+        body_bytes.len()
+    );
+    if let Some(cookie) = set_cookie {
+        response.push_str(&format!("Set-Cookie: {cookie}\r\n"));
+    }
+    response.push_str("\r\n");
+    stream.write_all(response.as_bytes()).await?;
+    stream.write_all(&body_bytes).await?;
+    Ok(())
 }
 
 /// The decision `handle_connection` makes from a parsed `TargetHost`: an
@@ -380,7 +634,7 @@ async fn write_json_rpc_error(stream: &mut TcpStream, status: u16, message: &str
 
 #[cfg(test)]
 mod tests {
-    use syneroym_core::dht_registry::SignedEndpointInfo;
+    use syneroym_core::dht_registry::{MasterAnchorPayload, SignedEndpointInfo};
     use syneroym_sdk::topology::Tier1Lookup;
 
     use super::*;
@@ -418,16 +672,33 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct UnreachableMasterAnchorResolver;
+
+    #[async_trait::async_trait]
+    impl MasterAnchorResolver for UnreachableMasterAnchorResolver {
+        async fn resolve_master_anchor(
+            &self,
+            _master_id: &str,
+        ) -> Result<MasterAnchorPayload, anyhow::Error> {
+            Err(anyhow::anyhow!("UnreachableMasterAnchorResolver must not be called in this test"))
+        }
+    }
+
     fn test_state(fetcher: Option<Box<dyn Tier2Fetch>>) -> GatewayState {
+        let identity = Identity::generate().unwrap();
+        let node_did = substrate::derive_did_key(&identity.public_key());
         GatewayState {
             registry_url: String::new(),
             clients: DashMap::new(),
-            identity: Identity::generate().unwrap(),
+            identity,
             app_host_resolver: AppHostResolver::new(
                 Box::new(UnreachableTier1),
                 fetcher,
                 LogicalResolver::new(Arc::new(StaticInventory::new())),
             ),
+            sessions: SessionStore::new(node_did, 3600),
+            anchor_lookup: Arc::new(UnreachableMasterAnchorResolver),
         }
     }
 

@@ -35,18 +35,22 @@ interface incoming-handler {
         ucan,
         /// A bare public key with no delegation and no UCAN: an assertion
         /// the handshake never challenged. **Treat as pseudonymous, not
-        /// authenticated.** This is what every request proxied by the
-        /// local client gateway looks like, and there `did` is the
+        /// authenticated.** This is what an unauthenticated request proxied by the
+        /// local client gateway looks like (and there `did` is the
         /// *node's* own key -- the same value for every visitor, saying
-        /// nothing about who is at the keyboard.
+        /// nothing about who is at the keyboard). With a local person session
+        /// attached, the gateway presents an owner->node delegation certificate,
+        /// which reports `delegated` and names the person's master DID instead.
         self-asserted,
     }
 
     /// Who is asking, as far as the host can honestly say. Absent means
     /// genuinely anonymous -- nothing usable on the connection at all --
-    /// which only a route declared `public` can reach.
+    /// which only a route declared `public` can reach. When `auth` is
+    /// `delegated`, `did` is the person's master DID (the root of trust that
+    /// signed the delegation certificate).
     record caller-identity {
-        /// did:key of the immediate caller. Trustworthy as an identity
+        /// did:key of the caller. Trustworthy as an identity
         /// only when `auth` is `delegated` or `ucan`.
         did: string,
         auth: caller-auth,

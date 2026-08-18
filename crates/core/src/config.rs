@@ -998,6 +998,10 @@ const fn default_http_port() -> u16 {
     7960
 }
 
+pub const fn default_session_ttl_secs() -> u64 {
+    8 * 3600
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClientGatewayRole {
@@ -1011,11 +1015,21 @@ pub struct ClientGatewayRole {
     /// unaffected either way.
     #[serde(default)]
     pub resolve_ucan: Option<PathBuf>,
+    /// Ceiling on how long a local person session stays valid. The
+    /// effective expiry is the earlier of this and the presented
+    /// delegation certificate's own `expires_at_secs` -- a session must
+    /// never outlive the authorization it rests on.
+    #[serde(default = "default_session_ttl_secs")]
+    pub session_ttl_secs: u64,
 }
 
 impl Default for ClientGatewayRole {
     fn default() -> Self {
-        Self { http_port: default_http_port(), resolve_ucan: None }
+        Self {
+            http_port: default_http_port(),
+            resolve_ucan: None,
+            session_ttl_secs: default_session_ttl_secs(),
+        }
     }
 }
 

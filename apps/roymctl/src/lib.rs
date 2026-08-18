@@ -8,3 +8,6 @@ pub mod commands;
 
 /// Default API endpoint for the Community Registry.
 pub const DEFAULT_API_URL: &str = "http://localhost:7961";
+
+/// Default endpoint for the Client Gateway.
+pub const DEFAULT_GATEWAY_URL: &str = "http://localhost:7960";

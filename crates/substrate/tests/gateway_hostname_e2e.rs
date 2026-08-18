@@ -186,8 +186,11 @@ impl Node {
                 .expect("write resolve_ucan file");
             path
         });
-        config.roles.client_gateway =
-            Some(ClientGatewayRole { http_port: gateway_port, resolve_ucan: resolve_ucan_path });
+        config.roles.client_gateway = Some(ClientGatewayRole {
+            http_port: gateway_port,
+            resolve_ucan: resolve_ucan_path,
+            ..Default::default()
+        });
         config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
         config.iam.grant_resolve_to_node_did = grant_resolve_to_node_did;
         config.roles.supervisor = supervisor;
