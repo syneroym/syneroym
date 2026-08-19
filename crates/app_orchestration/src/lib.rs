@@ -16,7 +16,7 @@ pub mod topology_document;
 
 pub use alerts::{AlertKind, AlertRecord, AlertStore};
 pub use catalog::{LocalFilesystemCatalog, ManifestCatalog};
-pub use compiler::{CompiledDeployment, compile};
+pub use compiler::{CompiledDeployment, compile, validate_plan_visibility};
 pub use journal::{
     ActionRecord, ActionState, DeploymentJournal, DeploymentRecord, DeploymentState,
 };
@@ -25,6 +25,7 @@ pub use models::{
     HealthCheck, HttpProbe, InterfaceName, LogicalServiceName, LogicalServiceRef, ParseError,
     PlacementSelector, PlannedService, RpcProbe, ScheduleSpec, ServiceConfig, ServiceId,
     ServiceSpec, ServiceType, SubstrateAlias, SynAppManifest, TcpProbe, TopologyMode,
+    TopologyVisibility, Visibility,
 };
 pub use reconcile::{ReconcileAction, ReconcilePlan, Reconciler};
 pub use resolver::{

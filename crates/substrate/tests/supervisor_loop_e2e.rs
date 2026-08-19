@@ -254,12 +254,14 @@ fn two_service_manifest() -> SynAppManifest {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility: Default::default(),
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_A_ALIAS))),
             replicas: 1,
             sharding_strategy: None,
             schedule: None,
+            topology_visibility: Default::default(),
         },
     );
     services.insert(
@@ -279,12 +281,14 @@ fn two_service_manifest() -> SynAppManifest {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility: Default::default(),
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_B_ALIAS))),
             replicas: 1,
             sharding_strategy: None,
             schedule: None,
+            topology_visibility: Default::default(),
         },
     );
     SynAppManifest {

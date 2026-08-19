@@ -2,11 +2,14 @@
 
 **Status**: Accepted (2026-08-18). Surfaced during M04A Slice B7 planning; see
 [plans/B7.md](../planning/milestones/M04A-proxy-and-auth-foundation/plans/B7.md)
-flag F9 and §6.2 for the findings this builds on. Implemented by
+flag F9 and §6.2 for the findings this builds on. **Implemented by
 [M06B](../planning/milestones/M06B-roym-substrate-foundations/task.md) slice
-**B2**, which also carries [ADR-0022](0022-two-tier-logical-service-discovery.md)
-§5's resolution-side declaration — the same question at the other layer
-(M06B `D-06B-4`).
+B2 (2026-08-18)**: §1 and §4 in full; §2 (export/import) as
+`roymctl svc deploy --record-out` and `SyneroymClient::new_with_record`; §3
+(the peer-substrate known-records store) deferred — see
+[deferred-backlog.md](../planning/deferred-backlog.md). B2 also carries
+[ADR-0022](0022-two-tier-logical-service-discovery.md) §5's resolution-side
+declaration — the same question at the other layer (M06B `D-06B-4`).
 
 > **Partly landed ahead of acceptance.** §1's three-valued enum already exists
 > on both sides of the boundary — `visibility` in
@@ -15,20 +18,28 @@ flag F9 and §6.2 for the findings this builds on. Implemented by
 > [app_orchestration/src/models.rs:534-543](../../crates/app_orchestration/src/models.rs#L534),
 > both defaulting to `private` as argued in §5. M06A slice A1 defined it because
 > it was the first consumer, for a *different* question: whether a static asset
-> bundle is readable without a signature. What B2 still owes is
-> `service-config.visibility` — the field this ADR is actually about — and the
-> publication path that honours it.
+> bundle is readable without a signature.
 
 **Context**:
 
-Whether a deployed service's record reaches the community registry is today
-**incidental, not declared**. A service is published if and only if a pre-signed
-`registry_certificate` happened to be supplied in its deploy manifest —
-`roymctl svc deploy --identity <name>` builds one
-([svc.rs:74-89](../../apps/roymctl/src/commands/svc.rs#L74)); without the flag
-`cert = None` and nothing is ever published. Publication is thus a side effect of
-*which flag you passed*, not a statement of intent, and "deployed but
-undiscoverable" is indistinguishable from "deployed and deliberately private".
+Whether a deployed service's record reaches the community registry was
+**incidental, not declared**. On the standalone **`svc deploy`** path, a
+service was published if and only if a pre-signed `registry_certificate`
+happened to be supplied in its deploy manifest — `roymctl svc deploy
+--identity <name>` built one, and without the flag `cert = None` and nothing
+was ever published.
+
+That was not the whole picture. On the **app deploy** path,
+`deploy::certify_placed_members` minted an `EndpointInfo` with a hardcoded
+`is_private: false` for **every placed member**, unconditionally — so an
+app-deployed member was published regardless of any declaration, and no
+manifest field could ever have said otherwise (none existed). Publication
+was thus a side effect of *which path deployed the service*, not a
+statement of intent, and "deployed but undiscoverable" was indistinguishable
+from "deployed and deliberately private". `roymctl registry register` is a
+third, unaffected path: an explicit operator action that signs and publishes
+a record directly, with its own `--private` flag, never touching a deploy
+manifest — that *is* a declaration, just not this ADR's.
 
 Three things do not exist (verified, not assumed):
 
@@ -99,7 +110,7 @@ sync:
 /// Whether this service's endpoint record is published, and how far it
 /// travels. Declared, not inferred from whether a certificate was supplied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "lowercase")]
 pub enum Visibility {
     /// Registered, and propagated to parent registries. `is_private: false`.
     Public,
@@ -194,9 +205,23 @@ federation scope, not publication. It is the wire encoding of exactly one tier:
 
 | `visibility` | Certificate supplied to substrate? | `is_private` in the signed record | Result |
 |---|---|---|---|
-| `public` | yes (required) | `false` | registered, propagated upward |
-| `internal` | yes (required) | `true` | registered here, not propagated |
+| `public` | yes (required) | `false` | registered, propagated upward, and published to the Mainline DHT (if enabled) |
+| `internal` | yes (required) | `true` | registered with this substrate's registry only — **not** propagated to a parent registry, and **not** published to the Mainline DHT |
 | `private` | **no** | n/a — never on the wire | not registered; shared out of band |
+
+**Two publication channels are wider than the parent-registry relay, and both
+must respect `is_private`.** The table above names only the relay
+(`is_private` gating `RegistryClient`'s HTTP `/register` propagation,
+[registry.rs:226](../../crates/community_registry/src/registry.rs#L226)) —
+but `RegistryClient::register` also, independently, publishes to the
+Mainline DHT whenever `enable_bep0044_dht` is on
+([dht_registry.rs](../../crates/core/src/dht_registry.rs)), and a global DHT
+is strictly wider than a parent registry. Before B2's `D-B2-16`, that path
+ignored `is_private` entirely, so `internal` meant "globally resolvable" on
+any node with the DHT enabled — the opposite of what the tier declares. Both
+channels are now gated on the same flag, in the same function
+(`RegistryClient::register`), so `internal` means what this table says on
+every transport.
 
 Because `is_private` lives *inside the signed payload*, it must be set by the
 signer at deploy time. The substrate therefore **validates rather than decides**:
@@ -231,10 +256,24 @@ remove — publication would still follow from *holding a key* (having passed
 The one behavior change worth knowing (not a migration, no strategy required):
 `roymctl svc deploy --identity X` publishes today and will fail after this ADR
 until `--visibility public` is added — deliberately loud rather than silently
-reverting to unpublished. **Verified blast radius: nil.** Nothing in the tree
-passes `svc deploy --identity` — both e2e setups
-(`global-setup.ts:155`, `global-setup-multihop.ts:274,288`) deploy without it,
-and no smoke test uses that path. Nothing publishes a service record today.
+reverting to unpublished. **Verified blast radius: nil for `svc deploy`.**
+Nothing in the tree passes `svc deploy --identity` — both e2e setups
+(`global-setup.ts`, `global-setup-multihop.ts`) deploy without it, and no
+smoke test uses that path.
+
+**Not nil for the app-deploy path.** `certify_placed_members` published
+every placed member unconditionally (the Context section above), so every
+existing app-deploy fixture that relied on cross-node resolution stops
+resolving unless its manifest now declares `visibility = "internal"` — and,
+unlike `svc deploy`'s loud failure, an undeclared app-deployed member's
+deploy still *succeeds*; only the first cross-node call to it fails, later,
+with a message naming neither visibility nor the manifest.
+`validate_plan_visibility` (M06B `D-B2-14`) closes the one contradiction
+that is statically detectable — a cross-substrate dependency on a `private`
+member — at compile/submit time, before that quiet failure can happen; a
+manifest with no cross-substrate dependency at all still deploys with no
+warning and simply stops being cross-node reachable, which is `D-B2-3`'s
+intended, if quieter, consequence.
 
 **Consequences**:
 

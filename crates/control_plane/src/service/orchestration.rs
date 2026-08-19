@@ -21,8 +21,8 @@ use serde_json::Value;
 use syneroym_app_orchestration::{
     AppInstanceId, BindingWriteOutcome, HealthCheck, HttpProbe, InterfaceName, LogicalServiceName,
     RpcProbe, ServiceId as AppServiceId, ServiceType as AppServiceType, TcpProbe, TopologyEntry,
-    TopologyEpoch, TopologyKey, TopologyMode as AppTopologyMode, classify_binding_write,
-    compensated_operation,
+    TopologyEpoch, TopologyKey, TopologyMode as AppTopologyMode, Visibility as AppVisibility,
+    classify_binding_write, compensated_operation,
 };
 use syneroym_core::{
     asset_manifest::ServiceAssets,
@@ -261,6 +261,74 @@ fn stable_registry_certificate_for_hash(json: &str) -> String {
         ))
         .unwrap_or_else(|_| json.to_string()),
         Err(_) => json.to_string(),
+    }
+}
+
+/// Whether `service_id` is safe to join, unescaped, into a filename under
+/// `hosted_apps_dir` -- `deploy_with_context`'s certificate write/delete,
+/// and `undeploy_impl`'s own delete of the same file. Real service ids are
+/// DIDs, which use only `did:key:z...` characters -- none of the excluded
+/// ones are ever legitimate here.
+fn is_safe_service_id_for_path(service_id: &str) -> bool {
+    !service_id.is_empty()
+        && !service_id.contains('/')
+        && !service_id.contains('\\')
+        && !service_id.contains("..")
+}
+
+/// ADR-0018 §4: the substrate *validates* the declaration against the signed
+/// artifact rather than deciding it -- `is_private` lives inside the
+/// signature, so only the signer can set it. Returns the model `Visibility`
+/// to record for this service.
+fn validate_publication(
+    service_id: &str,
+    declared: Option<WitVisibility>,
+    certificate: Option<&str>,
+) -> Result<AppVisibility, String> {
+    let v = match declared.unwrap_or(WitVisibility::Private) {
+        WitVisibility::Public => AppVisibility::Public,
+        WitVisibility::Internal => AppVisibility::Internal,
+        WitVisibility::Private => AppVisibility::Private,
+    };
+
+    let v_str = v.as_str();
+
+    match (v, certificate) {
+        (AppVisibility::Private, None) => Ok(AppVisibility::Private),
+        (AppVisibility::Private, Some(_)) => Err(format!(
+            "service '{service_id}' declares visibility 'private' but a registry certificate was \
+             supplied -- declare 'public' or 'internal', or deploy without the certificate"
+        )),
+        (AppVisibility::Public | AppVisibility::Internal, None) => Err(format!(
+            "service '{service_id}' declares visibility '{v_str}' but no registry certificate was \
+             supplied -- a record must be signed by the service's own key, which this substrate \
+             does not hold"
+        )),
+        (AppVisibility::Public | AppVisibility::Internal, Some(json)) => {
+            let signed = serde_json::from_str::<SignedEndpointInfo>(json).map_err(|e| {
+                format!("registry certificate for '{service_id}' does not parse: {e}")
+            })?;
+
+            if signed.info.service_id != service_id {
+                return Err(format!(
+                    "registry certificate for '{service_id}' names service '{}' -- it would be \
+                     rejected by the registry, which resolves the signing key from that field",
+                    signed.info.service_id
+                ));
+            }
+
+            let want_private = v == AppVisibility::Internal;
+            if signed.info.is_private != want_private {
+                return Err(format!(
+                    "service '{service_id}' declares visibility '{v_str}', but its registry \
+                     certificate carries is_private={}; the record is signed, so this can only be \
+                     fixed by re-signing it",
+                    signed.info.is_private
+                ));
+            }
+
+            Ok(v)
+        }
     }
 }
 
@@ -1106,7 +1174,7 @@ impl OrchestratorInterface for ControlPlaneService {
             // service with no recorded facts (deployed by a pre-A4 binary)
             // is no longer podman-inspected, matching `status`'s `unknown`,
             // so the two surfaces cannot disagree.
-            if let Some((t, _, _)) = self.registry.deploy_facts(&service_id)
+            if let Some((t, ..)) = self.registry.deploy_facts(&service_id)
                 && parse_service_type(&t) == Some(AppServiceType::Container)
             {
                 self.podman_sandbox_engine
@@ -1327,6 +1395,17 @@ impl ControlPlaneService {
         app_context: Option<AppContext>,
         caller: &CallerContext,
     ) -> Result<(), String> {
+        // `service_id` is joined verbatim into `hosted_apps_dir/<service_id>.json`
+        // below (write, and now also delete on a private redeploy, D-B2-5) --
+        // reject anything that could walk that join out of the directory
+        // before it is used for anything, including the ownership/capability
+        // checks that follow.
+        if !is_safe_service_id_for_path(&service_id) {
+            return Err(format!(
+                "service_id '{service_id}' is not a valid deploy target: it must be non-empty and \
+                 contain no '/', '\\\\', or '..' -- it is joined into a stored-record filename"
+            ));
+        }
         // A deploy may not claim a `service_id` this substrate already uses
         // as a fixed `native_dispatch` key: the node's own DID (`RouteHandler
         // ::init` registers `ControlPlaneService` itself there, so claiming
@@ -1413,6 +1492,12 @@ impl ControlPlaneService {
                 )?),
                 None => None,
             };
+
+        let validated_visibility = validate_publication(
+            &service_id,
+            manifest.config.visibility,
+            manifest.registry_certificate.as_deref(),
+        )?;
 
         // ADR-0021 §2 / D-A2-2: validated here, before the artifact work,
         // for the same reason the certificate is -- a malformed or
@@ -1571,7 +1656,7 @@ impl ControlPlaneService {
         // unconditionally for it (M04A B7a: "authorized or not") -- a
         // dedup that skipped straight to `Ok(())` here would silently
         // leave the service owned by whoever deployed it first.
-        if self.registry.deploy_facts(&service_id).and_then(|(_, _, hash)| hash).as_deref()
+        if self.registry.deploy_facts(&service_id).and_then(|(_, _, hash, _)| hash).as_deref()
             == Some(incoming_hash.as_str())
             && self.registry.owner_of(&service_id).as_deref().is_none_or(|o| o == caller.caller_did)
             && !matches!(
@@ -1586,16 +1671,29 @@ impl ControlPlaneService {
             return Ok(());
         }
 
-        if let Some(cert) = &manifest.registry_certificate {
-            let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
-            if let Err(e) = fs::write(&cert_path, cert) {
-                tracing::warn!("Failed to save registry certificate for {}: {}", service_id, e);
-            } else {
-                tracing::debug!(
-                    "Saved registry certificate for {} at {}",
-                    service_id,
-                    cert_path.display()
-                );
+        match &manifest.registry_certificate {
+            Some(cert) => {
+                let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
+                if let Err(e) = fs::write(&cert_path, cert) {
+                    tracing::warn!("Failed to save registry certificate for {}: {}", service_id, e);
+                } else {
+                    tracing::debug!(
+                        "Saved registry certificate for {} at {}",
+                        service_id,
+                        cert_path.display()
+                    );
+                }
+            }
+            None => {
+                let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
+                if cert_path.exists()
+                    && let Err(e) = fs::remove_file(&cert_path)
+                {
+                    tracing::warn!(
+                        "failed to remove the stored endpoint record for {service_id} after a \
+                         private redeploy; it may keep being republished: {e}"
+                    );
+                }
             }
         }
 
@@ -2194,6 +2292,7 @@ impl ControlPlaneService {
                 service_type_str(service_type).to_string(),
                 health_check_json,
                 Some(incoming_hash.clone()),
+                Some(validated_visibility.as_str().to_string()),
             )
             .await
         {
@@ -2206,6 +2305,11 @@ impl ControlPlaneService {
             self.rollback_fdae_policy(&service_id, &previous_fdae_policy).await;
             return Err(format!("Deploy facts installation failed: {e}"));
         }
+
+        info!(
+            "service '{service_id}' deployed with visibility '{}'",
+            validated_visibility.as_str()
+        );
 
         // A2 write (finding 03/post-review fix), deferred until every
         // fallible step above -- schema validation, FDAE policy, artifact
@@ -2400,11 +2504,17 @@ impl ControlPlaneService {
         // path, deploy is the repair path" promises to handle. Clearing the
         // hash here forces that redeploy through the full reinstall instead.
         if any_applied
-            && let Some((service_type, health_check_json, _)) =
+            && let Some((service_type, health_check_json, _, visibility)) =
                 self.registry.deploy_facts(&write.service_id)
         {
             self.registry
-                .set_deploy_facts(write.service_id.clone(), service_type, health_check_json, None)
+                .set_deploy_facts(
+                    write.service_id.clone(),
+                    service_type,
+                    health_check_json,
+                    None,
+                    visibility,
+                )
                 .await
                 .map_err(|e| e.to_string())?;
         }
@@ -2439,6 +2549,16 @@ impl ControlPlaneService {
         generation: u64,
         caller: &CallerContext,
     ) -> Result<(), String> {
+        // Same reason and same placement as `deploy_with_context`'s
+        // equivalent check: `service_id` is joined verbatim into
+        // `hosted_apps_dir/<service_id>.json` below and then deleted,
+        // before anything else runs against it.
+        if !is_safe_service_id_for_path(&service_id) {
+            return Err(format!(
+                "service_id '{service_id}' is not a valid undeploy target: it must be non-empty \
+                 and contain no '/', '\\\\', or '..' -- it is joined into a stored-record filename"
+            ));
+        }
         if let Some(owner) = self.registry.owner_of(&service_id)
             && owner != caller.caller_did
             && !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_UNDEPLOY)
@@ -3161,6 +3281,13 @@ impl ControlPlaneService {
                 instance_certificate_expires_at: registry
                     .instance_cert(&service_id)
                     .map(|cert| cert.expires_at_secs),
+                visibility: registry.deploy_facts(&service_id).and_then(|f| f.3).map(|v| {
+                    match v.as_str() {
+                        "public" => WitVisibility::Public,
+                        "internal" => WitVisibility::Internal,
+                        _ => WitVisibility::Private,
+                    }
+                }),
             });
             entry.interfaces.push(interface);
         }
@@ -3322,7 +3449,7 @@ impl ControlPlaneService {
         now: u64,
     ) -> ServiceStatus {
         let facts = self.registry.deploy_facts(service_id);
-        let service_type = facts.as_ref().map(|(t, _, _)| t.clone());
+        let service_type = facts.as_ref().map(|(t, ..)| t.clone());
         let phase = self.instance_phase(service_id, service_type.as_deref()).await;
 
         // D-A4-7: phase does NOT gate the probe. A `tcp` service is always
@@ -3447,7 +3574,7 @@ impl ControlPlaneService {
 
     /// Runs the declared probe, if any, against the endpoint it names.
     async fn run_probe(&self, service_id: &str) -> ProbeStatus {
-        let Some((_, Some(check_json), _)) = self.registry.deploy_facts(service_id) else {
+        let Some((_, Some(check_json), ..)) = self.registry.deploy_facts(service_id) else {
             return ProbeStatus::NotDeclared;
         };
         let check: WitHealthCheck = match serde_json::from_str(&check_json) {
@@ -3782,6 +3909,7 @@ mod tests {
                         fdae_policy: None,
                         health_check: None,
                         assets: None,
+                        visibility: None,
                     },
                     service_type: WitServiceType::Wasm(WasmManifest {
                         source: ArtifactSource::Url("../../../../../etc/passwd".to_string()),
@@ -3867,6 +3995,7 @@ mod tests {
                         fdae_policy: None,
                         health_check: None,
                         assets: None,
+                        visibility: None,
                     },
                     service_type: WitServiceType::Wasm(WasmManifest {
                         source: ArtifactSource::Url("/etc/passwd".to_string()),
@@ -3957,6 +4086,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -4046,6 +4176,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -4132,6 +4263,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -5497,6 +5629,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -5638,6 +5771,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -5678,6 +5812,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -5729,6 +5864,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -5835,6 +5971,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -6390,6 +6527,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6507,6 +6645,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Inline(STAGE4_POLICY.to_string())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(
@@ -6601,6 +6740,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Inline(STAGE4_POLICY.to_string())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -6682,6 +6822,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Inline(STAGE4_POLICY.to_string())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(
@@ -6770,6 +6911,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wat.as_bytes().to_vec()),
@@ -6988,6 +7130,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7071,6 +7214,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7092,6 +7236,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7171,6 +7316,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7204,6 +7350,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -7291,6 +7438,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7322,6 +7470,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -7391,7 +7540,7 @@ mod tests {
         }
         async fn load_all_deploy_facts(
             &self,
-        ) -> Result<Vec<(String, String, Option<String>, Option<String>)>> {
+        ) -> Result<Vec<(String, String, Option<String>, Option<String>, Option<String>)>> {
             self.inner.load_all_deploy_facts().await
         }
         async fn save_deploy_facts(
@@ -7400,9 +7549,16 @@ mod tests {
             service_type: &str,
             health_check_json: Option<&str>,
             manifest_hash: Option<&str>,
+            visibility: Option<&str>,
         ) -> Result<()> {
             self.inner
-                .save_deploy_facts(service_id, service_type, health_check_json, manifest_hash)
+                .save_deploy_facts(
+                    service_id,
+                    service_type,
+                    health_check_json,
+                    manifest_hash,
+                    visibility,
+                )
                 .await
         }
         async fn remove_deploy_facts(&self, service_id: &str) -> Result<()> {
@@ -7538,6 +7694,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7586,6 +7743,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wat.as_bytes().to_vec()),
@@ -7697,6 +7855,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -7739,6 +7898,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -7836,6 +7996,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -7927,6 +8088,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -8005,6 +8167,7 @@ mod tests {
                     fdae_policy: Some(DocumentSource::Path(bad_path.to_string())),
                     health_check: None,
                     assets: None,
+                    visibility: None,
                 },
                 service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
                 registry_certificate: None,
@@ -8093,6 +8256,7 @@ mod tests {
                 fdae_policy: Some(DocumentSource::Path(symlink_name.clone())),
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -8350,6 +8514,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -8436,6 +8601,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -8561,6 +8727,7 @@ mod tests {
                     hash: None,
                     visibility: Some(WitVisibility::Public),
                 }),
+                visibility: None,
             },
             // An asset bundle is only servable for a `Wasm` service (a
             // `Tcp`/`Container` endpoint is raw passthrough and never
@@ -8670,6 +8837,7 @@ mod tests {
                     hash: None,
                     visibility: Some(WitVisibility::Public),
                 }),
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(minimal_wasm_component()),
@@ -8795,6 +8963,7 @@ mod tests {
                     hash: None,
                     visibility: Some(WitVisibility::Public),
                 }),
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(minimal_wasm_component()),
@@ -8944,6 +9113,7 @@ mod tests {
                     hash: None,
                     visibility: Some(WitVisibility::Public),
                 }),
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -9034,6 +9204,7 @@ mod tests {
                     hash: None,
                     visibility: Some(WitVisibility::Public),
                 }),
+                visibility: None,
             },
             service_type: WitServiceType::Container(ContainerManifest {
                 source: ArtifactSource::Url("docker.io/library/nginx:1.27".to_string()),
@@ -9130,6 +9301,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -9213,6 +9385,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Container(ContainerManifest {
                 source: ArtifactSource::Url("docker.io/library/nginx:1.27".to_string()),
@@ -9306,6 +9479,7 @@ mod tests {
                     hash: None,
                     visibility: Some(WitVisibility::Public),
                 }),
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(
@@ -9406,6 +9580,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(
@@ -9443,6 +9618,7 @@ mod tests {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -10464,6 +10640,7 @@ mod tests {
                 fdae_policy,
                 health_check: None,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -10592,6 +10769,7 @@ mod tests {
                 fdae_policy: None,
                 health_check,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -10617,6 +10795,7 @@ mod tests {
                 fdae_policy: None,
                 health_check,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Container(ContainerManifest {
                 source: ArtifactSource::Url("docker.io/library/nginx:1.27".to_string()),
@@ -10642,6 +10821,7 @@ mod tests {
                 fdae_policy: None,
                 health_check,
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(vec![]),
@@ -10722,7 +10902,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (service_type, check_json, _) = service.registry.deploy_facts("facts-svc").unwrap();
+        let (service_type, check_json, ..) = service.registry.deploy_facts("facts-svc").unwrap();
         assert_eq!(service_type, "tcp");
         // Stored as the wire variant's own JSON, not the app model's
         // kebab-case one -- `run_probe` deserializes back into the same
@@ -10757,7 +10937,7 @@ mod tests {
             .deploy("redeploy-svc".to_string(), without_check, &node_wide_caller("owner"))
             .await
             .unwrap();
-        let (service_type, check_json, _) = service.registry.deploy_facts("redeploy-svc").unwrap();
+        let (service_type, check_json, ..) = service.registry.deploy_facts("redeploy-svc").unwrap();
         assert_eq!(service_type, "tcp");
         assert!(check_json.is_none());
     }
@@ -10781,7 +10961,13 @@ mod tests {
             .unwrap();
         service
             .registry
-            .set_deploy_facts("container-svc".to_string(), "container".to_string(), None, None)
+            .set_deploy_facts(
+                "container-svc".to_string(),
+                "container".to_string(),
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap();
         service
@@ -10795,7 +10981,7 @@ mod tests {
             .unwrap();
         service
             .registry
-            .set_deploy_facts("tcp-svc".to_string(), "tcp".to_string(), None, None)
+            .set_deploy_facts("tcp-svc".to_string(), "tcp".to_string(), None, None, None)
             .await
             .unwrap();
 
@@ -11140,7 +11326,7 @@ mod tests {
             .unwrap();
         service
             .registry
-            .set_deploy_facts("tcp-readyz-svc".to_string(), "tcp".to_string(), None, None)
+            .set_deploy_facts("tcp-readyz-svc".to_string(), "tcp".to_string(), None, None, None)
             .await
             .unwrap();
 
@@ -11623,6 +11809,7 @@ mod tests {
                 "tcp".to_string(),
                 Some("not valid json".to_string()),
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -11663,6 +11850,7 @@ mod tests {
                     }))
                     .unwrap(),
                 ),
+                None,
                 None,
             )
             .await
@@ -11712,6 +11900,7 @@ mod tests {
                     .unwrap(),
                 ),
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -11756,6 +11945,7 @@ mod tests {
                     }))
                     .unwrap(),
                 ),
+                None,
                 None,
             )
             .await
@@ -11802,6 +11992,7 @@ mod tests {
                     }))
                     .unwrap(),
                 ),
+                None,
                 None,
             )
             .await
@@ -11867,6 +12058,7 @@ mod tests {
                     timeout_ms: 2000,
                 })),
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -11916,6 +12108,7 @@ mod tests {
                     timeout_ms: 2000,
                 })),
                 assets: None,
+                visibility: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -11994,6 +12187,7 @@ mod tests {
                         timeout_ms: 2000,
                     })),
                     assets: None,
+                    visibility: None,
                 },
                 service_type: WitServiceType::Wasm(WasmManifest {
                     source: ArtifactSource::Binary(wasm_bytes.clone()),
@@ -12056,6 +12250,7 @@ mod tests {
                     .unwrap(),
                 ),
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -12067,5 +12262,147 @@ mod tests {
         let (second, second_at) = service.probe_cached("cached-probe-svc", now + 1).await;
         assert!(matches!(second, ProbeStatus::Passing));
         assert_eq!(first_at, second_at);
+    }
+
+    fn test_signed_record(service_id: &str, is_private: bool) -> String {
+        serde_json::to_string(&SignedEndpointInfo {
+            info: syneroym_core::dht_registry::EndpointInfo {
+                service_id: service_id.to_string(),
+                substrate_id: "test-node".to_string(),
+                endpoint_type: syneroym_core::dht_registry::EndpointType::Service,
+                mechanisms: vec![],
+                nickname: None,
+                is_private,
+                ttl: None,
+                not_after: 0,
+                generation: 0,
+            },
+            pkarr_packet_hex: "abcd".to_string(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn validate_publication_public_with_matching_record_succeeds() {
+        let record = test_signed_record("test-svc", false);
+        let res = validate_publication("test-svc", Some(WitVisibility::Public), Some(&record));
+        assert_eq!(res, Ok(AppVisibility::Public));
+    }
+
+    #[test]
+    fn validate_publication_public_without_certificate_fails() {
+        let res = validate_publication("test-svc", Some(WitVisibility::Public), None);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("no registry certificate was supplied"));
+    }
+
+    #[test]
+    fn validate_publication_public_with_mismatched_service_id_fails() {
+        let record = test_signed_record("other-svc", false);
+        let res = validate_publication("test-svc", Some(WitVisibility::Public), Some(&record));
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("names service 'other-svc'"));
+    }
+
+    #[test]
+    fn validate_publication_public_with_is_private_true_fails() {
+        let record = test_signed_record("test-svc", true);
+        let res = validate_publication("test-svc", Some(WitVisibility::Public), Some(&record));
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("is_private=true"));
+    }
+
+    #[test]
+    fn validate_publication_internal_with_matching_record_succeeds() {
+        let record = test_signed_record("test-svc", true);
+        let res = validate_publication("test-svc", Some(WitVisibility::Internal), Some(&record));
+        assert_eq!(res, Ok(AppVisibility::Internal));
+    }
+
+    #[test]
+    fn validate_publication_internal_without_certificate_fails() {
+        let res = validate_publication("test-svc", Some(WitVisibility::Internal), None);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("no registry certificate was supplied"));
+    }
+
+    #[test]
+    fn validate_publication_internal_with_is_private_false_fails() {
+        let record = test_signed_record("test-svc", false);
+        let res = validate_publication("test-svc", Some(WitVisibility::Internal), Some(&record));
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("is_private=false"));
+    }
+
+    #[test]
+    fn validate_publication_private_without_certificate_succeeds() {
+        let res1 = validate_publication("test-svc", Some(WitVisibility::Private), None);
+        assert_eq!(res1, Ok(AppVisibility::Private));
+        let res2 = validate_publication("test-svc", None, None);
+        assert_eq!(res2, Ok(AppVisibility::Private));
+    }
+
+    #[test]
+    fn validate_publication_private_with_certificate_fails() {
+        let record = test_signed_record("test-svc", false);
+        let res = validate_publication("test-svc", Some(WitVisibility::Private), Some(&record));
+        assert!(res.is_err());
+        assert!(
+            res.unwrap_err()
+                .contains("declares visibility 'private' but a registry certificate was supplied")
+        );
+    }
+
+    #[test]
+    fn validate_publication_malformed_certificate_fails() {
+        let res =
+            validate_publication("test-svc", Some(WitVisibility::Public), Some("not valid json"));
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("does not parse"));
+    }
+
+    /// The guard both `deploy_with_context` and `undeploy_impl` call before
+    /// joining `service_id` into a stored-record filename. A real DID never
+    /// trips any of the rejected shapes.
+    #[test]
+    fn is_safe_service_id_for_path_rejects_traversal_and_admits_a_real_did() {
+        assert!(!is_safe_service_id_for_path(""));
+        assert!(!is_safe_service_id_for_path("../escaped"));
+        assert!(!is_safe_service_id_for_path("a/b"));
+        assert!(!is_safe_service_id_for_path("a\\b"));
+        assert!(is_safe_service_id_for_path("did:key:z6MkExample"));
+    }
+
+    /// Test 36 / `D-B2-5`: a public service redeployed as `private` clears
+    /// its stored record file -- otherwise the substrate keeps republishing
+    /// the old record on every heartbeat sweep for up to `not_after` (F2).
+    #[tokio::test]
+    async fn a_private_redeploy_removes_the_stored_endpoint_record_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        let mut public_manifest = tcp_manifest_with(9, None);
+        public_manifest.config.visibility = Some(WitVisibility::Public);
+        public_manifest.registry_certificate = Some(test_signed_record("stale-record-svc", false));
+        service
+            .deploy("stale-record-svc".to_string(), public_manifest, &node_wide_caller("owner"))
+            .await
+            .unwrap();
+
+        let cert_path = temp_dir.path().join("stale-record-svc.json");
+        assert!(cert_path.exists(), "the record file must exist after a public deploy");
+
+        let mut private_manifest = tcp_manifest_with(9, None);
+        private_manifest.config.visibility = Some(WitVisibility::Private);
+        service
+            .deploy("stale-record-svc".to_string(), private_manifest, &node_wide_caller("owner"))
+            .await
+            .unwrap();
+
+        assert!(
+            !cert_path.exists(),
+            "redeploying as private must remove the stale record file, or the heartbeat sweep \
+             keeps republishing it"
+        );
     }
 }

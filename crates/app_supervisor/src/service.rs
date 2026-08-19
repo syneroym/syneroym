@@ -24,12 +24,12 @@ use serde_json::Value;
 use syneroym_app_orchestration::{
     ActionRecord, AlertKind, DeploymentState, MAX_SCHEDULE_TIMEOUT_MS, MAX_SCHEDULED_SERVICES,
     ReconcileAction, Reconciler, ShardingStrategy, SignedTopologyDocument, TopologyDocument,
-    TopologyEpoch, has_occurrence_in,
+    TopologyEpoch, TopologyVisibility, has_occurrence_in,
     models::{
         AppDid, AppInstanceId, DeploymentPlan, LogicalServiceName, LogicalServiceRef, MAX_REPLICAS,
         MemberRef, PlannedService, RotationPolicy, ScheduleSpec, ServiceId, SubstrateAlias,
     },
-    topology_fingerprint,
+    topology_fingerprint, validate_plan_visibility,
 };
 use syneroym_async_queue::{FailOutcome, QueueItem};
 use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
@@ -3958,6 +3958,7 @@ impl SupervisorService {
         Self::refuse_replicas_above_cap(&plan).map_err(RpcError::InternalError)?;
         Self::refuse_unrunnable_schedules(&plan).map_err(RpcError::InternalError)?;
         Self::refuse_unshardable_plan(&plan).map_err(RpcError::InternalError)?;
+        validate_plan_visibility(&plan).map_err(|errs| RpcError::InvalidParams(errs.join("; ")))?;
 
         // Mint before connecting anywhere -- a locked vault or a bad plan
         // must fail before anything is persisted or a network round trip
@@ -5341,16 +5342,27 @@ impl SupervisorService {
             .map_err(|e| RpcError::InternalError(e.to_string()))?
             .ok_or_else(denied)?;
 
+        let mut open_to_all = false;
+        if let Ok(plan) = DeploymentPlan::from_json(&state.plan_json)
+            && let Ok(name) = topology::resolve_service_name(&plan, &service_name)
+        {
+            open_to_all = topology::service_topology_visibility(&plan, &name)
+                .map(|v| v == TopologyVisibility::Open)
+                .unwrap_or(false);
+        }
+
         // `synapp:<app-did>`, not `substrate:<node>/app/<id>`: the
         // latter's `app/` slot already holds a `service_id`, and it dies on
         // the handover ADR-0022 §5 explicitly worried about. A bare
         // `substrate:<node>` `substrate/admin` grant still covers this,
         // because `Capability::grants` short-circuits on
         // `is_substrate_scope`.
-        if !caller.has_capability(
-            &ResourceUri(format!("synapp:{app_did}")),
-            &Ability(Ability::SUPERVISOR_RESOLVE.to_string()),
-        ) {
+        if !open_to_all
+            && !caller.has_capability(
+                &ResourceUri(format!("synapp:{app_did}")),
+                &Ability(Ability::SUPERVISOR_RESOLVE.to_string()),
+            )
+        {
             return Err(denied());
         }
         // A retired instance answers nothing -- the same denial as an
@@ -5906,6 +5918,51 @@ mod tests {
         assert!(err.contains("plan-says-inst-1") && err.contains("outer-says-inst-2"), "{err}");
         assert!(s.store.get("outer-says-inst-2").unwrap().is_none());
         assert!(s.store.get("plan-says-inst-1").unwrap().is_none());
+    }
+
+    /// Test 20: `submit` is the backstop entry point for `D-B2-14`'s
+    /// contradiction check -- a plan reaching the supervisor was never
+    /// necessarily compiled through `compile()` (a hand-built plan, or a
+    /// client other than `roymctl`), so the same refusal must fire here
+    /// too, not only inside the compiler.
+    #[tokio::test]
+    async fn submit_is_refused_when_the_plan_declares_open_topology_over_a_private_service() {
+        let s = service();
+        let plan_json = serde_json::json!({
+            "app_instance_id": "inst-contradiction",
+            "blueprint_id": "syneroym:test",
+            "version": "1.0.0",
+            "services": [{
+                "service_id": "did:key:hFabricated",
+                "logical_ref": "inst-contradiction/backend",
+                "substrate": null,
+                "service_type": "tcp", "source": "127.0.0.1:9000",
+                "rotation_policy": "none",
+                "resolved_dependencies": {},
+                "topology_mode": "singleton",
+                "visibility": "private",
+                "topology_visibility": "open",
+            }]
+        })
+        .to_string();
+
+        let err = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "submit",
+            serde_json::json!([{
+                "app_instance_id": "inst-contradiction",
+                "plan_json": plan_json,
+                "inventory_json": "{}",
+                "generation": 0,
+            }]),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, RpcError::InvalidParams(_)), "expected InvalidParams, got {err:?}");
+        let err = err.to_string();
+        assert!(err.contains("open") && err.contains("private"), "{err}");
+        assert!(s.store.get("inst-contradiction").unwrap().is_none());
     }
 
     #[tokio::test]
@@ -7915,6 +7972,7 @@ mod tests {
             member_index: 0,
             schedule: None,
             sharding_strategy: None,
+            topology_visibility: Default::default(),
         }
     }
 
@@ -7933,6 +7991,7 @@ mod tests {
             fdae: None,
             health_check: None,
             assets: None,
+            visibility: Default::default(),
         }
     }
 
@@ -8499,6 +8558,7 @@ mod tests {
             member_index: 0,
             schedule: None,
             sharding_strategy: None,
+            topology_visibility: Default::default(),
         };
         let old_plan = DeploymentPlan {
             app_instance_id: AppInstanceId::new("inst-1"),
@@ -12506,6 +12566,7 @@ mod tests {
                 timeout_ms: DEFAULT_SCHEDULE_TIMEOUT_MS,
             }),
             sharding_strategy: None,
+            topology_visibility: Default::default(),
         }
     }
 
@@ -13527,11 +13588,13 @@ mod tests {
 
     // ── Tier 2 `resolve` ──────────────────────────────────────
 
-    fn plan_json_n_member_service(
+    fn plan_json_n_member_service_with_vis(
         instance: &str,
         service_name: &str,
         mode: &str,
         n: u32,
+        visibility: &str,
+        topology_visibility: &str,
     ) -> String {
         let services: Vec<_> = (0..n)
             .map(|i| {
@@ -13544,6 +13607,8 @@ mod tests {
                     "resolved_dependencies": {},
                     "topology_mode": mode,
                     "member_index": i,
+                    "visibility": visibility,
+                    "topology_visibility": topology_visibility,
                 })
             })
             .collect();
@@ -13554,6 +13619,22 @@ mod tests {
             "services": services,
         })
         .to_string()
+    }
+
+    fn plan_json_n_member_service(
+        instance: &str,
+        service_name: &str,
+        mode: &str,
+        n: u32,
+    ) -> String {
+        plan_json_n_member_service_with_vis(
+            instance,
+            service_name,
+            mode,
+            n,
+            "private",
+            "restricted",
+        )
     }
 
     /// Directly submits desired state and adopts an app master, bypassing
@@ -13686,6 +13767,202 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.code(), PERMISSION_DENIED_CODE);
+    }
+
+    /// Test 24: An ungranted caller resolving an `open` service receives the
+    /// signed document.
+    #[tokio::test]
+    async fn resolve_open_service_answers_ungranted_caller() {
+        let s = service();
+        let plan_json = plan_json_n_member_service_with_vis(
+            "inst-1",
+            "backend",
+            "singleton",
+            1,
+            "public",
+            "open",
+        );
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+
+        let resp = dispatch(
+            &s,
+            caller_with_no_capabilities("did:key:zOutsideCaller"),
+            "resolve",
+            serde_json::json!([app_did, "backend"]),
+        )
+        .await
+        .unwrap();
+        let signed = decode_signed_document(resp.payload);
+        assert_eq!(signed.document.members, vec![ServiceId::new("did:key:hMember0")]);
+        assert_eq!(signed.document.mode, TopologyMode::Singleton);
+        assert!(signed.verify(&AppDid::new(app_did)).is_ok());
+    }
+
+    /// Test 26: An ungranted caller naming a non-existent service gets the same
+    /// refusal as an unauthorized call.
+    #[tokio::test]
+    async fn resolve_open_service_nonexistent_service_refuses_identically_for_ungranted_caller() {
+        let s = service();
+        let plan_json = plan_json_n_member_service_with_vis(
+            "inst-1",
+            "backend",
+            "singleton",
+            1,
+            "public",
+            "open",
+        );
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+
+        let err = dispatch(
+            &s,
+            caller_with_no_capabilities("did:key:zOutsideCaller"),
+            "resolve",
+            serde_json::json!([app_did, "nonexistent"]),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), PERMISSION_DENIED_CODE);
+    }
+
+    /// Test 27: An ungranted caller resolving an `open` service on a retired
+    /// instance is refused.
+    #[tokio::test]
+    async fn resolve_open_service_on_retired_instance_is_refused() {
+        let s = service();
+        let plan_json = plan_json_n_member_service_with_vis(
+            "inst-1",
+            "backend",
+            "singleton",
+            1,
+            "public",
+            "open",
+        );
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+        s.store.retire("inst-1").unwrap();
+
+        let err = dispatch(
+            &s,
+            caller_with_no_capabilities("did:key:zOutsideCaller"),
+            "resolve",
+            serde_json::json!([app_did, "backend"]),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), PERMISSION_DENIED_CODE);
+    }
+
+    /// Test 28: A granted caller naming a non-existent service gets
+    /// InvalidParams, not denied.
+    #[tokio::test]
+    async fn resolve_granted_caller_naming_nonexistent_service_returns_invalid_params() {
+        let s = service();
+        let plan_json = plan_json_n_member_service_with_vis(
+            "inst-1",
+            "backend",
+            "singleton",
+            1,
+            "public",
+            "open",
+        );
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+
+        let err = dispatch(
+            &s,
+            resolve_grant("did:key:zOutsideCaller", &app_did),
+            "resolve",
+            serde_json::json!([app_did, "nonexistent"]),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, RpcError::InvalidParams(_)), "expected InvalidParams, got {err:?}");
+    }
+
+    /// Test 29: The document served to an ungranted `open` caller is
+    /// byte-identical to the one served to a granted caller.
+    #[tokio::test]
+    async fn resolve_open_service_served_to_ungranted_caller_is_identical_to_granted_caller() {
+        let s = service();
+        let plan_json = plan_json_n_member_service_with_vis(
+            "inst-1",
+            "backend",
+            "singleton",
+            1,
+            "public",
+            "open",
+        );
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+
+        let granted_resp = dispatch(
+            &s,
+            resolve_grant("did:key:zGrantedCaller", &app_did),
+            "resolve",
+            serde_json::json!([app_did, "backend"]),
+        )
+        .await
+        .unwrap();
+        let ungranted_resp = dispatch(
+            &s,
+            caller_with_no_capabilities("did:key:zUngrantedCaller"),
+            "resolve",
+            serde_json::json!([app_did, "backend"]),
+        )
+        .await
+        .unwrap();
+
+        let granted_signed = decode_signed_document(granted_resp.payload);
+        let ungranted_signed = decode_signed_document(ungranted_resp.payload);
+
+        assert_eq!(granted_signed.document, ungranted_signed.document);
+        assert_eq!(granted_signed.signature, ungranted_signed.signature);
+    }
+
+    /// Plan test 44 (F13): `topology_visibility = open` and `visibility =
+    /// private` are not redundant, and neither alone proves the other is
+    /// unnecessary. `D-B2-14`(b) refuses this combination at both of its
+    /// entry points (`compile()` and `handle_submit`) precisely because,
+    /// left to reach a supervisor, `open` alone is sufficient for
+    /// `handle_resolve` to hand out the document -- the visibility read at
+    /// [`SupervisorService::handle_resolve`]'s top does not consult
+    /// `config.visibility` at all, only `topology_visibility`. This test
+    /// goes around both refusal points the way `adopted_instance` always
+    /// does (`s.store.submit` directly, not the RPC `submit` that calls
+    /// `handle_submit`) to prove that half of F13's claim as an actual
+    /// runtime behaviour, not just an absence of a compile-time refusal.
+    ///
+    /// The other half of F13's claim -- that the member named in this
+    /// document is then unreachable -- is proven separately, structurally:
+    /// `member_registry_record_mints_nothing_for_a_private_member`
+    /// (`crates/sdk/src/deploy.rs`) shows a `private` member gets no
+    /// registry record at all, so nothing a caller could look up ever
+    /// exists to dial. Reproducing that failure here as well would need a
+    /// live registry and a live gateway dial, which is
+    /// `gateway_hostname_e2e.rs`'s job for the `(open, internal)` pair
+    /// (test 43); F13's own row already states the two halves come from
+    /// two different mechanisms.
+    #[tokio::test]
+    async fn resolve_open_service_over_a_private_member_still_serves_the_document() {
+        let s = service();
+        let plan_json = plan_json_n_member_service_with_vis(
+            "inst-1",
+            "backend",
+            "singleton",
+            1,
+            "private",
+            "open",
+        );
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+
+        let resp = dispatch(
+            &s,
+            caller_with_no_capabilities("did:key:zOutsideCaller"),
+            "resolve",
+            serde_json::json!([app_did, "backend"]),
+        )
+        .await
+        .unwrap();
+        let signed = decode_signed_document(resp.payload);
+        assert_eq!(signed.document.members, vec![ServiceId::new("did:key:hMember0")]);
+        assert!(signed.verify(&AppDid::new(app_did)).is_ok());
     }
 
     /// The probing guard: an unknown app and an unauthorized caller are

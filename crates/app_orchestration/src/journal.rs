@@ -391,7 +391,7 @@ mod tests {
     use super::*;
     use crate::models::{
         AppBlueprintId, LogicalServiceName, LogicalServiceRef, PlannedService, ServiceConfig,
-        ServiceId, ServiceType, TopologyMode,
+        ServiceId, ServiceType, TopologyMode, TopologyVisibility, Visibility,
     };
 
     fn dummy_plan(instance_name: &str) -> DeploymentPlan {
@@ -420,12 +420,14 @@ mod tests {
                     fdae: None,
                     health_check: None,
                     assets: None,
+                    visibility: Visibility::Private,
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
                 member_index: 0,
                 schedule: None,
                 sharding_strategy: None,
+                topology_visibility: TopologyVisibility::Restricted,
             }],
         }
     }

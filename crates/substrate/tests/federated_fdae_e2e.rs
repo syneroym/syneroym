@@ -248,6 +248,7 @@ fn deploy_manifest(policy_json: Option<String>) -> DeployManifest {
             fdae_policy: policy_json.map(DocumentSource::Inline),
             health_check: None,
             assets: None,
+            visibility: None,
         },
         service_type: ServiceType::Tcp(TcpManifest { endpoints: vec![] }),
         registry_certificate: None,

@@ -227,6 +227,25 @@ topology.
 This costs the owner nothing real: the control that matters is which logical
 services a caller may see at all, and that is preserved exactly.
 
+**Amendment (2026-08-18, M06B slice B2 implementation).** Implemented as
+`ServiceSpec.topology_visibility: TopologyVisibility` (`restricted` |
+`open`), cloned onto every member as `PlannedService.topology_visibility` —
+part of the compiled plan, not node-local config, so it survives a
+supervisor handover exactly as this section requires. Defaults to
+`restricted`: access is asked for, not assumed, matching every manifest
+written before this field existed. `open` is checked in `handle_resolve`
+between the stored-plan read and the capability check, and bypasses only
+that one check — an unknown app, a retired instance, an unknown service
+name, and a `restricted` service all still refuse identically, so the only
+new observable fact is the one the declaration is about. This is
+independent of [ADR-0018](0018-service-record-visibility.md)'s publication
+`visibility` (`public`/`internal`/`private`) — the two questions have
+different cardinality and different consequences, and a service that
+declares `open` still needs a registered (`internal` or `public`)
+`visibility` for a caller to actually resolve a member DID to an address
+(Tier 3 is unchanged by this ADR); `open` paired with `private` is refused
+at compile/submit time as a detectable contradiction.
+
 ## 6. The topology epoch is a fencing token on the data path
 
 A caller may resolve under epoch N and send its request while a rebalance moves

@@ -121,7 +121,9 @@ impl SqliteEndpointStorage {
                     service_id        TEXT PRIMARY KEY,
                     service_type      TEXT NOT NULL,
                     health_check_json TEXT,
-                    created_at        INTEGER NOT NULL
+                    created_at        INTEGER NOT NULL,
+                    manifest_hash     TEXT,
+                    visibility        TEXT
                 );",
                 [],
             )?;
@@ -141,6 +143,12 @@ impl SqliteEndpointStorage {
             // has already run once, on every open after the first.
             if let Err(err) =
                 conn.execute("ALTER TABLE service_deploy_facts ADD COLUMN manifest_hash TEXT", [])
+                && !err.to_string().contains("duplicate column name")
+            {
+                return Err(err.into());
+            }
+            if let Err(err) =
+                conn.execute("ALTER TABLE service_deploy_facts ADD COLUMN visibility TEXT", [])
                 && !err.to_string().contains("duplicate column name")
             {
                 return Err(err.into());
@@ -374,19 +382,19 @@ impl EndpointStorage for SqliteEndpointStorage {
 
     async fn load_all_deploy_facts(
         &self,
-    ) -> Result<Vec<(String, String, Option<String>, Option<String>)>> {
+    ) -> Result<Vec<(String, String, Option<String>, Option<String>, Option<String>)>> {
         let conn_arc = self.conn.clone();
         task::spawn_blocking(
-            move || -> Result<Vec<(String, String, Option<String>, Option<String>)>> {
+            move || -> Result<Vec<(String, String, Option<String>, Option<String>, Option<String>)>> {
                 let conn = lock_db(&conn_arc)?;
                 let mut stmt = conn.prepare(
-                    "SELECT service_id, service_type, health_check_json, manifest_hash FROM \
+                    "SELECT service_id, service_type, health_check_json, manifest_hash, visibility FROM \
                      service_deploy_facts",
                 )?;
                 let mut facts = Vec::new();
                 let mut rows = stmt.query([])?;
                 while let Some(row) = rows.next()? {
-                    facts.push((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?));
+                    facts.push((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?));
                 }
                 Ok(facts)
             },
@@ -400,12 +408,14 @@ impl EndpointStorage for SqliteEndpointStorage {
         service_type: &str,
         health_check_json: Option<&str>,
         manifest_hash: Option<&str>,
+        visibility: Option<&str>,
     ) -> Result<()> {
         let conn_arc = self.conn.clone();
         let sid = service_id.to_string();
         let stype = service_type.to_string();
         let check = health_check_json.map(str::to_string);
         let hash = manifest_hash.map(str::to_string);
+        let vis = visibility.map(str::to_string);
         let created_at: i64 =
             SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
 
@@ -413,14 +423,15 @@ impl EndpointStorage for SqliteEndpointStorage {
             let conn = lock_db(&conn_arc)?;
             conn.execute(
                 "INSERT INTO service_deploy_facts (service_id, service_type, health_check_json, \
-                 manifest_hash, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 manifest_hash, visibility, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(service_id) DO UPDATE SET
                     service_type = excluded.service_type,
                     health_check_json = excluded.health_check_json,
                     manifest_hash = excluded.manifest_hash,
+                    visibility = excluded.visibility,
                     created_at = excluded.created_at",
-                params![sid, stype, check, hash, created_at],
+                params![sid, stype, check, hash, vis, created_at],
             )?;
             Ok(())
         })
@@ -709,6 +720,7 @@ mod tests {
                     "tcp",
                     Some(r#"{"tcp-connect":{"interface-name":"main","timeout-ms":2000}}"#),
                     Some("deadbeef"),
+                    Some("internal"),
                 )
                 .await
                 .unwrap();
@@ -723,6 +735,7 @@ mod tests {
         assert_eq!(facts[0].1, "tcp");
         assert!(facts[0].2.as_deref().unwrap().contains("tcp-connect"));
         assert_eq!(facts[0].3.as_deref(), Some("deadbeef"));
+        assert_eq!(facts[0].4.as_deref(), Some("internal"));
     }
 
     /// `service_deploy_facts` predates `manifest_hash` (A4 created the
@@ -766,11 +779,15 @@ mod tests {
         // untouched row) and write.
         let store = SqliteEndpointStorage::new(&path).await.unwrap();
         let facts = store.load_all_deploy_facts().await.unwrap();
-        assert_eq!(facts, vec![("svc-old".to_string(), "tcp".to_string(), None, None)]);
+        assert_eq!(facts, vec![("svc-old".to_string(), "tcp".to_string(), None, None, None)]);
 
-        store.save_deploy_facts("svc-old", "tcp", None, Some("deadbeef")).await.unwrap();
+        store
+            .save_deploy_facts("svc-old", "tcp", None, Some("deadbeef"), Some("public"))
+            .await
+            .unwrap();
         let facts = store.load_all_deploy_facts().await.unwrap();
         assert_eq!(facts[0].3.as_deref(), Some("deadbeef"));
+        assert_eq!(facts[0].4.as_deref(), Some("public"));
     }
 
     /// The `app_instance_management`-shaped sibling of the deploy-facts

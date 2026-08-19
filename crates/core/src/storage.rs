@@ -12,11 +12,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::local_registry::SubstrateEndpoint;
 
-/// (`service_type`, `health_check_json`, `manifest_hash`) -- what a deploy
-/// recorded about a service (M05A A4/A5a). Named so the in-memory caches
-/// below stay readable now that A5a's `manifest_hash` widened it to three
-/// fields.
-pub type DeployFacts = (String, Option<String>, Option<String>);
+/// (`service_type`, `health_check_json`, `manifest_hash`, `visibility`) --
+/// what a deploy recorded about a service. `visibility` is `None` only for a
+/// service whose row predates the column (ADR-0018).
+pub type DeployFacts = (String, Option<String>, Option<String>, Option<String>);
 
 /// Who manages an app instance on this substrate (ADR-0021 §4). The
 /// generation is a **tiebreaker among already-authorized writers**, not
@@ -72,16 +71,17 @@ pub trait EndpointStorage: Send + Sync {
     async fn remove_cert(&self, service_id: &str) -> Result<()>;
 
     /// Every stored deploy fact, as (`service_id`, `service_type`,
-    /// `health_check_json`, `manifest_hash`) (M05A A4, `manifest_hash`
-    /// added A5a for deploy idempotency, failure-matrix row 10).
+    /// `health_check_json`, `manifest_hash`, `visibility`) (M05A A4,
+    /// `manifest_hash` added A5a for deploy idempotency, `visibility`
+    /// added ADR-0018).
     async fn load_all_deploy_facts(
         &self,
-    ) -> Result<Vec<(String, String, Option<String>, Option<String>)>>;
+    ) -> Result<Vec<(String, String, Option<String>, Option<String>, Option<String>)>>;
     /// Record what a deploy said `service_id` is, its declared health
-    /// check if any, and the canonical content hash of what was actually
-    /// installed (upsert -- a redeploy that drops the check writes
-    /// `None`, clearing it by construction; `manifest_hash` is written
-    /// only on full deploy success, so a half-failed deploy is never
+    /// check if any, the canonical content hash of what was actually
+    /// installed, and its declared visibility (upsert -- a redeploy that drops
+    /// the check writes `None`, clearing it by construction; `manifest_hash`
+    /// is written only on full deploy success, so a half-failed deploy is never
     /// deduplicated on the next attempt).
     async fn save_deploy_facts(
         &self,
@@ -89,6 +89,7 @@ pub trait EndpointStorage: Send + Sync {
         service_type: &str,
         health_check_json: Option<&str>,
         manifest_hash: Option<&str>,
+        visibility: Option<&str>,
     ) -> Result<()>;
     /// Forget `service_id`'s deploy facts. Idempotent.
     async fn remove_deploy_facts(&self, service_id: &str) -> Result<()>;
@@ -229,12 +230,18 @@ impl EndpointStorage for MockStorage {
     }
     async fn load_all_deploy_facts(
         &self,
-    ) -> Result<Vec<(String, String, Option<String>, Option<String>)>> {
+    ) -> Result<Vec<(String, String, Option<String>, Option<String>, Option<String>)>> {
         Ok(self
             .deploy_facts
             .iter()
             .map(|e| {
-                (e.key().clone(), e.value().0.clone(), e.value().1.clone(), e.value().2.clone())
+                (
+                    e.key().clone(),
+                    e.value().0.clone(),
+                    e.value().1.clone(),
+                    e.value().2.clone(),
+                    e.value().3.clone(),
+                )
             })
             .collect())
     }
@@ -244,6 +251,7 @@ impl EndpointStorage for MockStorage {
         service_type: &str,
         health_check_json: Option<&str>,
         manifest_hash: Option<&str>,
+        visibility: Option<&str>,
     ) -> Result<()> {
         self.deploy_facts.insert(
             service_id.to_string(),
@@ -251,6 +259,7 @@ impl EndpointStorage for MockStorage {
                 service_type.to_string(),
                 health_check_json.map(str::to_string),
                 manifest_hash.map(str::to_string),
+                visibility.map(str::to_string),
             ),
         );
         Ok(())

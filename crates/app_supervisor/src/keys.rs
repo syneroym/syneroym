@@ -651,12 +651,14 @@ mod tests {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility: Default::default(),
             },
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
             schedule: None,
             sharding_strategy: None,
+            topology_visibility: Default::default(),
         }
     }
 

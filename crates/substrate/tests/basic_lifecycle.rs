@@ -317,7 +317,7 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
             app_service_id.clone(),
             vec![GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes,
-            None,
+            syneroym_sdk::Publication::Private,
             None,
         )
         .await
@@ -414,7 +414,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
                 host: "localhost".to_string(),
                 port: app_port,
             }],
-            None,
+            syneroym_sdk::Publication::Private,
             None,
         )
         .await
@@ -539,7 +539,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
                 host: "localhost".to_string(),
                 port: https_port,
             }],
-            None,
+            syneroym_sdk::Publication::Private,
             None,
         )
         .await

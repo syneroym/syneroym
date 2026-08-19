@@ -27,7 +27,7 @@ use syneroym_identity::{
     substrate::{ControllerAgreement, SubstrateIdentityStatus},
 };
 use syneroym_rpc::{JsonRpcError, PERMISSION_DENIED_CODE};
-use syneroym_sdk::{NetworkEndpoint, SyneroymClient};
+use syneroym_sdk::{NetworkEndpoint, Publication, SyneroymClient};
 use syneroym_substrate::identity;
 use tempfile::TempDir;
 use tokio::{
@@ -232,7 +232,7 @@ async fn a_claimed_substrate_admits_its_controller_and_denies_everyone_else() {
                 host: "127.0.0.1".to_string(),
                 port: 30099,
             }],
-            None,
+            Publication::Private,
             None,
         )
         .await
@@ -258,7 +258,7 @@ async fn a_claimed_substrate_admits_its_controller_and_denies_everyone_else() {
                 host: "127.0.0.1".to_string(),
                 port: 30098,
             }],
-            None,
+            Publication::Private,
             None,
         )
         .await
@@ -333,7 +333,7 @@ async fn an_unowned_substrate_rejects_a_deploy() {
                 host: "127.0.0.1".to_string(),
                 port: 30097,
             }],
-            None,
+            Publication::Private,
             None,
         )
         .await

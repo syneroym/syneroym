@@ -16,7 +16,7 @@ use syneroym_core::{
     test_constants,
 };
 use syneroym_identity::{Identity, substrate};
-use syneroym_sdk::SyneroymClient;
+use syneroym_sdk::{Publication, SyneroymClient};
 use test_constants::GREETER_INTERFACE_NAME;
 use tokio::{
     sync::{Barrier, Mutex},
@@ -61,7 +61,7 @@ pub async fn run_scenario() -> Result<()> {
             app_service_id.clone(),
             vec![GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes,
-            None,
+            Publication::Private,
             None,
         )
         .await?;

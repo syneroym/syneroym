@@ -7,7 +7,7 @@ use syneroym_core::{
     util,
 };
 use syneroym_identity::{Identity, substrate};
-use syneroym_sdk::SyneroymClient;
+use syneroym_sdk::{Publication, SyneroymClient};
 
 use crate::{orchestrator::TestEnvironment, reporter::print_latency_comparison};
 
@@ -69,7 +69,7 @@ pub async fn run_scenario() -> Result<()> {
                 host: "127.0.0.1".to_string(),
                 port: 30001,
             }],
-            None,
+            Publication::Private,
             None,
         )
         .await?;

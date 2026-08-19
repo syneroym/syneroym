@@ -214,6 +214,7 @@ fn bare_tcp_manifest(port: u16, instance_certificate: Option<String>) -> DeployM
             fdae_policy: None,
             health_check: None,
             assets: None,
+            visibility: None,
         },
         service_type: ServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {

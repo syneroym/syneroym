@@ -22,7 +22,8 @@ use rustls::crypto::ring;
 use semver::Version;
 use serde_json::Map;
 use syneroym_app_orchestration::{
-    DeploymentJournal, DeploymentPlan, DeploymentState, LocalFilesystemCatalog, compile,
+    DeploymentJournal, DeploymentPlan, DeploymentState, LocalFilesystemCatalog, Visibility,
+    compile,
     models::{
         AppBlueprintId, AppInstanceId, LogicalServiceName, PlacementSelector, ServiceConfig,
         ServiceId, ServiceSpec, ServiceType, SubstrateAlias, SynAppManifest,
@@ -40,8 +41,10 @@ use syneroym_router::net_iroh::resolve_iroh_addr;
 use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
 use syneroym_sdk::{
     DeployManifest, NetworkEndpoint, ServiceConfig as WitServiceConfig,
-    ServiceType as WitServiceType, SyneroymClient, TcpManifest,
-    deploy::{self, ApplyRequest, DeployTarget, apply_plan, certify_instance},
+    ServiceType as WitServiceType, SyneroymClient, TcpManifest, Visibility as WitVisibility,
+    deploy::{
+        self, ApplyRequest, DeployTarget, apply_plan, certify_instance, member_registry_record,
+    },
 };
 use syneroym_substrate::identity;
 use tempfile::TempDir;
@@ -110,6 +113,14 @@ const PORTS_DEPENDENTS_OWN_REGISTRY: PortBlock = PortBlock {
     node_b_iroh: 9700,
     node_b_registry: 9701,
     node_b_gateway: 9702,
+};
+const PORTS_UNDECLARED_APP_PUBLISHES_NOTHING: PortBlock = PortBlock {
+    node_a_iroh: 9800,
+    node_a_registry: 9801,
+    node_a_gateway: 9802,
+    node_b_iroh: 9900,
+    node_b_registry: 9901,
+    node_b_gateway: 9902,
 };
 
 /// Not sharing a port block keeps the five tests here from colliding, but
@@ -337,12 +348,14 @@ fn two_service_manifest() -> SynAppManifest {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility: Visibility::Internal,
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(BACKEND_ALIAS))),
             replicas: 1,
             sharding_strategy: None,
             schedule: None,
+            topology_visibility: Default::default(),
         },
     );
     services.insert(
@@ -362,16 +375,91 @@ fn two_service_manifest() -> SynAppManifest {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility: Visibility::Internal,
             },
             depends_on: vec![LogicalServiceName::new("backend")],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(FRONTEND_ALIAS))),
             replicas: 1,
             sharding_strategy: None,
             schedule: None,
+            topology_visibility: Default::default(),
         },
     );
     SynAppManifest {
         id: AppBlueprintId::new("syneroym:a3-test-app"),
+        version: Version::new(0, 1, 0),
+        description: None,
+        placement: None,
+        services,
+        dependencies: BTreeMap::new(),
+    }
+}
+
+/// Two independent (no `depends_on`) services, both placed on
+/// `BACKEND_ALIAS` and both declaring no visibility (`Visibility::Private`
+/// by default) -- test 37's shape. Same alias, deliberately: a
+/// cross-substrate `depends_on` onto a `private` member is refused by
+/// `validate_plan_visibility` (`D-B2-14`(a)) before a deploy is even
+/// attempted, which would prove the compiler's refusal rather than F1's
+/// "undeclared = unpublished" consequence this test is actually about.
+fn two_service_manifest_same_alias_private() -> SynAppManifest {
+    let mut services = BTreeMap::new();
+    services.insert(
+        LogicalServiceName::new("backend"),
+        ServiceSpec {
+            config: ServiceConfig {
+                service_type: ServiceType::Tcp,
+                source: "127.0.0.1:41304".to_string(),
+                hash: None,
+                interfaces: vec![],
+                env: BTreeMap::new(),
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: Default::default(),
+                fdae: None,
+                health_check: None,
+                assets: None,
+                visibility: Visibility::Private,
+            },
+            depends_on: vec![],
+            placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(BACKEND_ALIAS))),
+            replicas: 1,
+            sharding_strategy: None,
+            schedule: None,
+            topology_visibility: Default::default(),
+        },
+    );
+    services.insert(
+        LogicalServiceName::new("sibling"),
+        ServiceSpec {
+            config: ServiceConfig {
+                service_type: ServiceType::Tcp,
+                source: "127.0.0.1:41305".to_string(),
+                hash: None,
+                interfaces: vec![],
+                env: BTreeMap::new(),
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: Default::default(),
+                fdae: None,
+                health_check: None,
+                assets: None,
+                visibility: Visibility::Private,
+            },
+            depends_on: vec![],
+            placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(BACKEND_ALIAS))),
+            replicas: 1,
+            sharding_strategy: None,
+            schedule: None,
+            topology_visibility: Default::default(),
+        },
+    );
+    SynAppManifest {
+        id: AppBlueprintId::new("syneroym:a3-undeclared-app"),
         version: Version::new(0, 1, 0),
         description: None,
         placement: None,
@@ -510,8 +598,15 @@ async fn boot_pair(
 
 /// Certifies and signs an endpoint record for each master, mirroring
 /// `deploy::certify_placed_members` but written directly against the two
-/// concrete clients above (that function's own coverage lives in
-/// `crates/sdk`'s unit tests; this harness only needs its result).
+/// concrete clients above -- this fixture always places every service
+/// explicitly (no `fallback` client) and wants a far-future `not_after`
+/// instead of the production default, which is why it is not simply a call
+/// to `certify_placed_members` itself. The registry-record half calls the
+/// exact same [`member_registry_record`] the production function does, so
+/// the visibility -> record decision (`D-B2-7`) cannot drift between this
+/// harness and production; that decision's own direct coverage lives in
+/// `crates/sdk`'s unit tests, since it needs no network and this harness
+/// only needs its result.
 async fn certify_and_publish(
     plan: &DeploymentPlan,
     masters: &BTreeMap<ServiceId, Identity>,
@@ -527,20 +622,17 @@ async fn certify_and_publish(
         let cert = certify_instance(client, master, svc.service_id.as_str(), 24).await.unwrap();
         certs.insert(svc.service_id.clone(), cert.to_json().unwrap());
 
-        let record = EndpointInfo {
-            service_id: svc.service_id.to_string(),
-            substrate_id: client.service_id().to_string(),
-            endpoint_type: EndpointType::Service,
-            mechanisms: vec![],
-            nickname: None,
-            is_private: false,
-            ttl: None,
-            not_after: far_future_not_after(),
-            generation: 0,
+        if let Some(record_json) = member_registry_record(
+            svc.config.visibility,
+            svc.service_id.as_str(),
+            client.service_id(),
+            master,
+            far_future_not_after(),
+        )
+        .unwrap()
+        {
+            records.insert(svc.service_id.clone(), record_json);
         }
-        .sign(master)
-        .unwrap();
-        records.insert(svc.service_id.clone(), serde_json::to_string(&record).unwrap());
     }
     (certs, records)
 }
@@ -697,6 +789,75 @@ async fn a_placed_members_endpoint_record_resolves_to_its_own_substrate() {
     node_b.teardown().await;
 }
 
+/// Test 37: an app deployed with no visibility declaration publishes no
+/// member records, and a cross-node dial for one of its members fails to
+/// resolve -- `D-B2-3`'s consequence made real on the app path, not just
+/// asserted at the unit level (F1: `certify_placed_members` used to mint a
+/// record for every placed member unconditionally).
+#[tokio::test]
+async fn an_app_deployed_with_no_visibility_declaration_publishes_no_member_records() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let owner = Identity::generate().unwrap();
+    let operator = Identity::generate().unwrap();
+    let (node_a, node_b, clients) =
+        boot_pair(&owner, &operator, PORTS_UNDECLARED_APP_PUBLISHES_NOTHING).await;
+
+    let manifest = two_service_manifest_same_alias_private();
+    let catalog = LocalFilesystemCatalog::new(std::path::PathBuf::from("."));
+    let compiled =
+        compile(AppInstanceId::new("a3-undeclared-inst"), &manifest, &catalog).await.unwrap();
+    let plan = compiled.plans.last().unwrap().clone();
+    let (new_plan, masters) = mint_and_substitute_masters(&plan);
+    // Mirrors `certify_placed_members`'s own behaviour (F1/D-B2-7): a
+    // `private` member gets no entry in the returned map at all.
+    let (instance_certs, registry_certs) = certify_and_publish(&new_plan, &masters, &clients).await;
+    assert!(
+        registry_certs.is_empty(),
+        "no member declares a visibility, so none should have a minted registry certificate: \
+         {registry_certs:?}"
+    );
+    let targets = deploy_targets(&clients);
+
+    let journal = DeploymentJournal::open_in_memory().unwrap();
+    let deployment_id = journal.append(&new_plan, DeploymentState::Applying).unwrap();
+    let report = apply_plan(
+        ApplyRequest {
+            plan: &new_plan,
+            targets: &targets,
+            fallback: None,
+            instance_certificates: &instance_certs,
+            registry_certificates: &registry_certs,
+            emit_bindings: true,
+            generation: 0,
+            binding_epochs: &BTreeMap::new(),
+        },
+        &journal,
+        deployment_id,
+    )
+    .await
+    .unwrap();
+    drop(targets);
+    assert!(report.is_complete(), "{:?}", report.failures);
+
+    let backend_svc = new_plan
+        .services
+        .iter()
+        .find(|s| s.logical_ref.service_name.as_str() == "backend")
+        .unwrap();
+
+    let registry_client = RegistryClient::new(false, Some(node_a.registry_url.clone()));
+    let err =
+        resolve_iroh_addr(&registry_client, backend_svc.service_id.as_str()).await.expect_err(
+            "a member with no visibility declaration must never resolve to an address across \
+             installations -- absence must not mean 'publish it'",
+        );
+    let _ = err;
+
+    shutdown_clients(clients.into_values()).await;
+    node_a.teardown().await;
+    node_b.teardown().await;
+}
+
 #[tokio::test]
 async fn a_certificate_minted_against_one_substrate_is_rejected_by_another() {
     let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
@@ -730,7 +891,11 @@ async fn a_certificate_minted_against_one_substrate_is_rejected_by_another() {
         endpoint_type: EndpointType::Service,
         mechanisms: vec![],
         nickname: None,
-        is_private: false,
+        // Matches the manifest's `visibility: Internal` below. Unreached in
+        // practice -- the instance-certificate mismatch this test is about
+        // is checked first -- but kept consistent so a reader does not
+        // mistake it for a second, unrelated bug.
+        is_private: true,
         ttl: None,
         not_after: far_future_not_after(),
         generation: 0,
@@ -749,6 +914,7 @@ async fn a_certificate_minted_against_one_substrate_is_rejected_by_another() {
             fdae_policy: None,
             health_check: None,
             assets: None,
+            visibility: Some(WitVisibility::Internal),
         },
         service_type: WitServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {

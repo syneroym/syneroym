@@ -17,7 +17,7 @@ use syneroym_rpc::{CallerContext, empty_row_authorizer};
 use syneroym_sandbox_wasm::{
     AppSandboxEngine, HostState, MessagingContext, StreamContext, empty_service_proxy,
 };
-use syneroym_sdk::SyneroymClient;
+use syneroym_sdk::{Publication, SyneroymClient};
 use test_constants::GREETER_INTERFACE_NAME;
 use wasmtime::{
     Store,
@@ -190,7 +190,7 @@ pub async fn run_scenario() -> Result<()> {
             app_service_id.clone(),
             vec![interface_name.to_string()],
             wasm_bytes,
-            None,
+            Publication::Private,
             None,
         )
         .await?;

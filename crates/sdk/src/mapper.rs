@@ -104,6 +104,14 @@ fn resolve_artifact_source(source: &str, what: &str) -> anyhow::Result<ArtifactS
     }
 }
 
+const fn map_visibility(v: ModelVisibility) -> WitVisibility {
+    match v {
+        ModelVisibility::Public => WitVisibility::Public,
+        ModelVisibility::Internal => WitVisibility::Internal,
+        ModelVisibility::Private => WitVisibility::Private,
+    }
+}
+
 /// Maps the app model's `AssetBundle` (M06A A1) to the wire record. Absent
 /// `visibility` is never produced here -- the model field already defaults
 /// to `Private` at parse time (`#[serde(default)]`), so the wire always
@@ -112,11 +120,7 @@ fn map_asset_bundle(bundle: &AssetBundle, what: &str) -> anyhow::Result<WitAsset
     Ok(WitAssetBundle {
         archive: resolve_artifact_source(&bundle.archive, what)?,
         hash: bundle.hash.clone(),
-        visibility: Some(match bundle.visibility {
-            ModelVisibility::Public => WitVisibility::Public,
-            ModelVisibility::Internal => WitVisibility::Internal,
-            ModelVisibility::Private => WitVisibility::Private,
-        }),
+        visibility: Some(map_visibility(bundle.visibility)),
     })
 }
 
@@ -234,6 +238,7 @@ pub fn map_deployment_plan_to_wit(
                     map_asset_bundle(a, &format!("asset bundle archive for {}", svc.service_id))
                 })
                 .transpose()?,
+            visibility: Some(map_visibility(svc.config.visibility)),
         };
 
         let service_type = match svc.config.service_type {
@@ -409,7 +414,7 @@ mod tests {
     use syneroym_app_orchestration::models::{
         AppBlueprintId, AppInstanceId, FdaeManifest, HttpProbe, InterfaceName, LogicalServiceName,
         LogicalServiceRef, PlannedService, RpcProbe, ServiceConfig, ServiceId, ServiceType,
-        TcpProbe, TopologyMode,
+        TcpProbe, TopologyMode, TopologyVisibility,
     };
 
     use super::*;
@@ -429,6 +434,7 @@ mod tests {
             fdae: None,
             health_check: None,
             assets: None,
+            visibility: ModelVisibility::Private,
         }
     }
 
@@ -450,6 +456,7 @@ mod tests {
                 member_index: 0,
                 schedule: None,
                 sharding_strategy: None,
+                topology_visibility: TopologyVisibility::Restricted,
             }],
         }
     }
@@ -777,6 +784,7 @@ mod tests {
                     member_index: 0,
                     schedule: None,
                     sharding_strategy: None,
+                    topology_visibility: TopologyVisibility::Restricted,
                 },
                 PlannedService {
                     service_id: ServiceId::new("did:key:hFrontend"),
@@ -794,6 +802,7 @@ mod tests {
                     member_index: 0,
                     schedule: None,
                     sharding_strategy: None,
+                    topology_visibility: TopologyVisibility::Restricted,
                 },
             ],
         }

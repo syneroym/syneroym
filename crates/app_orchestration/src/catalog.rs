@@ -9,6 +9,7 @@ use tokio::fs;
 
 use crate::models::{
     AppBlueprintId, LogicalServiceName, ServiceConfig, ServiceSpec, ServiceType, SynAppManifest,
+    TopologyVisibility, Visibility,
 };
 
 /// Trait for resolving application blueprints to their parsed manifests.
@@ -59,6 +60,7 @@ impl LocalFilesystemCatalog {
             fdae: None,
             health_check: None,
             assets: None,
+            visibility: Visibility::Private,
         };
         services.insert(
             LogicalServiceName::new("legacy-main"),
@@ -69,6 +71,7 @@ impl LocalFilesystemCatalog {
                 replicas: 1,
                 sharding_strategy: None,
                 schedule: None,
+                topology_visibility: TopologyVisibility::Restricted,
             },
         );
 

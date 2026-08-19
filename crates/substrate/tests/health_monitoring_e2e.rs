@@ -326,6 +326,7 @@ async fn deploy_tcp(
             fdae_policy: None,
             health_check,
             assets: None,
+            visibility: None,
         },
         service_type: WitServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {

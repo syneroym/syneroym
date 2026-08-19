@@ -398,12 +398,18 @@ mod tests {
     }
 
     async fn spawn_registry() -> (EcosystemRegistry, String) {
+        spawn_registry_with_parent(None).await
+    }
+
+    async fn spawn_registry_with_parent(
+        parent_registry_url: Option<String>,
+    ) -> (EcosystemRegistry, String) {
         let config = SubstrateConfig {
             roles: syneroym_core::config::RolesConfig {
                 community_registry: Some(ServiceRegistryRole {
                     access: AccessControl::String("everyone".to_string()),
                     http_bind_address: "127.0.0.1:0".to_string(),
-                    parent_registry_url: None,
+                    parent_registry_url,
                 }),
                 ..Default::default()
             },
@@ -807,6 +813,96 @@ mod tests {
 
         let err = client.resolve_master_anchor(&requested_master_did, None).await;
         assert!(err.is_err(), "a validly-signed anchor for a different master must be refused");
+    }
+
+    /// Plan test 32's third case (D-B2-16/D-B2-17): the DHT gate must skip
+    /// only the *DHT* channel for a private-flagged record, not the HTTP
+    /// registry channel -- which is the whole of what `internal` promises
+    /// (registered with this substrate's registry only, still reachable
+    /// through it). `crates/core::dht_registry`'s own gate tests cannot
+    /// cover this half: `syneroym-core` cannot depend on
+    /// `syneroym-community-registry` (the dependency runs the other way),
+    /// so there is no live HTTP registry to register against from there.
+    #[tokio::test]
+    async fn an_internal_record_registers_to_a_live_registry_with_the_dht_enabled_and_is_retrievable()
+     {
+        let (_registry, url) = spawn_registry().await;
+        let client = RegistryClient::new(true, Some(url));
+
+        let identity = Identity::generate().unwrap();
+        let did = substrate::derive_did_key(&identity.public_key());
+        let mut info = sample_service_info_for(&did);
+        info.is_private = true;
+        let signed = create_signed_info(&identity, info);
+
+        // `sync_dht: false` backgrounds the real DHT publish (the gate
+        // itself, and its skip for `is_private`, is `dht_registry`'s own
+        // `test_dht_publication_skipped_for_private_record`) -- this test
+        // needs no live DHT network, only that the HTTP registration this
+        // gate must NOT block actually succeeds.
+        client.register(&signed, false).await.unwrap();
+
+        let looked_up = client.lookup(&did, false).await.unwrap();
+        assert_eq!(looked_up.info.service_id, did);
+        assert!(looked_up.info.is_private);
+    }
+
+    /// Plan test 39, pairing with test 38 (`multi_substrate_placement_e2e.rs`):
+    /// the two published tiers stay distinguishable end to end -- `public`
+    /// resolves *and* its record reaches a parent registry, where `internal`
+    /// resolves and stops. `admit_endpoint`'s `!payload.info.is_private`
+    /// parent-relay gate (above) is the whole mechanism; this proves both of
+    /// its visible outcomes together, since a test only pinning one could
+    /// pass by accident if the gate's condition were ever inverted.
+    #[tokio::test]
+    async fn a_public_record_propagates_to_the_parent_registry_while_an_internal_one_does_not() {
+        let (_parent, parent_url) = spawn_registry().await;
+        let (_child, child_url) = spawn_registry_with_parent(Some(parent_url.clone())).await;
+        let child_client = RegistryClient::new(false, Some(child_url));
+        let parent_client = RegistryClient::new(false, Some(parent_url));
+
+        let public_identity = Identity::generate().unwrap();
+        let public_did = substrate::derive_did_key(&public_identity.public_key());
+        let mut public_info = sample_service_info_for(&public_did);
+        public_info.is_private = false;
+        child_client
+            .register(&create_signed_info(&public_identity, public_info), false)
+            .await
+            .unwrap();
+
+        let internal_identity = Identity::generate().unwrap();
+        let internal_did = substrate::derive_did_key(&internal_identity.public_key());
+        let mut internal_info = sample_service_info_for(&internal_did);
+        internal_info.is_private = true;
+        child_client
+            .register(&create_signed_info(&internal_identity, internal_info), false)
+            .await
+            .unwrap();
+
+        // Both records are retrievable through the child registry that
+        // admitted them, regardless of visibility -- `internal` still means
+        // "registered here", not "registered nowhere".
+        assert!(child_client.lookup(&public_did, false).await.is_ok());
+        assert!(child_client.lookup(&internal_did, false).await.is_ok());
+
+        // Propagation to the parent is fire-and-forget (`tokio::spawn` in
+        // `propagate_registration`), so poll rather than assert immediately.
+        let mut public_propagated = false;
+        for _ in 0..40 {
+            if parent_client.lookup(&public_did, false).await.is_ok() {
+                public_propagated = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(public_propagated, "a public record must propagate to the parent registry");
+
+        // The internal record had the same window to propagate as the
+        // public one did -- it must never have.
+        assert!(
+            parent_client.lookup(&internal_did, false).await.is_err(),
+            "an internal record must never reach the parent registry"
+        );
     }
 
     /// D-A1-3's recovery path, against a live registry -- `build_record`'s
