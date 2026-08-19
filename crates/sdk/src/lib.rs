@@ -52,6 +52,47 @@ pub struct DeployedService {
     /// still deserializes.
     #[serde(default)]
     pub instance_certificate_expires_at: Option<u64>,
+    /// Declared publication visibility (ADR-0018 §4). `#[serde(default)]` so a
+    /// substrate predating this field still deserializes as `None`.
+    #[serde(default)]
+    pub visibility: Option<Visibility>,
+}
+
+/// Publication policy for a service deployment (ADR-0018 §4). One type rather
+/// than two loose fields, so the three legal pairings are the only ones a
+/// caller can express -- the substrate still validates independently.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Publication {
+    /// Never registered. The default.
+    #[default]
+    Private,
+    /// Registered, and propagated to parent registries. The record's own
+    /// `is_private` must be `false`.
+    Public(SignedEndpointInfo),
+    /// Registered with the local registry only. The record's own
+    /// `is_private` must be `true`.
+    Internal(SignedEndpointInfo),
+}
+
+impl Publication {
+    /// `(visibility, serialized certificate)` for a `DeployManifest`.
+    pub fn split(self) -> Result<(Visibility, Option<String>)> {
+        match self {
+            Self::Private => Ok((Visibility::Private, None)),
+            Self::Public(record) => {
+                let serialized = serde_json::to_string(&record).map_err(|e| {
+                    anyhow::anyhow!("Failed to serialize registry certificate: {e}")
+                })?;
+                Ok((Visibility::Public, Some(serialized)))
+            }
+            Self::Internal(record) => {
+                let serialized = serde_json::to_string(&record).map_err(|e| {
+                    anyhow::anyhow!("Failed to serialize registry certificate: {e}")
+                })?;
+                Ok((Visibility::Internal, Some(serialized)))
+            }
+        }
+    }
 }
 
 /// Whether the substrate believes a service's instance is running (M05A A4).
@@ -167,6 +208,7 @@ pub struct SyneroymClient {
     service_id: String,
     registry_url: String,
     provided_mechanisms: Option<Vec<EndpointMechanism>>,
+    lookup_did: Option<String>,
     connection: Option<TransportConnection>,
     connect_timeout: Duration,
     /// A self-asserted caller identity (pubkey only, no delegation) sent on
@@ -218,13 +260,37 @@ impl Debug for SyneroymClient {
             .field("service_id", &self.service_id)
             .field("registry_url", &self.registry_url)
             .field("provided_mechanisms", &self.provided_mechanisms)
+            .field("lookup_did", &self.lookup_did)
             .field("connection", &self.connection)
             .field("connect_timeout", &self.connect_timeout)
             .field("identity", &self.identity)
             .field("caller_ucan", &self.caller_ucan)
-            .field("pending_closes", &self.pending_closes.len())
-            .finish()
+            .field("enable_dht", &self.enable_dht)
+            .finish_non_exhaustive()
     }
+}
+
+/// Ephemeral identity generated when the caller did not supply one. Panics on
+/// `expect` (mirroring `RouteHandler::new_coordinator`'s own ephemeral-
+/// identity fallback) so `SyneroymClient::new`/`new_with_mechanisms` stay
+/// infallible for their many existing callers.
+#[allow(clippy::expect_used)]
+fn generate_ephemeral_identity() -> Identity {
+    Identity::generate().expect("failed to generate ephemeral SDK client identity")
+}
+
+/// Everything optional about a [`SyneroymClient::deploy_svc_wasm_with_options`]
+/// call (M06A A2, `D-A2-9`). Replaces the growing positional tail
+/// `deploy_svc_wasm_with_assets` had started: `assets` was A1's addition,
+/// `custom_config` is A2's, and a third would have meant a third method.
+#[derive(Debug, Default)]
+pub struct DeploySvcOptions {
+    pub publication: Publication,
+    pub instance_certificate: Option<DelegationCertificate>,
+    pub assets: Option<AssetBundle>,
+    /// Verbatim `ServiceConfig.custom_config`. The reserved `http_routes`
+    /// key inside it is what declares HTTP routes.
+    pub custom_config: Option<String>,
 }
 
 #[derive(Clone)]
@@ -295,30 +361,6 @@ fn spawn_background_close(endpoint: Endpoint) -> JoinHandle<()> {
     })
 }
 
-/// Only fails if the system's random number generator is unavailable (e.g.
-/// certain sandboxed environments) -- see `Identity::generate`. Kept as an
-/// `expect` (mirroring `RouteHandler::new_coordinator`'s own ephemeral-
-/// identity fallback) so `SyneroymClient::new`/`new_with_mechanisms` stay
-/// infallible for their many existing callers.
-#[allow(clippy::expect_used)]
-fn generate_ephemeral_identity() -> Identity {
-    Identity::generate().expect("failed to generate ephemeral SDK client identity")
-}
-
-/// Everything optional about a [`SyneroymClient::deploy_svc_wasm_with_options`]
-/// call (M06A A2, `D-A2-9`). Replaces the growing positional tail
-/// `deploy_svc_wasm_with_assets` had started: `assets` was A1's addition,
-/// `custom_config` is A2's, and a third would have meant a third method.
-#[derive(Debug, Default)]
-pub struct DeploySvcOptions {
-    pub registry_certificate: Option<SignedEndpointInfo>,
-    pub instance_certificate: Option<DelegationCertificate>,
-    pub assets: Option<AssetBundle>,
-    /// Verbatim `ServiceConfig.custom_config`. The reserved `http_routes`
-    /// key inside it is what declares HTTP routes.
-    pub custom_config: Option<String>,
-}
-
 impl SyneroymClient {
     #[must_use]
     pub fn new(service_id: String, registry_url: String) -> Self {
@@ -326,6 +368,7 @@ impl SyneroymClient {
             service_id,
             registry_url,
             provided_mechanisms: None,
+            lookup_did: None,
             connection: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
@@ -342,6 +385,7 @@ impl SyneroymClient {
             service_id,
             registry_url: String::new(),
             provided_mechanisms: Some(mechanisms),
+            lookup_did: None,
             connection: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
@@ -350,6 +394,35 @@ impl SyneroymClient {
             enable_dht: true,
             registry_client: OnceLock::new(),
         }
+    }
+
+    /// Connect using a privately-shared endpoint record (ADR-0018 §2).
+    ///
+    /// Supersedes `new_with_mechanisms` for every case that has a record: the
+    /// record is verified on import, names the substrate that hosts the
+    /// service, and that substrate's own record is public -- so a private
+    /// service stays reachable by anyone the deployer handed the file to,
+    /// with no registry entry for the service itself.
+    pub fn new_with_record(record: SignedEndpointInfo, registry_url: String) -> Result<Self> {
+        record.verify().context("failed to verify signed endpoint record")?;
+        let service_id = record.info.service_id;
+        let substrate_id = record.info.substrate_id;
+        let provided_mechanisms =
+            if !record.info.mechanisms.is_empty() { Some(record.info.mechanisms) } else { None };
+        let lookup_did = if provided_mechanisms.is_none() { Some(substrate_id) } else { None };
+        Ok(Self {
+            service_id,
+            registry_url,
+            provided_mechanisms,
+            lookup_did,
+            connection: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            identity: generate_ephemeral_identity(),
+            caller_ucan: None,
+            pending_closes: Vec::new(),
+            enable_dht: true,
+            registry_client: OnceLock::new(),
+        })
     }
 
     /// Like [`Self::new`], but with a caller-supplied, stable identity
@@ -366,6 +439,7 @@ impl SyneroymClient {
             service_id,
             registry_url,
             provided_mechanisms: None,
+            lookup_did: None,
             connection: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity,
@@ -420,13 +494,16 @@ impl SyneroymClient {
 
         debug!("Connecting to {} via registry or provided mechanisms", self.service_id);
 
+        let lookup_target = self.lookup_did.as_deref().unwrap_or(&self.service_id);
         let mechanisms = if let Some(m) = &self.provided_mechanisms {
             m.clone()
         } else if !self.registry_url.is_empty() {
-            let info = self.registry_client().lookup(&self.service_id, true).await?.info;
-            // The lookup might have been done by an alias. Update service_id to the
-            // canonical DID.
-            self.service_id = info.service_id;
+            let info = self.registry_client().lookup(lookup_target, true).await?.info;
+            if self.lookup_did.is_none() {
+                // The lookup might have been done by an alias. Update service_id to the
+                // canonical DID.
+                self.service_id = info.service_id;
+            }
             info.mechanisms
         } else {
             return Err(anyhow::anyhow!("No registry URL or mechanisms provided"));
@@ -697,14 +774,14 @@ impl SyneroymClient {
         service_id: String,
         interfaces: Vec<String>,
         wasm_bytes: Vec<u8>,
-        registry_certificate: Option<SignedEndpointInfo>,
+        publication: Publication,
         instance_certificate: Option<DelegationCertificate>,
     ) -> Result<()> {
         self.deploy_svc_wasm_with_options(
             service_id,
             interfaces,
             wasm_bytes,
-            DeploySvcOptions { registry_certificate, instance_certificate, ..Default::default() },
+            DeploySvcOptions { publication, instance_certificate, ..Default::default() },
         )
         .await
     }
@@ -724,11 +801,7 @@ impl SyneroymClient {
         wasm_bytes: Vec<u8>,
         options: DeploySvcOptions,
     ) -> Result<()> {
-        let registry_certificate = options
-            .registry_certificate
-            .map(|c| serde_json::to_string(&c))
-            .transpose()
-            .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
+        let (visibility, registry_certificate) = options.publication.split()?;
         let instance_certificate = options
             .instance_certificate
             .map(|c| c.to_json())
@@ -745,6 +818,7 @@ impl SyneroymClient {
                 fdae_policy: None,
                 health_check: None,
                 assets: options.assets,
+                visibility: Some(visibility),
             },
             service_type: ServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -767,13 +841,10 @@ impl SyneroymClient {
         &self,
         service_id: String,
         endpoints: Vec<NetworkEndpoint>,
-        registry_certificate: Option<SignedEndpointInfo>,
+        publication: Publication,
         instance_certificate: Option<DelegationCertificate>,
     ) -> Result<()> {
-        let registry_certificate = registry_certificate
-            .map(|c| serde_json::to_string(&c))
-            .transpose()
-            .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
+        let (visibility, registry_certificate) = publication.split()?;
         let instance_certificate = instance_certificate
             .map(|c| c.to_json())
             .transpose()
@@ -789,6 +860,7 @@ impl SyneroymClient {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: Some(visibility),
             },
             service_type: ServiceType::Tcp(TcpManifest { endpoints }),
             registry_certificate,
@@ -809,13 +881,10 @@ impl SyneroymClient {
         image: String,
         ports: Vec<ContainerPortMapping>,
         volumes: Vec<ContainerVolumeMapping>,
-        registry_certificate: Option<SignedEndpointInfo>,
+        publication: Publication,
         instance_certificate: Option<DelegationCertificate>,
     ) -> Result<()> {
-        let registry_certificate = registry_certificate
-            .map(|c| serde_json::to_string(&c))
-            .transpose()
-            .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
+        let (visibility, registry_certificate) = publication.split()?;
         let instance_certificate = instance_certificate
             .map(|c| c.to_json())
             .transpose()
@@ -831,6 +900,7 @@ impl SyneroymClient {
                 fdae_policy: None,
                 health_check: None,
                 assets: None,
+                visibility: Some(visibility),
             },
             service_type: ServiceType::Container(ContainerManifest {
                 source: ArtifactSource::Binary(vec![]),
@@ -1172,5 +1242,50 @@ mod frame_size_tests {
         assert!(msg.contains("orchestrator.deploy"), "{msg}");
         assert!(msg.contains(&(framing::MAX_FRAME_SIZE as usize + 1).to_string()), "{msg}");
         assert!(msg.contains(&framing::MAX_FRAME_SIZE.to_string()), "{msg}");
+    }
+}
+
+#[cfg(test)]
+mod new_with_record_tests {
+    use syneroym_core::dht_registry::{EndpointInfo, EndpointType};
+    use syneroym_identity::Identity;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn new_with_record_verifies_signature_and_sets_fields() {
+        // `verify()` resolves the signing key from `service_id` itself
+        // (the registry's own admission rule), so it must be the signer's
+        // real derived DID, not a placeholder string.
+        let identity = Identity::generate().unwrap();
+        let service_id = syneroym_identity::substrate::derive_did_key(&identity.public_key());
+        let substrate_id = "did:key:z6Mksub".to_string();
+        let record = EndpointInfo {
+            service_id: service_id.clone(),
+            substrate_id: substrate_id.clone(),
+            endpoint_type: EndpointType::Service,
+            mechanisms: vec![],
+            nickname: Some("my-private-svc".to_string()),
+            is_private: true,
+            ttl: None,
+            not_after: 9999999999,
+            generation: 0,
+        }
+        .sign(&identity)
+        .unwrap();
+
+        let client =
+            SyneroymClient::new_with_record(record.clone(), "http://127.0.0.1:9999".to_string())
+                .unwrap();
+        assert_eq!(client.service_id(), service_id);
+        assert_eq!(client.lookup_did.as_deref(), Some(substrate_id.as_str()));
+        assert!(client.provided_mechanisms.is_none());
+
+        // Tampered record fails verification
+        let mut tampered = record;
+        tampered.info.service_id = "did:key:z6Mktampered".to_string();
+        assert!(
+            SyneroymClient::new_with_record(tampered, "http://127.0.0.1:9999".to_string()).is_err()
+        );
     }
 }

@@ -725,29 +725,35 @@ pub async fn certify_placed_members(
         let cert = certify_instance(client, master, svc.service_id.as_str(), expires_hours).await?;
         certs.insert(svc.service_id.clone(), cert.to_json()?);
 
-        // The endpoint record: the substrate holds no key that could ever
-        // sign this (ADR-0020 §3), so unlike the instance certificate above
-        // this is the *only* place one gets produced for an app-deployed
-        // member -- without it, the master DID never resolves to an address
-        // at all.
-        let not_after = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-            .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
-        let record = EndpointInfo {
-            service_id: svc.service_id.to_string(),
-            substrate_id: client.service_id().to_string(),
-            endpoint_type: EndpointType::Service,
-            mechanisms: vec![],
-            nickname: None,
-            is_private: false,
-            ttl: None,
-            not_after,
-            generation: 0,
+        // ADR-0018 §4 / D-B2-7: private services produce no registry certificate.
+        // Internal services produce an is_private=true certificate.
+        // Public services produce an is_private=false certificate.
+        let is_private = match svc.config.visibility {
+            syneroym_app_orchestration::Visibility::Private => None,
+            syneroym_app_orchestration::Visibility::Internal => Some(true),
+            syneroym_app_orchestration::Visibility::Public => Some(false),
+        };
+
+        if let Some(is_private) = is_private {
+            let not_after = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+                .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
+            let record = EndpointInfo {
+                service_id: svc.service_id.to_string(),
+                substrate_id: client.service_id().to_string(),
+                endpoint_type: EndpointType::Service,
+                mechanisms: vec![],
+                nickname: None,
+                is_private,
+                ttl: None,
+                not_after,
+                generation: 0,
+            }
+            .sign(master)?;
+            records.insert(svc.service_id.clone(), serde_json::to_string(&record)?);
         }
-        .sign(master)?;
-        records.insert(svc.service_id.clone(), serde_json::to_string(&record)?);
     }
 
     Ok((certs, records))
@@ -825,6 +831,7 @@ mod tests {
             fdae: None,
             health_check: None,
             assets: None,
+            visibility: syneroym_app_orchestration::Visibility::Private,
         }
     }
 
@@ -842,6 +849,7 @@ mod tests {
             member_index: 0,
             schedule: None,
             sharding_strategy: None,
+            topology_visibility: syneroym_app_orchestration::TopologyVisibility::Restricted,
         }
     }
 

@@ -64,6 +64,7 @@ use syneroym_identity::{
 use syneroym_router::net_iroh::resolve_iroh_addr;
 use syneroym_sdk::{
     DeployManifest, NetworkEndpoint, ServiceConfig, ServiceType, SyneroymClient, TcpManifest,
+    Visibility,
 };
 use syneroym_substrate::identity;
 use tempfile::TempDir;
@@ -213,6 +214,7 @@ fn bare_tcp_manifest(
             fdae_policy: None,
             health_check: None,
             assets: None,
+            visibility: Some(Visibility::Internal),
         },
         service_type: ServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {
@@ -350,7 +352,10 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         endpoint_type: EndpointType::Service,
         mechanisms: vec![],
         nickname: None,
-        is_private: false,
+        // `bare_tcp_manifest` declares `visibility: Internal`, and
+        // `validate_publication` requires `is_private == true` for it
+        // (ADR-0018 §4).
+        is_private: true,
         ttl: None,
         not_after: far_future_not_after(),
         generation: 0,
@@ -463,7 +468,7 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         endpoint_type: EndpointType::Service,
         mechanisms: vec![],
         nickname: None,
-        is_private: false,
+        is_private: true,
         ttl: None,
         not_after: far_future_not_after(),
         generation: 0,

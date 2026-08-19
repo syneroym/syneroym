@@ -37,7 +37,7 @@ use rustls::crypto::ring;
 use semver::Version;
 use serde_json::{Map, Value, json};
 use syneroym_app_orchestration::{
-    LocalFilesystemCatalog, compile,
+    LocalFilesystemCatalog, Visibility, compile,
     models::{
         AppBlueprintId, AppInstanceId, InterfaceName, LogicalServiceName, PlacementSelector,
         ScheduleSpec, ServiceConfig, ServiceSpec, ServiceType, SubstrateAlias, SynAppManifest,
@@ -273,6 +273,13 @@ fn scheduled_manifest() -> SynAppManifest {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                // The supervisor's own scheduled tick dials this worker by
+                // DID through the registry, since it is placed on a
+                // different substrate (`MANAGED_ALIAS`) -- undeclared
+                // (private) visibility means `certify_placed_members`
+                // mints no record for it, and the tick has nothing to
+                // resolve (ADR-0018 §4, M06B B2, F10 group C).
+                visibility: Visibility::Internal,
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),
@@ -285,6 +292,7 @@ fn scheduled_manifest() -> SynAppManifest {
                 params: None,
                 timeout_ms: 10_000,
             }),
+            topology_visibility: Default::default(),
         },
     );
     SynAppManifest {

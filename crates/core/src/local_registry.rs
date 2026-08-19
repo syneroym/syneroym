@@ -154,10 +154,11 @@ impl EndpointRegistry {
             }
         }
 
-        for (service_id, service_type, check, manifest_hash) in
+        for (service_id, service_type, check, manifest_hash, visibility) in
             self.storage.load_all_deploy_facts().await?
         {
-            self.service_deploy_facts.insert(service_id, (service_type, check, manifest_hash));
+            self.service_deploy_facts
+                .insert(service_id, (service_type, check, manifest_hash, visibility));
         }
 
         for (service_id, app_instance_id, service_name) in
@@ -348,16 +349,17 @@ impl EndpointRegistry {
     }
 
     /// Record what a deploy said `service_id` is, its declared health
-    /// check if any, and the canonical content hash of what was actually
-    /// installed (M05A A4, `manifest_hash` added A5a -- upsert; a
-    /// redeploy that drops the check writes `None`, clearing it by
-    /// construction).
+    /// check if any, the canonical content hash of what was actually
+    /// installed, and its declared visibility (M05A A4, `manifest_hash` added
+    /// A5a, `visibility` added ADR-0018 -- upsert; a redeploy that drops the
+    /// check writes `None`, clearing it by construction).
     pub async fn set_deploy_facts(
         &self,
         service_id: String,
         service_type: String,
         health_check_json: Option<String>,
         manifest_hash: Option<String>,
+        visibility: Option<String>,
     ) -> Result<()> {
         self.storage
             .save_deploy_facts(
@@ -365,10 +367,11 @@ impl EndpointRegistry {
                 &service_type,
                 health_check_json.as_deref(),
                 manifest_hash.as_deref(),
+                visibility.as_deref(),
             )
             .await?;
         self.service_deploy_facts
-            .insert(service_id, (service_type, health_check_json, manifest_hash));
+            .insert(service_id, (service_type, health_check_json, manifest_hash, visibility));
         Ok(())
     }
 

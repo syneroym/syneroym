@@ -146,7 +146,7 @@ mod tests {
     use super::*;
     use crate::models::{
         AppBlueprintId, AppInstanceId, LogicalServiceName, LogicalServiceRef, PlannedService,
-        ServiceConfig, ServiceId, TopologyMode,
+        ServiceConfig, ServiceId, TopologyMode, TopologyVisibility, Visibility,
     };
 
     #[test]
@@ -243,12 +243,14 @@ mod tests {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility: Visibility::Private,
             },
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
             schedule: None,
             sharding_strategy: None,
+            topology_visibility: TopologyVisibility::Restricted,
         }
     }
 

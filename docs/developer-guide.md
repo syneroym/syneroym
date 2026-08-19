@@ -307,6 +307,45 @@ roymctl --dir <DIR> --as owner svc deploy \
   --wasm ./app.wasm
 ```
 
+##### Declaring Publication Visibility (ADR-0018)
+
+`svc deploy` publishes nothing by default. Whether the service's endpoint
+record reaches the community registry, and how far, is a declaration, not a
+side effect of which flags happened to be passed:
+
+```bash
+roymctl --dir <DIR> --as owner svc deploy \
+  --svc-id did:key:my-app-did \
+  --interfaces my-interface:v1 \
+  --wasm ./app.wasm \
+  --identity my-service-key \
+  --visibility internal
+```
+
+`--visibility` is one of `public` (registered and propagated to parent
+registries), `internal` (registered with this substrate's community
+registry only — the value a multi-substrate app's own members need to
+resolve each other, not `public`), or `private` (never registered; the
+default). `public`/`internal` require `--identity` or `--master`, since
+only the service's own key can sign a record the registry will admit; a
+mismatched `--identity`/`--svc-id` pair is refused before anything is
+built. `--record-out <path>` writes the signed record to a file instead of
+(or as well as) handing it to the substrate, for sharing a `private`
+service's record out of band with `SyneroymClient::new_with_record`.
+
+An app deployed through a `SynAppManifest` declares the same thing per
+service, in TOML (`ServiceSpec`'s `config` is flattened, so `visibility`
+sits directly under the service, like `fdae` above):
+```toml
+[services.my-svc]
+visibility = "internal"
+```
+Omitting it means `private` — a member with no declaration is deployed but
+never published, and a cross-node call to it fails to resolve. A logical
+service's `topology_visibility = "open"` (ADR-0022 §5, below) still needs a
+registered `visibility` for an outside caller to actually reach any of its
+members.
+
 ##### Declaring an FDAE Policy (Row/Column-Level Security)
 
 Any deployed service (WASM, TCP, or container) may declare a `config.fdae`
@@ -1328,7 +1367,13 @@ resolve_ucan = "/path/to/resolve-token.json"
 
 With neither set, every app-scoped hostname is refused by the supervisor
 it reaches (a startup warning names both keys); unscoped (`-s` only)
-hostnames are unaffected either way.
+hostnames are unaffected either way. A third way in needs neither
+key: an app that declares a logical service `topology_visibility = "open"`
+(ADR-0022 §5) answers any verified caller with no capability at all, so a
+gateway with no credential for that app still resolves it. `[iam]
+grant_resolve_to_node_did` stays the *operator*-side answer for a node's
+own apps' `restricted` services — the two are independent, not
+alternatives for the same case.
 
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy
 

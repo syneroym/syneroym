@@ -329,7 +329,7 @@ async fn deploy_guest(
                 test_constants::SAGA_TEST_PARTICIPANT_INTERFACE.to_string(),
             ],
             wasm,
-            None,
+            syneroym_sdk::Publication::Private,
             instance_certificate,
         )
         .await

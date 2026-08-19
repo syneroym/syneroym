@@ -99,7 +99,7 @@ pub struct EndpointInfo {
     pub generation: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedEndpointInfo {
     pub info: EndpointInfo,
     pub pkarr_packet_hex: String, // Hex encoded SignedPacket bytes
@@ -292,6 +292,7 @@ impl RegistryClient {
         sync_dht: bool,
     ) -> anyhow::Result<()> {
         let mut http_success = self.registry_url.is_none();
+        let mut published = false;
 
         if let Some(url) = &self.registry_url {
             let client = &self.http_client;
@@ -301,6 +302,7 @@ impl RegistryClient {
             match client.post(&register_url).json(signed_info).send().await {
                 Ok(response) if response.status().is_success() => {
                     http_success = true;
+                    published = true;
                 }
                 Ok(response) => {
                     tracing::warn!("HTTP registry returned error status: {}", response.status());
@@ -321,7 +323,13 @@ impl RegistryClient {
         // design -- where a delegation-signed record could only ever land
         // under the instance key's own DID on the DHT, never the master's --
         // this always has a home there.
-        if let Some(dht) = &self.dht_client {
+        // ADR-0018 §4: `is_private` means "not propagated beyond this registry".
+        // The Mainline DHT is a *wider* channel than a parent registry, so the same
+        // flag has to gate it -- otherwise `internal` means "global" on any node
+        // with `enable_bep0044_dht` on, which is the opposite of what it declares.
+        if let Some(dht) = &self.dht_client
+            && !signed_info.info.is_private
+        {
             tracing::debug!("Publishing to Mainline DHT (background)");
             let packet_bytes = hex::decode(&signed_info.pkarr_packet_hex)?;
             let bytes_obj = Bytes::from(packet_bytes);
@@ -330,6 +338,25 @@ impl RegistryClient {
             let signed_packet = SignedPacket::from_relay_payload(&pkarr_pubkey, &bytes_obj)?;
 
             publish_dht_packet(dht.clone(), signed_packet, sync_dht, "endpoint info").await;
+            published = true;
+        }
+
+        if !published {
+            return Err(if signed_info.info.is_private {
+                anyhow::anyhow!(
+                    "nothing published for '{}': this node has no HTTP registry configured, and a \
+                     record marked private is deliberately not published to the DHT. Configure \
+                     `substrate.registry_url`, or declare this service `public`",
+                    signed_info.info.service_id
+                )
+            } else {
+                anyhow::anyhow!(
+                    "nothing published for '{}': this node has no HTTP registry configured and no \
+                     DHT client. Set `substrate.registry_url` or enable \
+                     `substrate.enable_bep0044_dht`",
+                    signed_info.info.service_id
+                )
+            });
         }
 
         Ok(())
@@ -1089,6 +1116,24 @@ mod tests {
         // connectivity -- it is `register`'s early HTTP-registry-required
         // refusal this test disproves, not the DHT publish itself.
         assert!(client.register(&signed, false).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_dht_publication_skipped_for_private_record() {
+        let identity = Identity::generate().unwrap();
+        let did = substrate::derive_did_key(&identity.public_key());
+        let mut info = sample_endpoint_info(&did);
+        info.is_private = true;
+        let signed = info.sign(&identity).unwrap();
+
+        let client = RegistryClient::new(true, None);
+        let res = client.register(&signed, false).await;
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("marked private is deliberately not published to the DHT"),
+            "{err_msg}"
+        );
     }
 
     #[test]

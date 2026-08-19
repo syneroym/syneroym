@@ -178,8 +178,8 @@ from doing.
 | M05B async primitives — `crates/async_queue`, ADR-0023 | Shipped as a library; no WIT surface (that is G2) |
 | M05C S1–S3 (registry record, signed topology document, gateway hostname scheme) | S1–S2 shipped; S3 substantially complete |
 | ADR-0013 + Amendment 1 (messaging architecture, group key) | Accepted |
-| ADR-0022 §5 (per-logical-service visibility) | Design accepted; **unimplemented** — B2 implements it (D-06B-4) |
-| ADR-0018 (declared service record visibility) | **Accepted 2026-08-18.** Its `visibility` enum already shipped with M06A A1; B2 owes the `service-config` field and the publication path |
+| ADR-0022 §5 (per-logical-service visibility) | Design accepted; **implemented by B2 (2026-08-18)** — `ServiceSpec.topology_visibility` / `PlannedService.topology_visibility` |
+| ADR-0018 (declared service record visibility) | **Accepted 2026-08-18. Implemented by B2 (2026-08-18)** — §1/§4 in full, §2 (`--record-out`/`new_with_record`); §3 (peer-substrate known-records store) deferred, see [deferred-backlog.md](../../deferred-backlog.md) |
 
 ---
 
@@ -188,7 +188,7 @@ from doing.
 | # | Scope | Status |
 |---|---|---|
 | **B1** | **Person identity at the client gateway (G3).** A local session model binding an authenticated local client to a person's identity, so the gateway presents that person's DID under an owner→node delegation instead of the node's own. Retires the `TODO(post-B0)` at [gateway.rs:46](../../../../crates/client_gateway/src/gateway.rs#L46) and lets A2's `self-asserted` `caller-auth` label become `verified` for this path. Bind stays `127.0.0.1` (D-06B-5) | **Complete (2026-08-18)** — [implementation plan](slice-b1-implementation-plan.md), [status & evidence](status.md) |
-| **B2** | **Declared service visibility (G4), both layers.** ADR-0018 implemented: `service-config.visibility` plus a publication path that reads it, so publication becomes a declaration rather than a side effect of which flag was passed. The enum itself already landed with M06A A1. Plus ADR-0022 §5's per-logical-service "open to all" resolution declaration, so a caller on an unaffiliated installation is not refused without a pre-installed token (D-06B-4) | — (ADR-0018 Accepted 2026-08-18) |
+| **B2** | **Declared service visibility (G4), both layers.** ADR-0018 implemented: `service-config.visibility` plus a publication path that reads it, so publication becomes a declaration rather than a side effect of which flag was passed. The enum itself already landed with M06A A1. Plus ADR-0022 §5's per-logical-service "open to all" resolution declaration, so a caller on an unaffiliated installation is not refused without a pre-installed token (D-06B-4) | **Complete (2026-08-18)** — [implementation plan](slice-b2-implementation-plan.md), [status & evidence](status.md) |
 | **B3** | **The dual-build shim (D2/D3).** One trait per host interface; two implementations — `wit-bindgen` guest bindings, and an in-process native shim linked into `syneroym-substrate` behind a Cargo feature. A fixture generic over them, built both ways, with one integration suite that runs against both. Proven against `data-layer`, `blob-store`, and `messaging` — interfaces that already exist (D-06B-3) | — |
 | **B4** | **Durable messaging: interface and 1:1 delivery (G1 part 1, G2).** The `syneroym:conversation` host interface — conversations, direct delivery, delivery state, history — with outbox `pending`/`delivered`/`failed` folded in (D-06B-2). Layer 3 underneath: X3DH + Double Ratchet direct exchange, the sender's own outbox, strict direct delivery with no third-party buffering (D4). Durable content never touches the pub/sub broker (ADR-0013 §6) | B3 |
 | **B5** | **Group delivery (G1 part 2).** Gossip DAG with epidemic routing and participant relays; total order by `(sender_timestamp, sender_did)`; offline catch-up pulled from any online peer; owner-distributed per-epoch group key with rekey on every join, every removal, and on a schedule. Membership changes are ordinary DAG entries (D5, ADR-0013 Amendment 1) | B4 |
@@ -245,7 +245,20 @@ dependency R4 declares on R1 in the product releases.
   **the default changes behaviour**: today publication follows from whether a
   certificate was passed. B2's plan must state the migration rule explicitly and
   pick the safe default (undeclared = unpublished), since the alternative
-  publishes records their owners never asked to publish.
+  publishes records their owners never asked to publish. **This is loudest on
+  the `svc deploy` path** (`--visibility public`/`internal` with no
+  `--identity`/`--master` now fails at deploy, naming the fix) **and quietest
+  on the app-deploy path**: `certify_placed_members` used to mint a record
+  for every placed member unconditionally, so an app manifest written before
+  this field existed now deploys successfully but publishes no member
+  records, and the first cross-node call to an undeclared member fails later
+  with *"No valid Iroh mechanism found"*. `validate_plan_visibility`
+  (`D-B2-14`) catches the one contradiction that is statically detectable —
+  a cross-substrate dependency on a `private` member — at compile/submit
+  time; an app whose members simply omit the field and never depend on each
+  other across substrates deploys with no warning and stops resolving
+  cross-node. Every manifest that needs cross-node resolution must declare
+  `visibility = "internal"` (`D-B2-15`).
 - **A new caller-identity shape at the gateway.** The `caller-auth` label a
   guest sees on the gateway path changes from `self-asserted` to `verified`.
   Guests that branch on it see a value they already had to handle.
@@ -269,7 +282,8 @@ dependency R4 declares on R1 in the product releases.
 10. All three post from skewed clocks  -> byte-identical transcripts
 11. C goes offline, misses messages, returns -> pulls the gap from B
 12. Owner removes C, rekeys           -> C cannot read anything after removal
-13. A service declares `visibility: open` -> a caller on install Z resolves it
+13. A service declares `topology_visibility: open` and a registered
+    `visibility` (`internal`/`public`) -> a caller on install Z resolves it
     with no pre-installed token
 ```
 
@@ -321,9 +335,13 @@ other is a bug in the shim, not in the test.
    membership changes the key.
 9. An offline member returns and pulls the gap from an online peer, converging
    to the same transcript.
-10. A service that declares no visibility is neither published nor resolvable;
-    one that declares `open` is resolvable by a caller on an unaffiliated
-    installation **with no pre-installed token**.
+10. A service that declares no visibility is neither published nor resolvable
+    across installations; one that declares `topology_visibility = open`
+    *and* a registered `visibility` (`internal`/`public`) is resolvable by a
+    caller on an unaffiliated installation **with no pre-installed token**.
+    (`topology_visibility = open` alone, with `visibility = private`, is a
+    detectable mistake refused at compile/submit time — `D-B2-14`(b) — since
+    it would name members nobody can dial.)
 11. Every row of the failure and security matrix has a test.
 12. `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets
     --all-features`, `cargo test --workspace`, and `mise run test:e2e` are

@@ -150,7 +150,7 @@ mod tests {
         journal::ActionState,
         models::{
             AppBlueprintId, LogicalServiceName, LogicalServiceRef, ServiceConfig, ServiceId,
-            ServiceType, TopologyMode,
+            ServiceType, TopologyMode, TopologyVisibility, Visibility,
         },
     };
 
@@ -180,12 +180,14 @@ mod tests {
                     fdae: None,
                     health_check: None,
                     assets: None,
+                    visibility: Visibility::Private,
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
                 member_index: 0,
                 schedule: None,
                 sharding_strategy: None,
+                topology_visibility: TopologyVisibility::Restricted,
             }],
         }
     }

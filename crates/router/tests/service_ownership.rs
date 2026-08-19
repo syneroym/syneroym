@@ -184,7 +184,7 @@ impl EndpointStorage for RemoveOwnerFailingStorage {
     }
     async fn load_all_deploy_facts(
         &self,
-    ) -> anyhow::Result<Vec<(String, String, Option<String>, Option<String>)>> {
+    ) -> anyhow::Result<Vec<(String, String, Option<String>, Option<String>, Option<String>)>> {
         self.inner.load_all_deploy_facts().await
     }
     async fn save_deploy_facts(
@@ -193,9 +193,16 @@ impl EndpointStorage for RemoveOwnerFailingStorage {
         service_type: &str,
         health_check_json: Option<&str>,
         manifest_hash: Option<&str>,
+        visibility: Option<&str>,
     ) -> anyhow::Result<()> {
         self.inner
-            .save_deploy_facts(service_id, service_type, health_check_json, manifest_hash)
+            .save_deploy_facts(
+                service_id,
+                service_type,
+                health_check_json,
+                manifest_hash,
+                visibility,
+            )
             .await
     }
     async fn remove_deploy_facts(&self, service_id: &str) -> anyhow::Result<()> {
@@ -273,6 +280,7 @@ fn tcp_manifest(port: u16) -> DeployManifest {
             fdae_policy: None,
             health_check: None,
             assets: None,
+            visibility: None,
         },
         service_type: ServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {

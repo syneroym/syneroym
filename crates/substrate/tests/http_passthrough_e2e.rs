@@ -45,6 +45,7 @@ fn tcp_deploy_manifest(http_routes: serde_json::Value) -> DeployManifest {
             fdae_policy: None,
             health_check: None,
             assets: None,
+            visibility: None,
         },
         service_type: ServiceType::Tcp(syneroym_sdk::TcpManifest { endpoints: vec![] }),
         registry_certificate: None,
@@ -68,6 +69,7 @@ fn wasm_deploy_manifest(
             fdae_policy: None,
             health_check: None,
             assets: None,
+            visibility: None,
         },
         service_type: ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),

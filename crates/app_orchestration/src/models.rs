@@ -499,6 +499,13 @@ pub struct ServiceConfig {
     /// Static assets served directly from blob storage (M06A A1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assets: Option<AssetBundle>,
+    /// Whether this service's endpoint record is published, and how far it
+    /// travels (ADR-0018 §1). Declared, never inferred from whether a
+    /// certificate was supplied. Absent means `private`: publication is a
+    /// privacy decision, and a default of `public` would preserve the exact
+    /// accident of publishing because someone held a key.
+    #[serde(default)]
+    pub visibility: Visibility,
 }
 
 /// Author-side declaration of a deploy-time document.
@@ -539,6 +546,29 @@ pub enum Visibility {
     Internal,
     #[default]
     Private,
+}
+
+/// Who may fetch a logical service's Tier-2 topology document (ADR-0022 §5).
+///
+/// Binary by construction, not three-valued like [`Visibility`]: a topology
+/// document is never registered anywhere, so `internal`'s "registered here,
+/// not propagated" has nothing to mean. §5 also forbids a filtered member
+/// list -- a caller receives the whole member set and mode, or a clean
+/// denial -- so there is no third answer to express.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TopologyVisibility {
+    /// The caller must hold `supervisor/resolve` on `synapp:<app-did>`.
+    /// Today's behaviour, and the default: access is asked for, not assumed.
+    #[default]
+    Restricted,
+    /// Any verified caller may fetch this service's topology document, with
+    /// no capability and no pre-installed token.
+    Open,
+}
+
+fn is_restricted(v: &TopologyVisibility) -> bool {
+    matches!(v, TopologyVisibility::Restricted)
 }
 
 /// Author-side declaration of a static asset bundle.
@@ -613,6 +643,13 @@ pub struct ServiceSpec {
     /// no use for would make editing a cron string restart the service.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<ScheduleSpec>,
+    /// Who may fetch this logical service's topology document (ADR-0022 §5).
+    /// Part of the desired state, so it survives a supervisor handover --
+    /// node-local supervisor config would be neither reproducible nor
+    /// portable. Absent means `restricted`, which is what every manifest
+    /// written before this field already means.
+    #[serde(default, skip_serializing_if = "is_restricted")]
+    pub topology_visibility: TopologyVisibility,
 }
 
 /// Defines a dependency on another application.
@@ -869,6 +906,14 @@ pub struct PlannedService {
     /// otherwise never name a strategy at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sharding_strategy: Option<ShardingStrategy>,
+    /// Who may fetch this logical service's topology document (ADR-0022 §5).
+    /// Cloned from `ServiceSpec.topology_visibility` -- every member of a
+    /// scaled service carries the identical value, exactly as `topology_mode`,
+    /// `schedule`, and `sharding_strategy` already do. Needed on the *plan*,
+    /// not only the manifest: the supervisor holds no manifest, so the
+    /// stored plan is the only place it can read it from.
+    #[serde(default, skip_serializing_if = "is_restricted")]
+    pub topology_visibility: TopologyVisibility,
 }
 
 impl PlannedService {
@@ -1108,12 +1153,14 @@ mod tests {
                     fdae: None,
                     health_check: None,
                     assets: None,
+                    visibility: Visibility::Private,
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
                 member_index: 0,
                 schedule: None,
                 sharding_strategy: None,
+                topology_visibility: TopologyVisibility::Restricted,
             }],
         };
 
@@ -1249,12 +1296,14 @@ mod tests {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility: Visibility::Private,
             },
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
             member_index: 3,
             schedule: None,
             sharding_strategy: None,
+            topology_visibility: TopologyVisibility::Restricted,
         };
         assert_eq!(svc.member_ref().to_string(), "inst-1/backend#3");
     }
@@ -1285,12 +1334,14 @@ mod tests {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility: Visibility::Private,
             },
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
             schedule: None,
             sharding_strategy: None,
+            topology_visibility: TopologyVisibility::Restricted,
         };
         let toml = toml::to_string(&svc).unwrap();
         assert!(!toml.contains("member_index"));
@@ -1367,12 +1418,14 @@ mod tests {
                     fdae: None,
                     health_check: None,
                     assets: None,
+                    visibility: Visibility::Private,
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
                 member_index: 0,
                 schedule: None,
                 sharding_strategy: None,
+                topology_visibility: TopologyVisibility::Restricted,
             }],
         };
 
@@ -1487,12 +1540,14 @@ mod tests {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility: Visibility::Private,
             },
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
             member_index: 0,
             schedule: None,
             sharding_strategy: None,
+            topology_visibility: TopologyVisibility::Restricted,
         };
 
         let toml_round = toml::to_string(&svc).unwrap();
@@ -1814,6 +1869,7 @@ mod tests {
                         fdae: None,
                         health_check: None,
                         assets: None,
+                        visibility: Visibility::Private,
                     },
                     depends_on: vec![],
                     placement: None,
@@ -1826,6 +1882,7 @@ mod tests {
                         params: None,
                         timeout_ms: DEFAULT_SCHEDULE_TIMEOUT_MS,
                     }),
+                    topology_visibility: TopologyVisibility::Restricted,
                 },
             );
         }

@@ -12,7 +12,7 @@ use syneroym_core::{
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
 };
-use syneroym_sdk::SyneroymClient;
+use syneroym_sdk::{Publication, SyneroymClient};
 use syneroym_substrate::identity;
 use tempfile::TempDir;
 use tokio::{
@@ -228,7 +228,7 @@ async fn test_podman_lifecycle() {
             "docker.io/library/nginx:alpine".to_string(),
             ports,
             volumes,
-            None,
+            Publication::Private,
             Some(instance_cert),
         )
         .await

@@ -91,7 +91,7 @@ async fn test_real_client_opens_direct_stream_both_directions() {
             app_service_id.clone(),
             vec![TEST_DRIVER_INTERFACE.to_string()],
             wasm_bytes,
-            None,
+            syneroym_sdk::Publication::Private,
             None,
         )
         .await
@@ -195,7 +195,7 @@ async fn test_unregistered_stream_protocol_rejected_cleanly() {
                 host: "localhost".to_string(),
                 port: 30199,
             }],
-            None,
+            syneroym_sdk::Publication::Private,
             None,
         )
         .await

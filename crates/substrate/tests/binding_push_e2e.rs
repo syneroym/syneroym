@@ -23,7 +23,8 @@ use rustls::crypto::ring;
 use semver::Version;
 use serde_json::Map;
 use syneroym_app_orchestration::{
-    DeploymentJournal, DeploymentPlan, DeploymentState, LocalFilesystemCatalog, compile,
+    DeploymentJournal, DeploymentPlan, DeploymentState, LocalFilesystemCatalog, Visibility,
+    compile,
     models::{
         AppBlueprintId, AppInstanceId, LogicalServiceName, PlacementSelector, ServiceConfig,
         ServiceId, ServiceSpec, ServiceType, SubstrateAlias, SynAppManifest,
@@ -255,12 +256,14 @@ fn two_service_manifest() -> SynAppManifest {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility: Visibility::Internal,
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(BACKEND_ALIAS))),
             replicas: 1,
             sharding_strategy: None,
             schedule: None,
+            topology_visibility: Default::default(),
         },
     );
     services.insert(
@@ -280,12 +283,14 @@ fn two_service_manifest() -> SynAppManifest {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility: Visibility::Internal,
             },
             depends_on: vec![LogicalServiceName::new("backend")],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(FRONTEND_ALIAS))),
             replicas: 1,
             sharding_strategy: None,
             schedule: None,
+            topology_visibility: Default::default(),
         },
     );
     SynAppManifest {
@@ -432,13 +437,17 @@ async fn certify_and_publish(
         let cert = certify_instance(client, master, svc.service_id.as_str(), 24).await.unwrap();
         certs.insert(svc.service_id.clone(), cert.to_json().unwrap());
 
+        if svc.config.visibility == Visibility::Private {
+            continue;
+        }
+
         let record = EndpointInfo {
             service_id: svc.service_id.to_string(),
             substrate_id: client.service_id().to_string(),
             endpoint_type: EndpointType::Service,
             mechanisms: vec![],
             nickname: None,
-            is_private: false,
+            is_private: svc.config.visibility == Visibility::Internal,
             ttl: None,
             not_after: far_future_not_after(),
             generation: 0,

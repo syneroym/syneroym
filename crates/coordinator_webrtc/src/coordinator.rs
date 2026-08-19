@@ -103,8 +103,8 @@ impl CoordinatorWebRtc {
                 Some(syneroym_sdk::topology::CredentialWarning::NeitherConfigured) => warn!(
                     "coordinator has neither `roles.coordinator.resolve_ucan` nor \
                      `iam.grant_resolve_to_node_did`; app-scoped (-a…-s…) bootstrap hosts will be \
-                     refused by any supervisor they reach. Unscoped (-s only) hosts are \
-                     unaffected."
+                     refused by any supervisor they reach, unless the app declares that logical \
+                     service `open` (ADR-0022 §5). Unscoped (-s only) hosts are unaffected."
                 ),
                 Some(syneroym_sdk::topology::CredentialWarning::OnlyTheSameNodeGate) => debug!(
                     "coordinator has no `resolve_ucan`; app-scoped bootstrap hosts will resolve \

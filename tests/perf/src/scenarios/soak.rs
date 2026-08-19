@@ -16,7 +16,7 @@ use syneroym_core::{
     test_constants,
 };
 use syneroym_identity::{Identity, substrate};
-use syneroym_sdk::SyneroymClient;
+use syneroym_sdk::{Publication, SyneroymClient};
 use test_constants::GREETER_INTERFACE_NAME;
 use tokio::{sync::Mutex, time, time::sleep};
 use tracing::{info, warn};
@@ -99,7 +99,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
             app_service_id.clone(),
             vec![GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes.clone(),
-            None,
+            Publication::Private,
             None,
         )
         .await?;
@@ -303,7 +303,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                     unique_service_id.clone(),
                     vec![GREETER_INTERFACE_NAME.to_string()],
                     wasm_bytes_clone.clone(),
-                    None,
+                    Publication::Private,
                     None,
                 )
                 .await;

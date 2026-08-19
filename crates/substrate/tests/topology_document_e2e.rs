@@ -22,7 +22,7 @@ use semver::Version;
 use serde_json::{Map, json};
 use syneroym_app_orchestration::{
     AppDid, LocalFilesystemCatalog, LogicalResolver, LogicalServiceName, SignedTopologyDocument,
-    StaticInventory, TopologyFetcher, compile,
+    StaticInventory, TopologyFetcher, TopologyVisibility, Visibility, compile,
     models::{
         AppBlueprintId, AppInstanceId, PlacementSelector, ServiceConfig, ServiceSpec, ServiceType,
         SubstrateAlias, SynAppManifest,
@@ -120,6 +120,22 @@ const PORTS_FORGED_DOCUMENT_REJECTED: PortBlock = PortBlock {
     managed_iroh: 16_500,
     managed_registry: 16_501,
     managed_gateway: 16_502,
+};
+const PORTS_UNGRANTED_CALLER_RESOLVES_OPEN: PortBlock = PortBlock {
+    supervisor_iroh: 16_600,
+    supervisor_registry: 16_601,
+    supervisor_gateway: 16_602,
+    managed_iroh: 16_700,
+    managed_registry: 16_701,
+    managed_gateway: 16_702,
+};
+const PORTS_UNGRANTED_CALLER_REFUSED_RESTRICTED: PortBlock = PortBlock {
+    supervisor_iroh: 16_800,
+    supervisor_registry: 16_801,
+    supervisor_gateway: 16_802,
+    managed_iroh: 16_900,
+    managed_registry: 16_901,
+    managed_gateway: 16_902,
 };
 
 const MANAGED_ALIAS: &str = "managed";
@@ -297,8 +313,11 @@ fn resolve_grant(supervisor_owner: &Identity, grantee_did: &str, app_did: &str) 
     .expect("issue resolve grant")
 }
 
-/// `replicas`-member manifest, `backend` placed on `MANAGED_ALIAS`.
-fn service_manifest(replicas: u32) -> SynAppManifest {
+fn service_manifest_with_vis(
+    replicas: u32,
+    visibility: Visibility,
+    topology_visibility: TopologyVisibility,
+) -> SynAppManifest {
     let mut services = BTreeMap::new();
     services.insert(
         LogicalServiceName::new("backend"),
@@ -317,12 +336,14 @@ fn service_manifest(replicas: u32) -> SynAppManifest {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility,
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),
             replicas,
             sharding_strategy: None,
             schedule: None,
+            topology_visibility,
         },
     );
     SynAppManifest {
@@ -333,6 +354,11 @@ fn service_manifest(replicas: u32) -> SynAppManifest {
         services,
         dependencies: BTreeMap::new(),
     }
+}
+
+/// `replicas`-member manifest, `backend` placed on `MANAGED_ALIAS`.
+fn service_manifest(replicas: u32) -> SynAppManifest {
+    service_manifest_with_vis(replicas, Visibility::Internal, TopologyVisibility::Restricted)
 }
 
 async fn compiled_plan_json(manifest: &SynAppManifest, instance_id: &str) -> String {
@@ -404,25 +430,13 @@ fn submission(
     }])
 }
 
-/// Submits and adopts a `replicas`-member instance, returning the app
-/// master DID -- the reference scenario's step 1.
-async fn submit_and_adopt(
+async fn submit_and_adopt_with_manifest(
     supervisor_node: &mut Node,
     instance_id: &str,
     inventory_json: String,
-    replicas: u32,
+    manifest: &SynAppManifest,
 ) -> String {
-    let manifest = service_manifest(replicas);
-    let plan_json = compiled_plan_json(&manifest, instance_id).await;
-    // `supervisor_node`'s connection was dialed and proven live by its own
-    // `wait_for_ready` during `Node::boot` inside `boot_pair`, then sat
-    // idle through the managed node's own full boot that followed -- long
-    // enough under CI's scheduling pressure for the peer to abandon that
-    // idle path ("no viable network path exists: last path abandoned by
-    // peer"; same root cause fixed throughout this crate's e2e tests, e.g.
-    // `binding_push_e2e.rs`). Recover by explicit shutdown→reconnect
-    // before one retry, not just retrying the same request on the same
-    // dead connection.
+    let plan_json = compiled_plan_json(manifest, instance_id).await;
     let submit_params = submission(instance_id, plan_json, inventory_json, 0);
     crate::call_with_reconnect!(
         supervisor_node.substrate_client,
@@ -442,10 +456,6 @@ async fn submit_and_adopt(
         .expect("adopt-result carries app_master_did")
         .to_string();
 
-    // Tier 1 (this app DID -> its supervising node) is published by the
-    // resident loop's own tick, not synchronously by `adopt` -- a `resolve`
-    // fetch's own Tier-1 lookup would otherwise race it. Waited out here,
-    // once, rather than in every test.
     let registry_client = RegistryClient::new(false, Some(supervisor_node.registry_url.clone()));
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
@@ -462,6 +472,18 @@ async fn submit_and_adopt(
     app_did
 }
 
+/// Submits and adopts a `replicas`-member instance, returning the app
+/// master DID -- the reference scenario's step 1.
+async fn submit_and_adopt(
+    supervisor_node: &mut Node,
+    instance_id: &str,
+    inventory_json: String,
+    replicas: u32,
+) -> String {
+    let manifest = service_manifest(replicas);
+    submit_and_adopt_with_manifest(supervisor_node, instance_id, inventory_json, &manifest).await
+}
+
 /// A fetcher connecting to the supervisor node as `caller`, presenting
 /// `grant`.
 fn outside_caller_fetcher(
@@ -472,6 +494,15 @@ fn outside_caller_fetcher(
     RegistryTopologyFetcher::new(supervisor_registry_url.to_string())
         .with_identity(caller)
         .with_ucan(grant)
+        .with_connect_timeout(Duration::from_secs(10))
+}
+
+fn anonymous_outside_caller_fetcher(
+    supervisor_registry_url: &str,
+    caller: &Identity,
+) -> RegistryTopologyFetcher {
+    RegistryTopologyFetcher::new(supervisor_registry_url.to_string())
+        .with_identity(caller)
         .with_connect_timeout(Duration::from_secs(10))
 }
 
@@ -729,6 +760,90 @@ async fn a_document_forged_under_a_different_key_is_rejected() {
     assert!(
         forged.verify(&app_did_typed).is_err(),
         "a document signed under an unrelated key must not verify against the real app DID"
+    );
+
+    supervisor_node.teardown().await;
+    managed_node.teardown().await;
+}
+
+/// Test 41: An outside caller with no UCAN grant fetches the Tier-2 topology
+/// document of an app whose service is declared `open`, and successfully
+/// resolves its members.
+#[tokio::test]
+async fn an_outside_caller_resolves_an_open_apps_members_with_no_ucan_grant() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let supervisor_owner = Identity::generate().unwrap();
+    let managed_owner = Identity::generate().unwrap();
+    let (mut supervisor_node, managed_node, inventory_json) =
+        boot_pair(&supervisor_owner, &managed_owner, PORTS_UNGRANTED_CALLER_RESOLVES_OPEN).await;
+
+    let manifest = service_manifest_with_vis(2, Visibility::Internal, TopologyVisibility::Open);
+    let app_did = submit_and_adopt_with_manifest(
+        &mut supervisor_node,
+        "resolve-open-inst",
+        inventory_json,
+        &manifest,
+    )
+    .await;
+
+    let outside_caller = Identity::generate().unwrap();
+    let fetcher = anonymous_outside_caller_fetcher(&supervisor_node.registry_url, &outside_caller);
+
+    let app_did_typed = AppDid::new(app_did.clone());
+    let resolver = LogicalResolver::new(Arc::new(StaticInventory::new()));
+    let key = fetch_and_register(
+        &fetcher,
+        &resolver,
+        &app_did_typed,
+        &LogicalServiceName::new("backend"),
+    )
+    .await
+    .expect("fetch_and_register failed for open service");
+
+    let member = resolver.resolve(&key, Some(b"routing-key")).expect("resolve failed");
+    let all = resolver.resolve_all(&key).unwrap();
+    assert_eq!(all.members.len(), 2, "the two-replica backend must resolve both members");
+    assert!(all.members.contains(&member));
+
+    supervisor_node.teardown().await;
+    managed_node.teardown().await;
+}
+
+/// Test 42: An outside caller with no UCAN grant fetching a `restricted`
+/// service is refused.
+#[tokio::test]
+async fn an_outside_caller_resolving_a_restricted_app_with_no_grant_is_refused() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let supervisor_owner = Identity::generate().unwrap();
+    let managed_owner = Identity::generate().unwrap();
+    let (mut supervisor_node, managed_node, inventory_json) =
+        boot_pair(&supervisor_owner, &managed_owner, PORTS_UNGRANTED_CALLER_REFUSED_RESTRICTED)
+            .await;
+
+    let manifest =
+        service_manifest_with_vis(1, Visibility::Internal, TopologyVisibility::Restricted);
+    let app_did = submit_and_adopt_with_manifest(
+        &mut supervisor_node,
+        "resolve-restricted-inst",
+        inventory_json,
+        &manifest,
+    )
+    .await;
+
+    let outside_caller = Identity::generate().unwrap();
+    let fetcher = anonymous_outside_caller_fetcher(&supervisor_node.registry_url, &outside_caller);
+
+    let app_did_typed = AppDid::new(app_did.clone());
+    let err = fetcher.fetch(&app_did_typed, &LogicalServiceName::new("backend")).await.unwrap_err();
+    // `fetch`'s own `.context("supervisor resolve call failed")` means the
+    // JSON-RPC error itself (naming the denial) is further down the chain,
+    // not in the top-level `Display` -- `{err:#}` walks the whole chain.
+    // `PERMISSION_DENIED_CODE` is `-32010`
+    // (`syneroym_rpc::PERMISSION_DENIED_CODE`).
+    let full = format!("{err:#}");
+    assert!(
+        full.contains("-32010") || full.contains("is resolvable by caller"),
+        "expected permission denied: {full}"
     );
 
     supervisor_node.teardown().await;

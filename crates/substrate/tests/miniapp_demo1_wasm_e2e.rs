@@ -43,6 +43,7 @@ fn miniapp_manifest_with_assets(
                 hash: None,
                 visibility: Some(Visibility::Public),
             }),
+            visibility: None,
         },
         service_type: ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),

@@ -302,7 +302,7 @@ async fn deploy_guest(node: &mut Node, master: &Identity, wasm: Vec<u8>) -> Stri
             service_id.clone(),
             vec![test_constants::PROXY_TEST_DRIVER_INTERFACE.to_string()],
             wasm,
-            None,
+            syneroym_sdk::Publication::Private,
             Some(cert),
         )
         .await
@@ -469,7 +469,7 @@ async fn a_queued_guest_call_to_an_offline_node_lands_after_it_returns() {
             target_did.clone(),
             vec![test_constants::GREETER_INTERFACE_NAME.to_string()],
             greeter_wasm.clone(),
-            None,
+            syneroym_sdk::Publication::Private,
             None,
         )
         .await
@@ -601,7 +601,7 @@ async fn a_queued_guest_call_to_an_offline_node_lands_after_it_returns() {
             target_did.clone(),
             vec![test_constants::GREETER_INTERFACE_NAME.to_string()],
             greeter_wasm,
-            None,
+            syneroym_sdk::Publication::Private,
             None,
         )
         .await
@@ -716,7 +716,7 @@ async fn a_permanently_unreachable_target_lands_in_the_dlq_and_replays() {
             target_did.clone(),
             vec![test_constants::GREETER_INTERFACE_NAME.to_string()],
             greeter_wasm,
-            None,
+            syneroym_sdk::Publication::Private,
             None,
         )
         .await

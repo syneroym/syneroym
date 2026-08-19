@@ -61,10 +61,9 @@ interface orchestrator {
         rpc(rpc-probe),
     }
 
-    /// Endpoint-record visibility (ADR-0018). Defined here by M06A A1 because
-    /// A1 is the first consumer; ADR-0018 adds the `service-config` field
-    /// that uses it for record publication, a different question from asset
-    /// readability below.
+    /// Endpoint-record visibility (ADR-0018). `public` propagates records to
+    /// parent registries; `internal` registers with the local community
+    /// registry only; `private` is never registered.
     enum visibility {
         public,
         internal,
@@ -106,6 +105,13 @@ interface orchestrator {
         health-check: option<health-check>,
         /// Static assets served directly from blob storage (M06A A1).
         assets: option<asset-bundle>,
+        /// Whether this service's endpoint record is published, and how far
+        /// it travels (ADR-0018). `public` requires a `registry-certificate`
+        /// whose `is_private` is false; `internal` requires one whose
+        /// `is_private` is true; `private` requires none, and refuses one.
+        /// Absent means `private` -- tolerant decoding of a field an older
+        /// caller omits, not a compatibility concession.
+        visibility: option<visibility>,
     }
 
     /// Manifest details for a Wasm component deployment.
@@ -191,6 +197,10 @@ interface orchestrator {
         /// Unix seconds when the installed instance certificate expires, if
         /// one is installed.
         instance-certificate-expires-at: option<u64>,
+        /// The visibility this service was deployed with (ADR-0018 §4), so
+        /// "deliberately private" is distinguishable from "forgotten" in a
+        /// listing. Absent for a service deployed before this field existed.
+        visibility: option<visibility>,
     }
 
     /// The instance signing key this substrate derives for `service-id` under

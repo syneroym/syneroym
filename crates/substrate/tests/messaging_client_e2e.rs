@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use rustls::crypto::ring;
 use syneroym_identity::{Identity, substrate};
-use syneroym_sdk::SyneroymClient;
+use syneroym_sdk::{Publication, SyneroymClient};
 use tokio::time;
 
 mod common;
@@ -40,7 +40,7 @@ async fn test_native_subscriber_receives_push_delivery_and_close_unsubscribes() 
                 host: "localhost".to_string(),
                 port: 30099,
             }],
-            None,
+            Publication::Private,
             None,
         )
         .await

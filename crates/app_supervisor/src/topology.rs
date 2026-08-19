@@ -7,6 +7,7 @@ use std::{collections::BTreeSet, fmt};
 
 use syneroym_app_orchestration::{
     DeploymentPlan, LogicalServiceName, ServiceId, ShardingStrategy, TopologyMode,
+    TopologyVisibility,
 };
 use syneroym_core::util;
 
@@ -60,6 +61,27 @@ impl fmt::Display for TopologyBuildError {
 }
 
 impl std::error::Error for TopologyBuildError {}
+
+/// Reads one logical service's declared publication posture for Tier-2
+/// resolution (ADR-0022 §5). Members of one logical service carry identical
+/// copies -- the compiler clones the spec's value onto each -- so a
+/// disagreement is a compiler defect, reported the same way `service_topology`
+/// reports one rather than resolved to whichever member sorted first.
+pub fn service_topology_visibility(
+    plan: &DeploymentPlan,
+    service_name: &LogicalServiceName,
+) -> Result<TopologyVisibility, TopologyBuildError> {
+    let members: Vec<_> =
+        plan.services.iter().filter(|s| &s.logical_ref.service_name == service_name).collect();
+    if members.is_empty() {
+        return Err(TopologyBuildError::NoSuchService(service_name.clone()));
+    }
+    let vis = members[0].topology_visibility;
+    if members.iter().any(|s| s.topology_visibility != vis) {
+        return Err(TopologyBuildError::InconsistentPlan(service_name.clone()));
+    }
+    Ok(vis)
+}
 
 /// Resolves the `service_name` a caller supplied against the names this
 /// plan actually declares, accepting either the exact name or its
@@ -180,6 +202,7 @@ mod tests {
             fdae: None,
             health_check: None,
             assets: None,
+            visibility: syneroym_app_orchestration::Visibility::Private,
         }
     }
 
@@ -188,6 +211,22 @@ mod tests {
         member_index: u32,
         mode: TopologyMode,
         sharding_strategy: Option<ShardingStrategy>,
+    ) -> PlannedService {
+        member_with_vis(
+            service_name,
+            member_index,
+            mode,
+            sharding_strategy,
+            TopologyVisibility::Restricted,
+        )
+    }
+
+    fn member_with_vis(
+        service_name: &str,
+        member_index: u32,
+        mode: TopologyMode,
+        sharding_strategy: Option<ShardingStrategy>,
+        topology_visibility: TopologyVisibility,
     ) -> PlannedService {
         PlannedService {
             service_id: svc_id(&format!("m{member_index}")),
@@ -202,6 +241,7 @@ mod tests {
             member_index,
             schedule: None,
             sharding_strategy,
+            topology_visibility,
         }
     }
 
@@ -212,6 +252,67 @@ mod tests {
             version: semver::Version::new(1, 0, 0),
             services,
         }
+    }
+
+    #[test]
+    fn test_service_topology_visibility_returns_declared_visibility() {
+        let p_open = plan(vec![member_with_vis(
+            "backend",
+            0,
+            TopologyMode::Singleton,
+            None,
+            TopologyVisibility::Open,
+        )]);
+        assert_eq!(
+            service_topology_visibility(&p_open, &svc_name("backend")).unwrap(),
+            TopologyVisibility::Open
+        );
+
+        let p_restricted = plan(vec![member_with_vis(
+            "backend",
+            0,
+            TopologyMode::Singleton,
+            None,
+            TopologyVisibility::Restricted,
+        )]);
+        assert_eq!(
+            service_topology_visibility(&p_restricted, &svc_name("backend")).unwrap(),
+            TopologyVisibility::Restricted
+        );
+    }
+
+    #[test]
+    fn test_service_topology_visibility_rejects_inconsistent_plan() {
+        let p = plan(vec![
+            member_with_vis("backend", 0, TopologyMode::Redundant, None, TopologyVisibility::Open),
+            member_with_vis(
+                "backend",
+                1,
+                TopologyMode::Redundant,
+                None,
+                TopologyVisibility::Restricted,
+            ),
+        ]);
+        let err = service_topology_visibility(&p, &svc_name("backend")).unwrap_err();
+        assert!(matches!(err, TopologyBuildError::InconsistentPlan(_)));
+    }
+
+    #[test]
+    fn test_service_topology_visibility_resolves_via_short_hash() {
+        let p = plan(vec![member_with_vis(
+            "backend",
+            0,
+            TopologyMode::Singleton,
+            None,
+            TopologyVisibility::Open,
+        )]);
+        let resolved_name =
+            resolve_service_name(&p, &svc_name(&util::short_hash("backend"))).unwrap();
+        assert_eq!(resolved_name, svc_name("backend"));
+        assert_eq!(
+            service_topology_visibility(&p, &resolved_name).unwrap(),
+            TopologyVisibility::Open
+        );
     }
 
     #[test]

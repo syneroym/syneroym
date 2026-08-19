@@ -30,7 +30,7 @@ use rustls::crypto::ring;
 use semver::Version;
 use serde_json::{Map, json};
 use syneroym_app_orchestration::{
-    LocalFilesystemCatalog, LogicalServiceName, compile,
+    LocalFilesystemCatalog, LogicalServiceName, TopologyVisibility, Visibility, compile,
     models::{
         AppBlueprintId, AppInstanceId, PlacementSelector, ServiceConfig, ServiceSpec, ServiceType,
         SubstrateAlias, SynAppManifest,
@@ -313,10 +313,12 @@ fn resolve_grant_for_node(
     .expect("issue resolve grant")
 }
 
-/// `replicas`-member manifest, `backend` placed on `MANAGED_ALIAS`, its
-/// TCP source pointing at `backend_port` -- a real listener this file
-/// spawns, so a request routed through it carries real, checkable bytes.
-fn service_manifest(replicas: u32, backend_port: u16) -> SynAppManifest {
+fn service_manifest_with_vis(
+    replicas: u32,
+    backend_port: u16,
+    visibility: Visibility,
+    topology_visibility: TopologyVisibility,
+) -> SynAppManifest {
     let mut services = BTreeMap::new();
     services.insert(
         LogicalServiceName::new("backend"),
@@ -335,12 +337,14 @@ fn service_manifest(replicas: u32, backend_port: u16) -> SynAppManifest {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility,
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),
             replicas,
             sharding_strategy: None,
             schedule: None,
+            topology_visibility,
         },
     );
     SynAppManifest {
@@ -351,6 +355,18 @@ fn service_manifest(replicas: u32, backend_port: u16) -> SynAppManifest {
         services,
         dependencies: BTreeMap::new(),
     }
+}
+
+/// `replicas`-member manifest, `backend` placed on `MANAGED_ALIAS`, its
+/// TCP source pointing at `backend_port` -- a real listener this file
+/// spawns, so a request routed through it carries real, checkable bytes.
+fn service_manifest(replicas: u32, backend_port: u16) -> SynAppManifest {
+    service_manifest_with_vis(
+        replicas,
+        backend_port,
+        Visibility::Internal,
+        TopologyVisibility::Restricted,
+    )
 }
 
 async fn compiled_plan_json(manifest: &SynAppManifest, instance_id: &str) -> String {
@@ -373,19 +389,13 @@ fn submission(
     }])
 }
 
-/// Submits and adopts a `replicas`-member instance whose `backend` TCP
-/// source is `backend_port`, returning the app master DID, and waits for
-/// the Tier-1 record to resolve through the registry (published by the
-/// resident loop's own tick, not synchronously by `adopt`).
-async fn submit_and_adopt(
+async fn submit_and_adopt_with_manifest(
     supervisor_node: &Node,
     instance_id: &str,
     inventory_json: String,
-    replicas: u32,
-    backend_port: u16,
+    manifest: &SynAppManifest,
 ) -> String {
-    let manifest = service_manifest(replicas, backend_port);
-    let plan_json = compiled_plan_json(&manifest, instance_id).await;
+    let plan_json = compiled_plan_json(manifest, instance_id).await;
     supervisor_node
         .substrate_client
         .request("supervisor", "submit", submission(instance_id, plan_json, inventory_json, 0))
@@ -417,6 +427,21 @@ async fn submit_and_adopt(
     }
 
     app_did
+}
+
+/// Submits and adopts a `replicas`-member instance whose `backend` TCP
+/// source is `backend_port`, returning the app master DID, and waits for
+/// the Tier-1 record to resolve through the registry (published by the
+/// resident loop's own tick, not synchronously by `adopt`).
+async fn submit_and_adopt(
+    supervisor_node: &Node,
+    instance_id: &str,
+    inventory_json: String,
+    replicas: u32,
+    backend_port: u16,
+) -> String {
+    let manifest = service_manifest(replicas, backend_port);
+    submit_and_adopt_with_manifest(supervisor_node, instance_id, inventory_json, &manifest).await
 }
 
 /// Spawns a minimal raw-TCP responder: whatever bytes arrive, it answers
@@ -818,6 +843,100 @@ async fn a_same_node_gateway_resolves_with_no_credential_file() {
     )
     .await;
     assert!(text.contains("same-node"), "{text}");
+
+    supervisor_node.teardown().await;
+    managed_node.teardown().await;
+}
+
+/// Test 43: A client gateway with neither credential resolves and proxies an
+/// `open` logical hostname.
+#[tokio::test]
+async fn a_gateway_with_neither_credential_resolves_and_proxies_an_open_logical_hostname() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let supervisor_owner = Identity::generate().unwrap();
+    let managed_owner = Identity::generate().unwrap();
+    let [backend_port] = common::alloc_ports();
+    let _backend = spawn_tcp_backend(backend_port, "open-hello").await;
+
+    let (supervisor_node, managed_node, inventory_json) = boot_pair(
+        &supervisor_owner,
+        &managed_owner,
+        PortBlock::alloc(),
+        false, // no same-node grant
+        None,  // no resolve_ucan anywhere
+        false,
+        None,
+    )
+    .await;
+
+    let manifest =
+        service_manifest_with_vis(1, backend_port, Visibility::Internal, TopologyVisibility::Open);
+    let app_did =
+        submit_and_adopt_with_manifest(&supervisor_node, "gw-host-open", inventory_json, &manifest)
+            .await;
+    let host =
+        util::generate_app_host("gw-host-open", &app_did, "backend", None, "localhost").unwrap();
+
+    let text = poll_gateway_until_success(
+        &Client::new(),
+        &managed_node.gateway_url(),
+        &host,
+        None,
+        Instant::now() + Duration::from_secs(20),
+    )
+    .await;
+    assert!(text.contains("open-hello"), "{text}");
+
+    supervisor_node.teardown().await;
+    managed_node.teardown().await;
+}
+
+/// Test 44: A client gateway with neither credential refuses a `restricted`
+/// logical hostname.
+#[tokio::test]
+async fn a_gateway_with_neither_credential_refuses_a_restricted_logical_hostname() {
+    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let supervisor_owner = Identity::generate().unwrap();
+    let managed_owner = Identity::generate().unwrap();
+    let [backend_port] = common::alloc_ports();
+    let _backend = spawn_tcp_backend(backend_port, "restricted-hello").await;
+
+    let (supervisor_node, managed_node, inventory_json) = boot_pair(
+        &supervisor_owner,
+        &managed_owner,
+        PortBlock::alloc(),
+        false, // no same-node grant
+        None,  // no resolve_ucan anywhere
+        false,
+        None,
+    )
+    .await;
+
+    let manifest = service_manifest_with_vis(
+        1,
+        backend_port,
+        Visibility::Internal,
+        TopologyVisibility::Restricted,
+    );
+    let app_did = submit_and_adopt_with_manifest(
+        &supervisor_node,
+        "gw-host-restricted",
+        inventory_json,
+        &manifest,
+    )
+    .await;
+    let host =
+        util::generate_app_host("gw-host-restricted", &app_did, "backend", None, "localhost")
+            .unwrap();
+
+    let res = Client::new()
+        .post(managed_node.gateway_url())
+        .header("Host", &host)
+        .body("ping")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status().as_u16(), 502);
 
     supervisor_node.teardown().await;
     managed_node.teardown().await;

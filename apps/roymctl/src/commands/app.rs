@@ -411,12 +411,14 @@ pub async fn handle(
                             fdae: None,
                             health_check: None,
                             assets: None,
+                            visibility: Default::default(),
                         },
                         depends_on: vec![],
                         placement: None,
                         replicas: 1,
                         sharding_strategy: None,
                         schedule: None,
+                        topology_visibility: Default::default(),
                     },
                 );
                 SynAppManifest {
@@ -1436,6 +1438,7 @@ mod tests {
             fdae: None,
             health_check: None,
             assets: None,
+            visibility: Default::default(),
         }
     }
 
@@ -1454,6 +1457,7 @@ mod tests {
             member_index: 0,
             schedule: None,
             sharding_strategy: None,
+            topology_visibility: Default::default(),
         }
     }
 

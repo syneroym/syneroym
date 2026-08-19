@@ -146,8 +146,8 @@ impl ClientGateway {
                 Some(CredentialWarning::NeitherConfigured) => warn!(
                     "client gateway has neither `roles.client_gateway.resolve_ucan` nor \
                      `iam.grant_resolve_to_node_did`; app-scoped (-a…-s…) hostnames will be \
-                     refused by any supervisor they reach. Unscoped (-s only) hostnames are \
-                     unaffected."
+                     refused by any supervisor they reach, unless the app declares that logical \
+                     service `open` (ADR-0022 §5). Unscoped (-s only) hostnames are unaffected."
                 ),
                 Some(CredentialWarning::OnlyTheSameNodeGate) => debug!(
                     "client gateway has no `resolve_ucan`; app-scoped hostnames will resolve only \

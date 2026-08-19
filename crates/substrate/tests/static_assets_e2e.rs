@@ -46,6 +46,7 @@ fn wasm_asset_manifest(
                 hash: None,
                 visibility: Some(visibility),
             }),
+            visibility: None,
         },
         service_type: ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
@@ -69,6 +70,7 @@ fn wasm_manifest_without_assets(wasm_bytes: Vec<u8>) -> DeployManifest {
             fdae_policy: None,
             health_check: None,
             assets: None,
+            visibility: None,
         },
         service_type: ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),

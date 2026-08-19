@@ -8,7 +8,7 @@ use crate::{
     models::{
         AppBlueprintId, AppDependencySpec, AppInstanceId, DeploymentPlan, LogicalServiceName,
         LogicalServiceRef, PlacementSelector, PlannedService, ServiceId, ServiceSpec,
-        SynAppManifest, TopologyMode,
+        SynAppManifest, TopologyMode, TopologyVisibility, Visibility,
     },
 };
 
@@ -42,7 +42,87 @@ pub async fn compile(
     )
     .await?;
 
+    for plan in &plans {
+        validate_plan_visibility(plan)
+            .map_err(|errs| anyhow!("Plan visibility validation failed: {}", errs.join("; ")))?;
+    }
+
     Ok(CompiledDeployment { plans })
+}
+
+const fn visibility_str(v: Visibility) -> &'static str {
+    match v {
+        Visibility::Public => "public",
+        Visibility::Internal => "internal",
+        Visibility::Private => "private",
+    }
+}
+
+/// Refuses a plan whose visibility declarations contradict its own placement
+/// (ADR-0018 + ADR-0022 §5, `D-B2-14`). Operates on the **plan**, not the
+/// manifest: a supervisor receives `plan-json` through `submit` and never
+/// sees a `SynAppManifest`, so a manifest-level check would leave that whole
+/// path silent.
+///
+/// Two checks:
+/// (a) a service placed on a **different, explicitly named** substrate from
+///     a service that `depends_on` it, while that dependency declares
+///     `visibility = private` -- a private record is never registered, so
+///     the dependency could never resolve to an address.
+/// (b) a service declaring `topology_visibility = open` while declaring
+///     `visibility = private` -- F13's `(open, private)` row: a caller
+///     receives a signed member list and then has nothing it can dial.
+pub fn validate_plan_visibility(plan: &DeploymentPlan) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    let by_id: BTreeMap<&ServiceId, &PlannedService> =
+        plan.services.iter().map(|s| (&s.service_id, s)).collect();
+
+    for service in &plan.services {
+        // (a) -- only fires when both placements are explicitly named and
+        // differ. `None` means "wherever this deploy was aimed", which this
+        // function cannot resolve; refusing on a maybe would reject working
+        // plans, so the runtime failure stays the backstop for that case.
+        for members in service.resolved_dependencies.values() {
+            for member_id in members {
+                let Some(dep) = by_id.get(member_id) else {
+                    continue; // a cross-app member; not this check's business
+                };
+                if let (Some(svc_substrate), Some(dep_substrate)) =
+                    (&service.substrate, &dep.substrate)
+                    && svc_substrate != dep_substrate
+                    && dep.config.visibility == Visibility::Private
+                {
+                    errors.push(format!(
+                        "'{}' on substrate '{svc_substrate}' depends on '{}' on substrate \
+                         '{dep_substrate}', but '{}' declares visibility 'private' -- its \
+                         endpoint record is never registered, so this dependency could never \
+                         resolve to an address. Declare 'internal': registered with the community \
+                         registry, not propagated upward, which is what a cross-substrate member \
+                         needs",
+                        service.logical_ref.service_name,
+                        dep.logical_ref.service_name,
+                        dep.logical_ref.service_name
+                    ));
+                }
+            }
+        }
+
+        // (b) -- F13's (open, private) row.
+        if service.topology_visibility == TopologyVisibility::Open
+            && service.config.visibility == Visibility::Private
+        {
+            errors.push(format!(
+                "'{}' declares topology_visibility 'open' but visibility '{}' -- an outside \
+                 caller would receive its member list and then be unable to resolve any member to \
+                 an address, because a private member is never registered. Declare visibility \
+                 'internal' alongside it",
+                service.logical_ref.service_name,
+                visibility_str(service.config.visibility)
+            ));
+        }
+    }
+
+    if errors.is_empty() { Ok(()) } else { Err(errors) }
 }
 
 fn compile_recursive<'a>(
@@ -174,6 +254,7 @@ fn compile_recursive<'a>(
                     member_index,
                     schedule: spec.schedule.clone(),
                     sharding_strategy: spec.sharding_strategy.clone(),
+                    topology_visibility: spec.topology_visibility,
                 });
             }
         }
@@ -945,5 +1026,193 @@ mod tests {
 
         let db_plan = &compiled.plans[0];
         assert_eq!(db_plan.services[0].substrate, Some(SubstrateAlias::new("edge-2")));
+    }
+
+    fn planned_service(
+        name: &str,
+        vis: Visibility,
+        topo_vis: TopologyVisibility,
+        substrate: Option<SubstrateAlias>,
+        resolved_dependencies: BTreeMap<LogicalServiceName, Vec<ServiceId>>,
+    ) -> PlannedService {
+        PlannedService {
+            service_id: ServiceId::new(format!("did:key:{name}")),
+            logical_ref: LogicalServiceRef {
+                app_instance_id: AppInstanceId::new("app-inst"),
+                service_name: LogicalServiceName::new(name),
+            },
+            substrate,
+            config: crate::models::ServiceConfig {
+                service_type: crate::models::ServiceType::Wasm,
+                source: "web.wasm".to_string(),
+                hash: None,
+                interfaces: Vec::new(),
+                env: BTreeMap::new(),
+                args: Vec::new(),
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: Default::default(),
+                fdae: None,
+                health_check: None,
+                assets: None,
+                visibility: vis,
+            },
+            resolved_dependencies,
+            topology_mode: TopologyMode::Singleton,
+            member_index: 0,
+            schedule: None,
+            sharding_strategy: None,
+            topology_visibility: topo_vis,
+        }
+    }
+
+    fn plan_with_service(
+        name: &str,
+        vis: Visibility,
+        topo_vis: TopologyVisibility,
+    ) -> DeploymentPlan {
+        DeploymentPlan {
+            app_instance_id: AppInstanceId::new("app-inst"),
+            blueprint_id: AppBlueprintId::new("syneroym:app"),
+            version: semver::Version::new(1, 0, 0),
+            services: vec![planned_service(name, vis, topo_vis, None, BTreeMap::new())],
+        }
+    }
+
+    /// A two-service plan: `frontend` depends on `backend`, each optionally
+    /// placed on the given substrate alias. Mirrors `D-B2-14`(a)'s shape.
+    fn plan_with_dependency(
+        frontend_substrate: Option<SubstrateAlias>,
+        backend_substrate: Option<SubstrateAlias>,
+        backend_vis: Visibility,
+    ) -> DeploymentPlan {
+        let backend = planned_service(
+            "backend",
+            backend_vis,
+            TopologyVisibility::Restricted,
+            backend_substrate,
+            BTreeMap::new(),
+        );
+        let mut deps = BTreeMap::new();
+        deps.insert(LogicalServiceName::new("backend"), vec![backend.service_id.clone()]);
+        let frontend = planned_service(
+            "frontend",
+            Visibility::Internal,
+            TopologyVisibility::Restricted,
+            frontend_substrate,
+            deps,
+        );
+        DeploymentPlan {
+            app_instance_id: AppInstanceId::new("app-inst"),
+            blueprint_id: AppBlueprintId::new("syneroym:app"),
+            version: semver::Version::new(1, 0, 0),
+            services: vec![backend, frontend],
+        }
+    }
+
+    /// Test 14: two services on explicitly different aliases, the
+    /// dependency `private` -> refused, naming both services and `internal`.
+    #[test]
+    fn validate_plan_visibility_cross_substrate_private_dependency_fails() {
+        let plan = plan_with_dependency(
+            Some(SubstrateAlias::new("edge-1")),
+            Some(SubstrateAlias::new("edge-2")),
+            Visibility::Private,
+        );
+        let errs = validate_plan_visibility(&plan).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(errs[0].contains("frontend"), "{}", errs[0]);
+        assert!(errs[0].contains("backend"), "{}", errs[0]);
+        assert!(errs[0].contains("internal"), "{}", errs[0]);
+    }
+
+    /// Test 15: the same pair with the dependency `internal` -> `Ok`.
+    #[test]
+    fn validate_plan_visibility_cross_substrate_internal_dependency_succeeds() {
+        let plan = plan_with_dependency(
+            Some(SubstrateAlias::new("edge-1")),
+            Some(SubstrateAlias::new("edge-2")),
+            Visibility::Internal,
+        );
+        assert!(validate_plan_visibility(&plan).is_ok());
+    }
+
+    /// Test 16: no explicit placement on either side -> `Ok` (no false
+    /// positive on an unresolvable `None`).
+    #[test]
+    fn validate_plan_visibility_no_explicit_placement_is_not_flagged() {
+        let plan = plan_with_dependency(None, None, Visibility::Private);
+        assert!(validate_plan_visibility(&plan).is_ok());
+    }
+
+    /// Test 17: one `Some(a)`, one `None` -> `Ok` (conservative; the runtime
+    /// failure is the backstop).
+    #[test]
+    fn validate_plan_visibility_partial_placement_is_not_flagged() {
+        let plan =
+            plan_with_dependency(Some(SubstrateAlias::new("edge-1")), None, Visibility::Private);
+        assert!(validate_plan_visibility(&plan).is_ok());
+    }
+
+    /// Test 18: `topology_visibility = open` with `visibility = private` ->
+    /// refused, naming both fields (F13's (open, private) row).
+    #[test]
+    fn validate_plan_visibility_open_with_private_fails() {
+        let plan = plan_with_service("web", Visibility::Private, TopologyVisibility::Open);
+        let errs = validate_plan_visibility(&plan).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(errs[0].contains("open"), "{}", errs[0]);
+        assert!(errs[0].contains("private"), "{}", errs[0]);
+        assert!(errs[0].contains("internal"), "{}", errs[0]);
+    }
+
+    /// Test 19: `topology_visibility = open` with `visibility = internal` ->
+    /// `Ok` -- `internal`, not `public`, is what a cross-substrate member
+    /// needs (`D-B2-15`), and `open` only requires the member be resolvable
+    /// inside the community registry, not propagated to a parent.
+    #[test]
+    fn validate_plan_visibility_open_with_internal_succeeds() {
+        let plan = plan_with_service("web", Visibility::Internal, TopologyVisibility::Open);
+        assert!(validate_plan_visibility(&plan).is_ok());
+    }
+
+    #[test]
+    fn validate_plan_visibility_open_with_public_succeeds() {
+        let plan = plan_with_service("web", Visibility::Public, TopologyVisibility::Open);
+        assert!(validate_plan_visibility(&plan).is_ok());
+    }
+
+    #[test]
+    fn validate_plan_visibility_restricted_with_private_succeeds() {
+        let plan = plan_with_service("db", Visibility::Private, TopologyVisibility::Restricted);
+        assert!(validate_plan_visibility(&plan).is_ok());
+    }
+
+    #[test]
+    fn validate_plan_visibility_restricted_with_internal_succeeds() {
+        let plan = plan_with_service("db", Visibility::Internal, TopologyVisibility::Restricted);
+        assert!(validate_plan_visibility(&plan).is_ok());
+    }
+
+    #[test]
+    fn validate_plan_visibility_restricted_with_public_succeeds() {
+        let plan = plan_with_service("db", Visibility::Public, TopologyVisibility::Restricted);
+        assert!(validate_plan_visibility(&plan).is_ok());
+    }
+
+    #[test]
+    fn validate_plan_visibility_multiple_errors() {
+        let mut plan = plan_with_service("web1", Visibility::Private, TopologyVisibility::Open);
+        let s2 = planned_service(
+            "web2",
+            Visibility::Private,
+            TopologyVisibility::Open,
+            None,
+            BTreeMap::new(),
+        );
+        plan.services.push(s2);
+        let errs = validate_plan_visibility(&plan).unwrap_err();
+        assert_eq!(errs.len(), 2);
     }
 }

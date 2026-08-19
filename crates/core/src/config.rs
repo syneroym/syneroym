@@ -1253,6 +1253,13 @@ pub struct IamConfig {
     /// because the check runs on the remote supervisor. Defaults to
     /// `false`: a grant is asked for, not assumed, matching
     /// `admin_ucan_root`'s own symmetry.
+    ///
+    /// This gate is the *operator-side* answer for a node's own apps: it
+    /// resolves an app's own `restricted` services with no token, for
+    /// whoever is running on this node. It is unrelated to a service the
+    /// app itself declares `topology_visibility = open` (ADR-0022 §5,
+    /// M06B B2) -- that declaration needs neither this grant nor a
+    /// `resolve_ucan`, and works for any caller on any installation.
     #[serde(default)]
     pub grant_resolve_to_node_did: bool,
 }

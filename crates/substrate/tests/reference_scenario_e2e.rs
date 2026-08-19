@@ -67,7 +67,7 @@ use rustls::crypto::ring;
 use semver::Version;
 use serde_json::{Map, Value, json};
 use syneroym_app_orchestration::{
-    AlertKind, LocalFilesystemCatalog, compile,
+    AlertKind, LocalFilesystemCatalog, Visibility, compile,
     models::{
         AppBlueprintId, AppInstanceId, InterfaceName, LogicalServiceName, PlacementSelector,
         ServiceConfig, ServiceSpec, ServiceType, SubstrateAlias, SynAppManifest,
@@ -292,12 +292,14 @@ fn reference_scenario_manifest(backend_replicas: u32) -> SynAppManifest {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility: Visibility::Internal,
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_B_ALIAS))),
             replicas: backend_replicas,
             sharding_strategy: None,
             schedule: None,
+            topology_visibility: Default::default(),
         },
     );
     services.insert(
@@ -317,12 +319,14 @@ fn reference_scenario_manifest(backend_replicas: u32) -> SynAppManifest {
                 fdae: None,
                 health_check: None,
                 assets: None,
+                visibility: Visibility::Internal,
             },
             depends_on: vec![LogicalServiceName::new("backend")],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_A_ALIAS))),
             replicas: 1,
             sharding_strategy: None,
             schedule: None,
+            topology_visibility: Default::default(),
         },
     );
     SynAppManifest {
