@@ -326,12 +326,16 @@ roymctl --dir <DIR> --as owner svc deploy \
 registries), `internal` (registered with this substrate's community
 registry only — the value a multi-substrate app's own members need to
 resolve each other, not `public`), or `private` (never registered; the
-default). `public`/`internal` require `--identity` or `--master`, since
-only the service's own key can sign a record the registry will admit; a
-mismatched `--identity`/`--svc-id` pair is refused before anything is
-built. `--record-out <path>` writes the signed record to a file instead of
-(or as well as) handing it to the substrate, for sharing a `private`
-service's record out of band with `SyneroymClient::new_with_record`.
+default when neither `--identity` nor `--master` is given). `public`/`internal`
+require `--identity` or `--master`, since only the service's own
+key can sign a record the registry will admit; a mismatched
+`--identity`/`--svc-id` pair is refused before anything is built. **Once
+`--identity` or `--master` is given, `--visibility` has no default and must
+be stated explicitly** — a deploy that could sign a record but was not told
+whether to publish it is refused rather than silently deploying unpublished.
+`--record-out <path>` writes the signed record to a file instead of (or as
+well as) handing it to the substrate, for sharing a `private` service's
+record out of band with `SyneroymClient::new_with_record`.
 
 An app deployed through a `SynAppManifest` declares the same thing per
 service, in TOML (`ServiceSpec`'s `config` is flattened, so `visibility`

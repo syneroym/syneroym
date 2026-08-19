@@ -197,12 +197,12 @@ passed or which grant an operator happened to install.
 
 - **`syneroym-app-orchestration`** (`compiler.rs`, `models.rs`): `validate_plan_visibility` — 13 tests covering both checks ((a) cross-substrate private dependency, (b) `open`+`private`), including the conservative `None`/partial-placement cases that must **not** false-positive.
 - **`syneroym-sdk`** (`deploy.rs`, `lib.rs`): `member_registry_record` — the visibility -> record decision `certify_placed_members` and the `multi_substrate_placement_e2e.rs` harness both call — mints no record for `private` and sets `is_private` correctly for `internal`/`public`, each record's own signature verified, not just its shape (plan tests 11/12); `Publication::split` for all three variants; `SyneroymClient::new_with_record` verifies the signature and rejects a tampered record.
-- **`syneroym-control-plane`** (`service/orchestration.rs`): `validate_publication` — 10 table-driven cases (§7 tests 1–10); `a_private_redeploy_removes_the_stored_endpoint_record_file` (test 36, direct access to `hosted_apps_dir`).
+- **`syneroym-control-plane`** (`service/orchestration.rs`): `validate_publication` — 10 table-driven cases (§7 tests 1–10); `a_private_redeploy_removes_the_stored_endpoint_record_file` (test 36, direct access to `hosted_apps_dir`); `is_safe_service_id_for_path_rejects_traversal_and_admits_a_real_did` — the path-traversal guard both `deploy_with_context` and `undeploy_impl` call before joining `service_id` into a stored-record filename.
 - **`syneroym-app-supervisor`** (`topology.rs`, `service.rs`): `service_topology_visibility` (declared/disagreement/short-hash); `handle_resolve` tests 24/26/27/28/29 (open bypass, non-existent service, retired instance, granted-caller `InvalidParams` unaffected, byte-identical document); `submit_is_refused_when_the_plan_declares_open_topology_over_a_private_service` (test 20, the `handle_submit` backstop entry point for `D-B2-14`); `resolve_open_service_over_a_private_member_still_serves_the_document` (test 44, F13's `(open, private)` row — a plan built directly, bypassing both of `D-B2-14`'s refusal points, the same way `adopted_instance` always does).
 - **`syneroym-core`** (`dht_registry.rs`): `test_dht_publication_skipped_for_private_record` (test 32, two of its three cases — the public-record and private-record-refused HTTP-less cases).
 - **`syneroym-community-registry`** (`registry.rs`): test 32's third case, `an_internal_record_registers_to_a_live_registry_with_the_dht_enabled_and_is_retrievable` — a live HTTP registry, not just the `Err`-on-no-channel case, since `syneroym-core` cannot depend on `syneroym-community-registry` to spin one up itself; `a_public_record_propagates_to_the_parent_registry_while_an_internal_one_does_not` (test 39, pairing with test 38 to prove the two published tiers stay distinguishable end to end).
 - **`syneroym-data-db`** (`registry_store.rs`): `visibility` round-trips through `save_deploy_facts`/`load_all_deploy_facts`; a pre-existing row without the column loads as `None`.
-- **`roymctl`** (`commands/svc.rs`): `a_record_out_file_round_trips_through_new_with_record` (test 45) — writes a signed `is_private: true` record to a temp file the way `--record-out` does and reads it back into `new_with_record`, since `svc deploy` itself cannot be driven from a test.
+- **`roymctl`** (`commands/svc.rs`): `signed_export_record` — the function both the private-with-`--record-out` and public/internal deploy arms call to build the record they sign — sets `is_private` correctly for all three visibilities; `a_record_out_file_round_trips_through_new_with_record` (test 45) — writes a record built by that same function to a temp file the way `--record-out` does and reads it back into `new_with_record`, since `svc deploy` itself cannot be driven from a test.
 
 ### Integration / E2E Tests
 
@@ -220,13 +220,13 @@ $ cargo test -p syneroym-app-orchestration --lib
 test result: ok. 164 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 $ cargo test -p syneroym-sdk --lib
-test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 $ cargo test -p syneroym-control-plane --lib
-test result: ok. 230 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 231 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 $ cargo test -p syneroym-app-supervisor --lib
-test result: ok. 295 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 296 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 $ cargo test -p syneroym-core --lib
 test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
@@ -234,8 +234,11 @@ test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 $ cargo test -p syneroym-data-db --lib
 test result: ok. 180 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
+$ cargo test -p syneroym-community-registry --lib
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
 $ cargo test -p roymctl --lib
-test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 73 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 $ cargo test -p syneroym-substrate --test service_visibility_e2e
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out

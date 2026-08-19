@@ -11,7 +11,9 @@ use std::{
 
 use chrono::DateTime;
 use clap::Subcommand;
-use syneroym_core::dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType};
+use syneroym_core::dht_registry::{
+    DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType, SignedEndpointInfo,
+};
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
 use syneroym_sdk::{
     ArtifactSource, AssetBundle, ContainerPortMapping, ContainerVolumeMapping, DeploySvcOptions,
@@ -303,23 +305,14 @@ pub async fn handle(
 
             let publication = match (parsed_visibility, signing_identity) {
                 (Visibility::Private, Some(id)) if record_out.is_some() => {
-                    let record = EndpointInfo {
-                        service_id: svc_id.clone(),
-                        substrate_id: substrate_did.clone(),
-                        endpoint_type: EndpointType::Service,
-                        mechanisms: vec![],
-                        nickname: nickname.clone(),
-                        // A record exported for a `private` service must
-                        // never be admitted by a registry: `is_private` is
-                        // signed into the payload, so this is the only
-                        // chance to say so. `RegistryClient::register`'s
-                        // DHT gate (D-B2-16) trusts this flag verbatim.
-                        is_private: true,
-                        ttl: None,
+                    let record = signed_export_record(
+                        Visibility::Private,
+                        svc_id,
+                        &substrate_did,
+                        nickname.clone(),
                         not_after,
-                        generation: 0,
-                    }
-                    .sign(id)?;
+                        id,
+                    )?;
                     if let Some(path) = record_out {
                         fs::write(path, serde_json::to_string_pretty(&record)?).map_err(|e| {
                             anyhow::anyhow!(
@@ -347,18 +340,14 @@ pub async fn handle(
                     );
                 }
                 (v, Some(id)) => {
-                    let record = EndpointInfo {
-                        service_id: svc_id.clone(),
-                        substrate_id: substrate_did.clone(),
-                        endpoint_type: EndpointType::Service,
-                        mechanisms: vec![],
-                        nickname: nickname.clone(),
-                        is_private: v == Visibility::Internal,
-                        ttl: None,
+                    let record = signed_export_record(
+                        v,
+                        svc_id,
+                        &substrate_did,
+                        nickname.clone(),
                         not_after,
-                        generation: 0,
-                    }
-                    .sign(id)?;
+                        id,
+                    )?;
                     if let Some(path) = record_out {
                         fs::write(path, serde_json::to_string_pretty(&record)?).map_err(|e| {
                             anyhow::anyhow!(
@@ -623,6 +612,36 @@ fn parse_visibility(value: &str, flag_name: &str) -> anyhow::Result<Visibility> 
     }
 }
 
+/// Builds and signs the endpoint record `svc deploy` produces for a
+/// signable `visibility` -- both the private-with-`--record-out` export arm
+/// and the public/internal arm share this. `public` signs `is_private:
+/// false`; `internal` and `private` both sign `is_private: true`, since a
+/// record exported for a `private` service must never be admitted by a
+/// registry, and `is_private` lives inside the signature, so this is the
+/// only chance to say so. `RegistryClient::register`'s DHT gate (D-B2-16)
+/// trusts this flag verbatim.
+fn signed_export_record(
+    visibility: Visibility,
+    svc_id: &str,
+    substrate_did: &str,
+    nickname: Option<String>,
+    not_after: u64,
+    identity: &Identity,
+) -> anyhow::Result<SignedEndpointInfo> {
+    EndpointInfo {
+        service_id: svc_id.to_string(),
+        substrate_id: substrate_did.to_string(),
+        endpoint_type: EndpointType::Service,
+        mechanisms: vec![],
+        nickname,
+        is_private: visibility != Visibility::Public,
+        ttl: None,
+        not_after,
+        generation: 0,
+    }
+    .sign(identity)
+}
+
 /// Parses `--interfaces`' comma-separated value into a non-empty,
 /// non-blank interface name list. A blank `--interfaces` value (the
 /// common case: an operator with one interface and no reason to name it)
@@ -776,7 +795,6 @@ fn load_identity(dir: &Path, name: &str) -> anyhow::Result<Identity> {
 #[cfg(test)]
 mod tests {
     use clap::{Parser, error::ErrorKind};
-    use syneroym_core::dht_registry::SignedEndpointInfo;
     use syneroym_sdk::SyneroymClient;
 
     use super::*;
@@ -1192,16 +1210,38 @@ mod tests {
         assert!(err.to_string().contains("--asset-visibility"), "{err}");
     }
 
+    /// `signed_export_record` is the exact function both the
+    /// private-with-`--record-out` deploy arm and the public/internal arm
+    /// call to build the record they sign -- a regression here is a
+    /// regression in `svc deploy` itself, not just in this test's own copy
+    /// of the shape.
+    #[test]
+    fn signed_export_record_sets_is_private_from_visibility() {
+        let identity = Identity::generate().unwrap();
+        let svc_id = substrate::derive_did_key(&identity.public_key());
+        for (v, expect_private) in
+            [(Visibility::Private, true), (Visibility::Internal, true), (Visibility::Public, false)]
+        {
+            let record = signed_export_record(
+                v,
+                &svc_id,
+                "did:key:zSubstrate",
+                None,
+                9_999_999_999,
+                &identity,
+            )
+            .unwrap();
+            assert_eq!(record.info.is_private, expect_private, "{v:?}");
+        }
+    }
+
     /// Plan test 45 (ADR-0018 §2, `D-B2-8`): the `--record-out` -> file ->
-    /// `new_with_record` round trip. `new_with_record_verifies_signature_
-    /// and_sets_fields` (`crates/sdk/src/lib.rs`) already covers the
-    /// signature-verification half against an in-memory record; what is
-    /// missing is the file itself -- `svc deploy` cannot be driven from a
-    /// test (`roymctl` is a binary, not linkable), so this builds the exact
-    /// record shape the private-with-export deploy arm signs (`is_private:
-    /// true`, since that record must never be admitted by a registry),
-    /// writes it to a temp file the way `--record-out` does, and reads it
-    /// back before connecting.
+    /// `new_with_record` round trip, over the record `signed_export_record`
+    /// actually builds -- `new_with_record_verifies_signature_and_sets_fields`
+    /// (`crates/sdk/src/lib.rs`) already covers the signature-verification
+    /// half against an in-memory record; what is missing is the file itself
+    /// (`svc deploy` cannot be driven from a test -- `roymctl` is a binary,
+    /// not linkable).
     #[test]
     fn a_record_out_file_round_trips_through_new_with_record() {
         let dir = tempfile::tempdir().unwrap();
@@ -1209,18 +1249,14 @@ mod tests {
 
         let identity = Identity::generate().unwrap();
         let svc_id = substrate::derive_did_key(&identity.public_key());
-        let record = EndpointInfo {
-            service_id: svc_id.clone(),
-            substrate_id: "did:key:zSubstrate".to_string(),
-            endpoint_type: EndpointType::Service,
-            mechanisms: vec![],
-            nickname: Some("my-private-svc".to_string()),
-            is_private: true,
-            ttl: None,
-            not_after: 9_999_999_999,
-            generation: 0,
-        }
-        .sign(&identity)
+        let record = signed_export_record(
+            Visibility::Private,
+            &svc_id,
+            "did:key:zSubstrate",
+            Some("my-private-svc".to_string()),
+            9_999_999_999,
+            &identity,
+        )
         .unwrap();
 
         fs::write(&path, serde_json::to_string_pretty(&record).unwrap()).unwrap();

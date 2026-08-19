@@ -265,9 +265,10 @@ fn stable_registry_certificate_for_hash(json: &str) -> String {
 }
 
 /// Whether `service_id` is safe to join, unescaped, into a filename under
-/// `hosted_apps_dir` (`deploy_with_context`'s certificate write/delete).
-/// Real service ids are DIDs, which use only `did:key:z...` characters --
-/// none of the excluded ones are ever legitimate here.
+/// `hosted_apps_dir` -- `deploy_with_context`'s certificate write/delete,
+/// and `undeploy_impl`'s own delete of the same file. Real service ids are
+/// DIDs, which use only `did:key:z...` characters -- none of the excluded
+/// ones are ever legitimate here.
 fn is_safe_service_id_for_path(service_id: &str) -> bool {
     !service_id.is_empty()
         && !service_id.contains('/')
@@ -2548,6 +2549,16 @@ impl ControlPlaneService {
         generation: u64,
         caller: &CallerContext,
     ) -> Result<(), String> {
+        // Same reason and same placement as `deploy_with_context`'s
+        // equivalent check: `service_id` is joined verbatim into
+        // `hosted_apps_dir/<service_id>.json` below and then deleted,
+        // before anything else runs against it.
+        if !is_safe_service_id_for_path(&service_id) {
+            return Err(format!(
+                "service_id '{service_id}' is not a valid undeploy target: it must be non-empty \
+                 and contain no '/', '\\\\', or '..' -- it is joined into a stored-record filename"
+            ));
+        }
         if let Some(owner) = self.registry.owner_of(&service_id)
             && owner != caller.caller_did
             && !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_UNDEPLOY)
@@ -12348,6 +12359,18 @@ mod tests {
             validate_publication("test-svc", Some(WitVisibility::Public), Some("not valid json"));
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("does not parse"));
+    }
+
+    /// The guard both `deploy_with_context` and `undeploy_impl` call before
+    /// joining `service_id` into a stored-record filename. A real DID never
+    /// trips any of the rejected shapes.
+    #[test]
+    fn is_safe_service_id_for_path_rejects_traversal_and_admits_a_real_did() {
+        assert!(!is_safe_service_id_for_path(""));
+        assert!(!is_safe_service_id_for_path("../escaped"));
+        assert!(!is_safe_service_id_for_path("a/b"));
+        assert!(!is_safe_service_id_for_path("a\\b"));
+        assert!(is_safe_service_id_for_path("did:key:z6MkExample"));
     }
 
     /// Test 36 / `D-B2-5`: a public service redeployed as `private` clears

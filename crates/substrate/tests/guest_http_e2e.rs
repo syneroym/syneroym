@@ -570,8 +570,16 @@ async fn test_guest_http_concurrency_limit_returns_503_with_retry_after() {
     let wasm_bytes = skip_if_missing!("test_guest_http_concurrency_limit_returns_503");
     let _ = ring::default_provider().install_default();
     let ctx = SubstrateTestContext::setup_with(9221, 9222, 9223, |config| {
-        config.roles.app_sandbox =
-            Some(AppSandboxRole { max_concurrent_guest_http_per_service: 1, ..Default::default() });
+        config.roles.app_sandbox = Some(AppSandboxRole {
+            max_concurrent_guest_http_per_service: 1,
+            // The default (5s) is a *tighter* ceiling than this test's own
+            // busy-spin needs and traps the guest call with "wasm trap:
+            // interrupt" before it can hold the permit long enough -- raised
+            // here, not lowered elsewhere, since the default protects the
+            // hot dispatch path this test does not represent.
+            dispatch_epoch_timeout_secs: 15,
+            ..Default::default()
+        });
     })
     .await;
     ctx.substrate_client.inject_kek("37".repeat(32)).await.expect("inject_kek failed");
@@ -588,21 +596,32 @@ async fn test_guest_http_concurrency_limit_returns_503_with_retry_after() {
     let conn = peer.connection().expect("peer has no live connection");
     let asserting = Identity::generate().unwrap();
 
-    // Budget of 1: the first request holds the only permit for 6s, far past
-    // `GUEST_HTTP_ADMISSION_TIMEOUT` (2s, fixed), so a second request fired
-    // while the first is still in flight must time out waiting for
-    // admission and get 503, not queue past the fixed wait or 500.
+    // Budget of 1: the first request holds the only permit for 8s -- within
+    // the 15s `dispatch_epoch_timeout_secs` raised above, and far past
+    // `GUEST_HTTP_ADMISSION_TIMEOUT` (2s, fixed) plus the buffer below -- so
+    // a second request fired while the first is still in flight must time
+    // out waiting for admission and get 503, not queue past the fixed wait
+    // or 500.
     let conn_a = conn.clone();
     let service_id_a = app_service_id.clone();
     let asserting_a = Identity::generate().unwrap();
     let first = tokio::spawn(async move {
-        http_request(&conn_a, &service_id_a, Some(&asserting_a), "GET", "/slow?ms=4000", &[]).await
+        http_request(&conn_a, &service_id_a, Some(&asserting_a), "GET", "/slow?ms=8000", &[]).await
     });
     // Give the first request time to actually acquire the sole permit
-    // before the second one is sent.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // before the second one is sent. This has to outlast the QUIC
+    // stream-open + request-parse + dispatch path landing the *first*
+    // request at the semaphore, not just the semaphore acquire itself --
+    // under CI's shared, contended runners that whole path can take well
+    // over the 500ms this used to budget, letting the second request win
+    // the race for the sole permit and return 200 where 503 was expected.
+    // 2s leaves 6s of headroom before the first request's own 8s hold ends,
+    // comfortably longer than `GUEST_HTTP_ADMISSION_TIMEOUT` (2s) so the
+    // second request's own wait still resolves to a timeout well before
+    // the first request would free the permit on its own.
+    tokio::time::sleep(Duration::from_millis(2000)).await;
     let second =
-        http_request(&conn, &app_service_id, Some(&asserting), "GET", "/slow?ms=4000", &[]).await;
+        http_request(&conn, &app_service_id, Some(&asserting), "GET", "/slow?ms=8000", &[]).await;
 
     assert_eq!(
         second.status, 503,
