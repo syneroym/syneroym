@@ -19,7 +19,7 @@ use std::{
 use anyhow::{Context, Result};
 use ed25519_dalek::VerifyingKey;
 use syneroym_app_orchestration::{
-    ActionRecord, ActionState, DeploymentJournal,
+    ActionRecord, ActionState, DeploymentJournal, Visibility,
     models::{
         DeploymentPlan, LogicalServiceRef, MemberRef, PlannedService, ServiceId, SubstrateAlias,
     },
@@ -675,6 +675,40 @@ fn certificate_over_instance_identity(
     )
 }
 
+/// ADR-0018 §4 / D-B2-7: the registry record a placed member's declared
+/// visibility produces, signed and serialized -- or `None` for `private`,
+/// which mints no record at all. Pure and network-free (unlike
+/// [`certify_instance`], which needs the substrate's own derived key), so it
+/// is the one piece of [`certify_placed_members`] directly unit testable
+/// without a live substrate, and the one both it and any test harness
+/// building the same shape by hand should share rather than re-derive.
+pub fn member_registry_record(
+    visibility: Visibility,
+    service_id: &str,
+    substrate_id: &str,
+    master: &Identity,
+    not_after: u64,
+) -> Result<Option<String>> {
+    let is_private = match visibility {
+        Visibility::Private => return Ok(None),
+        Visibility::Internal => true,
+        Visibility::Public => false,
+    };
+    let record = EndpointInfo {
+        service_id: service_id.to_string(),
+        substrate_id: substrate_id.to_string(),
+        endpoint_type: EndpointType::Service,
+        mechanisms: vec![],
+        nickname: None,
+        is_private,
+        ttl: None,
+        not_after,
+        generation: 0,
+    }
+    .sign(master)?;
+    Ok(Some(serde_json::to_string(&record)?))
+}
+
 /// Mints, per placed member, the instance certificate its hosting substrate
 /// will accept and the endpoint record that points at that substrate.
 ///
@@ -725,34 +759,19 @@ pub async fn certify_placed_members(
         let cert = certify_instance(client, master, svc.service_id.as_str(), expires_hours).await?;
         certs.insert(svc.service_id.clone(), cert.to_json()?);
 
-        // ADR-0018 §4 / D-B2-7: private services produce no registry certificate.
-        // Internal services produce an is_private=true certificate.
-        // Public services produce an is_private=false certificate.
-        let is_private = match svc.config.visibility {
-            syneroym_app_orchestration::Visibility::Private => None,
-            syneroym_app_orchestration::Visibility::Internal => Some(true),
-            syneroym_app_orchestration::Visibility::Public => Some(false),
-        };
-
-        if let Some(is_private) = is_private {
-            let not_after = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0)
-                .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
-            let record = EndpointInfo {
-                service_id: svc.service_id.to_string(),
-                substrate_id: client.service_id().to_string(),
-                endpoint_type: EndpointType::Service,
-                mechanisms: vec![],
-                nickname: None,
-                is_private,
-                ttl: None,
-                not_after,
-                generation: 0,
-            }
-            .sign(master)?;
-            records.insert(svc.service_id.clone(), serde_json::to_string(&record)?);
+        let not_after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
+        if let Some(record_json) = member_registry_record(
+            svc.config.visibility,
+            svc.service_id.as_str(),
+            client.service_id(),
+            master,
+            not_after,
+        )? {
+            records.insert(svc.service_id.clone(), record_json);
         }
     }
 
@@ -768,9 +787,10 @@ mod tests {
         DeploymentState,
         models::{
             AppBlueprintId, AppInstanceId, LogicalServiceName, ServiceConfig, ServiceType,
-            TopologyMode,
+            TopologyMode, TopologyVisibility,
         },
     };
+    use syneroym_core::dht_registry::SignedEndpointInfo;
 
     use super::*;
 
@@ -831,7 +851,7 @@ mod tests {
             fdae: None,
             health_check: None,
             assets: None,
-            visibility: syneroym_app_orchestration::Visibility::Private,
+            visibility: Visibility::Private,
         }
     }
 
@@ -849,7 +869,7 @@ mod tests {
             member_index: 0,
             schedule: None,
             sharding_strategy: None,
-            topology_visibility: syneroym_app_orchestration::TopologyVisibility::Restricted,
+            topology_visibility: TopologyVisibility::Restricted,
         }
     }
 
@@ -868,6 +888,57 @@ mod tests {
             substrate_did: did.to_string(),
             actor,
         }
+    }
+
+    /// Plan test 11/12 (D-B2-7): a `private` member gets no registry record
+    /// at all -- not an empty one, an absent one.
+    #[test]
+    fn member_registry_record_mints_nothing_for_a_private_member() {
+        let master = Identity::generate().unwrap();
+        let record =
+            member_registry_record(Visibility::Private, "did:key:zSvc", "did:key:zSub", &master, 0)
+                .unwrap();
+        assert!(record.is_none());
+    }
+
+    /// Plan test 12 (D-B2-7): `internal` signs `is_private: true`; `public`
+    /// signs `is_private: false`. This is the exact mapping ADR-0018 §4's
+    /// table specifies, and the one the record's own signature makes
+    /// impossible to correct downstream if it is ever wrong.
+    #[test]
+    fn member_registry_record_sets_is_private_from_the_declared_visibility() {
+        let master = Identity::generate().unwrap();
+        let service_id = substrate::derive_did_key(&master.public_key());
+
+        let internal = member_registry_record(
+            Visibility::Internal,
+            &service_id,
+            "did:key:zSub",
+            &master,
+            9_999_999_999,
+        )
+        .unwrap()
+        .expect("internal must mint a record");
+        let internal_signed: SignedEndpointInfo = serde_json::from_str(&internal).unwrap();
+        assert!(internal_signed.info.is_private);
+        assert_eq!(internal_signed.info.service_id, service_id);
+
+        let public = member_registry_record(
+            Visibility::Public,
+            &service_id,
+            "did:key:zSub",
+            &master,
+            9_999_999_999,
+        )
+        .unwrap()
+        .expect("public must mint a record");
+        let public_signed: SignedEndpointInfo = serde_json::from_str(&public).unwrap();
+        assert!(!public_signed.info.is_private);
+
+        // Both verify: the record's own signature, not just its shape, is
+        // what a registry or an importer actually checks.
+        assert!(internal_signed.verify().is_ok());
+        assert!(public_signed.verify().is_ok());
     }
 
     #[test]

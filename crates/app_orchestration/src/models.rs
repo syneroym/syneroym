@@ -548,6 +548,20 @@ pub enum Visibility {
     Private,
 }
 
+impl Visibility {
+    /// The wire/display form, matching the `#[serde(rename_all = "lowercase")]`
+    /// encoding above -- one definition instead of a hand-written match
+    /// repeated at every call site that needs to print or log this value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Internal => "internal",
+            Self::Private => "private",
+        }
+    }
+}
+
 /// Who may fetch a logical service's Tier-2 topology document (ADR-0022 §5).
 ///
 /// Binary by construction, not three-valued like [`Visibility`]: a topology

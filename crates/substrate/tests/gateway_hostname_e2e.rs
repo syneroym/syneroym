@@ -891,8 +891,14 @@ async fn a_gateway_with_neither_credential_resolves_and_proxies_an_open_logical_
     managed_node.teardown().await;
 }
 
-/// Test 44: A client gateway with neither credential refuses a `restricted`
-/// logical hostname.
+/// The negative half of test 43: a client gateway with neither credential
+/// refuses a `restricted` logical hostname. (Not test 44 -- that number
+/// belongs to F13's `(open, private)` case, which
+/// `resolve_open_service_over_a_private_member_still_serves_the_document`
+/// in `crates/app_supervisor/src/service.rs` covers: it needs a plan
+/// constructed directly, bypassing both of `D-B2-14`'s refusal points,
+/// which `app_supervisor`'s own test harness already has a helper for and
+/// this e2e binary does not.)
 #[tokio::test]
 async fn a_gateway_with_neither_credential_refuses_a_restricted_logical_hostname() {
     let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;

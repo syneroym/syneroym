@@ -414,7 +414,7 @@ mod tests {
     use syneroym_app_orchestration::models::{
         AppBlueprintId, AppInstanceId, FdaeManifest, HttpProbe, InterfaceName, LogicalServiceName,
         LogicalServiceRef, PlannedService, RpcProbe, ServiceConfig, ServiceId, ServiceType,
-        TcpProbe, TopologyMode,
+        TcpProbe, TopologyMode, TopologyVisibility,
     };
 
     use super::*;
@@ -434,7 +434,7 @@ mod tests {
             fdae: None,
             health_check: None,
             assets: None,
-            visibility: syneroym_app_orchestration::Visibility::Private,
+            visibility: ModelVisibility::Private,
         }
     }
 
@@ -456,7 +456,7 @@ mod tests {
                 member_index: 0,
                 schedule: None,
                 sharding_strategy: None,
-                topology_visibility: syneroym_app_orchestration::TopologyVisibility::Restricted,
+                topology_visibility: TopologyVisibility::Restricted,
             }],
         }
     }
@@ -784,7 +784,7 @@ mod tests {
                     member_index: 0,
                     schedule: None,
                     sharding_strategy: None,
-                    topology_visibility: syneroym_app_orchestration::TopologyVisibility::Restricted,
+                    topology_visibility: TopologyVisibility::Restricted,
                 },
                 PlannedService {
                     service_id: ServiceId::new("did:key:hFrontend"),
@@ -802,7 +802,7 @@ mod tests {
                     member_index: 0,
                     schedule: None,
                     sharding_strategy: None,
-                    topology_visibility: syneroym_app_orchestration::TopologyVisibility::Restricted,
+                    topology_visibility: TopologyVisibility::Restricted,
                 },
             ],
         }

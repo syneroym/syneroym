@@ -42,7 +42,9 @@ use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
 use syneroym_sdk::{
     DeployManifest, NetworkEndpoint, ServiceConfig as WitServiceConfig,
     ServiceType as WitServiceType, SyneroymClient, TcpManifest, Visibility as WitVisibility,
-    deploy::{self, ApplyRequest, DeployTarget, apply_plan, certify_instance},
+    deploy::{
+        self, ApplyRequest, DeployTarget, apply_plan, certify_instance, member_registry_record,
+    },
 };
 use syneroym_substrate::identity;
 use tempfile::TempDir;
@@ -596,8 +598,15 @@ async fn boot_pair(
 
 /// Certifies and signs an endpoint record for each master, mirroring
 /// `deploy::certify_placed_members` but written directly against the two
-/// concrete clients above (that function's own coverage lives in
-/// `crates/sdk`'s unit tests; this harness only needs its result).
+/// concrete clients above -- this fixture always places every service
+/// explicitly (no `fallback` client) and wants a far-future `not_after`
+/// instead of the production default, which is why it is not simply a call
+/// to `certify_placed_members` itself. The registry-record half calls the
+/// exact same [`member_registry_record`] the production function does, so
+/// the visibility -> record decision (`D-B2-7`) cannot drift between this
+/// harness and production; that decision's own direct coverage lives in
+/// `crates/sdk`'s unit tests, since it needs no network and this harness
+/// only needs its result.
 async fn certify_and_publish(
     plan: &DeploymentPlan,
     masters: &BTreeMap<ServiceId, Identity>,
@@ -613,24 +622,17 @@ async fn certify_and_publish(
         let cert = certify_instance(client, master, svc.service_id.as_str(), 24).await.unwrap();
         certs.insert(svc.service_id.clone(), cert.to_json().unwrap());
 
-        if svc.config.visibility == Visibility::Private {
-            continue;
+        if let Some(record_json) = member_registry_record(
+            svc.config.visibility,
+            svc.service_id.as_str(),
+            client.service_id(),
+            master,
+            far_future_not_after(),
+        )
+        .unwrap()
+        {
+            records.insert(svc.service_id.clone(), record_json);
         }
-
-        let record = EndpointInfo {
-            service_id: svc.service_id.to_string(),
-            substrate_id: client.service_id().to_string(),
-            endpoint_type: EndpointType::Service,
-            mechanisms: vec![],
-            nickname: None,
-            is_private: svc.config.visibility == Visibility::Internal,
-            ttl: None,
-            not_after: far_future_not_after(),
-            generation: 0,
-        }
-        .sign(master)
-        .unwrap();
-        records.insert(svc.service_id.clone(), serde_json::to_string(&record).unwrap());
     }
     (certs, records)
 }

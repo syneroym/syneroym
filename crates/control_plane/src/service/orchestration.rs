@@ -264,6 +264,17 @@ fn stable_registry_certificate_for_hash(json: &str) -> String {
     }
 }
 
+/// Whether `service_id` is safe to join, unescaped, into a filename under
+/// `hosted_apps_dir` (`deploy_with_context`'s certificate write/delete).
+/// Real service ids are DIDs, which use only `did:key:z...` characters --
+/// none of the excluded ones are ever legitimate here.
+fn is_safe_service_id_for_path(service_id: &str) -> bool {
+    !service_id.is_empty()
+        && !service_id.contains('/')
+        && !service_id.contains('\\')
+        && !service_id.contains("..")
+}
+
 /// ADR-0018 §4: the substrate *validates* the declaration against the signed
 /// artifact rather than deciding it -- `is_private` lives inside the
 /// signature, so only the signer can set it. Returns the model `Visibility`
@@ -279,11 +290,7 @@ fn validate_publication(
         WitVisibility::Private => AppVisibility::Private,
     };
 
-    let v_str = match v {
-        AppVisibility::Public => "public",
-        AppVisibility::Internal => "internal",
-        AppVisibility::Private => "private",
-    };
+    let v_str = v.as_str();
 
     match (v, certificate) {
         (AppVisibility::Private, None) => Ok(AppVisibility::Private),
@@ -1387,6 +1394,17 @@ impl ControlPlaneService {
         app_context: Option<AppContext>,
         caller: &CallerContext,
     ) -> Result<(), String> {
+        // `service_id` is joined verbatim into `hosted_apps_dir/<service_id>.json`
+        // below (write, and now also delete on a private redeploy, D-B2-5) --
+        // reject anything that could walk that join out of the directory
+        // before it is used for anything, including the ownership/capability
+        // checks that follow.
+        if !is_safe_service_id_for_path(&service_id) {
+            return Err(format!(
+                "service_id '{service_id}' is not a valid deploy target: it must be non-empty and \
+                 contain no '/', '\\\\', or '..' -- it is joined into a stored-record filename"
+            ));
+        }
         // A deploy may not claim a `service_id` this substrate already uses
         // as a fixed `native_dispatch` key: the node's own DID (`RouteHandler
         // ::init` registers `ControlPlaneService` itself there, so claiming
@@ -2273,11 +2291,7 @@ impl ControlPlaneService {
                 service_type_str(service_type).to_string(),
                 health_check_json,
                 Some(incoming_hash.clone()),
-                Some(match validated_visibility {
-                    AppVisibility::Public => "public".to_string(),
-                    AppVisibility::Internal => "internal".to_string(),
-                    AppVisibility::Private => "private".to_string(),
-                }),
+                Some(validated_visibility.as_str().to_string()),
             )
             .await
         {
@@ -2293,11 +2307,7 @@ impl ControlPlaneService {
 
         info!(
             "service '{service_id}' deployed with visibility '{}'",
-            match validated_visibility {
-                AppVisibility::Public => "public",
-                AppVisibility::Internal => "internal",
-                AppVisibility::Private => "private",
-            }
+            validated_visibility.as_str()
         );
 
         // A2 write (finding 03/post-review fix), deferred until every

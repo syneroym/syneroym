@@ -361,6 +361,57 @@ fn service_manifest(replicas: u32) -> SynAppManifest {
     service_manifest_with_vis(replicas, Visibility::Internal, TopologyVisibility::Restricted)
 }
 
+/// Two logical services in **one** app instance, differing only in
+/// `topology_visibility` -- the fixture test 42 needs to prove the
+/// declaration is per logical service, not per app. `topology_visibility`
+/// lives on `ServiceSpec` (per service) rather than the manifest root
+/// exactly to make this possible.
+fn two_service_manifest_with_topology_vis(
+    open_vis: TopologyVisibility,
+    restricted_vis: TopologyVisibility,
+) -> SynAppManifest {
+    let mut services = BTreeMap::new();
+    for (name, port, vis) in
+        [("open-svc", 41902, open_vis), ("restricted-svc", 41903, restricted_vis)]
+    {
+        services.insert(
+            LogicalServiceName::new(name),
+            ServiceSpec {
+                config: ServiceConfig {
+                    service_type: ServiceType::Tcp,
+                    source: format!("127.0.0.1:{port}"),
+                    hash: None,
+                    interfaces: vec![],
+                    env: BTreeMap::new(),
+                    args: vec![],
+                    custom_config: None,
+                    quota: None,
+                    schema: None,
+                    rotation_policy: Default::default(),
+                    fdae: None,
+                    health_check: None,
+                    assets: None,
+                    visibility: Visibility::Internal,
+                },
+                depends_on: vec![],
+                placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),
+                replicas: 1,
+                sharding_strategy: None,
+                schedule: None,
+                topology_visibility: vis,
+            },
+        );
+    }
+    SynAppManifest {
+        id: AppBlueprintId::new("syneroym:topology-document-two-service-test-app"),
+        version: Version::new(0, 1, 0),
+        description: None,
+        placement: None,
+        services,
+        dependencies: BTreeMap::new(),
+    }
+}
+
 async fn compiled_plan_json(manifest: &SynAppManifest, instance_id: &str) -> String {
     let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
     let compiled = compile(AppInstanceId::new(instance_id), manifest, &catalog).await.unwrap();
@@ -809,10 +860,18 @@ async fn an_outside_caller_resolves_an_open_apps_members_with_no_ucan_grant() {
     managed_node.teardown().await;
 }
 
-/// Test 42: An outside caller with no UCAN grant fetching a `restricted`
-/// service is refused.
+/// Test 42: one app instance, two logical services -- `open-svc` declares
+/// `topology_visibility = open`, `restricted-svc` declares the default
+/// `restricted`. The same ungranted caller gets a different answer for
+/// each, proving the declaration is per logical service and not per app.
+/// (Previously this test booted a *second, separate* app instance whose
+/// single service was `restricted`, which only re-proved a `restricted`
+/// app refuses -- behaviour that already existed before this slice and is
+/// already pinned by
+/// `an_outside_caller_resolves_an_open_apps_members_with_no_ucan_grant`'s
+/// negative case one test up.)
 #[tokio::test]
-async fn an_outside_caller_resolving_a_restricted_app_with_no_grant_is_refused() {
+async fn an_outside_caller_gets_a_different_answer_per_logical_service_in_one_instance() {
     let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
@@ -820,11 +879,13 @@ async fn an_outside_caller_resolving_a_restricted_app_with_no_grant_is_refused()
         boot_pair(&supervisor_owner, &managed_owner, PORTS_UNGRANTED_CALLER_REFUSED_RESTRICTED)
             .await;
 
-    let manifest =
-        service_manifest_with_vis(1, Visibility::Internal, TopologyVisibility::Restricted);
+    let manifest = two_service_manifest_with_topology_vis(
+        TopologyVisibility::Open,
+        TopologyVisibility::Restricted,
+    );
     let app_did = submit_and_adopt_with_manifest(
         &mut supervisor_node,
-        "resolve-restricted-inst",
+        "resolve-mixed-inst",
         inventory_json,
         &manifest,
     )
@@ -832,9 +893,17 @@ async fn an_outside_caller_resolving_a_restricted_app_with_no_grant_is_refused()
 
     let outside_caller = Identity::generate().unwrap();
     let fetcher = anonymous_outside_caller_fetcher(&supervisor_node.registry_url, &outside_caller);
-
     let app_did_typed = AppDid::new(app_did.clone());
-    let err = fetcher.fetch(&app_did_typed, &LogicalServiceName::new("backend")).await.unwrap_err();
+
+    fetcher
+        .fetch(&app_did_typed, &LogicalServiceName::new("open-svc"))
+        .await
+        .expect("the open logical service must resolve for an ungranted caller");
+
+    let err = fetcher
+        .fetch(&app_did_typed, &LogicalServiceName::new("restricted-svc"))
+        .await
+        .unwrap_err();
     // `fetch`'s own `.context("supervisor resolve call failed")` means the
     // JSON-RPC error itself (naming the denial) is further down the chain,
     // not in the top-level `Display` -- `{err:#}` walks the whole chain.

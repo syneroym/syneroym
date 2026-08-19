@@ -50,14 +50,6 @@ pub async fn compile(
     Ok(CompiledDeployment { plans })
 }
 
-const fn visibility_str(v: Visibility) -> &'static str {
-    match v {
-        Visibility::Public => "public",
-        Visibility::Internal => "internal",
-        Visibility::Private => "private",
-    }
-}
-
 /// Refuses a plan whose visibility declarations contradict its own placement
 /// (ADR-0018 + ADR-0022 §5, `D-B2-14`). Operates on the **plan**, not the
 /// manifest: a supervisor receives `plan-json` through `submit` and never
@@ -117,7 +109,7 @@ pub fn validate_plan_visibility(plan: &DeploymentPlan) -> Result<(), Vec<String>
                  an address, because a private member is never registered. Declare visibility \
                  'internal' alongside it",
                 service.logical_ref.service_name,
-                visibility_str(service.config.visibility)
+                service.config.visibility.as_str()
             ));
         }
     }

@@ -13916,6 +13916,55 @@ mod tests {
         assert_eq!(granted_signed.signature, ungranted_signed.signature);
     }
 
+    /// Plan test 44 (F13): `topology_visibility = open` and `visibility =
+    /// private` are not redundant, and neither alone proves the other is
+    /// unnecessary. `D-B2-14`(b) refuses this combination at both of its
+    /// entry points (`compile()` and `handle_submit`) precisely because,
+    /// left to reach a supervisor, `open` alone is sufficient for
+    /// `handle_resolve` to hand out the document -- the visibility read at
+    /// [`SupervisorService::handle_resolve`]'s top does not consult
+    /// `config.visibility` at all, only `topology_visibility`. This test
+    /// goes around both refusal points the way `adopted_instance` always
+    /// does (`s.store.submit` directly, not the RPC `submit` that calls
+    /// `handle_submit`) to prove that half of F13's claim as an actual
+    /// runtime behaviour, not just an absence of a compile-time refusal.
+    ///
+    /// The other half of F13's claim -- that the member named in this
+    /// document is then unreachable -- is proven separately, structurally:
+    /// `member_registry_record_mints_nothing_for_a_private_member`
+    /// (`crates/sdk/src/deploy.rs`) shows a `private` member gets no
+    /// registry record at all, so nothing a caller could look up ever
+    /// exists to dial. Reproducing that failure here as well would need a
+    /// live registry and a live gateway dial, which is
+    /// `gateway_hostname_e2e.rs`'s job for the `(open, internal)` pair
+    /// (test 43); F13's own row already states the two halves come from
+    /// two different mechanisms.
+    #[tokio::test]
+    async fn resolve_open_service_over_a_private_member_still_serves_the_document() {
+        let s = service();
+        let plan_json = plan_json_n_member_service_with_vis(
+            "inst-1",
+            "backend",
+            "singleton",
+            1,
+            "private",
+            "open",
+        );
+        let app_did = adopted_instance(&s, "inst-1", &plan_json).await;
+
+        let resp = dispatch(
+            &s,
+            caller_with_no_capabilities("did:key:zOutsideCaller"),
+            "resolve",
+            serde_json::json!([app_did, "backend"]),
+        )
+        .await
+        .unwrap();
+        let signed = decode_signed_document(resp.payload);
+        assert_eq!(signed.document.members, vec![ServiceId::new("did:key:hMember0")]);
+        assert!(signed.verify(&AppDid::new(app_did)).is_ok());
+    }
+
     /// The probing guard: an unknown app and an unauthorized caller are
     /// reported identically, asserted on the exact error string.
     /// `record_adopt` writes the row's `app_master_did`

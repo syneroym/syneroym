@@ -125,11 +125,15 @@ pub enum SvcCommands {
         /// Whether this service's endpoint record is published (ADR-0018):
         /// "public" (registered and propagated), "internal" (registered
         /// with this substrate's registry only), or "private" (never
-        /// registered; the default). `public`/`internal` require
-        /// `--identity` or `--master`, since only the service's own key can
-        /// sign a record the registry will admit.
-        #[arg(long, default_value = "private")]
-        visibility: String,
+        /// registered; the default when no `--identity`/`--master` is
+        /// given). `public`/`internal` require `--identity` or `--master`,
+        /// since only the service's own key can sign a record the registry
+        /// will admit. When `--identity`/`--master` is given, this flag has
+        /// no default and must be stated explicitly -- a deploy that could
+        /// sign a record but was not told to must refuse rather than
+        /// silently publish nothing.
+        #[arg(long)]
+        visibility: Option<String>,
         /// Write the signed endpoint record to this path instead of relying
         /// on the registry (ADR-0018 §2). The file is a `SignedEndpointInfo`
         /// -- self-contained and independently verifiable -- to hand to
@@ -223,7 +227,8 @@ pub async fn handle(
         } => {
             validate_container_flags(image, ports, volumes)?;
             let ifaces: Vec<String> = parse_interfaces(interfaces)?;
-            let parsed_visibility = parse_visibility(visibility, "--visibility")?;
+            let stated_visibility =
+                visibility.as_deref().map(|v| parse_visibility(v, "--visibility")).transpose()?;
 
             // The record the substrate publishes and replays verbatim: it
             // holds no key of its own that could ever produce this
@@ -265,6 +270,20 @@ pub async fn handle(
             let signing_identity: Option<&Identity> =
                 named_identity.as_ref().or(master_identity.as_ref());
 
+            // ADR-0018 §5: a deploy that *can* sign a record but was not
+            // told whether to publish it must fail loudly, not fall back to
+            // `private` and succeed having published nothing. Silence is
+            // only safe when there is no signing identity to publish with
+            // in the first place.
+            if signing_identity.is_some() && stated_visibility.is_none() {
+                anyhow::bail!(
+                    "--identity/--master can sign a published endpoint record, so --visibility \
+                     must be given explicitly (\"public\", \"internal\", or \"private\") -- it no \
+                     longer defaults silently to private"
+                );
+            }
+            let parsed_visibility = stated_visibility.unwrap_or(Visibility::Private);
+
             // Nothing to sign with, but a nickname was given: it is silently
             // dropped (unchanged from before this flag existed). Warn rather
             // than fail: the deploy itself still succeeds, and a
@@ -290,7 +309,12 @@ pub async fn handle(
                         endpoint_type: EndpointType::Service,
                         mechanisms: vec![],
                         nickname: nickname.clone(),
-                        is_private: false,
+                        // A record exported for a `private` service must
+                        // never be admitted by a registry: `is_private` is
+                        // signed into the payload, so this is the only
+                        // chance to say so. `RegistryClient::register`'s
+                        // DHT gate (D-B2-16) trusts this flag verbatim.
+                        is_private: true,
                         ttl: None,
                         not_after,
                         generation: 0,
@@ -316,11 +340,7 @@ pub async fn handle(
                     Publication::Private
                 }
                 (v, None) => {
-                    let v_str = match v {
-                        Visibility::Public => "public",
-                        Visibility::Internal => "internal",
-                        Visibility::Private => "private",
-                    };
+                    let v_str = v.as_str();
                     anyhow::bail!(
                         "--visibility '{v_str}' needs --identity or --master: only the service's \
                          own key can sign a record the registry will admit"
@@ -492,12 +512,7 @@ pub async fn handle(
             );
             println!("{:-<158}", "");
             for svc in services {
-                let vis_str = match svc.visibility {
-                    Some(Visibility::Public) => "public",
-                    Some(Visibility::Internal) => "internal",
-                    Some(Visibility::Private) => "private",
-                    None => "-",
-                };
+                let vis_str = svc.visibility.map_or("-", Visibility::as_str);
                 println!(
                     "{:<50} {:<10} {:<12} {:<30} {:<50}",
                     svc.service_id,
@@ -761,6 +776,8 @@ fn load_identity(dir: &Path, name: &str) -> anyhow::Result<Identity> {
 #[cfg(test)]
 mod tests {
     use clap::{Parser, error::ErrorKind};
+    use syneroym_core::dht_registry::SignedEndpointInfo;
+    use syneroym_sdk::SyneroymClient;
 
     use super::*;
 
@@ -1173,5 +1190,46 @@ mod tests {
 
         let err = parse_visibility("hidden", "--asset-visibility").unwrap_err();
         assert!(err.to_string().contains("--asset-visibility"), "{err}");
+    }
+
+    /// Plan test 45 (ADR-0018 §2, `D-B2-8`): the `--record-out` -> file ->
+    /// `new_with_record` round trip. `new_with_record_verifies_signature_
+    /// and_sets_fields` (`crates/sdk/src/lib.rs`) already covers the
+    /// signature-verification half against an in-memory record; what is
+    /// missing is the file itself -- `svc deploy` cannot be driven from a
+    /// test (`roymctl` is a binary, not linkable), so this builds the exact
+    /// record shape the private-with-export deploy arm signs (`is_private:
+    /// true`, since that record must never be admitted by a registry),
+    /// writes it to a temp file the way `--record-out` does, and reads it
+    /// back before connecting.
+    #[test]
+    fn a_record_out_file_round_trips_through_new_with_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("svc.record.json");
+
+        let identity = Identity::generate().unwrap();
+        let svc_id = substrate::derive_did_key(&identity.public_key());
+        let record = EndpointInfo {
+            service_id: svc_id.clone(),
+            substrate_id: "did:key:zSubstrate".to_string(),
+            endpoint_type: EndpointType::Service,
+            mechanisms: vec![],
+            nickname: Some("my-private-svc".to_string()),
+            is_private: true,
+            ttl: None,
+            not_after: 9_999_999_999,
+            generation: 0,
+        }
+        .sign(&identity)
+        .unwrap();
+
+        fs::write(&path, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+
+        let read_back: SignedEndpointInfo =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let client =
+            SyneroymClient::new_with_record(read_back, "http://127.0.0.1:9999".to_string())
+                .unwrap();
+        assert_eq!(client.service_id(), svc_id);
     }
 }

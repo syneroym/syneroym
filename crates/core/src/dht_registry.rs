@@ -337,6 +337,12 @@ impl RegistryClient {
             let pkarr_pubkey = PublicKey::try_from(pubkey.as_bytes())?;
             let signed_packet = SignedPacket::from_relay_payload(&pkarr_pubkey, &bytes_obj)?;
 
+            // When `sync_dht` is false, `publish_dht_packet` only *starts*
+            // the publish (`tokio::spawn`, fire-and-forget) and returns
+            // immediately -- so `published` here means "handed to the DHT
+            // publisher", not "confirmed on the DHT". `register`'s `Ok(())`
+            // is honest about queuing, not about completion; a caller that
+            // needs the latter must pass `sync_dht: true`.
             publish_dht_packet(dht.clone(), signed_packet, sync_dht, "endpoint info").await;
             published = true;
         }

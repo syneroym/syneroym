@@ -265,8 +265,8 @@ impl Debug for SyneroymClient {
             .field("connect_timeout", &self.connect_timeout)
             .field("identity", &self.identity)
             .field("caller_ucan", &self.caller_ucan)
-            .field("enable_dht", &self.enable_dht)
-            .finish_non_exhaustive()
+            .field("pending_closes", &self.pending_closes.len())
+            .finish()
     }
 }
 
@@ -1242,6 +1242,50 @@ mod frame_size_tests {
         assert!(msg.contains("orchestrator.deploy"), "{msg}");
         assert!(msg.contains(&(framing::MAX_FRAME_SIZE as usize + 1).to_string()), "{msg}");
         assert!(msg.contains(&framing::MAX_FRAME_SIZE.to_string()), "{msg}");
+    }
+}
+
+#[cfg(test)]
+mod publication_split_tests {
+    use syneroym_core::dht_registry::{EndpointInfo, EndpointType};
+    use syneroym_identity::Identity;
+
+    use super::*;
+
+    fn sample_record() -> SignedEndpointInfo {
+        let identity = Identity::generate().unwrap();
+        let service_id = syneroym_identity::substrate::derive_did_key(&identity.public_key());
+        EndpointInfo {
+            service_id,
+            substrate_id: "did:key:z6Mksub".to_string(),
+            endpoint_type: EndpointType::Service,
+            mechanisms: vec![],
+            nickname: None,
+            is_private: false,
+            ttl: None,
+            not_after: 9999999999,
+            generation: 0,
+        }
+        .sign(&identity)
+        .unwrap()
+    }
+
+    #[test]
+    fn private_splits_to_no_certificate() {
+        let (visibility, cert) = Publication::Private.split().unwrap();
+        assert_eq!(visibility, Visibility::Private);
+        assert!(cert.is_none());
+    }
+
+    #[test]
+    fn public_and_internal_split_to_a_serialized_certificate() {
+        let (visibility, cert) = Publication::Public(sample_record()).split().unwrap();
+        assert_eq!(visibility, Visibility::Public);
+        assert!(cert.is_some());
+
+        let (visibility, cert) = Publication::Internal(sample_record()).split().unwrap();
+        assert_eq!(visibility, Visibility::Internal);
+        assert!(cert.is_some());
     }
 }
 

@@ -174,7 +174,7 @@ mod tests {
 
     use syneroym_app_orchestration::{
         AppBlueprintId, AppInstanceId, LogicalServiceRef, PlannedService, ServiceConfig,
-        ServiceType,
+        ServiceType, Visibility,
     };
 
     use super::*;
@@ -202,7 +202,7 @@ mod tests {
             fdae: None,
             health_check: None,
             assets: None,
-            visibility: syneroym_app_orchestration::Visibility::Private,
+            visibility: Visibility::Private,
         }
     }
 
