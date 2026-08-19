@@ -208,7 +208,15 @@ pub struct SyneroymClient {
     service_id: String,
     registry_url: String,
     provided_mechanisms: Option<Vec<EndpointMechanism>>,
-    lookup_did: Option<String>,
+    /// Overrides which DID `connect()` queries the registry under, when it
+    /// differs from `service_id` itself. `None` for every constructor
+    /// except [`Self::new_with_record`]: a *private* service (ADR-0018 §2)
+    /// is never registered, so looking `service_id` up would fail, while
+    /// the substrate hosting it always is (it publishes itself on every
+    /// heartbeat) -- `new_with_record` sets this to that substrate's own
+    /// DID, taken from the signed record, so `connect()` resolves *that*
+    /// instead.
+    registry_lookup_override: Option<String>,
     connection: Option<TransportConnection>,
     connect_timeout: Duration,
     /// A self-asserted caller identity (pubkey only, no delegation) sent on
@@ -260,7 +268,7 @@ impl Debug for SyneroymClient {
             .field("service_id", &self.service_id)
             .field("registry_url", &self.registry_url)
             .field("provided_mechanisms", &self.provided_mechanisms)
-            .field("lookup_did", &self.lookup_did)
+            .field("registry_lookup_override", &self.registry_lookup_override)
             .field("connection", &self.connection)
             .field("connect_timeout", &self.connect_timeout)
             .field("identity", &self.identity)
@@ -368,7 +376,7 @@ impl SyneroymClient {
             service_id,
             registry_url,
             provided_mechanisms: None,
-            lookup_did: None,
+            registry_lookup_override: None,
             connection: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
@@ -385,7 +393,7 @@ impl SyneroymClient {
             service_id,
             registry_url: String::new(),
             provided_mechanisms: Some(mechanisms),
-            lookup_did: None,
+            registry_lookup_override: None,
             connection: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
@@ -409,12 +417,13 @@ impl SyneroymClient {
         let substrate_id = record.info.substrate_id;
         let provided_mechanisms =
             if !record.info.mechanisms.is_empty() { Some(record.info.mechanisms) } else { None };
-        let lookup_did = if provided_mechanisms.is_none() { Some(substrate_id) } else { None };
+        let registry_lookup_override =
+            if provided_mechanisms.is_none() { Some(substrate_id) } else { None };
         Ok(Self {
             service_id,
             registry_url,
             provided_mechanisms,
-            lookup_did,
+            registry_lookup_override,
             connection: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
@@ -439,7 +448,7 @@ impl SyneroymClient {
             service_id,
             registry_url,
             provided_mechanisms: None,
-            lookup_did: None,
+            registry_lookup_override: None,
             connection: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity,
@@ -494,12 +503,12 @@ impl SyneroymClient {
 
         debug!("Connecting to {} via registry or provided mechanisms", self.service_id);
 
-        let lookup_target = self.lookup_did.as_deref().unwrap_or(&self.service_id);
+        let lookup_target = self.registry_lookup_override.as_deref().unwrap_or(&self.service_id);
         let mechanisms = if let Some(m) = &self.provided_mechanisms {
             m.clone()
         } else if !self.registry_url.is_empty() {
             let info = self.registry_client().lookup(lookup_target, true).await?.info;
-            if self.lookup_did.is_none() {
+            if self.registry_lookup_override.is_none() {
                 // The lookup might have been done by an alias. Update service_id to the
                 // canonical DID.
                 self.service_id = info.service_id;
@@ -1322,7 +1331,7 @@ mod new_with_record_tests {
             SyneroymClient::new_with_record(record.clone(), "http://127.0.0.1:9999".to_string())
                 .unwrap();
         assert_eq!(client.service_id(), service_id);
-        assert_eq!(client.lookup_did.as_deref(), Some(substrate_id.as_str()));
+        assert_eq!(client.registry_lookup_override.as_deref(), Some(substrate_id.as_str()));
         assert!(client.provided_mechanisms.is_none());
 
         // Tampered record fails verification
