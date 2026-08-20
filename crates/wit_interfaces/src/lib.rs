@@ -2,11 +2,19 @@
 //! This module generates Rust types from the WIT interfaces including
 //! control-plane, data-layer, and vault.
 
+#[cfg(feature = "app-config")]
 pub mod app_config;
+#[cfg(feature = "blob-store")]
 pub mod blob_store;
+#[cfg(feature = "control-plane")]
 pub mod control_plane;
+#[cfg(feature = "data-layer")]
 pub mod data_layer;
+#[cfg(feature = "messaging")]
+pub mod messaging;
+#[cfg(feature = "supervisor")]
 pub mod supervisor;
+#[cfg(feature = "vault")]
 pub mod vault;
 
 #[cfg(not(target_arch = "wasm32"))]

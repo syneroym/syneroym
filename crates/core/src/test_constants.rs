@@ -153,3 +153,18 @@ pub fn miniapp_demo1_wasm_path() -> PathBuf {
 /// Default declared http_routes JSON for miniapp-demo1-wasm.
 pub const MINIAPP_DEMO1_WASM_ROUTES_JSON: &str =
     include_str!("../../../test-components/miniapp-demo1-wasm/routes.json");
+
+/// Returns the wasm32-wasip2 component path for the dual-build-shim
+/// fixture. Unlike every other `*_wasm_path` helper above, this one is
+/// **not** built as its own standalone `cargo-component` workspace -- it's
+/// a real member of the root workspace (so `syneroym-substrate` can link
+/// its native build behind the `dual_build_fixture` feature), so its
+/// component artifact lands in the **shared** workspace `target/`, not a
+/// per-component one. A `CARGO_TARGET_DIR` override breaks this path, same
+/// as it already breaks every other helper in this file. The interface name
+/// itself is `syneroym_test_dual_build_fixture::native::FIXTURE_INTERFACE`,
+/// not duplicated here, so the registration and the test can never drift.
+pub fn dual_build_fixture_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-wasip2/release/syneroym_test_dual_build_fixture.wasm")
+}

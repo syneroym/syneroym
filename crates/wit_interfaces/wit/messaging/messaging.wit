@@ -76,3 +76,16 @@ world messaging-guest {
     export stream-types;
     export guest-api;
 }
+
+/// Import-only view of `host-api`, with no `stream-types`/`guest-api`
+/// export requirement. For bindgen consumers that only need to *call*
+/// `host-api` (e.g. `syneroym-wit-interfaces`' shared guest bindings, reused
+/// by many components' own worlds) rather than stand alone as a deployable
+/// component in `messaging-guest`'s own right -- mirrors `data-layer-
+/// import`'s reasoning: a component exporting `guest-api`/`stream-types`
+/// implements its own world (see `test-components/dual-build-fixture/src/
+/// guest.rs`), and only maps its imports onto this module's `host-api`
+/// types.
+world messaging-import {
+    import host-api;
+}

@@ -1,0 +1,23 @@
+[package]
+name = "syneroym-app-host"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Not `workspace = true`: Cargo forbids a member from narrowing a workspace
+# dependency's `default-features`. `default-features = false` here on
+# purpose -- this crate's guest impls (`guest.rs`) call only
+# `data-layer`/`blob-store`/`messaging`. Pulling in
+# `syneroym-wit-interfaces`'s other guest modules (`app-config`,
+# `control-plane`, `supervisor`, `vault`) would link their unrelated,
+# usually-unsatisfied worlds' component-type sections into every wasm32
+# consumer of this crate -- see that crate's own `Cargo.toml` comment.
+syneroym-wit-interfaces = { path = "../wit_interfaces", default-features = false, features = [
+    "data-layer",
+    "blob-store",
+    "messaging",
+] }
+async-trait.workspace = true

@@ -33,6 +33,11 @@ run = """
 if [ -d "test-components/miniapp-demo1-wasm/client" ]; then
   (cd "test-components/miniapp-demo1-wasm/client" && npm ci || npm install && npm run build)
 fi
+# Built from the workspace root, not `cd`-ed like the loop below: this
+# fixture is a real workspace member (it needs to be linkable into
+# syneroym-substrate too), so its component lands in the shared workspace
+# `target/`, not a per-component one.
+cargo component build --release --target wasm32-wasip2 -p syneroym-test-dual-build-fixture
 for component in greeter data-layer-test proxy-test stream-test messaging-pubsub-test abac-test scheduled-test saga-test http-guest-test websocket-guest-test miniapp-demo1-wasm; do
   (cd "test-components/$component" && cargo component build --release --target wasm32-wasip2)
 done

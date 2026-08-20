@@ -190,3 +190,12 @@ world data-layer-guest {
     export init: func() -> result<_, string>;
     export migrate: func() -> result<_, string>;
 }
+
+/// Import-only view of `store`, with no `init`/`migrate` export
+/// requirement. For bindgen consumers that only need to *call* `store`
+/// (e.g. `syneroym-wit-interfaces`' shared guest bindings, reused by many
+/// components' own worlds) rather than stand alone as a deployable
+/// component in `data-layer-guest`'s own right.
+world data-layer-import {
+    import store;
+}

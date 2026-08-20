@@ -1,0 +1,26 @@
+package syneroym-test:dual-build-fixture@0.1.0;
+
+interface test-driver {
+    /// The fixture's entire surface. `request` and the success payload are
+    /// JSON documents; application-level failures are reported inside the
+    /// success payload, so the WIT `Err` arm carries only fixture-internal
+    /// faults (malformed request JSON) -- the two builds map a WIT `Err`
+    /// onto the wire through different code, and this keeps that difference
+    /// out of every ordinary result.
+    run: func(request: string) -> result<string, string>;
+}
+
+world dual-build-fixture {
+    import syneroym:data-layer/store@0.1.0;
+    import syneroym:blob-store/blob-store@0.1.0;
+    import syneroym:messaging/host-api@0.1.0;
+
+    // Exported, not imported: `guest-api` uses `stream-cursor`/`stream-sink`
+    // from `stream-types`, which are guest-implemented, so the world must
+    // declare `stream-types` in the export direction even though this
+    // fixture declines both stream exports.
+    export syneroym:messaging/stream-types@0.1.0;
+    export syneroym:messaging/guest-api@0.1.0;
+
+    export test-driver;
+}

@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fmt, fs,
+    fmt, fs, mem,
     path::PathBuf,
     sync::{Arc, LazyLock, Mutex},
     time,
@@ -353,6 +353,35 @@ struct ObjectStoreUploadSession {
     ciphertext_buf: Vec<u8>,
 }
 
+impl ObjectStoreUploadSession {
+    /// Refunds whatever this session still has speculatively reserved
+    /// against the aggregate quota (a no-op if there's nothing left), and
+    /// zeroes `reserved` so a second call -- from `Drop`, after `finish`/
+    /// `abort` already settled it one way or the other -- can't refund
+    /// twice.
+    fn refund_reserved(&mut self) {
+        if self.reserved > 0
+            && let Ok(mut usage) = self.usage.lock()
+        {
+            let entry = usage.entry(self.service_id.clone()).or_insert(0);
+            *entry = entry.saturating_sub(self.reserved);
+        }
+        self.reserved = 0;
+    }
+}
+
+/// Covers every path that ends a session without going through `finish`'s
+/// commit -- an explicit `abort`, or a caller simply dropping the writer
+/// (the WIT resource destructor on the WASM build; `NativeBlobWriter`'s own
+/// drop natively) -- with one synchronous, deterministic refund, run
+/// exactly once regardless of which of those paths got here. Safe to make
+/// synchronous: `usage` is a plain `std::sync::Mutex`, no I/O involved.
+impl Drop for ObjectStoreUploadSession {
+    fn drop(&mut self) {
+        self.refund_reserved();
+    }
+}
+
 #[async_trait]
 impl UploadSession for ObjectStoreUploadSession {
     async fn write(&mut self, chunk: Vec<u8>) -> Result<(), BlobError> {
@@ -398,7 +427,10 @@ impl UploadSession for ObjectStoreUploadSession {
         if let Some(enc) = self.encryptor.take() {
             self.ciphertext_buf.extend(enc.finish()?);
         }
-        let hash = hex::encode(self.plaintext_hasher.finalize());
+        // `mem::replace`/`mem::take`, not a field move: `Self` now
+        // implements `Drop` (for the refund-on-abandon path below), and
+        // Rust forbids partially moving a field out of a type that does.
+        let hash = hex::encode(mem::replace(&mut self.plaintext_hasher, Sha256::new()).finalize());
         let path = object_path(&self.service_id, &hash);
 
         // Content-addressed storage: if a blob with this hash already
@@ -408,30 +440,29 @@ impl UploadSession for ObjectStoreUploadSession {
         let already_existed = self.store.head(&path).await.is_ok();
 
         self.store
-            .put(&path, PutPayload::from(self.ciphertext_buf))
+            .put(&path, PutPayload::from(mem::take(&mut self.ciphertext_buf)))
             .await
             .map_err(BlobError::from)?;
 
-        if already_existed
-            && self.reserved > 0
-            && let Ok(mut usage) = self.usage.lock()
-        {
-            let entry = usage.entry(self.service_id.clone()).or_insert(0);
-            *entry = entry.saturating_sub(self.reserved);
+        if already_existed {
+            // Dedup: nothing new actually grew on disk, so refund what
+            // `write` speculatively reserved.
+            self.refund_reserved();
+        } else {
+            // Real growth: the reservation becomes genuine usage. Settle it
+            // without refunding -- otherwise `Drop`, below, would refund
+            // bytes that are now truly on disk.
+            self.reserved = 0;
         }
         Ok(hash)
     }
 
     async fn abort(mut self: Box<Self>) {
-        // Nothing was written to the backend, so refund whatever this
-        // session speculatively reserved against the aggregate quota in
-        // `write` and drop the buffer.
-        if self.reserved > 0
-            && let Ok(mut usage) = self.usage.lock()
-        {
-            let entry = usage.entry(self.service_id.clone()).or_insert(0);
-            *entry = entry.saturating_sub(self.reserved);
-        }
+        // The refund itself happens in `Drop`, below, when `self` goes out
+        // of scope at the end of this call -- identical to what happens if
+        // a caller drops the writer without calling `abort` at all, so
+        // there is exactly one place that does this accounting rather than
+        // two copies that could drift.
         self.ciphertext_buf.clear();
     }
 }
@@ -722,6 +753,21 @@ mod tests {
 
         // The aborted session's reservation must be refunded, freeing the
         // full budget back up for a subsequent upload.
+        assert!(provider.put_blob("svc-a", vec![2u8; 10], None).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn dropping_a_session_without_finish_or_abort_still_refunds_reserved_quota() {
+        // Neither host build guarantees a caller calls `abort` on a
+        // half-finished upload -- an early return on error, or a native
+        // caller with no resource-table destructor to fall back on, just
+        // drops the writer. `ObjectStoreUploadSession`'s own `Drop` is what
+        // has to catch that, not either caller.
+        let provider = in_memory_provider(1024, Some(10));
+        let mut session = provider.open_upload("svc-a", None).await.unwrap();
+        session.write(vec![1u8; 10]).await.unwrap();
+        drop(session);
+
         assert!(provider.put_blob("svc-a", vec![2u8; 10], None).await.is_ok());
     }
 
