@@ -19,11 +19,27 @@ use core::future::Future;
 pub mod guest;
 pub mod types;
 
-use types::{blob_store::BlobError, data_layer::*, messaging::MessagingError};
+use types::{
+    blob_store::BlobError,
+    conversation::{ConversationError, ConversationSummary, DeliveryState, HistoryPage, Message},
+    data_layer::*,
+    messaging::MessagingError,
+};
 
 /// Everything an app may reach. One bound for an app to be generic over.
-pub trait AppHost: AppDataLayer + AppBlobStore + AppMessaging + Send + Sync {}
-impl<T> AppHost for T where T: AppDataLayer + AppBlobStore + AppMessaging + Send + Sync {}
+///
+/// Widened to require `AppConversation` (M06B slice B4): the only two
+/// implementors today (`GuestHost`, `NativeAppHost`) both gain it in the
+/// same change, so there is no third app this breaks yet. §14.5 of the B4
+/// plan: revisit if a dual-build app exists that never uses conversations.
+pub trait AppHost:
+    AppDataLayer + AppBlobStore + AppMessaging + AppConversation + Send + Sync
+{
+}
+impl<T> AppHost for T where
+    T: AppDataLayer + AppBlobStore + AppMessaging + AppConversation + Send + Sync
+{
+}
 
 /// Mirrors `syneroym:data-layer/store@0.1.0`, function for function.
 pub trait AppDataLayer {
@@ -168,4 +184,43 @@ pub trait AppMessaging {
 #[async_trait::async_trait]
 pub trait MessageSink: Send + Sync + core::fmt::Debug {
     async fn handle_message(&self, topic: String, payload: Vec<u8>) -> Result<(), String>;
+}
+
+/// Mirrors `syneroym:conversation/conversation@0.1.0`, function for
+/// function (M06B slice B4).
+pub trait AppConversation {
+    fn open_direct(
+        &self,
+        peer_address: String,
+    ) -> impl Future<Output = Result<String, ConversationError>> + Send;
+    fn conversations(
+        &self,
+    ) -> impl Future<Output = Result<Vec<ConversationSummary>, ConversationError>> + Send;
+    fn send(
+        &self,
+        conversation: String,
+        content_type: String,
+        body: Vec<u8>,
+    ) -> impl Future<Output = Result<String, ConversationError>> + Send;
+    fn history(
+        &self,
+        conversation: String,
+        limit: u32,
+        cursor: Option<String>,
+    ) -> impl Future<Output = Result<HistoryPage, ConversationError>> + Send;
+    fn delivery_status(
+        &self,
+        message: String,
+    ) -> impl Future<Output = Result<DeliveryState, ConversationError>> + Send;
+    fn outbox(&self) -> impl Future<Output = Result<Vec<Message>, ConversationError>> + Send;
+    fn retry(&self, message: String) -> impl Future<Output = Result<(), ConversationError>> + Send;
+}
+
+/// The host -> app direction for conversations (M06B slice B4).
+/// `MessageSink`'s shape, for the same reason: part of the app-facing
+/// contract, and used as `dyn`.
+#[async_trait::async_trait]
+pub trait ConversationSink: Send + Sync + core::fmt::Debug {
+    async fn on_message(&self, msg: Message) -> Result<(), String>;
+    async fn on_delivery_state(&self, message: String, state: DeliveryState) -> Result<(), String>;
 }

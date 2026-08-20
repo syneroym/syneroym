@@ -13,9 +13,14 @@ use std::{
 };
 
 use serde_json::{Value, json};
-use syneroym_app_host_native::{MessageSink, NativeHostFactory};
+use syneroym_app_host_native::{ConversationSink, MessageSink, NativeHostFactory};
+use syneroym_async_queue::QueueConfig;
+use syneroym_conversation::ConversationService;
 use syneroym_core::{
-    config::SubstrateConfig, local_registry::EndpointRegistry, storage::MockStorage, test_constants,
+    config::{RetryPolicy, SubstrateConfig},
+    local_registry::EndpointRegistry,
+    storage::MockStorage,
+    test_constants,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
@@ -147,6 +152,11 @@ struct Harness {
     wasm_engine: Arc<AppSandboxEngine>,
     native_factory: Arc<NativeHostFactory>,
     native_storage_provider: Arc<dyn StorageProvider>,
+    /// M06B slice B4: each stack's own `ConversationService`, for tests
+    /// that drive the peer-facing side (`prekey_bundle`/`peer_deliver`)
+    /// directly rather than through the guest `run()` surface.
+    wasm_conversation: Arc<ConversationService>,
+    native_conversation: Arc<ConversationService>,
     // Dropped last (declaration order), after everything that might still
     // have files open under them.
     _wasm_dir: tempfile::TempDir,
@@ -178,8 +188,8 @@ async fn harness() -> Harness {
     let wasm_dir = tempfile::tempdir().unwrap();
     let native_dir = tempfile::tempdir().unwrap();
 
-    let wasm_engine = build_wasm_stack(wasm_dir.path(), &wasm_bytes).await;
-    let (native_fixture, native_factory, native_storage_provider) =
+    let (wasm_engine, wasm_conversation) = build_wasm_stack(wasm_dir.path(), &wasm_bytes).await;
+    let (native_fixture, native_factory, native_storage_provider, native_conversation) =
         build_native_stack(native_dir.path());
 
     Harness {
@@ -188,12 +198,45 @@ async fn harness() -> Harness {
         wasm_engine,
         native_factory,
         native_storage_provider,
+        wasm_conversation,
+        native_conversation,
         _wasm_dir: wasm_dir,
         _native_dir: native_dir,
     }
 }
 
-async fn build_wasm_stack(dir: &Path, wasm_bytes: &[u8]) -> Arc<AppSandboxEngine> {
+fn test_conversation_service(
+    storage_provider: Arc<dyn StorageProvider>,
+    key_store: Arc<KeyStore>,
+    registry: EndpointRegistry,
+) -> Arc<ConversationService> {
+    ConversationService::new(
+        storage_provider,
+        key_store,
+        registry,
+        QueueConfig {
+            retry: RetryPolicy {
+                max_attempts: 5,
+                initial_backoff_ms: 10,
+                backoff_multiplier: 2.0,
+                max_backoff_ms: 1000,
+            },
+            visibility_timeout_ms: 5000,
+            dlq_max_rows: 100,
+            max_pending_rows: 1000,
+        },
+        syneroym_conversation::ConversationConfig {
+            allow_insecure_crypto: true,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+async fn build_wasm_stack(
+    dir: &Path,
+    wasm_bytes: &[u8],
+) -> (Arc<AppSandboxEngine>, Arc<ConversationService>) {
     let mut config = SubstrateConfig {
         app_local_data_dir: dir.join("data"),
         app_data_dir: dir.join("user_data"),
@@ -212,6 +255,9 @@ async fn build_wasm_stack(dir: &Path, wasm_bytes: &[u8]) -> Arc<AppSandboxEngine
     // `MqttBroker::new` opens no listener, so a second in-process instance
     // per stack costs nothing and binds no port.
     let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+    let conversation =
+        test_conversation_service(storage_provider.clone(), key_store.clone(), registry.clone());
 
     let engine = Arc::new(
         AppSandboxEngine::init(
@@ -221,24 +267,32 @@ async fn build_wasm_stack(dir: &Path, wasm_bytes: &[u8]) -> Arc<AppSandboxEngine
             storage_provider,
             blob_provider,
             broker,
-            EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            registry,
             syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap(),
     );
     engine.self_weak.set(Arc::downgrade(&engine)).expect("self_weak set once");
-    engine.deploy_wasm(SERVICE_ID, &wasm_deploy_manifest(wasm_bytes.to_vec())).await.unwrap();
     engine
+        .conversation
+        .set(Arc::downgrade(&conversation) as std::sync::Weak<dyn syneroym_rpc::ConversationHost>)
+        .expect("conversation set once");
+    conversation.set_notifier(
+        Arc::downgrade(&engine) as std::sync::Weak<dyn syneroym_rpc::ConversationNotifier>
+    );
+    engine.deploy_wasm(SERVICE_ID, &wasm_deploy_manifest(wasm_bytes.to_vec())).await.unwrap();
+    (engine, conversation)
 }
 
-fn build_native_stack(
-    dir: &Path,
-) -> (
+type NativeStack = (
     Arc<NativeFixture<syneroym_app_host_native::NativeAppHost>>,
     Arc<NativeHostFactory>,
     Arc<dyn StorageProvider>,
-) {
+    Arc<ConversationService>,
+);
+
+fn build_native_stack(dir: &Path) -> NativeStack {
     let key_store = Arc::new(KeyStore::new());
     let storage_provider: Arc<dyn StorageProvider> =
         Arc::new(SqliteStorageProvider::new(dir.join("data"), false).unwrap());
@@ -246,6 +300,11 @@ fn build_native_stack(
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let endpoint_registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+    let conversation = test_conversation_service(
+        storage_provider.clone(),
+        key_store.clone(),
+        endpoint_registry.clone(),
+    );
 
     let factory = NativeHostFactory::new(
         SERVICE_ID.to_string(),
@@ -255,12 +314,14 @@ fn build_native_stack(
         broker,
         endpoint_registry,
         syneroym_app_orchestration::empty_resolver(),
+        conversation.clone(),
     );
     let f = factory.clone();
     let fixture =
         Arc::new(NativeFixture::new(SERVICE_ID.to_string(), move |caller| f.host_for(caller)));
     factory.set_sink(Arc::downgrade(&fixture) as Weak<dyn MessageSink>);
-    (fixture, factory, storage_provider)
+    factory.set_conversation_sink(Arc::downgrade(&fixture) as Weak<dyn ConversationSink>);
+    (fixture, factory, storage_provider, conversation)
 }
 
 /// Sequential-body scenarios only: everything here completes within one
@@ -281,6 +342,20 @@ const SCENARIOS: &[(&str, &str)] = &[
     ("drop-collection", r#"{"op":"drop-collection"}"#),
     ("delete-blob", r#"{"op":"delete-blob","body":"blob to delete"}"#),
     ("abort-upload", r#"{"op":"abort-upload","chunks":["ab","cd"]}"#),
+    // M06B slice B4: `open-direct`'s id is derived from `(SERVICE_ID,
+    // peer_address)` alone -- deterministic, so unlike `send-message`
+    // (whose message id includes a random nonce) it belongs in this
+    // byte-comparison table.
+    ("open-conversation", r#"{"op":"open-conversation","peer_address":"peer-parity-scenario"}"#),
+    // `retry`/`delivery-status`/`read-history` against an id that was never
+    // created are deterministic error shapes too.
+    ("retry-unknown", r#"{"op":"retry-message","message":"msg:does-not-exist"}"#),
+    ("delivery-status-unknown", r#"{"op":"delivery-status","message":"msg:does-not-exist"}"#),
+    (
+        "read-history-unknown-conversation",
+        r#"{"op":"read-history","conversation":"conv:does-not-exist","limit":10}"#,
+    ),
+    ("read-outbox-empty", r#"{"op":"read-outbox"}"#),
 ];
 
 async fn scenarios<D: Driver>(d: &D) -> Vec<(&'static str, String)> {
@@ -446,6 +521,258 @@ async fn both_builds_deliver_a_published_message_to_their_own_inbox() {
     assert_eq!(wasm_topic, format!("svc/{SERVICE_ID}/chat"));
 }
 
+// -- M06B slice B4: conversation scenarios not covered by the
+// byte-comparison SCENARIOS table (a message id includes a random nonce,
+// so `send-message`'s exact output cannot be compared verbatim across
+// builds -- these assert on structure instead). --
+
+#[tokio::test]
+async fn open_direct_is_idempotent_on_both_builds() {
+    let h = harness().await;
+    let wasm_id_1 = open_conversation(&h.wasm, "peer-idempotent").await;
+    let wasm_id_2 = open_conversation(&h.wasm, "peer-idempotent").await;
+    assert_eq!(wasm_id_1, wasm_id_2, "wasm build: a second open-direct must return the same id");
+
+    let native_id_1 = open_conversation(&h.native, "peer-idempotent").await;
+    let native_id_2 = open_conversation(&h.native, "peer-idempotent").await;
+    assert_eq!(
+        native_id_1, native_id_2,
+        "native build: a second open-direct must return the same id"
+    );
+
+    assert_eq!(wasm_id_1, native_id_1, "both builds must derive the same id for the same peer");
+}
+
+async fn open_conversation<D: Driver>(d: &D, peer_address: &str) -> String {
+    let result = d
+        .run(&format!(r#"{{"op":"open-conversation","peer_address":"{peer_address}"}}"#))
+        .await
+        .unwrap();
+    let v: Value = serde_json::from_str(&result).unwrap();
+    v["ok"]["conversation"].as_str().unwrap().to_string()
+}
+
+async fn assert_send_writes_pending_and_appears_in_the_outbox<D: Driver>(name: &str, driver: &D) {
+    let conv = open_conversation(driver, "peer-send-pending").await;
+    let send_result = driver
+        .run(&format!(r#"{{"op":"send-message","conversation":"{conv}","body":"hello"}}"#))
+        .await
+        .unwrap();
+    let send_v: Value = serde_json::from_str(&send_result).unwrap();
+    let message_id = send_v["ok"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{name}: send-message did not return a message id: {send_v}"));
+
+    let status_result = driver
+        .run(&format!(r#"{{"op":"delivery-status","message":"{message_id}"}}"#))
+        .await
+        .unwrap();
+    let status_v: Value = serde_json::from_str(&status_result).unwrap();
+    assert_eq!(
+        status_v["ok"]["state"], "pending",
+        "{name}: a freshly sent message must be pending"
+    );
+
+    let outbox_result = driver.run(r#"{"op":"read-outbox"}"#).await.unwrap();
+    let outbox_v: Value = serde_json::from_str(&outbox_result).unwrap();
+    let entries = outbox_v["ok"]["outbox"].as_array().unwrap();
+    assert!(
+        entries.iter().any(|e| e["id"] == message_id),
+        "{name}: the outbox must list the just-sent message"
+    );
+}
+
+#[tokio::test]
+async fn send_writes_pending_and_appears_in_the_outbox_on_both_builds() {
+    let h = harness().await;
+    assert_send_writes_pending_and_appears_in_the_outbox("wasm", &h.wasm).await;
+    assert_send_writes_pending_and_appears_in_the_outbox("native", &h.native).await;
+}
+
+async fn assert_oversized_body_is_refused<D: Driver>(name: &str, driver: &D, oversized: &str) {
+    let conv = open_conversation(driver, "peer-quota").await;
+    let result = driver
+        .run(&format!(r#"{{"op":"send-message","conversation":"{conv}","body":"{oversized}"}}"#))
+        .await
+        .unwrap();
+    let v: Value = serde_json::from_str(&result).unwrap();
+    assert!(v["err"].is_string(), "{name}: an oversized body must be refused, got {v}");
+}
+
+#[tokio::test]
+async fn a_body_over_the_configured_limit_is_refused_on_both_builds() {
+    let h = harness().await;
+    let oversized = "x".repeat(300_000); // > conversation_max_body_bytes (262_144)
+    assert_oversized_body_is_refused("wasm", &h.wasm, &oversized).await;
+    assert_oversized_body_is_refused("native", &h.native, &oversized).await;
+}
+
+async fn assert_retry_on_pending_is_refused<D: Driver>(name: &str, driver: &D) {
+    let conv = open_conversation(driver, "peer-retry-pending").await;
+    let send_result = driver
+        .run(&format!(r#"{{"op":"send-message","conversation":"{conv}","body":"hi"}}"#))
+        .await
+        .unwrap();
+    let send_v: Value = serde_json::from_str(&send_result).unwrap();
+    let message_id = send_v["ok"]["message"].as_str().unwrap();
+
+    let retry_result =
+        driver.run(&format!(r#"{{"op":"retry-message","message":"{message_id}"}}"#)).await.unwrap();
+    let retry_v: Value = serde_json::from_str(&retry_result).unwrap();
+    assert!(
+        retry_v["err"].is_string(),
+        "{name}: retrying a pending (not failed) message must be refused, got {retry_v}"
+    );
+}
+
+#[tokio::test]
+async fn retry_on_a_pending_message_is_invalid_argument_on_both_builds() {
+    let h = harness().await;
+    assert_retry_on_pending_is_refused("wasm", &h.wasm).await;
+    assert_retry_on_pending_is_refused("native", &h.native).await;
+}
+
+/// Drives a full prekey-bundle -> X3DH-placeholder-session -> sign -> encrypt
+/// -> `peer_deliver` exchange from an independent third `ConversationService`
+/// (standing in for a real peer substrate) into each build's own
+/// `ConversationService`, and confirms the delivered message lands in that
+/// build's own store, `verified: true`, and reaches the guest/native app's
+/// `on-message` export (read back through `read-conversation-inbox`) --
+/// the host -> app direction neither the SCENARIOS table nor `run()` alone
+/// can exercise, since `peer_deliver` is reachable only through the
+/// peer-facing native-capability dispatch arm, not the guest surface.
+const SENDER_ADDRESS: &str = "external-peer-address";
+
+async fn assert_signed_delivery_is_verified_and_notifies_the_app<D: Driver>(
+    name: &str,
+    target_conversation: &syneroym_conversation::ConversationService,
+    driver: &D,
+) {
+    use syneroym_conversation::{
+        crypto::{PrekeyBundle, SessionCrypto, StaticEcdhSessionCrypto, generate_identity_bytes},
+        envelope::{self, DeliveryPayload},
+        ids, store,
+    };
+    use syneroym_rpc::ConversationHost;
+
+    {
+        // The sender's own store -- an independent `ConversationStore`
+        // standing in for a real peer substrate. Built directly (not
+        // through a second `ConversationService`) since only session
+        // establishment (`begin_session`/`encrypt`/`commit`) is needed.
+        let sender_dir = tempfile::tempdir().unwrap();
+        let sender_store = store::ConversationStore::open_encrypted(
+            sender_dir.path(),
+            None,
+            QueueConfig {
+                retry: RetryPolicy::default(),
+                visibility_timeout_ms: 120_000,
+                dlq_max_rows: 100,
+                max_pending_rows: 1000,
+            },
+            store::ConversationConfig::default(),
+        )
+        .unwrap();
+        let crypto = StaticEcdhSessionCrypto;
+
+        let bundle_bytes =
+            target_conversation.prekey_bundle(SERVICE_ID, SENDER_ADDRESS).await.unwrap();
+        let bundle: PrekeyBundle = serde_json::from_slice(&bundle_bytes).unwrap();
+        let session = crypto.begin_session(&sender_store, SERVICE_ID, &bundle).await.unwrap();
+
+        let conversation_id = ids::derive_conversation_id(SENDER_ADDRESS, SERVICE_ID);
+        let message_id = ids::derive_message_id(
+            SENDER_ADDRESS,
+            &conversation_id,
+            1_000,
+            "text/plain",
+            b"hello from a peer",
+            &[7u8; 16],
+        );
+        let identity = sender_store.local_identity_or_generate(generate_identity_bytes).unwrap();
+        let sig_bytes: [u8; 32] = identity.sig_secret.as_slice().try_into().unwrap();
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&sig_bytes);
+        let signature = envelope::sign(
+            &signing_key,
+            &message_id,
+            &conversation_id,
+            SENDER_ADDRESS,
+            1_000,
+            "text/plain",
+            b"hello from a peer",
+        );
+        let payload = DeliveryPayload {
+            message_id: message_id.clone(),
+            conversation_id: conversation_id.clone(),
+            author: SENDER_ADDRESS.to_string(),
+            sender_timestamp_ms: 1_000,
+            content_type: "text/plain".to_string(),
+            body: b"hello from a peer".to_vec(),
+            signature,
+        };
+        let env = crypto.encrypt(&session, &payload).unwrap();
+        crypto.commit(&sender_store, &session).await.unwrap();
+
+        let env_bytes = serde_json::to_vec(&env).unwrap();
+        let ack_bytes = target_conversation
+            .peer_deliver(SERVICE_ID, SENDER_ADDRESS, env_bytes)
+            .await
+            .unwrap_or_else(|e| panic!("{name}: peer_deliver failed: {e:?}"));
+        let _ack: Value = serde_json::from_slice(&ack_bytes).unwrap();
+
+        // Both sides must derive the same conversation id (`D-B4-5`'s
+        // load-bearing property) -- the receiver's own value, computed
+        // independently, must match the sender's.
+        let receiver_conv_id = ids::derive_conversation_id(SERVICE_ID, SENDER_ADDRESS);
+        assert_eq!(receiver_conv_id, conversation_id);
+
+        let history_result = driver
+            .run(&format!(
+                r#"{{"op":"read-history","conversation":"{receiver_conv_id}","limit":10}}"#
+            ))
+            .await
+            .unwrap();
+        let history_v: Value = serde_json::from_str(&history_result).unwrap();
+        let messages = history_v["ok"]["messages"].as_array().unwrap();
+        let delivered = messages.iter().find(|m| m["id"] == message_id).unwrap_or_else(|| {
+            panic!("{name}: delivered message not found in history: {history_v}")
+        });
+        assert_eq!(
+            delivered["verified"], true,
+            "{name}: a validly signed delivery must be verified"
+        );
+        assert_eq!(
+            delivered["state"], "delivered",
+            "{name}: an inbound message is delivered on arrival"
+        );
+
+        // The app's own `on-message` export was called: the fixture
+        // persists it through `data-layer`, read back here.
+        let inbox_result = driver.run(r#"{"op":"read-conversation-inbox"}"#).await.unwrap();
+        let inbox_v: Value = serde_json::from_str(&inbox_result).unwrap();
+        let inbox_entries = inbox_v["ok"]["entries"].as_array().unwrap_or_else(|| {
+            panic!("{name}: unexpected read-conversation-inbox response: {inbox_v}")
+        });
+        assert!(
+            inbox_entries.iter().any(|e| e["id"] == message_id),
+            "{name}: on-message must have notified the app, got {inbox_v}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_signed_delivery_from_an_external_peer_is_verified_and_notifies_the_app_on_both_builds() {
+    let h = harness().await;
+    assert_signed_delivery_is_verified_and_notifies_the_app("wasm", &h.wasm_conversation, &h.wasm)
+        .await;
+    assert_signed_delivery_is_verified_and_notifies_the_app(
+        "native",
+        &h.native_conversation,
+        &h.native,
+    )
+    .await;
+}
+
 /// Permitted differences between the two builds, asserted explicitly rather
 /// than left latent.
 mod permitted_differences {
@@ -463,7 +790,7 @@ mod permitted_differences {
     #[tokio::test]
     async fn each_native_invocation_gets_a_fresh_resource_table() {
         let dir = tempfile::tempdir().unwrap();
-        let (_, factory, _) = build_native_stack(dir.path());
+        let (_, factory, _, _) = build_native_stack(dir.path());
         use syneroym_app_host::{AppBlobStore, AppBlobWriter};
 
         let host_a = factory.host_for(caller());

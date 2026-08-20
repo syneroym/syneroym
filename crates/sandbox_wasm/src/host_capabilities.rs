@@ -36,22 +36,25 @@ use syneroym_rpc::{
     ResourceUri, RowAuthorizer, SagaBegin, SagaState as RpcSagaState, SagaStepRequest,
     ServiceProxy, apply_stage4, union_masked_fields,
 };
-use syneroym_wit_interfaces::host::syneroym::{
-    app_config::app_config::{self, ConfigError},
-    blob_store::blob_store::{
-        self, BlobError, BlobReader, BlobWriter, HostBlobReader, HostBlobWriter,
+use syneroym_wit_interfaces::{
+    conversation_host::syneroym::conversation::conversation as wit_conversation,
+    host::syneroym::{
+        app_config::app_config::{self, ConfigError},
+        blob_store::blob_store::{
+            self, BlobError, BlobReader, BlobWriter, HostBlobReader, HostBlobWriter,
+        },
+        data_layer::store::{
+            self, CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult,
+            RawQueryResult, RecordReadValue, RecordWriteValue, SqlValue,
+        },
+        host::context::Host,
+        messaging::host_api::{self, MessagingError},
+        proxy::{
+            proxy::{self, CallOptions, CallTarget, CalleeError},
+            saga::{self, SagaState as WitSagaState, SagaStatus},
+        },
+        vault::vault::{self, VaultError},
     },
-    data_layer::store::{
-        self, CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult,
-        RawQueryResult, RecordReadValue, RecordWriteValue, SqlValue,
-    },
-    host::context::Host,
-    messaging::host_api::{self, MessagingError},
-    proxy::{
-        proxy::{self, CallOptions, CallTarget, CalleeError},
-        saga::{self, SagaState as WitSagaState, SagaStatus},
-    },
-    vault::vault::{self, VaultError},
 };
 use tracing::error;
 use wasmtime::{StoreLimits, StoreLimitsBuilder, component::Resource};
@@ -89,6 +92,84 @@ pub fn empty_service_proxy() -> Weak<dyn ServiceProxy> {
     #[async_trait::async_trait]
     impl ServiceProxy for NeverConstructed {
         async fn invoke(&self, _request: ProxyRequest) -> Result<Value, RpcProxyError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+    }
+    Weak::<NeverConstructed>::new()
+}
+
+/// An always-empty `Weak<dyn ConversationHost>` -- mirrors
+/// [`empty_service_proxy`] exactly, for `HostState.conversation`'s default
+/// before [`HostState::with_conversation`] sets a real one.
+pub(crate) fn empty_conversation_host() -> Weak<dyn syneroym_rpc::ConversationHost> {
+    #[derive(Debug)]
+    struct NeverConstructed;
+    #[async_trait::async_trait]
+    impl syneroym_rpc::ConversationHost for NeverConstructed {
+        async fn open_direct(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<String, syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn conversations(
+            &self,
+            _: &str,
+        ) -> Result<Vec<syneroym_rpc::ConversationSummary>, syneroym_rpc::ConversationError>
+        {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn send(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Vec<u8>,
+        ) -> Result<String, syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn history(
+            &self,
+            _: &str,
+            _: &str,
+            _: u32,
+            _: Option<String>,
+        ) -> Result<syneroym_rpc::ConversationHistoryPage, syneroym_rpc::ConversationError>
+        {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn delivery_status(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<syneroym_rpc::ConversationDeliveryState, syneroym_rpc::ConversationError>
+        {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn outbox(
+            &self,
+            _: &str,
+        ) -> Result<Vec<syneroym_rpc::ConversationMessage>, syneroym_rpc::ConversationError>
+        {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn retry(&self, _: &str, _: &str) -> Result<(), syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn prekey_bundle(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Vec<u8>, syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn peer_deliver(
+            &self,
+            _: &str,
+            _: &str,
+            _: Vec<u8>,
+        ) -> Result<Vec<u8>, syneroym_rpc::ConversationError> {
             unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
         }
     }
@@ -141,6 +222,11 @@ pub struct HostState {
     /// `Arc<dyn AppRegistry>` and no path back to the engine, so there is
     /// no cycle to guard against.
     pub logical_resolver: Arc<LogicalResolver>,
+    /// Weak handle to the Conversation service (M06B slice B4). Defaults to
+    /// an always-empty `Weak::new()` -- `HostState::new`'s signature does
+    /// not change (`D-B4-24`); set via [`Self::with_conversation`] at the
+    /// two real construction sites only.
+    pub conversation: Weak<dyn syneroym_rpc::ConversationHost>,
 }
 
 impl Debug for HostState {
@@ -200,7 +286,21 @@ impl HostState {
             row_authorizer,
             app_instance_id,
             logical_resolver,
+            conversation: empty_conversation_host(),
         }
+    }
+
+    /// Sets [`Self::conversation`] after construction (`D-B4-24`) -- the
+    /// two real construction sites (`AppSandboxEngine::instantiate`-adjacent
+    /// code) call this; every other `HostState::new` call site is
+    /// unaffected.
+    #[must_use]
+    pub fn with_conversation(
+        mut self,
+        conversation: Weak<dyn syneroym_rpc::ConversationHost>,
+    ) -> Self {
+        self.conversation = conversation;
+        self
     }
 
     /// Builds the `QueryAuth` for the current request from `fdae_policy` +
@@ -1723,6 +1823,167 @@ impl syneroym_wit_interfaces::http::syneroym::http::websocket::Host for HostStat
             }
         }
         Err("Unknown connection ID".to_string())
+    }
+}
+
+/// WIT `syneroym:conversation` <-> `syneroym-rpc`'s plain
+/// `ConversationHost` types -- the same split `data-layer`'s own `Host`
+/// impl already draws between WIT shapes and `syneroym-data-db`'s.
+mod conversation_wire {
+    use syneroym_rpc as rpc;
+    use syneroym_wit_interfaces::conversation_host::syneroym::conversation::conversation as wit;
+
+    pub(super) fn map_error(e: rpc::ConversationError) -> wit::ConversationError {
+        match e {
+            rpc::ConversationError::PermissionDenied => wit::ConversationError::PermissionDenied,
+            rpc::ConversationError::NotFound => wit::ConversationError::NotFound,
+            rpc::ConversationError::InvalidArgument(m) => {
+                wit::ConversationError::InvalidArgument(m)
+            }
+            rpc::ConversationError::Unreachable(m) => wit::ConversationError::Unreachable(m),
+            rpc::ConversationError::QuotaExceeded => wit::ConversationError::QuotaExceeded,
+            rpc::ConversationError::Internal(m) => wit::ConversationError::Internal(m),
+        }
+    }
+
+    pub(super) fn no_capability() -> wit::ConversationError {
+        wit::ConversationError::Internal("no conversation capability on this node".to_string())
+    }
+
+    fn map_kind(k: rpc::ConversationKind) -> wit::ConversationKind {
+        match k {
+            rpc::ConversationKind::Direct => wit::ConversationKind::Direct,
+            rpc::ConversationKind::Group => wit::ConversationKind::Group,
+        }
+    }
+
+    pub(super) fn map_state(s: rpc::ConversationDeliveryState) -> wit::DeliveryState {
+        match s {
+            rpc::ConversationDeliveryState::Pending => wit::DeliveryState::Pending,
+            rpc::ConversationDeliveryState::Delivered => wit::DeliveryState::Delivered,
+            rpc::ConversationDeliveryState::Failed => wit::DeliveryState::Failed,
+        }
+    }
+
+    pub(super) fn map_summary(s: rpc::ConversationSummary) -> wit::ConversationSummary {
+        wit::ConversationSummary {
+            id: s.id,
+            kind: map_kind(s.kind),
+            participants: s.participants,
+            created_at: s.created_at,
+            last_activity_at: s.last_activity_at,
+        }
+    }
+
+    pub(super) fn map_message(m: rpc::ConversationMessage) -> wit::Message {
+        wit::Message {
+            id: m.id,
+            conversation: m.conversation,
+            author: m.author,
+            sender_timestamp: m.sender_timestamp,
+            received_at: m.received_at,
+            content_type: m.content_type,
+            body: m.body,
+            state: map_state(m.state),
+            verified: m.verified,
+            last_error: m.last_error,
+        }
+    }
+
+    pub(super) fn map_history(p: rpc::ConversationHistoryPage) -> wit::HistoryPage {
+        wit::HistoryPage {
+            messages: p.messages.into_iter().map(map_message).collect(),
+            next_cursor: p.next_cursor,
+        }
+    }
+}
+
+impl wit_conversation::Host for HostState {
+    async fn open_direct(
+        &mut self,
+        peer_address: String,
+    ) -> Result<String, wit_conversation::ConversationError> {
+        if self.read_only {
+            return Err(conversation_wire::map_error(
+                syneroym_rpc::ConversationError::PermissionDenied,
+            ));
+        }
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.open_direct(&self.component_id, &peer_address)
+            .await
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn conversations(
+        &mut self,
+    ) -> Result<Vec<wit_conversation::ConversationSummary>, wit_conversation::ConversationError>
+    {
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.conversations(&self.component_id)
+            .await
+            .map(|v| v.into_iter().map(conversation_wire::map_summary).collect())
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn send(
+        &mut self,
+        conversation: String,
+        content_type: String,
+        body: Vec<u8>,
+    ) -> Result<String, wit_conversation::ConversationError> {
+        if self.read_only {
+            return Err(conversation_wire::map_error(
+                syneroym_rpc::ConversationError::PermissionDenied,
+            ));
+        }
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.send(&self.component_id, &conversation, &content_type, body)
+            .await
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn history(
+        &mut self,
+        conversation: String,
+        limit: u32,
+        cursor: Option<String>,
+    ) -> Result<wit_conversation::HistoryPage, wit_conversation::ConversationError> {
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.history(&self.component_id, &conversation, limit, cursor)
+            .await
+            .map(conversation_wire::map_history)
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn delivery_status(
+        &mut self,
+        message: String,
+    ) -> Result<wit_conversation::DeliveryState, wit_conversation::ConversationError> {
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.delivery_status(&self.component_id, &message)
+            .await
+            .map(conversation_wire::map_state)
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn outbox(
+        &mut self,
+    ) -> Result<Vec<wit_conversation::Message>, wit_conversation::ConversationError> {
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.outbox(&self.component_id)
+            .await
+            .map(|v| v.into_iter().map(conversation_wire::map_message).collect())
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn retry(&mut self, message: String) -> Result<(), wit_conversation::ConversationError> {
+        if self.read_only {
+            return Err(conversation_wire::map_error(
+                syneroym_rpc::ConversationError::PermissionDenied,
+            ));
+        }
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.retry(&self.component_id, &message).await.map_err(conversation_wire::map_error)
     }
 }
 

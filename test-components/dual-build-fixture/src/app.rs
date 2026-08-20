@@ -6,11 +6,19 @@ use core::fmt;
 use serde_json::json;
 use syneroym_app_host::{
     AppBlobReader, AppBlobWriter, AppHost,
-    types::data_layer::{CollectionSchema, Mutation, QueryOptions, RecordWriteValue},
+    types::{
+        conversation::{DeliveryState, Message},
+        data_layer::{CollectionSchema, Mutation, QueryOptions, RecordWriteValue},
+    },
 };
 
 const MESSAGES: &str = "messages";
 const INBOX: &str = "inbox";
+/// M06B slice B4: what `on_conversation_message` persists -- never
+/// in-process state, same rule `INBOX` follows (`D-B3-12`).
+const CONV_INBOX: &str = "conv_inbox";
+/// What `on_conversation_state` persists.
+const CONV_STATE_LOG: &str = "conv_state_log";
 /// Dedicated to the mutation-shape verbs below (`patch`/`batch-mutate`/
 /// `delete-many`/`drop-collection`) so they can seed, drop, and re-seed
 /// freely without disturbing `MESSAGES`/`INBOX`'s own row counts, which the
@@ -97,6 +105,34 @@ pub enum Request {
     AbortUpload {
         chunks: Vec<String>,
     },
+    /// M06B slice B4: idempotent -- proves the id is stable across repeat
+    /// calls.
+    OpenConversation {
+        peer_address: String,
+    },
+    /// M06B slice B4: returns the message id and its state (`pending`
+    /// immediately -- `send` never touches the network).
+    SendMessage {
+        conversation: String,
+        body: String,
+    },
+    ReadHistory {
+        conversation: String,
+        limit: u32,
+    },
+    DeliveryStatus {
+        message: String,
+    },
+    /// M06B slice B4 (G2): the outbox surface.
+    ReadOutbox,
+    RetryMessage {
+        message: String,
+    },
+    /// What `on_conversation_message` stored -- through `data-layer`, never
+    /// in-process state (`D-B3-12`).
+    ReadConversationInbox,
+    /// What `on_conversation_state` stored, same rule.
+    ReadStateLog,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -294,7 +330,91 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
             w.abort().await; // consumes `w`
             Ok(json!({ "aborted": true }))
         }
+        Request::OpenConversation { peer_address } => {
+            let id = host.open_direct(peer_address).await.map_err(fmt_err)?;
+            Ok(json!({ "conversation": id }))
+        }
+        Request::SendMessage { conversation, body } => {
+            let id = host
+                .send(conversation, "text/plain".to_string(), body.into_bytes())
+                .await
+                .map_err(fmt_err)?;
+            Ok(json!({ "message": id }))
+        }
+        Request::ReadHistory { conversation, limit } => {
+            let page = host.history(conversation, limit, None).await.map_err(fmt_err)?;
+            Ok(json!({
+                "messages": page.messages.iter().map(message_json).collect::<Vec<_>>(),
+                "next-cursor": page.next_cursor,
+            }))
+        }
+        Request::DeliveryStatus { message } => {
+            let state = host.delivery_status(message).await.map_err(fmt_err)?;
+            Ok(json!({ "state": delivery_state_str(state) }))
+        }
+        Request::ReadOutbox => {
+            let outbox = host.outbox().await.map_err(fmt_err)?;
+            Ok(json!({ "outbox": outbox.iter().map(message_json).collect::<Vec<_>>() }))
+        }
+        Request::RetryMessage { message } => {
+            host.retry(message).await.map_err(fmt_err)?;
+            Ok(json!({ "retried": true }))
+        }
+        Request::ReadConversationInbox => {
+            ensure_collection(host, CONV_INBOX).await?;
+            let page = host
+                .query(
+                    CONV_INBOX.into(),
+                    QueryOptions { filter: None, limit: Some(1000), cursor: None },
+                )
+                .await
+                .map_err(fmt_err)?;
+            let entries: Vec<serde_json::Value> = page
+                .records
+                .into_iter()
+                .filter_map(|r| serde_json::from_slice(&r.payload).ok())
+                .collect();
+            Ok(json!({ "entries": entries }))
+        }
+        Request::ReadStateLog => {
+            ensure_collection(host, CONV_STATE_LOG).await?;
+            let page = host
+                .query(
+                    CONV_STATE_LOG.into(),
+                    QueryOptions { filter: None, limit: Some(1000), cursor: None },
+                )
+                .await
+                .map_err(fmt_err)?;
+            let entries: Vec<serde_json::Value> = page
+                .records
+                .into_iter()
+                .filter_map(|r| serde_json::from_slice(&r.payload).ok())
+                .collect();
+            Ok(json!({ "entries": entries }))
+        }
     }
+}
+
+fn delivery_state_str(s: DeliveryState) -> &'static str {
+    match s {
+        DeliveryState::Pending => "pending",
+        DeliveryState::Delivered => "delivered",
+        DeliveryState::Failed => "failed",
+    }
+}
+
+fn message_json(m: &Message) -> serde_json::Value {
+    json!({
+        "id": m.id,
+        "conversation": m.conversation,
+        "author": m.author,
+        "sender-timestamp": m.sender_timestamp,
+        "content-type": m.content_type,
+        "body": String::from_utf8_lossy(&m.body),
+        "state": delivery_state_str(m.state),
+        "verified": m.verified,
+        "last-error": m.last_error,
+    })
 }
 
 /// Called by both builds when a subscribed message arrives -- from the
@@ -319,6 +439,47 @@ pub async fn on_message<H: AppHost>(
                 "payload": String::from_utf8_lossy(&payload),
             }))
             .map_err(|e| e.to_string())?,
+        },
+    )
+    .await
+    .map_err(fmt_err)
+}
+
+/// Called by both builds when a durable conversation message arrives --
+/// from the exported `guest-api::on-message` on WASM, from
+/// `ConversationSink::on_message` natively. Persists through `data-layer`,
+/// never in-process state (`D-B3-12`), keyed by the message's own id so a
+/// redelivery overwrites rather than duplicates.
+pub async fn on_conversation_message<H: AppHost>(host: &H, msg: Message) -> Result<(), String> {
+    ensure_collection(host, CONV_INBOX).await?;
+    host.put(
+        CONV_INBOX.into(),
+        RecordWriteValue {
+            id: msg.id.clone(),
+            payload: serde_json::to_vec(&message_json(&msg)).map_err(|e| e.to_string())?,
+        },
+    )
+    .await
+    .map_err(fmt_err)
+}
+
+/// Called by both builds on a delivery-state transition. Appends rather
+/// than overwrites (keyed by message id + a monotonic-enough sequence
+/// derived from the state name) so a test can observe the transition
+/// sequence, not just the latest state.
+pub async fn on_conversation_state<H: AppHost>(
+    host: &H,
+    message: String,
+    state: DeliveryState,
+) -> Result<(), String> {
+    ensure_collection(host, CONV_STATE_LOG).await?;
+    let state_str = delivery_state_str(state);
+    host.put(
+        CONV_STATE_LOG.into(),
+        RecordWriteValue {
+            id: format!("{message}:{state_str}"),
+            payload: serde_json::to_vec(&json!({ "message": message, "state": state_str }))
+                .map_err(|e| e.to_string())?,
         },
     )
     .await

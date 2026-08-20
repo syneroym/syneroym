@@ -577,6 +577,37 @@ pub struct AppSandboxRole {
     /// rather than clamping -- a workflow must not silently run under a
     /// deadline it did not ask for.
     pub saga_max_deadline_secs: u64,
+    /// The conversation delivery worker's own tick (M06B B4, beside the
+    /// proxy outbox's `queue_tick_secs`).
+    pub conversation_tick_secs: u64,
+    /// Per-message body cap. A queued payload is stored plaintext under the
+    /// service's own DEK and travels on every delivery attempt.
+    pub conversation_max_body_bytes: u32,
+    /// Ceiling on items waiting for delivery in one conversation
+    /// (failure-matrix row 12). Exceeding it returns `quota-exceeded` for
+    /// that conversation only.
+    pub conversation_max_pending_per_conversation: u32,
+    /// Ceiling on stored messages in one conversation (failure-matrix row
+    /// 12).
+    pub conversation_max_messages_per_conversation: u32,
+    /// How long a message may wait for an unreachable peer before it moves
+    /// from `pending` to `failed` (`D-B4-20`). 30 days: long enough that an
+    /// offline peer is not mistaken for a broken one, short enough that an
+    /// outbox does not grow forever.
+    pub conversation_max_pending_age_secs: u64,
+    /// A message whose `sender_timestamp` is this far *ahead* of the
+    /// receiver's own clock is refused on arrival (`D-B4-21`) -- a
+    /// far-future timestamp would otherwise pin a message to the top of
+    /// every participant's history permanently. Asymmetric on purpose: a
+    /// past timestamp is always accepted.
+    pub conversation_max_clock_skew_secs: u64,
+    /// One-time prekeys held per service, replenished lazily (`D-B4-6`).
+    pub conversation_prekey_pool_size: u32,
+    /// Per-peer rate limit on `prekey-bundle` requests (`D-B4-15`): each
+    /// request is a store write and, once the one-time pool is empty, a
+    /// keygen, so an unbounded caller could drain it at no cost to
+    /// themselves.
+    pub conversation_prekey_requests_per_peer_per_hour: u32,
 }
 
 /// The guest proxy outbox lives wherever a guest does, so its knobs live on
@@ -627,6 +658,33 @@ const fn default_saga_max_deadline_secs() -> u64 {
     86400
 }
 
+const fn default_conversation_tick_secs() -> u64 {
+    5
+}
+const fn default_conversation_max_body_bytes() -> u32 {
+    262_144
+}
+const fn default_conversation_max_pending_per_conversation() -> u32 {
+    1_000
+}
+const fn default_conversation_max_messages_per_conversation() -> u32 {
+    100_000
+}
+/// 30 days.
+const fn default_conversation_max_pending_age_secs() -> u64 {
+    2_592_000
+}
+/// 24 hours.
+const fn default_conversation_max_clock_skew_secs() -> u64 {
+    86_400
+}
+const fn default_conversation_prekey_pool_size() -> u32 {
+    100
+}
+const fn default_conversation_prekey_requests_per_peer_per_hour() -> u32 {
+    20
+}
+
 impl AppSandboxRole {
     #[must_use]
     pub fn memory_limit_bytes(&self) -> u64 {
@@ -663,6 +721,17 @@ impl Default for AppSandboxRole {
             saga_max_terminal_rows: default_saga_max_terminal_rows(),
             saga_default_deadline_secs: default_saga_default_deadline_secs(),
             saga_max_deadline_secs: default_saga_max_deadline_secs(),
+            conversation_tick_secs: default_conversation_tick_secs(),
+            conversation_max_body_bytes: default_conversation_max_body_bytes(),
+            conversation_max_pending_per_conversation:
+                default_conversation_max_pending_per_conversation(),
+            conversation_max_messages_per_conversation:
+                default_conversation_max_messages_per_conversation(),
+            conversation_max_pending_age_secs: default_conversation_max_pending_age_secs(),
+            conversation_max_clock_skew_secs: default_conversation_max_clock_skew_secs(),
+            conversation_prekey_pool_size: default_conversation_prekey_pool_size(),
+            conversation_prekey_requests_per_peer_per_hour:
+                default_conversation_prekey_requests_per_peer_per_hour(),
         }
     }
 }

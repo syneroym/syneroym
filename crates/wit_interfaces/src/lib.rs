@@ -8,6 +8,8 @@ pub mod app_config;
 pub mod blob_store;
 #[cfg(feature = "control-plane")]
 pub mod control_plane;
+#[cfg(feature = "conversation")]
+pub mod conversation;
 #[cfg(feature = "data-layer")]
 pub mod data_layer;
 #[cfg(feature = "messaging")]
@@ -22,3 +24,6 @@ pub mod host;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod http;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod conversation_host;

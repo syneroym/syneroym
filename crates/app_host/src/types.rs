@@ -16,3 +16,10 @@ pub mod blob_store {
 pub mod messaging {
     pub use syneroym_wit_interfaces::messaging::syneroym::messaging::host_api::MessagingError;
 }
+
+pub mod conversation {
+    pub use syneroym_wit_interfaces::conversation::syneroym::conversation::conversation::{
+        ConversationError, ConversationKind, ConversationSummary, DeliveryState, HistoryPage,
+        Message,
+    };
+}

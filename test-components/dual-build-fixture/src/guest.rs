@@ -9,9 +9,12 @@
 //! fails to encode.
 
 use bindings::exports::{
-    syneroym::messaging::{
-        guest_api::Guest as GuestApiGuest,
-        stream_types::{Guest as StreamTypesGuest, GuestStreamCursor, GuestStreamSink},
+    syneroym::{
+        conversation::guest_api::Guest as ConversationGuestApiGuest,
+        messaging::{
+            guest_api::Guest as GuestApiGuest,
+            stream_types::{Guest as StreamTypesGuest, GuestStreamCursor, GuestStreamSink},
+        },
     },
     syneroym_test::dual_build_fixture::test_driver::Guest as TestDriverGuest,
 };
@@ -31,6 +34,7 @@ mod bindings {
             "syneroym:blob-store/blob-store@0.1.0": syneroym_wit_interfaces::blob_store::syneroym::blob_store::blob_store,
             "syneroym:messaging/host-api@0.1.0": syneroym_wit_interfaces::messaging::syneroym::messaging::host_api,
             "syneroym:messaging/stream-types@0.1.0": generate,
+            "syneroym:conversation/conversation@0.1.0": syneroym_wit_interfaces::conversation::syneroym::conversation::conversation,
         },
     });
     use super::Fixture;
@@ -64,6 +68,21 @@ impl GuestApiGuest for Fixture {
         _metadata: String,
     ) -> Result<bindings::exports::syneroym::messaging::stream_types::StreamSink, String> {
         Err("streaming not supported by this fixture".to_string())
+    }
+}
+
+impl ConversationGuestApiGuest for Fixture {
+    fn on_message(
+        msg: bindings::exports::syneroym::conversation::guest_api::Message,
+    ) -> Result<(), String> {
+        block_on(crate::app::on_conversation_message(&GuestHost, msg))
+    }
+
+    fn on_delivery_state(
+        msg: String,
+        state: bindings::exports::syneroym::conversation::guest_api::DeliveryState,
+    ) -> Result<(), String> {
+        block_on(crate::app::on_conversation_state(&GuestHost, msg, state))
     }
 }
 

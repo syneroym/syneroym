@@ -16,6 +16,7 @@ syneroym-data-keystore.workspace = true
 syneroym-mqtt-broker.workspace = true
 syneroym-rpc.workspace = true
 syneroym-core.workspace = true
+syneroym-conversation.workspace = true
 syneroym-app-orchestration.workspace = true
 wasmtime.workspace = true
 tokio.workspace = true
@@ -25,5 +26,7 @@ async-trait.workspace = true
 
 [dev-dependencies]
 syneroym-test-dual-build-fixture.workspace = true
+syneroym-async-queue.workspace = true
 tempfile.workspace = true
 serde_json.workspace = true
+ed25519-dalek.workspace = true

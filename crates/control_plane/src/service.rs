@@ -38,7 +38,10 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
-use crate::dummy_sandbox::{AppSandboxEngine, ContainerEngine};
+use crate::{
+    dummy_sandbox::{AppSandboxEngine, ContainerEngine},
+    synsvc_native::empty_conversation_host,
+};
 
 mod orchestration;
 
@@ -112,6 +115,16 @@ pub struct ControlPlaneService {
     /// implementation, is constructed in `RouteHandler::init`, which runs
     /// after this service) and same two-phase `OnceLock` wiring.
     pub row_authorizer: OnceLock<Weak<dyn RowAuthorizer>>,
+    /// The Conversation service (M06B slice B4), threaded on to each
+    /// deployed service's `SynSvcNativeService` at construction time
+    /// (`orchestration.rs`'s two `SynSvcNativeService::new` call sites).
+    /// Unlike `service_proxy`/`row_authorizer`, `ConversationService`
+    /// exists *before* `ControlPlaneService` does (`build_route_handler_deps`
+    /// builds it first), so this could have been a constructor parameter --
+    /// kept as an `OnceLock` anyway, for the same reason `D-B4-24` avoids a
+    /// parameter on `SynSvcNativeService::new` itself: consistency with the
+    /// other two fields this struct already threads the same way.
+    pub conversation: OnceLock<Weak<dyn syneroym_rpc::ConversationHost>>,
     /// Set after construction by the substrate's composition root. A setter
     /// rather than an `init` parameter because `init` has many call sites,
     /// almost all of them tests with nothing to publish. Same two-phase
@@ -216,6 +229,7 @@ impl ControlPlaneService {
             service_proxy: OnceLock::new(),
             proxy_queues: OnceLock::new(),
             row_authorizer: OnceLock::new(),
+            conversation: OnceLock::new(),
             endpoint_publisher: OnceLock::new(),
             republish_trigger: OnceLock::new(),
             native_dispatch: Arc::downgrade(&native_dispatch),
@@ -318,6 +332,12 @@ impl ControlPlaneService {
     /// `app_sandbox` feature).
     pub(crate) fn current_row_authorizer(&self) -> Weak<dyn RowAuthorizer> {
         self.row_authorizer.get().cloned().unwrap_or_else(empty_row_authorizer)
+    }
+
+    /// The current `Weak<dyn ConversationHost>`, or an always-empty one if
+    /// unset -- mirrors `current_row_authorizer` exactly.
+    pub(crate) fn current_conversation(&self) -> Weak<dyn syneroym_rpc::ConversationHost> {
+        self.conversation.get().cloned().unwrap_or_else(empty_conversation_host)
     }
 
     /// Whether `caller` holds a specific **node-wide** ability -- the

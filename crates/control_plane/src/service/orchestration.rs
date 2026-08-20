@@ -2149,22 +2149,21 @@ impl ControlPlaneService {
             }
         }
         if let Some(native_dispatch) = self.native_dispatch.upgrade() {
-            native_dispatch.insert(
+            let native_service = Arc::new(SynSvcNativeService::new(
                 service_id.clone(),
-                Arc::new(SynSvcNativeService::new(
-                    service_id.clone(),
-                    self.key_store.clone(),
-                    self.storage_provider.clone(),
-                    self.blob_provider.clone(),
-                    self.messaging_broker.clone(),
-                    fdae_policy.as_ref().map(|(_, policy)| policy.clone()),
-                    self.node_identity.clone(),
-                    &caller.caller_did,
-                    self.current_service_proxy(),
-                    self.current_row_authorizer(),
-                    installed_instance_cert.clone(),
-                )) as Arc<dyn NativeService>,
-            );
+                self.key_store.clone(),
+                self.storage_provider.clone(),
+                self.blob_provider.clone(),
+                self.messaging_broker.clone(),
+                fdae_policy.as_ref().map(|(_, policy)| policy.clone()),
+                self.node_identity.clone(),
+                &caller.caller_did,
+                self.current_service_proxy(),
+                self.current_row_authorizer(),
+                installed_instance_cert.clone(),
+            ));
+            native_service.set_conversation(self.current_conversation());
+            native_dispatch.insert(service_id.clone(), native_service as Arc<dyn NativeService>);
         } else {
             tracing::error!(
                 "Native dispatch registry unavailable for service {}: registered its native \
@@ -3124,22 +3123,21 @@ impl ControlPlaneService {
         // every parameter, not an enumerated subset of it, or the renewed
         // service comes back with dead proxy/authorizer hooks.
         if let Some(native_dispatch) = self.native_dispatch.upgrade() {
-            native_dispatch.insert(
+            let native_service = Arc::new(SynSvcNativeService::new(
                 service_id.clone(),
-                Arc::new(SynSvcNativeService::new(
-                    service_id.clone(),
-                    self.key_store.clone(),
-                    self.storage_provider.clone(),
-                    self.blob_provider.clone(),
-                    self.messaging_broker.clone(),
-                    fdae_policy,
-                    self.node_identity.clone(),
-                    &caller.caller_did,
-                    self.current_service_proxy(),
-                    self.current_row_authorizer(),
-                    Some(cert),
-                )) as Arc<dyn NativeService>,
-            );
+                self.key_store.clone(),
+                self.storage_provider.clone(),
+                self.blob_provider.clone(),
+                self.messaging_broker.clone(),
+                fdae_policy,
+                self.node_identity.clone(),
+                &caller.caller_did,
+                self.current_service_proxy(),
+                self.current_row_authorizer(),
+                Some(cert),
+            ));
+            native_service.set_conversation(self.current_conversation());
+            native_dispatch.insert(service_id.clone(), native_service as Arc<dyn NativeService>);
             Ok(())
         } else {
             Err(format!(

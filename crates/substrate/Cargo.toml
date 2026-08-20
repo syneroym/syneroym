@@ -35,6 +35,8 @@ syneroym-coordinator = { workspace = true, optional = true, default-features = f
 syneroym-client-gateway = { workspace = true, optional = true }
 syneroym-app-supervisor = { workspace = true, optional = true }
 syneroym-sandbox-wasm.workspace = true
+syneroym-conversation.workspace = true
+syneroym-async-queue.workspace = true
 syneroym-app-host-native = { workspace = true, optional = true }
 syneroym-test-dual-build-fixture = { workspace = true, optional = true }
 tracing.workspace = true

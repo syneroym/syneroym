@@ -6,7 +6,10 @@
 use std::fmt;
 
 use serde_json::Value;
-use syneroym_app_host::{AppHost, MessageSink};
+use syneroym_app_host::{
+    AppHost, ConversationSink, MessageSink,
+    types::conversation::{DeliveryState, Message},
+};
 use syneroym_rpc::{CallerContext, NativeInvocation, NativeResponse, RpcError, RpcResult};
 
 /// Exported so the substrate's registration call site and this crate's own
@@ -73,5 +76,18 @@ impl<H: AppHost + 'static> MessageSink for NativeFixture<H> {
         // gate.
         let host = (self.host_for)(CallerContext::service_system(&self.service_id));
         crate::app::on_message(&host, topic, payload).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<H: AppHost + 'static> ConversationSink for NativeFixture<H> {
+    async fn on_message(&self, msg: Message) -> Result<(), String> {
+        let host = (self.host_for)(CallerContext::service_system(&self.service_id));
+        crate::app::on_conversation_message(&host, msg).await
+    }
+
+    async fn on_delivery_state(&self, message: String, state: DeliveryState) -> Result<(), String> {
+        let host = (self.host_for)(CallerContext::service_system(&self.service_id));
+        crate::app::on_conversation_state(&host, message, state).await
     }
 }

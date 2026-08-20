@@ -1,0 +1,888 @@
+//! `conversation.db`: one file per service, on one connection shared with
+//! its own `async_queue::Queue` (`D-B4-13`) -- what makes the `send`
+//! transaction (`D-B4-27`) atomic. Every `BLOB` column here is inside a
+//! DEK-opened database, matching the rest of the tree's per-service stores.
+
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
+
+use anyhow::{Result, anyhow};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use syneroym_async_queue::{Queue, QueueConfig};
+use syneroym_rpc::{ConversationDeliveryState, ConversationKind, ConversationMessage};
+use zeroize::Zeroizing;
+
+/// Per-conversation and per-service bounds (`D-B4-16`), plus the clock/age
+/// bounds `outbox.rs`/`transport.rs` apply. Converted from
+/// `AppSandboxRole`'s `conversation_*` fields by the crate's caller
+/// (`crates/substrate/src/runtime.rs`), not read from config directly here
+/// -- this crate does not depend on `syneroym-substrate`.
+#[derive(Debug, Clone)]
+pub struct ConversationConfig {
+    pub max_body_bytes: u32,
+    pub max_pending_per_conversation: u32,
+    pub max_messages_per_conversation: u32,
+    pub max_pending_age_secs: u64,
+    pub max_clock_skew_secs: u64,
+    pub prekey_requests_per_peer_per_hour: u32,
+}
+
+impl Default for ConversationConfig {
+    fn default() -> Self {
+        Self {
+            max_body_bytes: 262_144,
+            max_pending_per_conversation: 1_000,
+            max_messages_per_conversation: 100_000,
+            max_pending_age_secs: 2_592_000,
+            max_clock_skew_secs: 86_400,
+            prekey_requests_per_peer_per_hour: 20,
+        }
+    }
+}
+
+/// A row from `messages`, as `store.rs`'s own callers see it -- close to
+/// but not identical to `syneroym_rpc::ConversationMessage` (this one
+/// carries `signature`/`outgoing`, which are store-internal).
+#[derive(Debug, Clone)]
+pub struct StoredMessage {
+    pub id: String,
+    pub conversation_id: String,
+    pub author: String,
+    pub sender_timestamp_ms: i64,
+    pub received_at_ms: i64,
+    pub content_type: String,
+    pub body: Vec<u8>,
+    pub signature: [u8; 64],
+    pub outgoing: bool,
+    pub verified: bool,
+    pub state: ConversationDeliveryState,
+    pub last_error: Option<String>,
+}
+
+impl StoredMessage {
+    #[must_use]
+    pub fn into_wire(self) -> ConversationMessage {
+        ConversationMessage {
+            id: self.id,
+            conversation: self.conversation_id,
+            author: self.author,
+            sender_timestamp: self.sender_timestamp_ms,
+            received_at: self.received_at_ms,
+            content_type: self.content_type,
+            body: self.body,
+            state: self.state,
+            verified: self.verified,
+            last_error: self.last_error,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConversationRow {
+    pub id: String,
+    pub kind: ConversationKind,
+    pub peer_address: Option<String>,
+    pub created_at_ms: i64,
+    pub last_activity_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoryPage {
+    pub messages: Vec<StoredMessage>,
+    pub next_cursor: Option<String>,
+}
+
+/// A session row, as `crypto.rs` persists and reads it. `state` is opaque
+/// to this module -- `crypto.rs`'s own encoding.
+#[derive(Debug, Clone)]
+pub struct SessionRow {
+    pub peer_address: String,
+    pub pinned_sig_key: [u8; 32],
+    pub state: Vec<u8>,
+}
+
+/// This service's own long-term conversation keys (`D-B4-8`): generated
+/// once, on first use, and never derived from the service's ed25519 node
+/// identity.
+#[derive(Debug, Clone)]
+pub struct LocalIdentityRow {
+    pub dh_secret: Zeroizing<Vec<u8>>,
+    pub sig_secret: Zeroizing<Vec<u8>>,
+}
+
+pub struct ConversationStore {
+    conn: Arc<Mutex<Connection>>,
+    queue: Queue,
+    config: ConversationConfig,
+}
+
+impl std::fmt::Debug for ConversationStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConversationStore").finish_non_exhaustive()
+    }
+}
+
+// Lock-poisoning from a panicking holder is a programming error; there is
+// no safe recovery path, matching `syneroym-async-queue`'s own precedent.
+#[allow(clippy::expect_used)]
+impl ConversationStore {
+    pub fn open_encrypted(
+        dir: &Path,
+        dek: Option<&[u8; 32]>,
+        queue_config: QueueConfig,
+        config: ConversationConfig,
+    ) -> Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        let conn = open_connection(&dir.join("conversation.db"), dek)?;
+        Self::init_schema(&conn)?;
+        let conn = Arc::new(Mutex::new(conn));
+        let queue = Queue::from_connection(conn.clone(), queue_config)?;
+        Ok(Self { conn, queue, config })
+    }
+
+    #[must_use]
+    pub fn queue(&self) -> &Queue {
+        &self.queue
+    }
+
+    #[must_use]
+    pub fn config(&self) -> &ConversationConfig {
+        &self.config
+    }
+
+    fn init_schema(conn: &Connection) -> Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS conversations (
+                id            TEXT PRIMARY KEY,
+                kind          TEXT NOT NULL,
+                peer_address  TEXT,
+                created_at    INTEGER NOT NULL,
+                last_activity INTEGER NOT NULL
+             );
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_direct_peer
+                 ON conversations(peer_address) WHERE kind = 'direct';
+
+             CREATE TABLE IF NOT EXISTS messages (
+                id               TEXT PRIMARY KEY,
+                conversation_id  TEXT NOT NULL REFERENCES conversations(id),
+                author           TEXT NOT NULL,
+                sender_timestamp INTEGER NOT NULL,
+                received_at      INTEGER NOT NULL,
+                content_type     TEXT NOT NULL,
+                body             BLOB NOT NULL,
+                signature        BLOB NOT NULL,
+                outgoing         INTEGER NOT NULL,
+                verified         INTEGER NOT NULL,
+                state            TEXT NOT NULL,
+                last_error       TEXT
+             );
+             CREATE INDEX IF NOT EXISTS idx_messages_order
+                 ON messages(conversation_id, sender_timestamp, author, id);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(author, id);
+             CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+
+             CREATE TABLE IF NOT EXISTS sessions (
+                peer_address   TEXT PRIMARY KEY,
+                pinned_sig_key BLOB NOT NULL,
+                state          BLOB NOT NULL,
+                updated_at     INTEGER NOT NULL
+             );
+
+             CREATE TABLE IF NOT EXISTS local_identity (
+                id         INTEGER PRIMARY KEY CHECK (id = 1),
+                dh_secret  BLOB NOT NULL,
+                sig_secret BLOB NOT NULL,
+                created_at INTEGER NOT NULL
+             );
+
+             CREATE TABLE IF NOT EXISTS prekey_requests (
+                caller_did    TEXT NOT NULL,
+                window_start  INTEGER NOT NULL,
+                count         INTEGER NOT NULL,
+                PRIMARY KEY (caller_did, window_start)
+             );",
+        )?;
+        Ok(())
+    }
+
+    // -- conversations ----------------------------------------------------
+
+    /// Idempotent: returns the existing direct conversation with
+    /// `peer_address`, or creates one.
+    pub fn get_or_create_direct(
+        &self,
+        peer_address: &str,
+        id: &str,
+        now_ms: i64,
+    ) -> Result<String> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT id FROM conversations WHERE peer_address = ?1 AND kind = 'direct'",
+                params![peer_address],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+        conn.execute(
+            "INSERT INTO conversations (id, kind, peer_address, created_at, last_activity)
+             VALUES (?1, 'direct', ?2, ?3, ?3)
+             ON CONFLICT(peer_address) WHERE kind = 'direct' DO NOTHING",
+            params![id, peer_address, now_ms],
+        )?;
+        conn.query_row(
+            "SELECT id FROM conversations WHERE peer_address = ?1 AND kind = 'direct'",
+            params![peer_address],
+            |r| r.get(0),
+        )
+        .map_err(|e| anyhow!("failed to read back created conversation: {e}"))
+    }
+
+    pub fn get_conversation(&self, id: &str) -> Result<Option<ConversationRow>> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        conn.query_row(
+            "SELECT id, kind, peer_address, created_at, last_activity FROM conversations WHERE id \
+             = ?1",
+            params![id],
+            |r| {
+                let kind_str: String = r.get(1)?;
+                Ok(ConversationRow {
+                    id: r.get(0)?,
+                    kind: if kind_str == "direct" {
+                        ConversationKind::Direct
+                    } else {
+                        ConversationKind::Group
+                    },
+                    peer_address: r.get(2)?,
+                    created_at_ms: r.get(3)?,
+                    last_activity_ms: r.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub fn list_conversations(&self) -> Result<Vec<ConversationRow>> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, peer_address, created_at, last_activity FROM conversations ORDER BY \
+             last_activity DESC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let kind_str: String = row.get(1)?;
+            out.push(ConversationRow {
+                id: row.get(0)?,
+                kind: if kind_str == "direct" {
+                    ConversationKind::Direct
+                } else {
+                    ConversationKind::Group
+                },
+                peer_address: row.get(2)?,
+                created_at_ms: row.get(3)?,
+                last_activity_ms: row.get(4)?,
+            });
+        }
+        Ok(out)
+    }
+
+    fn touch_conversation(conn_or_tx: &Connection, id: &str, now_ms: i64) -> Result<()> {
+        conn_or_tx.execute(
+            "UPDATE conversations SET last_activity = ?1 WHERE id = ?2",
+            params![now_ms, id],
+        )?;
+        Ok(())
+    }
+
+    // -- messages -----------------------------------------------------------
+
+    pub fn pending_count(&self, conversation_id: &str) -> Result<u32> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND state = 'pending'",
+            params![conversation_id],
+            |r| r.get(0),
+        )?;
+        Ok(count as u32)
+    }
+
+    pub fn message_count(&self, conversation_id: &str) -> Result<u32> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+            params![conversation_id],
+            |r| r.get(0),
+        )?;
+        Ok(count as u32)
+    }
+
+    /// The atomic write for an outgoing `send` -- one row in `messages`,
+    /// one enqueue, one commit (`D-B4-27`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_outgoing_and_enqueue(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        author: &str,
+        sender_timestamp_ms: i64,
+        content_type: &str,
+        body: &[u8],
+        signature: &[u8; 64],
+        peer_address: &str,
+        now_ms: i64,
+    ) -> Result<()> {
+        let payload = serde_json::to_vec(&OutboxItem {
+            message_id: message_id.to_string(),
+            peer_address: peer_address.to_string(),
+        })?;
+        self.queue.transaction(|tx, txq| {
+            tx.execute(
+                "INSERT INTO messages (id, conversation_id, author, sender_timestamp, \
+                 received_at, content_type, body, signature, outgoing, verified, state, \
+                 last_error)
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, 1, 1, 'pending', NULL)",
+                params![
+                    message_id,
+                    conversation_id,
+                    author,
+                    sender_timestamp_ms,
+                    content_type,
+                    body,
+                    signature.as_slice()
+                ],
+            )?;
+            Self::touch_conversation(tx, conversation_id, now_ms)?;
+            txq.enqueue(tx, conversation_id, message_id, &payload, now_ms)?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// Inbound insert-or-ignore: the whole of receiver-side dedup
+    /// (`(author, id)`'s unique index) -- a repeat delivery is a no-op, not
+    /// an error, which is what makes `D-B4-10` safe under at-least-once
+    /// redelivery.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_incoming_if_absent(
+        &self,
+        tx: &Transaction<'_>,
+        conversation_id: &str,
+        message_id: &str,
+        author: &str,
+        sender_timestamp_ms: i64,
+        content_type: &str,
+        body: &[u8],
+        signature: &[u8; 64],
+        now_ms: i64,
+    ) -> Result<bool> {
+        tx.execute(
+            "INSERT INTO conversations (id, kind, peer_address, created_at, last_activity)
+             VALUES (?1, 'direct', ?2, ?3, ?3)
+             ON CONFLICT(peer_address) WHERE kind = 'direct' DO UPDATE SET last_activity = ?3",
+            params![conversation_id, author, now_ms],
+        )?;
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO messages (id, conversation_id, author, sender_timestamp, \
+             received_at, content_type, body, signature, outgoing, verified, state, last_error)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 1, 'delivered', NULL)",
+            params![
+                message_id,
+                conversation_id,
+                author,
+                sender_timestamp_ms,
+                now_ms,
+                content_type,
+                body,
+                signature.as_slice()
+            ],
+        )?;
+        Ok(inserted > 0)
+    }
+
+    pub fn get_message(&self, id: &str) -> Result<Option<StoredMessage>> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        Self::query_message(&conn, id)
+    }
+
+    fn query_message(conn: &Connection, id: &str) -> Result<Option<StoredMessage>> {
+        conn.query_row(
+            "SELECT id, conversation_id, author, sender_timestamp, received_at, content_type, \
+             body, signature, outgoing, verified, state, last_error FROM messages WHERE id = ?1",
+            params![id],
+            row_to_message,
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub fn set_state(
+        &self,
+        id: &str,
+        state: ConversationDeliveryState,
+        last_error: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        conn.execute(
+            "UPDATE messages SET state = ?1, last_error = ?2 WHERE id = ?3",
+            params![state_str(state), last_error, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn history(
+        &self,
+        conversation_id: &str,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<HistoryPage> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        // Cursor is the last-seen message id from a previous page; since
+        // ordering is (sender_timestamp, author, id) and `id` is unique,
+        // resuming after that row's own ordering key is sufficient.
+        let (after_ts, after_author, after_id) = match cursor {
+            Some(id) => {
+                let row: Option<(i64, String)> = conn
+                    .query_row(
+                        "SELECT sender_timestamp, author FROM messages WHERE id = ?1",
+                        params![id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                match row {
+                    Some((ts, author)) => (ts, author, id.to_string()),
+                    None => (i64::MIN, String::new(), String::new()),
+                }
+            }
+            None => (i64::MIN, String::new(), String::new()),
+        };
+        let fetch_limit = i64::from(limit) + 1;
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, author, sender_timestamp, received_at, content_type, \
+             body, signature, outgoing, verified, state, last_error FROM messages
+             WHERE conversation_id = ?1
+             AND (sender_timestamp, author, id) > (?2, ?3, ?4)
+             ORDER BY sender_timestamp ASC, author ASC, id ASC
+             LIMIT ?5",
+        )?;
+        let mut rows =
+            stmt.query(params![conversation_id, after_ts, after_author, after_id, fetch_limit])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(row_to_message(row)?);
+        }
+        let next_cursor = if out.len() as u32 > limit {
+            out.pop();
+            out.last().map(|m: &StoredMessage| m.id.clone())
+        } else {
+            None
+        };
+        Ok(HistoryPage { messages: out, next_cursor })
+    }
+
+    /// Every message this service still owes delivery for, plus every one
+    /// that gave up (`pending`/`failed`) -- the outbox surface (G2).
+    pub fn outbox_messages(&self) -> Result<Vec<StoredMessage>> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, author, sender_timestamp, received_at, content_type, \
+             body, signature, outgoing, verified, state, last_error FROM messages
+             WHERE state IN ('pending', 'failed') ORDER BY sender_timestamp ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(row_to_message(row)?);
+        }
+        Ok(out)
+    }
+
+    // -- sessions -----------------------------------------------------------
+
+    pub fn session(&self, peer_address: &str) -> Result<Option<SessionRow>> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        conn.query_row(
+            "SELECT peer_address, pinned_sig_key, state FROM sessions WHERE peer_address = ?1",
+            params![peer_address],
+            |r| {
+                let sig_key: Vec<u8> = r.get(1)?;
+                let mut pinned = [0u8; 32];
+                let len = sig_key.len().min(32);
+                pinned[..len].copy_from_slice(&sig_key[..len]);
+                Ok(SessionRow { peer_address: r.get(0)?, pinned_sig_key: pinned, state: r.get(2)? })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub fn upsert_session(&self, row: &SessionRow, now_ms: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        Self::upsert_session_conn(&conn, row, now_ms)
+    }
+
+    pub fn upsert_session_in(
+        &self,
+        tx: &Transaction<'_>,
+        row: &SessionRow,
+        now_ms: i64,
+    ) -> Result<()> {
+        Self::upsert_session_conn(tx, row, now_ms)
+    }
+
+    /// `pub(crate)`: `crypto.rs`'s `SessionCrypto::commit_in` calls this
+    /// directly, since it has a `&Transaction` but no `&ConversationStore`.
+    pub(crate) fn upsert_session_conn(
+        conn: &Connection,
+        row: &SessionRow,
+        now_ms: i64,
+    ) -> Result<()> {
+        conn.execute(
+            "INSERT INTO sessions (peer_address, pinned_sig_key, state, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(peer_address) DO UPDATE SET state = ?3, updated_at = ?4",
+            params![row.peer_address, row.pinned_sig_key.as_slice(), row.state, now_ms],
+        )?;
+        Ok(())
+    }
+
+    // -- local identity -------------------------------------------------
+
+    /// Loads this service's own conversation identity, generating one on
+    /// first use (`D-B4-8`).
+    pub fn local_identity_or_generate(
+        &self,
+        generate: impl FnOnce() -> (Vec<u8>, Vec<u8>),
+    ) -> Result<LocalIdentityRow> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let existing: Option<(Vec<u8>, Vec<u8>)> = conn
+            .query_row("SELECT dh_secret, sig_secret FROM local_identity WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()?;
+        let (dh_secret, sig_secret) = match existing {
+            Some(pair) => pair,
+            None => {
+                let (dh, sig) = generate();
+                conn.execute(
+                    "INSERT INTO local_identity (id, dh_secret, sig_secret, created_at) VALUES \
+                     (1, ?1, ?2, ?3)",
+                    params![dh, sig, now_ms()],
+                )?;
+                (dh, sig)
+            }
+        };
+        Ok(LocalIdentityRow {
+            dh_secret: Zeroizing::new(dh_secret),
+            sig_secret: Zeroizing::new(sig_secret),
+        })
+    }
+
+    // -- prekey rate limiting (`D-B4-15`) --------------------------------
+
+    /// Increments this hour's request count for `caller_did` and returns
+    /// whether it is still within budget. `window_start` is the request's
+    /// own hour bucket, so old buckets simply stop being written to rather
+    /// than needing an explicit sweep.
+    pub fn record_prekey_request(&self, caller_did: &str, now_ms: i64) -> Result<bool> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let window_start = now_ms - (now_ms % 3_600_000);
+        conn.execute(
+            "INSERT INTO prekey_requests (caller_did, window_start, count) VALUES (?1, ?2, 1)
+             ON CONFLICT(caller_did, window_start) DO UPDATE SET count = count + 1",
+            params![caller_did, window_start],
+        )?;
+        let count: i64 = conn.query_row(
+            "SELECT count FROM prekey_requests WHERE caller_did = ?1 AND window_start = ?2",
+            params![caller_did, window_start],
+            |r| r.get(0),
+        )?;
+        Ok(count as u32 <= self.config.prekey_requests_per_peer_per_hour)
+    }
+}
+
+/// The queue payload for one outgoing delivery -- shared between the
+/// `send` write (this module) and the outbox worker's read (`outbox.rs`).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct OutboxItem {
+    pub message_id: String,
+    pub peer_address: String,
+}
+
+fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
+    let body: Vec<u8> = row.get(6)?;
+    let signature_bytes: Vec<u8> = row.get(7)?;
+    let mut signature = [0u8; 64];
+    let len = signature_bytes.len().min(64);
+    signature[..len].copy_from_slice(&signature_bytes[..len]);
+    let state_str: String = row.get(10)?;
+    Ok(StoredMessage {
+        id: row.get(0)?,
+        conversation_id: row.get(1)?,
+        author: row.get(2)?,
+        sender_timestamp_ms: row.get(3)?,
+        received_at_ms: row.get(4)?,
+        content_type: row.get(5)?,
+        body,
+        signature,
+        outgoing: row.get::<_, i64>(8)? != 0,
+        verified: row.get::<_, i64>(9)? != 0,
+        state: state_from_str(&state_str),
+        last_error: row.get(11)?,
+    })
+}
+
+#[must_use]
+pub fn state_str(state: ConversationDeliveryState) -> &'static str {
+    match state {
+        ConversationDeliveryState::Pending => "pending",
+        ConversationDeliveryState::Delivered => "delivered",
+        ConversationDeliveryState::Failed => "failed",
+    }
+}
+
+fn state_from_str(s: &str) -> ConversationDeliveryState {
+    match s {
+        "delivered" => ConversationDeliveryState::Delivered,
+        "failed" => ConversationDeliveryState::Failed,
+        _ => ConversationDeliveryState::Pending,
+    }
+}
+
+#[must_use]
+pub fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// Opens (creating on first use) a WAL-mode SQLite connection, applying
+/// `PRAGMA key` before anything else touches the file when `dek` is
+/// present -- mirrors `syneroym-async-queue`'s own `open_connection`
+/// exactly, duplicated rather than shared since that one is private to its
+/// crate.
+fn open_connection(path: &Path, dek: Option<&[u8; 32]>) -> Result<Connection> {
+    let conn = Connection::open(path)?;
+    if let Some(dek) = dek {
+        let pragma = Zeroizing::new(format!("x'{}'", hex::encode(dek)));
+        conn.pragma_update(None, "key", &*pragma)?;
+    }
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    Ok(conn)
+}
+
+#[cfg(test)]
+mod tests {
+    use syneroym_core::config::RetryPolicy;
+
+    use super::*;
+
+    fn store() -> ConversationStore {
+        let dir = tempfile::tempdir().unwrap();
+        // Leak the tempdir so the file lives for the test's duration; each
+        // test gets its own directory so this is bounded.
+        let path = Box::leak(Box::new(dir)).path();
+        ConversationStore::open_encrypted(
+            path,
+            None,
+            QueueConfig {
+                retry: RetryPolicy {
+                    max_attempts: 5,
+                    initial_backoff_ms: 10,
+                    backoff_multiplier: 2.0,
+                    max_backoff_ms: 1000,
+                },
+                visibility_timeout_ms: 5000,
+                dlq_max_rows: 100,
+                max_pending_rows: 1000,
+            },
+            ConversationConfig::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn get_or_create_direct_is_idempotent() {
+        let s = store();
+        let id1 = s.get_or_create_direct("did:key:zPeer", "conv:precomputed", 1_000).unwrap();
+        let id2 = s.get_or_create_direct("did:key:zPeer", "conv:precomputed-again", 2_000).unwrap();
+        assert_eq!(id1, id2, "a second open-direct for the same peer must return the same id");
+    }
+
+    /// `D-B4-27`: the send transaction is atomic -- an injected failure
+    /// between the two writes leaves neither behind. Simulated here by a
+    /// closure that writes the message row then deliberately errors before
+    /// enqueueing.
+    #[test]
+    fn the_send_transaction_is_atomic_under_injected_failure() {
+        let s = store();
+        let conv_id = s.get_or_create_direct("did:key:zPeer", "conv:1", 1_000).unwrap();
+        let result = s.queue.transaction(|tx, _txq| {
+            tx.execute(
+                "INSERT INTO messages (id, conversation_id, author, sender_timestamp, \
+                 received_at, content_type, body, signature, outgoing, verified, state, \
+                 last_error) VALUES ('msg:1', ?1, 'a', 0, 0, 'text', X'00', X'00', 1, 1, \
+                 'pending', NULL)",
+                params![conv_id],
+            )?;
+            Err::<(), _>(anyhow!("simulated failure before enqueue"))
+        });
+        assert!(result.is_err());
+        assert!(s.get_message("msg:1").unwrap().is_none(), "the message row must have rolled back");
+        assert!(s.queue.all().unwrap().is_empty(), "no enqueue must have landed either");
+    }
+
+    #[test]
+    fn the_author_id_index_rejects_a_repeat() {
+        let s = store();
+        let author = "did:key:zPeer";
+        let conv_id = crate::ids::derive_conversation_id("did:key:zMe", author);
+        // First delivery: a genuine insert.
+        let first = {
+            let conn = s.conn.lock().unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
+            let inserted = s
+                .insert_incoming_if_absent(
+                    &tx,
+                    &conv_id,
+                    "msg:1",
+                    author,
+                    1_000,
+                    "text/plain",
+                    b"hi",
+                    &[0u8; 64],
+                    1_000,
+                )
+                .unwrap();
+            tx.commit().unwrap();
+            inserted
+        };
+        assert!(first, "the first delivery of (author, id) must insert");
+
+        // A second insert for the exact same (author, id) must not create
+        // a second row -- proven directly against the underlying
+        // constraint via the incoming-insert path's INSERT OR IGNORE.
+        let second = {
+            let conn = s.conn.lock().unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
+            let inserted = s
+                .insert_incoming_if_absent(
+                    &tx,
+                    &conv_id,
+                    "msg:1",
+                    author,
+                    1_000,
+                    "text/plain",
+                    b"hi",
+                    &[0u8; 64],
+                    2_000,
+                )
+                .unwrap();
+            tx.commit().unwrap();
+            inserted
+        };
+        assert!(!second, "a repeat (author, id) must be ignored, not error");
+    }
+
+    #[test]
+    fn history_returns_the_documented_order_under_a_skewed_clock() {
+        let s = store();
+        let conv_id = s.get_or_create_direct("did:key:zPeer", "conv:1", 1_000).unwrap();
+        // Out-of-order timestamps, as a skewed-clock sender would produce.
+        for (id, ts, author) in [
+            ("msg:b", 500, "did:key:zA"),
+            ("msg:a", 500, "did:key:zA"),
+            ("msg:c", 100, "did:key:zA"),
+        ] {
+            s.insert_outgoing_and_enqueue(
+                &conv_id,
+                id,
+                author,
+                ts,
+                "text/plain",
+                b"x",
+                &[0u8; 64],
+                "did:key:zPeer",
+                ts,
+            )
+            .unwrap();
+        }
+        let page = s.history(&conv_id, 10, None).unwrap();
+        let ids: Vec<&str> = page.messages.iter().map(|m| m.id.as_str()).collect();
+        // (sender_timestamp, author, id): msg:c (100) first, then msg:a
+        // before msg:b at the same timestamp (id tiebreak).
+        assert_eq!(ids, vec!["msg:c", "msg:a", "msg:b"]);
+    }
+
+    #[test]
+    fn history_pages_and_reports_a_next_cursor() {
+        let s = store();
+        let conv_id = s.get_or_create_direct("did:key:zPeer", "conv:1", 1_000).unwrap();
+        for i in 0..5 {
+            s.insert_outgoing_and_enqueue(
+                &conv_id,
+                &format!("msg:{i}"),
+                "did:key:zA",
+                i,
+                "text/plain",
+                b"x",
+                &[0u8; 64],
+                "did:key:zPeer",
+                i,
+            )
+            .unwrap();
+        }
+        let page1 = s.history(&conv_id, 2, None).unwrap();
+        assert_eq!(page1.messages.len(), 2);
+        assert_eq!(page1.messages[0].id, "msg:0");
+        assert_eq!(page1.messages[1].id, "msg:1");
+        assert!(page1.next_cursor.is_some());
+
+        let page2 = s.history(&conv_id, 2, page1.next_cursor.as_deref()).unwrap();
+        assert_eq!(page2.messages[0].id, "msg:2");
+        assert_eq!(page2.messages[1].id, "msg:3");
+    }
+
+    #[test]
+    fn local_identity_is_generated_once_and_persists() {
+        let s = store();
+        let first = s.local_identity_or_generate(|| (vec![1, 2, 3], vec![4, 5, 6])).unwrap();
+        let second = s.local_identity_or_generate(|| (vec![9, 9, 9], vec![9, 9, 9])).unwrap();
+        assert_eq!(&*first.dh_secret, &*second.dh_secret, "must not regenerate on a second call");
+        assert_eq!(&*first.sig_secret, &*second.sig_secret);
+    }
+
+    #[test]
+    fn prekey_rate_limit_refuses_past_the_configured_ceiling() {
+        let cfg = ConversationConfig { prekey_requests_per_peer_per_hour: 2, ..Default::default() };
+        let dir = tempfile::tempdir().unwrap();
+        let path = Box::leak(Box::new(dir)).path();
+        let s = ConversationStore::open_encrypted(
+            path,
+            None,
+            QueueConfig {
+                retry: RetryPolicy {
+                    max_attempts: 5,
+                    initial_backoff_ms: 10,
+                    backoff_multiplier: 2.0,
+                    max_backoff_ms: 1000,
+                },
+                visibility_timeout_ms: 5000,
+                dlq_max_rows: 100,
+                max_pending_rows: 1000,
+            },
+            cfg,
+        )
+        .unwrap();
+        let now = 1_000_000;
+        assert!(s.record_prekey_request("did:key:zPeer", now).unwrap());
+        assert!(s.record_prekey_request("did:key:zPeer", now + 1).unwrap());
+        assert!(
+            !s.record_prekey_request("did:key:zPeer", now + 2).unwrap(),
+            "the third request in the same hour must be refused"
+        );
+    }
+}
