@@ -50,6 +50,17 @@ throw-away code against the real crates, not by reading docs.
 > live), §12.8–12.10, and four backlog rows; and removed the planning-doc ids
 > from every code sketch, which violated
 > [AGENTS.md](../../../../AGENTS.md)'s "No Planning-Doc References in Code".
+>
+> **Revision 3 (review round 2).** Seven items, all accepted. Two would not have
+> compiled: `NativeHostFactory` cannot `derive(Debug)` (`StorageProvider` has no
+> `Debug` supertrait — the same reason `HostState` hand-writes one), and §4.2's
+> `read_only` test needed a constructor that did not exist. Three were leftovers
+> from revision 2's edit (a stale sketch comment, a reference to a `D-B3-16`
+> that was never written, and `D-B3-21` citing the wrong finding). Two are new
+> traps now recorded: `signed-url` can never join the parity scenarios (§7.1a),
+> and §7.3's persistence check must assert on `list_all_messaging_subscriptions()`
+> rather than attempt a restart, since `replay_persisted_subscriptions` is
+> private to `syneroym-substrate`.
 
 ---
 
@@ -355,7 +366,7 @@ writing the line by hand. §7.4 does the same, and §12.9 records the stale doc.
 | **D-B3-18** | **The shim does not persist subscriptions.** No `save_messaging_subscription` / `delete_messaging_subscription` call. Subscriptions live in the factory and die with it. Restart behaviour is therefore *not* at parity in B3, and says so in §7.3 and in the backlog. | F13. Writing to that table poisons a shared boot path this slice has no business changing, and the alternative — a native replay hook in `runtime.rs` — is new substrate machinery, not shim work. A stated gap beats a latent one. |
 | **D-B3-19** | **The fixture registers exactly one endpoint**: its `test-driver` interface. No `messaging` endpoint. | F14. The supervisor already owns `(node_did, "messaging")`, `register` is a silent last-write-wins insert, and CI enables both features. The fixture has no use for it either way: its `subscribe` is app-initiated and its pump reads the broker directly, never the router. |
 | **D-B3-20** | **`NativeAppHost` is a newtype over an `Arc`**, so the traits keep `&self` and a blob writer can hold its host. | A blob resource handle must outlive the `open_upload` call that produced it but not the invocation. A `&self`-borrowing writer would put a lifetime in `AppBlobStore::Writer`, which infects the trait — and therefore the *WASM* build, which has no such problem. Paying one `Arc` clone per upload is the smaller cost. |
-| **D-B3-21** | **The fixture's service id is supplied by the embedder**, never a `const` in the fixture. It is a field on the factory and a parameter on the fixture's constructor. | F15. It selects the store namespace, the topic namespace, and the admin-gate resource. A `const` in the app would silently disagree with the id the substrate registered it under. |
+| **D-B3-21** | **The fixture's service id is supplied by the embedder**, never a `const` in the fixture. It is a field on the factory and a parameter on the fixture's constructor. | F12. It selects the store namespace, the topic namespace, and the admin-gate resource. A `const` in the app would silently disagree with the id the substrate registered it under. |
 | **D-B3-22** | **The fixture inherits workspace lints** (`[lints] workspace = true`), with a module-scoped `#[allow(unsafe_code)]` on the cfg-gated bindings module only. | Opting the crate out to dodge generated `unsafe` would also drop the deny-level `correctness`/`suspicious` groups from a crate that is about to grow B4's conversation logic. |
 | **D-B3-15** | **`D-06B-6`'s "excluded from the workspace build graph" is amended, not silently overridden.** The fixture must be a workspace member for `syneroym-substrate` to link it. [task.md](task.md)'s `D-06B-6` row gets an edit noting this (§11). | Amending an input document in the open is the house rule (`D-06B-4` did the same to M05C's S4 row). |
 
@@ -703,7 +714,6 @@ root `Cargo.toml` (§9.2).
 ```rust
 /// Everything the shim needs that outlives one call. One per native app
 /// instance, held by whoever registered that app.
-#[derive(Debug)]
 pub struct NativeHostFactory {
     /// Supplied by the embedder, never defaulted: it selects the service's
     /// SQLite store, its broker topic namespace, and the resource its
@@ -723,6 +733,22 @@ pub struct NativeHostFactory {
     /// uncollectable cycle `HostState.service_proxy` and
     /// `ControlPlaneService.native_dispatch` already guard against.
     sink: OnceLock<Weak<dyn MessageSink>>,
+}
+
+/// Hand-written, not derived: `StorageProvider` has no `Debug` supertrait
+/// (`crates/data_db/src/traits.rs`, `pub trait StorageProvider: Send + Sync`),
+/// which is the same reason `HostState` writes its own. Every other field
+/// here does implement it -- `BlobProvider` carries the supertrait,
+/// `SubscriptionHandle`/`MqttBroker`/`KeyStore`/`EndpointRegistry`/
+/// `LogicalResolver` all have impls -- so `storage_provider` is the only one
+/// to leave out.
+impl fmt::Debug for NativeHostFactory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NativeHostFactory")
+            .field("service_id", &self.service_id)
+            .field("subscriptions", &self.subscriptions.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// The host -> app direction. The WASM build's equivalent is the exported
@@ -778,6 +804,9 @@ impl NativeHostFactory {
 #[derive(Debug, Clone)]
 pub struct NativeAppHost(Arc<HostInner>);
 
+/// `derive` works here only because `NativeHostFactory` has the manual impl
+/// above and `tokio::sync::Mutex<T>: Debug where T: Debug` (`HostState`
+/// supplies its own).
 #[derive(Debug)]
 struct HostInner {
     factory: Arc<NativeHostFactory>,
@@ -803,7 +832,7 @@ let state = HostState::new(
     MessagingContext { broker: self.broker.clone(), engine: Weak::new() },
     StreamContext { registry: self.endpoint_registry.clone(), engine: Weak::new() },
     empty_service_proxy(),
-    None,                                  // fdae_policy -- see D-B3-16 note below
+    None,                                  // fdae_policy: a linked app has no deploy record
     false,                                 // read_only
     empty_row_authorizer(),
     None,                                  // app_instance_id
@@ -816,14 +845,39 @@ routes `subscribe` through `HostState` (4.4), so it is never upgraded. The same
 holds for `StreamContext.engine`, since `register-stream-protocol` is out of
 scope.
 
-`read_only` is hardcoded `false` because its only producer is the stage-4 ABAC
-after-step, which has no native path. That leaves the `read_only` hard-denies at
-the head of nearly every host-capability function unexercised on both sides of
-the parity suite — a real hole in F4's "the shim inherits every gate" argument.
-Close it with a **shim unit test** (not a parity scenario, which cannot reach
-it): build a `NativeAppHost` with `read_only: true` and assert `put`,
-`delete`, `publish`, `put_blob` and `signed_url` all deny. The WASM side of the
-same gate is already covered by the ABAC suite.
+`read_only` is `false` for every app-facing call, because its only producer is
+the stage-4 ABAC after-step, which has no native path. That leaves the
+`read_only` hard-denies at the head of nearly every host-capability function
+unexercised on both sides of the parity suite — a real hole in F4's "the shim
+inherits every gate" argument.
+
+Close it with a **shim unit test**, which needs one structural change so it can
+be written at all: `host_for` must not be the only constructor.
+
+```rust
+impl NativeHostFactory {
+    /// The app-facing constructor. Always read-write.
+    pub fn host_for(self: &Arc<Self>, caller: CallerContext) -> NativeAppHost {
+        self.host_with(caller, false)
+    }
+
+    /// Private, and deliberately not `pub`: nothing an app or an embedder can
+    /// reach may ask for a read-only host, because nothing native produces the
+    /// stage-4 context that flag belongs to. It exists so the in-crate test
+    /// below can prove the shim inherits the read-only denials rather than
+    /// asserting it in prose.
+    fn host_with(self: &Arc<Self>, caller: CallerContext, read_only: bool) -> NativeAppHost {
+        // ... HostState::new(..., read_only, ...) ...
+    }
+}
+```
+
+The test must therefore be an **in-crate unit test**
+(`#[cfg(test)] mod tests` inside `syneroym-app-host-native`), not a file under
+`tests/` — an integration test cannot see a private constructor. It builds a
+host with `read_only: true` and asserts `put`, `delete`, `publish`, `put_blob`
+and `signed_url` all deny. The WASM side of the same gate is already covered by
+the ABAC suite.
 
 **`fdae_policy: None` is a scope boundary, not an oversight.** The WASM path
 loads a deployed service's compiled policy; there is no deploy record for a
@@ -1456,7 +1510,7 @@ async fn scenarios<D: Driver>(d: &D) -> Vec<(&'static str, String)> {
 
 #[tokio::test]
 async fn both_builds_produce_identical_results() {
-    let (wasm, native) = harness().await;       // one provider set, two service ids
+    let (wasm, native) = harness().await;       // two stacks, one service id (§7.1a)
     assert_eq!(scenarios(&wasm).await, scenarios(&native).await);
 }
 ```
@@ -1494,6 +1548,27 @@ The WASM stack additionally builds an `AppSandboxEngine` over its providers and
 deploys the component under `SERVICE_ID`; the native stack builds a
 `NativeHostFactory` over its own, with the same `SERVICE_ID`.
 
+**`signed-url` can never join `SCENARIOS`.** It is the one blob verb whose
+result is not comparable, for two independent reasons:
+
+1. `sign_url` HMACs with a key derived from the service's DEK
+   ([crypto.rs:199-210](../../../../crates/data_blob/src/crypto.rs#L199)), and
+   two stacks means two `KeyStore`s and two substrate DBs, so two DEKs — *when
+   encryption is on*. With `SqliteStorageProvider::new(dir, false)` the DEK
+   resolves to `None` ([sqlite.rs:1395](../../../../crates/data_db/src/sqlite.rs#L1395))
+   and `signed_url` falls back to a zero key, so the two would agree. Do not
+   rely on that: it makes the verb's comparability depend on a harness flag.
+2. The signed string embeds `exp = now_unix + ttl_secs`, so two calls that land
+   either side of a second boundary differ **even on one stack with one key**.
+   That is a flake, not a failure — the worse of the two outcomes.
+
+Reason 2 holds regardless of `D-B3-17`, so "share a `KeyStore`" is not a fix,
+it is a way to turn a reliable failure into an intermittent one. The other blob
+verbs are safe: `put-blob`/`stream-blob` return a SHA-256 over the **plaintext**
+([object_store_impl.rs:234](../../../../crates/data_blob/src/object_store_impl.rs#L234)),
+which is identical across stacks and independent of the DEK. `signed_url` is
+still exercised — by the `read_only` unit test in §4.2 — just never compared.
+
 Teardown calls `NativeHostFactory::shutdown()` on the native stack and drops
 both, so a test that follows does not inherit a live subscription.
 
@@ -1516,12 +1591,44 @@ One test per difference, so each is a decision on record rather than a gap:
 - **resource lifetime** — a `blob-writer` cannot outlive its invocation on
   either build (`D-B3-6`). Assert it natively (the WASM side cannot even express
   it, since the fixture has one verb).
-- **subscription survival across restart** — the WASM build's subscription is
-  persisted and replayed at boot
+- **subscription persistence** — the WASM build's subscription is written to
+  `messaging_subscriptions` and replayed at boot
   ([runtime.rs:972](../../../../crates/substrate/src/runtime.rs#L972)); the
-  native build's is not (`D-B3-18`, F13). Assert the *current* behaviour of each
-  in one test, with a comment naming the backlog row that would close the gap.
-  Asserting it is what stops the difference from being rediscovered as a bug.
+  native build writes nothing (`D-B3-18`, F13). **Do not write this as a restart
+  simulation**: `replay_persisted_subscriptions` is private to
+  `syneroym-substrate` ([runtime.rs:1054](../../../../crates/substrate/src/runtime.rs#L1054)),
+  so a test in `crates/app_host_native/tests/` cannot call it, and standing up a
+  whole substrate to observe a boot path is far more than this needs. Assert on
+  the state instead, which is public on `StorageProvider`
+  ([traits.rs:113](../../../../crates/data_db/src/traits.rs#L113)): after
+  `subscribe-topic` on both stacks, the WASM stack's
+  `list_all_messaging_subscriptions()` holds one row for `SERVICE_ID` and the
+  native stack's holds none. Name the backlog row that would close the gap in a
+  comment. Asserting it is what stops the difference from being rediscovered as
+  a bug.
+
+### 7.4 The feature-path test
+
+`crates/substrate/tests/dual_build_fixture_e2e.rs`, `#![cfg(feature = "dual_build_fixture")]`,
+one test: boot `SubstrateTestContext`, then
+
+```rust
+let response = ctx.substrate_client
+    .request(FIXTURE_INTERFACE, "run", json!([r#"{"op":"store-messages","count":3}"#]))
+    .await?;
+```
+
+and assert the payload. **Do not hand-write a preamble line.**
+`SyneroymClient::request`
+([sdk/src/lib.rs:630](../../../../crates/sdk/src/lib.rs#L630)) builds it, and the
+separator is `|`, not `.` — `PREAMBLE_SEPARATOR`
+([preamble.rs:100](../../../../crates/router/src/preamble.rs#L100)); the `.`
+form in that module's own header doc and in the repo's architecture prose is
+stale (F15, §12.9).
+
+This test proves §6's registration, which the in-process suite does not touch.
+It runs in CI under `--all-features` (F10) and locally via the command in §10's
+checklist.
 
 ### 7.5 A test that proves the comparison can fail
 
@@ -1554,29 +1661,6 @@ async fn the_parity_comparison_detects_a_divergence() {
 
 It must also assert the result vector is non-empty, so a harness that silently
 produces nothing fails loudly rather than passing twice.
-
-### 7.4 The feature-path test
-
-`crates/substrate/tests/dual_build_fixture_e2e.rs`, `#![cfg(feature = "dual_build_fixture")]`,
-one test: boot `SubstrateTestContext`, then
-
-```rust
-let response = ctx.substrate_client
-    .request(FIXTURE_INTERFACE, "run", json!([r#"{"op":"store-messages","count":3}"#]))
-    .await?;
-```
-
-and assert the payload. **Do not hand-write a preamble line.**
-`SyneroymClient::request`
-([sdk/src/lib.rs:630](../../../../crates/sdk/src/lib.rs#L630)) builds it, and the
-separator is `|`, not `.` — `PREAMBLE_SEPARATOR`
-([preamble.rs:100](../../../../crates/router/src/preamble.rs#L100)); the `.`
-form in that module's own header doc and in the repo's architecture prose is
-stale (F15, §12.9).
-
-This test proves §6's registration, which the in-process suite does not touch.
-It runs in CI under `--all-features` (F10) and locally via the command in §10's
-checklist.
 
 ---
 
@@ -1707,10 +1791,14 @@ step the native half of exit criterion 1 is met and provable.
 `test_constants` helper. Deploy it through `AppSandboxEngine::deploy_wasm` in a
 test and call one verb. Exit criterion 1 is now fully met.
 
-**Step 6 — the parity suite** (§7.1–7.3). Expect real failures here; each one
-is either a shim bug or a fixture that leaned on a build-specific behaviour.
-Fix the former, rewrite the latter, and record any behaviour that genuinely
-cannot be made identical in §7.3 with its reason.
+**Step 6 — the parity suite** (§7.1, 7.1a, 7.2, 7.3 and **7.5**; §7.4 belongs to
+Step 7, since it needs the feature). Expect real failures here; each one is
+either a shim bug or a fixture that leaned on a build-specific behaviour. Fix
+the former, rewrite the latter, and record any behaviour that genuinely cannot
+be made identical in §7.3 with its reason. **§7.5's mutant-driver test is part
+of this step, not an optional extra** — until it exists, a green
+`both_builds_produce_identical_results` is not evidence of anything, which is
+why §14.2 makes it a done-criterion.
 
 **Step 7 — the substrate feature** (§6) and its e2e test (§7.4).
 
