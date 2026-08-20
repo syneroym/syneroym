@@ -7289,6 +7289,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "syneroym-app-host"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "syneroym-wit-interfaces",
+]
+
+[[package]]
+name = "syneroym-app-host-native"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dashmap",
+ "serde_json",
+ "syneroym-app-host",
+ "syneroym-app-orchestration",
+ "syneroym-core",
+ "syneroym-data-blob",
+ "syneroym-data-db",
+ "syneroym-data-keystore",
+ "syneroym-mqtt-broker",
+ "syneroym-rpc",
+ "syneroym-sandbox-wasm",
+ "syneroym-test-dual-build-fixture",
+ "syneroym-wit-interfaces",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "wasmtime",
+]
+
+[[package]]
 name = "syneroym-app-orchestration"
 version = "0.1.0"
 dependencies = [
@@ -7953,6 +7985,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "syneroym-app-host-native",
  "syneroym-app-orchestration",
  "syneroym-app-supervisor",
  "syneroym-client-gateway",
@@ -7972,6 +8005,7 @@ dependencies = [
  "syneroym-sandbox-podman",
  "syneroym-sandbox-wasm",
  "syneroym-sdk",
+ "syneroym-test-dual-build-fixture",
  "syneroym-wit-interfaces",
  "tar",
  "tempfile",
@@ -7984,6 +8018,19 @@ dependencies = [
  "tracing-subscriber",
  "webrtc",
  "z32",
+]
+
+[[package]]
+name = "syneroym-test-dual-build-fixture"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "syneroym-app-host",
+ "syneroym-rpc",
+ "syneroym-wit-interfaces",
+ "wit-bindgen",
 ]
 
 [[package]]

@@ -44,6 +44,8 @@ syneroym-rpc = { path = "crates/rpc" }
 syneroym-identity = { path = "crates/identity" }
 syneroym-data-keystore = { path = "crates/data_keystore" }
 syneroym-app-orchestration = { path = "crates/app_orchestration" }
+syneroym-app-host = { path = "crates/app_host" }
+syneroym-app-host-native = { path = "crates/app_host_native" }
 syneroym-sandbox-wasm = { path = "crates/sandbox_wasm" }
 syneroym-data-db = { path = "crates/data_db" }
 syneroym-data-blob = { path = "crates/data_blob" }
@@ -67,6 +69,7 @@ syneroym-chunk-transfer = { path = "crates/chunk_transfer" }
 syneroym-app-supervisor = { path = "crates/app_supervisor" }
 syneroym-async-queue = { path = "crates/async_queue" }
 miniapp-demo1-web = { path = "test-components/miniapp-demo1-web" }
+syneroym-test-dual-build-fixture = { path = "test-components/dual-build-fixture" }
 roymctl = { path = "apps/roymctl" }
 
 # Networking & Async

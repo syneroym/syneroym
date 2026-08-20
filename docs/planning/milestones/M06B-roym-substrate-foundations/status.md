@@ -2,9 +2,10 @@
 
 **Milestone:** [task.md](task.md) · **Designs of record:**
 [slice-b1-implementation-plan.md](slice-b1-implementation-plan.md) (B1),
-[slice-b2-implementation-plan.md](slice-b2-implementation-plan.md) (B2)
+[slice-b2-implementation-plan.md](slice-b2-implementation-plan.md) (B2),
+[slice-b3-implementation-plan.md](slice-b3-implementation-plan.md) (B3)
 
-**Overall:** Slices B1 and B2 complete (2026-08-18).
+**Overall:** Slices B1, B2, and B3 complete (2026-08-20).
 
 ---
 
@@ -14,7 +15,7 @@
 |---|---|---|---|
 | B1 | Person identity at the client gateway (G3) | **Complete (2026-08-18)** — [implementation plan](slice-b1-implementation-plan.md), evidence below | None — independently mergeable |
 | B2 | Declared service visibility (G4) | **Complete (2026-08-18)** — [implementation plan](slice-b2-implementation-plan.md), evidence below | None (ADR-0018 Accepted) |
-| B3 | The dual-build shim (D2/D3) | Ready for planning | None |
+| B3 | The dual-build shim (D2/D3) | **Complete (2026-08-20)** — [implementation plan](slice-b3-implementation-plan.md), evidence below | None |
 | B4 | Durable messaging: interface and 1:1 delivery (G1 part 1, G2) | Pending | B3 |
 | B5 | Group delivery (G1 part 2) | Pending | B4 |
 
@@ -264,3 +265,225 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 A full `cargo test --workspace --tests` pass (needs real port binds, sandbox disabled) surfaced 6 failing test binaries; each was individually re-run in isolation afterward and investigated:
 - **One real regression, found and fixed**: `scheduled_task_e2e.rs` (see the fixture-repair note above) — both its tests fail under the full run and pass individually once `visibility = "internal"` is declared; confirmed by re-running the whole file standalone (2/2, 307s).
 - **Five confirmed environment artifacts, not regressions**: `guest_http_e2e`'s `test_trap_and_spin_return_500_and_a_new_stream_still_succeeds` (Iroh QUIC path-validation timeout), `http_passthrough_e2e`'s blob-GET performance-budget assertion, and `static_assets_e2e`/`topology_document_e2e`'s "substrate did not become available in time" / registry-registration timeouts, are the same class of flake the backlog's "CPU starvation, not flakiness" entry documents — this machine ran ~90 test binaries back-to-back with the sandbox disabled (needed for real socket binds), and by the time these ran, accumulated OS-level socket/registration pressure caused timeouts unrelated to any code path this slice touches. `service_visibility_e2e.rs` (this slice's own new file) hit the same class from the opposite direction — "No buffer space available (os error 55)" binding a relay socket — while the system was still under that same accumulated load; its `SubstrateTestContext::setup` already serializes its own tests via `tests/common/mod.rs`'s internal `SUBSTRATE_TEST_LOCK` (confirmed from the log: tests ran one at a time, each failing fast at the bind step, not concurrently), so no code change was needed there. Every one of these five files, and every `crates/substrate/tests/*_e2e.rs` file this slice touches, was re-run standalone after the full run finished and passes cleanly (evidence above).
+
+---
+
+## B3 — What shipped
+
+Slice B3 implements the dual-build shim (D2/D3): one trait per host
+interface (`data-layer`/`blob-store`/`messaging`), two implementations — a
+`wit-bindgen` guest adapter and an in-process native shim linked into
+`syneroym-substrate` behind a Cargo feature — proven by a fixture written
+once, built both ways, with one integration suite driving both builds and
+asserting byte-identical results.
+
+### 1. Two new crates (`crates/app_host/`, `crates/app_host_native/`)
+
+- `syneroym-app-host` (no dependency beyond `syneroym-wit-interfaces` and
+  `async-trait`): `AppDataLayer`/`AppBlobStore`/`AppBlobWriter`/
+  `AppBlobReader`/`AppMessaging` traits mirroring the three WIT interfaces
+  function-for-function, plus `AppHost` (the combined bound) and
+  `MessageSink` (the host→app delivery direction, mirroring
+  `guest-api::handle-message`). `guest.rs` (wasm32-only) is `GuestHost`, the
+  `wit-bindgen` implementation, calling `syneroym-wit-interfaces`'s
+  pre-generated import bindings directly — **an app's own `generate!` call
+  must remap these three interfaces onto `syneroym-app-host`'s bindings via
+  wit-bindgen's `with:` option rather than regenerating them** (see finding
+  below).
+- `syneroym-app-host-native`: `NativeHostFactory` (long-lived: holds the
+  providers, the broker, live subscriptions, the app's `MessageSink`) and
+  `NativeAppHost` (per-invocation: a fresh `HostState`, exactly mirroring
+  the sandbox's fresh `Store` per guest call). Every `AppDataLayer`/
+  `AppBlobStore`/`AppMessaging` method delegates to `HostState`'s existing
+  `Host` impl in `syneroym-sandbox-wasm` — one implementation of every gate,
+  mask, and attribution rule, two callers. `NativeHostFactory::subscribe`
+  mirrors the WASM path's `subscribe` + delivery pump step for step, except
+  it does not persist the subscription (a stated, tested restart gap — see
+  §4 below). `convert.rs` is a field-for-field guest⇄host type mapping, with
+  a round-trip unit test per type.
+
+### 2. The fixture (`test-components/dual-build-fixture/`, `syneroym-test-dual-build-fixture`)
+
+A real **workspace member** (not excluded — `D-06B-6` amended in
+[task.md](task.md)), `crate-type = ["cdylib", "rlib"]`, symlinked WIT deps.
+`app.rs` is the whole shared behaviour (one JSON-in/JSON-out `run` verb,
+application failures reported inside the payload rather than as a WIT
+`Err`), compiled unchanged into both builds; `guest.rs`/`native.rs` are the
+two thin, build-specific wirings around it. No `init`/`migrate` lifecycle
+hook — schema is ensured lazily on first use. Ten request kinds exercise
+data-layer CRUD, an admin-gated DDL denial, a data-layer read of a missing
+id, a one-shot blob put, a streaming blob round trip through the writer/
+reader resources, and a subscribe→publish→read-inbox messaging round trip.
+
+### 3. Substrate wiring (`dual_build_fixture` Cargo feature, off by default)
+
+`crates/substrate/src/runtime.rs`: `init_dual_build_fixture` builds a
+`NativeHostFactory` + `NativeFixture`, registers the fixture under
+`native_dispatch` (mirroring the `supervisor` role's shape exactly,
+`SUPERVISOR_DISPATCH_ID`'s pattern), and registers exactly one endpoint
+(`FIXTURE_INTERFACE`) — deliberately **not** a second `messaging` endpoint,
+since `EndpointRegistry::register` is a silent last-write-wins insert and
+`(node_did, "messaging")` already belongs to the supervisor. `SharedNodeHandles`
+gains `blob_provider`/`logical_resolver` so the fixture's factory can reuse
+what `build_route_handler_deps` already built.
+
+### 4. The parity suite (`crates/app_host_native/tests/dual_build_parity.rs`)
+
+Two fully independent host stacks (own `SqliteStorageProvider`, blob
+provider, `MqttBroker`, temp dir) sharing **one** service id — the id is the
+store namespace, the topic namespace, and the `data-layer/admin` gate
+resource all at once, so the two builds must share it and therefore share
+nothing else. Both driven under a real, identical, non-anonymous
+`CallerContext`. `both_builds_produce_identical_results` compares six
+sequential-body scenarios (store/read messages, admin-DDL denial, a missing
+read, a one-shot blob put, a streaming blob round trip) verbatim across
+both builds; a separate messaging test settles each build independently
+(subscribe, publish, poll `read-inbox` until non-empty) before comparing.
+`the_parity_comparison_detects_a_divergence` (a `Mutant` driver that
+corrupts one field of the result) proves the comparison can actually fail —
+without it, a green `both_builds_produce_identical_results` is not evidence
+of anything. Two stated, tested permitted differences: a fresh
+`ResourceTable` per native invocation (proven by two independent uploads
+each landing in their own table, not clobbering each other), and
+subscription persistence (WASM writes to `messaging_subscriptions` and
+survives a restart; native deliberately does not — see the deferred-backlog
+row).
+
+### 5. `crates/substrate/tests/dual_build_fixture_e2e.rs`
+
+One test, gated on the `dual_build_fixture` feature: boots a real
+`SubstrateTestContext`, calls the linked-in native fixture through
+`SyneroymClient::request` — the same client path any other native or WASM
+service is reached through — and asserts the response. Proves §3's
+registration; the in-process parity suite proves the shim itself.
+
+### 6. Findings and fixes along the way
+
+**Two genuine problems Step 1's de-risking spike was meant to catch, and
+did — but not the one the plan anticipated.** The plan's own risk was "two
+separate `wit_bindgen::generate!` invocations for the same import
+interfaces, linked into one component, might not link." That was tested and
+turned out fine on its own. The real, confirmed-against-the-real-toolchain
+problem was broader:
+
+- **`syneroym-wit-interfaces` could not be linked into a wasm32 component at
+  all**, because it unconditionally compiles *seven* separate guest modules
+  (`app_config`, `blob_store`, `control_plane`, `data_layer`, `messaging`,
+  `supervisor`, `vault`), each running its own `generate!` for a different
+  world, and wit-bindgen anchors each world's "component-type" custom
+  section with a `#[used]` static specifically so `--gc-sections` cannot
+  strip it — so *any* consumer of this crate on wasm32 pulls in all seven
+  worlds' export requirements, most of them unsatisfiable by that consumer.
+  `wasm-component-ld` failed to encode a component that only used
+  `data-layer`/`blob-store`/`messaging`, reporting a spurious missing export
+  (`init`) from `data-layer-guest`, an entirely different world. **Fixed**
+  by gating each guest module behind its own Cargo feature
+  (`crates/wit_interfaces/Cargo.toml`), default-on so every existing
+  (host-only) consumer is unaffected, and having `syneroym-app-host`/the
+  fixture opt into only the three they use.
+- **`data_layer.rs`'s own `generate!` targeted `data-layer-guest`**, a world
+  built for a *standalone* data-layer-only component (it requires exporting
+  `init`/`migrate`), not for reuse as a pure import elsewhere. **Fixed** by
+  adding a second, import-only world (`data-layer-import`) to
+  `data-layer.wit` and retargeting `data_layer.rs` at it — additive, and
+  safe because nothing used this module before B3 (confirmed by grep).
+
+**A latent, previously-unreachable bug in `HostBlobWriter::finish`/`abort`**
+(`crates/sandbox_wasm/src/host_capabilities.rs`), found by the parity
+suite's first real run against the actual wasm32 component (not by
+inspection): both are resource *methods*, so the canonical ABI hands the
+host a *borrowed* `self_`, but the code called `self.table.delete(self_)`
+directly — `ResourceTable::delete`'s own `debug_assert!(resource.owned())`
+panics on a borrowed handle. Never triggered before B3 because nothing
+called these functions through a real wasm guest (`blob-store`'s guest
+bindings were dead code per the design finding in the implementation plan);
+the crate's own existing unit tests construct an owned `Resource` by hand,
+sidestepping the ABI distinction entirely. **Fixed** by re-deriving an owned
+handle from the same `rep()` before calling `table.delete`, in both
+`finish` and `abort` — the table only ever keys on `rep()`, never on the
+passed-in handle's borrow/own bit, matching what the native shim's own
+`Resource::new_own(self.rep)` re-derivation already does. Verified against
+the pre-existing `blob_store_integration.rs` suite (5/5, unaffected — it
+constructs owned resources directly, so it never hit the bug either way).
+
+---
+
+## B3 — Verification Evidence
+
+### Automated Tests
+
+- **`crates/app_host_native/src/convert.rs`**: 13 unit tests, one round-trip
+  per guest⇄host type (index definition, collection schema, record write
+  value, patch mutation, every mutation/sql-value/data-layer-error/
+  blob-error/messaging-error variant, record read value, query result, raw
+  query result).
+- **`crates/app_host_native/tests/dual_build_parity.rs`** (11 tests):
+  `both_builds_produce_identical_results`,
+  `the_parity_comparison_detects_a_divergence`,
+  `wasm_build_store_and_read_round_trip` /
+  `native_build_store_and_read_round_trip`,
+  `wasm_build_stream_blob_round_trips_the_body` /
+  `native_build_stream_blob_round_trips_the_body`,
+  `wasm_build_admin_ddl_is_denied` / `native_build_admin_ddl_is_denied`,
+  `both_builds_deliver_a_published_message_to_their_own_inbox`,
+  `each_native_invocation_gets_a_fresh_resource_table`,
+  `only_the_wasm_stacks_subscription_is_persisted`.
+- **`crates/substrate/tests/dual_build_fixture_e2e.rs`** (1 test, feature-gated):
+  `a_client_reaches_the_linked_native_fixture_through_the_router`.
+- **`crates/sandbox_wasm/tests/blob_store_integration.rs`** (5 tests, pre-existing):
+  re-run after the `HostBlobWriter::finish`/`abort` fix, unaffected.
+
+### Component build (exit criterion 1)
+
+```
+$ cargo component build --release --target wasm32-wasip2 -p syneroym-test-dual-build-fixture
+    Creating component target/wasm32-wasip1/release/syneroym_test_dual_build_fixture.wasm
+$ wasm-tools validate --features component-model target/wasm32-wasip2/release/syneroym_test_dual_build_fixture.wasm
+$ wasm-tools component wit target/wasm32-wasip2/release/syneroym_test_dual_build_fixture.wasm
+# imports syneroym:data-layer/store, syneroym:blob-store/blob-store,
+# syneroym:messaging/host-api (+ wasi:cli/wasi:io); exports
+# syneroym:messaging/stream-types, syneroym:messaging/guest-api,
+# syneroym-test:dual-build-fixture/test-driver -- confirms the linked
+# component's actual export set, independent of the linker's own claims.
+
+$ cargo build -p syneroym-substrate --features dual_build_fixture
+    Finished `dev` profile [unoptimized + debuginfo] target(s)
+```
+
+### Run Evidence
+
+```
+$ cargo test -p syneroym-app-host-native --test dual_build_parity
+running 11 tests
+test permitted_differences::each_native_invocation_gets_a_fresh_resource_table ... ok
+test permitted_differences::only_the_wasm_stacks_subscription_is_persisted ... ok
+test wasm_build_admin_ddl_is_denied ... ok
+test native_build_admin_ddl_is_denied ... ok
+test native_build_store_and_read_round_trip ... ok
+test both_builds_produce_identical_results ... ok
+test the_parity_comparison_detects_a_divergence ... ok
+test both_builds_deliver_a_published_message_to_their_own_inbox ... ok
+test native_build_stream_blob_round_trips_the_body ... ok
+test wasm_build_stream_blob_round_trips_the_body ... ok
+test wasm_build_store_and_read_round_trip ... ok
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ cargo test -p syneroym-substrate --features dual_build_fixture --test dual_build_fixture_e2e
+test a_client_reaches_the_linked_native_fixture_through_the_router ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ cargo test -p syneroym-sandbox-wasm --test blob_store_integration
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ cargo test -p syneroym-app-host-native --lib
+test convert::tests::* (13 tests) ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+### Full workspace
+
+`cargo +nightly fmt --all` clean. `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean (covers the `dual_build_fixture` feature). `mise run build:test-components` builds all 11 fixtures, including the new one, cleanly. `cargo check -p syneroym-app-host --target wasm32-wasip2` clean (the trait crate's wasm half is not reachable from any host-target command). `mise run test:e2e` (Playwright WebRTC browser suite) passes (18 + 4 tests, exit 0) — B3 touches no browser-facing surface.
+
+`cargo test --workspace --lib --bins` (sandbox on, matching B1/B2's own convention) passes except for five crates whose failing tests all bind a real socket (`syneroym-community-registry`, `syneroym-control-plane`'s TCP/HTTP health probes, `syneroym-coordinator-webrtc`'s bootstrap-page HTTP tests, `syneroym-core`'s DHT registry tests, `syneroym-mqtt-broker`'s listener-binding test) — every one fails with `Operation not permitted (os error 1)`, the sandbox's socket-bind restriction, not a code defect. Confirmed by re-running exactly those five crates' `--lib` suites with the sandbox disabled: 358/358 pass (18+231+7+90+12).
+
+**Genuine flake, pre-existing and already tracked**: `keys::tests::get_or_mint_warns_with_the_wording_matching_its_kind` (`syneroym-app-supervisor`) failed once under the full parallel run and passed cleanly (296/296) run alone immediately after — this is the exact, already-documented row in [deferred-backlog.md](../../deferred-backlog.md) §1 ("is flaky under load", thread-local `tracing` subscriber), unrelated to this slice.

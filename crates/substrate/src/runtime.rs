@@ -694,6 +694,9 @@ async fn setup_router(
         None
     };
 
+    #[cfg(feature = "dual_build_fixture")]
+    init_dual_build_fixture(&shared, &endpoint_registry, service_id).await?;
+
     let router = ConnectionRouter::init(
         endpoint_registry.clone(),
         config.clone(),
@@ -773,6 +776,13 @@ struct SharedNodeHandles {
     /// alert publication shares one broker with the rest of the node
     /// instead of standing up a second one.
     messaging_broker: Arc<MqttBroker>,
+    /// The `dual_build_fixture` role's `NativeHostFactory` needs the same
+    /// blob backend and logical resolver `build_route_handler_deps` already
+    /// built, rather than standing up its own.
+    #[cfg_attr(not(feature = "dual_build_fixture"), allow(dead_code))]
+    blob_provider: Arc<dyn BlobProvider>,
+    #[cfg_attr(not(feature = "dual_build_fixture"), allow(dead_code))]
+    logical_resolver: Arc<LogicalResolver>,
 }
 
 /// The literal `native_dispatch` key the supervisor's `NativeService`
@@ -883,6 +893,67 @@ async fn init_supervisor(
         "[roles.supervisor] is configured but this binary was built without the `supervisor` \
          feature"
     ))
+}
+
+/// The reserved `native_dispatch` key the dual-build-shim fixture registers
+/// under, independent of this node's own DID -- the same shape
+/// `SUPERVISOR_DISPATCH_ID` uses.
+#[cfg(feature = "dual_build_fixture")]
+const DUAL_BUILD_FIXTURE_DISPATCH_ID: &str = "dual-build-fixture";
+
+/// Links the dual-build-shim fixture's native build in as a
+/// `NativeService`, proving the shim's exit criterion 1 (built both ways
+/// from one source tree, linked into `syneroym-substrate` behind a Cargo
+/// feature) end to end. Not a deployed service: there is no undeploy path,
+/// so `NativeHostFactory::shutdown` is never called here -- dropping the
+/// factory at process exit is the real teardown, and `SubscriptionHandle`'s
+/// own `Drop` unsubscribes.
+#[cfg(feature = "dual_build_fixture")]
+async fn init_dual_build_fixture(
+    shared: &SharedNodeHandles,
+    endpoint_registry: &EndpointRegistry,
+    node_service_id: &str,
+) -> anyhow::Result<()> {
+    use syneroym_app_host_native::NativeHostFactory;
+    use syneroym_test_dual_build_fixture::native::{FIXTURE_INTERFACE, NativeFixture};
+
+    let service_id = DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string();
+    let factory = NativeHostFactory::new(
+        service_id.clone(),
+        shared.key_store.clone(),
+        shared.storage_provider.clone(),
+        shared.blob_provider.clone(),
+        shared.messaging_broker.clone(),
+        endpoint_registry.clone(),
+        shared.logical_resolver.clone(),
+    );
+    let f = factory.clone();
+    let fixture = Arc::new(NativeFixture::new(service_id, move |caller| f.host_for(caller)));
+    factory.set_sink(
+        Arc::downgrade(&fixture) as std::sync::Weak<dyn syneroym_app_host_native::MessageSink>
+    );
+    shared
+        .native_dispatch
+        .insert(DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(), fixture as Arc<dyn NativeService>);
+
+    // Exactly one endpoint. Do not also register a `messaging` endpoint:
+    // `EndpointRegistry::register` is a silent last-write-wins insert on
+    // `(service_id, interface_name)`, `(node_did, "messaging")` already
+    // belongs to the supervisor above, and CI builds `--all-features`, so
+    // both would be live at once and one would quietly disappear. The
+    // fixture needs nothing from that key: its `subscribe` is app-initiated
+    // and its pump reads the broker directly, never through the router's
+    // messaging path.
+    endpoint_registry
+        .register(
+            node_service_id.to_string(),
+            FIXTURE_INTERFACE.to_string(),
+            SubstrateEndpoint::NativeHostChannel {
+                service_id: DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
+            },
+        )
+        .await?;
+    Ok(())
 }
 
 /// Rebuilds the in-memory `StaticInventory` from every dependency binding
@@ -1008,7 +1079,7 @@ async fn build_route_handler_deps(
         config.hosted_apps_dir(),
         key_store.clone(),
         storage_provider.clone(),
-        blob_provider,
+        blob_provider.clone(),
         messaging_broker.clone(),
         native_dispatch.clone(),
         http_routes.clone(),
@@ -1025,6 +1096,8 @@ async fn build_route_handler_deps(
         native_dispatch: native_dispatch.clone(),
         client_identity: supervisor_client_identity,
         messaging_broker: messaging_broker.clone(),
+        blob_provider,
+        logical_resolver: logical_resolver.clone(),
     };
 
     Ok((

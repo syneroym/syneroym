@@ -1621,12 +1621,26 @@ impl HostBlobWriter for HostState {
                 "stage-4 after-step instances are read-only".to_string(),
             ));
         }
-        let session = self.table.delete(self_).map_err(|e| BlobError::Internal(e.to_string()))?;
+        // `finish` is a resource *method* (`[method]blob-writer.finish`), so
+        // the canonical ABI hands the host a *borrowed* `self_` -- calling
+        // `table.delete(self_)` directly panics `ResourceTable`'s own
+        // `debug_assert!(resource.owned())` (never hit before B3: nothing
+        // called this via a real wasm guest until then, per the guest
+        // bindings' own dead-code history). Re-deriving an owned handle from
+        // the same `rep` is the table's own documented shape for a host that
+        // wants to end the entry's life from inside a method call -- the
+        // table only ever keys on `rep()`, never on the passed-in handle's
+        // borrow/own bit.
+        let session = self
+            .table
+            .delete(Resource::<BlobWriter>::new_own(self_.rep()))
+            .map_err(|e| BlobError::Internal(e.to_string()))?;
         session.0.finish().await.map_err(map_blob_error)
     }
 
     async fn abort(&mut self, self_: Resource<BlobWriter>) {
-        if let Ok(session) = self.table.delete(self_) {
+        // See `finish`'s comment: `abort` is the same kind of method call.
+        if let Ok(session) = self.table.delete(Resource::<BlobWriter>::new_own(self_.rep())) {
             session.0.abort().await;
         }
     }

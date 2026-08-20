@@ -35,6 +35,8 @@ syneroym-coordinator = { workspace = true, optional = true, default-features = f
 syneroym-client-gateway = { workspace = true, optional = true }
 syneroym-app-supervisor = { workspace = true, optional = true }
 syneroym-sandbox-wasm.workspace = true
+syneroym-app-host-native = { workspace = true, optional = true }
+syneroym-test-dual-build-fixture = { workspace = true, optional = true }
 tracing.workspace = true
 reqwest.workspace = true
 z32.workspace = true
@@ -67,6 +69,11 @@ coordinator_all = [
 # Forwards to syneroym-data-blob's own `aws` feature (off by default --
 # see the object_store/digest version-pin comment in the root Cargo.toml).
 aws = ["syneroym-data-blob/aws"]
+# Links the dual-build-shim fixture's native build in as a
+# `NativeService`, proving the shim's exit criterion 1 (built both ways from
+# one source tree) end to end. Off by default; CI's `--all-features` run
+# picks it up.
+dual_build_fixture = ["dep:syneroym-app-host-native", "dep:syneroym-test-dual-build-fixture"]
 
 [dev-dependencies]
 assert_cmd.workspace = true

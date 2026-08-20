@@ -119,7 +119,9 @@ pub struct SubstrateTestContext {
     #[allow(dead_code)]
     config: SubstrateConfig,
     pub substrate_client: SyneroymClient,
+    #[allow(dead_code)]
     registry_url: String,
+    #[allow(dead_code)]
     pub substrate_mechanisms: Vec<EndpointMechanism>,
     /// The DID that owns this substrate (an unowned
     /// substrate now fails closed, so every harness must own its own
@@ -128,6 +130,7 @@ pub struct SubstrateTestContext {
     pub owner_did: String,
     shutdown_tx: Sender<()>,
     substrate_handle: JoinHandle<()>,
+    #[allow(dead_code)]
     temp_dir: TempDir,
     _lock_guard: MutexGuard<'static, ()>,
 }

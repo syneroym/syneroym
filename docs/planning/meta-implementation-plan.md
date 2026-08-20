@@ -650,7 +650,8 @@ and the reason would otherwise be lost.
 >   The dual-build shim, person identity at the client gateway, the durable
 >   messaging host interface and Layer 3 delivery, outbox delivery state, and
 >   service-record visibility. These are gaps **G1–G4** in the experience spec.
->   Slices **B1–B5**, `task.md` written 2026-08-18, none started.
+>   Slices **B1–B5**, `task.md` written 2026-08-18. **B1–B3 Complete
+>   (2026-08-20)**; B4–B5 not started.
 > - **M06C** — the Roym product itself, following the spec's four releases (a
 >   usable local guild, the transaction vertical, cross-installation trust,
 >   private group chat). Directory not yet created.

@@ -1,0 +1,35 @@
+[package]
+name = "syneroym-test-dual-build-fixture"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+syneroym-app-host.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen.workspace = true
+# Not `workspace = true` -- same reasoning as `syneroym-app-host`'s own
+# dependency (see its Cargo.toml): only the three interfaces this fixture's
+# `with:` remap references.
+syneroym-wit-interfaces = { path = "../../crates/wit_interfaces", default-features = false, features = [
+    "data-layer",
+    "blob-store",
+    "messaging",
+] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+syneroym-rpc.workspace = true
+async-trait.workspace = true
+
+[package.metadata.component.target.dependencies]
+"syneroym:data-layer" = { path = "wit/deps/data-layer" }
+"syneroym:blob-store" = { path = "wit/deps/blob-store" }
+"syneroym:messaging" = { path = "wit/deps/messaging" }
