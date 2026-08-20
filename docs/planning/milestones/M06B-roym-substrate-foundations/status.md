@@ -398,13 +398,30 @@ panics on a borrowed handle. Never triggered before B3 because nothing
 called these functions through a real wasm guest (`blob-store`'s guest
 bindings were dead code per the design finding in the implementation plan);
 the crate's own existing unit tests construct an owned `Resource` by hand,
-sidestepping the ABI distinction entirely. **Fixed** by re-deriving an owned
-handle from the same `rep()` before calling `table.delete`, in both
-`finish` and `abort` — the table only ever keys on `rep()`, never on the
-passed-in handle's borrow/own bit, matching what the native shim's own
-`Resource::new_own(self.rep)` re-derivation already does. Verified against
-the pre-existing `blob_store_integration.rs` suite (5/5, unaffected — it
-constructs owned resources directly, so it never hit the bug either way).
+sidestepping the ABI distinction entirely. An initial fix re-derived an
+owned handle from the same `rep()` before calling `table.delete` — this
+silenced the `debug_assert!`, but a subsequent review (against
+`wasmtime-46.0.2`'s own source, not documentation) found it traded the
+panic for a worse, silent bug: deleting a still-borrowed entry frees its
+table slot for reuse while the guest can still reference it, and a later
+resource-drop for the original handle can then delete an unrelated,
+currently-live resource that has since taken that slot. **Fixed** instead by
+giving `HostUploadSession` an `Option<Box<dyn UploadSession>>` payload:
+`finish`/`abort` `take()` the session out of a borrow and leave the table
+entry itself alive (holding `None`), so only the resource's own destructor
+(`drop`, which the ABI always hands a genuinely owned `rep`) ever deletes
+the entry. The same review also found a related bug this shared code
+enabled on the native build only — a dropped-without-finishing upload never
+refunded its speculatively-reserved blob quota, since nothing native ever
+triggered wasmtime's own resource-drop call — fixed by moving the refund
+into a synchronous `Drop for ObjectStoreUploadSession`
+(`crates/data_blob/src/object_store_impl.rs`), which now runs identically
+on both builds regardless of which path (`finish`, `abort`, or an implicit
+drop) ends the session. Verified against the pre-existing
+`blob_store_integration.rs` suite (5/5, unaffected — it constructs owned
+resources directly, so it never hit the original bug either way) and a new
+`data_blob` unit test that drops a session mid-upload with neither `finish`
+nor `abort` called and confirms its reservation is refunded.
 
 ---
 
@@ -417,7 +434,11 @@ constructs owned resources directly, so it never hit the bug either way).
   value, patch mutation, every mutation/sql-value/data-layer-error/
   blob-error/messaging-error variant, record read value, query result, raw
   query result).
-- **`crates/app_host_native/tests/dual_build_parity.rs`** (11 tests):
+- **`crates/app_host_native/src/factory.rs`** (1 test):
+  `read_only_host_denies_every_mutating_and_egress_call` — the `host_with`
+  unit test the deferred-backlog row promised, added after a review found
+  it was missing. 14 unit tests total in the crate.
+- **`crates/app_host_native/tests/dual_build_parity.rs`** (13 tests):
   `both_builds_produce_identical_results`,
   `the_parity_comparison_detects_a_divergence`,
   `wasm_build_store_and_read_round_trip` /
@@ -427,11 +448,23 @@ constructs owned resources directly, so it never hit the bug either way).
   `wasm_build_admin_ddl_is_denied` / `native_build_admin_ddl_is_denied`,
   `both_builds_deliver_a_published_message_to_their_own_inbox`,
   `each_native_invocation_gets_a_fresh_resource_table`,
-  `only_the_wasm_stacks_subscription_is_persisted`.
+  `only_the_wasm_stacks_subscription_is_persisted`,
+  `malformed_request_json_errors_on_both_builds`,
+  `malformed_params_frame_is_invalid_params_not_internal_error`. The shared
+  `SCENARIOS` table that `both_builds_produce_identical_results`/
+  `the_parity_comparison_detects_a_divergence` both run also grew from 6 to
+  13 entries (added `patch`/`batch-mutate`/`delete-many`/`drop-collection`/
+  `delete-blob`/`abort-upload`/`unsubscribe`) after a review found 12 of 26
+  `AppDataLayer`/`AppBlobStore`/`AppMessaging` methods untested by either
+  build; `aggregate`/`delete`/`query_raw`/`check_access` remain untested
+  (deferred-backlog).
 - **`crates/substrate/tests/dual_build_fixture_e2e.rs`** (1 test, feature-gated):
   `a_client_reaches_the_linked_native_fixture_through_the_router`.
 - **`crates/sandbox_wasm/tests/blob_store_integration.rs`** (5 tests, pre-existing):
   re-run after the `HostBlobWriter::finish`/`abort` fix, unaffected.
+- **`crates/data_blob/src/object_store_impl.rs`** (1 new test, 36 total):
+  `dropping_a_session_without_finish_or_abort_still_refunds_reserved_quota`,
+  covering the blob-quota-refund fix above.
 
 ### Component build (exit criterion 1)
 

@@ -1550,7 +1550,9 @@ impl blob_store::Host for HostState {
             .open_upload(&self.component_id, dek)
             .await
             .map_err(map_blob_error)?;
-        self.table.push(HostUploadSession(session)).map_err(|e| BlobError::Internal(e.to_string()))
+        self.table
+            .push(HostUploadSession(Some(session)))
+            .map_err(|e| BlobError::Internal(e.to_string()))
     }
 
     async fn open_download(
@@ -1612,7 +1614,11 @@ impl HostBlobWriter for HostState {
             ));
         }
         let session = self.table.get_mut(&self_).map_err(|e| BlobError::Internal(e.to_string()))?;
-        session.0.write(chunk).await.map_err(map_blob_error)
+        let session = session
+            .0
+            .as_mut()
+            .ok_or_else(|| BlobError::Internal("blob writer already finished".to_string()))?;
+        session.write(chunk).await.map_err(map_blob_error)
     }
 
     async fn finish(&mut self, self_: Resource<BlobWriter>) -> Result<String, BlobError> {
@@ -1622,35 +1628,40 @@ impl HostBlobWriter for HostState {
             ));
         }
         // `finish` is a resource *method* (`[method]blob-writer.finish`), so
-        // the canonical ABI hands the host a *borrowed* `self_` -- calling
-        // `table.delete(self_)` directly panics `ResourceTable`'s own
-        // `debug_assert!(resource.owned())` (never hit before B3: nothing
-        // called this via a real wasm guest until then, per the guest
-        // bindings' own dead-code history). Re-deriving an owned handle from
-        // the same `rep` is the table's own documented shape for a host that
-        // wants to end the entry's life from inside a method call -- the
-        // table only ever keys on `rep()`, never on the passed-in handle's
-        // borrow/own bit.
-        let session = self
-            .table
-            .delete(Resource::<BlobWriter>::new_own(self_.rep()))
-            .map_err(|e| BlobError::Internal(e.to_string()))?;
-        session.0.finish().await.map_err(map_blob_error)
+        // the canonical ABI hands the host a *borrowed* `self_` -- the table
+        // entry has to stay alive until wasmtime's own resource-drop call
+        // for this handle arrives (`drop`, below), or a still-live borrow
+        // the guest holds could have its slot handed to an unrelated
+        // resource in between. Taking the inner session out of the table
+        // entry (leaving `None` behind) ends the upload without deleting
+        // the entry itself.
+        let entry = self.table.get_mut(&self_).map_err(|e| BlobError::Internal(e.to_string()))?;
+        let session = entry
+            .0
+            .take()
+            .ok_or_else(|| BlobError::Internal("blob writer already finished".to_string()))?;
+        session.finish().await.map_err(map_blob_error)
     }
 
     async fn abort(&mut self, self_: Resource<BlobWriter>) {
         // See `finish`'s comment: `abort` is the same kind of method call.
-        if let Ok(session) = self.table.delete(Resource::<BlobWriter>::new_own(self_.rep())) {
-            session.0.abort().await;
+        if let Ok(entry) = self.table.get_mut(&self_)
+            && let Some(session) = entry.0.take()
+        {
+            session.abort().await;
         }
     }
 
     async fn drop(&mut self, rep: Resource<BlobWriter>) -> wasmtime::Result<()> {
-        // If the guest dropped the resource without calling finish/abort,
-        // discard whatever partial session state remains (implicit abort,
-        // alongside the explicit `abort` method above).
-        if let Ok(session) = self.table.delete(rep) {
-            session.0.abort().await;
+        // This is the resource *destructor*, so `rep` is genuinely owned --
+        // safe to delete the table entry outright. If the guest called
+        // `finish`/`abort` already, the entry holds `None` and this only
+        // frees the slot; if it dropped the resource without calling
+        // either, abort the still-live session (implicit abort).
+        if let Ok(entry) = self.table.delete(rep)
+            && let Some(session) = entry.0
+        {
+            session.abort().await;
         }
         Ok(())
     }

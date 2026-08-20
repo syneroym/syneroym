@@ -72,7 +72,9 @@ aws = ["syneroym-data-blob/aws"]
 # Links the dual-build-shim fixture's native build in as a
 # `NativeService`, proving the shim's exit criterion 1 (built both ways from
 # one source tree) end to end. Off by default; CI's `--all-features` run
-# picks it up.
+# picks it up. Never enable in a release or deploy profile: it registers a
+# test-driver service reachable by any caller the router admits, with no
+# access control of its own.
 dual_build_fixture = ["dep:syneroym-app-host-native", "dep:syneroym-test-dual-build-fixture"]
 
 [dev-dependencies]

@@ -19,7 +19,13 @@ pub use traits::{BlobProvider, DownloadSession, UploadSession};
 /// explicit mapping bindgen invents its own opaque marker that trait
 /// objects can't satisfy. Mirrors how `wasmtime-wasi` maps its own
 /// `input-stream`/`output-stream` resources to concrete types internally.
-pub struct HostUploadSession(pub Box<dyn UploadSession>);
+///
+/// The field is `Option` because `finish`/`abort` are WIT resource
+/// *methods*, which the canonical ABI only ever hands a *borrowed* handle --
+/// the host can take the inner session out of a borrow, but it must leave
+/// the table entry itself alive for the guest's own (owned) resource-drop
+/// call to delete. See `HostBlobWriter` in `sandbox_wasm::host_capabilities`.
+pub struct HostUploadSession(pub Option<Box<dyn UploadSession>>);
 
 impl fmt::Debug for HostUploadSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

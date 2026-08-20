@@ -908,13 +908,20 @@ const DUAL_BUILD_FIXTURE_DISPATCH_ID: &str = "dual-build-fixture";
 /// so `NativeHostFactory::shutdown` is never called here -- dropping the
 /// factory at process exit is the real teardown, and `SubscriptionHandle`'s
 /// own `Drop` unsubscribes.
+///
+/// Registers under the node's own DID with no access control of its own --
+/// see the `dual_build_fixture` feature's own comment in `Cargo.toml`. Test
+/// scaffolding only; never enable this feature in a release or deploy
+/// profile.
 #[cfg(feature = "dual_build_fixture")]
 async fn init_dual_build_fixture(
     shared: &SharedNodeHandles,
     endpoint_registry: &EndpointRegistry,
     node_service_id: &str,
 ) -> anyhow::Result<()> {
-    use syneroym_app_host_native::NativeHostFactory;
+    use std::sync::Weak;
+
+    use syneroym_app_host_native::{MessageSink, NativeHostFactory};
     use syneroym_test_dual_build_fixture::native::{FIXTURE_INTERFACE, NativeFixture};
 
     let service_id = DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string();
@@ -929,9 +936,7 @@ async fn init_dual_build_fixture(
     );
     let f = factory.clone();
     let fixture = Arc::new(NativeFixture::new(service_id, move |caller| f.host_for(caller)));
-    factory.set_sink(
-        Arc::downgrade(&fixture) as std::sync::Weak<dyn syneroym_app_host_native::MessageSink>
-    );
+    factory.set_sink(Arc::downgrade(&fixture) as Weak<dyn MessageSink>);
     shared
         .native_dispatch
         .insert(DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(), fixture as Arc<dyn NativeService>);

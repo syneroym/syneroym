@@ -67,7 +67,7 @@ impl GuestApiGuest for Fixture {
     }
 }
 
-/// This fixture doesn't exercise M3B Slice 6B streaming, but must still
+/// This fixture doesn't exercise raw-stream messaging, but must still
 /// satisfy `guest-api`'s `use stream-types.{stream-cursor, stream-sink}`
 /// reference, since `stream-types` is guest-implemented (ADR-0014). Never
 /// constructed in practice: `handle-stream-request`/`accept-stream-upload`

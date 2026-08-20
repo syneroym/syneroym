@@ -5,10 +5,15 @@
 //! asserting the results are identical. A test that passes on one build and
 //! fails on the other is a bug in the shim, not in the test.
 
-use std::{fs, path::Path, sync::Arc, time::Duration};
+use std::{
+    fs,
+    path::Path,
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 use serde_json::{Value, json};
-use syneroym_app_host_native::NativeHostFactory;
+use syneroym_app_host_native::{MessageSink, NativeHostFactory};
 use syneroym_core::{
     config::SubstrateConfig, local_registry::EndpointRegistry, storage::MockStorage, test_constants,
 };
@@ -101,9 +106,9 @@ impl Driver for NativeDriver {
 /// `the_parity_comparison_detects_a_divergence` ever passes with this
 /// removed, `both_builds_produce_identical_results` is not comparing
 /// anything.
-struct Mutant<D>(D);
+struct Mutant<'a, D>(&'a D);
 
-impl<D: Driver> Driver for Mutant<D> {
+impl<D: Driver> Driver for Mutant<'_, D> {
     async fn run(&self, request: &str) -> Result<String, String> {
         self.0.run(request).await.map(|s| s.replace("\"written\"", "\"wrote\""))
     }
@@ -140,27 +145,35 @@ struct Harness {
     wasm: WasmDriver,
     native: NativeDriver,
     wasm_engine: Arc<AppSandboxEngine>,
-    #[expect(
-        dead_code,
-        reason = "kept alive for the shim's own teardown reasoning; not read directly"
-    )]
     native_factory: Arc<NativeHostFactory>,
     native_storage_provider: Arc<dyn StorageProvider>,
+    // Dropped last (declaration order), after everything that might still
+    // have files open under them.
+    _wasm_dir: tempfile::TempDir,
+    _native_dir: tempfile::TempDir,
 }
 
-/// Two fully independent host stacks, sharing one `SERVICE_ID`.
-/// `None` when the wasm component artifact hasn't been built yet, so tests
-/// can skip gracefully the same way every other WASM integration test in
-/// this workspace does.
-async fn harness() -> Option<Harness> {
-    let Ok(wasm_bytes) = fs::read(test_constants::dual_build_fixture_wasm_path()) else {
-        eprintln!(
-            "Skipping dual_build_parity: WASM artifact not found (run `mise run \
+/// Tears the native stack down the way a real embedder would when a linked
+/// app is undeployed -- this is `NativeHostFactory::shutdown`'s only caller.
+impl Drop for Harness {
+    fn drop(&mut self) {
+        self.native_factory.shutdown();
+    }
+}
+
+/// Two fully independent host stacks, sharing one `SERVICE_ID`. Panics if
+/// the wasm component artifact hasn't been built -- this suite is the
+/// milestone's evidence for exit criterion 2 (dual-build parity), so a run
+/// that silently skipped every test would be worse than a build failure,
+/// not equivalent to one. Build it with `mise run build:test-components`.
+async fn harness() -> Harness {
+    let wasm_bytes = fs::read(test_constants::dual_build_fixture_wasm_path()).unwrap_or_else(|e| {
+        panic!(
+            "dual_build_parity: WASM artifact not found ({e}) -- run `mise run \
              build:test-components`, or `cargo component build --release --target wasm32-wasip2 \
-             -p syneroym-test-dual-build-fixture`)"
-        );
-        return None;
-    };
+             -p syneroym-test-dual-build-fixture`"
+        )
+    });
 
     let wasm_dir = tempfile::tempdir().unwrap();
     let native_dir = tempfile::tempdir().unwrap();
@@ -169,18 +182,15 @@ async fn harness() -> Option<Harness> {
     let (native_fixture, native_factory, native_storage_provider) =
         build_native_stack(native_dir.path());
 
-    // Keep the temp dirs alive for the duration of the test process --
-    // leaking them is fine, this is a short-lived test binary.
-    std::mem::forget(wasm_dir);
-    std::mem::forget(native_dir);
-
-    Some(Harness {
+    Harness {
         wasm: WasmDriver { engine: wasm_engine.clone() },
         native: NativeDriver { fixture: native_fixture },
         wasm_engine,
         native_factory,
         native_storage_provider,
-    })
+        _wasm_dir: wasm_dir,
+        _native_dir: native_dir,
+    }
 }
 
 async fn build_wasm_stack(dir: &Path, wasm_bytes: &[u8]) -> Arc<AppSandboxEngine> {
@@ -249,9 +259,7 @@ fn build_native_stack(
     let f = factory.clone();
     let fixture =
         Arc::new(NativeFixture::new(SERVICE_ID.to_string(), move |caller| f.host_for(caller)));
-    factory.set_sink(
-        Arc::downgrade(&fixture) as std::sync::Weak<dyn syneroym_app_host_native::MessageSink>
-    );
+    factory.set_sink(Arc::downgrade(&fixture) as Weak<dyn MessageSink>);
     (fixture, factory, storage_provider)
 }
 
@@ -266,6 +274,13 @@ const SCENARIOS: &[(&str, &str)] = &[
     ("get-missing", r#"{"op":"get-missing","id":"does-not-exist"}"#),
     ("put-blob", r#"{"op":"put-blob","body":"hello dual-build shim"}"#),
     ("stream-blob", r#"{"op":"stream-blob","chunks":["ab","cd","ef"],"read_chunk":2}"#),
+    ("unsubscribe", r#"{"op":"unsubscribe","topic":"scratch-topic"}"#),
+    ("patch", r#"{"op":"patch","id":"p1"}"#),
+    ("batch-mutate", r#"{"op":"batch-mutate","id_a":"b1","id_b":"b2"}"#),
+    ("delete-many", r#"{"op":"delete-many","id":"dm1"}"#),
+    ("drop-collection", r#"{"op":"drop-collection"}"#),
+    ("delete-blob", r#"{"op":"delete-blob","body":"blob to delete"}"#),
+    ("abort-upload", r#"{"op":"abort-upload","chunks":["ab","cd"]}"#),
 ];
 
 async fn scenarios<D: Driver>(d: &D) -> Vec<(&'static str, String)> {
@@ -278,7 +293,7 @@ async fn scenarios<D: Driver>(d: &D) -> Vec<(&'static str, String)> {
 
 #[tokio::test]
 async fn both_builds_produce_identical_results() {
-    let Some(h) = harness().await else { return };
+    let h = harness().await;
     let wasm_results = scenarios(&h.wasm).await;
     let native_results = scenarios(&h.native).await;
     assert!(!wasm_results.is_empty(), "the scenario table must not be empty");
@@ -289,9 +304,9 @@ async fn both_builds_produce_identical_results() {
 /// anything unless the comparison is known to detect a real divergence.
 #[tokio::test]
 async fn the_parity_comparison_detects_a_divergence() {
-    let Some(h) = harness().await else { return };
+    let h = harness().await;
     let wasm_results = scenarios(&h.wasm).await;
-    let mutant_results = scenarios(&Mutant(h.native)).await;
+    let mutant_results = scenarios(&Mutant(&h.native)).await;
     assert!(!wasm_results.is_empty());
     assert_ne!(wasm_results, mutant_results);
 }
@@ -301,7 +316,7 @@ async fn the_parity_comparison_detects_a_divergence() {
 /// build.
 #[tokio::test]
 async fn wasm_build_store_and_read_round_trip() {
-    let Some(h) = harness().await else { return };
+    let h = harness().await;
     let result = h.wasm.run(r#"{"op":"store-messages","count":5}"#).await.unwrap();
     let v: Value = serde_json::from_str(&result).unwrap();
     assert_eq!(v["ok"]["written"], 5);
@@ -310,7 +325,7 @@ async fn wasm_build_store_and_read_round_trip() {
 
 #[tokio::test]
 async fn native_build_store_and_read_round_trip() {
-    let Some(h) = harness().await else { return };
+    let h = harness().await;
     let result = h.native.run(r#"{"op":"store-messages","count":5}"#).await.unwrap();
     let v: Value = serde_json::from_str(&result).unwrap();
     assert_eq!(v["ok"]["written"], 5);
@@ -319,7 +334,7 @@ async fn native_build_store_and_read_round_trip() {
 
 #[tokio::test]
 async fn wasm_build_stream_blob_round_trips_the_body() {
-    let Some(h) = harness().await else { return };
+    let h = harness().await;
     let result = h
         .wasm
         .run(r#"{"op":"stream-blob","chunks":["ab","cd","ef"],"read_chunk":2}"#)
@@ -331,7 +346,7 @@ async fn wasm_build_stream_blob_round_trips_the_body() {
 
 #[tokio::test]
 async fn native_build_stream_blob_round_trips_the_body() {
-    let Some(h) = harness().await else { return };
+    let h = harness().await;
     let result = h
         .native
         .run(r#"{"op":"stream-blob","chunks":["ab","cd","ef"],"read_chunk":2}"#)
@@ -343,7 +358,7 @@ async fn native_build_stream_blob_round_trips_the_body() {
 
 #[tokio::test]
 async fn wasm_build_admin_ddl_is_denied() {
-    let Some(h) = harness().await else { return };
+    let h = harness().await;
     let result = h.wasm.run(r#"{"op":"admin-ddl","sql":"DROP TABLE messages"}"#).await.unwrap();
     let v: Value = serde_json::from_str(&result).unwrap();
     assert!(v.get("err").is_some(), "expected admin-ddl to be denied, got {v}");
@@ -351,10 +366,46 @@ async fn wasm_build_admin_ddl_is_denied() {
 
 #[tokio::test]
 async fn native_build_admin_ddl_is_denied() {
-    let Some(h) = harness().await else { return };
+    let h = harness().await;
     let result = h.native.run(r#"{"op":"admin-ddl","sql":"DROP TABLE messages"}"#).await.unwrap();
     let v: Value = serde_json::from_str(&result).unwrap();
     assert!(v.get("err").is_some(), "expected admin-ddl to be denied, got {v}");
+}
+
+/// `app::run`'s `serde_json::from_str` failure is the fixture's only WIT
+/// `Err` path (as opposed to a WIT-level `Ok` carrying a JSON `"err"`
+/// field, like the two tests above). Both builds surface it as an error at
+/// this layer: `NativeFixture::dispatch`'s own comment notes its
+/// `RpcError::InternalError` "mirrors the WASM `Err` arm's -32603" -- that
+/// numeric code is a `syneroym-router` JSON-RPC-framing property
+/// (`RpcError::code`, `crates/rpc/src/lib.rs`) neither driver here goes
+/// through, so it is out of this suite's reach to assert directly.
+#[tokio::test]
+async fn malformed_request_json_errors_on_both_builds() {
+    let h = harness().await;
+    assert!(h.wasm.run(r#"{"op":"#).await.is_err());
+    assert!(h.native.run(r#"{"op":"#).await.is_err());
+}
+
+/// `extract_request_param`'s `InvalidParams` arm needs a malformed *frame*
+/// (no `request` field to find), which `Driver::run` can never produce --
+/// it always builds a well-shaped `params: [<json>]`. Pinned here directly
+/// against the native fixture, bypassing `Driver`. No WASM equivalent:
+/// `WasmDriver` doesn't go through `NativeService::dispatch` either, so
+/// there is nothing to compare against.
+#[tokio::test]
+async fn malformed_params_frame_is_invalid_params_not_internal_error() {
+    use syneroym_rpc::{NativeService, RpcError};
+
+    let h = harness().await;
+    let inv = NativeInvocation {
+        interface: "test-driver".to_string(),
+        method: "run".to_string(),
+        params: json!({}), // no "request" key
+        caller: caller(),
+    };
+    let err = h.native.fixture.dispatch(inv).await.unwrap_err();
+    assert!(matches!(err, RpcError::InvalidParams(_)), "got {err:?}");
 }
 
 /// Messaging round trip, with a settle step per build (publish is
@@ -373,7 +424,7 @@ async fn poll_inbox_nonempty<D: Driver>(d: &D) -> Value {
 
 #[tokio::test]
 async fn both_builds_deliver_a_published_message_to_their_own_inbox() {
-    let Some(h) = harness().await else { return };
+    let h = harness().await;
 
     h.wasm.run(r#"{"op":"subscribe-topic","topic":"chat"}"#).await.unwrap();
     h.native.run(r#"{"op":"subscribe-topic","topic":"chat"}"#).await.unwrap();
@@ -417,6 +468,11 @@ mod permitted_differences {
 
         let host_a = factory.host_for(caller());
         let writer_a = host_a.open_upload().await.unwrap();
+        assert_eq!(
+            writer_a.rep(),
+            0,
+            "invocation a's writer should be the first entry in its own fresh table"
+        );
         let hash_a = {
             let mut w = writer_a;
             w.write(b"invocation a".to_vec()).await.unwrap();
@@ -425,16 +481,20 @@ mod permitted_differences {
 
         let host_b = factory.host_for(caller());
         let writer_b = host_b.open_upload().await.unwrap();
+        assert_eq!(
+            writer_b.rep(),
+            0,
+            "invocation b's writer should also be index 0 -- a shared table would put it at 1"
+        );
         let hash_b = {
             let mut w = writer_b;
             w.write(b"invocation b".to_vec()).await.unwrap();
             w.finish().await.unwrap()
         };
 
-        // Both succeed independently -- a shared table would still let this
-        // pass, so the real assertion is that both blobs are separately
-        // retrievable afterward, proving neither invocation's table state
-        // leaked into or clobbered the other's.
+        // Belt and suspenders: both blobs are also separately retrievable
+        // afterward, proving neither invocation's table state leaked into
+        // or clobbered the other's.
         assert_ne!(hash_a, hash_b);
         assert_eq!(host_a.get_blob(hash_a).await.unwrap(), b"invocation a");
         assert_eq!(host_b.get_blob(hash_b).await.unwrap(), b"invocation b");
@@ -450,7 +510,7 @@ mod permitted_differences {
     /// gap.
     #[tokio::test]
     async fn only_the_wasm_stacks_subscription_is_persisted() {
-        let Some(h) = harness().await else { return };
+        let h = harness().await;
         h.wasm.run(r#"{"op":"subscribe-topic","topic":"persisted"}"#).await.unwrap();
         h.native.run(r#"{"op":"subscribe-topic","topic":"persisted"}"#).await.unwrap();
 
