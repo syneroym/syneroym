@@ -1,5 +1,5 @@
-//! Types and object-safe traits for `syneroym:conversation` (M06B slice
-//! B4). Plain Rust here, not the WIT-generated shapes: this crate has no
+//! Types and object-safe traits for `syneroym:conversation`.
+//! Plain Rust here, not the WIT-generated shapes: this crate has no
 //! `syneroym-wit-interfaces` dependency (no `wasmtime`), and both host
 //! implementors -- `syneroym-sandbox-wasm`'s `HostState` (the WASM path) and
 //! `syneroym-app-host-native`'s `NativeAppHost` (the native path) -- convert

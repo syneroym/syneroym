@@ -115,13 +115,13 @@ pub struct ControlPlaneService {
     /// implementation, is constructed in `RouteHandler::init`, which runs
     /// after this service) and same two-phase `OnceLock` wiring.
     pub row_authorizer: OnceLock<Weak<dyn RowAuthorizer>>,
-    /// The Conversation service (M06B slice B4), threaded on to each
+    /// The Conversation service, threaded on to each
     /// deployed service's `SynSvcNativeService` at construction time
     /// (`orchestration.rs`'s two `SynSvcNativeService::new` call sites).
     /// Unlike `service_proxy`/`row_authorizer`, `ConversationService`
     /// exists *before* `ControlPlaneService` does (`build_route_handler_deps`
     /// builds it first), so this could have been a constructor parameter --
-    /// kept as an `OnceLock` anyway, for the same reason `D-B4-24` avoids a
+    /// kept as an `OnceLock` anyway, to avoid a
     /// parameter on `SynSvcNativeService::new` itself: consistency with the
     /// other two fields this struct already threads the same way.
     pub conversation: OnceLock<Weak<dyn syneroym_rpc::ConversationHost>>,

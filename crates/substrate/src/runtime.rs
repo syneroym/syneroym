@@ -284,7 +284,7 @@ impl RuntimeServices {
         self.supervisor = supervisor;
     }
 
-    /// Injects the Conversation service (M06B slice B4), same reasoning as
+    /// Injects the Conversation service, same reasoning as
     /// `set_supervisor`.
     fn set_conversation(&mut self, conversation: Arc<ConversationService>) {
         self.conversation = Some(conversation);
@@ -850,7 +850,7 @@ struct SharedNodeHandles {
     blob_provider: Arc<dyn BlobProvider>,
     #[cfg_attr(not(feature = "dual_build_fixture"), allow(dead_code))]
     logical_resolver: Arc<LogicalResolver>,
-    /// M06B slice B4: needed by `setup_router` to wire the real
+    /// Needed by `setup_router` to wire the real
     /// `ServiceProxy` in once `ConnectionRouter::init` has built it, and by
     /// the `dual_build_fixture` role's `NativeHostFactory`.
     conversation: Arc<ConversationService>,
@@ -1150,7 +1150,7 @@ async fn build_route_handler_deps(
     // connects, as a client, to the substrates it manages (ADR-0021 §8).
     let supervisor_client_identity = node_identity.clone();
 
-    // M06B slice B4: same lifetime as `app_sandbox_engine` above -- built
+    // Same lifetime as `app_sandbox_engine` above -- built
     // once, wired to the real `ServiceProxy`/engine notifier once those
     // exist (`setup_router`, after `ConnectionRouter::init`).
     let app_sandbox_role = config.roles.app_sandbox.clone().unwrap_or_default();

@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! M06B slice B4's durable 1:1 messaging, end to end across two real
+//! Durable 1:1 messaging, end to end across two real
 //! `syneroym-substrate` instances -- the reference scenario's steps 6-8
 //! (task.md): A messages B while B is offline, the message stays `pending`
 //! in A's own outbox; A restarts and the same item is still there, not

@@ -132,14 +132,13 @@ pub struct SynSvcNativeService {
     /// four native read/delete sites work unconditionally, without a
     /// `#[cfg]`.
     row_authorizer: Weak<dyn RowAuthorizer>,
-    /// The Conversation service (M06B slice B4), reached by
+    /// The Conversation service, reached by
     /// `dispatch_conversation`. `OnceLock`, not a constructor parameter --
     /// `ConversationService` is constructed once, node-wide, alongside
     /// `ControlPlaneService` itself, and adding it to `Self::new`'s
     /// signature would touch every one of this struct's ~26 existing call
-    /// sites for a capability most of them never exercise (`D-B4-24`'s own
-    /// reasoning, applied here). Unset (`.upgrade()` always `None`) on a
-    /// node running no conversation service.
+    /// sites for a capability most of them never exercise. Unset
+    /// (`.upgrade()` always `None`) on a node running no conversation service.
     conversation: std::sync::OnceLock<Weak<dyn ConversationHost>>,
 }
 

@@ -577,7 +577,7 @@ pub struct AppSandboxRole {
     /// rather than clamping -- a workflow must not silently run under a
     /// deadline it did not ask for.
     pub saga_max_deadline_secs: u64,
-    /// The conversation delivery worker's own tick (M06B B4, beside the
+    /// The conversation delivery worker's own tick (beside the
     /// proxy outbox's `queue_tick_secs`).
     pub conversation_tick_secs: u64,
     /// Per-message body cap. A queued payload is stored plaintext under the

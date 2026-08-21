@@ -155,7 +155,7 @@ pub(crate) fn msg_error_out(v: HostMessagingError) -> GuestMessagingError {
     }
 }
 
-// ---- conversation: out (host -> guest), M06B slice B4 ----
+// ---- conversation: out (host -> guest) ----
 
 pub(crate) fn conversation_error_out(v: HostConversationError) -> GuestConversationError {
     match v {

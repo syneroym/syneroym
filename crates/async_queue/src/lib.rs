@@ -1315,7 +1315,7 @@ mod tests {
         assert_eq!(dead_again[0].attempts, 3, "history accumulates across replays");
     }
 
-    /// `D-B4-27`: a caller can write its own table and enqueue in one
+    /// A caller can write its own table and enqueue in one
     /// commit through `TxQueue`.
     #[test]
     fn transaction_commits_the_callers_write_and_the_enqueue_together() {
@@ -1362,7 +1362,7 @@ mod tests {
         assert_eq!(count, 0, "the caller's own write must have rolled back too");
     }
 
-    /// `D-B4-20`: `defer` must not advance `attempts` (the retry budget)
+    /// `defer` must not advance `attempts` (the retry budget)
     /// even though it changes `visible_at`, and must un-count the claim so
     /// the crashed-worker `claim_count` bound does not fire on a
     /// deliberately-waiting item.

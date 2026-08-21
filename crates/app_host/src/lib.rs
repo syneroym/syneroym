@@ -185,7 +185,7 @@ pub trait MessageSink: Send + Sync + core::fmt::Debug {
 }
 
 /// Mirrors `syneroym:conversation/conversation@0.1.0`, function for
-/// function (M06B slice B4).
+/// function.
 pub trait AppConversation {
     fn open_direct(
         &self,
@@ -214,7 +214,7 @@ pub trait AppConversation {
     fn retry(&self, message: String) -> impl Future<Output = Result<(), ConversationError>> + Send;
 }
 
-/// The host -> app direction for conversations (M06B slice B4).
+/// The host -> app direction for conversations.
 /// `MessageSink`'s shape, for the same reason: part of the app-facing
 /// contract, and used as `dyn`.
 #[async_trait::async_trait]

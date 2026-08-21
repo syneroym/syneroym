@@ -44,7 +44,7 @@ pub struct NativeHostFactory {
     /// holds this factory, so a strong reference back would be the same
     /// uncollectable cycle `HostState.service_proxy` already guards against.
     sink: OnceLock<Weak<dyn MessageSink>>,
-    /// The Conversation service (M06B slice B4) -- held strong: unlike
+    /// The Conversation service -- held strong: unlike
     /// `service_proxy`, `ConversationService` holds no reference back to
     /// this factory *directly* (it reaches it only through the `Weak`
     /// registered in `register_service_notifier` below), so there is no

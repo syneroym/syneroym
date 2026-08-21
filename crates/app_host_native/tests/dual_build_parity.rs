@@ -152,7 +152,7 @@ struct Harness {
     wasm_engine: Arc<AppSandboxEngine>,
     native_factory: Arc<NativeHostFactory>,
     native_storage_provider: Arc<dyn StorageProvider>,
-    /// M06B slice B4: each stack's own `ConversationService`, for tests
+    /// Each stack's own `ConversationService`, for tests
     /// that drive the peer-facing side (`prekey_bundle`/`peer_deliver`)
     /// directly rather than through the guest `run()` surface.
     wasm_conversation: Arc<ConversationService>,
@@ -339,7 +339,7 @@ const SCENARIOS: &[(&str, &str)] = &[
     ("drop-collection", r#"{"op":"drop-collection"}"#),
     ("delete-blob", r#"{"op":"delete-blob","body":"blob to delete"}"#),
     ("abort-upload", r#"{"op":"abort-upload","chunks":["ab","cd"]}"#),
-    // M06B slice B4: `open-direct`'s id is derived from `(SERVICE_ID,
+    // `open-direct`'s id is derived from `(SERVICE_ID,
     // peer_address)` alone -- deterministic, so unlike `send-message`
     // (whose message id includes a random nonce) it belongs in this
     // byte-comparison table.
@@ -518,7 +518,7 @@ async fn both_builds_deliver_a_published_message_to_their_own_inbox() {
     assert_eq!(wasm_topic, format!("svc/{SERVICE_ID}/chat"));
 }
 
-// -- M06B slice B4: conversation scenarios not covered by the
+// -- Conversation scenarios not covered by the
 // byte-comparison SCENARIOS table (a message id includes a random nonce,
 // so `send-message`'s exact output cannot be compared verbatim across
 // builds -- these assert on structure instead). --

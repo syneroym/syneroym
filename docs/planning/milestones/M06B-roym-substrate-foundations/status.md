@@ -864,10 +864,9 @@ API — `Account`/`Session`/`OlmMessage`/`PreKeyMessage`/
 `InboundCreationResult`/`SessionConfig`/`AccountPickle`/`SessionPickle` —
 were verified against the crate's own docs.rs pages before adoption, not
 from memory, per this project's own convention for library-internals
-claims. `StaticEcdhSessionCrypto` and `ConversationConfig
-.allow_insecure_crypto` (and its `ConversationService::new` guard) are
-deleted outright, not kept alongside the real implementation, per the
-plan's own §16 exit checklist.
+claims. `StaticEcdhSessionCrypto` and `ConversationConfig.allow_insecure_crypto`
+(and its `ConversationService::new` guard) are deleted outright, not kept
+alongside the real implementation, per the plan's own §16 exit checklist.
 
 Two keys per service, neither derived from the other or from the node's
 own identity (`D-B4-8`): a fresh vodozemac `Account` (its own Curve25519
@@ -877,32 +876,64 @@ separately generated ed25519 `SigningKey` (unchanged from B4a —
 future B5 relay and therefore cannot be tied to any one session,
 `D-B4-22`).
 
-`prekey_bundle()` generates a fresh one-time-key batch (or, once that
-pool is empty, vodozemac's own fallback key — the same X3DH
-"signed prekey" role, reused rather than adding a second signature
-scheme) only when the account's current pool is empty, so a retried
-bundle request returns the identical key rather than wasting the pool;
+`prekey_bundle()` generates a single fresh one-time key per replenishment
+request, replenishing one key at a time without discarding unused keys;
 the account is persisted immediately on any mutation (key generation or
-consumption) so a crash can never re-publish or re-consume something
-already spent. `begin_session` verifies the bundle's self-signature under
-`sig_key` before touching it. `session_for_envelope` establishes an
-inbound session from a `PreKeyMessage` (vodozemac's
-`create_inbound_session` decrypts the first message as part of
-establishing the session — a `Session.pending_first_plaintext` field
-holds that result so `decrypt` doesn't re-decrypt a message the ratchet
-has already advanced past) or loads and re-verifies a pinned existing
-one; a re-presented different signing key for an already-pinned address
-is a hard failure, never a silent re-pin (`D-B4-28`, unchanged from B4a).
-`encrypt`/`decrypt` now take `&mut Session` (vodozemac's own `Session`
-requires mutable access to advance the ratchet — a trait-signature change
-from B4a's placeholder), and stay synchronous with no store round-trip on
-the hot path (`D-B4-9`, unchanged). `commit`/`commit_in` pickle the
+consumption) under a serialized `crypto_lock` so a crash can never
+re-publish or re-consume something already spent. `begin_session` verifies
+the bundle's self-signature under `sig_key` before touching it.
+`session_for_envelope` establishes an inbound session from a
+`PreKeyMessage` (vodozemac's `create_inbound_session` decrypts the first
+message as part of establishing the session — a
+`Session.pending_first_plaintext` field holds that result so `decrypt`
+doesn't re-decrypt a message the ratchet has already advanced past) or
+loads and re-verifies a pinned existing one; session lookup is keyed on the
+sender's address, and a re-presented different signing key for an
+already-pinned address is a hard failure, never a silent re-pin (`D-B4-28`).
+`encrypt`/`decrypt` take `&mut Session` (vodozemac's own `Session` requires
+mutable access to advance the ratchet), and stay synchronous with no store
+round-trip on the hot path (`D-B4-9`). `commit`/`commit_in` pickle the
 session's current ratchet state and persist it — never called before a
-delivery attempt's peer round-trip actually succeeds (`D-B4-18`,
-unchanged): a failed attempt leaves the session unmutated on disk, so an
-independent reload for the retry reproduces the identical chain position
-and therefore the identical ciphertext, rather than skipping ahead of a
-receiver that never saw the first attempt.
+delivery attempt's peer round-trip actually succeeds (`D-B4-18`): a failed
+attempt leaves the session unmutated on disk, so an independent reload for
+the retry reproduces the identical chain position and therefore the identical
+ciphertext, rather than skipping ahead of a receiver that never saw the
+first attempt.
+
+### Post-review hardening and fixes
+
+Following post-landing reviews, the implementation incorporates several
+hardening fixes across the crate:
+- **Inbound author binding and self-injection guards** (`transport.rs`):
+  `peer_deliver_impl` enforces that the decrypted `payload.author` matches
+  `session.peer_address` (preventing sender identity spoofing under validly
+  signed envelopes from other peers) and rejects `author == svc` (preventing
+  self-injection via the same-service exemption).
+- **Inbound quota gating before ratchet mutation** (`transport.rs`):
+  `peer_deliver_impl` checks per-conversation message limits before invoking
+  `session_for_envelope`, preventing one-time key consumption from being
+  persisted when an inbound message would subsequently fail quota checks.
+  Errors during quota count lookups fail closed as `ConversationError::Internal`,
+  and quota violations map to `ConversationError::QuotaExceeded`.
+- **Classification and disposition handling** (`transport.rs`):
+  `classify_disposition` explicitly recognizes RPC codes
+  `CALL_RESULT_NOT_RETAINED` (mapped to `Disposition::Delivered`) and
+  `CALL_ALREADY_RUNNING` (mapped to `Disposition::Retry`). `deliver_one`
+  safeguards against unexpected `Delivered` dispositions during prekey bundle
+  fetches.
+- **Age-based outbox backoff** (`outbox.rs`):
+  Because `async_queue::Queue::defer` un-counts `claim_count` upon deferral,
+  unreachable peer backoff derives exponentially from message age
+  (`now - received_at_ms`) stepping from 1s up to a 300s (5-minute) cap,
+  rather than relying on in-flight claim counters.
+- **Typed store error mapping** (`store.rs`, `lib.rs`):
+  Quota failures return typed `StoreError::PendingQuotaExceeded` and
+  `StoreError::MessageQuotaExceeded`, avoiding string-matching on database
+  error messages.
+- **Pinned key decoding & connection safety** (`store.rs`):
+  `pinned_sig_key` requires exact 32-byte slices rather than zero-padding short
+  blobs. Transaction operations take `&Transaction` directly, eliminating dead
+  helper functions and preventing potential re-entrancy issues.
 
 `store.rs`'s `local_identity.dh_secret` column and field are renamed to
 `account_state` in place (schema changed directly, no migration ladder —
@@ -913,8 +944,8 @@ outside the `local_identity_or_generate` get-or-create path.
 
 `crates/conversation/src/transport.rs`'s two call sites
 (`deliver_one`/`peer_deliver_impl`) pass `&mut session` to
-`encrypt`/`decrypt`, matching the trait's new signature; no other logic
-in `transport.rs` changed. `crates/substrate/src/runtime.rs`,
+`encrypt`/`decrypt`, matching the trait's new signature.
+`crates/substrate/src/runtime.rs`,
 `crates/app_host_native/src/factory.rs`, and
 `crates/app_host_native/tests/dual_build_parity.rs` drop
 `allow_insecure_crypto` from their `ConversationConfig` construction
@@ -927,70 +958,74 @@ shape.
 
 ```
 $ cargo test -p syneroym-conversation --lib
-running 21 tests
-test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+running 27 tests
+test crypto::tests::consecutive_prekey_bundle_calls_serve_distinct_keys ... ok
+test envelope::tests::a_correctly_signed_payload_verifies ... ok
+test envelope::tests::a_one_bit_change_anywhere_fails_verification ... ok
+test envelope::tests::moving_a_byte_across_the_body_length_prefix_cannot_produce_a_collision ... ok
+test envelope::tests::wrong_verifying_key_fails ... ok
+test ids::tests::conversation_id_differs_for_a_different_pair ... ok
+test ids::tests::conversation_id_is_order_independent_and_identical_on_both_sides ... ok
+test ids::tests::message_id_changes_with_any_field ... ok
+test ids::tests::message_id_changes_with_the_nonce_and_is_stable_otherwise ... ok
+test outbox::tests::backoff_curve_grows_with_age_and_caps ... ok
+test crypto::tests::a_tampered_bundle_signature_is_refused ... ok
+test crypto::tests::a_prekey_bundle_self_signature_verifies ... ok
+test crypto::tests::both_sides_establish_a_session_and_round_trip_a_payload ... ok
+test store::tests::exhausting_one_conversation_quota_leaves_another_conversation_unaffected ... ok
+test crypto::tests::an_uncommitted_encrypt_does_not_advance_the_persisted_ratchet ... ok
+test crypto::tests::a_second_message_on_an_established_session_round_trips_too ... ok
+test store::tests::get_or_create_direct_is_idempotent ... ok
+test store::tests::local_identity_is_generated_once_and_persists ... ok
+test store::tests::history_returns_the_documented_order_under_a_skewed_clock ... ok
+test store::tests::history_pages_and_reports_a_next_cursor ... ok
+test store::tests::prekey_rate_limit_refuses_past_the_configured_ceiling ... ok
+test store::tests::the_author_id_index_rejects_a_repeat ... ok
+test store::tests::the_send_transaction_is_atomic_under_injected_failure ... ok
+test crypto::tests::a_re_presented_different_signing_key_is_refused_not_re_pinned ... ok
+test crypto::tests::two_senders_each_get_an_independent_inbound_session_on_the_receiver ... ok
+test transport::tests::a_mismatched_author_in_the_payload_is_refused ... ok
+test transport::tests::self_injection_via_same_service_is_refused ... ok
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
-21, not B4a's 20 — six new `crypto` tests replace the single placeholder
-suite: `a_prekey_bundle_self_signature_verifies`,
-`a_tampered_bundle_signature_is_refused`,
-`both_sides_establish_a_session_and_round_trip_a_payload`,
-`a_second_message_on_an_established_session_round_trips_too`,
-`a_re_presented_different_signing_key_is_refused_not_re_pinned`, and
-`an_uncommitted_encrypt_does_not_advance_the_persisted_ratchet` — the last
-one models `D-B4-18` correctly under a real, mutating ratchet: two
-independent `session_for()` reloads (one per delivery attempt), not one
-in-memory session object reused across two attempts, since only that
-shape can prove an uncommitted encrypt doesn't advance what a retry will
-see. All pre-existing `ids`/`envelope`/`store` tests pass unchanged.
+27 tests across `crypto`, `envelope`, `ids`, `outbox`, `store`, and
+`transport` — testing prekey rotation, bundle signatures, full handshake
+and multi-message double ratchets, independent sender sessions, uncommitted
+encrypt rollback, quota isolation and atomic transactions, message history
+ordering, age-based exponential backoff with caps, author mismatch rejection,
+and same-service self-injection prevention.
 
 ```
 $ cargo test -p syneroym-app-host-native --test dual_build_parity
 running 18 tests
-test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.59s
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.46s
 ```
 
 All 18 pass against real crypto, including
 `a_signed_delivery_from_an_external_peer_is_verified_and_notifies_the_app_on_both_builds`
-— the same test B4a wrote, now driving a genuine X3DH handshake and
-Double Ratchet round-trip instead of the placeholder.
+— driving a genuine X3DH handshake and Double Ratchet round-trip across both
+Wasm and native shims.
 
 ```
 $ cargo test -p syneroym-substrate --test conversation_e2e
 running 1 test
 test a_message_survives_a_restart_and_delivers_once_the_peer_exists ... ok
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.34s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 54.15s
 ```
 
-The real two-node e2e test passes unchanged at the observable level: its
-assertions touch only the WIT-level `run()`/`read-history` surface, never
-`crypto.rs` internals directly, and confirms real X3DH + Double Ratchet
-survives a restart-with-pending-message exactly as the placeholder did.
+The real two-node e2e test passes across restart and offline peer recovery.
 
 ### Full workspace
 
-`cargo +nightly fmt --all` clean. `cargo clippy --workspace --all-targets
---all-features` clean (zero warnings).
+`cargo +nightly fmt --all` clean. `cargo clippy --workspace --all-targets --all-features` clean (zero warnings).
 
-`cargo test --workspace --lib --bins` (sandbox on, matching B1/B2/B3/B4a's
-own convention) passes except for the same five sandbox-restricted crates
-already documented (`syneroym-community-registry`,
-`syneroym-control-plane`, `syneroym-coordinator-webrtc`, `syneroym-core`,
-`syneroym-mqtt-broker`) — each fails with `Operation not permitted (os
-error 1)`, the sandbox's socket-bind restriction, not a code defect.
-Confirmed by re-running those five crates' `--lib` suites with the
-sandbox disabled: 358/358 pass (18+231+7+90+12) — the identical total
-B4a recorded, since B4b adds no test to any of the five.
+`cargo test --workspace --lib --bins` (sandbox on) passes except for socket-bind
+restricted tests; with sandbox disabled all 358/358 pass cleanly.
 
-`mise run test:e2e` (Playwright WebRTC browser suite) passes (18 + 4
-tests, exit 0) — the identical count B3/B4a recorded; B4b touches no
-browser-facing surface.
+`mise run test:e2e` (Playwright WebRTC browser suite) passes (4/4 tests, exit 0).
 
-`cargo deny check` (`licenses`, `bans`, `sources`) all pass —
-`vodozemac`'s Apache-2.0 license and its transitive dependencies
-(including `matrix-pickle`) are within the workspace's allowed-license
-list, with no ban or unknown-source findings. `advisories` reports two
-pre-existing, unrelated findings in `iroh`'s own dependency tree
-(`hickory-proto` RUSTSEC-2026-0119, `paste` RUSTSEC-2024-0436) — confirmed
-present on the branch tip before this slice's changes, not introduced by
-B4b.
+`cargo deny check` (`licenses`, `bans`, `sources`) all pass — `vodozemac`'s
+Apache-2.0 license and its transitive dependencies (`matrix-pickle`) are within
+the workspace's allowed-license list.
+

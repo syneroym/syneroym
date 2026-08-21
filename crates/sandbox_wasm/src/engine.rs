@@ -199,7 +199,7 @@ pub struct AppSandboxEngine {
     /// and two strong refs would be an uncollectable cycle (the same class
     /// that hung graceful shutdown in Slice 6B).
     pub service_proxy: OnceLock<Weak<dyn ServiceProxy>>,
-    /// The Conversation service (M06B slice B4). Same two-phase `Weak`
+    /// The Conversation service. Same two-phase `Weak`
     /// wiring as `service_proxy`, for the same cycle reason:
     /// `ConversationService` and this engine are constructed independently
     /// at the composition root and wired to each other afterward.
@@ -1683,8 +1683,7 @@ impl AppSandboxEngine {
     /// Invokes the deployed component's optional
     /// `syneroym:conversation/guest-api::on-message` export, mirroring
     /// [`Self::deliver_message`]'s shape exactly (retry budget,
-    /// `service_system` caller, silent discard on a missing export --
-    /// `§5.5`/`D-B4-14`).
+    /// `service_system` caller, silent discard on a missing export).
     pub(crate) async fn notify_guest_message(
         &self,
         service_id: &str,
