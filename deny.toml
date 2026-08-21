@@ -50,7 +50,7 @@ no-default-features = false
 # is specified on the cmd line they will take precedence over this option.
 #features = []
 
-exclude-dev=true
+exclude-dev = false
 
 # The output table provides options for how/if diagnostics are outputted
 [output]
