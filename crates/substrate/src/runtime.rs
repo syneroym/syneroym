@@ -210,13 +210,13 @@ pub struct RuntimeServices {
     /// worker takes the token rather than a handle with a `shutdown`
     /// method of its own.
     proxy_outbox_cancel: CancellationToken,
-    /// M06B slice B4. `None` only in a test harness that never calls
-    /// `set_conversation`; the real composition root always sets it.
+    /// `None` only in a test harness that never calls `set_conversation`;
+    /// the real composition root always sets it.
     conversation: Option<Arc<ConversationService>>,
-    /// The conversation delivery worker's task -- raced and shut down
-    /// exactly like `proxy_outbox_join` (D-B4-19), for the identical
-    /// reason: a delivery in flight against an offline peer is the case
-    /// this queue exists to survive, so shutdown must not wait for it.
+    /// The conversation delivery worker's task — raced and shut down
+    /// exactly like `proxy_outbox_join`, for the identical reason:
+    /// a delivery in flight against an offline peer is the case this
+    /// queue exists to survive, so shutdown must not wait for it.
     conversation_worker_join: Option<JoinHandle<()>>,
     conversation_worker_cancel: CancellationToken,
 }
@@ -317,8 +317,6 @@ impl RuntimeServices {
             let cancel = self.proxy_outbox_cancel.clone();
             tokio::spawn(async move { proxy.run_async_worker(tick, cancel).await })
         });
-        // M06B B4 (`D-B4-19`): same spawn shape as `proxy_outbox_join`,
-        // beside it.
         self.conversation_worker_join = self.conversation.clone().map(|svc| {
             let tick = Duration::from_secs(
                 config
@@ -1185,10 +1183,10 @@ async fn build_route_handler_deps(
             },
         },
     )?;
-    // Both directions, `Weak` on both sides (Slice-6B's `Arc`-cycle
-    // reason, `D-B4-24`): the engine reaches `conversation` for the
-    // guest-facing WIT surface, `conversation` reaches the engine to
-    // notify a wasm-hosted service of an inbound message/state change.
+    // Both directions, `Weak` on both sides: the engine reaches
+    // `conversation` for the guest-facing WIT surface, `conversation`
+    // reaches the engine to notify a wasm-hosted service of an inbound
+    // message/state change.
     app_sandbox_engine
         .conversation
         .set(Arc::downgrade(&conversation) as Weak<dyn ConversationHost>)

@@ -99,7 +99,7 @@ pub trait ConversationHost: Send + Sync + Debug {
     ) -> Result<Vec<ConversationSummary>, ConversationError>;
 
     /// Writes durably and returns `pending` immediately; never touches the
-    /// network (`D-B4-9`).
+    /// network directly.
     async fn send(
         &self,
         service_id: &str,
@@ -128,10 +128,9 @@ pub trait ConversationHost: Send + Sync + Debug {
     async fn retry(&self, service_id: &str, message: &str) -> Result<(), ConversationError>;
 
     /// Peer-facing: serves this service's own X3DH prekey bundle to a
-    /// verified requester (`D-B4-6`), rate-limited per `requester_did`
-    /// (`D-B4-15`). The returned bytes are a bincode/serde-encoded
-    /// `PrekeyBundle`; the transport layer on both ends agrees on the
-    /// encoding, so this trait need not name it.
+    /// verified requester, rate-limited per `requester_did`. The returned
+    /// bytes are a JSON/serde-encoded `PrekeyBundle`; the transport layer
+    /// on both ends agrees on the encoding, so this trait need not name it.
     async fn prekey_bundle(
         &self,
         service_id: &str,
@@ -139,8 +138,8 @@ pub trait ConversationHost: Send + Sync + Debug {
     ) -> Result<Vec<u8>, ConversationError>;
 
     /// Peer-facing: receives one encrypted envelope from `requester_did`
-    /// (the transport-verified owner Master DID, a coarse gate only --
-    /// `D-B4-5`). Returns the encoded `DeliveryAck` on success.
+    /// (the transport-verified owner Master DID, a coarse gate only).
+    /// Returns the encoded `DeliveryAck` on success.
     async fn peer_deliver(
         &self,
         service_id: &str,

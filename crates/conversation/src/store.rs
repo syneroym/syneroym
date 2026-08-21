@@ -1,7 +1,7 @@
-//! `conversation.db`: one file per service, on one connection shared with
-//! its own `async_queue::Queue` (`D-B4-13`) -- what makes the `send`
-//! transaction (`D-B4-27`) atomic. Every `BLOB` column here is inside a
-//! DEK-opened database, matching the rest of the tree's per-service stores.
+//! `conversation.db`: one file per service, on one shared connection with
+//! its own `async_queue::Queue` — what makes the `send` transaction
+//! atomic. Every `BLOB` column here is inside a DEK-opened database,
+//! matching the rest of the tree's per-service stores.
 
 use std::{
     path::Path,
@@ -14,11 +14,19 @@ use syneroym_async_queue::{Queue, QueueConfig};
 use syneroym_rpc::{ConversationDeliveryState, ConversationKind, ConversationMessage};
 use zeroize::Zeroizing;
 
-/// Per-conversation and per-service bounds (`D-B4-16`), plus the clock/age
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    #[error("quota exceeded: pending messages cap reached")]
+    PendingQuotaExceeded,
+    #[error("quota exceeded: max messages per conversation reached")]
+    MessageQuotaExceeded,
+}
+
+/// Per-conversation and per-service bounds, plus the clock/age
 /// bounds `outbox.rs`/`transport.rs` apply. Converted from
 /// `AppSandboxRole`'s `conversation_*` fields by the crate's caller
 /// (`crates/substrate/src/runtime.rs`), not read from config directly here
-/// -- this crate does not depend on `syneroym-substrate`.
+/// — this crate does not depend on `syneroym-substrate`.
 #[derive(Debug, Clone)]
 pub struct ConversationConfig {
     pub max_body_bytes: u32,
@@ -103,9 +111,8 @@ pub struct SessionRow {
     pub state: Vec<u8>,
 }
 
-/// This service's own long-term conversation keys (`D-B4-8`): generated
-/// once, on first use, and never derived from the service's ed25519 node
-/// identity.
+/// This service's own long-term conversation keys: generated once, on
+/// first use, and never derived from the service's ed25519 node identity.
 #[derive(Debug, Clone)]
 pub struct LocalIdentityRow {
     pub account_state: Zeroizing<Vec<u8>>,
@@ -302,16 +309,6 @@ impl ConversationStore {
 
     // -- messages -----------------------------------------------------------
 
-    pub fn pending_count(&self, conversation_id: &str) -> Result<u32> {
-        let conn = self.conn.lock().expect("conversation connection lock poisoned");
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND state = 'pending'",
-            params![conversation_id],
-            |r| r.get(0),
-        )?;
-        Ok(count as u32)
-    }
-
     pub fn message_count(&self, conversation_id: &str) -> Result<u32> {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
         let count: i64 = conn.query_row(
@@ -322,8 +319,10 @@ impl ConversationStore {
         Ok(count as u32)
     }
 
-    /// The atomic write for an outgoing `send` -- one row in `messages`,
-    /// one enqueue, one commit (`D-B4-27`).
+    /// The atomic write for an outgoing `send` — one row in `messages`,
+    /// one enqueue, one commit. The per-conversation bounds are enforced
+    /// inside this transaction so concurrent `send` calls on the same
+    /// conversation cannot both pass the check and both write.
     #[allow(clippy::too_many_arguments)]
     pub fn insert_outgoing_and_enqueue(
         &self,
@@ -341,7 +340,25 @@ impl ConversationStore {
             message_id: message_id.to_string(),
             peer_address: peer_address.to_string(),
         })?;
+        let max_pending = self.config.max_pending_per_conversation;
+        let max_messages = self.config.max_messages_per_conversation;
         self.queue.transaction(|tx, txq| {
+            let pending_count: u32 = tx.query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND state = 'pending'",
+                rusqlite::params![conversation_id],
+                |r| r.get::<_, i64>(0),
+            )? as u32;
+            if pending_count >= max_pending {
+                return Err(StoreError::PendingQuotaExceeded.into());
+            }
+            let message_count: u32 = tx.query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                rusqlite::params![conversation_id],
+                |r| r.get::<_, i64>(0),
+            )? as u32;
+            if message_count >= max_messages {
+                return Err(StoreError::MessageQuotaExceeded.into());
+            }
             tx.execute(
                 "INSERT INTO messages (id, conversation_id, author, sender_timestamp, \
                  received_at, content_type, body, signature, outgoing, verified, state, \
@@ -364,10 +381,16 @@ impl ConversationStore {
         Ok(())
     }
 
-    /// Inbound insert-or-ignore: the whole of receiver-side dedup
-    /// (`(author, id)`'s unique index) -- a repeat delivery is a no-op, not
-    /// an error, which is what makes `D-B4-10` safe under at-least-once
-    /// redelivery.
+    /// Inbound insert-or-ignore: the whole of receiver-side dedup —
+    /// a repeat delivery is a no-op, not an error, which is what makes
+    /// at-least-once redelivery safe. Also enforces
+    /// `max_messages_per_conversation` inside the same transaction.
+    ///
+    /// # API note
+    /// `&self` is not used in this function body — only `tx` is touched.
+    /// Do not reach for `self.conn` inside this function: the queue's mutex
+    /// and `self.conn` share the same connection and doing so would
+    /// self-deadlock the node.
     #[allow(clippy::too_many_arguments)]
     pub fn insert_incoming_if_absent(
         &self,
@@ -380,6 +403,7 @@ impl ConversationStore {
         body: &[u8],
         signature: &[u8; 64],
         now_ms: i64,
+        max_messages_per_conversation: u32,
     ) -> Result<bool> {
         tx.execute(
             "INSERT INTO conversations (id, kind, peer_address, created_at, last_activity)
@@ -387,9 +411,20 @@ impl ConversationStore {
              ON CONFLICT(peer_address) WHERE kind = 'direct' DO UPDATE SET last_activity = ?3",
             params![conversation_id, author, now_ms],
         )?;
+        // Enforce the per-conversation message limit on the receive path.
+        // Without this check a peer can fill an unbounded number of rows
+        // into this service's store.
+        let message_count: u32 = tx.query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+            params![conversation_id],
+            |r| r.get::<_, i64>(0),
+        )? as u32;
+        if message_count >= max_messages_per_conversation {
+            return Err(StoreError::MessageQuotaExceeded.into());
+        }
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO messages (id, conversation_id, author, sender_timestamp, \
-             received_at, content_type, body, signature, outgoing, verified, state, last_error)
+             received_at, content_type, body, signature, outgoing, verified, state, last_error) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 1, 'delivered', NULL)",
             params![
                 message_id,
@@ -511,9 +546,16 @@ impl ConversationStore {
             params![peer_address],
             |r| {
                 let sig_key: Vec<u8> = r.get(1)?;
-                let mut pinned = [0u8; 32];
-                let len = sig_key.len().min(32);
-                pinned[..len].copy_from_slice(&sig_key[..len]);
+                // A wrong-length blob means the row is corrupt. Fail
+                // loudly: a silently zero-padded key would compare as a
+                // partially-zero array, which is incorrect key material.
+                let pinned: [u8; 32] = sig_key.as_slice().try_into().map_err(|_| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Blob,
+                        Box::new(std::io::Error::other("pinned_sig_key must be exactly 32 bytes")),
+                    )
+                })?;
                 Ok(SessionRow { peer_address: r.get(0)?, pinned_sig_key: pinned, state: r.get(2)? })
             },
         )
@@ -554,7 +596,7 @@ impl ConversationStore {
     // -- local identity -------------------------------------------------
 
     /// Loads this service's own conversation identity, generating one on
-    /// first use (`D-B4-8`).
+    /// first use.
     pub fn local_identity_or_generate(
         &self,
         generate: impl FnOnce() -> (Vec<u8>, Vec<u8>),
@@ -597,15 +639,17 @@ impl ConversationStore {
         Ok(())
     }
 
-    // -- prekey rate limiting (`D-B4-15`) --------------------------------
+    // -- prekey rate limiting -------------------------------------------------
 
     /// Increments this hour's request count for `caller_did` and returns
     /// whether it is still within budget. `window_start` is the request's
-    /// own hour bucket, so old buckets simply stop being written to rather
-    /// than needing an explicit sweep.
+    /// own hour bucket. Rows older than 24 hours are pruned on every call
+    /// to keep the table bounded for long-running services.
     pub fn record_prekey_request(&self, caller_did: &str, now_ms: i64) -> Result<bool> {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
         let window_start = now_ms - (now_ms % 3_600_000);
+        let cutoff = now_ms - 86_400_000; // 24 hours
+        conn.execute("DELETE FROM prekey_requests WHERE window_start < ?1", params![cutoff])?;
         conn.execute(
             "INSERT INTO prekey_requests (caller_did, window_start, count) VALUES (?1, ?2, 1)
              ON CONFLICT(caller_did, window_start) DO UPDATE SET count = count + 1",
@@ -631,9 +675,15 @@ pub(crate) struct OutboxItem {
 fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
     let body: Vec<u8> = row.get(6)?;
     let signature_bytes: Vec<u8> = row.get(7)?;
-    let mut signature = [0u8; 64];
-    let len = signature_bytes.len().min(64);
-    signature[..len].copy_from_slice(&signature_bytes[..len]);
+    // A wrong-length blob means the row is corrupt; fail loudly so a
+    // caller sees an error rather than a silently malformed signature.
+    let signature: [u8; 64] = signature_bytes.as_slice().try_into().map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            7,
+            rusqlite::types::Type::Blob,
+            Box::new(std::io::Error::other("signature must be exactly 64 bytes")),
+        )
+    })?;
     let state_str: String = row.get(10)?;
     Ok(StoredMessage {
         id: row.get(0)?,
@@ -726,10 +776,9 @@ mod tests {
         assert_eq!(id1, id2, "a second open-direct for the same peer must return the same id");
     }
 
-    /// `D-B4-27`: the send transaction is atomic -- an injected failure
-    /// between the two writes leaves neither behind. Simulated here by a
-    /// closure that writes the message row then deliberately errors before
-    /// enqueueing.
+    /// The send transaction is atomic: an injected failure between the two
+    /// writes leaves neither behind. Simulated here by a closure that
+    /// writes the message row then deliberately errors before enqueueing.
     #[test]
     fn the_send_transaction_is_atomic_under_injected_failure() {
         let s = store();
@@ -769,6 +818,7 @@ mod tests {
                     b"hi",
                     &[0u8; 64],
                     1_000,
+                    100,
                 )
                 .unwrap();
             tx.commit().unwrap();
@@ -793,12 +843,94 @@ mod tests {
                     b"hi",
                     &[0u8; 64],
                     2_000,
+                    100,
                 )
                 .unwrap();
             tx.commit().unwrap();
             inserted
         };
         assert!(!second, "a repeat (author, id) must be ignored, not error");
+    }
+
+    #[test]
+    fn exhausting_one_conversation_quota_leaves_another_conversation_unaffected() {
+        let s = store();
+        let conv_1 = "conv:1";
+        let conv_2 = "conv:2";
+        let author_1 = "did:key:zA";
+        let author_2 = "did:key:zB";
+
+        // Insert 2 messages into conv_1 with a cap of 2.
+        {
+            let conn = s.conn.lock().unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
+            s.insert_incoming_if_absent(
+                &tx,
+                conv_1,
+                "msg:1",
+                author_1,
+                1_000,
+                "text/plain",
+                b"1",
+                &[0u8; 64],
+                1_000,
+                2,
+            )
+            .unwrap();
+            s.insert_incoming_if_absent(
+                &tx,
+                conv_1,
+                "msg:2",
+                author_1,
+                1_001,
+                "text/plain",
+                b"2",
+                &[0u8; 64],
+                1_001,
+                2,
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        // 3rd message into conv_1 fails with quota exceeded.
+        {
+            let conn = s.conn.lock().unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
+            let res = s.insert_incoming_if_absent(
+                &tx,
+                conv_1,
+                "msg:3",
+                author_1,
+                1_002,
+                "text/plain",
+                b"3",
+                &[0u8; 64],
+                1_002,
+                2,
+            );
+            assert!(res.is_err(), "exceeding max_messages_per_conversation must error");
+        }
+
+        // conv_2 is unaffected and accepts messages.
+        {
+            let conn = s.conn.lock().unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
+            let res = s.insert_incoming_if_absent(
+                &tx,
+                conv_2,
+                "msg:c2_1",
+                author_2,
+                1_000,
+                "text/plain",
+                b"hello",
+                &[0u8; 64],
+                1_000,
+                2,
+            );
+            assert!(res.is_ok(), "other conversation must not be affected by conv_1's exhaustion");
+            tx.commit().unwrap();
+        }
     }
 
     #[test]

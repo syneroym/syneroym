@@ -222,10 +222,9 @@ pub struct HostState {
     /// `Arc<dyn AppRegistry>` and no path back to the engine, so there is
     /// no cycle to guard against.
     pub logical_resolver: Arc<LogicalResolver>,
-    /// Weak handle to the Conversation service (M06B slice B4). Defaults to
-    /// an always-empty `Weak::new()` -- `HostState::new`'s signature does
-    /// not change (`D-B4-24`); set via [`Self::with_conversation`] at the
-    /// two real construction sites only.
+    /// Weak handle to the Conversation service. Defaults to an always-empty
+    /// `Weak::new()` — `HostState::new`'s signature does not change; set via
+    /// [`Self::with_conversation`] at the two real construction sites only.
     pub conversation: Weak<dyn syneroym_rpc::ConversationHost>,
 }
 
@@ -290,8 +289,8 @@ impl HostState {
         }
     }
 
-    /// Sets [`Self::conversation`] after construction (`D-B4-24`) -- the
-    /// two real construction sites (`AppSandboxEngine::instantiate`-adjacent
+    /// Sets [`Self::conversation`] after construction — the two real
+    /// construction sites (`AppSandboxEngine::instantiate`-adjacent
     /// code) call this; every other `HostState::new` call site is
     /// unaffected.
     #[must_use]

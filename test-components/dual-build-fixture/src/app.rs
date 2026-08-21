@@ -14,8 +14,8 @@ use syneroym_app_host::{
 
 const MESSAGES: &str = "messages";
 const INBOX: &str = "inbox";
-/// M06B slice B4: what `on_conversation_message` persists -- never
-/// in-process state, same rule `INBOX` follows (`D-B3-12`).
+/// What `on_conversation_message` persists — never in-process state,
+/// same rule `INBOX` follows.
 const CONV_INBOX: &str = "conv_inbox";
 /// What `on_conversation_state` persists.
 const CONV_STATE_LOG: &str = "conv_state_log";

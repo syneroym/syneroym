@@ -1,6 +1,6 @@
 //! The delivery worker: drains every open service's conversation outbox on
-//! a tick, mirroring `syneroym_router::proxy_outbox`'s three subtleties
-//! (F1) -- a claim that never resolves is bounded by `claim_count`, not
+//! a tick, mirroring `syneroym_router::proxy_outbox`'s three subtleties —
+//! a claim that never resolves is bounded by `claim_count`, not
 //! `attempts`; an unreadable payload is terminal; a target that no longer
 //! resolves is terminal on its own terms.
 
@@ -17,7 +17,7 @@ use crate::{
     transport::Disposition,
 };
 
-/// How many items one service may have claimed in a single worker tick --
+/// How many items one service may have claimed in a single worker tick —
 /// matches `syneroym_router::proxy_outbox::CLAIM_LIMIT_PER_TICK`'s
 /// reasoning: one service with a permanently unreachable target must not
 /// spend the whole node's tick budget on its own backlog.
@@ -25,7 +25,7 @@ const CLAIM_LIMIT_PER_TICK: u32 = 16;
 
 impl ConversationService {
     /// Runs until `cancel` fires. Spawned once, beside
-    /// `proxy_outbox_join` (`D-B4-19`).
+    /// `proxy_outbox_join`.
     pub async fn run_worker(self: std::sync::Arc<Self>, tick: Duration, cancel: CancellationToken) {
         loop {
             tokio::select! {
@@ -92,18 +92,22 @@ impl ConversationService {
         }
 
         match self.deliver_one(svc, &parsed.peer_address, &msg).await {
-            Ok(()) => {
+            Ok(()) | Err(Disposition::Delivered) => {
                 let _ = store.set_state(&msg.id, ConversationDeliveryState::Delivered, None);
                 self.notify_state(svc, msg.id.clone(), ConversationDeliveryState::Delivered).await;
                 let _ = store.queue().complete(item.id);
             }
             Err(Disposition::Unreachable) => {
-                let backoff_ms = backoff_for(item.attempts);
+                // `defer` un-counts the claim and does not advance
+                // `attempts` by design, so the queue has no counter that
+                // survives a defer. We derive the backoff exponentially
+                // from the message's elapsed age since creation.
+                let age_ms = now.saturating_sub(msg.received_at_ms);
+                let backoff_ms = backoff_for_age(age_ms);
                 let _ = store.queue().defer(item.id, now + backoff_ms);
             }
-            Err(Disposition::Terminal) => {
-                self.settle_failed(svc, store, &item, "delivery refused or the target is invalid")
-                    .await;
+            Err(Disposition::Terminal(reason)) => {
+                self.settle_failed(svc, store, &item, &reason).await;
             }
             Err(Disposition::Retry) => {
                 match store.queue().fail(item.id, now, "transport error", false) {
@@ -141,15 +145,57 @@ impl ConversationService {
         self.notify_state(svc, message_id.to_string(), ConversationDeliveryState::Failed).await;
         metrics::counter!("substrate.conversation.outbox.dead_lettered").increment(1);
         warn!(service = svc, message = message_id, error = reason, "conversation delivery gave up");
-        // No `AlertStore` write -- `D-B4-25`: the existing proxy outbox
-        // gives a dead letter the same treatment (metric + log), and a
-        // node running a conversation service and no supervisor role has
-        // no `AlertStore` to write to at all.
+        // No `AlertStore` write: the existing proxy outbox gives a dead
+        // letter the same treatment (metric + log), and a node running a
+        // conversation service and no supervisor role has no `AlertStore`
+        // to write to at all.
     }
 }
 
 #[must_use]
-fn backoff_for(attempts: u32) -> i64 {
-    let base = 1_000i64.saturating_mul(1i64 << attempts.min(10));
+fn backoff_for_age(age_ms: i64) -> i64 {
+    // Start at 1s, double with elapsed time, capped at 300s (5 minutes).
+    // Steps every 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 512s of age.
+    let step = if age_ms < 1_000 {
+        0
+    } else if age_ms < 3_000 {
+        1
+    } else if age_ms < 7_000 {
+        2
+    } else if age_ms < 15_000 {
+        3
+    } else if age_ms < 31_000 {
+        4
+    } else if age_ms < 63_000 {
+        5
+    } else if age_ms < 127_000 {
+        6
+    } else if age_ms < 255_000 {
+        7
+    } else if age_ms < 511_000 {
+        8
+    } else {
+        9
+    };
+    let base = 1_000i64.saturating_mul(1i64 << step);
     base.min(300_000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_curve_grows_with_age_and_caps() {
+        assert_eq!(backoff_for_age(0), 1_000);
+        assert_eq!(backoff_for_age(500), 1_000);
+        assert_eq!(backoff_for_age(1_500), 2_000);
+        assert_eq!(backoff_for_age(4_000), 4_000);
+        assert_eq!(backoff_for_age(10_000), 8_000);
+        assert_eq!(backoff_for_age(20_000), 16_000);
+        assert_eq!(backoff_for_age(100_000), 64_000);
+        assert_eq!(backoff_for_age(300_000), 256_000);
+        assert_eq!(backoff_for_age(600_000), 300_000);
+        assert_eq!(backoff_for_age(1_000_000), 300_000);
+    }
 }

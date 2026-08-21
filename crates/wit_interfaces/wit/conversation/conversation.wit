@@ -60,12 +60,11 @@ interface conversation {
         content-type: string,
         body: list<u8>,
         state: delivery-state,
-        /// The host's own verdict: the envelope decrypted under the
-        /// session pinned to `author` **and** the signature verified under
-        /// the key pinned for `author`. Always true for a message this
-        /// service sent itself. A guest may show provenance from this
-        /// without holding any key material -- the same honesty the
-        /// `caller-auth` label already applies on the HTTP path.
+        /// The host's own verdict: always true for stored messages. A
+        /// message whose envelope cannot be decrypted under the session
+        /// pinned to `author` or whose signature fails verification under
+        /// the key pinned for `author` is refused at the transport layer
+        /// and never stored. Always true for outgoing messages.
         verified: bool,
         /// Set only on `failed`.
         last-error: option<string>,

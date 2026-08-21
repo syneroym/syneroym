@@ -1,17 +1,16 @@
-//! `conversation-id`/`message-id` derivation (`D-B4-5`, `D-B4-11`, §5.1).
+//! `conversation-id`/`message-id` derivation.
 //!
 //! `conversation-id` is derived, not merely host-minted: it must come out
 //! identically on both ends of a 1:1 conversation from nothing but the two
 //! participants' own addresses. `message-id` is generated once, by the
-//! sender at `send`, and carried inside the signed envelope -- the
+//! sender at `send`, and carried inside the signed envelope — the
 //! receiver never re-derives it, only verifies the signature over it.
 
 use blake3::Hasher;
 
 /// Order-independent over the address pair, so both participants compute
 /// the same id regardless of who is "sender" and who is "receiver" for a
-/// given call. `svc_address(svc)`-shaped strings on both sides (`D-B4-29`
-/// canonicalizes before this is ever called).
+/// given call.
 #[must_use]
 pub fn derive_conversation_id(a: &str, b: &str) -> String {
     let (lo, hi) = if a <= b { (a, b) } else { (b, a) };

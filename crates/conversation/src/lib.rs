@@ -1,12 +1,11 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
-//! `syneroym:conversation` (M06B slice B4): durable, ordered,
-//! end-to-end-encrypted 1:1 messaging with outbox `pending`/`delivered`/
-//! `failed` state, plus the peer-facing transport underneath it. Not
-//! `syneroym-sandbox-wasm`: the store, the ratchet, the outbox, and the
-//! delivery worker need no `wasmtime` and are driven from three places
-//! (the `HostState` impl, the native shim's delegation, the substrate's
-//! own worker loop) -- a dependency `syneroym-sandbox-wasm` would drag into
-//! all three.
+//! `syneroym:conversation`: durable, ordered, end-to-end-encrypted 1:1
+//! messaging with outbox `pending`/`delivered`/`failed` state, plus the
+//! peer-facing transport underneath it. Not `syneroym-sandbox-wasm`: the
+//! store, the ratchet, the outbox, and the delivery worker need no
+//! `wasmtime` and are driven from three places (the `HostState` impl, the
+//! native shim's delegation, the substrate's own worker loop) — a
+//! dependency `syneroym-sandbox-wasm` would drag into all three.
 
 pub mod crypto;
 pub mod envelope;
@@ -34,7 +33,7 @@ use syneroym_rpc::{
 };
 
 /// Node-level configuration, converted from `AppSandboxRole`'s
-/// `conversation_*` fields (`D-B4-19`) by the crate's own caller
+/// `conversation_*` fields by the crate's own caller
 /// (`crates/substrate/src/runtime.rs`); this crate does not depend on
 /// `syneroym-core::config::AppSandboxRole` beyond the plain values it
 /// carries.
@@ -91,7 +90,7 @@ impl ConversationService {
             key_store,
             service_proxy: std::sync::OnceLock::new(),
             registry,
-            crypto: Arc::new(crypto::X3dhDoubleRatchetCrypto),
+            crypto: Arc::new(crypto::X3dhDoubleRatchetCrypto::new()),
             queue_config,
             max_clock_skew_secs: config.store.max_clock_skew_secs,
             conversation_config: config.store,
@@ -312,16 +311,6 @@ impl ConversationHost for ConversationService {
                 "direct conversation is missing its peer address".to_string(),
             )
         })?;
-        if store.pending_count(conversation).map_err(internal)?
-            >= store.config().max_pending_per_conversation
-        {
-            return Err(ConversationError::QuotaExceeded);
-        }
-        if store.message_count(conversation).map_err(internal)?
-            >= store.config().max_messages_per_conversation
-        {
-            return Err(ConversationError::QuotaExceeded);
-        }
 
         let now = store::now_ms();
         let mut nonce = [0u8; 16];
@@ -358,7 +347,13 @@ impl ConversationHost for ConversationService {
                 &peer_address,
                 now,
             )
-            .map_err(internal)?;
+            .map_err(|e| {
+                if e.downcast_ref::<store::StoreError>().is_some() {
+                    ConversationError::QuotaExceeded
+                } else {
+                    internal(e)
+                }
+            })?;
         Ok(message_id)
     }
 
@@ -439,6 +434,9 @@ impl ConversationHost for ConversationService {
         service_id: &str,
         requester_did: &str,
     ) -> Result<Vec<u8>, ConversationError> {
+        if requester_did.is_empty() {
+            return Err(ConversationError::PermissionDenied);
+        }
         let store = self.store_for(service_id).await.map_err(internal)?;
         if !store.record_prekey_request(requester_did, store::now_ms()).map_err(internal)? {
             return Err(ConversationError::PermissionDenied);

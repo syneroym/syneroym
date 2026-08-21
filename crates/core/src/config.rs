@@ -583,30 +583,27 @@ pub struct AppSandboxRole {
     /// Per-message body cap. A queued payload is stored plaintext under the
     /// service's own DEK and travels on every delivery attempt.
     pub conversation_max_body_bytes: u32,
-    /// Ceiling on items waiting for delivery in one conversation
-    /// (failure-matrix row 12). Exceeding it returns `quota-exceeded` for
-    /// that conversation only.
+    /// Ceiling on items waiting for delivery in one conversation. Exceeding
+    /// it returns `quota-exceeded` for that conversation only.
     pub conversation_max_pending_per_conversation: u32,
-    /// Ceiling on stored messages in one conversation (failure-matrix row
-    /// 12).
+    /// Ceiling on stored messages in one conversation.
     pub conversation_max_messages_per_conversation: u32,
     /// How long a message may wait for an unreachable peer before it moves
-    /// from `pending` to `failed` (`D-B4-20`). 30 days: long enough that an
-    /// offline peer is not mistaken for a broken one, short enough that an
-    /// outbox does not grow forever.
+    /// from `pending` to `failed`. 30 days: long enough that an offline peer
+    /// is not mistaken for a broken one, short enough that an outbox does
+    /// not grow forever.
     pub conversation_max_pending_age_secs: u64,
     /// A message whose `sender_timestamp` is this far *ahead* of the
-    /// receiver's own clock is refused on arrival (`D-B4-21`) -- a
-    /// far-future timestamp would otherwise pin a message to the top of
-    /// every participant's history permanently. Asymmetric on purpose: a
+    /// receiver's own clock is refused on arrival — a far-future
+    /// timestamp would otherwise pin a message to the top of every
+    /// participant's history permanently. Asymmetric on purpose: a
     /// past timestamp is always accepted.
     pub conversation_max_clock_skew_secs: u64,
-    /// One-time prekeys held per service, replenished lazily (`D-B4-6`).
+    /// One-time prekeys held per service, replenished lazily.
     pub conversation_prekey_pool_size: u32,
-    /// Per-peer rate limit on `prekey-bundle` requests (`D-B4-15`): each
-    /// request is a store write and, once the one-time pool is empty, a
-    /// keygen, so an unbounded caller could drain it at no cost to
-    /// themselves.
+    /// Per-peer rate limit on `prekey-bundle` requests: each request is a
+    /// store write and, once the one-time pool is empty, a keygen, so an
+    /// unbounded caller could drain it at no cost to themselves.
     pub conversation_prekey_requests_per_peer_per_hour: u32,
 }
 

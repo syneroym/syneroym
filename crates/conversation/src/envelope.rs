@@ -1,21 +1,19 @@
 //! The signed message payload (`DeliveryPayload`) and its canonical byte
-//! encoding (`D-B4-22`). This is what a ratchet session encrypts and what
-//! the receiver verifies -- attribution is signature-based, never
-//! transport-based (F16, `D-B4-5`), so this module is what B5's relayed DAG
-//! entries reuse unchanged (§15 item 3).
+//! encoding. This is what a ratchet session encrypts and what the receiver
+//! verifies — attribution is signature-based, never transport-based.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 
 /// What one ratchet session carries per message, before encryption and
 /// after decryption. Signed as a whole (`sign`/`verify` below) under the
 /// sender's own conversation signing key, independently of the session
-/// encryption -- attribution survives a relay, which a transport-identity
+/// encryption — attribution survives a relay, which a transport-identity
 /// check never could.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DeliveryPayload {
     pub message_id: String,
     pub conversation_id: String,
-    /// The sender's own routing service id (`D-B4-5`'s `author`).
+    /// The sender's own routing service id.
     pub author: String,
     pub sender_timestamp_ms: i64,
     pub content_type: String,

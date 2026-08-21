@@ -503,7 +503,7 @@ impl SynSvcNativeService {
         }
     }
 
-    /// Wires the Conversation service in after construction (`D-B4-24`).
+    /// Wires the Conversation service in after construction.
     /// Called at most once per instance, from the node's own composition
     /// root.
     pub fn set_conversation(&self, conversation: Weak<dyn ConversationHost>) {
@@ -1512,7 +1512,7 @@ impl SynSvcNativeService {
         }
     }
 
-    // -- conversation (M06B slice B4, `D-B4-4`) ----------------------------
+    // -- conversation ---------------------------------------------------------
 
     /// Only the two peer-facing transport verbs -- never the guest-facing
     /// `syneroym:conversation` surface, which a peer must not be able to

@@ -222,8 +222,8 @@ async fn publish_endpoint(
 }
 
 /// Deploys the dual-build-fixture guest as `master`'s own DID, with an
-/// installed instance certificate -- `D-B4-23` refuses every send/deliver
-/// from a service holding no unexpired one. Mirrors `proxy_outbox_e2e.rs`'s
+/// installed instance certificate — uncertified services are refused
+/// on every send/deliver attempt. Mirrors `proxy_outbox_e2e.rs`'s
 /// `deploy_guest`.
 async fn deploy_fixture(node: &mut Node, master: &Identity, wasm: Vec<u8>) -> String {
     let service_id = substrate::derive_did_key(&master.public_key());

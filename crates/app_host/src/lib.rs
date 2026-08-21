@@ -28,10 +28,8 @@ use types::{
 
 /// Everything an app may reach. One bound for an app to be generic over.
 ///
-/// Widened to require `AppConversation` (M06B slice B4): the only two
-/// implementors today (`GuestHost`, `NativeAppHost`) both gain it in the
-/// same change, so there is no third app this breaks yet. §14.5 of the B4
-/// plan: revisit if a dual-build app exists that never uses conversations.
+/// Requires `AppConversation`: both implementors (`GuestHost`,
+/// `NativeAppHost`) implement it for full capability access.
 pub trait AppHost:
     AppDataLayer + AppBlobStore + AppMessaging + AppConversation + Send + Sync
 {

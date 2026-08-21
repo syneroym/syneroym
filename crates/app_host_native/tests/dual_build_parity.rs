@@ -670,12 +670,13 @@ async fn assert_signed_delivery_is_verified_and_notifies_the_app<D: Driver>(
             store::ConversationConfig::default(),
         )
         .unwrap();
-        let crypto = X3dhDoubleRatchetCrypto;
+        let crypto = X3dhDoubleRatchetCrypto::new();
 
         let bundle_bytes =
             target_conversation.prekey_bundle(SERVICE_ID, SENDER_ADDRESS).await.unwrap();
         let bundle: PrekeyBundle = serde_json::from_slice(&bundle_bytes).unwrap();
-        let mut session = crypto.begin_session(&sender_store, SERVICE_ID, &bundle).await.unwrap();
+        let mut session =
+            crypto.begin_session(&sender_store, SENDER_ADDRESS, SERVICE_ID, &bundle).await.unwrap();
 
         let conversation_id = ids::derive_conversation_id(SENDER_ADDRESS, SERVICE_ID);
         let message_id = ids::derive_message_id(
@@ -711,15 +712,12 @@ async fn assert_signed_delivery_is_verified_and_notifies_the_app<D: Driver>(
         crypto.commit(&sender_store, &session).await.unwrap();
 
         let env_bytes = serde_json::to_vec(&env).unwrap();
-        let ack_bytes = target_conversation
+        let _ack_bytes = target_conversation
             .peer_deliver(SERVICE_ID, SENDER_ADDRESS, env_bytes)
             .await
             .unwrap_or_else(|e| panic!("{name}: peer_deliver failed: {e:?}"));
-        let _ack: Value = serde_json::from_slice(&ack_bytes).unwrap();
-
-        // Both sides must derive the same conversation id (`D-B4-5`'s
-        // load-bearing property) -- the receiver's own value, computed
-        // independently, must match the sender's.
+        // Both sides must derive the same conversation id — the receiver's
+        // own value, computed independently, must match the sender's.
         let receiver_conv_id = ids::derive_conversation_id(SERVICE_ID, SENDER_ADDRESS);
         assert_eq!(receiver_conv_id, conversation_id);
 
