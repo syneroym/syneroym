@@ -40,6 +40,18 @@ To ensure all files adhere to the project's strict idiomatic guidelines—includ
 cargo +nightly fmt --all
 ```
 
+### Security & License Audits
+
+Verify dependencies for known security vulnerabilities and license compliance:
+
+```bash
+# Check dependencies for known security advisories
+cargo audit
+
+# Check license compliance against deny.toml
+cargo deny check licenses
+```
+
 ### Run Commands
 
 To run local CLI and substrate nodes:

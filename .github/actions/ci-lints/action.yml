@@ -1,5 +1,5 @@
-name: 'CI Lints and Audit'
-description: 'Runs formatting, clippy lints, and security audit'
+name: 'CI Lints, Audit & Licenses'
+description: 'Runs formatting, clippy lints, security audit, and license checks'
 inputs:
   github_token:
     description: 'GitHub token for audit check'
@@ -19,3 +19,10 @@ runs:
       uses: rustsec/audit-check@v2.0.0
       with:
         token: ${{ inputs.github_token }}
+
+    - name: Install cargo-deny
+      uses: taiki-e/install-action@cargo-deny
+
+    - name: Check Licenses
+      run: cargo deny check licenses
+      shell: bash

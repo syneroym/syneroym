@@ -2,7 +2,7 @@
 
 ## General Instructions
 - Focus religiously on these code aspects: Simplicity, performance, readability, testability, overall beauty, robustness, scalability, reliability.
-- Follow standard Rust `clippy` guidelines. Before completion, confirm that `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, `cargo test --workspace`, and `mise run test:e2e` succeed. As part of the same completion pass, update [docs/planning/deferred-backlog.md](docs/planning/deferred-backlog.md) if the change deferred or shortcut anything (see the Mandatory Deferred-Backlog Update rule under AI Agent Guidelines).
+- Follow standard Rust `clippy` guidelines. Before completion, confirm that `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, `cargo test --workspace`, `cargo audit`, `cargo deny check licenses`, and `mise run test:e2e` succeed. As part of the same completion pass, update [docs/planning/deferred-backlog.md](docs/planning/deferred-backlog.md) if the change deferred or shortcut anything (see the Mandatory Deferred-Backlog Update rule under AI Agent Guidelines).
 - Try to use the latest stable versions of any library added.
 - Have extensive integration and end to end tests for end user facing interfaces.
 - Have solid unit tests for internal code if it is complex and delicate, even if it is not user facing.
@@ -34,6 +34,12 @@ cargo +nightly fmt --all
 
 # Lint (must be clean; correctness/suspicious lints are deny-level workspace-wide)
 cargo clippy --workspace --all-targets --all-features
+
+# Security audit (known vulnerabilities in dependencies)
+cargo audit
+
+# License check (SPDX compliance against deny.toml)
+cargo deny check licenses
 
 # Full Rust test suite
 cargo test --workspace
@@ -85,6 +91,7 @@ Crate names are `syneroym-<dir>` (e.g. `crates/data_db` → `syneroym-data-db`, 
 - The above docs are starting points for the implementation. It is likely that during implementation we deviate and improvise from those, and later get them in sync.
 
 ## AI Agent Guidelines
+- **Mandatory Pre-Completion Verification**: Before concluding any coding task, you MUST execute and confirm success for all standard quality gates: `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, `cargo test --workspace`, `cargo audit`, `cargo deny check licenses`, and `mise run test:e2e`. Do not skip `cargo audit` and `cargo deny check licenses`—they are fast, lightweight, and required for CI.
 - **Mandatory Import Cleanup**: Before finishing any coding task, you MUST perform a dedicated final pass over the files you edited to clean up imports. You must strictly enforce the import rules (Types via standard `use`, Functions qualified by parent module) and proactively remove inline fully-qualified paths (lines with multiple `::`). For conflicting types like `Result` or `Error`, import their parent module (e.g., `use std::fmt;`) and use `fmt::Result` to avoid multiple `::`.
 - **Mandatory Deferred-Backlog Update**: Before finishing any task, do a final sanity pass (same discipline as the import cleanup) asking: *did this change postpone, shortcut, coarsely gate as a stand-in, or scope out anything?* If yes, record it in [docs/planning/deferred-backlog.md](docs/planning/deferred-backlog.md) — the single running backlog — under the right theme, with the reason, a target milestone/phase (or `TBD`), and a link to the source of record or `file.rs:line`. Every new open `TODO`/`FIXME` marker that encodes a real deferral needs a matching row in that doc's "Open in-code markers" section. Conversely, when you *resolve* a deferral, delete its code marker and move its backlog row to "Recently resolved". Keeping this doc current is part of "done," not optional.
 - **No Planning-Doc References in Code**: Never cite milestone/slice/task IDs (`M04A`, `Slice B6`, `B7a`, etc.) or planning-doc section numbers in code comments, doc comments, or test names. These docs get archived, renumbered, or deleted, so the reference rots and the comment becomes misleading noise. ADR references (`ADR-0014`) are fine since ADRs are stable, permanent records. Comments should explain the current WHY (invariant, constraint, non-obvious tradeoff) standing on its own — that context belongs in the commit message or PR description, not the code.
