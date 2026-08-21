@@ -26,12 +26,9 @@ serde.workspace = true
 serde_json.workspace = true
 blake3.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
-p256.workspace = true
-aes-gcm.workspace = true
-hkdf.workspace = true
-sha2.workspace = true
+vodozemac.workspace = true
 rand.workspace = true
-# `ed25519-dalek`/`p256`'s `elliptic-curve`/`aes-gcm`'s `aead` all pin
+# `ed25519-dalek`/vodozemac's own `ed25519-dalek`/`x25519-dalek` pin
 # `rand_core` 0.6's `CryptoRngCore`, one major behind workspace `rand`
 # 0.9's own `rand_core` -- `crates/coordinator_webrtc`'s own Cargo.toml sets
 # this same precedent for the same reason.

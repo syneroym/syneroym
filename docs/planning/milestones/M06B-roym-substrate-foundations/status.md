@@ -5,7 +5,7 @@
 [slice-b2-implementation-plan.md](slice-b2-implementation-plan.md) (B2),
 [slice-b3-implementation-plan.md](slice-b3-implementation-plan.md) (B3)
 
-**Overall:** Slices B1, B2, and B3 complete (2026-08-20). Slice B4a complete (2026-08-20); B4b (real X3DH + Double Ratchet) not started — see B4's own status below.
+**Overall:** Slices B1, B2, B3, and B4 complete (2026-08-21) — see B4's own status below.
 
 ---
 
@@ -16,8 +16,8 @@
 | B1 | Person identity at the client gateway (G3) | **Complete (2026-08-18)** — [implementation plan](slice-b1-implementation-plan.md), evidence below | None — independently mergeable |
 | B2 | Declared service visibility (G4) | **Complete (2026-08-18)** — [implementation plan](slice-b2-implementation-plan.md), evidence below | None (ADR-0018 Accepted) |
 | B3 | The dual-build shim (D2/D3) | **Complete (2026-08-20)** — [implementation plan](slice-b3-implementation-plan.md), evidence below | None |
-| B4 | Durable messaging: interface and 1:1 delivery (G1 part 1, G2) | **B4a Complete (2026-08-20)** — [implementation plan](slice-b4-implementation-plan.md), evidence below. **B4b (real crypto) not started.** | None for B4a — B3 met |
-| B5 | Group delivery (G1 part 2) | Pending | B4b |
+| B4 | Durable messaging: interface and 1:1 delivery (G1 part 1, G2) | **Complete (2026-08-21)** — [implementation plan](slice-b4-implementation-plan.md), evidence below | None — B3 met |
+| B5 | Group delivery (G1 part 2) | Pending | B4 |
 
 ---
 
@@ -533,7 +533,7 @@ agreement**. Per `D-B4-1`, B4 is not complete until B4b replaces that
 placeholder with real X3DH + Double Ratchet; everything else below (WIT
 interface, storage schema, outbox semantics, dual-build shim, cross-node
 delivery, signature-based attribution) is real and does not change shape
-when B4b lands.
+when B4b lands. **B4b landed 2026-08-21 — see its own section below.**
 
 ### 1. The WIT package (`crates/wit_interfaces/wit/conversation/conversation.wit`)
 
@@ -574,7 +574,9 @@ seven functions, `D-B3-2`'s guest vocabulary only, no resources per
   reviewable decision in `runtime.rs`, not a `SubstrateConfig` TOML field.
   Peer signing keys are pinned trust-on-first-use per address (`D-B4-28`);
   a later bundle presenting a different key for a pinned address is a hard
-  failure, never a silent re-pin.
+  failure, never a silent re-pin. **Superseded by B4b — see below**;
+  `StaticEcdhSessionCrypto`/`allow_insecure_crypto` are deleted, not kept
+  alongside the real implementation.
 - `outbox.rs` — the delivery worker: mirrors `syneroym_router::proxy_outbox`'s
   three subtleties (F1) — a claim that never resolves is bounded by
   `claim_count`, not `attempts`; an unreadable payload is terminal; a
@@ -848,3 +850,147 @@ is untouched by this slice.
 `mise run test:e2e` (Playwright WebRTC browser suite) passes (18 + 4
 tests, exit 0) — the identical count B3 recorded; B4a touches no
 browser-facing surface.
+
+---
+
+## B4b — What shipped
+
+B4b replaces B4a's stated placeholder with real X3DH + Double Ratchet,
+closing `D-B4-1` and completing B4. `crates/conversation/src/crypto.rs` is
+rewritten around `X3dhDoubleRatchetCrypto`, built on
+[`vodozemac`](https://docs.rs/vodozemac) (Apache-2.0, matrix-org's Rust
+reimplementation of libolm; the decision itself is `D-B4-7`). License and
+API — `Account`/`Session`/`OlmMessage`/`PreKeyMessage`/
+`InboundCreationResult`/`SessionConfig`/`AccountPickle`/`SessionPickle` —
+were verified against the crate's own docs.rs pages before adoption, not
+from memory, per this project's own convention for library-internals
+claims. `StaticEcdhSessionCrypto` and `ConversationConfig
+.allow_insecure_crypto` (and its `ConversationService::new` guard) are
+deleted outright, not kept alongside the real implementation, per the
+plan's own §16 exit checklist.
+
+Two keys per service, neither derived from the other or from the node's
+own identity (`D-B4-8`): a fresh vodozemac `Account` (its own Curve25519
+identity plus one-time/fallback keys, driving the ratchet) and a
+separately generated ed25519 `SigningKey` (unchanged from B4a —
+`envelope.rs`'s application-level attribution, which must survive a
+future B5 relay and therefore cannot be tied to any one session,
+`D-B4-22`).
+
+`prekey_bundle()` generates a fresh one-time-key batch (or, once that
+pool is empty, vodozemac's own fallback key — the same X3DH
+"signed prekey" role, reused rather than adding a second signature
+scheme) only when the account's current pool is empty, so a retried
+bundle request returns the identical key rather than wasting the pool;
+the account is persisted immediately on any mutation (key generation or
+consumption) so a crash can never re-publish or re-consume something
+already spent. `begin_session` verifies the bundle's self-signature under
+`sig_key` before touching it. `session_for_envelope` establishes an
+inbound session from a `PreKeyMessage` (vodozemac's
+`create_inbound_session` decrypts the first message as part of
+establishing the session — a `Session.pending_first_plaintext` field
+holds that result so `decrypt` doesn't re-decrypt a message the ratchet
+has already advanced past) or loads and re-verifies a pinned existing
+one; a re-presented different signing key for an already-pinned address
+is a hard failure, never a silent re-pin (`D-B4-28`, unchanged from B4a).
+`encrypt`/`decrypt` now take `&mut Session` (vodozemac's own `Session`
+requires mutable access to advance the ratchet — a trait-signature change
+from B4a's placeholder), and stay synchronous with no store round-trip on
+the hot path (`D-B4-9`, unchanged). `commit`/`commit_in` pickle the
+session's current ratchet state and persist it — never called before a
+delivery attempt's peer round-trip actually succeeds (`D-B4-18`,
+unchanged): a failed attempt leaves the session unmutated on disk, so an
+independent reload for the retry reproduces the identical chain position
+and therefore the identical ciphertext, rather than skipping ahead of a
+receiver that never saw the first attempt.
+
+`store.rs`'s `local_identity.dh_secret` column and field are renamed to
+`account_state` in place (schema changed directly, no migration ladder —
+this project's own pre-release convention), since the column now holds a
+serialized `AccountPickle`, not a raw DH secret scalar. A new
+`ConversationStore::save_local_account` method persists a mutated account
+outside the `local_identity_or_generate` get-or-create path.
+
+`crates/conversation/src/transport.rs`'s two call sites
+(`deliver_one`/`peer_deliver_impl`) pass `&mut session` to
+`encrypt`/`decrypt`, matching the trait's new signature; no other logic
+in `transport.rs` changed. `crates/substrate/src/runtime.rs`,
+`crates/app_host_native/src/factory.rs`, and
+`crates/app_host_native/tests/dual_build_parity.rs` drop
+`allow_insecure_crypto` from their `ConversationConfig` construction
+sites; the parity suite's own crypto-driving test
+(`a_signed_delivery_from_an_external_peer_is_verified_and_notifies_the_app_on_both_builds`)
+is updated to `X3dhDoubleRatchetCrypto` and the new mutable-`Session`
+shape.
+
+## B4b — Verification Evidence
+
+```
+$ cargo test -p syneroym-conversation --lib
+running 21 tests
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+21, not B4a's 20 — six new `crypto` tests replace the single placeholder
+suite: `a_prekey_bundle_self_signature_verifies`,
+`a_tampered_bundle_signature_is_refused`,
+`both_sides_establish_a_session_and_round_trip_a_payload`,
+`a_second_message_on_an_established_session_round_trips_too`,
+`a_re_presented_different_signing_key_is_refused_not_re_pinned`, and
+`an_uncommitted_encrypt_does_not_advance_the_persisted_ratchet` — the last
+one models `D-B4-18` correctly under a real, mutating ratchet: two
+independent `session_for()` reloads (one per delivery attempt), not one
+in-memory session object reused across two attempts, since only that
+shape can prove an uncommitted encrypt doesn't advance what a retry will
+see. All pre-existing `ids`/`envelope`/`store` tests pass unchanged.
+
+```
+$ cargo test -p syneroym-app-host-native --test dual_build_parity
+running 18 tests
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.59s
+```
+
+All 18 pass against real crypto, including
+`a_signed_delivery_from_an_external_peer_is_verified_and_notifies_the_app_on_both_builds`
+— the same test B4a wrote, now driving a genuine X3DH handshake and
+Double Ratchet round-trip instead of the placeholder.
+
+```
+$ cargo test -p syneroym-substrate --test conversation_e2e
+running 1 test
+test a_message_survives_a_restart_and_delivers_once_the_peer_exists ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.34s
+```
+
+The real two-node e2e test passes unchanged at the observable level: its
+assertions touch only the WIT-level `run()`/`read-history` surface, never
+`crypto.rs` internals directly, and confirms real X3DH + Double Ratchet
+survives a restart-with-pending-message exactly as the placeholder did.
+
+### Full workspace
+
+`cargo +nightly fmt --all` clean. `cargo clippy --workspace --all-targets
+--all-features` clean (zero warnings).
+
+`cargo test --workspace --lib --bins` (sandbox on, matching B1/B2/B3/B4a's
+own convention) passes except for the same five sandbox-restricted crates
+already documented (`syneroym-community-registry`,
+`syneroym-control-plane`, `syneroym-coordinator-webrtc`, `syneroym-core`,
+`syneroym-mqtt-broker`) — each fails with `Operation not permitted (os
+error 1)`, the sandbox's socket-bind restriction, not a code defect.
+Confirmed by re-running those five crates' `--lib` suites with the
+sandbox disabled: 358/358 pass (18+231+7+90+12) — the identical total
+B4a recorded, since B4b adds no test to any of the five.
+
+`mise run test:e2e` (Playwright WebRTC browser suite) passes (18 + 4
+tests, exit 0) — the identical count B3/B4a recorded; B4b touches no
+browser-facing surface.
+
+`cargo deny check` (`licenses`, `bans`, `sources`) all pass —
+`vodozemac`'s Apache-2.0 license and its transitive dependencies
+(including `matrix-pickle`) are within the workspace's allowed-license
+list, with no ban or unknown-source findings. `advisories` reports two
+pre-existing, unrelated findings in `iroh`'s own dependency tree
+(`hickory-proto` RUSTSEC-2026-0119, `paste` RUSTSEC-2024-0436) — confirmed
+present on the branch tip before this slice's changes, not introduced by
+B4b.

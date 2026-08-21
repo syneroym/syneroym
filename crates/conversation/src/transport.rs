@@ -12,7 +12,7 @@ use crate::{
     crypto::{Envelope, PrekeyBundle},
     envelope::DeliveryPayload,
     ids::derive_conversation_id,
-    store::StoredMessage,
+    store::{StoredMessage, now_ms},
 };
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -96,7 +96,7 @@ impl ConversationService {
 
         let existing_session =
             self.crypto.session_for(&store, peer_address).await.map_err(|_| Disposition::Retry)?;
-        let session = match existing_session {
+        let mut session = match existing_session {
             Some(session) => session,
             None => {
                 let bundle_json = self
@@ -120,7 +120,7 @@ impl ConversationService {
             body: msg.body.clone(),
             signature: msg.signature,
         };
-        let env = self.crypto.encrypt(&session, &payload).map_err(|_| Disposition::Terminal)?;
+        let env = self.crypto.encrypt(&mut session, &payload).map_err(|_| Disposition::Terminal)?;
         let env_json = serde_json::to_value(&env).map_err(|_| Disposition::Terminal)?;
 
         let ack_json =
@@ -150,13 +150,15 @@ impl ConversationService {
         let store =
             self.store_for(svc).await.map_err(|e| ConversationError::Internal(e.to_string()))?;
 
-        let session = self
+        let mut session = self
             .crypto
             .session_for_envelope(&store, &env)
             .await
             .map_err(|_| ConversationError::PermissionDenied)?;
-        let payload =
-            self.crypto.decrypt(&session, &env).map_err(|_| ConversationError::PermissionDenied)?;
+        let payload = self
+            .crypto
+            .decrypt(&mut session, &env)
+            .map_err(|_| ConversationError::PermissionDenied)?;
 
         let author = payload.author.clone();
         if author == svc {
@@ -172,7 +174,7 @@ impl ConversationService {
         ) {
             return Err(ConversationError::PermissionDenied);
         }
-        let now = crate::store::now_ms();
+        let now = now_ms();
         let max_skew_ms = (self.max_clock_skew_secs as i64).saturating_mul(1000);
         if payload.sender_timestamp_ms > now.saturating_add(max_skew_ms) {
             return Err(ConversationError::InvalidArgument(

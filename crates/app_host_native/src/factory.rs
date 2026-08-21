@@ -327,10 +327,7 @@ mod tests {
                 dlq_max_rows: 100,
                 max_pending_rows: syneroym_async_queue::DEFAULT_MAX_PENDING_ROWS,
             },
-            syneroym_conversation::ConversationConfig {
-                allow_insecure_crypto: true,
-                ..Default::default()
-            },
+            syneroym_conversation::ConversationConfig::default(),
         )
         .unwrap();
         let factory = NativeHostFactory::new(

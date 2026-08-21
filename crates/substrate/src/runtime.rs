@@ -1154,11 +1154,7 @@ async fn build_route_handler_deps(
 
     // M06B slice B4: same lifetime as `app_sandbox_engine` above -- built
     // once, wired to the real `ServiceProxy`/engine notifier once those
-    // exist (`setup_router`, after `ConnectionRouter::init`). B4a's
-    // `allow_insecure_crypto: true` is a hardcoded source-level decision,
-    // not an operator-configurable one (`ConversationConfig`'s own doc
-    // comment): `StaticEcdhSessionCrypto` is the only implementation until
-    // B4b's real X3DH + Double Ratchet lands and deletes this flag.
+    // exist (`setup_router`, after `ConnectionRouter::init`).
     let app_sandbox_role = config.roles.app_sandbox.clone().unwrap_or_default();
     let conversation = ConversationService::new(
         storage_provider.clone(),
@@ -1187,7 +1183,6 @@ async fn build_route_handler_deps(
                 prekey_requests_per_peer_per_hour: app_sandbox_role
                     .conversation_prekey_requests_per_peer_per_hour,
             },
-            allow_insecure_crypto: true,
         },
     )?;
     // Both directions, `Weak` on both sides (Slice-6B's `Arc`-cycle

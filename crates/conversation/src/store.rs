@@ -108,7 +108,7 @@ pub struct SessionRow {
 /// identity.
 #[derive(Debug, Clone)]
 pub struct LocalIdentityRow {
-    pub dh_secret: Zeroizing<Vec<u8>>,
+    pub account_state: Zeroizing<Vec<u8>>,
     pub sig_secret: Zeroizing<Vec<u8>>,
 }
 
@@ -192,7 +192,7 @@ impl ConversationStore {
 
              CREATE TABLE IF NOT EXISTS local_identity (
                 id         INTEGER PRIMARY KEY CHECK (id = 1),
-                dh_secret  BLOB NOT NULL,
+                account_state  BLOB NOT NULL,
                 sig_secret BLOB NOT NULL,
                 created_at INTEGER NOT NULL
              );
@@ -561,26 +561,40 @@ impl ConversationStore {
     ) -> Result<LocalIdentityRow> {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
         let existing: Option<(Vec<u8>, Vec<u8>)> = conn
-            .query_row("SELECT dh_secret, sig_secret FROM local_identity WHERE id = 1", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT account_state, sig_secret FROM local_identity WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .optional()?;
-        let (dh_secret, sig_secret) = match existing {
+        let (account_state, sig_secret) = match existing {
             Some(pair) => pair,
             None => {
                 let (dh, sig) = generate();
                 conn.execute(
-                    "INSERT INTO local_identity (id, dh_secret, sig_secret, created_at) VALUES \
-                     (1, ?1, ?2, ?3)",
+                    "INSERT INTO local_identity (id, account_state, sig_secret, created_at) \
+                     VALUES (1, ?1, ?2, ?3)",
                     params![dh, sig, now_ms()],
                 )?;
                 (dh, sig)
             }
         };
         Ok(LocalIdentityRow {
-            dh_secret: Zeroizing::new(dh_secret),
+            account_state: Zeroizing::new(account_state),
             sig_secret: Zeroizing::new(sig_secret),
         })
+    }
+
+    /// Persists a mutated ratchet account (`crypto.rs`'s `save_account`) --
+    /// the row a one-time-key consumption or a fresh batch must land in
+    /// before anything else can rely on it surviving a restart.
+    pub fn save_local_account(&self, account_state: &[u8]) -> Result<()> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        conn.execute(
+            "UPDATE local_identity SET account_state = ?1 WHERE id = 1",
+            params![account_state],
+        )?;
+        Ok(())
     }
 
     // -- prekey rate limiting (`D-B4-15`) --------------------------------
@@ -851,7 +865,10 @@ mod tests {
         let s = store();
         let first = s.local_identity_or_generate(|| (vec![1, 2, 3], vec![4, 5, 6])).unwrap();
         let second = s.local_identity_or_generate(|| (vec![9, 9, 9], vec![9, 9, 9])).unwrap();
-        assert_eq!(&*first.dh_secret, &*second.dh_secret, "must not regenerate on a second call");
+        assert_eq!(
+            &*first.account_state, &*second.account_state,
+            "must not regenerate on a second call"
+        );
         assert_eq!(&*first.sig_secret, &*second.sig_secret);
     }
 

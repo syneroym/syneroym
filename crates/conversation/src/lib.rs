@@ -41,14 +41,6 @@ use syneroym_rpc::{
 #[derive(Debug, Clone, Default)]
 pub struct ConversationConfig {
     pub store: StoreConfig,
-    /// `D-B4-1`, `D-B4-7`: `StaticEcdhSessionCrypto` is not a ratchet and
-    /// provides no forward secrecy. `ConversationService::new` refuses to
-    /// start unless this is explicitly `true` -- no `SubstrateConfig` TOML
-    /// field maps onto it, so setting it is a source-level decision, not an
-    /// operator one, made and recorded once by `runtime.rs`'s own B4a
-    /// wiring and removed outright when B4b's real X3DH + Double Ratchet
-    /// replaces `StaticEcdhSessionCrypto`.
-    pub allow_insecure_crypto: bool,
 }
 
 pub struct ConversationService {
@@ -87,8 +79,6 @@ fn internal(e: impl std::fmt::Display) -> ConversationError {
 // path, matching `syneroym-async-queue`'s own precedent for its `Queue`.
 #[allow(clippy::expect_used)]
 impl ConversationService {
-    /// Refuses unless `config.allow_insecure_crypto` is set -- see its own
-    /// doc. `D-B4-1`/`D-B4-7`.
     pub fn new(
         storage_provider: Arc<dyn StorageProvider>,
         key_store: Arc<KeyStore>,
@@ -96,19 +86,12 @@ impl ConversationService {
         queue_config: QueueConfig,
         config: ConversationConfig,
     ) -> anyhow::Result<Arc<Self>> {
-        if !config.allow_insecure_crypto {
-            anyhow::bail!(
-                "ConversationService requires config.allow_insecure_crypto=true until B4b's real \
-                 X3DH + Double Ratchet lands (D-B4-1) -- StaticEcdhSessionCrypto provides no \
-                 forward secrecy and is not a ratchet"
-            );
-        }
         Ok(Arc::new(Self {
             storage_provider,
             key_store,
             service_proxy: std::sync::OnceLock::new(),
             registry,
-            crypto: Arc::new(crypto::StaticEcdhSessionCrypto),
+            crypto: Arc::new(crypto::X3dhDoubleRatchetCrypto),
             queue_config,
             max_clock_skew_secs: config.store.max_clock_skew_secs,
             conversation_config: config.store,

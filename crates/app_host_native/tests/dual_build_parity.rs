@@ -225,10 +225,7 @@ fn test_conversation_service(
             dlq_max_rows: 100,
             max_pending_rows: 1000,
         },
-        syneroym_conversation::ConversationConfig {
-            allow_insecure_crypto: true,
-            ..Default::default()
-        },
+        syneroym_conversation::ConversationConfig::default(),
     )
     .unwrap()
 }
@@ -632,7 +629,7 @@ async fn retry_on_a_pending_message_is_invalid_argument_on_both_builds() {
     assert_retry_on_pending_is_refused("native", &h.native).await;
 }
 
-/// Drives a full prekey-bundle -> X3DH-placeholder-session -> sign -> encrypt
+/// Drives a full prekey-bundle -> X3DH session -> sign -> encrypt
 /// -> `peer_deliver` exchange from an independent third `ConversationService`
 /// (standing in for a real peer substrate) into each build's own
 /// `ConversationService`, and confirms the delivered message lands in that
@@ -649,7 +646,7 @@ async fn assert_signed_delivery_is_verified_and_notifies_the_app<D: Driver>(
     driver: &D,
 ) {
     use syneroym_conversation::{
-        crypto::{PrekeyBundle, SessionCrypto, StaticEcdhSessionCrypto, generate_identity_bytes},
+        crypto::{PrekeyBundle, SessionCrypto, X3dhDoubleRatchetCrypto, generate_identity_bytes},
         envelope::{self, DeliveryPayload},
         ids, store,
     };
@@ -673,12 +670,12 @@ async fn assert_signed_delivery_is_verified_and_notifies_the_app<D: Driver>(
             store::ConversationConfig::default(),
         )
         .unwrap();
-        let crypto = StaticEcdhSessionCrypto;
+        let crypto = X3dhDoubleRatchetCrypto;
 
         let bundle_bytes =
             target_conversation.prekey_bundle(SERVICE_ID, SENDER_ADDRESS).await.unwrap();
         let bundle: PrekeyBundle = serde_json::from_slice(&bundle_bytes).unwrap();
-        let session = crypto.begin_session(&sender_store, SERVICE_ID, &bundle).await.unwrap();
+        let mut session = crypto.begin_session(&sender_store, SERVICE_ID, &bundle).await.unwrap();
 
         let conversation_id = ids::derive_conversation_id(SENDER_ADDRESS, SERVICE_ID);
         let message_id = ids::derive_message_id(
@@ -710,7 +707,7 @@ async fn assert_signed_delivery_is_verified_and_notifies_the_app<D: Driver>(
             body: b"hello from a peer".to_vec(),
             signature,
         };
-        let env = crypto.encrypt(&session, &payload).unwrap();
+        let env = crypto.encrypt(&mut session, &payload).unwrap();
         crypto.commit(&sender_store, &session).await.unwrap();
 
         let env_bytes = serde_json::to_vec(&env).unwrap();
