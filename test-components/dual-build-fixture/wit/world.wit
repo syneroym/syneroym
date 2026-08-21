@@ -14,6 +14,7 @@ world dual-build-fixture {
     import syneroym:data-layer/store@0.1.0;
     import syneroym:blob-store/blob-store@0.1.0;
     import syneroym:messaging/host-api@0.1.0;
+    import syneroym:conversation/conversation@0.1.0;
 
     // Exported, not imported: `guest-api` uses `stream-cursor`/`stream-sink`
     // from `stream-types`, which are guest-implemented, so the world must
@@ -21,6 +22,7 @@ world dual-build-fixture {
     // fixture declines both stream exports.
     export syneroym:messaging/stream-types@0.1.0;
     export syneroym:messaging/guest-api@0.1.0;
+    export syneroym:conversation/guest-api@0.1.0;
 
     export test-driver;
 }

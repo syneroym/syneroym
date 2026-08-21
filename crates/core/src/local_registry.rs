@@ -37,8 +37,8 @@ use crate::{
 /// endpoint under the same interface name silently overwrote the app's own
 /// `TcpHostPort` registration, discovered via `mise run test:e2e` breaking
 /// end to end during M3B Slice 7's own verification).
-pub const NATIVE_CAPABILITY_INTERFACES: [&str; 6] =
-    ["data-layer", "vault", "app-config", "blob-store", "messaging", "http-native"];
+pub const NATIVE_CAPABILITY_INTERFACES: [&str; 7] =
+    ["data-layer", "vault", "app-config", "blob-store", "messaging", "http-native", "conversation"];
 
 /// `orchestrator`/`security`: every substrate registers these under its
 /// **own** DID (`runtime.rs`'s `setup_router`), not under a deployed

@@ -6,6 +6,7 @@
 
 use std::result;
 
+pub mod conversation;
 mod converter;
 mod dispatch_registry;
 pub mod fdae_abac;
@@ -16,6 +17,10 @@ mod proxy;
 pub mod relationship_proof;
 mod types;
 
+pub use conversation::{
+    ConversationDeliveryState, ConversationError, ConversationHistoryPage, ConversationHost,
+    ConversationKind, ConversationMessage, ConversationNotifier, ConversationSummary,
+};
 pub use converter::JsonRpcConverter;
 pub use dispatch_registry::{NativeDispatchRegistry, WeakNativeDispatchRegistry};
 pub use fdae_abac::{

@@ -9,7 +9,7 @@ use std::{
     future,
     future::Future,
     pin,
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -23,6 +23,7 @@ use syneroym_app_orchestration::{
 use syneroym_client_gateway::ClientGateway;
 use syneroym_community_registry::EcosystemRegistry;
 use syneroym_control_plane::ControlPlaneService;
+use syneroym_conversation::ConversationService;
 use syneroym_coordinator::EcosystemCoordinator;
 use syneroym_core::{
     asset_manifest::AssetRegistry,
@@ -42,7 +43,9 @@ use syneroym_identity::{Identity, substrate::SubstrateIdentityStatus};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_observability::{MemoryRecorder, MetricsSnapshot, ObservabilityEngine};
 use syneroym_router::{ConnectionRouter, RouteHandlerDeps};
-use syneroym_rpc::{NativeDispatchRegistry, NativeService};
+use syneroym_rpc::{
+    ConversationHost, ConversationNotifier, NativeDispatchRegistry, NativeService, ServiceProxy,
+};
 use syneroym_sandbox_podman::ContainerEngine;
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::{
@@ -156,9 +159,10 @@ pub async fn init(config: SubstrateConfig) -> anyhow::Result<InitializedRuntime>
     // composition root has built them, is injected into `RuntimeServices`
     // afterward instead of changing when either call runs.
     let mut services = RuntimeServices::init(&config).await?;
-    let (connection_router, endpoint_registry, supervisor) =
+    let (connection_router, endpoint_registry, supervisor, conversation) =
         setup_connection_router(&config).await?;
     services.set_supervisor(supervisor);
+    services.set_conversation(conversation);
 
     Ok(InitializedRuntime { observability, services, connection_router, endpoint_registry })
 }
@@ -206,6 +210,15 @@ pub struct RuntimeServices {
     /// worker takes the token rather than a handle with a `shutdown`
     /// method of its own.
     proxy_outbox_cancel: CancellationToken,
+    /// `None` only in a test harness that never calls `set_conversation`;
+    /// the real composition root always sets it.
+    conversation: Option<Arc<ConversationService>>,
+    /// The conversation delivery worker's task — raced and shut down
+    /// exactly like `proxy_outbox_join`, for the identical reason:
+    /// a delivery in flight against an offline peer is the case this
+    /// queue exists to survive, so shutdown must not wait for it.
+    conversation_worker_join: Option<JoinHandle<()>>,
+    conversation_worker_cancel: CancellationToken,
 }
 
 impl Debug for RuntimeServices {
@@ -225,6 +238,8 @@ impl Debug for RuntimeServices {
         debug_struct.field("client_gateway", &self.client_gateway);
 
         debug_struct.field("supervisor", &self.supervisor.as_ref().map(|_| "SupervisorService"));
+        debug_struct
+            .field("conversation", &self.conversation.as_ref().map(|_| "ConversationService"));
 
         debug_struct.finish()
     }
@@ -256,6 +271,9 @@ impl RuntimeServices {
             queue_worker_join: None,
             proxy_outbox_join: None,
             proxy_outbox_cancel: CancellationToken::new(),
+            conversation: None,
+            conversation_worker_join: None,
+            conversation_worker_cancel: CancellationToken::new(),
         })
     }
 
@@ -264,6 +282,12 @@ impl RuntimeServices {
     /// this is a setter rather than an `init` parameter).
     fn set_supervisor(&mut self, supervisor: Option<Arc<SupervisorHandle>>) {
         self.supervisor = supervisor;
+    }
+
+    /// Injects the Conversation service, same reasoning as
+    /// `set_supervisor`.
+    fn set_conversation(&mut self, conversation: Arc<ConversationService>) {
+        self.conversation = Some(conversation);
     }
 
     async fn run_until_shutdown<F>(
@@ -292,6 +316,18 @@ impl RuntimeServices {
             );
             let cancel = self.proxy_outbox_cancel.clone();
             tokio::spawn(async move { proxy.run_async_worker(tick, cancel).await })
+        });
+        self.conversation_worker_join = self.conversation.clone().map(|svc| {
+            let tick = Duration::from_secs(
+                config
+                    .roles
+                    .app_sandbox
+                    .as_ref()
+                    .map_or(5, |role| role.conversation_tick_secs)
+                    .max(1),
+            );
+            let cancel = self.conversation_worker_cancel.clone();
+            tokio::spawn(async move { svc.run_worker(tick, cancel).await })
         });
 
         #[cfg(feature = "community_registry")]
@@ -433,6 +469,17 @@ impl RuntimeServices {
                 None => pending_component().await,
             }
         });
+        let mut conversation_outbox_fut = pin::pin!(async {
+            match self.conversation_worker_join.as_mut() {
+                Some(handle) => match handle.await {
+                    Ok(()) => Ok(()),
+                    Err(join_err) => {
+                        Err(anyhow::anyhow!("conversation outbox worker task panicked: {join_err}"))
+                    }
+                },
+                None => pending_component().await,
+            }
+        });
         let mut shutdown_signal = pin::pin!(shutdown_signal);
 
         info!(profile = %config.profile, "starting substrate components");
@@ -446,6 +493,7 @@ impl RuntimeServices {
             res = &mut supervisor_fut => log_component_exit("supervisor", res),
             res = &mut queue_worker_fut => log_component_exit("queue worker", res),
             res = &mut proxy_outbox_fut => log_component_exit("proxy outbox worker", res),
+            res = &mut conversation_outbox_fut => log_component_exit("conversation outbox worker", res),
             () = &mut expiry_sweep_fut => {},
             () = &mut shutdown_signal => warn!("received shutdown signal"),
         }
@@ -481,6 +529,12 @@ impl RuntimeServices {
         // not await a delivery that may be waiting on an offline peer.
         self.proxy_outbox_cancel.cancel();
         drop(self.proxy_outbox_join.take());
+
+        // Same rule, same reason, as `proxy_outbox_join` above: a delivery
+        // in flight against an offline peer is exactly the case this
+        // queue exists for.
+        self.conversation_worker_cancel.cancel();
+        drop(self.conversation_worker_join.take());
 
         #[cfg(feature = "client_gateway")]
         if let Some(service) = self.client_gateway.as_mut()
@@ -583,7 +637,12 @@ fn log_component_exit(component: &str, result: anyhow::Result<()>) {
 /// native service.
 async fn setup_connection_router(
     config: &SubstrateConfig,
-) -> anyhow::Result<(ConnectionRouter, EndpointRegistry, Option<Arc<SupervisorHandle>>)> {
+) -> anyhow::Result<(
+    ConnectionRouter,
+    EndpointRegistry,
+    Option<Arc<SupervisorHandle>>,
+    Arc<ConversationService>,
+)> {
     let (service_id, secret_key, verified_controller) = setup_identity_and_storage(config).await?;
 
     // A verified `ControllerAgreement` (mutually signed by the substrate and
@@ -614,10 +673,10 @@ async fn setup_connection_router(
         );
     }
 
-    let (router, endpoint_registry, _publisher, supervisor) =
+    let (router, endpoint_registry, _publisher, supervisor, conversation) =
         setup_router(config, &service_id, secret_key).await?;
 
-    Ok((router, endpoint_registry, supervisor))
+    Ok((router, endpoint_registry, supervisor, conversation))
 }
 
 async fn setup_identity_and_storage(
@@ -644,6 +703,7 @@ async fn setup_router(
     EndpointRegistry,
     Option<Arc<EndpointPublisher>>,
     Option<Arc<SupervisorHandle>>,
+    Arc<ConversationService>,
 )> {
     let data_store = registry_store::init_store(config).await?;
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
@@ -706,6 +766,13 @@ async fn setup_router(
     )
     .await?;
 
+    // `ProxyRouter` (the sole `ServiceProxy`) exists only now -- wired the
+    // same post-construction way `AppSandboxEngine.service_proxy`/
+    // `ControlPlaneService.service_proxy` already are.
+    if let Some(proxy) = router.proxy() {
+        shared.conversation.set_service_proxy(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>);
+    }
+
     // Built here rather than in `build_route_handler_deps` because it needs
     // the finished `EndpointRegistry`, and handed to the control plane so a
     // deploy can publish immediately instead of waiting for the heartbeat.
@@ -753,7 +820,7 @@ async fn setup_router(
         }
     }
 
-    Ok((router, endpoint_registry, publisher, supervisor))
+    Ok((router, endpoint_registry, publisher, supervisor, shared.conversation.clone()))
 }
 
 /// Handles the supervisor role (and any future post-router role that must
@@ -783,6 +850,10 @@ struct SharedNodeHandles {
     blob_provider: Arc<dyn BlobProvider>,
     #[cfg_attr(not(feature = "dual_build_fixture"), allow(dead_code))]
     logical_resolver: Arc<LogicalResolver>,
+    /// Needed by `setup_router` to wire the real
+    /// `ServiceProxy` in once `ConnectionRouter::init` has built it, and by
+    /// the `dual_build_fixture` role's `NativeHostFactory`.
+    conversation: Arc<ConversationService>,
 }
 
 /// The literal `native_dispatch` key the supervisor's `NativeService`
@@ -933,10 +1004,14 @@ async fn init_dual_build_fixture(
         shared.messaging_broker.clone(),
         endpoint_registry.clone(),
         shared.logical_resolver.clone(),
+        shared.conversation.clone(),
     );
     let f = factory.clone();
     let fixture = Arc::new(NativeFixture::new(service_id, move |caller| f.host_for(caller)));
     factory.set_sink(Arc::downgrade(&fixture) as Weak<dyn MessageSink>);
+    factory.set_conversation_sink(
+        Arc::downgrade(&fixture) as Weak<dyn syneroym_app_host_native::ConversationSink>
+    );
     shared
         .native_dispatch
         .insert(DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(), fixture as Arc<dyn NativeService>);
@@ -1075,6 +1150,50 @@ async fn build_route_handler_deps(
     // connects, as a client, to the substrates it manages (ADR-0021 §8).
     let supervisor_client_identity = node_identity.clone();
 
+    // Same lifetime as `app_sandbox_engine` above -- built
+    // once, wired to the real `ServiceProxy`/engine notifier once those
+    // exist (`setup_router`, after `ConnectionRouter::init`).
+    let app_sandbox_role = config.roles.app_sandbox.clone().unwrap_or_default();
+    let conversation = ConversationService::new(
+        storage_provider.clone(),
+        key_store.clone(),
+        registry.clone(),
+        syneroym_async_queue::QueueConfig {
+            retry: syneroym_core::config::RetryPolicy {
+                max_attempts: 54,
+                initial_backoff_ms: 100,
+                backoff_multiplier: 2.0,
+                max_backoff_ms: 900_000,
+            },
+            visibility_timeout_ms: 120_000,
+            dlq_max_rows: 1000,
+            max_pending_rows: syneroym_async_queue::DEFAULT_MAX_PENDING_ROWS,
+        },
+        syneroym_conversation::ConversationConfig {
+            store: syneroym_conversation::store::ConversationConfig {
+                max_body_bytes: app_sandbox_role.conversation_max_body_bytes,
+                max_pending_per_conversation: app_sandbox_role
+                    .conversation_max_pending_per_conversation,
+                max_messages_per_conversation: app_sandbox_role
+                    .conversation_max_messages_per_conversation,
+                max_pending_age_secs: app_sandbox_role.conversation_max_pending_age_secs,
+                max_clock_skew_secs: app_sandbox_role.conversation_max_clock_skew_secs,
+                prekey_requests_per_peer_per_hour: app_sandbox_role
+                    .conversation_prekey_requests_per_peer_per_hour,
+            },
+        },
+    )?;
+    // Both directions, `Weak` on both sides: the engine reaches
+    // `conversation` for the guest-facing WIT surface, `conversation`
+    // reaches the engine to notify a wasm-hosted service of an inbound
+    // message/state change.
+    app_sandbox_engine
+        .conversation
+        .set(Arc::downgrade(&conversation) as Weak<dyn ConversationHost>)
+        .map_err(|_| anyhow::anyhow!("AppSandboxEngine::conversation set more than once"))?;
+    conversation
+        .set_notifier(Arc::downgrade(&app_sandbox_engine) as Weak<dyn ConversationNotifier>);
+
     let control_plane_service = ControlPlaneService::init(
         service_id.to_string(),
         service_id.to_string(),
@@ -1094,6 +1213,14 @@ async fn build_route_handler_deps(
     )
     .await?;
     let control_plane_service = Arc::new(control_plane_service);
+    // Unlike `service_proxy`/`row_authorizer` (which need `ProxyRouter`,
+    // built later in `ConnectionRouter::init`), `ConversationService`
+    // already exists at this point, so it is wired in here rather than
+    // deferred to `setup_router`.
+    control_plane_service
+        .conversation
+        .set(Arc::downgrade(&conversation) as Weak<dyn ConversationHost>)
+        .map_err(|_| anyhow::anyhow!("ControlPlaneService::conversation set more than once"))?;
 
     let shared = SharedNodeHandles {
         key_store: key_store.clone(),
@@ -1103,6 +1230,7 @@ async fn build_route_handler_deps(
         messaging_broker: messaging_broker.clone(),
         blob_provider,
         logical_resolver: logical_resolver.clone(),
+        conversation: conversation.clone(),
     };
 
     Ok((

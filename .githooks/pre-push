@@ -19,5 +19,23 @@ if ! cargo clippy --workspace --all-targets --all-features -- -D warnings; then
     exit 1
 fi
 
+# Check licenses if cargo-deny is installed
+if command -v cargo-deny >/dev/null 2>&1; then
+    echo "Checking cargo deny licenses..."
+    if ! cargo deny check licenses; then
+        echo "❌ cargo deny check licenses failed! Please resolve license issues before pushing."
+        exit 1
+    fi
+fi
+
+# Check security audit if cargo-audit is installed
+if command -v cargo-audit >/dev/null 2>&1; then
+    echo "Checking cargo audit..."
+    if ! cargo audit; then
+        echo "❌ cargo audit failed! Please resolve security advisories before pushing."
+        exit 1
+    fi
+fi
+
 echo "✅ All pre-push checks passed! Pushing code..."
 exit 0

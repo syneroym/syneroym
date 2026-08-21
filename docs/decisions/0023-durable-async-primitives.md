@@ -123,6 +123,17 @@ dependents converging in microseconds; a queue-always design would put a SQLite
 write on that path for no benefit. **The happy path must not touch the queue at
 all**, and that is a tested budget, not a preference.
 
+> **Note (M06B B4, 2026-08-20): this reasoning does not transfer to
+> `syneroym:conversation/conversation.send`, which is queue-always by
+> design (`D-B4-9`).** `send`'s WIT return type has no "applied now"
+> arm to invent an outcome for — its documented, only outcome is
+> `pending`, matching R1's own acceptance test: *"never shown as
+> delivered while pending."* A synchronous try-first would also violate
+> `dispatch_epoch_timeout_secs`'s 5-second budget (`crates/core/src/
+> config.rs`), which `send` must never wait on the network within. The two
+> primitives share a queue and a dead-letter table, not this decision's
+> conclusion.
+
 ## 3. Queueability is declared per action, and most actions are not queueable
 
 Idempotence and queueability are different questions. §1 answers the first —

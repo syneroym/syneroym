@@ -33,7 +33,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use syneroym_core::{
     config::{AppSandboxRole, RetryPolicy, SupervisorRole},
     retry::calculate_jittered_backoff,
@@ -355,6 +355,39 @@ impl Queue {
         let pruned = Self::prune_dead_letters(&tx, self.config.dlq_max_rows, group_key)?;
         tx.commit()?;
         Ok(pruned)
+    }
+
+    /// Runs `f` inside one transaction on this queue's own connection,
+    /// handing the caller both the transaction and a queue handle that
+    /// writes through it. For an owner whose own tables live in the same
+    /// file and must commit atomically with the enqueue -- `Queue::enqueue`
+    /// itself takes this connection's lock, so an owner already holding a
+    /// `Transaction` on it cannot also call `enqueue` (`std::sync::Mutex`
+    /// is not reentrant, so it would self-deadlock).
+    pub fn transaction<T>(
+        &self,
+        f: impl FnOnce(&Transaction<'_>, &TxQueue<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let mut conn = self.conn.lock().expect("queue connection lock poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let txq = TxQueue { _marker: std::marker::PhantomData };
+        let result = f(&tx, &txq)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    /// Pushes a claimed item back to `visible_at` **without** charging the
+    /// attempt budget, and un-counts this claim so the poison-pill bound
+    /// (`claim_count > max_attempts`) does not fire on an item that is
+    /// deliberately waiting. For a target that is absent rather than
+    /// broken; a caller using this owes its own outer bound.
+    pub fn defer(&self, id: i64, visible_at: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("queue connection lock poisoned");
+        conn.execute(
+            "UPDATE outbox SET visible_at = ?1, claim_count = claim_count - 1 WHERE id = ?2",
+            params![visible_at, id],
+        )?;
+        Ok(())
     }
 
     /// This queue's configured attempt budget -- the same value
@@ -731,6 +764,37 @@ impl Queue {
             plan.push('\n');
         }
         Ok(plan)
+    }
+}
+
+/// The transaction-scoped half of [`Queue`], for use inside
+/// [`Queue::transaction`]. Same SQL as [`Queue::enqueue`], but written
+/// through the caller's own `Transaction` instead of taking `Queue`'s own
+/// connection lock, so it composes with the caller's own writes into one
+/// atomic commit.
+#[derive(Debug)]
+pub struct TxQueue<'a> {
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl TxQueue<'_> {
+    /// Same effect as [`Queue::enqueue`], through `tx` instead of a fresh
+    /// lock.
+    pub fn enqueue(
+        &self,
+        tx: &Transaction<'_>,
+        group_key: &str,
+        queue_key: &str,
+        payload: &[u8],
+        now: i64,
+    ) -> Result<i64> {
+        tx.execute(
+            "INSERT INTO outbox (group_key, queue_key, payload, attempts, claim_count, \
+             visible_at, created_at)
+             VALUES (?1, ?2, ?3, 0, 0, ?4, ?4)",
+            params![group_key, queue_key, payload, now],
+        )?;
+        Ok(tx.last_insert_rowid())
     }
 }
 
@@ -1249,6 +1313,90 @@ mod tests {
         let dead_again = queue.dead_letters().unwrap();
         assert_eq!(dead_again.len(), 1);
         assert_eq!(dead_again[0].attempts, 3, "history accumulates across replays");
+    }
+
+    /// A caller can write its own table and enqueue in one
+    /// commit through `TxQueue`.
+    #[test]
+    fn transaction_commits_the_callers_write_and_the_enqueue_together() {
+        let queue = Queue::open_in_memory(config()).unwrap();
+        {
+            let conn = queue.conn.lock().unwrap();
+            conn.execute_batch("CREATE TABLE owner_rows (id INTEGER PRIMARY KEY)").unwrap();
+        }
+        queue
+            .transaction(|tx, txq| {
+                tx.execute("INSERT INTO owner_rows (id) VALUES (1)", [])?;
+                txq.enqueue(tx, "g", "k", b"p", 1_000)?;
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(queue.all().unwrap().len(), 1);
+        let conn = queue.conn.lock().unwrap();
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM owner_rows", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    /// A `transaction` closure returning `Err` must roll back both the
+    /// caller's own write and the enqueue -- neither exists afterward.
+    #[test]
+    fn transaction_rolls_back_both_writes_on_err() {
+        let queue = Queue::open_in_memory(config()).unwrap();
+        {
+            let conn = queue.conn.lock().unwrap();
+            conn.execute_batch("CREATE TABLE owner_rows (id INTEGER PRIMARY KEY)").unwrap();
+        }
+        let result = queue.transaction(|tx, txq| {
+            tx.execute("INSERT INTO owner_rows (id) VALUES (1)", [])?;
+            txq.enqueue(tx, "g", "k", b"p", 1_000)?;
+            Err::<(), _>(anyhow!("caller decided to abort"))
+        });
+        assert!(result.is_err());
+
+        assert!(queue.all().unwrap().is_empty(), "the enqueue must have rolled back");
+        let conn = queue.conn.lock().unwrap();
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM owner_rows", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0, "the caller's own write must have rolled back too");
+    }
+
+    /// `defer` must not advance `attempts` (the retry budget)
+    /// even though it changes `visible_at`, and must un-count the claim so
+    /// the crashed-worker `claim_count` bound does not fire on a
+    /// deliberately-waiting item.
+    #[test]
+    fn defer_does_not_advance_attempts_and_uncounts_the_claim() {
+        let queue = Queue::open_in_memory(config()).unwrap();
+        queue.enqueue("g", "k", b"p", 1_000).unwrap();
+        let claimed = queue.claim_due(1_000, 10).unwrap();
+        assert_eq!(claimed[0].claim_count, 1);
+        assert_eq!(claimed[0].attempts, 0);
+
+        queue.defer(claimed[0].id, 5_000).unwrap();
+
+        let all = queue.all().unwrap();
+        assert_eq!(all[0].attempts, 0, "defer must not charge the retry budget");
+        assert_eq!(all[0].claim_count, 0, "defer must un-count this claim");
+    }
+
+    /// A deferred item must not be claimable again before its new
+    /// `visible_at`.
+    #[test]
+    fn a_deferred_item_is_invisible_to_claim_due_until_its_new_visible_at() {
+        let queue = Queue::open_in_memory(config()).unwrap();
+        let id = queue.enqueue("g", "k", b"p", 1_000).unwrap();
+        queue.claim_due(1_000, 10).unwrap();
+        queue.defer(id, 5_000).unwrap();
+
+        assert!(
+            queue.claim_due(4_999, 10).unwrap().is_empty(),
+            "must stay invisible before the deferred visible_at"
+        );
+        let reclaimed = queue.claim_due(5_000, 10).unwrap();
+        assert_eq!(reclaimed.len(), 1, "must become claimable again at the deferred visible_at");
+        assert_eq!(reclaimed[0].id, id);
     }
 
     #[test]

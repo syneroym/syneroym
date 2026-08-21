@@ -6,16 +6,23 @@ use std::{
 };
 
 use dashmap::DashMap;
-use syneroym_app_host::{MessageSink, types::messaging::MessagingError};
+use syneroym_app_host::{ConversationSink, MessageSink, types::messaging::MessagingError};
+use syneroym_conversation::ConversationService;
 use syneroym_core::local_registry::EndpointRegistry;
 use syneroym_data_blob::traits::BlobProvider;
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, SubscriptionHandle, namespace_topic};
-use syneroym_rpc::CallerContext;
+use syneroym_rpc::{
+    CallerContext, ConversationDeliveryState, ConversationHost, ConversationMessage,
+    ConversationNotifier,
+};
 use syneroym_sandbox_wasm::{HostState, MessagingContext, StreamContext, empty_service_proxy};
 
-use crate::host::{HostInner, NativeAppHost};
+use crate::{
+    convert,
+    host::{HostInner, NativeAppHost},
+};
 
 /// Everything the shim needs that outlives one call. One per native app
 /// instance, held by whoever registered that app.
@@ -37,6 +44,14 @@ pub struct NativeHostFactory {
     /// holds this factory, so a strong reference back would be the same
     /// uncollectable cycle `HostState.service_proxy` already guards against.
     sink: OnceLock<Weak<dyn MessageSink>>,
+    /// The Conversation service -- held strong: unlike
+    /// `service_proxy`, `ConversationService` holds no reference back to
+    /// this factory *directly* (it reaches it only through the `Weak`
+    /// registered in `register_service_notifier` below), so there is no
+    /// cycle to guard against.
+    conversation: Arc<ConversationService>,
+    /// The app's inbound conversation entry point, mirroring `sink` above.
+    conversation_sink: OnceLock<Weak<dyn ConversationSink>>,
 }
 
 /// Hand-written, not derived: `StorageProvider` has no `Debug` supertrait,
@@ -61,9 +76,10 @@ impl NativeHostFactory {
         broker: Arc<MqttBroker>,
         endpoint_registry: EndpointRegistry,
         logical_resolver: Arc<syneroym_app_orchestration::LogicalResolver>,
+        conversation: Arc<ConversationService>,
     ) -> Arc<Self> {
-        Arc::new(Self {
-            service_id,
+        let factory = Arc::new(Self {
+            service_id: service_id.clone(),
             key_store,
             storage_provider,
             blob_provider,
@@ -72,7 +88,21 @@ impl NativeHostFactory {
             logical_resolver,
             subscriptions: DashMap::new(),
             sink: OnceLock::new(),
-        })
+            conversation: conversation.clone(),
+            conversation_sink: OnceLock::new(),
+        });
+        // `§6.5`: registers itself as this service's conversation
+        // notification target, so the delivery worker wakes a natively-
+        // linked app the same way `AppSandboxEngine` wakes a wasm-hosted
+        // one -- without this, the fixture's `on-message`/`on-delivery-
+        // state` would fall through to `ConversationService`'s default
+        // notifier (the wasm engine), which has no component for this
+        // service id.
+        conversation.register_service_notifier(
+            service_id,
+            Arc::downgrade(&factory) as Weak<dyn ConversationNotifier>,
+        );
+        factory
     }
 
     /// Sets the app's inbound message entry point. Panics if called twice --
@@ -81,6 +111,15 @@ impl NativeHostFactory {
     #[allow(clippy::expect_used)]
     pub fn set_sink(&self, sink: Weak<dyn MessageSink>) {
         self.sink.set(sink).expect("NativeHostFactory::set_sink called more than once");
+    }
+
+    /// Sets the app's inbound conversation entry point, mirroring
+    /// `set_sink`.
+    #[allow(clippy::expect_used)]
+    pub fn set_conversation_sink(&self, sink: Weak<dyn ConversationSink>) {
+        self.conversation_sink
+            .set(sink)
+            .expect("NativeHostFactory::set_conversation_sink called more than once");
     }
 
     #[must_use]
@@ -121,7 +160,8 @@ impl NativeHostFactory {
             syneroym_rpc::empty_row_authorizer(),
             None, // app_instance_id
             self.logical_resolver.clone(),
-        );
+        )
+        .with_conversation(Arc::downgrade(&self.conversation) as Weak<dyn ConversationHost>);
         NativeAppHost::new(Arc::new(HostInner {
             factory: self.clone(),
             state: tokio::sync::Mutex::new(state),
@@ -190,6 +230,43 @@ impl NativeHostFactory {
     }
 }
 
+/// The native build's wake mechanism: a `Weak<dyn ConversationSink>` with
+/// no retry, unlike the WASM build's instantiate-and-call with a 4-attempt
+/// retry (`AppSandboxEngine::notify_guest_message`) -- a stated, permitted
+/// difference (B3's own precedent for `MessageSink`): what must match is
+/// the store contents afterward, not the delivery mechanism or its timing.
+#[async_trait::async_trait]
+impl ConversationNotifier for NativeHostFactory {
+    async fn notify_message(&self, service_id: &str, msg: ConversationMessage) {
+        debug_assert_eq!(
+            service_id, self.service_id,
+            "a factory only ever hears about its own service"
+        );
+        let Some(sink) = self.conversation_sink.get().and_then(Weak::upgrade) else { return };
+        if let Err(e) = sink.on_message(convert::rpc_message_to_guest(msg)).await {
+            tracing::warn!(service_id, error = %e, "native conversation on-message delivery failed");
+        }
+    }
+
+    async fn notify_delivery_state(
+        &self,
+        service_id: &str,
+        message_id: String,
+        state: ConversationDeliveryState,
+    ) {
+        debug_assert_eq!(
+            service_id, self.service_id,
+            "a factory only ever hears about its own service"
+        );
+        let Some(sink) = self.conversation_sink.get().and_then(Weak::upgrade) else { return };
+        if let Err(e) =
+            sink.on_delivery_state(message_id, convert::rpc_delivery_state_to_guest(state)).await
+        {
+            tracing::warn!(service_id, error = %e, "native conversation on-delivery-state delivery failed");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -202,6 +279,7 @@ mod tests {
             messaging::MessagingError,
         },
     };
+    use syneroym_conversation::ConversationService;
     use syneroym_core::{local_registry::EndpointRegistry, storage::MockStorage};
     use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
     use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
@@ -239,6 +317,19 @@ mod tests {
         let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
         let endpoint_registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
+        let conversation = ConversationService::new(
+            storage_provider.clone(),
+            key_store.clone(),
+            endpoint_registry.clone(),
+            syneroym_async_queue::QueueConfig {
+                retry: syneroym_core::config::RetryPolicy::default(),
+                visibility_timeout_ms: 120_000,
+                dlq_max_rows: 100,
+                max_pending_rows: syneroym_async_queue::DEFAULT_MAX_PENDING_ROWS,
+            },
+            syneroym_conversation::ConversationConfig::default(),
+        )
+        .unwrap();
         let factory = NativeHostFactory::new(
             "read-only-unit-test".to_string(),
             key_store,
@@ -247,6 +338,7 @@ mod tests {
             broker,
             endpoint_registry,
             syneroym_app_orchestration::empty_resolver(),
+            conversation,
         );
         let host = factory.host_with(caller(), true);
 

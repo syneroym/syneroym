@@ -39,6 +39,7 @@ use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceType,
     },
+    conversation_host::syneroym::conversation::conversation,
     host::syneroym::{
         app_config::app_config,
         blob_store::blob_store,
@@ -198,6 +199,11 @@ pub struct AppSandboxEngine {
     /// and two strong refs would be an uncollectable cycle (the same class
     /// that hung graceful shutdown in Slice 6B).
     pub service_proxy: OnceLock<Weak<dyn ServiceProxy>>,
+    /// The Conversation service. Same two-phase `Weak`
+    /// wiring as `service_proxy`, for the same cycle reason:
+    /// `ConversationService` and this engine are constructed independently
+    /// at the composition root and wired to each other afterward.
+    pub conversation: OnceLock<Weak<dyn syneroym_rpc::ConversationHost>>,
     /// Live guest-delivery subscriptions, keyed `(service_id,
     /// namespaced_topic)`. Dropping an entry unsubscribes from the broker
     /// (see `SubscriptionHandle::drop`).
@@ -593,6 +599,7 @@ impl AppSandboxEngine {
             messaging_broker,
             self_weak: OnceLock::new(),
             service_proxy: OnceLock::new(),
+            conversation: OnceLock::new(),
             subscriptions: DashMap::new(),
             endpoint_registry,
             logical_resolver,
@@ -754,6 +761,7 @@ impl AppSandboxEngine {
             _,
             HasSelf<HostState>,
         >(&mut linker, |state| state)?;
+        conversation::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         Ok(linker)
     }
 
@@ -1274,6 +1282,11 @@ impl AppSandboxEngine {
         // app instance could address an arbitrary one.
         let app_instance_id =
             self.endpoint_registry.app_context_of(service_id).map(|(instance, _name)| instance);
+        let conversation = self
+            .conversation
+            .get()
+            .cloned()
+            .unwrap_or_else(crate::host_capabilities::empty_conversation_host);
         let host_state = HostState::new(
             service_id.to_string(),
             max_memory_bytes,
@@ -1290,7 +1303,8 @@ impl AppSandboxEngine {
             row_authorizer,
             app_instance_id,
             self.logical_resolver.clone(),
-        );
+        )
+        .with_conversation(conversation);
 
         debug!("created wasi ctx and host state");
 
@@ -1632,6 +1646,210 @@ impl AppSandboxEngine {
                         error = %e,
                         "messaging: handle-message invocation trapped, giving up"
                     );
+                    return;
+                }
+            }
+        }
+    }
+
+    /// `msg` as the JSON shape `on-message`'s WIT `message` record expects
+    /// -- kebab-case keys, matching the wasm component ABI's own field
+    /// names (verified by `wasmtime::component::Val::Record`'s field
+    /// names, which are the WIT identifiers verbatim, not Rust's
+    /// snake_case).
+    fn conversation_message_json(msg: &syneroym_rpc::ConversationMessage) -> serde_json::Value {
+        serde_json::json!({
+            "id": msg.id,
+            "conversation": msg.conversation,
+            "author": msg.author,
+            "sender-timestamp": msg.sender_timestamp,
+            "received-at": msg.received_at,
+            "content-type": msg.content_type,
+            "body": msg.body,
+            "state": Self::conversation_state_str(msg.state),
+            "verified": msg.verified,
+            "last-error": msg.last_error,
+        })
+    }
+
+    fn conversation_state_str(s: syneroym_rpc::ConversationDeliveryState) -> &'static str {
+        match s {
+            syneroym_rpc::ConversationDeliveryState::Pending => "pending",
+            syneroym_rpc::ConversationDeliveryState::Delivered => "delivered",
+            syneroym_rpc::ConversationDeliveryState::Failed => "failed",
+        }
+    }
+
+    /// Invokes the deployed component's optional
+    /// `syneroym:conversation/guest-api::on-message` export, mirroring
+    /// [`Self::deliver_message`]'s shape exactly (retry budget,
+    /// `service_system` caller, silent discard on a missing export).
+    pub(crate) async fn notify_guest_message(
+        &self,
+        service_id: &str,
+        msg: syneroym_rpc::ConversationMessage,
+    ) {
+        const GUEST_API_INTERFACE: &str = "syneroym:conversation/guest-api@0.1.0";
+        const MAX_ATTEMPTS: u32 = 4;
+        const RETRY_BACKOFF: Duration = Duration::from_millis(50);
+        let payload = Self::conversation_message_json(&msg);
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            let last_attempt = attempt == MAX_ATTEMPTS;
+            let (mut store, instance, _max_instructions) = match self
+                .build_store_and_instantiate(
+                    service_id,
+                    CallerContext::service_system(service_id),
+                    self.dispatch_epoch_ticks,
+                    InstanceOptions::default(),
+                )
+                .await
+            {
+                Ok(triple) => triple,
+                Err(e) if !last_attempt => {
+                    debug!(service_id, attempt, error = %e, "conversation: failed to instantiate for on-message, retrying");
+                    time::sleep(RETRY_BACKOFF).await;
+                    continue;
+                }
+                Err(e) => {
+                    warn!(service_id, attempts = MAX_ATTEMPTS, error = %e, "conversation: failed to instantiate for on-message, giving up");
+                    return;
+                }
+            };
+
+            let (func, results_len, item) = match Self::get_wasm_func(
+                &mut store,
+                &instance,
+                Some(GUEST_API_INTERFACE),
+                "on-message",
+            ) {
+                Ok(found) => found,
+                Err(_) => {
+                    debug!(
+                        service_id,
+                        "conversation: component does not export guest-api::on-message, discarding"
+                    );
+                    return;
+                }
+            };
+            let params_iter = match &item {
+                ComponentItem::ComponentFunc(f) => f.params(),
+                _ => return,
+            };
+            let wasm_params = match crate::conversions::json_to_wasm_params(
+                params_iter,
+                &serde_json::Value::Array(vec![payload.clone()]),
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(service_id, error = %e, "conversation: could not encode on-message params");
+                    return;
+                }
+            };
+            let mut results = vec![Val::Bool(false); results_len];
+            match func.call_async(&mut store, &wasm_params, &mut results).await {
+                Ok(()) => {
+                    if let Some(msg) = Self::wasm_result_err(&results) {
+                        warn!(service_id, error = %msg, "conversation: on-message returned an error");
+                    }
+                    return;
+                }
+                Err(e) if !last_attempt => {
+                    debug!(service_id, attempt, error = %e, "conversation: on-message invocation trapped, retrying");
+                    time::sleep(RETRY_BACKOFF).await;
+                }
+                Err(e) => {
+                    warn!(service_id, attempts = MAX_ATTEMPTS, error = %e, "conversation: on-message invocation trapped, giving up");
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Invokes the deployed component's optional
+    /// `syneroym:conversation/guest-api::on-delivery-state` export --
+    /// mirrors [`Self::notify_guest_message`] exactly.
+    pub(crate) async fn notify_guest_state(
+        &self,
+        service_id: &str,
+        message_id: String,
+        state: syneroym_rpc::ConversationDeliveryState,
+    ) {
+        const GUEST_API_INTERFACE: &str = "syneroym:conversation/guest-api@0.1.0";
+        const MAX_ATTEMPTS: u32 = 4;
+        const RETRY_BACKOFF: Duration = Duration::from_millis(50);
+        let params_json = serde_json::Value::Array(vec![
+            serde_json::Value::String(message_id.clone()),
+            serde_json::Value::String(Self::conversation_state_str(state).to_string()),
+        ]);
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            let last_attempt = attempt == MAX_ATTEMPTS;
+            let (mut store, instance, _max_instructions) = match self
+                .build_store_and_instantiate(
+                    service_id,
+                    CallerContext::service_system(service_id),
+                    self.dispatch_epoch_ticks,
+                    InstanceOptions::default(),
+                )
+                .await
+            {
+                Ok(triple) => triple,
+                Err(e) if !last_attempt => {
+                    debug!(service_id, attempt, error = %e, "conversation: failed to instantiate for on-delivery-state, retrying");
+                    time::sleep(RETRY_BACKOFF).await;
+                    continue;
+                }
+                Err(e) => {
+                    warn!(service_id, attempts = MAX_ATTEMPTS, error = %e, "conversation: failed to instantiate for on-delivery-state, giving up");
+                    return;
+                }
+            };
+
+            let (func, results_len, item) = match Self::get_wasm_func(
+                &mut store,
+                &instance,
+                Some(GUEST_API_INTERFACE),
+                "on-delivery-state",
+            ) {
+                Ok(found) => found,
+                Err(_) => {
+                    debug!(
+                        service_id,
+                        "conversation: component does not export guest-api::on-delivery-state, \
+                         discarding"
+                    );
+                    return;
+                }
+            };
+            let params_iter = match &item {
+                ComponentItem::ComponentFunc(f) => f.params(),
+                _ => return,
+            };
+            let wasm_params = match crate::conversions::json_to_wasm_params(
+                params_iter,
+                &params_json,
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(service_id, error = %e, "conversation: could not encode on-delivery-state params");
+                    return;
+                }
+            };
+            let mut results = vec![Val::Bool(false); results_len];
+            match func.call_async(&mut store, &wasm_params, &mut results).await {
+                Ok(()) => {
+                    if let Some(msg) = Self::wasm_result_err(&results) {
+                        warn!(service_id, error = %msg, "conversation: on-delivery-state returned an error");
+                    }
+                    return;
+                }
+                Err(e) if !last_attempt => {
+                    debug!(service_id, attempt, error = %e, "conversation: on-delivery-state invocation trapped, retrying");
+                    time::sleep(RETRY_BACKOFF).await;
+                }
+                Err(e) => {
+                    warn!(service_id, attempts = MAX_ATTEMPTS, error = %e, "conversation: on-delivery-state invocation trapped, giving up");
                     return;
                 }
             }
@@ -2033,6 +2251,22 @@ impl RowAuthorizer for AppSandboxEngine {
         metrics::histogram!("substrate.fdae.abac_ms", "outcome" => outcome)
             .record(exec_start.elapsed().as_secs_f64() * 1000.0);
         result
+    }
+}
+
+#[async_trait::async_trait]
+impl syneroym_rpc::ConversationNotifier for AppSandboxEngine {
+    async fn notify_message(&self, service_id: &str, msg: syneroym_rpc::ConversationMessage) {
+        self.notify_guest_message(service_id, msg).await;
+    }
+
+    async fn notify_delivery_state(
+        &self,
+        service_id: &str,
+        message_id: String,
+        state: syneroym_rpc::ConversationDeliveryState,
+    ) {
+        self.notify_guest_state(service_id, message_id, state).await;
     }
 }
 
@@ -3018,6 +3252,7 @@ mod tests {
             messaging_broker: Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
             self_weak: OnceLock::new(),
             service_proxy: OnceLock::new(),
+            conversation: OnceLock::new(),
             subscriptions: DashMap::new(),
             endpoint_registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             logical_resolver: syneroym_app_orchestration::empty_resolver(),
@@ -3161,6 +3396,7 @@ mod tests {
             messaging_broker: Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
             self_weak: OnceLock::new(),
             service_proxy: OnceLock::new(),
+            conversation: OnceLock::new(),
             subscriptions: DashMap::new(),
             endpoint_registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             logical_resolver: syneroym_app_orchestration::empty_resolver(),

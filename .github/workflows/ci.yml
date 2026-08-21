@@ -66,7 +66,7 @@ jobs:
       # ========================================
       # 2. Composite Actions
       # ========================================
-      - name: Run Lints & Audit
+      - name: Run Lints, Audit & Licenses
         uses: ./.github/actions/ci-lints
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

@@ -5,14 +5,18 @@
 use std::{fmt, sync::Arc};
 
 use syneroym_app_host::{
-    AppBlobReader, AppBlobStore, AppBlobWriter, AppDataLayer, AppMessaging,
-    types::{blob_store::BlobError, data_layer::*, messaging::MessagingError},
+    AppBlobReader, AppBlobStore, AppBlobWriter, AppConversation, AppDataLayer, AppMessaging,
+    types::{
+        blob_store::BlobError, conversation::ConversationError, data_layer::*,
+        messaging::MessagingError,
+    },
 };
 use syneroym_sandbox_wasm::HostState;
 // Aliased: `data_layer::store`, `blob_store::blob_store` and
 // `messaging::host_api` each define their own `Host` trait, so importing
 // all three under their real name would collide. `HostBlobWriter`/
 // `HostBlobReader` have no such collision and need no alias.
+use syneroym_wit_interfaces::conversation_host::syneroym::conversation::conversation::Host as HostConversation;
 use syneroym_wit_interfaces::host::syneroym::{
     blob_store::blob_store::{Host as HostBlobStore, HostBlobReader, HostBlobWriter},
     data_layer::store::Host as HostStore,
@@ -331,5 +335,76 @@ impl AppMessaging for NativeAppHost {
             return Err(MessagingError::PermissionDenied);
         }
         self.0.factory.unsubscribe(&topic)
+    }
+}
+
+impl AppConversation for NativeAppHost {
+    async fn open_direct(&self, peer_address: String) -> Result<String, ConversationError> {
+        let mut state = self.0.state.lock().await;
+        HostConversation::open_direct(&mut *state, peer_address)
+            .await
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn conversations(
+        &self,
+    ) -> Result<Vec<syneroym_app_host::types::conversation::ConversationSummary>, ConversationError>
+    {
+        let mut state = self.0.state.lock().await;
+        HostConversation::conversations(&mut *state)
+            .await
+            .map(|v| v.into_iter().map(convert::conversation_summary_out).collect())
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn send(
+        &self,
+        conversation: String,
+        content_type: String,
+        body: Vec<u8>,
+    ) -> Result<String, ConversationError> {
+        let mut state = self.0.state.lock().await;
+        HostConversation::send(&mut *state, conversation, content_type, body)
+            .await
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn history(
+        &self,
+        conversation: String,
+        limit: u32,
+        cursor: Option<String>,
+    ) -> Result<syneroym_app_host::types::conversation::HistoryPage, ConversationError> {
+        let mut state = self.0.state.lock().await;
+        HostConversation::history(&mut *state, conversation, limit, cursor)
+            .await
+            .map(convert::history_page_out)
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn delivery_status(
+        &self,
+        message: String,
+    ) -> Result<syneroym_app_host::types::conversation::DeliveryState, ConversationError> {
+        let mut state = self.0.state.lock().await;
+        HostConversation::delivery_status(&mut *state, message)
+            .await
+            .map(convert::delivery_state_out)
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn outbox(
+        &self,
+    ) -> Result<Vec<syneroym_app_host::types::conversation::Message>, ConversationError> {
+        let mut state = self.0.state.lock().await;
+        HostConversation::outbox(&mut *state)
+            .await
+            .map(|v| v.into_iter().map(convert::message_out).collect())
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn retry(&self, message: String) -> Result<(), ConversationError> {
+        let mut state = self.0.state.lock().await;
+        HostConversation::retry(&mut *state, message).await.map_err(convert::conversation_error_out)
     }
 }

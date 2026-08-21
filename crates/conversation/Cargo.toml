@@ -1,0 +1,41 @@
+[package]
+name = "syneroym-conversation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+syneroym-core.workspace = true
+syneroym-data-db.workspace = true
+syneroym-data-keystore.workspace = true
+syneroym-async-queue.workspace = true
+syneroym-rpc.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+rusqlite.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
+tokio-util.workspace = true
+tracing.workspace = true
+metrics.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+vodozemac.workspace = true
+rand.workspace = true
+# `ed25519-dalek`/vodozemac's own `ed25519-dalek`/`x25519-dalek` pin
+# `rand_core` 0.6's `CryptoRngCore`, one major behind workspace `rand`
+# 0.9's own `rand_core` -- `crates/coordinator_webrtc`'s own Cargo.toml sets
+# this same precedent for the same reason.
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize.workspace = true
+hex.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

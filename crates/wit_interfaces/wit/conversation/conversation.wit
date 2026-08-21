@@ -1,0 +1,130 @@
+package syneroym:conversation@0.1.0;
+
+/// Durable, ordered, end-to-end-encrypted conversation. Distinct from
+/// `syneroym:messaging` by design: ADR-0013 section 6 forbids durable
+/// message content from depending on the pub/sub broker.
+interface conversation {
+    /// Host-minted, opaque, never parsed by a guest.
+    type conversation-id = string;
+    /// Content-derived and stable across delivery attempts: it is the
+    /// at-least-once fence both the receiver's store and the RPC dedup
+    /// layer use.
+    type message-id = string;
+
+    variant conversation-error {
+        permission-denied,
+        not-found,
+        invalid-argument(string),
+        /// No session could be established with the peer. A `send` never
+        /// returns this -- `send` does not touch the network.
+        unreachable(string),
+        quota-exceeded,
+        internal(string),
+    }
+
+    enum delivery-state { pending, delivered, failed }
+
+    /// `group` is reserved for the group slice and is never returned by
+    /// this version. Present so a guest's match is not broken by its
+    /// arrival.
+    enum conversation-kind { direct, group }
+
+    record conversation-summary {
+        id: conversation-id,
+        kind: conversation-kind,
+        /// Routing service ids ("addresses"), sorted. Exactly two for
+        /// `direct`. This is the same namespace `open-direct` takes and
+        /// `message.author` reports -- see the note on `author`.
+        participants: list<string>,
+        created-at: s64,
+        last-activity-at: s64,
+    }
+
+    record message {
+        id: message-id,
+        conversation: conversation-id,
+        /// The sender's own routing service id. It is **not** read from
+        /// the transport: the transport reports the owner's master DID,
+        /// which cannot distinguish two services of one owner. `author`
+        /// travels inside the signed, session-authenticated envelope, and
+        /// `verified` below reports whether both checks passed.
+        author: string,
+        /// The sender's own raw clock in Unix milliseconds, signed by the
+        /// sender and taken at face value (ADR-0013 section 5). Primary
+        /// sort key. Not corrected, and it may be wrong -- though a value
+        /// implausibly far in the future is refused on arrival.
+        sender-timestamp: s64,
+        /// When this substrate learned of the message. Local, never
+        /// sorted on, never sent.
+        received-at: s64,
+        content-type: string,
+        body: list<u8>,
+        state: delivery-state,
+        /// The host's own verdict: always true for stored messages. A
+        /// message whose envelope cannot be decrypted under the session
+        /// pinned to `author` or whose signature fails verification under
+        /// the key pinned for `author` is refused at the transport layer
+        /// and never stored. Always true for outgoing messages.
+        verified: bool,
+        /// Set only on `failed`.
+        last-error: option<string>,
+    }
+
+    record history-page {
+        /// Oldest first within the page, ordered by
+        /// (sender-timestamp, author, id).
+        messages: list<message>,
+        next-cursor: option<string>,
+    }
+
+    /// Returns the existing 1:1 conversation with `peer-address`, or
+    /// creates one. `peer-address` is the peer's Conversation *service*
+    /// id -- the same string a proxy call would target. Idempotent.
+    open-direct: func(peer-address: string) -> result<conversation-id, conversation-error>;
+
+    conversations: func() -> result<list<conversation-summary>, conversation-error>;
+
+    /// Writes the message durably and returns immediately with state
+    /// `pending`. Never touches the network.
+    send: func(
+        conversation: conversation-id,
+        content-type: string,
+        body: list<u8>,
+    ) -> result<message-id, conversation-error>;
+
+    history: func(
+        conversation: conversation-id,
+        limit: u32,
+        cursor: option<string>,
+    ) -> result<history-page, conversation-error>;
+
+    delivery-status: func(message: message-id) -> result<delivery-state, conversation-error>;
+
+    /// Every message this service still owes delivery for, plus every one
+    /// that gave up. The outbox surface, folded in here rather than given
+    /// a package of its own.
+    outbox: func() -> result<list<message>, conversation-error>;
+
+    /// Re-arms a `failed` message. A `pending` or `delivered` message is
+    /// `invalid-argument`.
+    retry: func(message: message-id) -> result<_, conversation-error>;
+}
+
+/// Optional guest exports. A component that exports neither still
+/// receives messages durably -- they are in the store either way.
+interface guest-api {
+    use conversation.{message-id, message, delivery-state};
+
+    on-message: func(msg: message) -> result<_, string>;
+    on-delivery-state: func(msg: message-id, state: delivery-state) -> result<_, string>;
+}
+
+world conversation-guest { import conversation; export guest-api; }
+
+/// Import-only view. Without this, every consumer inherits `guest-api`'s
+/// export requirement into its own component-type section and encoding
+/// fails -- the finding that produced `data-layer-import` and
+/// `messaging-import`.
+world conversation-import { import conversation; }
+
+world conversation-host { import conversation; export guest-api; }

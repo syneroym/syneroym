@@ -17,12 +17,16 @@ use core::fmt;
 
 use syneroym_wit_interfaces::{
     blob_store::syneroym::blob_store::blob_store as bs,
+    conversation::syneroym::conversation::conversation as conv,
     data_layer::syneroym::data_layer::store as dl, messaging::syneroym::messaging::host_api as msg,
 };
 
 use crate::{
-    AppBlobReader, AppBlobStore, AppBlobWriter, AppDataLayer, AppMessaging,
-    types::{blob_store::BlobError, data_layer::*, messaging::MessagingError},
+    AppBlobReader, AppBlobStore, AppBlobWriter, AppConversation, AppDataLayer, AppMessaging,
+    types::{
+        blob_store::BlobError, conversation::ConversationError, data_layer::*,
+        messaging::MessagingError,
+    },
 };
 
 /// The app's handle to the host in the WASM build. Zero-sized: the component
@@ -194,6 +198,51 @@ impl AppMessaging for GuestHost {
 
     async fn unsubscribe(&self, topic: String) -> Result<(), MessagingError> {
         msg::unsubscribe(&topic)
+    }
+}
+
+impl AppConversation for GuestHost {
+    async fn open_direct(&self, peer_address: String) -> Result<String, ConversationError> {
+        conv::open_direct(&peer_address)
+    }
+
+    async fn conversations(
+        &self,
+    ) -> Result<Vec<crate::types::conversation::ConversationSummary>, ConversationError> {
+        conv::conversations()
+    }
+
+    async fn send(
+        &self,
+        conversation: String,
+        content_type: String,
+        body: Vec<u8>,
+    ) -> Result<String, ConversationError> {
+        conv::send(&conversation, &content_type, &body)
+    }
+
+    async fn history(
+        &self,
+        conversation: String,
+        limit: u32,
+        cursor: Option<String>,
+    ) -> Result<crate::types::conversation::HistoryPage, ConversationError> {
+        conv::history(&conversation, limit, cursor.as_deref())
+    }
+
+    async fn delivery_status(
+        &self,
+        message: String,
+    ) -> Result<crate::types::conversation::DeliveryState, ConversationError> {
+        conv::delivery_status(&message)
+    }
+
+    async fn outbox(&self) -> Result<Vec<crate::types::conversation::Message>, ConversationError> {
+        conv::outbox()
+    }
+
+    async fn retry(&self, message: String) -> Result<(), ConversationError> {
+        conv::retry(&message)
     }
 }
 

@@ -11,4 +11,4 @@ mod host;
 
 pub use factory::NativeHostFactory;
 pub use host::{NativeAppHost, NativeBlobReader, NativeBlobWriter};
-pub use syneroym_app_host::MessageSink;
+pub use syneroym_app_host::{ConversationSink, MessageSink};

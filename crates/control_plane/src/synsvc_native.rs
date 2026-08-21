@@ -39,9 +39,9 @@ use syneroym_fdae::{MAX_FETCH_IDS, Mode, Policy};
 use syneroym_identity::{DelegationCertificate, Identity};
 use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{
-    AbacError, Ability, CandidateRow, NativeInvocation, NativeResponse, NativeService,
-    PERMISSION_DENIED_CODE, RelationshipProof, ResourceUri, RowAuthorizer, RpcError, RpcResult,
-    ServiceProxy, apply_stage4, union_masked_fields,
+    AbacError, Ability, CandidateRow, ConversationHost, NativeInvocation, NativeResponse,
+    NativeService, PERMISSION_DENIED_CODE, RelationshipProof, ResourceUri, RowAuthorizer, RpcError,
+    RpcResult, ServiceProxy, apply_stage4, union_masked_fields,
 };
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::ConfigError,
@@ -132,6 +132,14 @@ pub struct SynSvcNativeService {
     /// four native read/delete sites work unconditionally, without a
     /// `#[cfg]`.
     row_authorizer: Weak<dyn RowAuthorizer>,
+    /// The Conversation service, reached by
+    /// `dispatch_conversation`. `OnceLock`, not a constructor parameter --
+    /// `ConversationService` is constructed once, node-wide, alongside
+    /// `ControlPlaneService` itself, and adding it to `Self::new`'s
+    /// signature would touch every one of this struct's ~26 existing call
+    /// sites for a capability most of them never exercise. Unset
+    /// (`.upgrade()` always `None`) on a node running no conversation service.
+    conversation: std::sync::OnceLock<Weak<dyn ConversationHost>>,
 }
 
 impl fmt::Debug for SynSvcNativeService {
@@ -144,6 +152,99 @@ impl fmt::Debug for SynSvcNativeService {
 
 fn internal(msg: impl fmt::Display) -> RpcError {
     RpcError::InternalError(msg.to_string())
+}
+
+/// Mirrors `empty_service_proxy`: an always-empty `Weak<dyn
+/// ConversationHost>` for a node running no conversation service.
+pub(crate) fn empty_conversation_host() -> Weak<dyn ConversationHost> {
+    #[derive(Debug)]
+    struct NeverConstructed;
+    #[async_trait::async_trait]
+    impl ConversationHost for NeverConstructed {
+        async fn open_direct(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<String, syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn conversations(
+            &self,
+            _: &str,
+        ) -> Result<Vec<syneroym_rpc::ConversationSummary>, syneroym_rpc::ConversationError>
+        {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn send(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Vec<u8>,
+        ) -> Result<String, syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn history(
+            &self,
+            _: &str,
+            _: &str,
+            _: u32,
+            _: Option<String>,
+        ) -> Result<syneroym_rpc::ConversationHistoryPage, syneroym_rpc::ConversationError>
+        {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn delivery_status(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<syneroym_rpc::ConversationDeliveryState, syneroym_rpc::ConversationError>
+        {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn outbox(
+            &self,
+            _: &str,
+        ) -> Result<Vec<syneroym_rpc::ConversationMessage>, syneroym_rpc::ConversationError>
+        {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn retry(&self, _: &str, _: &str) -> Result<(), syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn prekey_bundle(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Vec<u8>, syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn peer_deliver(
+            &self,
+            _: &str,
+            _: &str,
+            _: Vec<u8>,
+        ) -> Result<Vec<u8>, syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+    }
+    Weak::<NeverConstructed>::new()
+}
+
+/// Maps `ConversationError` into the `RpcError` shape every other native
+/// dispatch arm uses.
+fn conversation_error(e: syneroym_rpc::ConversationError) -> RpcError {
+    use syneroym_rpc::ConversationError as CE;
+    match e {
+        CE::PermissionDenied => {
+            RpcError::Custom(PERMISSION_DENIED_CODE, "permission denied".to_string(), None)
+        }
+        CE::NotFound => RpcError::Custom(-32001, "not found".to_string(), None),
+        CE::InvalidArgument(msg) => RpcError::InvalidParams(msg),
+        CE::Unreachable(msg) => RpcError::Custom(-32002, msg, None),
+        CE::QuotaExceeded => RpcError::Custom(-32003, "quota exceeded".to_string(), None),
+        CE::Internal(msg) => internal(msg),
+    }
 }
 
 fn invalid_params(msg: impl fmt::Display) -> RpcError {
@@ -397,7 +498,19 @@ impl SynSvcNativeService {
             instance_cert,
             service_proxy,
             row_authorizer,
+            conversation: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Wires the Conversation service in after construction.
+    /// Called at most once per instance, from the node's own composition
+    /// root.
+    pub fn set_conversation(&self, conversation: Weak<dyn ConversationHost>) {
+        let _ = self.conversation.set(conversation);
+    }
+
+    fn current_conversation(&self) -> Weak<dyn ConversationHost> {
+        self.conversation.get().cloned().unwrap_or_else(empty_conversation_host)
     }
 
     async fn open_store(&self) -> Result<Box<dyn ServiceStore>, DataLayerError> {
@@ -1397,6 +1510,38 @@ impl SynSvcNativeService {
             other => Err(RpcError::MethodNotFound(format!("messaging/{other}"))),
         }
     }
+
+    // -- conversation ---------------------------------------------------------
+
+    /// Only the two peer-facing transport verbs -- never the guest-facing
+    /// `syneroym:conversation` surface, which a peer must not be able to
+    /// reach through this arm at all.
+    async fn dispatch_conversation(
+        &self,
+        invocation: NativeInvocation,
+    ) -> RpcResult<NativeResponse> {
+        let Some(conversation) = self.current_conversation().upgrade() else {
+            return Err(internal("this node runs no conversation service"));
+        };
+        match invocation.method.as_str() {
+            "prekey-bundle" => {
+                let bundle = conversation
+                    .prekey_bundle(&self.service_id, &invocation.caller.caller_did)
+                    .await
+                    .map_err(conversation_error)?;
+                to_payload(&serde_json::from_slice::<Value>(&bundle).map_err(internal)?)
+            }
+            "deliver" => {
+                let envelope_bytes = serde_json::to_vec(&invocation.params).map_err(internal)?;
+                let ack = conversation
+                    .peer_deliver(&self.service_id, &invocation.caller.caller_did, envelope_bytes)
+                    .await
+                    .map_err(conversation_error)?;
+                to_payload(&serde_json::from_slice::<Value>(&ack).map_err(internal)?)
+            }
+            other => Err(RpcError::MethodNotFound(format!("conversation/{other}"))),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -1408,6 +1553,7 @@ impl NativeService for SynSvcNativeService {
             "app-config" => self.dispatch_app_config(invocation).await,
             "blob-store" => self.dispatch_blob_store(invocation).await,
             "messaging" => self.dispatch_messaging(invocation).await,
+            "conversation" => self.dispatch_conversation(invocation).await,
             other => Err(RpcError::MethodNotFound(format!("unknown interface: {other}"))),
         }
     }

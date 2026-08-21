@@ -5,7 +5,7 @@
 [slice-b2-implementation-plan.md](slice-b2-implementation-plan.md) (B2),
 [slice-b3-implementation-plan.md](slice-b3-implementation-plan.md) (B3)
 
-**Overall:** Slices B1, B2, and B3 complete (2026-08-20).
+**Overall:** Slices B1, B2, B3, and B4 complete (2026-08-21) — see B4's own status below.
 
 ---
 
@@ -16,7 +16,7 @@
 | B1 | Person identity at the client gateway (G3) | **Complete (2026-08-18)** — [implementation plan](slice-b1-implementation-plan.md), evidence below | None — independently mergeable |
 | B2 | Declared service visibility (G4) | **Complete (2026-08-18)** — [implementation plan](slice-b2-implementation-plan.md), evidence below | None (ADR-0018 Accepted) |
 | B3 | The dual-build shim (D2/D3) | **Complete (2026-08-20)** — [implementation plan](slice-b3-implementation-plan.md), evidence below | None |
-| B4 | Durable messaging: interface and 1:1 delivery (G1 part 1, G2) | Pending | B3 |
+| B4 | Durable messaging: interface and 1:1 delivery (G1 part 1, G2) | **Complete (2026-08-21)** — [implementation plan](slice-b4-implementation-plan.md), evidence below | None — B3 met |
 | B5 | Group delivery (G1 part 2) | Pending | B4 |
 
 ---
@@ -520,3 +520,512 @@ test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 `cargo test --workspace --lib --bins` (sandbox on, matching B1/B2's own convention) passes except for five crates whose failing tests all bind a real socket (`syneroym-community-registry`, `syneroym-control-plane`'s TCP/HTTP health probes, `syneroym-coordinator-webrtc`'s bootstrap-page HTTP tests, `syneroym-core`'s DHT registry tests, `syneroym-mqtt-broker`'s listener-binding test) — every one fails with `Operation not permitted (os error 1)`, the sandbox's socket-bind restriction, not a code defect. Confirmed by re-running exactly those five crates' `--lib` suites with the sandbox disabled: 358/358 pass (18+231+7+90+12).
 
 **Genuine flake, pre-existing and already tracked**: `keys::tests::get_or_mint_warns_with_the_wording_matching_its_kind` (`syneroym-app-supervisor`) failed once under the full parallel run and passed cleanly (296/296) run alone immediately after — this is the exact, already-documented row in [deferred-backlog.md](../../deferred-backlog.md) §1 ("is flaky under load", thread-local `tracing` subscriber), unrelated to this slice.
+
+---
+
+## B4a — What shipped
+
+Slice B4a implements the guest-facing `syneroym:conversation` host interface
+(conversations, direct delivery, delivery state, history, outbox) and the
+Layer 3 machinery underneath it — storage, the delivery outbox worker, and
+peer-to-peer transport — against a **stated, non-production placeholder key
+agreement**. Per `D-B4-1`, B4 is not complete until B4b replaces that
+placeholder with real X3DH + Double Ratchet; everything else below (WIT
+interface, storage schema, outbox semantics, dual-build shim, cross-node
+delivery, signature-based attribution) is real and does not change shape
+when B4b lands. **B4b landed 2026-08-21 — see its own section below.**
+
+### 1. The WIT package (`crates/wit_interfaces/wit/conversation/conversation.wit`)
+
+`syneroym:conversation@0.1.0`: `conversation` interface (`open-direct`,
+`conversations`, `send`, `history`, `delivery-status`, `outbox`, `retry` —
+seven functions, `D-B3-2`'s guest vocabulary only, no resources per
+`D-B4-2`/`D-B3-6`) and `guest-api` interface (`on-message`,
+`on-delivery-state` — optional host→guest exports). Three worlds
+(`conversation-guest`, `conversation-import`, `conversation-host`), matching
+`data-layer`/`messaging`'s own `*-import` precedent. **Not** added to
+`host-environment` (additive, opt-in per component, matching the
+`syneroym:http` precedent task.md names).
+
+### 2. The `syneroym-conversation` crate (`crates/conversation/`, new)
+
+- `store.rs` — `ConversationStore`: `conversation.db` per service, sharing
+  one SQLite connection with its own `async_queue::Queue`
+  (`D-B4-13`, `Queue::from_connection`) so the atomic `send` write
+  (`D-B4-27`) is expressible at all. Tables: `conversations`, `messages`
+  (ordered `(sender_timestamp, author, id)`, deduped `UNIQUE(author, id)`),
+  `sessions` (TOFU-pinned signing key), `local_identity`, `prekey_requests`
+  (rate limiting). Per-conversation/per-service bounds (`D-B4-16`).
+- `ids.rs` — `derive_conversation_id` (order-independent over the address
+  pair, `blake3`) and `derive_message_id` (content + nonce).
+- `envelope.rs` — `DeliveryPayload` and its canonical byte encoding
+  (`D-B4-22`): every message is ed25519-signed by the sender's own
+  conversation signing key, length-prefixed so no field can be reassigned
+  across the `body` boundary. Attribution is signature-based, never
+  transport-based — replaces the transport-identity check the plan's own
+  revision 1 found could never pass (F16: `CallerContext.caller_did` is the
+  owner's Master DID, which cannot distinguish two services one owner
+  runs).
+- `crypto.rs` — the `SessionCrypto` trait (`D-B4-1`'s seam) and its **only
+  implementation so far**, `StaticEcdhSessionCrypto`: one static ECDH-P256
+  + AES-256-GCM session per peer, explicitly *not* a ratchet, no forward
+  secrecy. `ConversationService::new` refuses to construct unless
+  `ConversationConfig.allow_insecure_crypto` is `true` — a hardcoded,
+  reviewable decision in `runtime.rs`, not a `SubstrateConfig` TOML field.
+  Peer signing keys are pinned trust-on-first-use per address (`D-B4-28`);
+  a later bundle presenting a different key for a pinned address is a hard
+  failure, never a silent re-pin. **Superseded by B4b — see below**;
+  `StaticEcdhSessionCrypto`/`allow_insecure_crypto` are deleted, not kept
+  alongside the real implementation.
+- `outbox.rs` — the delivery worker: mirrors `syneroym_router::proxy_outbox`'s
+  three subtleties (F1) — a claim that never resolves is bounded by
+  `claim_count`, not `attempts`; an unreadable payload is terminal; a
+  target that no longer resolves is terminal. An unreachable peer
+  `defer`s without charging the attempt budget (`D-B4-20`), bounded
+  instead by `conversation_max_pending_age_secs` (default 30 days) from
+  the message's own creation time. A dead letter gets a metric + `warn!`,
+  matching the existing proxy outbox's own precedent — no `AlertStore`
+  write (`D-B4-25`; that store is supervisor-scoped and a node running
+  conversation with no supervisor role has nothing to write to).
+- `transport.rs` — `deliver_one` (X3DH-placeholder prekey fetch on first
+  contact, sign, encrypt, deliver, ratchet-commit only after a real `Ok`
+  per `D-B4-18`) and `peer_deliver_impl` (decrypt, verify `author` isn't
+  this service's own address — `D-B4-26`'s close of F17's same-service
+  proxy exemption — verify the signature under the pinned key, reject an
+  implausibly-future `sender_timestamp` per `D-B4-21`, atomic
+  insert-or-ignore dedup + session commit). Outbound calls build
+  `CallerContext::service_system` with `proof: None`
+  (`D-B4-23`) and refuse up front if the sending service holds no
+  unexpired instance certificate or recorded owner, naming the missing
+  certificate rather than silently falling back to the node's own key
+  (closing F10's silent-impersonation gap).
+- `lib.rs` — `ConversationService` implementing `syneroym_rpc::ConversationHost`;
+  `Weak<dyn ServiceProxy>`/notifier wiring both via `OnceLock`, since
+  `ConversationService` is built before the real `ProxyRouter` exists
+  (mirrors `AppSandboxEngine.service_proxy`'s own two-phase wiring).
+
+### 3. `syneroym-async-queue` extensions (`D-B4-27`)
+
+`Queue::transaction` (one lock, one `rusqlite::Transaction`, a `TxQueue`
+handle that enqueues through it — `Queue::enqueue` itself would
+self-deadlock if called inside a caller-held transaction on the same
+connection, since `std::sync::Mutex` is not reentrant) and `Queue::defer`
+(pushes a claimed item back to `visible_at` without charging the attempt
+budget or the crashed-worker `claim_count` bound).
+
+### 4. Host wiring
+
+- `crates/sandbox_wasm/src/host_capabilities.rs`: `HostState.conversation:
+  Weak<dyn ConversationHost>` (defaults `Weak::new()`, no `HostState::new`
+  signature change — `D-B4-24`), `with_conversation` builder,
+  `impl conversation::Host for HostState` (seven methods, delegating with
+  `component_id`/`read_only`).
+- `crates/sandbox_wasm/src/engine.rs`: `AppSandboxEngine.conversation:
+  OnceLock<Weak<dyn ConversationHost>>` (same pattern as `service_proxy`,
+  three construction sites, one `add_to_linker` line),
+  `notify_guest_message`/`notify_guest_state` (instantiate-and-call with a
+  4-attempt retry, mirroring `deliver_message`, using the existing generic
+  `json_to_wasm_params` JSON→`Val` converter rather than hand-building
+  `Val::Record` for a 10-field record), `impl ConversationNotifier for
+  AppSandboxEngine`.
+- `crates/control_plane/src/synsvc_native.rs`: sixth `dispatch` arm,
+  `dispatch_conversation` (`prekey-bundle`/`deliver` only — the seven
+  guest-facing verbs are unreachable through this arm). `SynSvcNativeService.
+  conversation: OnceLock<Weak<dyn ConversationHost>>` (not a constructor
+  parameter — `D-B4-24`'s reasoning applied to this struct's own ~26
+  existing `::new` call sites, most of which never touch conversation).
+  `ControlPlaneService.conversation` gains the matching `OnceLock`, set
+  directly at construction (unlike `service_proxy`/`row_authorizer`,
+  `ConversationService` already exists by then).
+- `crates/core/src/local_registry.rs`: `NATIVE_CAPABILITY_INTERFACES`
+  `[&str; 6]` → `[&str; 7]` (`conversation` added).
+- `crates/substrate/src/runtime.rs`: constructs `ConversationService` in
+  `build_route_handler_deps` (alongside the blob provider/logical
+  resolver), wires the engine ↔ conversation notifier/host both ways via
+  `OnceLock`, wires the real `ServiceProxy` in once `ConnectionRouter::init`
+  produces it (`setup_router`), spawns the delivery worker beside
+  `proxy_outbox_join` with matching cancellation/shutdown handling.
+
+### 4. The dual-build surface (`D-B3` precedent)
+
+- `crates/app_host/src/lib.rs`: `AppConversation` trait (seven methods,
+  mirrors the WIT interface) and `ConversationSink` (host→app, mirrors
+  `MessageSink`). `AppHost` widened to require `AppConversation` — the only
+  two implementors (`GuestHost`, `NativeAppHost`) both gain it in this
+  change (§14.5 of the plan: revisit if a third dual-build app exists
+  later that never uses conversations).
+- `crates/app_host/src/guest.rs`: `impl AppConversation for GuestHost`,
+  calling the remapped `syneroym_wit_interfaces::conversation` bindings.
+- `crates/app_host_native/src/{host,factory,convert}.rs`: `impl
+  AppConversation for NativeAppHost` (delegates to `HostState`'s own
+  `conversation::Host` impl, matching the data-layer/blob-store/messaging
+  precedent exactly); six new guest⇄host type conversions
+  (`ConversationError`/`DeliveryState`/`ConversationKind`/
+  `ConversationSummary`/`Message`/`HistoryPage`), each with a round-trip
+  unit test; `NativeHostFactory::new` gains an `Arc<ConversationService>`
+  argument and registers itself as that service's notification target
+  (`register_service_notifier`) so the delivery worker can wake a
+  natively-linked app the same way `AppSandboxEngine` wakes a wasm-hosted
+  one; `set_conversation_sink`/`impl ConversationNotifier for
+  NativeHostFactory`, forwarding `syneroym-rpc`'s plain types to the guest
+  vocabulary via two new `rpc_message_to_guest`/`rpc_delivery_state_to_guest`
+  conversions. **Permitted difference, stated in code**: the native build's
+  wake has no retry (a `Weak<dyn ConversationSink>` call), the WASM
+  build's has four — the same shape B3 documented for `MessageSink`; what
+  must match is the store contents afterward, which the parity suite
+  compares.
+
+### 5. The fixture (`test-components/dual-build-fixture/`)
+
+`wit/deps/conversation/` (file symlink, matching the existing three),
+`wit/world.wit` imports `syneroym:conversation/conversation@0.1.0` and
+exports `syneroym:conversation/guest-api@0.1.0`. `app.rs` gained eight
+`Request` variants (`open-conversation`, `send-message`, `read-history`,
+`delivery-status`, `read-outbox`, `retry-message`,
+`read-conversation-inbox`, `read-state-log`) and
+`on_conversation_message`/`on_conversation_state` (persisted through
+`data-layer`, never in-process state, `D-B3-12`) — collections named with
+underscores (`conv_inbox`/`conv_state_log`), not hyphens, after a real
+`data-layer` identifier-validation failure surfaced the hyphenated names
+during test development. `guest.rs`/`native.rs` wire the two builds'
+`guest-api`/`ConversationSink` implementations to the same two `app.rs`
+functions.
+
+### 6. Config (`crates/core/src/config.rs`)
+
+Eight `AppSandboxRole` fields, beside the existing `queue_*` ones
+(`D-B4-19`): `conversation_tick_secs` (5), `conversation_max_body_bytes`
+(262,144), `conversation_max_pending_per_conversation` (1,000),
+`conversation_max_messages_per_conversation` (100,000),
+`conversation_max_pending_age_secs` (30 days),
+`conversation_max_clock_skew_secs` (24 hours),
+`conversation_prekey_pool_size` (100),
+`conversation_prekey_requests_per_peer_per_hour` (20).
+
+---
+
+## B4a — Verification Evidence
+
+### Automated Unit Tests
+
+- **`syneroym-async-queue`** (`crates/async_queue/src/lib.rs`): 6 new
+  tests — `transaction_commits_the_callers_write_and_the_enqueue_together`,
+  `transaction_rolls_back_both_writes_on_err`,
+  `defer_does_not_advance_attempts_and_uncounts_the_claim`,
+  `a_deferred_item_is_invisible_to_claim_due_until_its_new_visible_at`,
+  plus two existing suites unaffected. 68/68 pass.
+- **`syneroym-conversation`** (new crate): 20 unit tests across
+  `ids`/`envelope`/`store`/`crypto` — conversation-id order-independence
+  and stability; message-id nonce sensitivity; the `send` transaction's
+  atomicity under injected failure; the `(author, id)` dedup index;
+  history ordering under a skewed clock with cursor paging; local-identity
+  generate-once; prekey rate limiting; canonical-bytes signature
+  round-trip and the length-prefix collision guard; a genuine
+  self-consistent prekey bundle vs. a tampered one; both sides deriving
+  the identical session and round-tripping a payload; `D-B4-28`'s
+  re-presented-key refusal; the dropped-ack re-encrypt case. 20/20 pass.
+- **`syneroym-app-host-native`** (`crates/app_host_native/src/convert.rs`):
+  6 new round-trip tests for the conversation type conversions, alongside
+  the pre-existing 13. 20/20 pass in the crate's `--lib` suite (13
+  conversion + `read_only_host_denies_every_mutating_and_egress_call`,
+  itself extended to construct a real `ConversationService`).
+
+### The parity suite (`crates/app_host_native/tests/dual_build_parity.rs`)
+
+Extended `SCENARIOS` (the byte-for-byte wasm-vs-native comparison table)
+with five deterministic conversation entries (`open-direct`'s id is
+derived solely from `(SERVICE_ID, peer_address)`, so — unlike
+`send-message`, whose message id includes a random nonce — it belongs in
+this table): `open-conversation`, and the deterministic-error shapes for
+`retry`/`delivery-status`/`read-history` against an unknown id and an
+empty `read-outbox`.
+
+Five new dedicated tests (structural, not byte-comparison, since
+`send-message`'s id is non-deterministic):
+`open_direct_is_idempotent_on_both_builds`,
+`send_writes_pending_and_appears_in_the_outbox_on_both_builds`,
+`a_body_over_the_configured_limit_is_refused_on_both_builds`,
+`retry_on_a_pending_message_is_invalid_argument_on_both_builds`, and
+**`a_signed_delivery_from_an_external_peer_is_verified_and_notifies_the_app_on_both_builds`**
+— drives a full prekey-fetch → X3DH-placeholder-session → sign → encrypt
+→ `peer_deliver` exchange from an independent third `ConversationStore`
+(standing in for a real peer) into *each* build's own `ConversationService`
+directly (the peer-facing surface, unreachable from the guest `run()`
+verb), and confirms the message lands `verified: true`, `state:
+"delivered"` in that build's own history, and that the app's own
+`on-message` export was actually called (read back through
+`read-conversation-inbox`) — the host→app direction the SCENARIOS table
+alone cannot exercise.
+
+```
+$ cargo component build --release --target wasm32-wasip2 -p syneroym-test-dual-build-fixture
+    Creating component target/wasm32-wasip1/release/syneroym_test_dual_build_fixture.wasm
+$ wasm-tools validate --features component-model target/wasm32-wasip2/release/syneroym_test_dual_build_fixture.wasm
+$ wasm-tools component wit target/wasm32-wasip2/release/syneroym_test_dual_build_fixture.wasm
+# world root: imports syneroym:data-layer/store, syneroym:blob-store/blob-store,
+# syneroym:messaging/host-api, syneroym:conversation/conversation (+ wasi:*);
+# exports syneroym:messaging/stream-types, syneroym:messaging/guest-api,
+# syneroym:conversation/guest-api, syneroym-test:dual-build-fixture/test-driver
+# -- confirms the linked component's actual import/export set, independent
+# of the linker's own claims.
+
+$ cargo test -p syneroym-app-host-native --test dual_build_parity
+running 18 tests
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ~10s
+```
+
+### Cross-node e2e (`crates/substrate/tests/conversation_e2e.rs`, new)
+
+One test, `a_message_survives_a_restart_and_delivers_once_the_peer_exists`,
+over two real `syneroym-substrate` instances (real iroh QUIC, self-hosted
+relay, wasmtime), driving the dual-build-fixture's real WASM component
+through an ordinary `SyneroymClient` — not a Rust-level fake. Proves the
+milestone's reference-scenario steps 6-8 and failure-matrix rows 3-6 in
+one flow: the peer is named (a deterministic DID) before it ever boots
+(row 5, stronger than merely offline); several consecutive polls confirm
+`pending`, never `delivered`, while the peer does not exist (row 3); the
+sending substrate is torn down and rebooted with the message still
+`pending`, and the outbox afterward holds exactly the same one item, not
+zero and not two (row 4); the peer then comes up, delivery resumes on the
+next worker tick, and the receiving side's own `read-history` shows
+`verified: true`, `state: "delivered"`, with the exact body sent; the
+app's own `on-message` export was called (`read-conversation-inbox`); and
+both sides' pub/sub broker inbox (`read-inbox`) stays empty throughout —
+asserted against the broker's own traffic, not by inspection (row 6,
+ADR-0013 §6).
+
+`Node`/`publish_endpoint`/the certified-instance-deploy pattern are copied
+from `proxy_outbox_e2e.rs` (F13 of the plan: `multi_substrate_placement_e2e.rs`'s
+`Node` pulls in the full `DeploymentPlan`/`compile`/`apply_plan`
+app-placement machinery conversation delivery does not need — one
+certified WASM service per node is enough).
+
+```
+$ cargo test -p syneroym-substrate --test conversation_e2e
+running 1 test
+test a_message_survives_a_restart_and_delivers_once_the_peer_exists ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 47.88s
+```
+
+**Not covered by this file**: 13 of the plan's §10.2 17-row table — dropped-ack
+retry, rate-limited prekey requests, per-conversation quota isolation under
+concurrent conversations, clock-skew rejection, alias canonicalization
+(`D-B4-29`, not implemented — see the deferred-backlog row), the
+same-service exemption (`D-B4-26`, unit-tested in `syneroym-conversation`
+and the parity suite but not over a real cross-node connection), and
+cross-service capability-gate denial. Rows 7-10 of the failure-and-security
+matrix are B5's per the plan's own §10.5 ledger. Recorded in
+[deferred-backlog.md](../../deferred-backlog.md) §5.
+
+### Full workspace
+
+`cargo +nightly fmt --all` clean. `cargo clippy --workspace --all-targets
+--all-features` clean (zero warnings, not just zero errors — three real
+findings fixed along the way: a `.expect()` that could have been a
+`match` instead of a post-hoc unwrap in `transport.rs`'s session
+establishment, a manual `Default` impl clippy could derive, and one
+`field_reassign_with_default` in a test).
+
+`cargo build -p syneroym-substrate --features dual_build_fixture` clean.
+`cargo test -p syneroym-substrate --features dual_build_fixture --test
+dual_build_fixture_e2e` passes (1/1) — proves the full `runtime.rs`
+composition (construction, both-directions `OnceLock` wiring, worker
+spawn) boots cleanly in a real substrate process, not just in isolation.
+
+`cargo test --workspace --lib --bins` (sandbox on, matching B1/B2/B3's own
+convention) passes except for the same five sandbox-restricted crates B3
+already documented (`syneroym-community-registry`, `syneroym-control-plane`,
+`syneroym-coordinator-webrtc`, `syneroym-core`, `syneroym-mqtt-broker`) —
+each fails with `Operation not permitted (os error 1)`, the sandbox's
+socket-bind restriction, not a code defect. Confirmed by re-running those
+five crates' `--lib` suites with the sandbox disabled: 358/358 pass
+(18+231+7+90+12) — the identical total B3 recorded, since this slice adds
+no test to any of the five. **One flake, not a regression**:
+`syneroym-fdae --lib` was reported failing inside the full concurrent
+`--workspace` run but passes 99/99 standalone immediately after — the
+same class of CPU-contention flake this milestone's own deferred-backlog
+already documents for other crates under a full concurrent run; `fdae`
+is untouched by this slice.
+
+`mise run test:e2e` (Playwright WebRTC browser suite) passes (18 + 4
+tests, exit 0) — the identical count B3 recorded; B4a touches no
+browser-facing surface.
+
+---
+
+## B4b — What shipped
+
+B4b replaces B4a's stated placeholder with real X3DH + Double Ratchet,
+closing `D-B4-1` and completing B4. `crates/conversation/src/crypto.rs` is
+rewritten around `X3dhDoubleRatchetCrypto`, built on
+[`vodozemac`](https://docs.rs/vodozemac) (Apache-2.0, matrix-org's Rust
+reimplementation of libolm; the decision itself is `D-B4-7`). License and
+API — `Account`/`Session`/`OlmMessage`/`PreKeyMessage`/
+`InboundCreationResult`/`SessionConfig`/`AccountPickle`/`SessionPickle` —
+were verified against the crate's own docs.rs pages before adoption, not
+from memory, per this project's own convention for library-internals
+claims. `StaticEcdhSessionCrypto` and `ConversationConfig.allow_insecure_crypto`
+(and its `ConversationService::new` guard) are deleted outright, not kept
+alongside the real implementation, per the plan's own §16 exit checklist.
+
+Two keys per service, neither derived from the other or from the node's
+own identity (`D-B4-8`): a fresh vodozemac `Account` (its own Curve25519
+identity plus one-time/fallback keys, driving the ratchet) and a
+separately generated ed25519 `SigningKey` (unchanged from B4a —
+`envelope.rs`'s application-level attribution, which must survive a
+future B5 relay and therefore cannot be tied to any one session,
+`D-B4-22`).
+
+`prekey_bundle()` generates a single fresh one-time key per replenishment
+request, replenishing one key at a time without discarding unused keys;
+the account is persisted immediately on any mutation (key generation or
+consumption) under a serialized `crypto_lock` so a crash can never
+re-publish or re-consume something already spent. `begin_session` verifies
+the bundle's self-signature under `sig_key` before touching it.
+`session_for_envelope` establishes an inbound session from a
+`PreKeyMessage` (vodozemac's `create_inbound_session` decrypts the first
+message as part of establishing the session — a
+`Session.pending_first_plaintext` field holds that result so `decrypt`
+doesn't re-decrypt a message the ratchet has already advanced past) or
+loads and re-verifies a pinned existing one; session lookup is keyed on the
+sender's address, and a re-presented different signing key for an
+already-pinned address is a hard failure, never a silent re-pin (`D-B4-28`).
+`encrypt`/`decrypt` take `&mut Session` (vodozemac's own `Session` requires
+mutable access to advance the ratchet), and stay synchronous with no store
+round-trip on the hot path (`D-B4-9`). `commit`/`commit_in` pickle the
+session's current ratchet state and persist it — never called before a
+delivery attempt's peer round-trip actually succeeds (`D-B4-18`): a failed
+attempt leaves the session unmutated on disk, so an independent reload for
+the retry reproduces the identical chain position and therefore the identical
+ciphertext, rather than skipping ahead of a receiver that never saw the
+first attempt.
+
+### Post-review hardening and fixes
+
+Following post-landing reviews, the implementation incorporates several
+hardening fixes across the crate:
+- **Inbound author binding and self-injection guards** (`transport.rs`):
+  `peer_deliver_impl` enforces that the decrypted `payload.author` matches
+  `session.peer_address` (preventing sender identity spoofing under validly
+  signed envelopes from other peers) and rejects `author == svc` (preventing
+  self-injection via the same-service exemption).
+- **Inbound quota gating before ratchet mutation** (`transport.rs`):
+  `peer_deliver_impl` checks per-conversation message limits before invoking
+  `session_for_envelope`, preventing one-time key consumption from being
+  persisted when an inbound message would subsequently fail quota checks.
+  Errors during quota count lookups fail closed as `ConversationError::Internal`,
+  and quota violations map to `ConversationError::QuotaExceeded`.
+- **Classification and disposition handling** (`transport.rs`):
+  `classify_disposition` explicitly recognizes RPC codes
+  `CALL_RESULT_NOT_RETAINED` (mapped to `Disposition::Delivered`) and
+  `CALL_ALREADY_RUNNING` (mapped to `Disposition::Retry`). `deliver_one`
+  safeguards against unexpected `Delivered` dispositions during prekey bundle
+  fetches.
+- **Age-based outbox backoff** (`outbox.rs`):
+  Because `async_queue::Queue::defer` un-counts `claim_count` upon deferral,
+  unreachable peer backoff derives exponentially from message age
+  (`now - received_at_ms`) stepping from 1s up to a 300s (5-minute) cap,
+  rather than relying on in-flight claim counters.
+- **Typed store error mapping** (`store.rs`, `lib.rs`):
+  Quota failures return typed `StoreError::PendingQuotaExceeded` and
+  `StoreError::MessageQuotaExceeded`, avoiding string-matching on database
+  error messages.
+- **Pinned key decoding & connection safety** (`store.rs`):
+  `pinned_sig_key` requires exact 32-byte slices rather than zero-padding short
+  blobs. Transaction operations take `&Transaction` directly, eliminating dead
+  helper functions and preventing potential re-entrancy issues.
+
+`store.rs`'s `local_identity.dh_secret` column and field are renamed to
+`account_state` in place (schema changed directly, no migration ladder —
+this project's own pre-release convention), since the column now holds a
+serialized `AccountPickle`, not a raw DH secret scalar. A new
+`ConversationStore::save_local_account` method persists a mutated account
+outside the `local_identity_or_generate` get-or-create path.
+
+`crates/conversation/src/transport.rs`'s two call sites
+(`deliver_one`/`peer_deliver_impl`) pass `&mut session` to
+`encrypt`/`decrypt`, matching the trait's new signature.
+`crates/substrate/src/runtime.rs`,
+`crates/app_host_native/src/factory.rs`, and
+`crates/app_host_native/tests/dual_build_parity.rs` drop
+`allow_insecure_crypto` from their `ConversationConfig` construction
+sites; the parity suite's own crypto-driving test
+(`a_signed_delivery_from_an_external_peer_is_verified_and_notifies_the_app_on_both_builds`)
+is updated to `X3dhDoubleRatchetCrypto` and the new mutable-`Session`
+shape.
+
+## B4b — Verification Evidence
+
+```
+$ cargo test -p syneroym-conversation --lib
+running 27 tests
+test crypto::tests::consecutive_prekey_bundle_calls_serve_distinct_keys ... ok
+test envelope::tests::a_correctly_signed_payload_verifies ... ok
+test envelope::tests::a_one_bit_change_anywhere_fails_verification ... ok
+test envelope::tests::moving_a_byte_across_the_body_length_prefix_cannot_produce_a_collision ... ok
+test envelope::tests::wrong_verifying_key_fails ... ok
+test ids::tests::conversation_id_differs_for_a_different_pair ... ok
+test ids::tests::conversation_id_is_order_independent_and_identical_on_both_sides ... ok
+test ids::tests::message_id_changes_with_any_field ... ok
+test ids::tests::message_id_changes_with_the_nonce_and_is_stable_otherwise ... ok
+test outbox::tests::backoff_curve_grows_with_age_and_caps ... ok
+test crypto::tests::a_tampered_bundle_signature_is_refused ... ok
+test crypto::tests::a_prekey_bundle_self_signature_verifies ... ok
+test crypto::tests::both_sides_establish_a_session_and_round_trip_a_payload ... ok
+test store::tests::exhausting_one_conversation_quota_leaves_another_conversation_unaffected ... ok
+test crypto::tests::an_uncommitted_encrypt_does_not_advance_the_persisted_ratchet ... ok
+test crypto::tests::a_second_message_on_an_established_session_round_trips_too ... ok
+test store::tests::get_or_create_direct_is_idempotent ... ok
+test store::tests::local_identity_is_generated_once_and_persists ... ok
+test store::tests::history_returns_the_documented_order_under_a_skewed_clock ... ok
+test store::tests::history_pages_and_reports_a_next_cursor ... ok
+test store::tests::prekey_rate_limit_refuses_past_the_configured_ceiling ... ok
+test store::tests::the_author_id_index_rejects_a_repeat ... ok
+test store::tests::the_send_transaction_is_atomic_under_injected_failure ... ok
+test crypto::tests::a_re_presented_different_signing_key_is_refused_not_re_pinned ... ok
+test crypto::tests::two_senders_each_get_an_independent_inbound_session_on_the_receiver ... ok
+test transport::tests::a_mismatched_author_in_the_payload_is_refused ... ok
+test transport::tests::self_injection_via_same_service_is_refused ... ok
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+27 tests across `crypto`, `envelope`, `ids`, `outbox`, `store`, and
+`transport` — testing prekey rotation, bundle signatures, full handshake
+and multi-message double ratchets, independent sender sessions, uncommitted
+encrypt rollback, quota isolation and atomic transactions, message history
+ordering, age-based exponential backoff with caps, author mismatch rejection,
+and same-service self-injection prevention.
+
+```
+$ cargo test -p syneroym-app-host-native --test dual_build_parity
+running 18 tests
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.46s
+```
+
+All 18 pass against real crypto, including
+`a_signed_delivery_from_an_external_peer_is_verified_and_notifies_the_app_on_both_builds`
+— driving a genuine X3DH handshake and Double Ratchet round-trip across both
+Wasm and native shims.
+
+```
+$ cargo test -p syneroym-substrate --test conversation_e2e
+running 1 test
+test a_message_survives_a_restart_and_delivers_once_the_peer_exists ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 54.15s
+```
+
+The real two-node e2e test passes across restart and offline peer recovery.
+
+### Full workspace
+
+`cargo +nightly fmt --all` clean. `cargo clippy --workspace --all-targets --all-features` clean (zero warnings).
+
+`cargo test --workspace --lib --bins` (sandbox on) passes except for socket-bind
+restricted tests; with sandbox disabled all 358/358 pass cleanly.
+
+`mise run test:e2e` (Playwright WebRTC browser suite) passes (4/4 tests, exit 0).
+
+`cargo deny check` (`licenses`, `bans`, `sources`) all pass — `vodozemac`'s
+Apache-2.0 license and its transitive dependencies (`matrix-pickle`) are within
+the workspace's allowed-license list.
+

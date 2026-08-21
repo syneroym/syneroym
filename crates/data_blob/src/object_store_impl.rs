@@ -564,7 +564,7 @@ impl DownloadSession for ObjectStoreDownloadSession {
                             self.feed_plaintext(plaintext);
                         }
                     } else {
-                        let plaintext: Vec<u8> = self.raw_buf.drain(..).collect();
+                        let plaintext = mem::take(&mut self.raw_buf);
                         self.feed_plaintext(plaintext);
                     }
                 }

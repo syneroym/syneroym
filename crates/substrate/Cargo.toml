@@ -2,6 +2,7 @@
 name = "syneroym-substrate"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [lints]
 workspace = true
@@ -35,6 +36,8 @@ syneroym-coordinator = { workspace = true, optional = true, default-features = f
 syneroym-client-gateway = { workspace = true, optional = true }
 syneroym-app-supervisor = { workspace = true, optional = true }
 syneroym-sandbox-wasm.workspace = true
+syneroym-conversation.workspace = true
+syneroym-async-queue.workspace = true
 syneroym-app-host-native = { workspace = true, optional = true }
 syneroym-test-dual-build-fixture = { workspace = true, optional = true }
 tracing.workspace = true
@@ -75,7 +78,10 @@ aws = ["syneroym-data-blob/aws"]
 # picks it up. Never enable in a release or deploy profile: it registers a
 # test-driver service reachable by any caller the router admits, with no
 # access control of its own.
-dual_build_fixture = ["dep:syneroym-app-host-native", "dep:syneroym-test-dual-build-fixture"]
+dual_build_fixture = [
+    "dep:syneroym-app-host-native",
+    "dep:syneroym-test-dual-build-fixture",
+]
 
 [dev-dependencies]
 assert_cmd.workspace = true
