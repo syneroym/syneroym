@@ -39,6 +39,7 @@ use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceType,
     },
+    conversation_host::syneroym::conversation::conversation,
     host::syneroym::{
         app_config::app_config,
         blob_store::blob_store,
@@ -760,10 +761,7 @@ impl AppSandboxEngine {
             _,
             HasSelf<HostState>,
         >(&mut linker, |state| state)?;
-        syneroym_wit_interfaces::conversation_host::syneroym::conversation::conversation::add_to_linker::<
-            _,
-            HasSelf<HostState>,
-        >(&mut linker, |state| state)?;
+        conversation::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         Ok(linker)
     }
 
