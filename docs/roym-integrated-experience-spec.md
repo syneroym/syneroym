@@ -837,3 +837,105 @@ group size. None binds at the scale this product targets.
 DAG, ordering, sync, and storage do not depend on. If MLS is ever wanted — for
 large groups, or to interoperate with other MLS clients — it replaces that one
 module. Recorded in [deferred-backlog.md](planning/deferred-backlog.md) §5.
+
+---
+
+## Appendix: Conceptual Architecture — Federated Query Graphs & Universal Search
+
+This section compares the **Federated Query Orchestrator** (`[PLT-DAP-02]`, Operator Graph) and the **Universal Search / Distributed Matching Fabric** (`[P2P-DSC]`, Search Node).
+
+At a high level, both systems solve the same core problem: **executing a query across partitioned, decentralized data nodes without centralizing raw datasets.**
+
+```mermaid
+flowchart TD
+    subgraph Orchestrator / Consumer Node
+        Q[User Query / Search Request] --> P[Query Planner / Shard Locator]
+        P --> S1[Plan Fragment 1 / Filter 1]
+        P --> S2[Plan Fragment 2 / Filter 2]
+        P --> SN[Plan Fragment N / Filter N]
+        
+        G[Gather & Merge Engine] --> V[Verify Evidence / Final Aggregation]
+        V --> R[Final Result Set]
+    end
+
+    subgraph Remote Node A
+        S1 -->|Pushdown via QUIC| E1[Edge Transform / Directory Index]
+        E1 -->|Stream Records / Listings| G
+    end
+
+    subgraph Remote Node B
+        S2 -->|Pushdown via QUIC| E2[Edge Transform / Directory Index]
+        E2 -->|Stream Records / Listings| G
+    end
+
+    subgraph Remote Node N
+        SN -->|Pushdown via QUIC| EN[Edge Transform / Directory Index]
+        EN -->|Stream Records / Listings| G
+    end
+```
+
+### 1. Common Conceptual Abstractions
+
+The two subsystems share a unified four-stage execution pipeline:
+
+| Pipeline Stage | Federated Query Orchestrator (`[PLT-DAP-02]`) | Universal Search / Matching Node (`[P2P-DSC]`) | Common Abstraction |
+|---|---|---|---|
+| **1. Planning & Placement** | DataFusion generates a logical plan, identifies physical partitions across DIDs, and splits the query into Substrait plan fragments. | Consumer node resolves search tags (category, spatial geohash) against known directories or rendezvous-hashed shard holders. | **Scatter Planner:** Maps a logical intent to a set of physical node targets and builds per-node query payloads. |
+| **2. Edge Pushdown (ELT)** | Edge node executes `syneroym:data/transform` inside a sandboxed WASM guest directly against local SQLite storage. | Directory/index node runs structured query filtering over local member listings and published intents. | **Edge Evaluation:** Pushes filtering logic to where data lives instead of pulling raw databases over the wire. |
+| **3. Streamed Exchange** | Edge nodes stream Arrow record batches back over multiplexed Iroh QUIC streams (`syneroym:data/stream`) with backpressure. | Target nodes stream matching listing records over multiplexed QUIC streams with response paging. | **Framed Data Stream:** Point-to-point, backpressured transport of typed record batches over QUIC. |
+| **4. Ingestion & Merging** | Orchestrator merges streams, executes remaining non-pushable operations (cross-node joins, global sorting, top-$k$). | Consumer node merges parallel results, ranks listings by trust/relevance, and presents them to the UI. | **Gather & Reduction:** Merging, ranking, and deduplication of parallel result streams. |
+
+---
+
+### 2. Deep Differences Not Easily Reconciled
+
+While their pipeline shapes match, the two systems serve fundamentally different operational models that resist a naive single-implementation unification:
+
+#### A. Zero-Trust Verification vs. Relational Correctness
+* **Federated SQL (`[PLT-DAP-02]`):** Operates in a **closed or semi-trusted administrative domain** (e.g. across nodes belonging to one SynApp deployment). The engine assumes that an edge node's returned numbers and aggregations are mathematically honest if the DID transport is authorized.
+* **Universal Search (`[P2P-DSC]`):** Operates in an **open, adversarial zero-trust network**. The search node **cannot trust** the directory's assertions. Every individual listing must carry independent cryptographic proofs (ed25519 author signatures, verifiable credentials, unexpired timestamps, non-revocation proofs). The gather stage is fundamentally a *cryptographic verification engine* first, and a *record merger* second.
+
+#### B. Complete Sets vs. Best-Effort Top-$k$ Ranking
+* **Federated SQL:** Relational queries demand **exact completeness and sound semantics**. If one partition fails or times out during a `SUM()` or `JOIN`, the entire query fails or returns an explicit error.
+* **Universal Search:** Search operates under **best-effort, loss-tolerant semantics**. If 3 out of 10 directories are offline or slow, the search yields partial results from the remaining 7, ranking candidates by freshness, reputation score (`[P2P-REP]`), and proximity without failing the user request.
+
+#### C. Schema Uniformity vs. Heterogeneous Extensible Schemas
+* **Federated SQL:** Relies on strict, compile-time relational schemas (Arrow schemas, SQL table column types) known to the DataFusion planner.
+* **Universal Search:** Operates over semi-structured, evolving entity schemas (e.g., extensible JSON Action Cards, arbitrary service tags, localized taxonomies) where unknown attributes must degrade gracefully in the client UI.
+
+#### D. State Pushdown vs. Index Synchronization
+* **Federated SQL:** Pushdown is ephemeral: send a query fragment, evaluate against hot tables, discard execution context.
+* **Universal Search:** Nodes maintain persistent inverted indices, rendezvous cache shards, and spatial cell buckets requiring background TTL management, gossip synchronization, and cache eviction.
+
+---
+
+### 3. Engine Footprint: "SQLite for All" vs. Heavy Analytical / Search Engines
+
+Syneroym nodes are designed to be **extremely lightweight and resource-frugal** (running on edge devices, home servers, and mobile webviews) while preserving **strict per-app encryption and single-file isolation**.
+
+This motivates a critical design choice: **relying on embedded SQLite capabilities for all storage and query needs rather than introducing heavy engines like Apache DataFusion or Tantivy.**
+
+| Capability | Heavy External Engine | SQLite-for-All Alternative | Trade-offs & Benefits for Syneroym |
+|---|---|---|---|
+| **Text Search** | **Tantivy** (Lucene-style inverted index files) | **SQLite FTS5** (built-in full-text index) | Tantivy requires separate index files outside SQLite, complicating the per-app KEK/DEK encryption model and backup/WAL replication. FTS5 indexes live **inside the encrypted database file** and replicate automatically. BM25 ranking is built-in. |
+| **Vector / Embeddings** | Standalone vector index daemon | **`sqlite-vec`** (C extension) | Seamlessly integrates vector search and agent memory directly inside the app's encrypted SQLite instance with zero network or process overhead. |
+| **Relational / Analytical Query** | **Apache DataFusion + Substrait** | **Parameterized SQL Pushdown + `AggregationPipeline`** | DataFusion + Arrow + Substrait add tens of megabytes to the binary and substantial memory allocation during query planning. For edge workloads, simple parameterized SQL queries with in-memory top-$k$ merging eliminate this overhead completely. |
+
+#### Why "SQLite for All" Fits Syneroym:
+1. **Zero Index Leakage & Single Security Perimeter:** When full-text search (FTS5) and vector embeddings (`sqlite-vec`) reside inside SQLite, the host's DEK encryption and access-control guarantees apply universally. No plaintext index data or secondary index files ever escape to the filesystem.
+2. **Unified Durability and Replication (`[PLT-RED]`):** Milestone 7 replicates state via SQLite WAL streaming over QUIC. With SQLite-for-all, search indexes and relational tables are replicated and snapshotted simultaneously with zero extra replication machinery.
+3. **Scatter-Gather over Shards:** Real-world cross-installation queries in Roym are almost exclusively **fan-out filters with top-$k$ ranking** (e.g. matching listings by area and category). An orchestrator node simply issues parallel parameterized queries over `data-layer` proxies and performs an in-memory heap merge of the results, making a heavy distributed query compiler unnecessary for typical node scales.
+
+---
+
+### 4. Unified Architectural Strategy
+
+Rather than forcing complex external engines into the node footprint, Syneroym treats search, discovery, and query execution as **specialized query patterns over a single unified SQLite + QUIC substrate**:
+
+1. **Shared Storage Engine:** All local state (relational data, FTS5 text indexes, `sqlite-vec` embeddings, and directory listings) is hosted in single-file, DEK-encrypted SQLite databases.
+2. **Shared Transport Foundation:** All cross-node scatter-gather queries use the same underlying Iroh QUIC multiplexed streams (`[PLT-DAP-05]`), connection pooling, and token-based DID authentication.
+3. **Shared WASM Sandbox Pipeline:** Edge-computed transformations or custom filters execute within `syneroym-sandbox-wasm`.
+4. **Decoupled Application Logic:**
+   - **Internal SynApp Relational Queries:** Use standard SQL / `AggregationPipeline` pushdown over the `data-layer` interface.
+   - **Cross-Installation Discovery (`[P2P-DSC]`):** Uses the **Signed Publication & Matching Fabric** pattern, where FTS5/tag-filtered candidate listings are streamed back and client-verified for signatures, credentials, and revocations during the reduction step.
+
