@@ -909,17 +909,35 @@ While their pipeline shapes match, the two systems serve fundamentally different
 
 ---
 
-### 3. Engine Footprint: "SQLite for All" vs. Heavy Analytical / Search Engines
+### 3. Engine Footprint & The Impedance Mismatch of External Engines
 
 Syneroym nodes are designed to be **extremely lightweight and resource-frugal** (running on edge devices, home servers, and mobile webviews) while preserving **strict per-app encryption and single-file isolation**.
 
-This motivates a critical design choice: **relying on embedded SQLite capabilities for all storage and query needs rather than introducing heavy engines like Apache DataFusion or Tantivy.**
+Beyond binary size and memory footprint, there is a fundamental **architectural impedance mismatch** between off-the-shelf analytical query engines (Apache DataFusion, Arrow, Substrait, Tantivy) and Syneroym's execution model:
 
-| Capability | Heavy External Engine | SQLite-for-All Alternative | Trade-offs & Benefits for Syneroym |
+#### A. The Impedance Mismatches
+
+1. **Storage & Transport Layer Mismatch:**
+   - *Standard Engines:* Assume unencrypted columnar files (Parquet/Arrow IPC), accessible via standard filesystem paths or object stores (S3/HDFS), read by memory-mapped file handles or multi-threaded scanning threads.
+   - *Syneroym Reality:* All persistent state is encapsulated inside **DEK-encrypted single-file SQLite databases** and content-addressed encrypted blobs behind WASM WIT host boundaries (`data-layer`, `blob-store`). Raw files cannot be memory-mapped or scanned directly by external C/Rust engines without bypassing the per-app encryption and capability fences.
+   - *P2P Networking:* Data exchange across nodes flows over **Iroh QUIC streams** with authenticated DIDs, session tokens, and route preambles—not raw Arrow Flight / gRPC endpoints.
+
+2. **Metadata & Topology Awareness:**
+   - *Standard Engines:* Rely on traditional catalog metadata (table schemas, partition keys, static table providers).
+   - *Syneroym Reality:* The planner optimizes across a **dynamic P2P mesh**:
+     - Service discovery and placement topology (Registry records, DIDs, shard/replica mappings).
+     - Network topology: direct vs. relay hops, latency estimates, and online/offline reachability.
+   - Injecting this dynamic mesh topology into an off-the-shelf engine like DataFusion requires rewriting its catalog, `TableProvider`, and physical optimization layers from scratch.
+
+3. **Adversarial Verification vs. Closed Federation:**
+   - Standard distributed execution assumes trusted compute workers that return sound, honest intermediate record batches.
+   - In cross-installation search (`[P2P-DSC]`), data is inherently untrusted. The gather stage must perform **cryptographic signature verification, credential expiration checks, and revocation evaluations** on returned listings. DataFusion physical operators have no concept of zero-trust record verification.
+
+| Capability | Heavy External Engine | SQLite-for-All Alternative | Trade-offs & Architectural Assessment |
 |---|---|---|---|
-| **Text Search** | **Tantivy** (Lucene-style inverted index files) | **SQLite FTS5** (built-in full-text index) | Tantivy requires separate index files outside SQLite, complicating the per-app KEK/DEK encryption model and backup/WAL replication. FTS5 indexes live **inside the encrypted database file** and replicate automatically. BM25 ranking is built-in. |
-| **Vector / Embeddings** | Standalone vector index daemon | **`sqlite-vec`** (C extension) | Seamlessly integrates vector search and agent memory directly inside the app's encrypted SQLite instance with zero network or process overhead. |
-| **Relational / Analytical Query** | **Apache DataFusion + Substrait** | **Parameterized SQL Pushdown + `AggregationPipeline`** | DataFusion + Arrow + Substrait add tens of megabytes to the binary and substantial memory allocation during query planning. For edge workloads, simple parameterized SQL queries with in-memory top-$k$ merging eliminate this overhead completely. |
+| **Text Search** | **Tantivy** (Lucene-style inverted index files) | **SQLite FTS5** (built-in full-text index) | Tantivy writes separate index files, breaking SQLite DEK encryption and WAL replication (`[PLT-RED]`). FTS5 indexes live **inside the encrypted database** and replicate automatically. BM25 ranking is built-in. |
+| **Vector / Embeddings** | Standalone vector daemon | **`sqlite-vec`** (C extension) | Integrates vector search and agent memory directly inside the app's encrypted SQLite instance with zero extra process or network overhead. |
+| **Relational / Analytical Query** | **Apache DataFusion + Substrait** | **Parameterized SQL Pushdown + `AggregationPipeline`** | DataFusion + Arrow + Substrait add tens of megabytes to the binary and heavy memory allocation during query planning. For edge workloads, simple parameterized SQL pushdown with in-memory top-$k$ merging eliminates this overhead completely. |
 
 #### Why "SQLite for All" Fits Syneroym:
 1. **Zero Index Leakage & Single Security Perimeter:** When full-text search (FTS5) and vector embeddings (`sqlite-vec`) reside inside SQLite, the host's DEK encryption and access-control guarantees apply universally. No plaintext index data or secondary index files ever escape to the filesystem.
@@ -928,14 +946,85 @@ This motivates a critical design choice: **relying on embedded SQLite capabiliti
 
 ---
 
-### 4. Unified Architectural Strategy
+### 4. Beyond Cross-Node SQL: Two-Tier Intent & Document Aggregation
 
-Rather than forcing complex external engines into the node footprint, Syneroym treats search, discovery, and query execution as **specialized query patterns over a single unified SQLite + QUIC substrate**:
+SQL is a relational abstraction designed for a single, uniform tabular database with fixed schemas. In a decentralized, multi-installation mesh, data is inherently **heterogeneous and multi-modal**:
+- **Document / JSON Collections:** Semi-structured, evolving entity schemas (Action Cards, listings, custom service configurations) with nested JSON attributes (`data-layer`).
+- **Lexical & Full-Text Data:** Text descriptions, guild posts, service catalogs indexed via **SQLite FTS5**.
+- **Vector Embeddings:** Episodic memory, skill vectors, and semantic discovery representations indexed via **`sqlite-vec`**.
+- **Cryptographic Attestations:** UCAN delegation chains, verifiable credentials, and signed interaction receipts.
 
-1. **Shared Storage Engine:** All local state (relational data, FTS5 text indexes, `sqlite-vec` embeddings, and directory listings) is hosted in single-file, DEK-encrypted SQLite databases.
+Because node schemas evolve independently across installations, **raw SQL is not the cross-node wire protocol.** Instead, the architecture establishes a **Two-Tier Model**:
+
+```mermaid
+flowchart TD
+    subgraph Tier 1: P2P Intent & Document Pipeline (Across Nodes)
+        Intent[User / App Intent Filter]
+        Planner[Lightweight Rule Planner]
+        Merger[Reduction & Cryptographic Evidence Verifier]
+        
+        Intent --> Planner
+        Planner -->|Structured Intent Payload| NodeA[Node A: Directory]
+        Planner -->|Vector Cosine Spec| NodeB[Node B: Vector Index]
+        Planner -->|JSON Filter / Match Doc| NodeC[Node C: Service Store]
+        
+        NodeA -->|Signed Publications| Merger
+        NodeB -->|Top-k Vector Matches| Merger
+        NodeC -->|JSON Documents| Merger
+    end
+
+    subgraph Tier 2: Local Node Pushdown (Inside SQLite)
+        NodeA --> PushA[Translate to SQLite FTS5 / SQL]
+        NodeB --> PushB[Translate to sqlite-vec Distance]
+        NodeC --> PushC[Translate to AggregationPipeline / SQL]
+    end
+```
+
+#### The Two Tiers Defined:
+1. **Tier 1 — The P2P Wire Protocol (Structured Intent & Document Pipelines):**
+   - Cross-node requests express queries as **Intent Filters and Document Aggregation stages** (e.g., `$match`, `$project`, `$spatial_near`, `$text_search`, `$vector_near`, `$required_credentials`).
+   - This format is self-describing, schema-flexible, and natively carries cryptographic proofs and JSON Action Cards over Iroh QUIC streams.
+2. **Tier 2 — Local Node Storage & Execution (SQLite Engine Compilation):**
+   - SQL is an **internal storage execution detail** of an individual node's SQLite database.
+   - When a node receives a structured intent, its local host engine compiles it into whichever SQLite capability best executes it:
+     - Document filters $\rightarrow$ Parameterized SQL + SQLite JSON operators.
+     - Text keywords $\rightarrow$ SQLite **FTS5** (BM25 search).
+     - Semantic embeddings $\rightarrow$ **`sqlite-vec`** (cosine/L2 distance).
+     - Relational transformations $\rightarrow$ `AggregationPipeline` (`GROUP BY`, views).
+
+---
+
+### 5. Planning Architecture: Taking Lessons from Calcite / Cascades
+
+Rather than embedding a monolithic analytical framework or writing naive ad-hoc scatter-gather scripts, Syneroym adopts the **proven conceptual patterns of extensible query planners (like Apache Calcite and the Volcano/Cascades framework)** stripped of heavy runtime baggage:
+
+1. **Logical Plan Representation (Intent & Relational AST):**
+   - Queries (whether document filters, relational aggregations, spatial bounds, or semantic searches) are represented as a lightweight, clean AST (Project, Filter, Aggregate, SpatialScan, TextMatch, VectorScan).
+2. **Uniform Node Baseline & Topology-Aware Rules:**
+   - Every Syneroym Substrate node provides the **identical uniform baseline** (SQLite SQL, FTS5 full-text, `sqlite-vec`, and WASM sandbox execution). There is no need for per-node operator capability negotiation.
+   - Transformation rules operate directly over **App Supervisor & Registry metadata**:
+     - *Uniform Pushdown Rule:* Translate logical AST nodes into local SQLite parameterized queries (SQL, FTS5 match, `sqlite-vec` KNN) executed directly at the target node.
+     - *Placement & Routing Rule:* Use shard/rendezvous routing tables to partition the scan into physical DIDs.
+     - *Topology & Latency Rule:* Select nearest healthy read-replicas (`[PLT-RED]`) or direct-connection paths over high-latency multi-hop relays.
+3. **Execution as Streams over Iroh:**
+   - The physical plan executes as an asynchronous operator graph. Remote scan operators open multiplexed Iroh QUIC streams to target DIDs, receiving typed JSON/Arrow-lite frames.
+4. **Unified In-Memory Reducer:**
+   - The orchestrator executes the top of the physical tree: streaming hash-aggregates, in-memory heap-based top-$k$ merges, and cryptographic evidence verification pipelines.
+
+---
+
+### 6. Unified Architectural Summary
+
+| Scope | Language / Wire Format | Execution Engine |
+|---|---|---|
+| **Local Service Storage (Within 1 Node)** | Parameterized SQL, Raw SQL (privileged DDL), SQLite JSON | `rusqlite` + SQLCipher (single-file encrypted DB) |
+| **Cross-Node Service Dispatch** | Structured JSON Aggregation / Intent Documents (`data-layer`, `[P2P-DSC]`) | Multiplexed Iroh QUIC streams |
+| **Cross-Node Reducer & Verification** | Streaming In-Memory Aggregator (Merge Sort, Top-$k$, Evidence Verification) | Substrate In-Memory Reducer |
+
+1. **Unified Storage & Security Boundary:** All local state (relational data, FTS5 text indexes, `sqlite-vec` embeddings, and directory listings) is hosted in single-file, DEK-encrypted SQLite databases.
 2. **Shared Transport Foundation:** All cross-node scatter-gather queries use the same underlying Iroh QUIC multiplexed streams (`[PLT-DAP-05]`), connection pooling, and token-based DID authentication.
-3. **Shared WASM Sandbox Pipeline:** Edge-computed transformations or custom filters execute within `syneroym-sandbox-wasm`.
+3. **Lightweight Topology-Aware Planner:** A bespoke, lightweight rule-based planner inspired by Volcano/Calcite that translates queries into structured intent pushdowns and maps them to target DIDs based on live Registry state.
 4. **Decoupled Application Logic:**
-   - **Internal SynApp Relational Queries:** Use standard SQL / `AggregationPipeline` pushdown over the `data-layer` interface.
+   - **Internal SynApp Queries:** Use structured document filters / `AggregationPipeline` pushdown over the `data-layer` interface.
    - **Cross-Installation Discovery (`[P2P-DSC]`):** Uses the **Signed Publication & Matching Fabric** pattern, where FTS5/tag-filtered candidate listings are streamed back and client-verified for signatures, credentials, and revocations during the reduction step.
 
