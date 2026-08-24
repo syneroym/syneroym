@@ -290,6 +290,7 @@ impl ConversationStore {
                 sig_key         BLOB NOT NULL,
                 joined_epoch    INTEGER NOT NULL,
                 removed_epoch   INTEGER,
+                epoch_confirmed INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (conversation_id, member_address)
              );
 
@@ -1057,39 +1058,46 @@ impl ConversationStore {
         conversation_id: &str,
         payload: &MembershipPayload,
     ) -> Result<()> {
-        let existing: Option<(i64, Option<i64>, Vec<u8>)> = tx
+        let existing: Option<(i64, Option<i64>, bool)> = tx
             .query_row(
-                "SELECT joined_epoch, removed_epoch, sig_key FROM group_members WHERE \
+                "SELECT joined_epoch, removed_epoch, epoch_confirmed FROM group_members WHERE \
                  conversation_id = ?1 AND member_address = ?2",
                 params![conversation_id, payload.subject_address],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)),
             )
             .optional()?;
 
         let new_epoch = payload.new_epoch as i64;
         if payload.action == "add" {
             match existing {
-                Some((joined, removed, sig_key)) => {
+                Some((joined, removed, epoch_confirmed)) => {
                     // A row seeded from a `GroupKeyPayload` (see
                     // `peer_deliver_impl`) is a best-effort guess: the payload
                     // carries only member *addresses*, not each bystander's
                     // true join epoch, so a member first learned about
                     // through a later key message can end up placeholder-
                     // seeded at a *later* epoch than it actually joined.
-                    // `sig_key` still holding the `zeroblob(32)` placeholder
-                    // is exactly the signal that this row was never confirmed
-                    // by a real, owner-signed DAG entry — the entry being
-                    // applied right now always outranks a guess like that,
-                    // regardless of epoch ordering. The ordering guard below
+                    // `epoch_confirmed` staying false is exactly the signal
+                    // that this row's `joined_epoch` was never confirmed by a
+                    // real, owner-signed DAG entry — the entry being applied
+                    // right now always outranks a guess like that, regardless
+                    // of epoch ordering. This must be a signal separate from
+                    // `sig_key`: TOFU-pinning a peer's signing key (see
+                    // `pin_member_sig_key_if_placeholder`) confirms the *key*
+                    // the moment that peer is first talked to directly, well
+                    // before the real DAG entry naming their true join epoch
+                    // has necessarily arrived — treating that as "confirmed"
+                    // let a lower, correct epoch from the real entry lose to
+                    // the ordering guard below forever. That guard
                     // (`new_epoch >= prior_epoch`) is only meaningful between
                     // two *real* entries, guarding against a stale replay.
-                    let unconfirmed = sig_key.as_slice() == [0u8; 32].as_slice();
+                    let unconfirmed = !epoch_confirmed;
                     let prior_epoch = removed.unwrap_or(joined);
                     if unconfirmed || new_epoch >= prior_epoch {
                         tx.execute(
                             "UPDATE group_members SET sig_key = ?3, joined_epoch = ?4, \
-                             removed_epoch = NULL WHERE conversation_id = ?1 AND member_address = \
-                             ?2",
+                             removed_epoch = NULL, epoch_confirmed = 1 WHERE conversation_id = ?1 \
+                             AND member_address = ?2",
                             params![
                                 conversation_id,
                                 payload.subject_address,
@@ -1102,7 +1110,8 @@ impl ConversationStore {
                 None => {
                     tx.execute(
                         "INSERT INTO group_members (conversation_id, member_address, sig_key, \
-                         joined_epoch, removed_epoch) VALUES (?1, ?2, ?3, ?4, NULL)",
+                         joined_epoch, removed_epoch, epoch_confirmed) VALUES (?1, ?2, ?3, ?4, \
+                         NULL, 1)",
                         params![
                             conversation_id,
                             payload.subject_address,
@@ -1114,13 +1123,13 @@ impl ConversationStore {
             }
         } else if payload.action == "remove" {
             match existing {
-                Some((joined, removed, sig_key)) => {
-                    let unconfirmed = sig_key.as_slice() == [0u8; 32].as_slice();
+                Some((joined, removed, epoch_confirmed)) => {
+                    let unconfirmed = !epoch_confirmed;
                     let prior_epoch = removed.unwrap_or(joined);
                     if unconfirmed || new_epoch > prior_epoch {
                         tx.execute(
-                            "UPDATE group_members SET removed_epoch = ?3 WHERE conversation_id = \
-                             ?1 AND member_address = ?2",
+                            "UPDATE group_members SET removed_epoch = ?3, epoch_confirmed = 1 \
+                             WHERE conversation_id = ?1 AND member_address = ?2",
                             params![conversation_id, payload.subject_address, new_epoch,],
                         )?;
                     }
@@ -1135,7 +1144,8 @@ impl ConversationStore {
                     // succeeds.
                     tx.execute(
                         "INSERT INTO group_members (conversation_id, member_address, sig_key, \
-                         joined_epoch, removed_epoch) VALUES (?1, ?2, ?3, ?4, ?4)",
+                         joined_epoch, removed_epoch, epoch_confirmed) VALUES (?1, ?2, ?3, ?4, \
+                         ?4, 1)",
                         params![
                             conversation_id,
                             payload.subject_address,

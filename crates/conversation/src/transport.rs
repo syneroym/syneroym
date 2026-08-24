@@ -699,7 +699,13 @@ impl ConversationService {
             // not blindly to `next_seq` — a page can contain an entry that
             // fails validation (e.g. still-arriving membership), and the
             // peer will keep offering that same page until it is resolved.
+            // Once any entry fails, stop advancing: a later entry in the
+            // same page succeeding must not push the cursor past the
+            // failure, or it is never retried again -- entries only fail
+            // transiently here (a dependency, like a member's real join
+            // epoch, that a still-in-flight earlier entry will resolve).
             let mut highest_applied_seq = cursor;
+            let mut saw_failure = false;
             for (seq, entry) in resp.seqs.into_iter().zip(resp.entries) {
                 if entry.conversation_id != conversation {
                     continue;
@@ -707,17 +713,25 @@ impl ConversationService {
                 let res = crate::group::validate_and_insert(&store, service_id, &conv, &entry);
                 match res {
                     Ok((_, Some(msg))) => {
-                        highest_applied_seq = highest_applied_seq.max(seq);
+                        if !saw_failure {
+                            highest_applied_seq = highest_applied_seq.max(seq);
+                        }
                         self.notify_message(service_id, msg.into_wire()).await;
                     }
                     Ok(_) => {
-                        highest_applied_seq = highest_applied_seq.max(seq);
+                        if !saw_failure {
+                            highest_applied_seq = highest_applied_seq.max(seq);
+                        }
                     }
                     Err(e) => {
+                        saw_failure = true;
                         tracing::warn!(
                             service = service_id,
                             entry_id = entry.entry_id,
                             error = ?e,
+                            epoch = entry.epoch,
+                            kind = ?entry.kind,
+                            payload = ?entry.payload,
                             "group sync validate_and_insert failed"
                         );
                     }

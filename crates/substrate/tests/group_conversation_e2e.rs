@@ -390,7 +390,10 @@ async fn three_members_converge_to_byte_identical_transcripts() {
     let _ =
         fixture_run(&node_c, &did_c, &json!({"op": "sync-now", "conversation": group_id})).await;
 
-    // Wait until all 3 nodes have 3 messages in history
+    // Wait until all 3 nodes have 3 messages in history *and* 3 membership
+    // events -- the two DAGs are gossiped over the same sync-now round but
+    // are separate entry chains, so message convergence alone does not
+    // guarantee membership-history has caught up too.
     let converged = wait_until(Duration::from_secs(30), || {
         let node_a = &node_a;
         let node_b = &node_b;
@@ -430,11 +433,34 @@ async fn three_members_converge_to_byte_identical_transcripts() {
             let len_a = hist_a["ok"]["messages"].as_array().map_or(0, |v| v.len());
             let len_b = hist_b["ok"]["messages"].as_array().map_or(0, |v| v.len());
             let len_c = hist_c["ok"]["messages"].as_array().map_or(0, |v| v.len());
-            len_a == 3 && len_b == 3 && len_c == 3
+
+            let mem_a = fixture_run(
+                node_a,
+                &did_a,
+                &json!({"op": "membership-history", "conversation": group_id}),
+            )
+            .await;
+            let mem_b = fixture_run(
+                node_b,
+                &did_b,
+                &json!({"op": "membership-history", "conversation": group_id}),
+            )
+            .await;
+            let mem_c = fixture_run(
+                node_c,
+                &did_c,
+                &json!({"op": "membership-history", "conversation": group_id}),
+            )
+            .await;
+            let mlen_a = mem_a["ok"]["events"].as_array().map_or(0, |v| v.len());
+            let mlen_b = mem_b["ok"]["events"].as_array().map_or(0, |v| v.len());
+            let mlen_c = mem_c["ok"]["events"].as_array().map_or(0, |v| v.len());
+
+            len_a == 3 && len_b == 3 && len_c == 3 && mlen_a == 3 && mlen_b == 3 && mlen_c == 3
         }
     })
     .await;
-    assert!(converged, "all three nodes must converge to 3 messages");
+    assert!(converged, "all three nodes must converge to 3 messages and 3 membership events");
 
     // Read histories and compare message bodies and order
     let hist_a = fixture_run(
