@@ -224,11 +224,7 @@ fn create_signed_info_with_full_addr(
     service_id: &str,
     endpoint_addr: &EndpointAddr,
 ) -> SignedEndpointInfo {
-    let mut pruned_addr = EndpointAddr::new(endpoint_addr.id);
-    for da in endpoint_addr.addrs.iter().take(2) {
-        pruned_addr.addrs.insert(da.clone());
-    }
-    let endpoint_addr_bytes = serde_json::to_vec(&pruned_addr).unwrap();
+    let endpoint_addr_bytes = serde_json::to_vec(endpoint_addr).unwrap();
     let info = EndpointInfo {
         service_id: service_id.to_string(),
         substrate_id: service_id.to_string(),
