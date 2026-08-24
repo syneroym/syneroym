@@ -7363,6 +7363,7 @@ dependencies = [
  "syneroym-data-blob",
  "syneroym-data-db",
  "syneroym-data-keystore",
+ "syneroym-identity",
  "syneroym-mqtt-broker",
  "syneroym-rpc",
  "syneroym-sandbox-wasm",
@@ -7536,6 +7537,7 @@ dependencies = [
 name = "syneroym-conversation"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
  "blake3",

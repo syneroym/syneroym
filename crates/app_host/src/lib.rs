@@ -21,7 +21,10 @@ pub mod types;
 
 use types::{
     blob_store::BlobError,
-    conversation::{ConversationError, ConversationSummary, DeliveryState, HistoryPage, Message},
+    conversation::{
+        ConversationError, ConversationSummary, DeliveryState, HistoryPage, MembershipEvent,
+        Message,
+    },
     data_layer::*,
     messaging::MessagingError,
 };
@@ -212,6 +215,29 @@ pub trait AppConversation {
     ) -> impl Future<Output = Result<DeliveryState, ConversationError>> + Send;
     fn outbox(&self) -> impl Future<Output = Result<Vec<Message>, ConversationError>> + Send;
     fn retry(&self, message: String) -> impl Future<Output = Result<(), ConversationError>> + Send;
+    fn create_group(&self) -> impl Future<Output = Result<String, ConversationError>> + Send;
+    fn add_member(
+        &self,
+        conversation: String,
+        member_address: String,
+    ) -> impl Future<Output = Result<(), ConversationError>> + Send;
+    fn remove_member(
+        &self,
+        conversation: String,
+        member_address: String,
+    ) -> impl Future<Output = Result<(), ConversationError>> + Send;
+    fn members(
+        &self,
+        conversation: String,
+    ) -> impl Future<Output = Result<Vec<String>, ConversationError>> + Send;
+    fn membership_history(
+        &self,
+        conversation: String,
+    ) -> impl Future<Output = Result<Vec<MembershipEvent>, ConversationError>> + Send;
+    fn sync_now(
+        &self,
+        conversation: String,
+    ) -> impl Future<Output = Result<(), ConversationError>> + Send;
 }
 
 /// The host -> app direction for conversations.

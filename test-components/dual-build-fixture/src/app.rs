@@ -105,13 +105,12 @@ pub enum Request {
     AbortUpload {
         chunks: Vec<String>,
     },
-    /// M06B slice B4: idempotent -- proves the id is stable across repeat
-    /// calls.
+    /// Proves the conversation id is stable across repeat calls.
     OpenConversation {
         peer_address: String,
     },
-    /// M06B slice B4: returns the message id and its state (`pending`
-    /// immediately -- `send` never touches the network).
+    /// Returns the message id and its state (pending immediately -- send never
+    /// touches the network).
     SendMessage {
         conversation: String,
         body: String,
@@ -123,13 +122,32 @@ pub enum Request {
     DeliveryStatus {
         message: String,
     },
-    /// M06B slice B4 (G2): the outbox surface.
+    /// The outbox surface.
     ReadOutbox,
     RetryMessage {
         message: String,
     },
+    CreateGroup,
+    AddMember {
+        conversation: String,
+        member_address: String,
+    },
+    RemoveMember {
+        conversation: String,
+        member_address: String,
+    },
+    Members {
+        conversation: String,
+    },
+    MembershipHistory {
+        conversation: String,
+    },
+    SyncNow {
+        conversation: String,
+    },
+    ListConversations,
     /// What `on_conversation_message` stored -- through `data-layer`, never
-    /// in-process state (`D-B3-12`).
+    /// in-process state.
     ReadConversationInbox,
     /// What `on_conversation_state` stored, same rule.
     ReadStateLog,
@@ -359,6 +377,59 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
         Request::RetryMessage { message } => {
             host.retry(message).await.map_err(fmt_err)?;
             Ok(json!({ "retried": true }))
+        }
+        Request::CreateGroup => {
+            let id = host.create_group().await.map_err(fmt_err)?;
+            Ok(json!({ "conversation": id }))
+        }
+        Request::AddMember { conversation, member_address } => {
+            host.add_member(conversation, member_address).await.map_err(fmt_err)?;
+            Ok(json!({ "added": true }))
+        }
+        Request::RemoveMember { conversation, member_address } => {
+            host.remove_member(conversation, member_address).await.map_err(fmt_err)?;
+            Ok(json!({ "removed": true }))
+        }
+        Request::Members { conversation } => {
+            let members = host.members(conversation).await.map_err(fmt_err)?;
+            Ok(json!({ "members": members }))
+        }
+        Request::MembershipHistory { conversation } => {
+            let history = host.membership_history(conversation).await.map_err(fmt_err)?;
+            let events: Vec<serde_json::Value> = history
+                .into_iter()
+                .map(|e| {
+                    json!({
+                        "entry": e.entry,
+                        "action": e.action,
+                        "subject": e.subject,
+                        "epoch": e.epoch,
+                        "sender_timestamp": e.sender_timestamp,
+                    })
+                })
+                .collect();
+            Ok(json!({ "events": events }))
+        }
+        Request::SyncNow { conversation } => {
+            host.sync_now(conversation).await.map_err(fmt_err)?;
+            Ok(json!({ "synced": true }))
+        }
+        Request::ListConversations => {
+            let convs = host.conversations().await.map_err(fmt_err)?;
+            let rows: Vec<serde_json::Value> = convs
+                .into_iter()
+                .map(|c| {
+                    json!({
+                        "id": c.id,
+                        "kind": match c.kind {
+                            syneroym_app_host::types::conversation::ConversationKind::Direct => "direct",
+                            syneroym_app_host::types::conversation::ConversationKind::Group => "group",
+                        },
+                        "participants": c.participants,
+                    })
+                })
+                .collect();
+            Ok(json!({ "conversations": rows }))
         }
         Request::ReadConversationInbox => {
             ensure_collection(host, CONV_INBOX).await?;

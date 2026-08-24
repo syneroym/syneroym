@@ -244,6 +244,41 @@ impl AppConversation for GuestHost {
     async fn retry(&self, message: String) -> Result<(), ConversationError> {
         conv::retry(&message)
     }
+
+    async fn create_group(&self) -> Result<String, ConversationError> {
+        conv::create_group()
+    }
+
+    async fn add_member(
+        &self,
+        conversation: String,
+        member_address: String,
+    ) -> Result<(), ConversationError> {
+        conv::add_member(&conversation, &member_address)
+    }
+
+    async fn remove_member(
+        &self,
+        conversation: String,
+        member_address: String,
+    ) -> Result<(), ConversationError> {
+        conv::remove_member(&conversation, &member_address)
+    }
+
+    async fn members(&self, conversation: String) -> Result<Vec<String>, ConversationError> {
+        conv::members(&conversation)
+    }
+
+    async fn membership_history(
+        &self,
+        conversation: String,
+    ) -> Result<Vec<crate::types::conversation::MembershipEvent>, ConversationError> {
+        conv::membership_history(&conversation)
+    }
+
+    async fn sync_now(&self, conversation: String) -> Result<(), ConversationError> {
+        conv::sync_now(&conversation)
+    }
 }
 
 /// Drives an already-complete future to its value.

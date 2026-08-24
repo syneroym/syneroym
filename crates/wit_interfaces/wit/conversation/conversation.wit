@@ -77,6 +77,31 @@ interface conversation {
         next-cursor: option<string>,
     }
 
+    /// One membership change, as it appears in the group's own DAG. Signed
+    /// by the group's owner and never encrypted: a member that has just
+    /// joined must be able to verify the chain that admitted it, which it
+    /// could not do if the entry were sealed under an epoch it may not
+    /// read.
+    record membership-event {
+        /// The DAG entry this change came from. Stable, content-derived,
+        /// and identical on every member's substrate.
+        entry: string,
+        /// `add` or `remove`. A string, not an enum: a future action
+        /// (`transfer-ownership`) must not break a guest's match, and this
+        /// value is already carried inside a signed entry a guest cannot
+        /// influence.
+        action: string,
+        /// The member being added or removed, as a routing service id --
+        /// the same namespace `open-direct` takes.
+        subject: string,
+        /// The epoch this change opened. Every message entry at or after
+        /// it is encrypted under a different key than the one before.
+        epoch: u64,
+        /// The owner's own clock when it issued the change, in Unix
+        /// milliseconds. Ordered by the same rule as messages.
+        sender-timestamp: s64,
+    }
+
     /// Returns the existing 1:1 conversation with `peer-address`, or
     /// creates one. `peer-address` is the peer's Conversation *service*
     /// id -- the same string a proxy call would target. Idempotent.
@@ -108,6 +133,47 @@ interface conversation {
     /// Re-arms a `failed` message. A `pending` or `delivered` message is
     /// `invalid-argument`.
     retry: func(message: message-id) -> result<_, conversation-error>;
+
+    /// Creates a group owned by this service and returns its id. The
+    /// caller is its first and, until `add-member`, only member.
+    create-group: func() -> result<conversation-id, conversation-error>;
+
+    /// Owner-only. Adds `member-address` and opens a new epoch, whose key
+    /// reaches every member -- including the joiner -- over the 1:1
+    /// channel. The joiner cannot read anything from before the change:
+    /// earlier entries are sealed under earlier epochs.
+    add-member: func(
+        conversation: conversation-id,
+        member-address: string,
+    ) -> result<_, conversation-error>;
+
+    /// Owner-only. Removes `member-address` and opens a new epoch whose
+    /// key reaches everyone except them.
+    remove-member: func(
+        conversation: conversation-id,
+        member-address: string,
+    ) -> result<_, conversation-error>;
+
+    /// Current members, sorted. Same namespace as
+    /// `conversation-summary.participants`, which reports the same list.
+    members: func(conversation: conversation-id)
+        -> result<list<string>, conversation-error>;
+
+    /// Every membership change this substrate has observed, oldest first,
+    /// ordered by the same (sender-timestamp, author, entry) rule messages
+    /// use -- one ordering rule for the whole conversation, not two.
+    /// Identical on every member once synced.
+    membership-history: func(conversation: conversation-id)
+        -> result<list<membership-event>, conversation-error>;
+
+    /// Pulls whatever peers hold and this substrate does not, now, instead
+    /// of waiting for the next scheduled pass. Runs one round under a
+    /// short time budget and returns `ok` whether or not that round
+    /// reached every member -- a caller's own time budget is small, and an
+    /// unreachable member must not spend it. Convergence is the periodic
+    /// pass's guarantee; this only makes it prompt. Call it again to make
+    /// further progress.
+    sync-now: func(conversation: conversation-id) -> result<_, conversation-error>;
 }
 
 /// Optional guest exports. A component that exports neither still

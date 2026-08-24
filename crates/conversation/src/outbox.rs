@@ -13,25 +13,54 @@ use tracing::warn;
 
 use crate::{
     ConversationService,
+    dag::EntryKind,
     store::{ConversationStore, OutboxItem, now_ms},
     transport::Disposition,
 };
 
 /// How many items one service may have claimed in a single worker tick —
-/// matches `syneroym_router::proxy_outbox::CLAIM_LIMIT_PER_TICK`'s
-/// reasoning: one service with a permanently unreachable target must not
-/// spend the whole node's tick budget on its own backlog.
-const CLAIM_LIMIT_PER_TICK: u32 = 16;
+/// raised to 64 per D-B5-13 because group fan-out multiplies outbox rows by
+/// member count.
+const CLAIM_LIMIT_PER_TICK: u32 = 64;
 
 impl ConversationService {
     /// Runs until `cancel` fires. Spawned once, beside
     /// `proxy_outbox_join`.
     pub async fn run_worker(self: std::sync::Arc<Self>, tick: Duration, cancel: CancellationToken) {
+        let mut sync_tick_count = 0u64;
         loop {
             tokio::select! {
                 () = cancel.cancelled() => return,
                 () = tokio::time::sleep(tick) => {
                     self.drain_once().await;
+                    self.drain_relay_pending_once().await;
+                    self.scheduled_rekey_once().await;
+                    sync_tick_count = sync_tick_count.wrapping_add(1);
+                    self.periodic_group_sync_once(tick, sync_tick_count).await;
+                }
+            }
+        }
+    }
+
+    async fn periodic_group_sync_once(&self, tick: Duration, tick_count: u64) {
+        let services = self.candidate_service_ids();
+        for svc in services {
+            if let Ok(store) = self.store_for(&svc).await {
+                let interval_secs = store.config().conversation_group_sync_secs;
+                if interval_secs == 0 {
+                    continue;
+                }
+                let tick_secs = tick.as_secs().max(1);
+                let ticks_per_sync = (interval_secs / tick_secs).max(1);
+                if !tick_count.is_multiple_of(ticks_per_sync) {
+                    continue;
+                }
+                if let Ok(convs) = store.group_conversations() {
+                    for conv in convs {
+                        let _ = self
+                            .periodic_group_sync_pass(&svc, &conv.id, tick_count as usize)
+                            .await;
+                    }
                 }
             }
         }
@@ -44,6 +73,57 @@ impl ConversationService {
                 || self.registry.instance_cert(&svc).is_some();
             if let Ok(store) = self.store_for(&svc).await {
                 self.drain_one(&svc, &store, still_deployed).await;
+            }
+        }
+    }
+
+    async fn drain_relay_pending_once(&self) {
+        let services = self.candidate_service_ids();
+        for svc in services {
+            if let Ok(store) = self.store_for(&svc).await
+                && let Ok(entries) = store.claim_relay_pending(CLAIM_LIMIT_PER_TICK)
+            {
+                let fanout = store.config().conversation_relay_fanout.max(1) as usize;
+                for entry in entries {
+                    if let Ok(members) = store.current_members(&entry.conversation_id) {
+                        let wire = entry.into_wire();
+                        let mut targets: Vec<String> = members
+                            .into_iter()
+                            .filter(|m| m != &svc && m != &wire.author)
+                            .collect();
+                        if targets.len() > fanout {
+                            use rand::seq::SliceRandom;
+                            let mut rng = rand::rng();
+                            targets.shuffle(&mut rng);
+                            targets.truncate(fanout);
+                        }
+                        // A `remove` membership entry is relayed to the fanout
+                        // sample above *plus* the member it just removed —
+                        // added after truncation, not before, so it is never
+                        // the truncated-away entry it would otherwise often be
+                        // on a group larger than the fanout. Otherwise the
+                        // removed member never learns of their own removal
+                        // (relay targets are `current_members` evaluated at
+                        // push time, which already excludes them by then) and
+                        // keeps using the last epoch key it was ever handed.
+                        // This still gives it no way to decrypt anything past
+                        // that point — the owner never sends the new epoch's
+                        // key to a removed member — only the membership fact
+                        // itself, so its own client can update local state and
+                        // refuse to keep posting.
+                        if let (EntryKind::Membership, Some(payload)) = (wire.kind, &wire.payload)
+                            && payload.action == "remove"
+                            && payload.subject_address != svc
+                            && payload.subject_address != wire.author
+                            && !targets.contains(&payload.subject_address)
+                        {
+                            targets.push(payload.subject_address.clone());
+                        }
+                        for m in targets {
+                            let _ = self.push_group_entry(&store, &svc, &m, &wire).await;
+                        }
+                    }
+                }
             }
         }
     }
@@ -68,15 +148,23 @@ impl ConversationService {
             let _ = store.queue().complete(item.id);
             return;
         }
-        if item.claim_count > u32::from(store.queue().max_attempts()) {
-            self.settle_failed(svc, store, &item, "claimed repeatedly without ever completing")
-                .await;
-            return;
-        }
         let Ok(parsed) = serde_json::from_slice::<OutboxItem>(&item.payload) else {
             let _ = store.queue().fail(item.id, now, "queued payload is unreadable", true);
             return;
         };
+        let is_group = parsed.group.is_some();
+        if item.claim_count > u32::from(store.queue().max_attempts()) {
+            self.settle_failed(
+                svc,
+                store,
+                &item,
+                "claimed repeatedly without ever completing",
+                is_group,
+                &parsed.peer_address,
+            )
+            .await;
+            return;
+        }
         let Ok(Some(msg)) = store.get_message(&parsed.message_id) else {
             let _ = store.queue().complete(item.id);
             return;
@@ -87,15 +175,67 @@ impl ConversationService {
         }
         let max_age_ms = (store.config().max_pending_age_secs as i64).saturating_mul(1000);
         if now.saturating_sub(msg.received_at_ms) > max_age_ms {
-            self.settle_failed(svc, store, &item, "recipient never became reachable").await;
+            self.settle_failed(
+                svc,
+                store,
+                &item,
+                "recipient never became reachable",
+                is_group,
+                &parsed.peer_address,
+            )
+            .await;
             return;
         }
 
-        match self.deliver_one(svc, &parsed.peer_address, &msg).await {
+        let delivery_result = if is_group {
+            self.deliver_group_one(svc, &parsed.peer_address, &msg).await
+        } else {
+            self.deliver_one(svc, &parsed.peer_address, &msg).await
+        };
+
+        match delivery_result {
             Ok(()) | Err(Disposition::Delivered) => {
-                let _ = store.set_state(&msg.id, ConversationDeliveryState::Delivered, None);
-                self.notify_state(svc, msg.id.clone(), ConversationDeliveryState::Delivered).await;
-                let _ = store.queue().complete(item.id);
+                if is_group {
+                    let _ = store.set_recipient_state(
+                        &msg.id,
+                        &parsed.peer_address,
+                        ConversationDeliveryState::Delivered,
+                        None,
+                    );
+                    let _ = store.queue().complete(item.id);
+                    if store.recipients_remaining(&msg.id).unwrap_or(0) == 0 {
+                        if store.any_recipient_failed(&msg.id).unwrap_or(false) {
+                            let _ = store.set_state(
+                                &msg.id,
+                                ConversationDeliveryState::Failed,
+                                Some("one or more recipients failed"),
+                            );
+                            self.notify_state(
+                                svc,
+                                msg.id.clone(),
+                                ConversationDeliveryState::Failed,
+                            )
+                            .await;
+                        } else {
+                            let _ = store.set_state(
+                                &msg.id,
+                                ConversationDeliveryState::Delivered,
+                                None,
+                            );
+                            self.notify_state(
+                                svc,
+                                msg.id.clone(),
+                                ConversationDeliveryState::Delivered,
+                            )
+                            .await;
+                        }
+                    }
+                } else {
+                    let _ = store.set_state(&msg.id, ConversationDeliveryState::Delivered, None);
+                    self.notify_state(svc, msg.id.clone(), ConversationDeliveryState::Delivered)
+                        .await;
+                    let _ = store.queue().complete(item.id);
+                }
             }
             Err(Disposition::Unreachable) => {
                 // `defer` un-counts the claim and does not advance
@@ -107,13 +247,21 @@ impl ConversationService {
                 let _ = store.queue().defer(item.id, now + backoff_ms);
             }
             Err(Disposition::Terminal(reason)) => {
-                self.settle_failed(svc, store, &item, &reason).await;
+                self.settle_failed(svc, store, &item, &reason, is_group, &parsed.peer_address)
+                    .await;
             }
             Err(Disposition::Retry) => {
                 match store.queue().fail(item.id, now, "transport error", false) {
                     Ok(FailOutcome::DeadLettered { .. }) => {
-                        self.finish_failed(svc, store, &msg.id, "delivery attempts exhausted")
-                            .await;
+                        self.finish_item_failed(
+                            svc,
+                            store,
+                            &msg.id,
+                            "delivery attempts exhausted",
+                            is_group,
+                            &parsed.peer_address,
+                        )
+                        .await;
                     }
                     Ok(FailOutcome::Retrying { .. }) | Err(_) => {}
                 }
@@ -127,28 +275,59 @@ impl ConversationService {
         store: &ConversationStore,
         item: &QueueItem,
         reason: &str,
+        is_group: bool,
+        peer_address: &str,
     ) {
         let _ = store.queue().fail(item.id, now_ms(), reason, true);
         if let Ok(parsed) = serde_json::from_slice::<OutboxItem>(&item.payload) {
-            self.finish_failed(svc, store, &parsed.message_id, reason).await;
+            self.finish_item_failed(svc, store, &parsed.message_id, reason, is_group, peer_address)
+                .await;
         }
     }
 
-    async fn finish_failed(
+    async fn finish_item_failed(
         &self,
         svc: &str,
         store: &ConversationStore,
         message_id: &str,
         reason: &str,
+        is_group: bool,
+        peer_address: &str,
     ) {
-        let _ = store.set_state(message_id, ConversationDeliveryState::Failed, Some(reason));
-        self.notify_state(svc, message_id.to_string(), ConversationDeliveryState::Failed).await;
-        metrics::counter!("substrate.conversation.outbox.dead_lettered").increment(1);
-        warn!(service = svc, message = message_id, error = reason, "conversation delivery gave up");
-        // No `AlertStore` write: the existing proxy outbox gives a dead
-        // letter the same treatment (metric + log), and a node running a
-        // conversation service and no supervisor role has no `AlertStore`
-        // to write to at all.
+        if is_group {
+            let _ = store.set_recipient_state(
+                message_id,
+                peer_address,
+                ConversationDeliveryState::Failed,
+                Some(reason),
+            );
+            if store.recipients_remaining(message_id).unwrap_or(0) == 0 {
+                let _ = store.set_state(
+                    message_id,
+                    ConversationDeliveryState::Failed,
+                    Some("one or more recipients failed"),
+                );
+                self.notify_state(svc, message_id.to_string(), ConversationDeliveryState::Failed)
+                    .await;
+                metrics::counter!("substrate.conversation.outbox.dead_lettered").increment(1);
+                warn!(
+                    service = svc,
+                    message = message_id,
+                    error = reason,
+                    "group conversation delivery gave up"
+                );
+            }
+        } else {
+            let _ = store.set_state(message_id, ConversationDeliveryState::Failed, Some(reason));
+            self.notify_state(svc, message_id.to_string(), ConversationDeliveryState::Failed).await;
+            metrics::counter!("substrate.conversation.outbox.dead_lettered").increment(1);
+            warn!(
+                service = svc,
+                message = message_id,
+                error = reason,
+                "conversation delivery gave up"
+            );
+        }
     }
 }
 

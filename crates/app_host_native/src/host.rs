@@ -407,4 +407,57 @@ impl AppConversation for NativeAppHost {
         let mut state = self.0.state.lock().await;
         HostConversation::retry(&mut *state, message).await.map_err(convert::conversation_error_out)
     }
+
+    async fn create_group(&self) -> Result<String, ConversationError> {
+        let mut state = self.0.state.lock().await;
+        HostConversation::create_group(&mut *state).await.map_err(convert::conversation_error_out)
+    }
+
+    async fn add_member(
+        &self,
+        conversation: String,
+        member_address: String,
+    ) -> Result<(), ConversationError> {
+        let mut state = self.0.state.lock().await;
+        HostConversation::add_member(&mut *state, conversation, member_address)
+            .await
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn remove_member(
+        &self,
+        conversation: String,
+        member_address: String,
+    ) -> Result<(), ConversationError> {
+        let mut state = self.0.state.lock().await;
+        HostConversation::remove_member(&mut *state, conversation, member_address)
+            .await
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn members(&self, conversation: String) -> Result<Vec<String>, ConversationError> {
+        let mut state = self.0.state.lock().await;
+        HostConversation::members(&mut *state, conversation)
+            .await
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn membership_history(
+        &self,
+        conversation: String,
+    ) -> Result<Vec<syneroym_app_host::types::conversation::MembershipEvent>, ConversationError>
+    {
+        let mut state = self.0.state.lock().await;
+        HostConversation::membership_history(&mut *state, conversation)
+            .await
+            .map(|v| v.into_iter().map(convert::membership_event_out).collect())
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn sync_now(&self, conversation: String) -> Result<(), ConversationError> {
+        let mut state = self.0.state.lock().await;
+        HostConversation::sync_now(&mut *state, conversation)
+            .await
+            .map_err(convert::conversation_error_out)
+    }
 }

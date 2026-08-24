@@ -157,6 +157,59 @@ pub(crate) fn empty_conversation_host() -> Weak<dyn syneroym_rpc::ConversationHo
         async fn retry(&self, _: &str, _: &str) -> Result<(), syneroym_rpc::ConversationError> {
             unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
         }
+        async fn create_group(&self, _: &str) -> Result<String, syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn add_member(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<(), syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn remove_member(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<(), syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn members(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Vec<String>, syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn membership_history(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Vec<syneroym_rpc::ConversationMembershipEvent>, syneroym_rpc::ConversationError>
+        {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn sync_now(&self, _: &str, _: &str) -> Result<(), syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn group_push(
+            &self,
+            _: &str,
+            _: &str,
+            _: Vec<u8>,
+        ) -> Result<Vec<u8>, syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+        async fn group_sync(
+            &self,
+            _: &str,
+            _: &str,
+            _: Vec<u8>,
+        ) -> Result<Vec<u8>, syneroym_rpc::ConversationError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
         async fn prekey_bundle(
             &self,
             _: &str,
@@ -1895,6 +1948,18 @@ mod conversation_wire {
             next_cursor: p.next_cursor,
         }
     }
+
+    pub(super) fn map_membership_event(
+        e: rpc::ConversationMembershipEvent,
+    ) -> wit::MembershipEvent {
+        wit::MembershipEvent {
+            entry: e.entry,
+            action: e.action,
+            subject: e.subject,
+            epoch: e.epoch,
+            sender_timestamp: e.sender_timestamp,
+        }
+    }
 }
 
 impl wit_conversation::Host for HostState {
@@ -1983,6 +2048,80 @@ impl wit_conversation::Host for HostState {
         }
         let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
         conv.retry(&self.component_id, &message).await.map_err(conversation_wire::map_error)
+    }
+
+    async fn create_group(&mut self) -> Result<String, wit_conversation::ConversationError> {
+        if self.read_only {
+            return Err(conversation_wire::map_error(
+                syneroym_rpc::ConversationError::PermissionDenied,
+            ));
+        }
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.create_group(&self.component_id).await.map_err(conversation_wire::map_error)
+    }
+
+    async fn add_member(
+        &mut self,
+        conversation: String,
+        member_address: String,
+    ) -> Result<(), wit_conversation::ConversationError> {
+        if self.read_only {
+            return Err(conversation_wire::map_error(
+                syneroym_rpc::ConversationError::PermissionDenied,
+            ));
+        }
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.add_member(&self.component_id, &conversation, &member_address)
+            .await
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn remove_member(
+        &mut self,
+        conversation: String,
+        member_address: String,
+    ) -> Result<(), wit_conversation::ConversationError> {
+        if self.read_only {
+            return Err(conversation_wire::map_error(
+                syneroym_rpc::ConversationError::PermissionDenied,
+            ));
+        }
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.remove_member(&self.component_id, &conversation, &member_address)
+            .await
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn members(
+        &mut self,
+        conversation: String,
+    ) -> Result<Vec<String>, wit_conversation::ConversationError> {
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.members(&self.component_id, &conversation).await.map_err(conversation_wire::map_error)
+    }
+
+    async fn membership_history(
+        &mut self,
+        conversation: String,
+    ) -> Result<Vec<wit_conversation::MembershipEvent>, wit_conversation::ConversationError> {
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.membership_history(&self.component_id, &conversation)
+            .await
+            .map(|v| v.into_iter().map(conversation_wire::map_membership_event).collect())
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn sync_now(
+        &mut self,
+        conversation: String,
+    ) -> Result<(), wit_conversation::ConversationError> {
+        if self.read_only {
+            return Err(conversation_wire::map_error(
+                syneroym_rpc::ConversationError::PermissionDenied,
+            ));
+        }
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.sync_now(&self.component_id, &conversation).await.map_err(conversation_wire::map_error)
     }
 }
 

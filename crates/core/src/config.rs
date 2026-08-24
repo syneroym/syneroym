@@ -605,6 +605,29 @@ pub struct AppSandboxRole {
     /// store write and, once the one-time pool is empty, a keygen, so an
     /// unbounded caller could drain it at no cost to themselves.
     pub conversation_prekey_requests_per_peer_per_hour: u32,
+    #[serde(default = "default_conversation_group_sync_secs")]
+    pub conversation_group_sync_secs: u64,
+    #[serde(default = "default_conversation_group_rekey_secs")]
+    pub conversation_group_rekey_secs: u64,
+    #[serde(default = "default_conversation_max_group_members")]
+    pub conversation_max_group_members: u32,
+    #[serde(default = "default_conversation_max_dag_entries_per_conversation")]
+    pub conversation_max_dag_entries_per_conversation: u32,
+    #[serde(default = "default_conversation_max_sync_entries_per_call")]
+    pub conversation_max_sync_entries_per_call: u32,
+    #[serde(default = "default_conversation_relay_fanout")]
+    pub conversation_relay_fanout: u32,
+    #[serde(default = "default_conversation_sync_now_budget_ms")]
+    pub conversation_sync_now_budget_ms: u64,
+    /// Total time budget for the background periodic sync pass, one
+    /// conversation at a time — kept separate from
+    /// `conversation_sync_now_budget_ms` because that budget is bounded by
+    /// `dispatch_epoch_timeout_secs` for the guest-facing `sync-now` call,
+    /// while the background pass has no guest waiting on it and needs
+    /// enough time to reach every member of a large group, not just the
+    /// first two.
+    #[serde(default = "default_conversation_background_sync_budget_ms")]
+    pub conversation_background_sync_budget_ms: u64,
 }
 
 /// The guest proxy outbox lives wherever a guest does, so its knobs live on
@@ -681,6 +704,33 @@ const fn default_conversation_prekey_pool_size() -> u32 {
 const fn default_conversation_prekey_requests_per_peer_per_hour() -> u32 {
     20
 }
+const fn default_conversation_group_sync_secs() -> u64 {
+    60
+}
+const fn default_conversation_group_rekey_secs() -> u64 {
+    604_800
+}
+const fn default_conversation_max_group_members() -> u32 {
+    256
+}
+const fn default_conversation_max_dag_entries_per_conversation() -> u32 {
+    100_000
+}
+const fn default_conversation_max_sync_entries_per_call() -> u32 {
+    64
+}
+const fn default_conversation_relay_fanout() -> u32 {
+    3
+}
+const fn default_conversation_sync_now_budget_ms() -> u64 {
+    3_000
+}
+/// 10 seconds per peer (§6.16) times a generous 16-member allowance;
+/// members past that still get reached on a later tick since the pass
+/// rotates its starting member each time.
+const fn default_conversation_background_sync_budget_ms() -> u64 {
+    160_000
+}
 
 impl AppSandboxRole {
     #[must_use]
@@ -729,6 +779,17 @@ impl Default for AppSandboxRole {
             conversation_prekey_pool_size: default_conversation_prekey_pool_size(),
             conversation_prekey_requests_per_peer_per_hour:
                 default_conversation_prekey_requests_per_peer_per_hour(),
+            conversation_group_sync_secs: default_conversation_group_sync_secs(),
+            conversation_group_rekey_secs: default_conversation_group_rekey_secs(),
+            conversation_max_group_members: default_conversation_max_group_members(),
+            conversation_max_dag_entries_per_conversation:
+                default_conversation_max_dag_entries_per_conversation(),
+            conversation_max_sync_entries_per_call: default_conversation_max_sync_entries_per_call(
+            ),
+            conversation_relay_fanout: default_conversation_relay_fanout(),
+            conversation_sync_now_budget_ms: default_conversation_sync_now_budget_ms(),
+            conversation_background_sync_budget_ms: default_conversation_background_sync_budget_ms(
+            ),
         }
     }
 }

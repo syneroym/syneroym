@@ -1180,6 +1180,17 @@ async fn build_route_handler_deps(
                 max_clock_skew_secs: app_sandbox_role.conversation_max_clock_skew_secs,
                 prekey_requests_per_peer_per_hour: app_sandbox_role
                     .conversation_prekey_requests_per_peer_per_hour,
+                conversation_group_sync_secs: app_sandbox_role.conversation_group_sync_secs,
+                conversation_group_rekey_secs: app_sandbox_role.conversation_group_rekey_secs,
+                conversation_max_group_members: app_sandbox_role.conversation_max_group_members,
+                conversation_max_dag_entries_per_conversation: app_sandbox_role
+                    .conversation_max_dag_entries_per_conversation,
+                conversation_max_sync_entries_per_call: app_sandbox_role
+                    .conversation_max_sync_entries_per_call,
+                conversation_relay_fanout: app_sandbox_role.conversation_relay_fanout,
+                conversation_sync_now_budget_ms: app_sandbox_role.conversation_sync_now_budget_ms,
+                conversation_background_sync_budget_ms: app_sandbox_role
+                    .conversation_background_sync_budget_ms,
             },
         },
     )?;

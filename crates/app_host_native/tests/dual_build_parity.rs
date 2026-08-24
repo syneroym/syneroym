@@ -26,7 +26,10 @@ use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
-use syneroym_rpc::{AuthLevel, CallerContext, JsonRpcRequest, NativeInvocation, SessionContext};
+use syneroym_rpc::{
+    AuthLevel, CallerContext, ConversationError, ConversationHost, JsonRpcRequest,
+    NativeInvocation, ProxyError, ProxyRequest, ServiceProxy, SessionContext,
+};
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use syneroym_test_dual_build_fixture::native::{FIXTURE_INTERFACE, NativeFixture};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
@@ -143,6 +146,84 @@ fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
     }
 }
 
+/// The identity the *other* stack's `ConversationService` answers under
+/// when it is standing in as a peer for `SERVICE_ID` (see `PeerProxy`).
+/// Must differ from `SERVICE_ID`: both builds share that constant, and a
+/// service cannot be its own group peer -- `peer_deliver_impl`'s
+/// self-injection guard (`author == svc`) and `group_push_impl`/
+/// `group_sync_impl`'s equivalent (`req.from.address == svc`) both refuse
+/// on purpose if the two ever collide.
+const PEER_SERVICE_ID: &str = "dual-build-fixture-parity-peer";
+
+/// A minimal `ServiceProxy`: every outbound conversation call one build's
+/// `ConversationService` makes is answered by calling the matching method
+/// directly on the *other* build's `ConversationService` object, addressed
+/// as `PEER_SERVICE_ID` rather than `SERVICE_ID` (see that constant's own
+/// doc). `target_service`/`interface` are not consulted -- there is only
+/// ever one peer relationship in this harness, so no routing table is
+/// needed, matching how `synsvc_native.rs`'s `dispatch_conversation` maps
+/// these same four methods for a real peer call.
+struct PeerProxy {
+    target: Arc<ConversationService>,
+}
+
+impl std::fmt::Debug for PeerProxy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerProxy").field("target", &PEER_SERVICE_ID).finish()
+    }
+}
+
+fn conversation_error_to_proxy_error(e: ConversationError) -> ProxyError {
+    match e {
+        ConversationError::PermissionDenied => ProxyError::PermissionDenied(e.to_string()),
+        _ => ProxyError::Callee { code: -1, message: e.to_string(), data: None },
+    }
+}
+
+#[async_trait::async_trait]
+impl ServiceProxy for PeerProxy {
+    async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError> {
+        let requester_did = request.caller.caller_did.as_str();
+        let result_bytes = match request.method.as_str() {
+            "prekey-bundle" => self
+                .target
+                .prekey_bundle(PEER_SERVICE_ID, requester_did)
+                .await
+                .map_err(conversation_error_to_proxy_error)?,
+            "deliver" => {
+                let envelope = serde_json::to_vec(&request.params)
+                    .map_err(|e| ProxyError::Internal(e.to_string()))?;
+                self.target
+                    .peer_deliver(PEER_SERVICE_ID, requester_did, envelope)
+                    .await
+                    .map_err(conversation_error_to_proxy_error)?
+            }
+            "group-push" => {
+                let payload = serde_json::to_vec(&request.params)
+                    .map_err(|e| ProxyError::Internal(e.to_string()))?;
+                self.target
+                    .group_push(PEER_SERVICE_ID, requester_did, payload)
+                    .await
+                    .map_err(conversation_error_to_proxy_error)?
+            }
+            "group-sync" => {
+                let payload = serde_json::to_vec(&request.params)
+                    .map_err(|e| ProxyError::Internal(e.to_string()))?;
+                self.target
+                    .group_sync(PEER_SERVICE_ID, requester_did, payload)
+                    .await
+                    .map_err(conversation_error_to_proxy_error)?
+            }
+            other => {
+                return Err(ProxyError::UnsupportedTarget(format!(
+                    "PeerProxy has no stub for method {other}"
+                )));
+            }
+        };
+        serde_json::from_slice(&result_bytes).map_err(|e| ProxyError::Internal(e.to_string()))
+    }
+}
+
 /// Everything one full harness setup produces, for tests that need to poke
 /// past the `Driver` abstraction (e.g. asserting on persisted storage
 /// state).
@@ -157,6 +238,12 @@ struct Harness {
     /// directly rather than through the guest `run()` surface.
     wasm_conversation: Arc<ConversationService>,
     native_conversation: Arc<ConversationService>,
+    /// Kept alive so the `Weak<dyn ServiceProxy>` each `ConversationService`
+    /// holds (via `set_service_proxy`) does not dangle -- `wasm_conversation`
+    /// calls out through `_wasm_peer_proxy` and reaches `native_conversation`
+    /// (as `PEER_SERVICE_ID`), and vice versa.
+    _wasm_peer_proxy: Arc<PeerProxy>,
+    _native_peer_proxy: Arc<PeerProxy>,
     // Dropped last (declaration order), after everything that might still
     // have files open under them.
     _wasm_dir: tempfile::TempDir,
@@ -190,7 +277,15 @@ async fn harness() -> Harness {
 
     let (wasm_engine, wasm_conversation) = build_wasm_stack(wasm_dir.path(), &wasm_bytes).await;
     let (native_fixture, native_factory, native_storage_provider, native_conversation) =
-        build_native_stack(native_dir.path());
+        build_native_stack(native_dir.path()).await;
+
+    // Each stack calls out through a proxy that reaches straight into the
+    // *other* stack's own `ConversationService` -- see `PeerProxy`.
+    let wasm_peer_proxy = Arc::new(PeerProxy { target: native_conversation.clone() });
+    let native_peer_proxy = Arc::new(PeerProxy { target: wasm_conversation.clone() });
+    wasm_conversation.set_service_proxy(Arc::downgrade(&wasm_peer_proxy) as Weak<dyn ServiceProxy>);
+    native_conversation
+        .set_service_proxy(Arc::downgrade(&native_peer_proxy) as Weak<dyn ServiceProxy>);
 
     Harness {
         wasm: WasmDriver { engine: wasm_engine.clone() },
@@ -200,6 +295,8 @@ async fn harness() -> Harness {
         native_storage_provider,
         wasm_conversation,
         native_conversation,
+        _wasm_peer_proxy: wasm_peer_proxy,
+        _native_peer_proxy: native_peer_proxy,
         _wasm_dir: wasm_dir,
         _native_dir: native_dir,
     }
@@ -230,6 +327,33 @@ fn test_conversation_service(
     .unwrap()
 }
 
+/// `call_peer`'s `check_outbound_identity` refuses up front unless the
+/// caller holds both an instance certificate and a recorded owner for
+/// `service_id` -- real requirements for presenting that service's own
+/// identity to a peer, not exercised by any test before this one since
+/// every existing group op either targets `self` (refused earlier) or a
+/// group with no other member (skipped before any outbound call).
+async fn install_outbound_identity(registry: &EndpointRegistry, service_id: &str) {
+    let master = syneroym_identity::Identity::generate().unwrap();
+    let instance = syneroym_identity::Identity::generate().unwrap();
+    let mut cert = syneroym_identity::DelegationCertificate::issue(
+        &master,
+        instance.public_key(),
+        3600,
+        syneroym_identity::delegation::SCOPE_SERVICE_INSTANCE.to_string(),
+    )
+    .unwrap();
+    cert.temporary_did = service_id.to_string();
+    registry.set_instance_cert(service_id.to_string(), cert).await.unwrap();
+    registry
+        .set_owner(
+            service_id.to_string(),
+            syneroym_identity::substrate::derive_did_key(&master.public_key()),
+        )
+        .await
+        .unwrap();
+}
+
 async fn build_wasm_stack(
     dir: &Path,
     wasm_bytes: &[u8],
@@ -253,6 +377,7 @@ async fn build_wasm_stack(
     // per stack costs nothing and binds no port.
     let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+    install_outbound_identity(&registry, SERVICE_ID).await;
     let conversation =
         test_conversation_service(storage_provider.clone(), key_store.clone(), registry.clone());
 
@@ -289,7 +414,7 @@ type NativeStack = (
     Arc<ConversationService>,
 );
 
-fn build_native_stack(dir: &Path) -> NativeStack {
+async fn build_native_stack(dir: &Path) -> NativeStack {
     let key_store = Arc::new(KeyStore::new());
     let storage_provider: Arc<dyn StorageProvider> =
         Arc::new(SqliteStorageProvider::new(dir.join("data"), false).unwrap());
@@ -297,6 +422,7 @@ fn build_native_stack(dir: &Path) -> NativeStack {
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let endpoint_registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+    install_outbound_identity(&endpoint_registry, SERVICE_ID).await;
     let conversation = test_conversation_service(
         storage_provider.clone(),
         key_store.clone(),
@@ -344,6 +470,7 @@ const SCENARIOS: &[(&str, &str)] = &[
     // (whose message id includes a random nonce) it belongs in this
     // byte-comparison table.
     ("open-conversation", r#"{"op":"open-conversation","peer_address":"peer-parity-scenario"}"#),
+    ("list-conversations", r#"{"op":"list-conversations"}"#),
     // `retry`/`delivery-status`/`read-history` against an id that was never
     // created are deterministic error shapes too.
     ("retry-unknown", r#"{"op":"retry-message","message":"msg:does-not-exist"}"#),
@@ -352,6 +479,12 @@ const SCENARIOS: &[(&str, &str)] = &[
         "read-history-unknown-conversation",
         r#"{"op":"read-history","conversation":"conv:does-not-exist","limit":10}"#,
     ),
+    ("members-unknown", r#"{"op":"members","conversation":"conv:does-not-exist"}"#),
+    (
+        "membership-history-unknown",
+        r#"{"op":"membership-history","conversation":"conv:does-not-exist"}"#,
+    ),
+    ("sync-now-unknown", r#"{"op":"sync-now","conversation":"conv:does-not-exist"}"#),
     ("read-outbox-empty", r#"{"op":"read-outbox"}"#),
 ];
 
@@ -629,6 +762,145 @@ async fn retry_on_a_pending_message_is_invalid_argument_on_both_builds() {
     assert_retry_on_pending_is_refused("native", &h.native).await;
 }
 
+async fn assert_create_group<D: Driver>(name: &str, driver: &D) {
+    let create_res = driver.run(r#"{"op":"create-group"}"#).await.unwrap();
+    let create_v: Value = serde_json::from_str(&create_res).unwrap();
+    let conv_id = create_v["ok"]["conversation"].as_str().unwrap();
+    assert!(conv_id.starts_with("conv:"), "{name}: group id must start with conv:");
+
+    let members_res =
+        driver.run(&format!(r#"{{"op":"members","conversation":"{conv_id}"}}"#)).await.unwrap();
+    let members_v: Value = serde_json::from_str(&members_res).unwrap();
+    let members = members_v["ok"]["members"].as_array().unwrap();
+    assert_eq!(members, &vec![json!(SERVICE_ID)], "{name}: owner must be the first member");
+
+    let history_res = driver
+        .run(&format!(r#"{{"op":"membership-history","conversation":"{conv_id}"}}"#))
+        .await
+        .unwrap();
+    let history_v: Value = serde_json::from_str(&history_res).unwrap();
+    let events = history_v["ok"]["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1, "{name}: genesis membership entry must exist");
+    assert_eq!(events[0]["action"], "add");
+    assert_eq!(events[0]["subject"], SERVICE_ID);
+    assert_eq!(events[0]["epoch"], 1);
+
+    // Test add_member on self is invalid argument
+    let add_self = driver
+        .run(&format!(
+            r#"{{"op":"add-member","conversation":"{conv_id}","member_address":"{SERVICE_ID}"}}"#
+        ))
+        .await
+        .unwrap();
+    let add_self_v: Value = serde_json::from_str(&add_self).unwrap();
+    assert!(
+        add_self_v["err"].is_string(),
+        "{name}: add_member for owner must return err response: {add_self}"
+    );
+
+    // Test remove_member for non-existent member is a no-op / success
+    let rem_nonmember = driver
+        .run(&format!(
+            r#"{{"op":"remove-member","conversation":"{conv_id}","member_address":"peer-none"}}"#
+        ))
+        .await
+        .unwrap();
+    let rem_v: Value = serde_json::from_str(&rem_nonmember).unwrap();
+    assert_eq!(rem_v["ok"]["removed"], true, "{name}: remove non-member succeeds as no-op");
+
+    // Test sync_now on existing group succeeds
+    let sync_res =
+        driver.run(&format!(r#"{{"op":"sync-now","conversation":"{conv_id}"}}"#)).await.unwrap();
+    let sync_v: Value = serde_json::from_str(&sync_res).unwrap();
+    assert_eq!(sync_v["ok"]["synced"], true, "{name}: sync_now succeeds");
+}
+
+#[tokio::test]
+async fn create_group_initializes_membership_and_epoch_on_both_builds() {
+    let h = harness().await;
+    assert_create_group("wasm", &h.wasm).await;
+    assert_create_group("native", &h.native).await;
+}
+
+/// Drives `add-member` to a real second party (routed through `PeerProxy`
+/// straight into the *other* stack's own `ConversationService`, so this is
+/// a genuine `prekey-bundle` round trip -- an X3DH handshake, not a stub
+/// response), then a group `send`, then `membership-history` -- exercising
+/// exactly the group paths `assert_create_group` above could not reach
+/// (its own `add-member` case is deliberately the *refused* one, adding the
+/// owner to itself). `add-member`'s own network step (`fetch_prekey_bundle`)
+/// is awaited inline by `change_membership_impl`, so no background worker
+/// or settle delay is needed for these three assertions -- unlike group-key
+/// distribution and DAG-entry relay, which are enqueued for the (unstarted,
+/// in this harness) delivery worker and are not observed here.
+async fn assert_group_add_member_send_and_history_on_a_populated_group<D: Driver>(
+    name: &str,
+    driver: &D,
+) {
+    let create_res = driver.run(r#"{"op":"create-group"}"#).await.unwrap();
+    let create_v: Value = serde_json::from_str(&create_res).unwrap();
+    let conv_id = create_v["ok"]["conversation"].as_str().unwrap().to_string();
+
+    let add_res = driver
+        .run(&format!(
+            r#"{{"op":"add-member","conversation":"{conv_id}","member_address":"{PEER_SERVICE_ID}"}}"#
+        ))
+        .await
+        .unwrap();
+    let add_v: Value = serde_json::from_str(&add_res).unwrap();
+    assert_eq!(
+        add_v["ok"]["added"], true,
+        "{name}: add-member on a real peer must succeed: {add_res}"
+    );
+
+    let members_res =
+        driver.run(&format!(r#"{{"op":"members","conversation":"{conv_id}"}}"#)).await.unwrap();
+    let members_v: Value = serde_json::from_str(&members_res).unwrap();
+    let mut members: Vec<String> = members_v["ok"]["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m.as_str().unwrap().to_string())
+        .collect();
+    members.sort();
+    let mut expected = vec![SERVICE_ID.to_string(), PEER_SERVICE_ID.to_string()];
+    expected.sort();
+    assert_eq!(members, expected, "{name}: group must have both members after add-member");
+
+    let send_res = driver
+        .run(&format!(r#"{{"op":"send-message","conversation":"{conv_id}","body":"hello group"}}"#))
+        .await
+        .unwrap();
+    let send_v: Value = serde_json::from_str(&send_res).unwrap();
+    assert!(
+        send_v["ok"]["message"].is_string(),
+        "{name}: send-message on a populated group must succeed: {send_res}"
+    );
+
+    let history_res = driver
+        .run(&format!(r#"{{"op":"membership-history","conversation":"{conv_id}"}}"#))
+        .await
+        .unwrap();
+    let history_v: Value = serde_json::from_str(&history_res).unwrap();
+    let events = history_v["ok"]["events"].as_array().unwrap();
+    assert_eq!(
+        events.len(),
+        2,
+        "{name}: membership history must hold the genesis and add-member events: {history_v:?}"
+    );
+    assert_eq!(events[0]["action"], "add");
+    assert_eq!(events[0]["subject"], SERVICE_ID);
+    assert_eq!(events[1]["action"], "add");
+    assert_eq!(events[1]["subject"], PEER_SERVICE_ID);
+}
+
+#[tokio::test]
+async fn group_add_member_send_and_history_are_identical_on_both_builds() {
+    let h = harness().await;
+    assert_group_add_member_send_and_history_on_a_populated_group("wasm", &h.wasm).await;
+    assert_group_add_member_send_and_history_on_a_populated_group("native", &h.native).await;
+}
+
 /// Drives a full prekey-bundle -> X3DH session -> sign -> encrypt
 /// -> `peer_deliver` exchange from an independent third `ConversationService`
 /// (standing in for a real peer substrate) into each build's own
@@ -785,7 +1057,7 @@ mod permitted_differences {
     #[tokio::test]
     async fn each_native_invocation_gets_a_fresh_resource_table() {
         let dir = tempfile::tempdir().unwrap();
-        let (_, factory, _, _) = build_native_stack(dir.path());
+        let (_, factory, _, _) = build_native_stack(dir.path()).await;
         use syneroym_app_host::{AppBlobStore, AppBlobWriter};
 
         let host_a = factory.host_for(caller());

@@ -28,6 +28,7 @@ async-trait.workspace = true
 [dev-dependencies]
 syneroym-test-dual-build-fixture.workspace = true
 syneroym-async-queue.workspace = true
+syneroym-identity.workspace = true
 tempfile.workspace = true
 serde_json.workspace = true
 ed25519-dalek.workspace = true
