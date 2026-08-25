@@ -61,6 +61,7 @@ pub struct NativeHostFactory {
     websocket_sink: OnceLock<Weak<dyn WebSocketSink>>,
     pub(crate) websocket_senders: Arc<WebSocketSenders>,
     fdae_policy: RwLock<Option<Option<Arc<Policy>>>>,
+    fdae_policy_generation: std::sync::atomic::AtomicU64,
 }
 
 /// Hand-written, not derived: `StorageProvider` has no `Debug` supertrait,
@@ -105,6 +106,7 @@ impl NativeHostFactory {
             websocket_sink: OnceLock::new(),
             websocket_senders,
             fdae_policy: tokio::sync::RwLock::new(None),
+            fdae_policy_generation: std::sync::atomic::AtomicU64::new(0),
         });
         // `§6.5`: registers itself as this service's conversation
         // notification target, so the delivery worker wakes a natively-
@@ -118,6 +120,15 @@ impl NativeHostFactory {
             Arc::downgrade(&factory) as Weak<dyn ConversationNotifier>,
         );
         factory
+    }
+
+    /// Explicitly invalidates the memoized FDAE policy cache and bumps the
+    /// generation counter so in-flight loads from storage cannot resurrect a
+    /// stale policy.
+    pub async fn invalidate_fdae_policy(&self) {
+        self.fdae_policy_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut guard = self.fdae_policy.write().await;
+        *guard = None;
     }
 
     /// Sets the app's inbound message entry point. Panics if called twice --
@@ -184,45 +195,47 @@ impl NativeHostFactory {
     }
 
     pub(crate) async fn fdae_policy(&self) -> Option<Arc<syneroym_fdae::Policy>> {
+        let generation_before =
+            self.fdae_policy_generation.load(std::sync::atomic::Ordering::SeqCst);
         {
             let guard = self.fdae_policy.read().await;
             if let Some(memoized) = &*guard {
                 return memoized.clone();
             }
         }
-        match self.storage_provider.load_fdae_policy(&self.service_id).await {
+        let resolved = match self.storage_provider.load_fdae_policy(&self.service_id).await {
             Ok(Some(doc)) => match syneroym_fdae::parse_and_validate(&doc) {
-                Ok(p) => {
-                    let policy = Some(Arc::new(p));
-                    let mut guard = self.fdae_policy.write().await;
-                    *guard = Some(policy.clone());
-                    policy
-                }
+                Ok(p) => Some(Arc::new(p)),
                 Err(e) => {
                     tracing::error!(
                         service_id = %self.service_id,
                         error = %e,
                         "FDAE policy failed to parse; treating as policy-absent"
                     );
-                    let mut guard = self.fdae_policy.write().await;
-                    *guard = Some(None);
                     None
                 }
             },
-            Ok(None) => {
-                let mut guard = self.fdae_policy.write().await;
-                *guard = Some(None);
-                None
-            }
+            Ok(None) => None,
             Err(e) => {
                 tracing::error!(
                     service_id = %self.service_id,
                     error = %e,
                     "failed to load FDAE policy"
                 );
-                None
+                return None;
+            }
+        };
+        let generation_after =
+            self.fdae_policy_generation.load(std::sync::atomic::Ordering::SeqCst);
+        if generation_before == generation_after {
+            let mut guard = self.fdae_policy.write().await;
+            if self.fdae_policy_generation.load(std::sync::atomic::Ordering::SeqCst)
+                == generation_before
+            {
+                *guard = Some(resolved.clone());
             }
         }
+        resolved
     }
 
     pub(crate) async fn build_host_state(

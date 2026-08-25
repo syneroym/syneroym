@@ -261,7 +261,13 @@ impl AppBlobStore for NativeAppHost {
 /// `Resource::new_own(rep)` per call is what `HostBlobWriter`'s own
 /// implementation expects -- the table, not the handle, owns the session's
 /// lifetime, and `rep()` is all any of `write`/`finish`/`abort` ever read
-/// back out of it.
+/// back out of it. Deliberately no `Drop` here: if a caller drops this
+/// without calling `finish`/`abort`, the table entry (and the boxed
+/// `UploadSession` inside it) is torn down whenever the per-invocation
+/// `HostState` that owns the table is -- and the quota refund that matters
+/// lives in `ObjectStoreUploadSession`'s own `Drop`
+/// (`crates/data_blob/src/object_store_impl.rs`), which fires exactly then,
+/// synchronously, on both builds. Nothing here needs to race that.
 pub struct NativeBlobWriter {
     host: NativeAppHost,
     rep: u32,

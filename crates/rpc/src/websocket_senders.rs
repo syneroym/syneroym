@@ -52,7 +52,9 @@ impl WebSocketSenders {
     /// Called from undeploy/stop. Dropping the senders unblocks any active
     /// rx.recv() loops in the router, terminating the WebSockets cleanly.
     pub fn forget_service(&self, service_id: &str) {
-        self.inner.remove(service_id);
+        if let Some((_, map)) = self.inner.remove(service_id) {
+            map.clear();
+        }
     }
 
     /// `Err` distinguishes the two real failures the WIT's `result<_, string>`

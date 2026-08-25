@@ -8,7 +8,7 @@ use syneroym_app_host::{
     AppAppConfig, AppBlobReader, AppBlobWriter, AppConversation, AppDataLayer, AppHost,
     AppWebSocket,
     types::{
-        conversation::{DeliveryState, Message},
+        conversation::{ConversationKind, DeliveryState, Message},
         data_layer::{CollectionSchema, Mutation, QueryOptions, RecordWriteValue},
         http::{CallerAuth, FrameKind, HttpRequest, HttpResponse},
         proxy::{CallOptions, CallTarget},
@@ -421,7 +421,6 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
             let messages = host.outbox().await.map_err(fmt_err)?;
             let list = messages.iter().map(message_json).collect::<Vec<_>>();
             Ok(json!({
-                "messages": list.clone(),
                 "outbox": list,
             }))
         }
@@ -460,8 +459,7 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
                 })
                 .collect();
             Ok(json!({
-                "history": events.clone(),
-                "events": events,
+                "history": events,
             }))
         }
         Request::SyncNow { conversation } => {
@@ -476,6 +474,10 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
                     json!({
                         "id": c.id,
                         "participants": c.participants,
+                        "kind": match c.kind {
+                            ConversationKind::Direct => "direct",
+                            ConversationKind::Group => "group",
+                        },
                         "created-at": c.created_at,
                         "last-activity-at": c.last_activity_at,
                     })
@@ -488,7 +490,7 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
             let page = host
                 .query(
                     CONV_INBOX.into(),
-                    QueryOptions { filter: None, limit: Some(100), cursor: None },
+                    QueryOptions { filter: None, limit: Some(1000), cursor: None },
                 )
                 .await
                 .map_err(fmt_err)?;
@@ -504,7 +506,7 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
             let page = host
                 .query(
                     CONV_STATE_LOG.into(),
-                    QueryOptions { filter: None, limit: Some(100), cursor: None },
+                    QueryOptions { filter: None, limit: Some(1000), cursor: None },
                 )
                 .await
                 .map_err(fmt_err)?;
@@ -516,7 +518,8 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
             Ok(json!({ "entries": entries }))
         }
         Request::ProxyCallSelf { service_id, interface, method, params } => {
-            let target = CallTarget::Service(service_id.unwrap_or_default());
+            let target_service = service_id.unwrap_or_else(|| "dual-build-fixture".to_string());
+            let target = CallTarget::Service(target_service);
             let res = host.call(target, interface, method, params, None).await.map_err(fmt_err)?;
             Ok(json!({ "result": res }))
         }
@@ -663,7 +666,12 @@ fn message_json(m: &Message) -> serde_json::Value {
     })
 }
 
-/// Called by both builds when a subscribed message arrives.
+/// Called by both builds when a subscribed message arrives -- from the
+/// exported `guest-api::handle-message` on WASM, from the shim's broker pump
+/// natively. Persists through `data-layer`, never in process memory.
+///
+/// `topic` arrives fully namespaced (`svc/<service_id>/<topic>`) on both
+/// builds, and is stored verbatim.
 pub async fn on_message<H: AppHost>(
     host: &H,
     topic: String,
@@ -686,7 +694,11 @@ pub async fn on_message<H: AppHost>(
     .map_err(fmt_err)
 }
 
-/// Called by both builds when a durable conversation message arrives.
+/// Called by both builds when a durable conversation message arrives --
+/// from the exported `guest-api::on-message` on WASM, from
+/// `ConversationSink::on_message` natively. Persists through `data-layer`,
+/// never in-process state (`D-B3-12`), keyed by the message's own id so a
+/// redelivery overwrites rather than duplicates.
 pub async fn on_conversation_message<H: AppHost>(host: &H, msg: Message) -> Result<(), String> {
     ensure_collection(host, CONV_INBOX).await?;
     host.put(
@@ -700,7 +712,10 @@ pub async fn on_conversation_message<H: AppHost>(host: &H, msg: Message) -> Resu
     .map_err(fmt_err)
 }
 
-/// Called by both builds on a delivery-state transition.
+/// Called by both builds on a delivery-state transition. Appends rather
+/// than overwrites (keyed by message id + a monotonic-enough sequence
+/// derived from the state name) so a test can observe the transition
+/// sequence, not just the latest state.
 pub async fn on_conversation_state<H: AppHost>(
     host: &H,
     message: String,
@@ -721,8 +736,7 @@ pub async fn on_conversation_state<H: AppHost>(
 }
 
 /// Echoes every field of the request back as JSON, or handles sub-paths.
-pub async fn handle_http<H: AppHost>(host: &H, req: HttpRequest) -> Result<HttpResponse, String> {
-    ensure_collection(host, "http_seen").await?;
+pub async fn handle_http<H: AppHost>(_host: &H, req: HttpRequest) -> Result<HttpResponse, String> {
     let path = req.path.as_str();
     if path == "/echo" {
         let body = serde_json::to_vec(&json!({
@@ -761,10 +775,15 @@ pub async fn handle_http<H: AppHost>(host: &H, req: HttpRequest) -> Result<HttpR
     }
 }
 
+static WS_MSG_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub async fn on_ws_open<H: AppHost>(host: &H, conn: String) {
-    let _ = ensure_collection(host, WS_LOG).await;
+    if let Err(e) = ensure_collection(host, WS_LOG).await {
+        eprintln!("failed to ensure WS_LOG: {e}");
+        return;
+    }
     let id = format!("{conn}:open");
-    let _ = host
+    if let Err(e) = host
         .put(
             WS_LOG.into(),
             RecordWriteValue {
@@ -776,13 +795,20 @@ pub async fn on_ws_open<H: AppHost>(host: &H, conn: String) {
                 .unwrap_or_default(),
             },
         )
-        .await;
+        .await
+    {
+        eprintln!("failed to write ws open log: {e:?}");
+    }
 }
 
 pub async fn on_ws_message<H: AppHost>(host: &H, conn: String, frame: Vec<u8>, kind: FrameKind) {
-    let _ = ensure_collection(host, WS_LOG).await;
-    let id = format!("{conn}:message:{}", inbox_entry_id(&frame));
-    let _ = host
+    if let Err(e) = ensure_collection(host, WS_LOG).await {
+        eprintln!("failed to ensure WS_LOG: {e}");
+        return;
+    }
+    let seq = WS_MSG_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let id = format!("{conn}:message:{seq}:{}", inbox_entry_id(&frame));
+    if let Err(e) = host
         .put(
             WS_LOG.into(),
             RecordWriteValue {
@@ -790,6 +816,7 @@ pub async fn on_ws_message<H: AppHost>(host: &H, conn: String, frame: Vec<u8>, k
                 payload: serde_json::to_vec(&json!({
                     "event": "message",
                     "conn": conn,
+                    "seq": seq,
                     "frame": String::from_utf8_lossy(&frame),
                     "kind": match kind {
                         FrameKind::Text => "text",
@@ -799,13 +826,19 @@ pub async fn on_ws_message<H: AppHost>(host: &H, conn: String, frame: Vec<u8>, k
                 .unwrap_or_default(),
             },
         )
-        .await;
+        .await
+    {
+        eprintln!("failed to write ws message log: {e:?}");
+    }
 }
 
 pub async fn on_ws_close<H: AppHost>(host: &H, conn: String) {
-    let _ = ensure_collection(host, WS_LOG).await;
+    if let Err(e) = ensure_collection(host, WS_LOG).await {
+        eprintln!("failed to ensure WS_LOG: {e}");
+        return;
+    }
     let id = format!("{conn}:close");
-    let _ = host
+    if let Err(e) = host
         .put(
             WS_LOG.into(),
             RecordWriteValue {
@@ -817,7 +850,10 @@ pub async fn on_ws_close<H: AppHost>(host: &H, conn: String) {
                 .unwrap_or_default(),
             },
         )
-        .await;
+        .await
+    {
+        eprintln!("failed to write ws close log: {e:?}");
+    }
 }
 
 /// A short, stable id derived from the payload bytes.

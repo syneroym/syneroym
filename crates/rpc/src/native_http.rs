@@ -41,6 +41,13 @@ pub trait NativeHttpService: Send + Sync + Debug {
         caller: Option<CallerContext>,
     );
     async fn on_websocket_close(&self, conn: String, caller: Option<CallerContext>);
+
+    /// Returns the canonical service ID this native service was registered
+    /// under, used to route WebSocket senders and other service-scoped
+    /// resources.
+    fn service_id(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Shared registry of natively linked HTTP surfaces, keyed by `service_id`

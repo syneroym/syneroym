@@ -1080,7 +1080,7 @@ async fn init_dual_build_fixture(
             collection: None,
             topic: None,
             protocol: None,
-            public: false,
+            public: true,
         },
     ];
     shared.http_routes.insert(DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(), routes.clone());
@@ -1363,6 +1363,7 @@ async fn build_route_handler_deps(
             messaging_broker,
             native_dispatch,
             native_http,
+            websocket_senders,
             http_routes,
             assets,
             sse_permits: control_plane_service.sse_permits(),

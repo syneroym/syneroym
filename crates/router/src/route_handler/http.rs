@@ -1549,7 +1549,17 @@ impl HttpHandler {
             .get(&self.preamble.service_id)
             .map(|e| e.value().clone());
 
-        let app_sandbox_engine = if native.is_none() {
+        let app_sandbox_engine = if let Some(_svc) = &native {
+            if let Some(engine) = &self.route_handler.inner.app_sandbox_engine
+                && engine.is_deployed(&self.preamble.service_id)
+            {
+                warn!(
+                    service_id = %self.preamble.service_id,
+                    "native_http service shadows deployed WASM component"
+                );
+            }
+            None
+        } else {
             let Some(engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
                 return Ok(http_error(
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -1563,8 +1573,6 @@ impl HttpHandler {
                 ));
             }
             Some(engine)
-        } else {
-            None
         };
 
         let (parts, body) = req.into_parts();
@@ -1712,14 +1720,17 @@ impl HttpHandler {
             .get(&self.preamble.service_id)
             .map(|e| e.value().clone());
 
-        let (ws_target, app_sandbox_engine) = if let Some(svc) = native {
-            let Some(engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
-                return Ok(http_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "app sandbox engine not available (coordinator mode)".into(),
-                ));
-            };
-            (WsTarget::Native(svc), engine)
+        let (ws_target, ws_service_id) = if let Some(svc) = native {
+            if let Some(engine) = &self.route_handler.inner.app_sandbox_engine
+                && engine.is_deployed(&self.preamble.service_id)
+            {
+                warn!(
+                    service_id = %self.preamble.service_id,
+                    "native_http service shadows deployed WASM component"
+                );
+            }
+            let ws_id = svc.service_id().unwrap_or(&self.preamble.service_id).to_string();
+            (WsTarget::Native(svc), ws_id)
         } else {
             let Some(engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
                 return Ok(http_error(
@@ -1733,7 +1744,7 @@ impl HttpHandler {
                     "service has no deployed WASM component".into(),
                 ));
             }
-            (WsTarget::Wasm(engine.clone()), engine)
+            (WsTarget::Wasm(engine), self.preamble.service_id.clone())
         };
 
         let req_key = match Self::validate_websocket_upgrade_headers(req.headers()) {
@@ -1798,8 +1809,10 @@ impl HttpHandler {
         };
 
         let conn_id = uuid::Uuid::new_v4().to_string();
-        let mut rx_internal = app_sandbox_engine.register_websocket_sender(&service_id, &conn_id);
-        let engine_cleanup = app_sandbox_engine.clone();
+        let mut rx_internal =
+            self.route_handler.inner.websocket_senders.register(&ws_service_id, &conn_id);
+        let senders_cleanup = self.route_handler.inner.websocket_senders.clone();
+        let cleanup_service_id = ws_service_id.clone();
         let caller = self.caller.clone();
 
         tokio::task::spawn(async move {
@@ -1829,7 +1842,7 @@ impl HttpHandler {
                                 broadcast = async {
                                     if let Some(rx) = &mut topic_rx {
                                         rx.recv().await
-                                     } else {
+                                    } else {
                                         futures::future::pending().await
                                     }
                                 } => {
@@ -1916,12 +1929,12 @@ impl HttpHandler {
                     drop(ws_stream);
                     let _ = writer_shutdown_tx.send(());
                     let _ = writer_task.await;
-                    engine_cleanup.deregister_websocket_sender(&service_id, &conn_id);
+                    senders_cleanup.deregister(&cleanup_service_id, &conn_id);
                     ws_target.on_close(&service_id, &conn_id, caller).await;
                 }
                 Err(e) => {
                     error!("WebSocket upgrade error: {}", e);
-                    engine_cleanup.deregister_websocket_sender(&service_id, &conn_id);
+                    senders_cleanup.deregister(&cleanup_service_id, &conn_id);
                 }
             }
         });

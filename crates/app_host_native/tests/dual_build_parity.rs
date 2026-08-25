@@ -270,7 +270,8 @@ impl HttpDriver for WasmHttpDriver {
             caller: caller.as_ref().map(|c| CallerIdentity {
                 did: c.caller_did.clone(),
                 auth: match c.auth {
-                    AuthLevel::Ucan => CallerAuth::Delegated,
+                    AuthLevel::Ucan => CallerAuth::Ucan,
+                    AuthLevel::Delegated => CallerAuth::Delegated,
                     _ => CallerAuth::SelfAsserted,
                 },
                 app_instance: c.app_instance.clone(),
@@ -301,7 +302,8 @@ impl HttpDriver for NativeHttpDriver {
             caller: caller.as_ref().map(|c| CallerIdentity {
                 did: c.caller_did.clone(),
                 auth: match c.auth {
-                    AuthLevel::Ucan => CallerAuth::Delegated,
+                    AuthLevel::Ucan => CallerAuth::Ucan,
+                    AuthLevel::Delegated => CallerAuth::Delegated,
                     _ => CallerAuth::SelfAsserted,
                 },
                 app_instance: c.app_instance.clone(),
@@ -688,7 +690,7 @@ const SCENARIOS: &[(&str, &str)] = &[
     ("read-outbox-empty", r#"{"op":"read-outbox"}"#),
     (
         "proxy-call-self",
-        r#"{"op":"proxy-call-self","interface":"greeter","method":"greet","params":"{}"}"#,
+        r#"{"op":"proxy-call-self","service_id":"dual-build-fixture-parity","interface":"greeter","method":"greet","params":"{}"}"#,
     ),
     (
         "proxy-call-dependency",
@@ -922,7 +924,7 @@ async fn assert_send_writes_pending_and_appears_in_the_outbox<D: Driver>(name: &
 
     let outbox_result = driver.run(r#"{"op":"read-outbox"}"#).await.unwrap();
     let outbox_v: Value = serde_json::from_str(&outbox_result).unwrap();
-    let entries = outbox_v["ok"]["messages"].as_array().unwrap();
+    let entries = outbox_v["ok"]["outbox"].as_array().unwrap();
     assert!(
         entries.iter().any(|e| e["id"] == message_id),
         "{name}: the outbox must list the just-sent message"

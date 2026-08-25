@@ -3,7 +3,7 @@
 **Milestone:** [task.md](task.md) · **Designs of record:**
 [slice-c1-implementation-plan.md](slice-c1-implementation-plan.md) (C1)
 
-**Overall:** Slice C1 complete (2026-08-25) — see C1's status and evidence below.
+**Overall:** Slice C1 complete (2026-08-25) — see C1's status, architectural decisions, permitted differences, and evidence below.
 
 ---
 
@@ -26,50 +26,60 @@
 
 ## C1 — What shipped
 
-Slice C1 completes the dual-build shim for all guest capabilities Roym needs: `syneroym:proxy`, `syneroym:http` inbound (`incoming-handler` and `websocket-handler`), `syneroym:app-config`, and `syneroym:vault`.
+Slice C1 completes the dual-build shim for the guest capabilities Roym requires: `syneroym:proxy` (`call`/`enqueue`), `syneroym:http` inbound (`incoming-handler` and `websocket-handler`), `syneroym:app-config`, and `syneroym:vault`.
 
-### 1. WIT Bindgen & Export Unification (`crates/wit_interfaces`)
-- Added `proxy` package under `crates/wit_interfaces/wit/proxy/proxy.wit` (`syneroym:proxy/proxy@0.1.0`).
-- Generated typed Rust bindings for both guest and host targets (`proxy`, `http_guest`, `http_host`).
-- Re-exported guest bindings from `crates/wit_interfaces/src/lib.rs`.
+### 1. WIT Bindgen & Interface Bindings (`crates/wit_interfaces`, `crates/app_host`)
+- Added `proxy` world to `crates/wit_interfaces/wit/proxy/proxy.wit` (`syneroym:proxy/proxy@0.1.0`) with typed guest and host bindings.
+- Generated typed bindings for `http_host` (renamed to avoid collisions with guest `http`) and guest HTTP/WebSocket interfaces.
+- Standardized common HTTP/WebSocket types in `syneroym_app_host::types::http` (`HttpRequest`, `HttpResponse`, `FrameKind`, `CallerAuth`).
+- Implemented `AppProxy`, `AppAppConfig`, and `AppVault` guest bridges in `crates/app_host/src/guest.rs`.
 
-### 2. Common HTTP Types & Traits (`crates/app_host`)
-- Replaced hand-written `guest_http` types with unified `app_host::types::http` (`HttpRequest`, `HttpResponse`, `FrameKind`, `HttpError`, `WebSocketError`).
-- Added `AppHttp` and `AppWebSocket` traits to `syneroym-app-host`.
-- Updated `AppProxy`, `AppAppConfig`, `AppVault`, `AppBlobStore`, `AppDataLayer`, `AppMessaging`, `AppConversation` guest implementations in `crates/app_host/src/guest.rs`.
-
-### 3. Native HTTP Dispatch & WebSocket Channel Registry (`crates/rpc`)
+### 2. Native HTTP Sinks & Dispatch (`crates/rpc`, `crates/app_host_native`)
+- Defined `HttpSink` and `WebSocketSink` in `crates/app_host_native/src/http.rs` (D-C1-4: placed in `app_host_native` because guest code implements WIT exports rather than host traits).
 - Created `NativeHttpService` trait and `NativeHttpRegistry` in `crates/rpc/src/native_http.rs`.
-- Decoupled `WebSocketSenders` into `crates/rpc/src/websocket_senders.rs`, allowing native services to register, send, broadcast, and drain WebSocket connections without depending on WASM sandbox internals.
+- Implemented `NativeHttpAdapter` wrapping `HttpSink` and `WebSocketSink` into `NativeHttpService`.
+- Decoupled `WebSocketSenders` into `crates/rpc/src/websocket_senders.rs` as a shared table across `RouteHandlerInner`, `AppSandboxEngine`, and `NativeAppHost`.
 
-### 4. Native App Host & Adapter (`crates/app_host_native`)
-- Implemented `NativeHttpAdapter`, `HttpSink`, and `WebSocketSink` in `crates/app_host_native/src/http.rs`.
-- Implemented full trait suite on `NativeAppHost`: `AppHttp`, `AppWebSocket`, `AppProxy`, `AppAppConfig`, `AppVault`, `AppDataLayer`, `AppBlobStore`, `AppMessaging`, `AppConversation`.
-- Implemented lazy FDAE policy loading from service SQLite storage with non-memoized transient error handling and fail-closed ABAC gate.
-- Handled `config_generation` validation and monotonic reload logic.
+### 3. Native App Host Implementation (`crates/app_host_native`)
+- Implemented full trait suite on `NativeAppHost`: `AppProxy`, `AppAppConfig`, `AppVault`, `AppDataLayer`, `AppBlobStore`, `AppMessaging`, `AppConversation`, `AppWebSocket`.
+- Implemented lazy FDAE policy loading in `NativeAppHostFactory` with `fdae_policy_generation` atomic concurrency guard, transient load error resilience, and fail-closed handling for ABAC policies.
+- Implemented per-invocation config reads reflecting monotonic config generations.
 
-### 5. Router Native HTTP & Substrate Fixture Wiring (`crates/router`, `crates/substrate`)
-- Integrated native HTTP routing into `RouteHandlerInner.native_http` in `crates/router/src/route_handler/http.rs`.
-- Extended `SharedNodeHandles` and registered `/whoami`, `http`, and `http-native` endpoints under both `DUAL_BUILD_FIXTURE_DISPATCH_ID` and `node_service_id` in `crates/substrate/src/runtime.rs`.
+### 4. Router Integration & Substrate Fixture (`crates/router`, `crates/substrate`)
+- Integrated native HTTP routing in `crates/router/src/route_handler/http.rs`, dispatching via `native_http` and issuing warnings if a native HTTP service shadows a deployed WASM service.
+- Registered `/whoami`, `/ws`, and `/run` HTTP routes and native services under `DUAL_BUILD_FIXTURE_DISPATCH_ID` and `node_service_id` in `crates/substrate/src/runtime.rs`.
 
-### 6. Dual-Build Fixture & Verification (`test-components/dual-build-fixture`, `crates/app_host_native/tests/dual_build_parity.rs`, `crates/substrate/tests/dual_build_fixture_e2e.rs`)
-- Built `test-components/dual-build-fixture` as both `wasm32-wasip2` component and natively linked module.
-- 32 dual-build parity tests in `dual_build_parity.rs` proving identical behavior across WASM and native builds for all host capabilities.
-- 3 substrate E2E tests in `dual_build_fixture_e2e.rs` proving router reachability, HTTP routing, and access control for linked native services.
+### 5. Architectural Decisions & Test Harness
+- `HttpSink`/`WebSocketSink` location: Defined in `app_host_native` rather than `app_host` (D-C1-4) since guests export WIT functions directly.
+- WIT package naming: `http_host` naming avoids clashes with guest `http` definitions.
+- Test parity harness: `crates/app_host_native/tests/dual_build_parity.rs` runs with real AES-GCM encrypted SQLite storage provider and injected KEK.
+
+---
+
+## §14 Permitted Differences (WASM vs Native Build)
+
+As specified in §14 of the implementation plan, the following structural differences between the WASM component host and the native in-process shim are intentional and accepted:
+
+1. **Guest HTTP Admission Limiting:** WASM execution acquires per-service concurrency permits (`guest_http_permits`); native HTTP dispatches directly as asynchronous Tokio tasks.
+2. **HTTP Failure Taxonomy:** WASM bridge classifies failures into `Unavailable`, `Declined`, or `Trap`; native handlers return `Result<HttpResponse, String>`.
+3. **WebSocket Permits:** WASM bridge enforces `guest_websocket_permits`; native WebSocket connections register directly in the shared `WebSocketSenders` table.
+4. **Row Authorizer (Stage-4 ABAC):** WASM host instantiates guest `syneroym:data-layer/authorizer` for stage-4 post-query filtering; native host uses `empty_row_authorizer()` and fails closed for policies with ABAC rules.
+5. **Subscription Replay:** WASM engine replays stored subscriptions from `StorageProvider` on startup; native app subscription replay is deferred to C2 (`D-C1-9`).
+6. **Isolated Resource Tables:** WASM execution manages Wasmtime store-bound resource handles; native host allocates unique monotonic handle IDs per invocation.
 
 ---
 
 ## C1 — Verification evidence
 
 1. `cargo test -p syneroym-app-host-native --test dual_build_parity`: **32 passed, 0 failed**
-2. `cargo test -p syneroym-app-host-native --lib`: **24 passed, 0 failed**
-3. `cargo test -p syneroym-substrate --test dual_build_fixture_e2e`: **3 passed, 0 failed**
+2. `cargo test -p syneroym-substrate --features dual_build_fixture --test dual_build_fixture_e2e`: **4 passed, 0 failed**
+3. `cargo test -p syneroym-coordinator-iroh --test multi_hop_relay`: **5 passed, 0 failed**
 4. `cargo test -p syneroym-substrate --test conversation_e2e`: **1 passed, 0 failed**
 5. `cargo test -p syneroym-substrate --test group_conversation_e2e`: **1 passed, 0 failed**
-6. `cargo test -p syneroym-coordinator-iroh --test multi_hop_relay`: **5 passed, 0 failed**
-7. `cargo test --workspace`: **All unit, integration, and doc tests passed**
-8. `cargo +nightly fmt --all`: **Clean**
-9. `cargo clippy --workspace --all-targets --all-features`: **Clean (0 errors, 0 warnings)**
-10. `cargo audit`: **Clean (0 vulnerabilities found across 915 dependencies)**
-11. `cargo deny check licenses`: **Clean (`licenses ok`)**
-12. `mise run test:e2e`: **4 passed (20.0s, clean)**
+6. `cargo test --workspace`: **All tests passed**
+7. `cargo +nightly fmt --all`: **Clean**
+8. `cargo clippy --workspace --all-targets --all-features`: **Clean (0 errors, 0 warnings)**
+9. `cargo audit`: **Clean (0 vulnerabilities)**
+10. `cargo deny check licenses`: **Clean (`licenses ok`)**
+11. `mise run test:e2e`: **4 passed (clean)**
+

@@ -104,4 +104,8 @@ impl NativeHttpService for NativeHttpAdapter {
             sink.on_close(host_caller, conn).await;
         }
     }
+
+    fn service_id(&self) -> Option<&str> {
+        Some(self.factory.service_id())
+    }
 }

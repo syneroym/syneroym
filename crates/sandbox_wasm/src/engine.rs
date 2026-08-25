@@ -1301,9 +1301,7 @@ impl AppSandboxEngine {
             self.logical_resolver.clone(),
         )
         .with_conversation(conversation)
-        .with_websocket_senders(
-            self.websocket_senders.get_or_init(syneroym_rpc::WebSocketSenders::new).clone(),
-        );
+        .with_websocket_senders(self.websocket_senders());
 
         debug!("created wasi ctx and host state");
 
@@ -1512,28 +1510,32 @@ impl AppSandboxEngine {
         self.max_sse_subscribers_per_service as usize
     }
 
+    /// Returns the shared `WebSocketSenders` table, initializing with a default
+    /// instance if none was set by the composition root.
+    pub fn websocket_senders(&self) -> Arc<syneroym_rpc::WebSocketSenders> {
+        self.websocket_senders.get_or_init(syneroym_rpc::WebSocketSenders::new).clone()
+    }
+
     /// Registers a unicast sender channel for an active WebSocket connection,
     /// returning the receiver to drain in the router's connection loop.
     pub fn register_websocket_sender(&self, service_id: &str, conn_id: &str) -> WebSocketReceiver {
-        self.websocket_senders
-            .get_or_init(syneroym_rpc::WebSocketSenders::new)
-            .register(service_id, conn_id)
+        self.websocket_senders().register(service_id, conn_id)
     }
 
     /// Removes a unicast sender channel for a closed WebSocket connection.
     pub fn deregister_websocket_sender(&self, service_id: &str, conn_id: &str) {
-        self.websocket_senders
-            .get_or_init(syneroym_rpc::WebSocketSenders::new)
-            .deregister(service_id, conn_id);
+        if let Some(senders) = self.websocket_senders.get() {
+            senders.deregister(service_id, conn_id);
+        }
     }
 
     /// Drops all WebSocket senders for a service.
     /// Called from undeploy/stop. Dropping the senders unblocks any active
     /// rx.recv() loops in the router, terminating the WebSockets cleanly.
     pub fn forget_websocket_senders(&self, service_id: &str) {
-        self.websocket_senders
-            .get_or_init(syneroym_rpc::WebSocketSenders::new)
-            .forget_service(service_id);
+        if let Some(senders) = self.websocket_senders.get() {
+            senders.forget_service(service_id);
+        }
         self.guest_websocket_permits.remove(service_id);
     }
 
@@ -3240,7 +3242,11 @@ mod tests {
             guest_websocket_permits: Arc::new(DashMap::new()),
             max_concurrent_websockets_per_service: 10,
             max_sse_subscribers_per_service: 100,
-            websocket_senders: OnceLock::new(),
+            websocket_senders: {
+                let ws = OnceLock::new();
+                let _ = ws.set(syneroym_rpc::WebSocketSenders::new());
+                ws
+            },
             _shutdown_tx: None,
             key_store: Arc::new(KeyStore::new()),
             storage_provider: Arc::new(SqliteStorageProvider::new(env::temp_dir(), false).unwrap()),
@@ -3384,7 +3390,11 @@ mod tests {
             guest_websocket_permits: Arc::new(DashMap::new()),
             max_concurrent_websockets_per_service: 10,
             max_sse_subscribers_per_service: 100,
-            websocket_senders: OnceLock::new(),
+            websocket_senders: {
+                let ws = OnceLock::new();
+                let _ = ws.set(syneroym_rpc::WebSocketSenders::new());
+                ws
+            },
             _shutdown_tx: None,
             key_store: Arc::new(KeyStore::new()),
             storage_provider,

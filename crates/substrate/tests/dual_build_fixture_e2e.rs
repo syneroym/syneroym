@@ -70,26 +70,66 @@ async fn an_http_request_reaches_the_linked_native_fixture_through_the_router() 
 }
 
 #[tokio::test]
-async fn a_cross_service_call_by_did_is_gated_identically_on_both_builds() {
+async fn a_cross_service_call_by_did_is_gated_on_native_build() {
     let [iroh_port, registry_port, gateway_port] = alloc_ports();
     let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("40".repeat(32)).await.expect("inject_kek failed");
 
+    let target_did = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
     let response = ctx
         .substrate_client
         .request(
             FIXTURE_INTERFACE,
             "run",
-            json!([r#"{"op":"proxy-call-unbound-dependency","name":"unbound"}"#]),
+            json!([serde_json::to_string(&json!({
+                "op": "proxy-call-cross-service-native",
+                "target": target_did,
+                "interface": "data-layer",
+                "method": "query",
+                "params": "{}",
+            }))
+            .unwrap()]),
         )
         .await
         .expect("request to native fixture");
 
     let payload: String = serde_json::from_value(response.result).expect("fixture payload");
     let parsed: serde_json::Value = serde_json::from_str(&payload).expect("fixture payload JSON");
+    let error_str = parsed["ok"]["error"].as_str().expect("expected error field in ok payload");
     assert!(
-        parsed.get("err").is_some() || parsed["ok"].get("error").is_some(),
-        "expected error response, got {parsed:?}"
+        error_str.contains("PermissionDenied")
+            || error_str.contains("permission-denied")
+            || error_str.contains("Permission denied"),
+        "expected permission denied error for ungranted cross-service call, got: {error_str}"
+    );
+
+    ctx.teardown().await;
+}
+
+#[tokio::test]
+async fn a_websocket_reaches_the_linked_native_fixture_through_the_router() {
+    let [iroh_port, registry_port, gateway_port] = alloc_ports();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
+    ctx.substrate_client.inject_kek("40".repeat(32)).await.expect("inject_kek failed");
+
+    let node_did = ctx.substrate_client.service_id().to_string();
+    let TransportConnection::Iroh { conn, .. } =
+        ctx.substrate_client.connection().expect("iroh connection");
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+
+    let preamble = format!("http://http-native|{node_did}\n");
+    send.write_all(preamble.as_bytes()).await.unwrap();
+    let ws_upgrade = "GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: \
+                      Upgrade\r\nSec-WebSocket-Key: \
+                      dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+    send.write_all(ws_upgrade.as_bytes()).await.unwrap();
+
+    let mut buf = [0u8; 1024];
+    let n = recv.read(&mut buf).await.unwrap().unwrap_or(0);
+    let resp = String::from_utf8_lossy(&buf[..n]);
+    assert!(
+        resp.contains("101 Switching Protocols") || resp.contains("HTTP/1.1 101"),
+        "unexpected upgrade response: {resp}"
     );
 
     ctx.teardown().await;

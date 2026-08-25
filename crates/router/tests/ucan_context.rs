@@ -114,6 +114,7 @@ async fn test_route_handler(service_id: &str) -> RouteHandler {
         messaging_broker,
         native_dispatch: NativeDispatchRegistry::default(),
         native_http: Arc::new(DashMap::new()),
+        websocket_senders: syneroym_rpc::WebSocketSenders::new(),
         http_routes,
         assets: Arc::new(DashMap::new()),
         sse_permits: Arc::new(DashMap::new()),

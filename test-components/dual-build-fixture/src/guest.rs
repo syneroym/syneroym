@@ -1,7 +1,12 @@
 #![cfg(target_arch = "wasm32")]
 //! WASM wiring: `syneroym-app-host::guest::GuestHost` supplies the import
-//! side; this module only needs to `generate!` the export side and remap
-//! the import interfaces onto `syneroym-app-host`'s own bindings.
+//! side (`data-layer`/`blob-store`/`messaging/host-api`); this module only
+//! needs to `generate!` the export side (`test-driver`, `guest-api`,
+//! `stream-types`) and remap the import interfaces onto
+//! `syneroym-app-host`'s own bindings rather than regenerating them -- see
+//! `syneroym-app-host`'s `lib.rs`/`guest.rs` doc comments for why a second
+//! `generate!` pass over the same imports, linked into one component,
+//! fails to encode.
 
 use bindings::exports::{
     syneroym::{
@@ -20,7 +25,9 @@ use bindings::exports::{
 use syneroym_app_host::guest::{GuestHost, block_on};
 
 /// The only place generated `unsafe` enters this crate, so the workspace's
-/// `unsafe_code = "deny"` is relaxed here and nowhere else.
+/// `unsafe_code = "deny"` is relaxed here and nowhere else -- the crate keeps
+/// every other workspace lint, including the deny-level correctness and
+/// suspicious groups.
 #[allow(unsafe_code)]
 mod bindings {
     wit_bindgen::generate!({
@@ -182,7 +189,10 @@ impl WebSocketHandlerGuest for Fixture {
 
 /// This fixture doesn't exercise raw-stream messaging, but must still
 /// satisfy `guest-api`'s `use stream-types.{stream-cursor, stream-sink}`
-/// reference, since `stream-types` is guest-implemented (ADR-0014).
+/// reference, since `stream-types` is guest-implemented (ADR-0014). Never
+/// constructed in practice: `handle-stream-request`/`accept-stream-upload`
+/// above always return `Err` before any instance of these types would need
+/// to exist.
 pub struct UnusedStreamCursor;
 
 impl GuestStreamCursor for UnusedStreamCursor {
