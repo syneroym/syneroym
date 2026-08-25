@@ -67,7 +67,10 @@ use syneroym_rpc::{
 use syneroym_sandbox_wasm::{
     AppSandboxEngine, FrameKind, GuestHttpFailure, GuestHttpOutcome, StreamRequestOutcome,
 };
-use tokio::io::{self as tokio_io, AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::{
+    io::{self as tokio_io, AsyncRead, AsyncReadExt, AsyncWrite},
+    sync::{Semaphore, oneshot},
+};
 use tokio_tungstenite::{
     WebSocketStream,
     tungstenite::{
@@ -1240,7 +1243,7 @@ impl HttpHandler {
                 .inner
                 .sse_permits
                 .entry(service_id)
-                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_subscribers)));
+                .or_insert_with(|| Arc::new(Semaphore::new(max_subscribers)));
             entry.value().clone()
         };
         let permit = match permits.try_acquire_owned() {
@@ -1831,10 +1834,8 @@ impl HttpHandler {
                     use futures::{SinkExt, StreamExt};
                     let (mut ws_sink, mut ws_stream) = ws_stream.split();
 
-                    let (writer_shutdown_tx, mut writer_shutdown_rx) =
-                        tokio::sync::oneshot::channel::<()>();
-                    let (session_stop_tx, mut session_stop_rx) =
-                        tokio::sync::oneshot::channel::<()>();
+                    let (writer_shutdown_tx, mut writer_shutdown_rx) = oneshot::channel::<()>();
+                    let (session_stop_tx, mut session_stop_rx) = oneshot::channel::<()>();
                     let writer_task = tokio::spawn(async move {
                         loop {
                             tokio::select! {

@@ -54,7 +54,7 @@ use syneroym_wit_interfaces::{
 use tokio::{
     fs as tokio_fs,
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
-    sync::{Semaphore, oneshot},
+    sync::{OwnedSemaphorePermit, Semaphore, oneshot},
     time,
 };
 use tracing::{debug, error, info, warn};
@@ -318,7 +318,7 @@ pub struct AppSandboxEngine {
 
     /// Pool slots this node will let active WebSocket connections hold
     /// concurrently.
-    guest_websocket_permits: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
+    guest_websocket_permits: Arc<DashMap<String, Arc<Semaphore>>>,
     max_concurrent_websockets_per_service: u32,
     max_sse_subscribers_per_service: u32,
 }
@@ -1491,14 +1491,12 @@ impl AppSandboxEngine {
         &self,
         service_id: &str,
         timeout: Duration,
-    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    ) -> Option<OwnedSemaphorePermit> {
         let sem = self
             .guest_websocket_permits
             .entry(service_id.to_string())
             .or_insert_with(|| {
-                Arc::new(tokio::sync::Semaphore::new(
-                    self.max_concurrent_websockets_per_service as usize,
-                ))
+                Arc::new(Semaphore::new(self.max_concurrent_websockets_per_service as usize))
             })
             .clone();
         time::timeout(timeout, sem.acquire_owned()).await.ok().and_then(Result::ok)

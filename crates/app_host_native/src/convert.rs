@@ -26,6 +26,9 @@ use syneroym_app_host::types::{
     },
     vault::VaultError as GuestVaultError,
 };
+use syneroym_rpc::{
+    ConversationDeliveryState as RpcDeliveryState, ConversationMessage as RpcMessage,
+};
 use syneroym_wit_interfaces::{
     conversation_host::syneroym::conversation::conversation::{
         ConversationError as HostConversationError, ConversationKind as HostConversationKind,
@@ -245,17 +248,15 @@ pub(crate) fn membership_event_out(v: HostMembershipEvent) -> GuestMembershipEve
 // receives the `syneroym-rpc` shape and must hand `ConversationSink` the
 // guest one.
 
-pub(crate) fn rpc_delivery_state_to_guest(
-    v: syneroym_rpc::ConversationDeliveryState,
-) -> GuestDeliveryState {
+pub(crate) fn rpc_delivery_state_to_guest(v: RpcDeliveryState) -> GuestDeliveryState {
     match v {
-        syneroym_rpc::ConversationDeliveryState::Pending => GuestDeliveryState::Pending,
-        syneroym_rpc::ConversationDeliveryState::Delivered => GuestDeliveryState::Delivered,
-        syneroym_rpc::ConversationDeliveryState::Failed => GuestDeliveryState::Failed,
+        RpcDeliveryState::Pending => GuestDeliveryState::Pending,
+        RpcDeliveryState::Delivered => GuestDeliveryState::Delivered,
+        RpcDeliveryState::Failed => GuestDeliveryState::Failed,
     }
 }
 
-pub(crate) fn rpc_message_to_guest(v: syneroym_rpc::ConversationMessage) -> GuestMessage {
+pub(crate) fn rpc_message_to_guest(v: RpcMessage) -> GuestMessage {
     GuestMessage {
         id: v.id,
         conversation: v.conversation,
@@ -622,7 +623,7 @@ mod tests {
 
     #[test]
     fn rpc_message_to_guest_round_trips() {
-        let rpc_msg = syneroym_rpc::ConversationMessage {
+        let rpc_msg = RpcMessage {
             id: "msg:1".to_string(),
             conversation: "conv:1".to_string(),
             author: "did:key:zA".to_string(),
@@ -630,7 +631,7 @@ mod tests {
             received_at: 1,
             content_type: "text/plain".to_string(),
             body: vec![9],
-            state: syneroym_rpc::ConversationDeliveryState::Failed,
+            state: RpcDeliveryState::Failed,
             verified: false,
             last_error: Some("gave up".to_string()),
         };

@@ -10,7 +10,10 @@ use syneroym_app_host::{
     types::{
         app_config::ConfigError,
         blob_store::BlobError,
-        conversation::ConversationError,
+        conversation::{
+            ConversationError, ConversationSummary, DeliveryState, HistoryPage, MembershipEvent,
+            Message,
+        },
         data_layer::{
             CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult, RawQueryResult,
             RecordReadValue, RecordWriteValue, SqlValue,
@@ -34,6 +37,7 @@ use syneroym_wit_interfaces::host::syneroym::{
     proxy::proxy::Host as HostProxy,
     vault::vault::Host as HostVault,
 };
+use tokio::sync::{Mutex, OnceCell};
 use wasmtime::component::Resource;
 
 use crate::{convert, factory::NativeHostFactory};
@@ -52,7 +56,7 @@ impl NativeAppHost {
 }
 
 /// `derive` works here only because `NativeHostFactory` has its own manual
-/// `Debug` impl and `tokio::sync::Mutex<T>: Debug where T: Debug` (`HostState`
+/// `Debug` impl and `Mutex<T>: Debug where T: Debug` (`HostState`
 /// supplies its own).
 #[derive(Debug)]
 pub(crate) struct HostInner {
@@ -62,16 +66,14 @@ pub(crate) struct HostInner {
     /// Lazy: instantiated on the first host call that needs a `HostState`.
     /// Methods that do not need one (`subscribe`/`unsubscribe`, outbound
     /// `send_websocket_frame`) never initialize this.
-    pub(crate) state: tokio::sync::OnceCell<tokio::sync::Mutex<HostState>>,
+    pub(crate) state: OnceCell<Mutex<HostState>>,
 }
 
 impl HostInner {
-    pub(crate) async fn state_mutex(&self) -> &tokio::sync::Mutex<HostState> {
+    pub(crate) async fn state_mutex(&self) -> &Mutex<HostState> {
         self.state
             .get_or_init(|| async {
-                tokio::sync::Mutex::new(
-                    self.factory.build_host_state(self.caller.clone(), self.read_only).await,
-                )
+                Mutex::new(self.factory.build_host_state(self.caller.clone(), self.read_only).await)
             })
             .await
     }
@@ -360,10 +362,7 @@ impl AppConversation for NativeAppHost {
             .map_err(convert::conversation_error_out)
     }
 
-    async fn conversations(
-        &self,
-    ) -> Result<Vec<syneroym_app_host::types::conversation::ConversationSummary>, ConversationError>
-    {
+    async fn conversations(&self) -> Result<Vec<ConversationSummary>, ConversationError> {
         let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::conversations(&mut *state)
             .await
@@ -388,7 +387,7 @@ impl AppConversation for NativeAppHost {
         conversation: String,
         limit: u32,
         cursor: Option<String>,
-    ) -> Result<syneroym_app_host::types::conversation::HistoryPage, ConversationError> {
+    ) -> Result<HistoryPage, ConversationError> {
         let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::history(&mut *state, conversation, limit, cursor)
             .await
@@ -396,10 +395,7 @@ impl AppConversation for NativeAppHost {
             .map_err(convert::conversation_error_out)
     }
 
-    async fn delivery_status(
-        &self,
-        message: String,
-    ) -> Result<syneroym_app_host::types::conversation::DeliveryState, ConversationError> {
+    async fn delivery_status(&self, message: String) -> Result<DeliveryState, ConversationError> {
         let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::delivery_status(&mut *state, message)
             .await
@@ -407,9 +403,7 @@ impl AppConversation for NativeAppHost {
             .map_err(convert::conversation_error_out)
     }
 
-    async fn outbox(
-        &self,
-    ) -> Result<Vec<syneroym_app_host::types::conversation::Message>, ConversationError> {
+    async fn outbox(&self) -> Result<Vec<Message>, ConversationError> {
         let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::outbox(&mut *state)
             .await
@@ -459,8 +453,7 @@ impl AppConversation for NativeAppHost {
     async fn membership_history(
         &self,
         conversation: String,
-    ) -> Result<Vec<syneroym_app_host::types::conversation::MembershipEvent>, ConversationError>
-    {
+    ) -> Result<Vec<MembershipEvent>, ConversationError> {
         let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::membership_history(&mut *state, conversation)
             .await

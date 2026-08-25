@@ -2,7 +2,10 @@
 
 use std::{
     fmt,
-    sync::{Arc, OnceLock, Weak},
+    sync::{
+        Arc, OnceLock, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use dashmap::DashMap;
@@ -20,7 +23,7 @@ use syneroym_rpc::{
     ConversationNotifier, ServiceProxy, WebSocketSenders,
 };
 use syneroym_sandbox_wasm::{HostState, MessagingContext, StreamContext, empty_service_proxy};
-use tokio::sync::RwLock;
+use tokio::sync::{OnceCell, RwLock};
 
 use crate::{
     convert,
@@ -61,7 +64,7 @@ pub struct NativeHostFactory {
     websocket_sink: OnceLock<Weak<dyn WebSocketSink>>,
     pub(crate) websocket_senders: Arc<WebSocketSenders>,
     fdae_policy: RwLock<Option<Option<Arc<Policy>>>>,
-    fdae_policy_generation: std::sync::atomic::AtomicU64,
+    fdae_policy_generation: AtomicU64,
 }
 
 /// Hand-written, not derived: `StorageProvider` has no `Debug` supertrait,
@@ -85,7 +88,7 @@ impl NativeHostFactory {
         blob_provider: Arc<dyn BlobProvider>,
         broker: Arc<MqttBroker>,
         endpoint_registry: EndpointRegistry,
-        logical_resolver: Arc<syneroym_app_orchestration::LogicalResolver>,
+        logical_resolver: Arc<LogicalResolver>,
         conversation: Arc<ConversationService>,
         websocket_senders: Arc<WebSocketSenders>,
     ) -> Arc<Self> {
@@ -105,8 +108,8 @@ impl NativeHostFactory {
             http_sink: OnceLock::new(),
             websocket_sink: OnceLock::new(),
             websocket_senders,
-            fdae_policy: tokio::sync::RwLock::new(None),
-            fdae_policy_generation: std::sync::atomic::AtomicU64::new(0),
+            fdae_policy: RwLock::new(None),
+            fdae_policy_generation: AtomicU64::new(0),
         });
         // `§6.5`: registers itself as this service's conversation
         // notification target, so the delivery worker wakes a natively-
@@ -126,7 +129,7 @@ impl NativeHostFactory {
     /// generation counter so in-flight loads from storage cannot resurrect a
     /// stale policy.
     pub async fn invalidate_fdae_policy(&self) {
-        self.fdae_policy_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.fdae_policy_generation.fetch_add(1, Ordering::SeqCst);
         let mut guard = self.fdae_policy.write().await;
         *guard = None;
     }
@@ -194,9 +197,8 @@ impl NativeHostFactory {
         }
     }
 
-    pub(crate) async fn fdae_policy(&self) -> Option<Arc<syneroym_fdae::Policy>> {
-        let generation_before =
-            self.fdae_policy_generation.load(std::sync::atomic::Ordering::SeqCst);
+    pub(crate) async fn fdae_policy(&self) -> Option<Arc<Policy>> {
+        let generation_before = self.fdae_policy_generation.load(Ordering::SeqCst);
         {
             let guard = self.fdae_policy.read().await;
             if let Some(memoized) = &*guard {
@@ -225,13 +227,10 @@ impl NativeHostFactory {
                 return None;
             }
         };
-        let generation_after =
-            self.fdae_policy_generation.load(std::sync::atomic::Ordering::SeqCst);
+        let generation_after = self.fdae_policy_generation.load(Ordering::SeqCst);
         if generation_before == generation_after {
             let mut guard = self.fdae_policy.write().await;
-            if self.fdae_policy_generation.load(std::sync::atomic::Ordering::SeqCst)
-                == generation_before
-            {
+            if self.fdae_policy_generation.load(Ordering::SeqCst) == generation_before {
                 *guard = Some(resolved.clone());
             }
         }
@@ -286,7 +285,7 @@ impl NativeHostFactory {
             factory: self.clone(),
             caller,
             read_only,
-            state: tokio::sync::OnceCell::new(),
+            state: OnceCell::new(),
         }))
     }
 

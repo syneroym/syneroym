@@ -6,6 +6,7 @@
 //! substrates across networks.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::{
+    collections::BTreeSet,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -186,8 +187,7 @@ fn create_signed_info_with_full_addr(
     service_id: &str,
     endpoint_addr: &EndpointAddr,
 ) -> SignedEndpointInfo {
-    let pruned_addrs: std::collections::BTreeSet<_> =
-        endpoint_addr.addrs.iter().take(2).cloned().collect();
+    let pruned_addrs: BTreeSet<_> = endpoint_addr.addrs.iter().take(2).cloned().collect();
     let pruned = EndpointAddr { id: endpoint_addr.id, addrs: pruned_addrs };
     let endpoint_addr_bytes = serde_json::to_vec(&pruned).unwrap();
     let info = EndpointInfo {

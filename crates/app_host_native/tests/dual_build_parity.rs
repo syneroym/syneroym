@@ -8,7 +8,7 @@
 use std::{
     fs,
     path::Path,
-    sync::{Arc, Weak},
+    sync::{Arc, Weak, atomic::Ordering},
     time::Duration,
 };
 
@@ -17,18 +17,19 @@ use syneroym_app_host::{
     AppDataLayer,
     types::{
         data_layer::RecordWriteValue,
-        http::{CallerAuth, CallerIdentity, HttpRequest, HttpResponse},
+        http::{CallerAuth, CallerIdentity, FrameKind, HttpRequest, HttpResponse},
     },
 };
 use syneroym_app_host_native::{
-    ConversationSink, HttpSink, MessageSink, NativeHostFactory, NativeHttpAdapter, WebSocketSink,
+    ConversationSink, HttpSink, MessageSink, NativeAppHost, NativeHostFactory, NativeHttpAdapter,
+    WebSocketSink,
 };
 use syneroym_app_orchestration::{
     AppInstanceId, AppRegistry, LogicalResolver, LogicalServiceName, ServiceId, StaticInventory,
     TopologyEntry, TopologyEpoch, TopologyKey, TopologyMode,
 };
 use syneroym_async_queue::QueueConfig;
-use syneroym_conversation::ConversationService;
+use syneroym_conversation::{ConversationConfig, ConversationService};
 use syneroym_core::{
     config::{RetryPolicy, SubstrateConfig},
     local_registry::EndpointRegistry,
@@ -36,13 +37,19 @@ use syneroym_core::{
     test_constants,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
-use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
+use syneroym_data_db::{
+    SqliteStorageProvider, StorageProvider,
+    host_store::{CollectionSchema as DbCollectionSchema, RecordWriteValue as DbRecordWriteValue},
+};
 use syneroym_data_keystore::KeyStore;
+use syneroym_identity::{
+    DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate::derive_did_key,
+};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::{
-    AuthLevel, CallerContext, ConversationError, ConversationHost, JsonRpcRequest,
-    NativeHttpService, NativeInvocation, ProxyError, ProxyRequest, ServiceProxy, SessionContext,
-    WebSocketSenders,
+    AuthLevel, CallerContext, ConversationError, ConversationHost, ConversationNotifier,
+    JsonRpcRequest, NativeHttpService, NativeInvocation, ProxyError, ProxyRequest, ServiceProxy,
+    SessionContext, WebSocketSenders,
 };
 use syneroym_sandbox_wasm::{AppSandboxEngine, GuestHttpOutcome};
 use syneroym_test_dual_build_fixture::native::{FIXTURE_INTERFACE, NativeFixture};
@@ -103,7 +110,7 @@ impl Driver for WasmDriver {
 
 /// Drives the same source, linked in, through the shim.
 struct NativeDriver {
-    fixture: Arc<NativeFixture<syneroym_app_host_native::NativeAppHost>>,
+    fixture: Arc<NativeFixture<NativeAppHost>>,
 }
 
 impl Driver for NativeDriver {
@@ -511,7 +518,7 @@ fn test_conversation_service(
             dlq_max_rows: 100,
             max_pending_rows: 1000,
         },
-        syneroym_conversation::ConversationConfig::default(),
+        ConversationConfig::default(),
     )
     .unwrap()
 }
@@ -523,24 +530,18 @@ fn test_conversation_service(
 /// every existing group op either targets `self` (refused earlier) or a
 /// group with no other member (skipped before any outbound call).
 async fn install_outbound_identity(registry: &EndpointRegistry, service_id: &str) {
-    let master = syneroym_identity::Identity::generate().unwrap();
-    let instance = syneroym_identity::Identity::generate().unwrap();
-    let mut cert = syneroym_identity::DelegationCertificate::issue(
+    let master = Identity::generate().unwrap();
+    let instance = Identity::generate().unwrap();
+    let mut cert = DelegationCertificate::issue(
         &master,
         instance.public_key(),
         3600,
-        syneroym_identity::delegation::SCOPE_SERVICE_INSTANCE.to_string(),
+        SCOPE_SERVICE_INSTANCE.to_string(),
     )
     .unwrap();
     cert.temporary_did = service_id.to_string();
     registry.set_instance_cert(service_id.to_string(), cert).await.unwrap();
-    registry
-        .set_owner(
-            service_id.to_string(),
-            syneroym_identity::substrate::derive_did_key(&master.public_key()),
-        )
-        .await
-        .unwrap();
+    registry.set_owner(service_id.to_string(), derive_did_key(&master.public_key())).await.unwrap();
 }
 
 async fn build_wasm_stack(
@@ -631,17 +632,15 @@ async fn build_wasm_stack(
         .expect("set service proxy");
     engine
         .conversation
-        .set(Arc::downgrade(&conversation) as std::sync::Weak<dyn syneroym_rpc::ConversationHost>)
+        .set(Arc::downgrade(&conversation) as Weak<dyn ConversationHost>)
         .expect("conversation set once");
-    conversation.set_notifier(
-        Arc::downgrade(&engine) as std::sync::Weak<dyn syneroym_rpc::ConversationNotifier>
-    );
+    conversation.set_notifier(Arc::downgrade(&engine) as Weak<dyn ConversationNotifier>);
     engine.deploy_wasm(SERVICE_ID, &wasm_deploy_manifest(wasm_bytes.to_vec())).await.unwrap();
     (engine, conversation, ws_senders)
 }
 
 type NativeStack = (
-    Arc<NativeFixture<syneroym_app_host_native::NativeAppHost>>,
+    Arc<NativeFixture<NativeAppHost>>,
     Arc<NativeHostFactory>,
     Arc<dyn StorageProvider>,
     Arc<ConversationService>,
@@ -1215,7 +1214,7 @@ const SENDER_ADDRESS: &str = "external-peer-address";
 
 async fn assert_signed_delivery_is_verified_and_notifies_the_app<D: Driver>(
     name: &str,
-    target_conversation: &syneroym_conversation::ConversationService,
+    target_conversation: &ConversationService,
     driver: &D,
 ) {
     use syneroym_conversation::{
@@ -1444,7 +1443,7 @@ async fn both_builds_deliver_websocket_frames_to_the_app() {
             SERVICE_ID,
             "ws-c1",
             b"frame1".to_vec(),
-            syneroym_sandbox_wasm::FrameKind::Text,
+            FrameKind::Text,
             Some(caller()),
         )
         .await;
@@ -1453,7 +1452,7 @@ async fn both_builds_deliver_websocket_frames_to_the_app() {
             SERVICE_ID,
             "ws-c1",
             b"frame1".to_vec(),
-            syneroym_sandbox_wasm::FrameKind::Text,
+            FrameKind::Text,
             Some(caller()),
         )
         .await;
@@ -1462,7 +1461,7 @@ async fn both_builds_deliver_websocket_frames_to_the_app() {
             SERVICE_ID,
             "ws-c1",
             b"frame2".to_vec(),
-            syneroym_sandbox_wasm::FrameKind::Text,
+            FrameKind::Text,
             Some(caller()),
         )
         .await;
@@ -1476,7 +1475,7 @@ async fn both_builds_deliver_websocket_frames_to_the_app() {
         .on_websocket_message(
             "ws-c1".to_string(),
             b"frame1".to_vec(),
-            syneroym_sandbox_wasm::FrameKind::Text,
+            FrameKind::Text,
             Some(caller()),
         )
         .await;
@@ -1485,7 +1484,7 @@ async fn both_builds_deliver_websocket_frames_to_the_app() {
         .on_websocket_message(
             "ws-c1".to_string(),
             b"frame1".to_vec(),
-            syneroym_sandbox_wasm::FrameKind::Text,
+            FrameKind::Text,
             Some(caller()),
         )
         .await;
@@ -1494,7 +1493,7 @@ async fn both_builds_deliver_websocket_frames_to_the_app() {
         .on_websocket_message(
             "ws-c1".to_string(),
             b"frame2".to_vec(),
-            syneroym_sandbox_wasm::FrameKind::Text,
+            FrameKind::Text,
             Some(caller()),
         )
         .await;
@@ -1603,7 +1602,7 @@ async fn a_cached_fdae_policy_can_be_invalidated_and_reloaded() {
     {
         let service_store = storage_provider.open_service_db(SERVICE_ID, &key_store).await.unwrap();
         service_store
-            .create_collection(&syneroym_data_db::host_store::CollectionSchema {
+            .create_collection(&DbCollectionSchema {
                 name: "profiles".to_string(),
                 indexes: vec![],
             })
@@ -1877,7 +1876,7 @@ mod permitted_differences {
         }
 
         async fn load_fdae_policy(&self, service_id: &str) -> anyhow::Result<Option<String>> {
-            if self.failed_once.fetch_and(false, std::sync::atomic::Ordering::SeqCst) {
+            if self.failed_once.fetch_and(false, Ordering::SeqCst) {
                 anyhow::bail!("transient storage error");
             }
             self.inner.load_fdae_policy(service_id).await
@@ -1898,7 +1897,7 @@ mod permitted_differences {
         {
             let service_store = raw_storage.open_service_db(SERVICE_ID, &key_store).await.unwrap();
             service_store
-                .create_collection(&syneroym_data_db::host_store::CollectionSchema {
+                .create_collection(&DbCollectionSchema {
                     name: "profiles".to_string(),
                     indexes: vec![],
                 })
@@ -1907,7 +1906,7 @@ mod permitted_differences {
             service_store
                 .put(
                     "profiles",
-                    &syneroym_data_db::host_store::RecordWriteValue {
+                    &DbRecordWriteValue {
                         id: "owned-by-alice".to_string(),
                         payload: br#"{"creator_uuid":"did:key:zParityTestCaller"}"#.to_vec(),
                     },
