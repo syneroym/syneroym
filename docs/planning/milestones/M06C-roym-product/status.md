@@ -71,7 +71,7 @@ As specified in §14 of the implementation plan, the following structural differ
 
 ## C1 — Verification evidence
 
-1. `cargo test -p syneroym-app-host-native --test dual_build_parity`: **32 passed, 0 failed**
+1. `cargo test -p syneroym-app-host-native --test dual_build_parity`: **34 passed, 0 failed**
 2. `cargo test -p syneroym-substrate --features dual_build_fixture --test dual_build_fixture_e2e`: **4 passed, 0 failed**
 3. `cargo test -p syneroym-coordinator-iroh --test multi_hop_relay`: **5 passed, 0 failed**
 4. `cargo test -p syneroym-substrate --test conversation_e2e`: **1 passed, 0 failed**

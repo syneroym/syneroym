@@ -399,7 +399,7 @@ discovery bug. Keeping the gates keeps each failure attributable.
   sink traits, D-06C-10). This is a **breaking change to `syneroym-app-host`'s
   own trait bound**: `AppHost`'s supertrait list grows, so every existing
   implementor must satisfy the new traits. Today there are exactly two
-  (`GuestHost`, `NativeAppHost`) plus one fixture, all in-tree, so the cost
+  (`GuestHost`, `NativeAppHost`), both in-tree, so the cost
   is bounded and known — but C1's plan must name it rather than discover it.
 - **No wire-format change** to endpoint records, topology documents, gateway
   hostnames, the conversation envelope, or the group DAG. M06C consumes all

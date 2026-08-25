@@ -13,7 +13,13 @@ use std::{
 };
 
 use serde_json::{Value, json};
-use syneroym_app_host::types::http::{CallerAuth, CallerIdentity, HttpRequest, HttpResponse};
+use syneroym_app_host::{
+    AppDataLayer,
+    types::{
+        data_layer::RecordWriteValue,
+        http::{CallerAuth, CallerIdentity, HttpRequest, HttpResponse},
+    },
+};
 use syneroym_app_host_native::{
     ConversationSink, HttpSink, MessageSink, NativeHostFactory, NativeHttpAdapter, WebSocketSink,
 };
@@ -251,6 +257,20 @@ impl ServiceProxy for StubProxy {
 
 trait HttpDriver {
     async fn get(&self, path: &str, caller: Option<CallerContext>) -> HttpResponse;
+    async fn post(
+        &self,
+        path_and_query: &str,
+        body: Vec<u8>,
+        caller: Option<CallerContext>,
+    ) -> HttpResponse;
+}
+
+fn split_path_and_query(path_and_query: &str) -> (String, String) {
+    if let Some((p, q)) = path_and_query.split_once('?') {
+        (p.to_string(), q.to_string())
+    } else {
+        (path_and_query.to_string(), String::new())
+    }
 }
 
 struct WasmHttpDriver {
@@ -259,14 +279,47 @@ struct WasmHttpDriver {
 
 impl HttpDriver for WasmHttpDriver {
     async fn get(&self, path: &str, caller: Option<CallerContext>) -> HttpResponse {
+        let (path_str, query_str) = split_path_and_query(path);
         let req = HttpRequest {
             method: "GET".to_string(),
-            path: path.to_string(),
-            query: String::new(),
-            route: path.to_string(),
+            path: path_str.clone(),
+            query: query_str,
+            route: path_str,
             path_params: vec![],
             headers: vec![],
             body: vec![],
+            caller: caller.as_ref().map(|c| CallerIdentity {
+                did: c.caller_did.clone(),
+                auth: if matches!(c.auth, AuthLevel::Ucan) {
+                    CallerAuth::Ucan
+                } else {
+                    CallerAuth::SelfAsserted
+                },
+                app_instance: c.app_instance.clone(),
+            }),
+        };
+        match self.engine.handle_guest_http_request(SERVICE_ID, &req, caller).await {
+            Ok(GuestHttpOutcome::Response(r)) => r,
+            Ok(GuestHttpOutcome::Failed(f)) => panic!("wasm http driver failure: {f:?}"),
+            Err(e) => panic!("wasm http driver error: {e:?}"),
+        }
+    }
+
+    async fn post(
+        &self,
+        path_and_query: &str,
+        body: Vec<u8>,
+        caller: Option<CallerContext>,
+    ) -> HttpResponse {
+        let (path_str, query_str) = split_path_and_query(path_and_query);
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            path: path_str.clone(),
+            query: query_str,
+            route: path_str,
+            path_params: vec![],
+            headers: vec![],
+            body,
             caller: caller.as_ref().map(|c| CallerIdentity {
                 did: c.caller_did.clone(),
                 auth: if matches!(c.auth, AuthLevel::Ucan) {
@@ -291,14 +344,43 @@ struct NativeHttpDriver {
 
 impl HttpDriver for NativeHttpDriver {
     async fn get(&self, path: &str, caller: Option<CallerContext>) -> HttpResponse {
+        let (path_str, query_str) = split_path_and_query(path);
         let req = HttpRequest {
             method: "GET".to_string(),
-            path: path.to_string(),
-            query: String::new(),
-            route: path.to_string(),
+            path: path_str.clone(),
+            query: query_str,
+            route: path_str,
             path_params: vec![],
             headers: vec![],
             body: vec![],
+            caller: caller.as_ref().map(|c| CallerIdentity {
+                did: c.caller_did.clone(),
+                auth: if matches!(c.auth, AuthLevel::Ucan) {
+                    CallerAuth::Ucan
+                } else {
+                    CallerAuth::SelfAsserted
+                },
+                app_instance: c.app_instance.clone(),
+            }),
+        };
+        self.adapter.handle_request(req, caller).await.expect("native http driver")
+    }
+
+    async fn post(
+        &self,
+        path_and_query: &str,
+        body: Vec<u8>,
+        caller: Option<CallerContext>,
+    ) -> HttpResponse {
+        let (path_str, query_str) = split_path_and_query(path_and_query);
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            path: path_str.clone(),
+            query: query_str,
+            route: path_str,
+            path_params: vec![],
+            headers: vec![],
+            body,
             caller: caller.as_ref().map(|c| CallerIdentity {
                 did: c.caller_did.clone(),
                 auth: if matches!(c.auth, AuthLevel::Ucan) {
@@ -1271,6 +1353,34 @@ async fn both_builds_answer_an_http_request_identically() {
 }
 
 #[tokio::test]
+async fn both_builds_persist_host_state_from_an_http_request_identically() {
+    let h = harness().await;
+    let wasm_resp = h
+        .wasm_http
+        .post("/store?item1", b"{\"data\":\"stored-via-http\"}".to_vec(), Some(caller()))
+        .await;
+    let native_resp = h
+        .native_http
+        .post("/store?item1", b"{\"data\":\"stored-via-http\"}".to_vec(), Some(caller()))
+        .await;
+    assert_eq!(wasm_resp.status, 200);
+    assert_eq!(native_resp.status, 200);
+    assert_eq!(wasm_resp.body, b"stored");
+    assert_eq!(native_resp.body, b"stored");
+
+    // Read back the persisted state via run() on both builds
+    let wasm_res = h.wasm.run(r#"{"op":"read-http-store"}"#).await.unwrap();
+    let native_res = h.native.run(r#"{"op":"read-http-store"}"#).await.unwrap();
+    assert_eq!(wasm_res, native_res);
+
+    let parsed: Value = serde_json::from_str(&wasm_res).unwrap();
+    let entries = parsed["ok"]["entries"].as_array().expect("entries array in http store");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["id"], "item1");
+    assert_eq!(entries[0]["payload"], "{\"data\":\"stored-via-http\"}");
+}
+
+#[tokio::test]
 async fn both_builds_render_the_same_caller_for_a_delegated_request() {
     let h = harness().await;
     let wasm_resp = h.wasm_http.get("/whoami", Some(caller())).await;
@@ -1463,34 +1573,122 @@ async fn both_builds_read_the_same_config_generation() {
     assert_eq!(v["ok"]["value"], "hello generation 2");
 }
 
-/// Permitted differences between the two builds, asserted explicitly rather
-/// than left latent.
-mod permitted_differences {
-    use syneroym_app_host::{
-        AppBlobStore, AppBlobWriter, AppDataLayer, types::data_layer::RecordWriteValue,
-    };
-
-    use super::*;
-
-    fn abac_policy() -> String {
-        r#"{
-            "version": "fdae/v1",
-            "definitions": {
-                "profiles": {
-                    "table": "profiles",
-                    "principal_column": "creator_uuid",
-                    "permissions": {
-                        "view": {
-                            "allows": ["data-layer/read"],
-                            "paths": [["caller"]],
-                            "authorize_rows": true
-                        }
+fn abac_policy() -> String {
+    r#"{
+        "version": "fdae/v1",
+        "definitions": {
+            "profiles": {
+                "table": "profiles",
+                "principal_column": "creator_uuid",
+                "permissions": {
+                    "view": {
+                        "allows": ["data-layer/read"],
+                        "paths": [["caller"]],
+                        "authorize_rows": true
                     }
                 }
             }
-        }"#
-        .to_string()
+        }
+    }"#
+    .to_string()
+}
+
+#[tokio::test]
+async fn a_cached_fdae_policy_can_be_invalidated_and_reloaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_store = Arc::new(KeyStore::new());
+    key_store.inject_kek([0x42; 32]).expect("inject kek");
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(dir.path().join("data"), true).unwrap());
+    {
+        let service_store = storage_provider.open_service_db(SERVICE_ID, &key_store).await.unwrap();
+        service_store
+            .create_collection(&syneroym_data_db::host_store::CollectionSchema {
+                name: "profiles".to_string(),
+                indexes: vec![],
+            })
+            .await
+            .unwrap();
     }
+    // Initially no policy -> write succeeds
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let endpoint_registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+    install_outbound_identity(&endpoint_registry, SERVICE_ID).await;
+
+    let app_instance = AppInstanceId::new("test-app");
+    let sibling_name = LogicalServiceName::new("sibling");
+    let inventory = Arc::new(StaticInventory::new());
+    inventory.register(
+        TopologyKey::local(app_instance.clone(), sibling_name),
+        TopologyEntry {
+            mode: TopologyMode::Singleton,
+            members: vec![ServiceId::new("did:key:zSiblingMember")],
+            sharding_strategy: None,
+            epoch: TopologyEpoch(1),
+            cache_ttl: Duration::from_secs(60),
+            not_after: None,
+        },
+    );
+    let resolver = Arc::new(LogicalResolver::new(inventory));
+    endpoint_registry
+        .set_app_context(SERVICE_ID.to_string(), app_instance.to_string(), "self".to_string())
+        .await
+        .unwrap();
+
+    let conversation = test_conversation_service(
+        storage_provider.clone(),
+        key_store.clone(),
+        endpoint_registry.clone(),
+    );
+    let stub = Arc::new(StubProxy);
+    let factory = NativeHostFactory::new(
+        SERVICE_ID.to_string(),
+        key_store,
+        storage_provider.clone(),
+        blob_provider,
+        broker,
+        endpoint_registry,
+        resolver,
+        conversation,
+        WebSocketSenders::new(),
+    );
+    factory.set_service_proxy(Arc::downgrade(&stub) as Weak<dyn ServiceProxy>);
+
+    let host1 = factory.host_for(caller());
+    let res1 = host1
+        .put(
+            "profiles".to_string(),
+            RecordWriteValue { id: "p1".to_string(), payload: b"{}".to_vec() },
+        )
+        .await;
+    assert!(res1.is_ok());
+
+    // Now save an ABAC policy into storage. Because policy is cached as None,
+    // it would still be None without invalidation.
+    storage_provider.save_fdae_policy(SERVICE_ID, &abac_policy()).await.unwrap();
+
+    // Invalidate FDAE policy cache and bump generation
+    factory.invalidate_fdae_policy().await;
+
+    // Fresh host should now reload policy from storage and deny write under ABAC
+    let host2 = factory.host_for(caller());
+    let res2 = host2
+        .put(
+            "profiles".to_string(),
+            RecordWriteValue { id: "p2".to_string(), payload: b"{}".to_vec() },
+        )
+        .await;
+    assert!(res2.is_err());
+}
+
+/// Permitted differences between the two builds, asserted explicitly rather
+/// than left latent.
+mod permitted_differences {
+    use syneroym_app_host::{AppBlobStore, AppBlobWriter};
+
+    use super::*;
 
     /// Resource lifetime: a fresh `HostState` (and therefore a fresh
     /// `ResourceTable`) is built per invocation on the native build, exactly
@@ -1803,96 +2001,5 @@ mod permitted_differences {
             )
             .await;
         assert!(res3.is_err());
-    }
-
-    #[tokio::test]
-    async fn a_cached_fdae_policy_can_be_invalidated_and_reloaded() {
-        let dir = tempfile::tempdir().unwrap();
-        let key_store = Arc::new(KeyStore::new());
-        key_store.inject_kek([0x42; 32]).expect("inject kek");
-        let storage_provider: Arc<dyn StorageProvider> =
-            Arc::new(SqliteStorageProvider::new(dir.path().join("data"), true).unwrap());
-        {
-            let service_store =
-                storage_provider.open_service_db(SERVICE_ID, &key_store).await.unwrap();
-            service_store
-                .create_collection(&syneroym_data_db::host_store::CollectionSchema {
-                    name: "profiles".to_string(),
-                    indexes: vec![],
-                })
-                .await
-                .unwrap();
-        }
-        // Initially no policy -> write succeeds
-        let blob_provider: Arc<dyn BlobProvider> =
-            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
-        let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
-        let endpoint_registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
-        install_outbound_identity(&endpoint_registry, SERVICE_ID).await;
-
-        let app_instance = AppInstanceId::new("test-app");
-        let sibling_name = LogicalServiceName::new("sibling");
-        let inventory = Arc::new(StaticInventory::new());
-        inventory.register(
-            TopologyKey::local(app_instance.clone(), sibling_name),
-            TopologyEntry {
-                mode: TopologyMode::Singleton,
-                members: vec![ServiceId::new("did:key:zSiblingMember")],
-                sharding_strategy: None,
-                epoch: TopologyEpoch(1),
-                cache_ttl: Duration::from_secs(60),
-                not_after: None,
-            },
-        );
-        let resolver = Arc::new(LogicalResolver::new(inventory));
-        endpoint_registry
-            .set_app_context(SERVICE_ID.to_string(), app_instance.to_string(), "self".to_string())
-            .await
-            .unwrap();
-
-        let conversation = test_conversation_service(
-            storage_provider.clone(),
-            key_store.clone(),
-            endpoint_registry.clone(),
-        );
-        let stub = Arc::new(StubProxy);
-        let factory = NativeHostFactory::new(
-            SERVICE_ID.to_string(),
-            key_store,
-            storage_provider.clone(),
-            blob_provider,
-            broker,
-            endpoint_registry,
-            resolver,
-            conversation,
-            WebSocketSenders::new(),
-        );
-        factory.set_service_proxy(Arc::downgrade(&stub) as Weak<dyn ServiceProxy>);
-
-        let host1 = factory.host_for(caller());
-        let res1 = host1
-            .put(
-                "profiles".to_string(),
-                RecordWriteValue { id: "p1".to_string(), payload: b"{}".to_vec() },
-            )
-            .await;
-        assert!(res1.is_ok());
-
-        // Now save an ABAC policy into storage. Because policy is cached as None,
-        // it would still be None without invalidation.
-        storage_provider.save_fdae_policy(SERVICE_ID, &abac_policy()).await.unwrap();
-
-        // Invalidate FDAE policy cache and bump generation
-        factory.invalidate_fdae_policy().await;
-
-        // Fresh host should now reload policy from storage and deny write under ABAC
-        let host2 = factory.host_for(caller());
-        let res2 = host2
-            .put(
-                "profiles".to_string(),
-                RecordWriteValue { id: "p2".to_string(), payload: b"{}".to_vec() },
-            )
-            .await;
-        assert!(res2.is_err());
     }
 }

@@ -180,26 +180,38 @@ async fn a_websocket_reaches_the_linked_native_fixture_through_the_router() {
     }
 
     // 3. Verify on_open reached the native fixture by querying the stored WS log
-    time::sleep(Duration::from_millis(50)).await;
-    let response = ctx
-        .substrate_client
-        .request(
-            "dual-build-fixture",
-            "run",
-            serde_json::json!([serde_json::to_string(&serde_json::json!({
-                "op": "read-ws-log",
-            }))
-            .unwrap()]),
-        )
-        .await
-        .expect("request to native fixture");
+    let deadline = time::Instant::now() + Duration::from_secs(5);
+    let mut found_open = false;
+    let mut last_payload = serde_json::Value::Null;
+    while time::Instant::now() < deadline {
+        let response = ctx
+            .substrate_client
+            .request(
+                FIXTURE_INTERFACE,
+                "run",
+                json!([serde_json::to_string(&json!({
+                    "op": "read-ws-log",
+                }))
+                .unwrap()]),
+            )
+            .await
+            .expect("request to native fixture");
 
-    let payload: String = serde_json::from_value(response.result).expect("fixture payload");
-    let parsed: serde_json::Value = serde_json::from_str(&payload).expect("fixture payload JSON");
-    let events = parsed["ok"]["events"].as_array().expect("events array in WS log");
+        let payload: String = serde_json::from_value(response.result).expect("fixture payload");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&payload).expect("fixture payload JSON");
+        if let Some(events) = parsed["ok"]["events"].as_array()
+            && events.iter().any(|e| e["event"] == "open")
+        {
+            found_open = true;
+            break;
+        }
+        last_payload = parsed;
+        time::sleep(Duration::from_millis(50)).await;
+    }
     assert!(
-        events.iter().any(|e| e["event"] == "open"),
-        "expected on_open event in native fixture WS log: {parsed:?}"
+        found_open,
+        "timed out waiting for on_open event in native fixture WS log; last log: {last_payload:?}"
     );
 
     ctx.teardown().await;

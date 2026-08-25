@@ -1063,6 +1063,16 @@ async fn init_dual_build_fixture(
             public: false,
         },
         HttpRoute {
+            method: "POST".into(),
+            path: "/store".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: false,
+        },
+        HttpRoute {
             method: "GET".into(),
             path: "/whoami".into(),
             target: "guest".into(),

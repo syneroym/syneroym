@@ -28,6 +28,7 @@ const CONV_STATE_LOG: &str = "conv_state_log";
 /// messaging and `store-messages`/`read-messages` scenarios depend on.
 const SCRATCH: &str = "scratch";
 const WS_LOG: &str = "ws_log";
+const HTTP_STORE: &str = "http_store";
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
@@ -199,6 +200,7 @@ pub enum Request {
         body: String,
     },
     ReadWsLog,
+    ReadHttpStore,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -640,6 +642,27 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
                 .collect();
             Ok(json!({ "events": events }))
         }
+        Request::ReadHttpStore => {
+            ensure_collection(host, HTTP_STORE).await?;
+            let page = host
+                .query(
+                    HTTP_STORE.into(),
+                    QueryOptions { filter: None, limit: Some(100), cursor: None },
+                )
+                .await
+                .map_err(fmt_err)?;
+            let entries: Vec<serde_json::Value> = page
+                .records
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "payload": String::from_utf8_lossy(&r.payload),
+                    })
+                })
+                .collect();
+            Ok(json!({ "entries": entries }))
+        }
     }
 }
 
@@ -738,20 +761,6 @@ pub async fn on_conversation_state<H: AppHost>(
 pub async fn handle_http<H: AppHost>(host: &H, req: HttpRequest) -> Result<HttpResponse, String> {
     let path = req.path.as_str();
     if path == "/echo" {
-        ensure_collection(host, "http_requests").await.map_err(fmt_err)?;
-        let _ = host
-            .put(
-                "http_requests".into(),
-                RecordWriteValue {
-                    id: format!("{}:{}", req.method, req.path),
-                    payload: serde_json::to_vec(&json!({
-                        "path": req.path,
-                        "caller": req.caller.as_ref().map(|c| &c.did),
-                    }))
-                    .unwrap_or_default(),
-                },
-            )
-            .await;
         let body = serde_json::to_vec(&json!({
             "method": req.method,
             "path": req.path,
@@ -777,9 +786,9 @@ pub async fn handle_http<H: AppHost>(host: &H, req: HttpRequest) -> Result<HttpR
             body,
         })
     } else if path.starts_with("/store") {
-        ensure_collection(host, "http_store").await.map_err(fmt_err)?;
+        ensure_collection(host, HTTP_STORE).await.map_err(fmt_err)?;
         let id = if req.query.is_empty() { "default".to_string() } else { req.query.clone() };
-        host.put("http_store".into(), RecordWriteValue { id, payload: req.body.clone() })
+        host.put(HTTP_STORE.into(), RecordWriteValue { id, payload: req.body.clone() })
             .await
             .map_err(fmt_err)?;
         Ok(HttpResponse { status: 200, headers: vec![], body: b"stored".to_vec() })
@@ -824,6 +833,9 @@ pub async fn on_ws_message<H: AppHost>(host: &H, conn: String, frame: Vec<u8>, k
         eprintln!("failed to ensure WS_LOG: {e}");
         return;
     }
+    // Count existing message rows for this connection in WS_LOG to assign a
+    // deterministic monotonic sequence number that matches between WASM and
+    // native builds. The 1000-row limit is deliberate for fixture scale.
     let msg_count = match host
         .query(WS_LOG.into(), QueryOptions { filter: None, limit: Some(1000), cursor: None })
         .await
@@ -831,7 +843,10 @@ pub async fn on_ws_message<H: AppHost>(host: &H, conn: String, frame: Vec<u8>, k
         Ok(page) => {
             page.records.iter().filter(|r| r.id.starts_with(&format!("{conn}:message:"))).count()
         }
-        Err(_) => 0,
+        Err(e) => {
+            eprintln!("failed to query WS_LOG for message sequence: {e:?}");
+            0
+        }
     };
     let seq = (msg_count + 1) as u64;
     let id = format!("{conn}:message:{seq}:{}", inbox_entry_id(&frame));
