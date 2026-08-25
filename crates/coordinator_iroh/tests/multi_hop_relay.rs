@@ -161,6 +161,7 @@ async fn build_test_route_handler_deps(
         app_sandbox_engine,
         messaging_broker,
         native_dispatch,
+        native_http: Arc::new(DashMap::new()),
         http_routes,
         assets,
         sse_permits: control_plane_service.sse_permits(),
@@ -224,7 +225,10 @@ fn create_signed_info_with_full_addr(
     service_id: &str,
     endpoint_addr: &EndpointAddr,
 ) -> SignedEndpointInfo {
-    let endpoint_addr_bytes = serde_json::to_vec(endpoint_addr).unwrap();
+    let pruned_addrs: std::collections::BTreeSet<_> =
+        endpoint_addr.addrs.iter().take(2).cloned().collect();
+    let pruned = EndpointAddr { id: endpoint_addr.id, addrs: pruned_addrs };
+    let endpoint_addr_bytes = serde_json::to_vec(&pruned).unwrap();
     let info = EndpointInfo {
         service_id: service_id.to_string(),
         substrate_id: service_id.to_string(),

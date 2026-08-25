@@ -13,9 +13,11 @@ pub mod fdae_abac;
 pub mod fdae_fetch;
 pub mod framing;
 mod native;
+mod native_http;
 mod proxy;
 pub mod relationship_proof;
 mod types;
+mod websocket_senders;
 
 pub use conversation::{
     ConversationDeliveryState, ConversationError, ConversationHistoryPage, ConversationHost,
@@ -32,6 +34,7 @@ pub use fdae_fetch::{FDAE_FETCH_TIMEOUT, FetchError, resolve_fetches};
 pub use native::{
     AuthLevel, CallerContext, CallerProof, NativeInvocation, NativeResponse, NativeService,
 };
+pub use native_http::{NativeHttpRegistry, NativeHttpService};
 pub use proxy::{
     CallOrigin, DEFAULT_PROXY_CALL_TIMEOUT, DeadLetterInfo, PROXY_TRANSPORT_RPC_CODE, ProxyError,
     ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCall, QueuedCallInfo, QueuedTarget,
@@ -51,6 +54,7 @@ pub use types::{
     JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD,
     MessagingNotification,
 };
+pub use websocket_senders::{WebSocketReceiver, WebSocketSender, WebSocketSenders};
 
 /// JSON-RPC application error code for an authorization denial. Shared so a
 /// caller can distinguish "denied" from "failed" without string-matching.

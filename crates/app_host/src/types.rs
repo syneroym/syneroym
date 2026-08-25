@@ -23,3 +23,68 @@ pub mod conversation {
         MembershipEvent, Message,
     };
 }
+
+pub mod proxy {
+    pub use syneroym_wit_interfaces::proxy::syneroym::proxy::proxy::{
+        CallOptions, CallTarget, CalleeError, ProxyError,
+    };
+}
+
+pub mod app_config {
+    pub use syneroym_wit_interfaces::app_config::syneroym::app_config::app_config::ConfigError;
+}
+
+pub mod vault {
+    pub use syneroym_wit_interfaces::vault::syneroym::vault::vault::VaultError;
+}
+
+/// Mirrors `syneroym:http/incoming-handler@0.1.0`'s records field for
+/// field, **in the same order** -- the dynamic `Val::Record` the WASM
+/// build marshals from these must match the declared field order.
+///
+/// Hand-written rather than WIT-generated, unlike every other module here:
+/// these records are declared inside an interface a component *exports*,
+/// so there is no import-direction interface to generate a shared guest
+/// view from, and creating one would add a types-only import instance no
+/// linker in the tree registers.
+pub mod http {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CallerAuth {
+        Delegated,
+        Ucan,
+        SelfAsserted,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CallerIdentity {
+        pub did: String,
+        pub auth: CallerAuth,
+        pub app_instance: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub struct HttpRequest {
+        pub method: String,
+        pub path: String,
+        pub query: String,
+        pub route: String,
+        pub path_params: Vec<(String, String)>,
+        pub headers: Vec<(String, String)>,
+        pub body: Vec<u8>,
+        pub caller: Option<CallerIdentity>,
+    }
+
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub struct HttpResponse {
+        pub status: u16,
+        pub headers: Vec<(String, String)>,
+        pub body: Vec<u8>,
+    }
+
+    /// Mirrors `syneroym:http/websocket-types@0.1.0`'s `frame-kind`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum FrameKind {
+        Text,
+        Binary,
+    }
+}

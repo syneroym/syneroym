@@ -8,12 +8,9 @@
 
 use std::{fs, path::Path, sync::Arc};
 
+use syneroym_app_host::types::http::{CallerAuth, CallerIdentity, HttpRequest};
 use syneroym_core::{
-    config::SubstrateConfig,
-    guest_http::{GuestCallerAuth, GuestCallerIdentity, GuestHttpRequest},
-    local_registry::EndpointRegistry,
-    storage::MockStorage,
-    test_constants,
+    config::SubstrateConfig, local_registry::EndpointRegistry, storage::MockStorage, test_constants,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
@@ -100,8 +97,8 @@ macro_rules! skip_if_missing {
     };
 }
 
-fn request(path: &str) -> GuestHttpRequest {
-    GuestHttpRequest {
+fn request(path: &str) -> HttpRequest {
+    HttpRequest {
         method: "GET".to_string(),
         path: path.to_string(),
         query: String::new(),
@@ -217,9 +214,9 @@ async fn whoami_reflects_the_forwarded_caller_identity() {
     // gets) are supplied, matching how the router builds both from the same
     // connection.
     let mut req = request("/whoami");
-    req.caller = Some(GuestCallerIdentity {
+    req.caller = Some(CallerIdentity {
         did: "did:key:caller123".to_string(),
-        auth: GuestCallerAuth::Delegated,
+        auth: CallerAuth::Delegated,
         app_instance: None,
     });
     let caller_context = CallerContext {

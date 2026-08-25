@@ -49,9 +49,9 @@ use hyper_util::{
     server::conn::auto::Builder as AutoBuilder,
 };
 use serde_json::Value;
+use syneroym_app_host::types::http::{CallerAuth, CallerIdentity, HttpRequest, HttpResponse};
 use syneroym_core::{
     asset_manifest::AssetEntry,
-    guest_http::{GuestCallerAuth, GuestCallerIdentity, GuestHttpRequest, GuestHttpResponse},
     http_routes::{DEFAULT_MAX_SSE_SUBSCRIBERS_PER_SERVICE, HttpRoute, match_path, param_name},
     streaming::StreamDirection,
 };
@@ -64,7 +64,9 @@ use syneroym_rpc::{
     AuthLevel, CallerContext, JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest,
     PROXY_TRANSPORT_RPC_CODE, UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
 };
-use syneroym_sandbox_wasm::{FrameKind, GuestHttpFailure, GuestHttpOutcome, StreamRequestOutcome};
+use syneroym_sandbox_wasm::{
+    AppSandboxEngine, FrameKind, GuestHttpFailure, GuestHttpOutcome, StreamRequestOutcome,
+};
 use tokio::io::{self as tokio_io, AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio_tungstenite::{
     WebSocketStream,
@@ -487,7 +489,7 @@ fn guest_request_headers(
 fn guest_caller_identity(
     caller: Option<&CallerContext>,
     preamble: &RoutePreamble,
-) -> result::Result<Option<GuestCallerIdentity>, String> {
+) -> result::Result<Option<CallerIdentity>, String> {
     let Some(caller) = caller else { return Ok(None) };
     if matches!(
         caller.auth,
@@ -496,13 +498,13 @@ fn guest_caller_identity(
         return Err("substrate-injected auth level on an inbound HTTP request".to_string());
     }
     let auth = if matches!(caller.auth, AuthLevel::Ucan) {
-        GuestCallerAuth::Ucan
+        CallerAuth::Ucan
     } else if preamble.delegation.is_some() {
-        GuestCallerAuth::Delegated
+        CallerAuth::Delegated
     } else {
-        GuestCallerAuth::SelfAsserted
+        CallerAuth::SelfAsserted
     };
-    Ok(Some(GuestCallerIdentity {
+    Ok(Some(CallerIdentity {
         did: caller.caller_did.clone(),
         auth,
         app_instance: caller.app_instance.clone(),
@@ -516,7 +518,7 @@ fn guest_caller_identity(
 /// rather than being silently dropped: a guest that thought it set
 /// `Content-Type: application/json` must not silently serve
 /// `application/octet-stream`.
-fn build_guest_response(response: GuestHttpResponse) -> Response<HttpBody> {
+fn build_guest_response(response: HttpResponse) -> Response<HttpBody> {
     if response.body.len() > MAX_GUEST_RESPONSE_BODY_BYTES {
         return http_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -608,6 +610,49 @@ fn describe_guest_http_failure(failure: &GuestHttpFailure) -> String {
         // match stays exhaustive if a new caller reuses this function.
         GuestHttpFailure::Unavailable(detail) => {
             format!("guest HTTP handler unavailable: {detail}")
+        }
+    }
+}
+
+enum WsTarget {
+    Native(Arc<dyn syneroym_rpc::NativeHttpService>),
+    Wasm(Arc<AppSandboxEngine>),
+}
+
+impl WsTarget {
+    async fn on_open(&self, service_id: &str, conn: &str, caller: Option<CallerContext>) {
+        match self {
+            WsTarget::Native(svc) => svc.on_websocket_open(conn.to_string(), caller).await,
+            WsTarget::Wasm(engine) => {
+                engine.handle_websocket_on_open(service_id, conn, caller).await;
+            }
+        }
+    }
+
+    async fn on_message(
+        &self,
+        service_id: &str,
+        conn: &str,
+        frame: Vec<u8>,
+        kind: FrameKind,
+        caller: Option<CallerContext>,
+    ) {
+        match self {
+            WsTarget::Native(svc) => {
+                svc.on_websocket_message(conn.to_string(), frame, kind, caller).await;
+            }
+            WsTarget::Wasm(engine) => {
+                engine.handle_websocket_on_message(service_id, conn, frame, kind, caller).await;
+            }
+        }
+    }
+
+    async fn on_close(&self, service_id: &str, conn: &str, caller: Option<CallerContext>) {
+        match self {
+            WsTarget::Native(svc) => svc.on_websocket_close(conn.to_string(), caller).await,
+            WsTarget::Wasm(engine) => {
+                engine.handle_websocket_on_close(service_id, conn, caller).await;
+            }
         }
     }
 }
@@ -1497,18 +1542,30 @@ impl HttpHandler {
             }
         };
 
-        let Some(app_sandbox_engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
-            return Ok(http_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "app sandbox engine not available (coordinator mode)".into(),
-            ));
+        let native = self
+            .route_handler
+            .inner
+            .native_http
+            .get(&self.preamble.service_id)
+            .map(|e| e.value().clone());
+
+        let app_sandbox_engine = if native.is_none() {
+            let Some(engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
+                return Ok(http_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "app sandbox engine not available (coordinator mode)".into(),
+                ));
+            };
+            if !engine.is_deployed(&self.preamble.service_id) {
+                return Ok(http_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "service has no deployed WASM component".into(),
+                ));
+            }
+            Some(engine)
+        } else {
+            None
         };
-        if !app_sandbox_engine.is_deployed(&self.preamble.service_id) {
-            return Ok(http_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "service has no deployed WASM component".into(),
-            ));
-        }
 
         let (parts, body) = req.into_parts();
         let headers = match guest_request_headers(&parts.headers) {
@@ -1538,7 +1595,7 @@ impl HttpHandler {
             (Some(name), Some(value)) => vec![(name.to_string(), value)],
             _ => vec![],
         };
-        let request = GuestHttpRequest {
+        let request = HttpRequest {
             method: parts.method.as_str().to_string(),
             path: parts.uri.path().to_string(),
             query: parts.uri.query().unwrap_or("").to_string(),
@@ -1549,47 +1606,64 @@ impl HttpHandler {
             caller: caller_identity,
         };
 
-        match app_sandbox_engine
-            .handle_guest_http_request(&self.preamble.service_id, &request, self.caller.clone())
-            .await
-        {
-            Ok(GuestHttpOutcome::Response(response)) => Ok(build_guest_response(response)),
-            Ok(GuestHttpOutcome::Failed(GuestHttpFailure::Unavailable(detail))) => {
-                let mut resp = http_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    format!("service is at its guest HTTP concurrency limit: {detail}"),
-                );
-                resp.headers_mut().insert("retry-after", HeaderValue::from_static("1"));
-                Ok(resp)
-            }
-            Ok(GuestHttpOutcome::Failed(failure)) => {
-                // `Declined` is the guest's own `Err` return -- an ordinary
-                // application-level outcome, and on a `public: true` route
-                // one any anonymous caller can trigger at will. Logging it
-                // at `error!` would make the node's error log a rate the
-                // caller controls; every other variant is a genuine host or
-                // component-shape problem and stays at `error!`.
-                if matches!(failure, GuestHttpFailure::Declined(_)) {
+        if let Some(svc) = native {
+            match svc.handle_request(request, self.caller.clone()).await {
+                Ok(response) => Ok(build_guest_response(response)),
+                Err(detail) => {
                     warn!(
                         service_id = %self.preamble.service_id,
                         route = %route.path,
-                        ?failure,
-                        "guest HTTP handler declined the request"
+                        error = %detail,
+                        "native HTTP handler failed"
                     );
-                } else {
-                    error!(
-                        service_id = %self.preamble.service_id,
-                        route = %route.path,
-                        ?failure,
-                        "guest HTTP handler failed"
-                    );
+                    Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, detail))
                 }
-                Ok(http_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    describe_guest_http_failure(&failure),
-                ))
             }
-            Err(e) => Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        } else if let Some(app_sandbox_engine) = app_sandbox_engine {
+            match app_sandbox_engine
+                .handle_guest_http_request(&self.preamble.service_id, &request, self.caller.clone())
+                .await
+            {
+                Ok(GuestHttpOutcome::Response(response)) => Ok(build_guest_response(response)),
+                Ok(GuestHttpOutcome::Failed(GuestHttpFailure::Unavailable(detail))) => {
+                    let mut resp = http_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!("service is at its guest HTTP concurrency limit: {detail}"),
+                    );
+                    resp.headers_mut().insert("retry-after", HeaderValue::from_static("1"));
+                    Ok(resp)
+                }
+                Ok(GuestHttpOutcome::Failed(failure)) => {
+                    // `Declined` is the guest's own `Err` return -- an ordinary
+                    // application-level outcome, and on a `public: true` route
+                    // one any anonymous caller can trigger at will. Logging it
+                    // at `error!` would make the node's error log a rate the
+                    // caller controls; every other variant is a genuine host or
+                    // component-shape problem and stays at `error!`.
+                    if matches!(failure, GuestHttpFailure::Declined(_)) {
+                        warn!(
+                            service_id = %self.preamble.service_id,
+                            route = %route.path,
+                            ?failure,
+                            "guest HTTP handler declined the request"
+                        );
+                    } else {
+                        error!(
+                            service_id = %self.preamble.service_id,
+                            route = %route.path,
+                            ?failure,
+                            "guest HTTP handler failed"
+                        );
+                    }
+                    Ok(http_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        describe_guest_http_failure(&failure),
+                    ))
+                }
+                Err(e) => Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+            }
+        } else {
+            Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, "no HTTP handler available".into()))
         }
     }
 
@@ -1631,18 +1705,36 @@ impl HttpHandler {
             ));
         }
 
-        let Some(app_sandbox_engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
-            return Ok(http_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "app sandbox engine not available (coordinator mode)".into(),
-            ));
+        let native = self
+            .route_handler
+            .inner
+            .native_http
+            .get(&self.preamble.service_id)
+            .map(|e| e.value().clone());
+
+        let (ws_target, app_sandbox_engine) = if let Some(svc) = native {
+            let Some(engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
+                return Ok(http_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "app sandbox engine not available (coordinator mode)".into(),
+                ));
+            };
+            (WsTarget::Native(svc), engine)
+        } else {
+            let Some(engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
+                return Ok(http_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "app sandbox engine not available (coordinator mode)".into(),
+                ));
+            };
+            if !engine.is_deployed(&self.preamble.service_id) {
+                return Ok(http_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "service has no deployed WASM component".into(),
+                ));
+            }
+            (WsTarget::Wasm(engine.clone()), engine)
         };
-        if !app_sandbox_engine.is_deployed(&self.preamble.service_id) {
-            return Ok(http_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "service has no deployed WASM component".into(),
-            ));
-        }
 
         let req_key = match Self::validate_websocket_upgrade_headers(req.headers()) {
             Ok(k) => k,
@@ -1688,24 +1780,26 @@ impl HttpHandler {
             _sub_handle = Some(handle);
         }
 
-        let permit = match app_sandbox_engine
-            .acquire_websocket_permit(&service_id, Duration::from_secs(2))
-            .await
-        {
-            Some(p) => p,
-            None => {
-                let mut resp = http_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "websocket concurrency limit reached".into(),
-                );
-                resp.headers_mut().insert(RETRY_AFTER, HeaderValue::from_static("1"));
-                return Ok(resp);
+        let permit = match &ws_target {
+            WsTarget::Wasm(engine) => {
+                match engine.acquire_websocket_permit(&service_id, Duration::from_secs(2)).await {
+                    Some(p) => Some(p),
+                    None => {
+                        let mut resp = http_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "websocket concurrency limit reached".into(),
+                        );
+                        resp.headers_mut().insert(RETRY_AFTER, HeaderValue::from_static("1"));
+                        return Ok(resp);
+                    }
+                }
             }
+            WsTarget::Native(_) => None,
         };
 
         let conn_id = uuid::Uuid::new_v4().to_string();
         let mut rx_internal = app_sandbox_engine.register_websocket_sender(&service_id, &conn_id);
-        let engine = app_sandbox_engine.clone();
+        let engine_cleanup = app_sandbox_engine.clone();
         let caller = self.caller.clone();
 
         tokio::task::spawn(async move {
@@ -1735,7 +1829,7 @@ impl HttpHandler {
                                 broadcast = async {
                                     if let Some(rx) = &mut topic_rx {
                                         rx.recv().await
-                                    } else {
+                                     } else {
                                         futures::future::pending().await
                                     }
                                 } => {
@@ -1776,7 +1870,7 @@ impl HttpHandler {
                     });
 
                     // Sequential dispatch: await on-open before frame loop
-                    engine.handle_websocket_on_open(&service_id, &conn_id, caller.clone()).await;
+                    ws_target.on_open(&service_id, &conn_id, caller.clone()).await;
 
                     loop {
                         tokio::select! {
@@ -1785,8 +1879,8 @@ impl HttpHandler {
                                 let Some(msg_res) = msg_opt else { break; };
                                 match msg_res {
                                     Ok(Message::Text(txt)) => {
-                                        engine
-                                            .handle_websocket_on_message(
+                                        ws_target
+                                            .on_message(
                                                 &service_id,
                                                 &conn_id,
                                                 txt.as_bytes().to_vec(),
@@ -1796,8 +1890,8 @@ impl HttpHandler {
                                             .await;
                                     }
                                     Ok(Message::Binary(bin)) => {
-                                        engine
-                                            .handle_websocket_on_message(
+                                        ws_target
+                                            .on_message(
                                                 &service_id,
                                                 &conn_id,
                                                 bin.to_vec(),
@@ -1822,12 +1916,12 @@ impl HttpHandler {
                     drop(ws_stream);
                     let _ = writer_shutdown_tx.send(());
                     let _ = writer_task.await;
-                    engine.deregister_websocket_sender(&service_id, &conn_id);
-                    engine.handle_websocket_on_close(&service_id, &conn_id, caller).await;
+                    engine_cleanup.deregister_websocket_sender(&service_id, &conn_id);
+                    ws_target.on_close(&service_id, &conn_id, caller).await;
                 }
                 Err(e) => {
                     error!("WebSocket upgrade error: {}", e);
-                    engine.deregister_websocket_sender(&service_id, &conn_id);
+                    engine_cleanup.deregister_websocket_sender(&service_id, &conn_id);
                 }
             }
         });
@@ -2271,7 +2365,7 @@ mod tests {
         let caller = caller_context(AuthLevel::Delegated);
         let preamble = preamble_with(None, None);
         let identity = guest_caller_identity(Some(&caller), &preamble).unwrap().unwrap();
-        assert_eq!(identity.auth, GuestCallerAuth::SelfAsserted);
+        assert_eq!(identity.auth, CallerAuth::SelfAsserted);
     }
 
     #[test]
@@ -2283,7 +2377,7 @@ mod tests {
         let caller = caller_context(AuthLevel::Delegated);
         let preamble = preamble_with(None, Some(()));
         let identity = guest_caller_identity(Some(&caller), &preamble).unwrap().unwrap();
-        assert_eq!(identity.auth, GuestCallerAuth::SelfAsserted);
+        assert_eq!(identity.auth, CallerAuth::SelfAsserted);
     }
 
     #[test]
@@ -2291,7 +2385,7 @@ mod tests {
         let caller = caller_context(AuthLevel::Ucan);
         let preamble = preamble_with(None, Some(()));
         let identity = guest_caller_identity(Some(&caller), &preamble).unwrap().unwrap();
-        assert_eq!(identity.auth, GuestCallerAuth::Ucan);
+        assert_eq!(identity.auth, CallerAuth::Ucan);
     }
 
     #[test]
@@ -2299,7 +2393,7 @@ mod tests {
         let caller = caller_context(AuthLevel::Delegated);
         let preamble = preamble_with(Some(()), None);
         let identity = guest_caller_identity(Some(&caller), &preamble).unwrap().unwrap();
-        assert_eq!(identity.auth, GuestCallerAuth::Delegated);
+        assert_eq!(identity.auth, CallerAuth::Delegated);
     }
 
     #[test]
@@ -2327,8 +2421,8 @@ mod tests {
         status: u16,
         headers: Vec<(&str, &str)>,
         body: Vec<u8>,
-    ) -> GuestHttpResponse {
-        GuestHttpResponse {
+    ) -> HttpResponse {
+        HttpResponse {
             status,
             headers: headers.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
             body,
@@ -2389,7 +2483,7 @@ mod tests {
         let headers = (0..MAX_GUEST_RESPONSE_HEADERS + 1)
             .map(|i| (format!("x-h{i}"), "v".to_string()))
             .collect();
-        let response = GuestHttpResponse { status: 200, headers, body: vec![] };
+        let response = HttpResponse { status: 200, headers, body: vec![] };
         let resp = build_guest_response(response);
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }

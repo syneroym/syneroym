@@ -12,8 +12,12 @@ pub mod control_plane;
 pub mod conversation;
 #[cfg(feature = "data-layer")]
 pub mod data_layer;
+#[cfg(feature = "http")]
+pub mod http_guest;
 #[cfg(feature = "messaging")]
 pub mod messaging;
+#[cfg(feature = "proxy")]
+pub mod proxy;
 #[cfg(feature = "supervisor")]
 pub mod supervisor;
 #[cfg(feature = "vault")]
@@ -23,7 +27,7 @@ pub mod vault;
 pub mod host;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub mod http;
+pub mod http_host;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod conversation_host;

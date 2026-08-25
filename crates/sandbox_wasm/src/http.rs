@@ -4,11 +4,10 @@
 //! is already dynamic (`AppSandboxEngine::get_wasm_func` +
 //! `Func::call_async`), so a first typed (`bindgen!`) export path would be
 //! new machinery for one interface with a request/response body capped at
-//! 1 MiB.
+//! 1 MiB. The Rust mirror of these records lives in
+//! `syneroym-app-host::types::http`.
 
-use syneroym_core::guest_http::{
-    GuestCallerAuth, GuestCallerIdentity, GuestHttpRequest, GuestHttpResponse,
-};
+use syneroym_app_host::types::http::{CallerAuth, CallerIdentity, HttpRequest, HttpResponse};
 use wasmtime::component::Val;
 
 use crate::{
@@ -30,15 +29,15 @@ fn string_pairs_to_val(pairs: &[(String, String)]) -> Val {
     )
 }
 
-fn caller_auth_case(auth: GuestCallerAuth) -> &'static str {
+fn caller_auth_case(auth: CallerAuth) -> &'static str {
     match auth {
-        GuestCallerAuth::Delegated => "delegated",
-        GuestCallerAuth::Ucan => "ucan",
-        GuestCallerAuth::SelfAsserted => "self-asserted",
+        CallerAuth::Delegated => "delegated",
+        CallerAuth::Ucan => "ucan",
+        CallerAuth::SelfAsserted => "self-asserted",
     }
 }
 
-fn caller_identity_to_val(caller: &GuestCallerIdentity) -> Val {
+fn caller_identity_to_val(caller: &CallerIdentity) -> Val {
     Val::Record(vec![
         ("did".to_string(), Val::String(caller.did.clone())),
         ("auth".to_string(), Val::Enum(caller_auth_case(caller.auth).to_string())),
@@ -52,7 +51,7 @@ fn caller_identity_to_val(caller: &GuestCallerIdentity) -> Val {
 /// Builds the `Val::Record` argument for `handle-request`. Field order is
 /// the WIT declaration order and must stay in sync with
 /// `crates/wit_interfaces/wit/http/http.wit`.
-pub(crate) fn request_to_val(request: &GuestHttpRequest) -> Val {
+pub(crate) fn request_to_val(request: &HttpRequest) -> Val {
     Val::Record(vec![
         ("method".to_string(), Val::String(request.method.clone())),
         ("path".to_string(), Val::String(request.path.clone())),
@@ -88,7 +87,7 @@ fn find_field<'a>(fields: &'a [(String, Val)], name: &str) -> Option<&'a Val> {
     fields.iter().find(|(n, _)| n == name).map(|(_, v)| v)
 }
 
-fn response_from_record(fields: &[(String, Val)]) -> Result<GuestHttpResponse, GuestHttpFailure> {
+fn response_from_record(fields: &[(String, Val)]) -> Result<HttpResponse, GuestHttpFailure> {
     let status = match find_field(fields, "status") {
         Some(Val::U16(s)) => *s,
         other => {
@@ -111,7 +110,7 @@ fn response_from_record(fields: &[(String, Val)]) -> Result<GuestHttpResponse, G
         })?,
         None => return Err(GuestHttpFailure::Malformed("http-response missing body".into())),
     };
-    Ok(GuestHttpResponse { status, headers, body })
+    Ok(HttpResponse { status, headers, body })
 }
 
 /// Decodes `handle-request`'s `result<http-response, string>` return.
@@ -120,9 +119,7 @@ fn response_from_record(fields: &[(String, Val)]) -> Result<GuestHttpResponse, G
 /// inspecting the `Ok` payload: both would otherwise collapse into the same
 /// kind of error, and a deliberate guest rejection (`Declined`) must not be
 /// reported the same way as a broken component (`Malformed`).
-pub(crate) fn response_from_results(
-    results: &[Val],
-) -> Result<GuestHttpResponse, GuestHttpFailure> {
+pub(crate) fn response_from_results(results: &[Val]) -> Result<HttpResponse, GuestHttpFailure> {
     let [val] = results else {
         return Err(GuestHttpFailure::Malformed(format!(
             "expected exactly 1 result<http-response, string> return value, got {}",
@@ -154,8 +151,8 @@ pub(crate) fn response_from_results(
 mod tests {
     use super::*;
 
-    fn sample_request() -> GuestHttpRequest {
-        GuestHttpRequest {
+    fn sample_request() -> HttpRequest {
+        HttpRequest {
             method: "GET".to_string(),
             path: "/items/42".to_string(),
             query: "a=b".to_string(),
@@ -205,9 +202,9 @@ mod tests {
     #[test]
     fn request_to_val_caller_some_carries_did_and_auth() {
         let mut request = sample_request();
-        request.caller = Some(GuestCallerIdentity {
+        request.caller = Some(CallerIdentity {
             did: "did:key:z6Mk...".to_string(),
-            auth: GuestCallerAuth::Ucan,
+            auth: CallerAuth::Ucan,
             app_instance: Some("instance-1".to_string()),
         });
         let Val::Record(fields) = request_to_val(&request) else {

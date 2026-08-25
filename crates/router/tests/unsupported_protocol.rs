@@ -67,6 +67,7 @@ async fn test_route_handler() -> RouteHandler {
         app_sandbox_engine,
         messaging_broker,
         native_dispatch: NativeDispatchRegistry::default(),
+        native_http: Arc::new(DashMap::new()),
         http_routes,
         assets: Arc::new(DashMap::new()),
         sse_permits: Arc::new(DashMap::new()),

@@ -7351,6 +7351,7 @@ dependencies = [
 name = "syneroym-app-host-native"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "dashmap",
  "ed25519-dalek 2.2.0",
@@ -7363,6 +7364,7 @@ dependencies = [
  "syneroym-data-blob",
  "syneroym-data-db",
  "syneroym-data-keystore",
+ "syneroym-fdae",
  "syneroym-identity",
  "syneroym-mqtt-broker",
  "syneroym-rpc",
@@ -7373,6 +7375,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wasmtime",
+ "zeroize",
 ]
 
 [[package]]
@@ -7896,6 +7899,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "syneroym-app-host",
  "syneroym-app-orchestration",
  "syneroym-async-queue",
  "syneroym-control-plane",
@@ -7930,6 +7934,7 @@ dependencies = [
  "dashmap",
  "serde",
  "serde_json",
+ "syneroym-app-host",
  "syneroym-fdae",
  "syneroym-identity",
  "syneroym-ucan",
@@ -7970,6 +7975,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "syneroym-app-host",
  "syneroym-app-orchestration",
  "syneroym-chunk-transfer",
  "syneroym-core",
@@ -8116,6 +8122,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syneroym-app-host",
+ "syneroym-app-host-native",
  "syneroym-rpc",
  "syneroym-wit-interfaces",
  "wit-bindgen",

@@ -17,11 +17,12 @@ use anyhow::{Context, Result, anyhow};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+pub use syneroym_app_host::types::http::FrameKind;
+use syneroym_app_host::types::http::{HttpRequest, HttpResponse};
 use syneroym_app_orchestration::LogicalResolver;
 use syneroym_chunk_transfer::{self as chunk_transfer, ChunkSink};
 use syneroym_core::{
     config::SubstrateConfig,
-    guest_http::{GuestHttpRequest, GuestHttpResponse},
     local_registry::{EndpointRegistry, SubstrateEndpoint},
     streaming::StreamDirection,
 };
@@ -34,7 +35,7 @@ use syneroym_rpc::{
     AbacAuthContext, AbacError, AuthLevel, CallerContext, CandidateRow, JsonRpcRequest,
     RowAuthorizer, RowDecision, ServiceProxy,
 };
-pub use syneroym_wit_interfaces::http::syneroym::http::websocket_types::FrameKind;
+pub use syneroym_rpc::{WebSocketReceiver, WebSocketSender};
 use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceType,
@@ -72,10 +73,6 @@ use crate::{
     stream::{self, GuestStreamCursor, GuestStreamSink, StreamContext, StreamRegistry},
 };
 
-pub type WebSocketSender = tokio::sync::mpsc::Sender<(Vec<u8>, FrameKind)>;
-pub type WebSocketReceiver = tokio::sync::mpsc::Receiver<(Vec<u8>, FrameKind)>;
-type WebSocketSenders = DashMap<String, Arc<DashMap<String, WebSocketSender>>>;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmResourceQuota {
     pub max_instructions: Option<u64>,
@@ -109,7 +106,7 @@ pub enum StreamRequestOutcome {
 /// lands in here, mirroring `StreamRequestOutcome`'s split.
 #[derive(Debug)]
 pub enum GuestHttpOutcome {
-    Response(GuestHttpResponse),
+    Response(HttpResponse),
     Failed(GuestHttpFailure),
 }
 
@@ -316,9 +313,8 @@ pub struct AppSandboxEngine {
     /// the size each per-service semaphore above is created at.
     max_concurrent_guest_http_per_service: u32,
     /// Registry for routing guest unicast sends back to active WebSocket
-    /// connections. Grouped by service_id to allow clean bulk
-    /// teardown on undeploy.
-    pub(crate) websocket_senders: Arc<WebSocketSenders>,
+    /// connections.
+    pub websocket_senders: OnceLock<Arc<syneroym_rpc::WebSocketSenders>>,
 
     /// Pool slots this node will let active WebSocket connections hold
     /// concurrently.
@@ -617,7 +613,7 @@ impl AppSandboxEngine {
             instantiations: AtomicU64::new(0),
             guest_http_permits: Arc::new(DashMap::new()),
             max_concurrent_guest_http_per_service,
-            websocket_senders: Arc::new(DashMap::new()),
+            websocket_senders: OnceLock::new(),
             guest_websocket_permits: Arc::new(DashMap::new()),
             max_concurrent_websockets_per_service: config
                 .roles
@@ -757,7 +753,7 @@ impl AppSandboxEngine {
         host_api::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         proxy::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         saga::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
-        syneroym_wit_interfaces::http::syneroym::http::websocket::add_to_linker::<
+        syneroym_wit_interfaces::http_host::syneroym::http::websocket::add_to_linker::<
             _,
             HasSelf<HostState>,
         >(&mut linker, |state| state)?;
@@ -1304,7 +1300,10 @@ impl AppSandboxEngine {
             app_instance_id,
             self.logical_resolver.clone(),
         )
-        .with_conversation(conversation);
+        .with_conversation(conversation)
+        .with_websocket_senders(
+            self.websocket_senders.get_or_init(syneroym_rpc::WebSocketSenders::new).clone(),
+        );
 
         debug!("created wasi ctx and host state");
 
@@ -1516,28 +1515,25 @@ impl AppSandboxEngine {
     /// Registers a unicast sender channel for an active WebSocket connection,
     /// returning the receiver to drain in the router's connection loop.
     pub fn register_websocket_sender(&self, service_id: &str, conn_id: &str) -> WebSocketReceiver {
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
-        let service_map = self
-            .websocket_senders
-            .entry(service_id.to_string())
-            .or_insert_with(|| Arc::new(DashMap::new()))
-            .clone();
-        service_map.insert(conn_id.to_string(), tx);
-        rx
+        self.websocket_senders
+            .get_or_init(syneroym_rpc::WebSocketSenders::new)
+            .register(service_id, conn_id)
     }
 
     /// Removes a unicast sender channel for a closed WebSocket connection.
     pub fn deregister_websocket_sender(&self, service_id: &str, conn_id: &str) {
-        if let Some(service_map) = self.websocket_senders.get(service_id) {
-            service_map.remove(conn_id);
-        }
+        self.websocket_senders
+            .get_or_init(syneroym_rpc::WebSocketSenders::new)
+            .deregister(service_id, conn_id);
     }
 
     /// Drops all WebSocket senders for a service.
     /// Called from undeploy/stop. Dropping the senders unblocks any active
     /// rx.recv() loops in the router, terminating the WebSockets cleanly.
     pub fn forget_websocket_senders(&self, service_id: &str) {
-        self.websocket_senders.remove(service_id);
+        self.websocket_senders
+            .get_or_init(syneroym_rpc::WebSocketSenders::new)
+            .forget_service(service_id);
         self.guest_websocket_permits.remove(service_id);
     }
 
@@ -2456,7 +2452,7 @@ impl AppSandboxEngine {
     pub async fn handle_guest_http_request(
         &self,
         service_id: &str,
-        request: &GuestHttpRequest,
+        request: &HttpRequest,
         caller: Option<CallerContext>,
     ) -> Result<GuestHttpOutcome> {
         Self::validate_service_id(service_id)?;
@@ -3244,7 +3240,7 @@ mod tests {
             guest_websocket_permits: Arc::new(DashMap::new()),
             max_concurrent_websockets_per_service: 10,
             max_sse_subscribers_per_service: 100,
-            websocket_senders: Arc::new(DashMap::new()),
+            websocket_senders: OnceLock::new(),
             _shutdown_tx: None,
             key_store: Arc::new(KeyStore::new()),
             storage_provider: Arc::new(SqliteStorageProvider::new(env::temp_dir(), false).unwrap()),
@@ -3388,7 +3384,7 @@ mod tests {
             guest_websocket_permits: Arc::new(DashMap::new()),
             max_concurrent_websockets_per_service: 10,
             max_sse_subscribers_per_service: 100,
-            websocket_senders: Arc::new(DashMap::new()),
+            websocket_senders: OnceLock::new(),
             _shutdown_tx: None,
             key_store: Arc::new(KeyStore::new()),
             storage_provider,

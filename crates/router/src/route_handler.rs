@@ -89,6 +89,7 @@ impl Drop for ConnectionSlot {
 pub struct RouteHandlerInner {
     pub registry: EndpointRegistry,
     pub native_dispatch: NativeDispatchRegistry,
+    pub native_http: syneroym_rpc::NativeHttpRegistry,
     pub app_sandbox_engine: Option<Arc<AppSandboxEngine>>,
     /// `Arc`-wrapped (M04A Slice A1) so the `ProxyRouter`'s outbound remote
     /// hop can share this exact node identity rather than constructing (and
@@ -193,6 +194,7 @@ pub struct RouteHandlerDeps {
     pub app_sandbox_engine: Arc<AppSandboxEngine>,
     pub messaging_broker: Arc<MqttBroker>,
     pub native_dispatch: NativeDispatchRegistry,
+    pub native_http: syneroym_rpc::NativeHttpRegistry,
     pub http_routes: HttpRouteRegistry,
     /// Static asset manifests, per service (M06A A1). Same `Arc`, same
     /// registration path (`ControlPlaneService::deploy`/`undeploy`), and
@@ -365,6 +367,7 @@ impl RouteHandler {
         let inner = Arc::new(RouteHandlerInner {
             registry,
             native_dispatch: deps.native_dispatch,
+            native_http: deps.native_http,
             app_sandbox_engine: Some(deps.app_sandbox_engine),
             identity,
             iroh_endpoint,
@@ -405,6 +408,7 @@ impl RouteHandler {
         let inner = Arc::new(RouteHandlerInner {
             registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             native_dispatch: Arc::new(DashMap::new()),
+            native_http: Arc::new(DashMap::new()),
             app_sandbox_engine: None,
             identity: Arc::new(identity),
             iroh_endpoint: Some(iroh_endpoint),

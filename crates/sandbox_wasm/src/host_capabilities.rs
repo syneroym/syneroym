@@ -279,6 +279,8 @@ pub struct HostState {
     /// `Weak::new()` — `HostState::new`'s signature does not change; set via
     /// [`Self::with_conversation`] at the two real construction sites only.
     pub conversation: Weak<dyn syneroym_rpc::ConversationHost>,
+    /// Live WebSocket connections table shared across components and the host.
+    pub websocket_senders: Arc<syneroym_rpc::WebSocketSenders>,
 }
 
 impl Debug for HostState {
@@ -339,6 +341,7 @@ impl HostState {
             app_instance_id,
             logical_resolver,
             conversation: empty_conversation_host(),
+            websocket_senders: syneroym_rpc::WebSocketSenders::new(),
         }
     }
 
@@ -352,6 +355,16 @@ impl HostState {
         conversation: Weak<dyn syneroym_rpc::ConversationHost>,
     ) -> Self {
         self.conversation = conversation;
+        self
+    }
+
+    /// Sets [`Self::websocket_senders`] after construction.
+    #[must_use]
+    pub fn with_websocket_senders(
+        mut self,
+        websocket_senders: Arc<syneroym_rpc::WebSocketSenders>,
+    ) -> Self {
+        self.websocket_senders = websocket_senders;
         self
     }
 
@@ -1858,23 +1871,22 @@ impl wasmtime::ResourceLimiter for HostState {
     }
 }
 
-impl syneroym_wit_interfaces::http::syneroym::http::websocket::Host for HostState {
+impl syneroym_wit_interfaces::http_host::syneroym::http::websocket::Host for HostState {
     async fn send(
         &mut self,
         conn: String,
         frame: Vec<u8>,
-        kind: syneroym_wit_interfaces::http::syneroym::http::websocket_types::FrameKind,
+        kind: syneroym_wit_interfaces::http_host::syneroym::http::websocket_types::FrameKind,
     ) -> Result<(), String> {
-        if let Some(engine) = self.messaging.engine.upgrade()
-            && let Some(service_map) = engine.websocket_senders.get(&self.component_id)
-            && let Some(sender) = service_map.get(&conn)
-        {
-            match sender.send((frame, kind)).await {
-                Ok(_) => return Ok(()),
-                Err(_) => return Err("Connection closed".to_string()),
+        let k = match kind {
+            syneroym_wit_interfaces::http_host::syneroym::http::websocket_types::FrameKind::Text => {
+                syneroym_app_host::types::http::FrameKind::Text
             }
-        }
-        Err("Unknown connection ID".to_string())
+            syneroym_wit_interfaces::http_host::syneroym::http::websocket_types::FrameKind::Binary => {
+                syneroym_app_host::types::http::FrameKind::Binary
+            }
+        };
+        self.websocket_senders.send(&self.component_id, &conn, frame, k).await
     }
 }
 

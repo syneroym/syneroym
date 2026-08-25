@@ -91,3 +91,39 @@ impl<H: AppHost + 'static> ConversationSink for NativeFixture<H> {
         crate::app::on_conversation_state(&host, message, state).await
     }
 }
+
+#[async_trait::async_trait]
+impl<H: AppHost + 'static> syneroym_app_host_native::HttpSink for NativeFixture<H> {
+    async fn handle_request(
+        &self,
+        caller: CallerContext,
+        request: syneroym_app_host::types::http::HttpRequest,
+    ) -> Result<syneroym_app_host::types::http::HttpResponse, String> {
+        let host = (self.host_for)(caller);
+        crate::app::handle_http(&host, request).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<H: AppHost + 'static> syneroym_app_host_native::WebSocketSink for NativeFixture<H> {
+    async fn on_open(&self, caller: CallerContext, conn: String) {
+        let host = (self.host_for)(caller);
+        crate::app::on_ws_open(&host, conn).await;
+    }
+
+    async fn on_message(
+        &self,
+        caller: CallerContext,
+        conn: String,
+        frame: Vec<u8>,
+        kind: syneroym_app_host::types::http::FrameKind,
+    ) {
+        let host = (self.host_for)(caller);
+        crate::app::on_ws_message(&host, conn, frame, kind).await;
+    }
+
+    async fn on_close(&self, caller: CallerContext, conn: String) {
+        let host = (self.host_for)(caller);
+        crate::app::on_ws_close(&host, conn).await;
+    }
+}
