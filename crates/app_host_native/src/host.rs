@@ -12,8 +12,8 @@ use syneroym_app_host::{
         blob_store::BlobError,
         conversation::ConversationError,
         data_layer::{
-            CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult,
-            RawQueryResult, RecordReadValue, RecordWriteValue, SqlValue,
+            CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult, RawQueryResult,
+            RecordReadValue, RecordWriteValue, SqlValue,
         },
         http::FrameKind,
         messaging::MessagingError,
