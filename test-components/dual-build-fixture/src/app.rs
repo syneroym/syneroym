@@ -5,10 +5,13 @@ use core::fmt;
 
 use serde_json::json;
 use syneroym_app_host::{
-    AppBlobReader, AppBlobWriter, AppHost,
+    AppAppConfig, AppBlobReader, AppBlobWriter, AppConversation, AppDataLayer, AppHost,
+    AppWebSocket,
     types::{
-        conversation::{DeliveryState, Message},
+        conversation::{ConversationKind, DeliveryState, Message},
         data_layer::{CollectionSchema, Mutation, QueryOptions, RecordWriteValue},
+        http::{CallerAuth, FrameKind, HttpRequest, HttpResponse},
+        proxy::{CallOptions, CallTarget},
     },
 };
 
@@ -24,6 +27,8 @@ const CONV_STATE_LOG: &str = "conv_state_log";
 /// freely without disturbing `MESSAGES`/`INBOX`'s own row counts, which the
 /// messaging and `store-messages`/`read-messages` scenarios depend on.
 const SCRATCH: &str = "scratch";
+const WS_LOG: &str = "ws_log";
+const HTTP_STORE: &str = "http_store";
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
@@ -98,10 +103,7 @@ pub enum Request {
         body: String,
     },
     /// blob-store: open an upload, write to it, then abort instead of
-    /// finishing. `abort`, like `finish`, is a WIT resource *method* (a
-    /// borrowed handle) rather than the destructor (an owned one) -- the
-    /// same distinction that made `HostBlobWriter::finish` easy to get
-    /// wrong, so both need exercising on both builds, not just `finish`.
+    /// finishing.
     AbortUpload {
         chunks: Vec<String>,
     },
@@ -151,6 +153,54 @@ pub enum Request {
     ReadConversationInbox,
     /// What `on_conversation_state` stored, same rule.
     ReadStateLog,
+
+    // ---- C1 new verbs ----
+    ProxyCallSelf {
+        service_id: String,
+        interface: String,
+        method: String,
+        params: String,
+    },
+    ProxyCallDependency {
+        name: String,
+        interface: String,
+        method: String,
+        params: String,
+    },
+    ProxyCallUnboundDependency {
+        name: String,
+    },
+    ProxyCallCrossServiceNative {
+        target: String,
+        interface: String,
+        method: String,
+        params: String,
+    },
+    ProxyEnqueue {
+        name: String,
+        idempotency_key: Option<String>,
+    },
+    ProxyEnqueueNoKey {
+        name: String,
+    },
+    ProxyEnqueueEmptyKey {
+        name: String,
+    },
+    ReadConfig {
+        key: String,
+    },
+    ReadConfigSection {
+        prefix: String,
+    },
+    RevealSecret {
+        key: String,
+    },
+    WsSend {
+        conn: String,
+        body: String,
+    },
+    ReadWsLog,
+    ReadHttpStore,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -174,12 +224,7 @@ fn fmt_err<E: fmt::Debug>(e: E) -> String {
     format!("{e:?}")
 }
 
-/// Ensures `collection` exists, lazily, on first use -- this fixture has no
-/// `init`/`migrate` lifecycle hook, since there is no native analogue of
-/// "the host called `init` at deploy time" to keep in step with the WASM
-/// side. `create_collection` is `CREATE TABLE IF NOT EXISTS` underneath, so
-/// a repeat call is a no-op `Ok(())` on both builds, not an error to
-/// special-case.
+/// Ensures `collection` exists, lazily, on first use.
 async fn ensure_collection<H: AppHost>(host: &H, collection: &str) -> Result<(), String> {
     host.create_collection(CollectionSchema { name: collection.to_string(), indexes: vec![] })
         .await
@@ -227,7 +272,7 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
         },
         Request::GetMissing { id } => {
             ensure_collection(host, MESSAGES).await?;
-            let found = host.get(MESSAGES.into(), id).await.map_err(fmt_err)?;
+            let found = AppDataLayer::get(host, MESSAGES.into(), id).await.map_err(fmt_err)?;
             Ok(json!({ "found": found.is_some() }))
         }
         Request::PutBlob { body } => {
@@ -292,7 +337,7 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
             host.patch(SCRATCH.into(), id.clone(), b"{\"patched\":true}".to_vec())
                 .await
                 .map_err(fmt_err)?;
-            let after = host.get(SCRATCH.into(), id).await.map_err(fmt_err)?;
+            let after = AppDataLayer::get(host, SCRATCH.into(), id).await.map_err(fmt_err)?;
             Ok(json!({ "after": after.map(|r| String::from_utf8_lossy(&r.payload).into_owned()) }))
         }
         Request::BatchMutate { id_a, id_b } => {
@@ -312,8 +357,10 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
             )
             .await
             .map_err(fmt_err)?;
-            let a_found = host.get(SCRATCH.into(), id_a).await.map_err(fmt_err)?.is_some();
-            let b_found = host.get(SCRATCH.into(), id_b).await.map_err(fmt_err)?.is_some();
+            let a_found =
+                AppDataLayer::get(host, SCRATCH.into(), id_a).await.map_err(fmt_err)?.is_some();
+            let b_found =
+                AppDataLayer::get(host, SCRATCH.into(), id_b).await.map_err(fmt_err)?.is_some();
             Ok(json!({ "a_found": a_found, "b_found": b_found }))
         }
         Request::DeleteMany { id } => {
@@ -321,16 +368,14 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
             host.put(SCRATCH.into(), RecordWriteValue { id: id.clone(), payload: b"{}".to_vec() })
                 .await
                 .map_err(fmt_err)?;
-            // An empty filter matches every row in the collection.
             let deleted = host.delete_many(SCRATCH.into(), String::new()).await.map_err(fmt_err)?;
-            let still_present = host.get(SCRATCH.into(), id).await.map_err(fmt_err)?.is_some();
+            let still_present =
+                AppDataLayer::get(host, SCRATCH.into(), id).await.map_err(fmt_err)?.is_some();
             Ok(json!({ "deleted": deleted, "still_present": still_present }))
         }
         Request::DropCollection => {
             ensure_collection(host, SCRATCH).await?;
             host.drop_collection(SCRATCH.into()).await.map_err(fmt_err)?;
-            // Recreate immediately so later scenarios reusing `SCRATCH` (in
-            // either request order) still find it.
             ensure_collection(host, SCRATCH).await?;
             Ok(json!({ "dropped": true }))
         }
@@ -353,10 +398,14 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
             Ok(json!({ "conversation": id }))
         }
         Request::SendMessage { conversation, body } => {
-            let id = host
-                .send(conversation, "text/plain".to_string(), body.into_bytes())
-                .await
-                .map_err(fmt_err)?;
+            let id = AppConversation::send(
+                host,
+                conversation,
+                "text/plain".to_string(),
+                body.into_bytes(),
+            )
+            .await
+            .map_err(fmt_err)?;
             Ok(json!({ "message": id }))
         }
         Request::ReadHistory { conversation, limit } => {
@@ -371,8 +420,11 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
             Ok(json!({ "state": delivery_state_str(state) }))
         }
         Request::ReadOutbox => {
-            let outbox = host.outbox().await.map_err(fmt_err)?;
-            Ok(json!({ "outbox": outbox.iter().map(message_json).collect::<Vec<_>>() }))
+            let messages = host.outbox().await.map_err(fmt_err)?;
+            let list = messages.iter().map(message_json).collect::<Vec<_>>();
+            Ok(json!({
+                "outbox": list,
+            }))
         }
         Request::RetryMessage { message } => {
             host.retry(message).await.map_err(fmt_err)?;
@@ -396,40 +448,44 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
         }
         Request::MembershipHistory { conversation } => {
             let history = host.membership_history(conversation).await.map_err(fmt_err)?;
-            let events: Vec<serde_json::Value> = history
-                .into_iter()
+            let events: Vec<_> = history
+                .iter()
                 .map(|e| {
                     json!({
                         "entry": e.entry,
                         "action": e.action,
                         "subject": e.subject,
                         "epoch": e.epoch,
-                        "sender_timestamp": e.sender_timestamp,
+                        "sender-timestamp": e.sender_timestamp,
                     })
                 })
                 .collect();
-            Ok(json!({ "events": events }))
+            Ok(json!({
+                "history": events,
+            }))
         }
         Request::SyncNow { conversation } => {
             host.sync_now(conversation).await.map_err(fmt_err)?;
             Ok(json!({ "synced": true }))
         }
         Request::ListConversations => {
-            let convs = host.conversations().await.map_err(fmt_err)?;
-            let rows: Vec<serde_json::Value> = convs
-                .into_iter()
+            let list = host.conversations().await.map_err(fmt_err)?;
+            let summaries: Vec<_> = list
+                .iter()
                 .map(|c| {
                     json!({
                         "id": c.id,
-                        "kind": match c.kind {
-                            syneroym_app_host::types::conversation::ConversationKind::Direct => "direct",
-                            syneroym_app_host::types::conversation::ConversationKind::Group => "group",
-                        },
                         "participants": c.participants,
+                        "kind": match c.kind {
+                            ConversationKind::Direct => "direct",
+                            ConversationKind::Group => "group",
+                        },
+                        "created-at": c.created_at,
+                        "last-activity-at": c.last_activity_at,
                     })
                 })
                 .collect();
-            Ok(json!({ "conversations": rows }))
+            Ok(json!({ "conversations": summaries }))
         }
         Request::ReadConversationInbox => {
             ensure_collection(host, CONV_INBOX).await?;
@@ -463,11 +519,155 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
                 .collect();
             Ok(json!({ "entries": entries }))
         }
+        Request::ProxyCallSelf { service_id, interface, method, params } => {
+            let target = CallTarget::Service(service_id);
+            let res = host.call(target, interface, method, params, None).await.map_err(fmt_err)?;
+            Ok(json!({ "result": res }))
+        }
+        Request::ProxyCallDependency { name, interface, method, params } => {
+            let res = host
+                .call(CallTarget::Dependency(name), interface, method, params, None)
+                .await
+                .map_err(fmt_err)?;
+            Ok(json!({ "result": res }))
+        }
+        Request::ProxyCallUnboundDependency { name } => {
+            let res = host
+                .call(
+                    CallTarget::Dependency(name),
+                    "any".to_string(),
+                    "any".to_string(),
+                    "{}".to_string(),
+                    None,
+                )
+                .await;
+            match res {
+                Ok(v) => Ok(json!({ "result": v })),
+                Err(e) => Ok(json!({ "error": fmt_err(e) })),
+            }
+        }
+        Request::ProxyCallCrossServiceNative { target, interface, method, params } => {
+            let res = host.call(CallTarget::Service(target), interface, method, params, None).await;
+            match res {
+                Ok(v) => Ok(json!({ "result": v })),
+                Err(e) => Ok(json!({ "error": fmt_err(e) })),
+            }
+        }
+        Request::ProxyEnqueue { name, idempotency_key } => {
+            host.enqueue(
+                CallTarget::Dependency(name),
+                "syneroym-test:dual-build-fixture/test-driver@0.1.0".to_string(),
+                "run".to_string(),
+                "{}".to_string(),
+                Some(CallOptions {
+                    protocol: None,
+                    idempotent: false,
+                    timeout_ms: None,
+                    routing_key: None,
+                    idempotency_key,
+                }),
+            )
+            .await
+            .map_err(fmt_err)?;
+            Ok(json!({ "enqueued": true }))
+        }
+        Request::ProxyEnqueueNoKey { name } => {
+            let res = host
+                .enqueue(
+                    CallTarget::Dependency(name),
+                    "syneroym-test:dual-build-fixture/test-driver@0.1.0".to_string(),
+                    "run".to_string(),
+                    "{}".to_string(),
+                    None,
+                )
+                .await;
+            match res {
+                Ok(()) => Ok(json!({ "enqueued": true })),
+                Err(e) => Ok(json!({ "error": fmt_err(e) })),
+            }
+        }
+        Request::ProxyEnqueueEmptyKey { name } => {
+            let res = host
+                .enqueue(
+                    CallTarget::Dependency(name),
+                    "syneroym-test:dual-build-fixture/test-driver@0.1.0".to_string(),
+                    "run".to_string(),
+                    "{}".to_string(),
+                    Some(CallOptions {
+                        protocol: None,
+                        idempotent: false,
+                        timeout_ms: None,
+                        routing_key: None,
+                        idempotency_key: Some(String::new()),
+                    }),
+                )
+                .await;
+            match res {
+                Ok(()) => Ok(json!({ "enqueued": true })),
+                Err(e) => Ok(json!({ "error": fmt_err(e) })),
+            }
+        }
+        Request::ReadConfig { key } => {
+            let value = AppAppConfig::get(host, key).await.map_err(fmt_err)?;
+            Ok(json!({ "value": value }))
+        }
+        Request::ReadConfigSection { prefix } => {
+            let entries = host.get_section(prefix).await.map_err(fmt_err)?;
+            Ok(json!({ "entries": entries }))
+        }
+        Request::RevealSecret { key } => {
+            let res = host.reveal(key).await;
+            match res {
+                Ok(bytes) => Ok(json!({ "secret": String::from_utf8_lossy(&bytes) })),
+                Err(e) => Ok(json!({ "error": fmt_err(e) })),
+            }
+        }
+        Request::WsSend { conn, body } => {
+            let res = AppWebSocket::send(host, conn, body.into_bytes(), FrameKind::Text).await;
+            match res {
+                Ok(()) => Ok(json!({ "sent": true })),
+                Err(e) => Ok(json!({ "error": e })),
+            }
+        }
+        Request::ReadWsLog => {
+            ensure_collection(host, WS_LOG).await?;
+            let page = host
+                .query(WS_LOG.into(), QueryOptions { filter: None, limit: Some(100), cursor: None })
+                .await
+                .map_err(fmt_err)?;
+            let events: Vec<serde_json::Value> = page
+                .records
+                .into_iter()
+                .filter_map(|r| serde_json::from_slice(&r.payload).ok())
+                .collect();
+            Ok(json!({ "events": events }))
+        }
+        Request::ReadHttpStore => {
+            ensure_collection(host, HTTP_STORE).await?;
+            let page = host
+                .query(
+                    HTTP_STORE.into(),
+                    QueryOptions { filter: None, limit: Some(100), cursor: None },
+                )
+                .await
+                .map_err(fmt_err)?;
+            let entries: Vec<serde_json::Value> = page
+                .records
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "payload": String::from_utf8_lossy(&r.payload),
+                    })
+                })
+                .collect();
+            Ok(json!({ "entries": entries }))
+        }
     }
 }
 
-fn delivery_state_str(s: DeliveryState) -> &'static str {
-    match s {
+fn delivery_state_str(state: DeliveryState) -> &'static str {
+    match state {
         DeliveryState::Pending => "pending",
         DeliveryState::Delivered => "delivered",
         DeliveryState::Failed => "failed",
@@ -557,8 +757,148 @@ pub async fn on_conversation_state<H: AppHost>(
     .map_err(fmt_err)
 }
 
-/// A short, stable id derived from the payload bytes -- avoids a hash
-/// dependency for what is only ever a test fixture's own dedup key.
+/// Echoes every field of the request back as JSON, or handles sub-paths.
+pub async fn handle_http<H: AppHost>(host: &H, req: HttpRequest) -> Result<HttpResponse, String> {
+    let path = req.path.as_str();
+    if path == "/echo" {
+        let body = serde_json::to_vec(&json!({
+            "method": req.method,
+            "path": req.path,
+            "query": req.query,
+            "route": req.route,
+            "path-params": req.path_params,
+            "headers": req.headers,
+            "body": String::from_utf8_lossy(&req.body),
+            "caller": req.caller.as_ref().map(|c| json!({
+                "did": c.did,
+                "auth": match c.auth {
+                    CallerAuth::Delegated => "delegated",
+                    CallerAuth::Ucan => "ucan",
+                    CallerAuth::SelfAsserted => "self-asserted",
+                },
+                "app-instance": c.app_instance,
+            })),
+        }))
+        .map_err(|e| e.to_string())?;
+        Ok(HttpResponse {
+            status: 200,
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body,
+        })
+    } else if path.starts_with("/store") {
+        ensure_collection(host, HTTP_STORE).await.map_err(fmt_err)?;
+        let id = if req.query.is_empty() { "default".to_string() } else { req.query.clone() };
+        host.put(HTTP_STORE.into(), RecordWriteValue { id, payload: req.body.clone() })
+            .await
+            .map_err(fmt_err)?;
+        Ok(HttpResponse { status: 200, headers: vec![], body: b"stored".to_vec() })
+    } else if path == "/reject" {
+        Ok(HttpResponse { status: 403, headers: vec![], body: b"forbidden".to_vec() })
+    } else if path == "/fail" {
+        Err("handler exploded intentionally".to_string())
+    } else if path == "/whoami" {
+        let caller_did = req.caller.as_ref().map(|c| c.did.as_str()).unwrap_or("anonymous");
+        Ok(HttpResponse { status: 200, headers: vec![], body: caller_did.as_bytes().to_vec() })
+    } else {
+        Ok(HttpResponse { status: 200, headers: vec![], body: b"ok".to_vec() })
+    }
+}
+
+pub async fn on_ws_open<H: AppHost>(host: &H, conn: String) {
+    if let Err(e) = ensure_collection(host, WS_LOG).await {
+        eprintln!("failed to ensure WS_LOG: {e}");
+        return;
+    }
+    let id = format!("{conn}:open");
+    if let Err(e) = host
+        .put(
+            WS_LOG.into(),
+            RecordWriteValue {
+                id,
+                payload: serde_json::to_vec(&json!({
+                    "event": "open",
+                    "conn": conn,
+                }))
+                .unwrap_or_default(),
+            },
+        )
+        .await
+    {
+        eprintln!("failed to write ws open log: {e:?}");
+    }
+}
+
+pub async fn on_ws_message<H: AppHost>(host: &H, conn: String, frame: Vec<u8>, kind: FrameKind) {
+    if let Err(e) = ensure_collection(host, WS_LOG).await {
+        eprintln!("failed to ensure WS_LOG: {e}");
+        return;
+    }
+    // Count existing message rows for this connection in WS_LOG to assign a
+    // deterministic monotonic sequence number that matches between WASM and
+    // native builds. The 1000-row limit is deliberate for fixture scale.
+    let msg_count = match host
+        .query(WS_LOG.into(), QueryOptions { filter: None, limit: Some(1000), cursor: None })
+        .await
+    {
+        Ok(page) => {
+            page.records.iter().filter(|r| r.id.starts_with(&format!("{conn}:message:"))).count()
+        }
+        Err(e) => {
+            eprintln!("failed to query WS_LOG for message sequence: {e:?}");
+            0
+        }
+    };
+    let seq = (msg_count + 1) as u64;
+    let id = format!("{conn}:message:{seq}:{}", inbox_entry_id(&frame));
+    if let Err(e) = host
+        .put(
+            WS_LOG.into(),
+            RecordWriteValue {
+                id,
+                payload: serde_json::to_vec(&json!({
+                    "event": "message",
+                    "conn": conn,
+                    "seq": seq,
+                    "frame": String::from_utf8_lossy(&frame),
+                    "kind": match kind {
+                        FrameKind::Text => "text",
+                        FrameKind::Binary => "binary",
+                    },
+                }))
+                .unwrap_or_default(),
+            },
+        )
+        .await
+    {
+        eprintln!("failed to write ws message log: {e:?}");
+    }
+}
+
+pub async fn on_ws_close<H: AppHost>(host: &H, conn: String) {
+    if let Err(e) = ensure_collection(host, WS_LOG).await {
+        eprintln!("failed to ensure WS_LOG: {e}");
+        return;
+    }
+    let id = format!("{conn}:close");
+    if let Err(e) = host
+        .put(
+            WS_LOG.into(),
+            RecordWriteValue {
+                id,
+                payload: serde_json::to_vec(&json!({
+                    "event": "close",
+                    "conn": conn,
+                }))
+                .unwrap_or_default(),
+            },
+        )
+        .await
+    {
+        eprintln!("failed to write ws close log: {e:?}");
+    }
+}
+
+/// A short, stable id derived from the payload bytes.
 fn inbox_entry_id(payload: &[u8]) -> String {
     let mut acc: u64 = 0xcbf2_9ce4_8422_2325;
     for b in payload {

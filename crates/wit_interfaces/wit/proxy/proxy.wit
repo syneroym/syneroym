@@ -179,3 +179,12 @@ interface saga {
 
     status: func(saga: string) -> result<saga-status, proxy-error>;
 }
+
+/// Import-only view of `proxy`, with no `saga` requirement. For bindgen
+/// consumers that only need to *call* `proxy` (`syneroym-app-host`'s
+/// shared guest bindings, reused by every component's own world) rather
+/// than stand alone as a deployable component -- mirrors
+/// `messaging-import` and `conversation-import`.
+world proxy-import {
+    import proxy;
+}

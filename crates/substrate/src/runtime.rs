@@ -755,7 +755,7 @@ async fn setup_router(
     };
 
     #[cfg(feature = "dual_build_fixture")]
-    init_dual_build_fixture(&shared, &endpoint_registry, service_id).await?;
+    let fixture_factory = init_dual_build_fixture(&shared, &endpoint_registry, service_id).await?;
 
     let router = ConnectionRouter::init(
         endpoint_registry.clone(),
@@ -771,6 +771,10 @@ async fn setup_router(
     // `ControlPlaneService.service_proxy` already are.
     if let Some(proxy) = router.proxy() {
         shared.conversation.set_service_proxy(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>);
+        #[cfg(feature = "dual_build_fixture")]
+        if let Some(factory) = fixture_factory {
+            factory.set_service_proxy(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>);
+        }
     }
 
     // Built here rather than in `build_route_handler_deps` because it needs
@@ -854,6 +858,17 @@ struct SharedNodeHandles {
     /// `ServiceProxy` in once `ConnectionRouter::init` has built it, and by
     /// the `dual_build_fixture` role's `NativeHostFactory`.
     conversation: Arc<ConversationService>,
+    /// The per-service HTTP route table. A linked native app has no deploy
+    /// record, so nothing else would ever put its routes here.
+    #[cfg_attr(not(feature = "dual_build_fixture"), allow(dead_code))]
+    http_routes: HttpRouteRegistry,
+    /// The `guest`/`websocket` route targets' native registry.
+    #[cfg_attr(not(feature = "dual_build_fixture"), allow(dead_code))]
+    native_http: syneroym_rpc::NativeHttpRegistry,
+    /// The shared live-WebSocket table (`AppSandboxEngine` holds the same
+    /// `Arc`).
+    #[cfg_attr(not(feature = "dual_build_fixture"), allow(dead_code))]
+    websocket_senders: Arc<syneroym_rpc::WebSocketSenders>,
 }
 
 /// The literal `native_dispatch` key the supervisor's `NativeService`
@@ -989,10 +1004,14 @@ async fn init_dual_build_fixture(
     shared: &SharedNodeHandles,
     endpoint_registry: &EndpointRegistry,
     node_service_id: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Arc<syneroym_app_host_native::NativeHostFactory>>> {
     use std::sync::Weak;
 
-    use syneroym_app_host_native::{MessageSink, NativeHostFactory};
+    use syneroym_app_host_native::{
+        HttpSink, MessageSink, NativeHostFactory, NativeHttpAdapter, WebSocketSink,
+    };
+    use syneroym_core::http_routes::HttpRoute;
+    use syneroym_rpc::NativeHttpService;
     use syneroym_test_dual_build_fixture::native::{FIXTURE_INTERFACE, NativeFixture};
 
     let service_id = DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string();
@@ -1005,16 +1024,87 @@ async fn init_dual_build_fixture(
         endpoint_registry.clone(),
         shared.logical_resolver.clone(),
         shared.conversation.clone(),
+        shared.websocket_senders.clone(),
     );
     let f = factory.clone();
-    let fixture = Arc::new(NativeFixture::new(service_id, move |caller| f.host_for(caller)));
+    let fixture =
+        Arc::new(NativeFixture::new(service_id.clone(), move |caller| f.host_for(caller)));
     factory.set_sink(Arc::downgrade(&fixture) as Weak<dyn MessageSink>);
     factory.set_conversation_sink(
         Arc::downgrade(&fixture) as Weak<dyn syneroym_app_host_native::ConversationSink>
     );
-    shared
-        .native_dispatch
-        .insert(DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(), fixture as Arc<dyn NativeService>);
+    factory.set_http_sink(Arc::downgrade(&fixture) as Weak<dyn HttpSink>);
+    factory.set_websocket_sink(Arc::downgrade(&fixture) as Weak<dyn WebSocketSink>);
+
+    shared.native_dispatch.insert(
+        DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
+        fixture.clone() as Arc<dyn NativeService>,
+    );
+
+    let adapter = Arc::new(NativeHttpAdapter::new(
+        factory.clone(),
+        Arc::downgrade(&fixture) as Weak<dyn HttpSink>,
+        Arc::downgrade(&fixture) as Weak<dyn WebSocketSink>,
+    ));
+    shared.native_http.insert(
+        DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
+        adapter.clone() as Arc<dyn NativeHttpService>,
+    );
+    shared.native_http.insert(node_service_id.to_string(), adapter as Arc<dyn NativeHttpService>);
+    let routes = vec![
+        HttpRoute {
+            method: "POST".into(),
+            path: "/run".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: false,
+        },
+        HttpRoute {
+            method: "POST".into(),
+            path: "/store".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: false,
+        },
+        HttpRoute {
+            method: "GET".into(),
+            path: "/whoami".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "GET".into(),
+            path: "/ws".into(),
+            target: "websocket".into(),
+            operation: "handle-upgrade".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: false,
+        },
+        HttpRoute {
+            method: "GET".into(),
+            path: "/ws-public".into(),
+            target: "websocket".into(),
+            operation: "handle-upgrade".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+    ];
+    shared.http_routes.insert(DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(), routes.clone());
+    shared.http_routes.insert(node_service_id.to_string(), routes);
 
     // Exactly one endpoint. Do not also register a `messaging` endpoint:
     // `EndpointRegistry::register` is a silent last-write-wins insert on
@@ -1033,7 +1123,38 @@ async fn init_dual_build_fixture(
             },
         )
         .await?;
-    Ok(())
+
+    endpoint_registry
+        .register(
+            node_service_id.to_string(),
+            "http".to_string(),
+            SubstrateEndpoint::NativeHostChannel {
+                service_id: DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
+            },
+        )
+        .await?;
+
+    endpoint_registry
+        .register(
+            node_service_id.to_string(),
+            "http-native".to_string(),
+            SubstrateEndpoint::NativeHostChannel {
+                service_id: DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
+            },
+        )
+        .await?;
+
+    endpoint_registry
+        .register(
+            DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
+            "http-native".to_string(),
+            SubstrateEndpoint::NativeHostChannel {
+                service_id: DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
+            },
+        )
+        .await?;
+
+    Ok(Some(factory))
 }
 
 /// Rebuilds the in-memory `StaticInventory` from every dependency binding
@@ -1119,6 +1240,11 @@ async fn build_route_handler_deps(
         .self_weak
         .set(Arc::downgrade(&app_sandbox_engine))
         .map_err(|_| anyhow::anyhow!("AppSandboxEngine::self_weak set more than once"))?;
+    let websocket_senders = syneroym_rpc::WebSocketSenders::new();
+    app_sandbox_engine
+        .websocket_senders
+        .set(websocket_senders.clone())
+        .map_err(|_| anyhow::anyhow!("AppSandboxEngine::websocket_senders set more than once"))?;
 
     replay_persisted_subscriptions(&storage_provider, &app_sandbox_engine).await?;
 
@@ -1140,6 +1266,7 @@ async fn build_route_handler_deps(
     // -- `RouteHandler`'s own dispatch path reads through the identical
     // handles.
     let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+    let native_http: syneroym_rpc::NativeHttpRegistry = Arc::new(DashMap::new());
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
     let assets: AssetRegistry = Arc::new(DashMap::new());
 
@@ -1242,6 +1369,9 @@ async fn build_route_handler_deps(
         blob_provider,
         logical_resolver: logical_resolver.clone(),
         conversation: conversation.clone(),
+        http_routes: http_routes.clone(),
+        native_http: native_http.clone(),
+        websocket_senders: websocket_senders.clone(),
     };
 
     Ok((
@@ -1252,6 +1382,8 @@ async fn build_route_handler_deps(
             app_sandbox_engine,
             messaging_broker,
             native_dispatch,
+            native_http,
+            websocket_senders,
             http_routes,
             assets,
             sse_permits: control_plane_service.sse_permits(),

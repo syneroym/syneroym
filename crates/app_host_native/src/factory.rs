@@ -2,26 +2,33 @@
 
 use std::{
     fmt,
-    sync::{Arc, OnceLock, Weak},
+    sync::{
+        Arc, OnceLock, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use dashmap::DashMap;
 use syneroym_app_host::{ConversationSink, MessageSink, types::messaging::MessagingError};
+use syneroym_app_orchestration::LogicalResolver;
 use syneroym_conversation::ConversationService;
 use syneroym_core::local_registry::EndpointRegistry;
 use syneroym_data_blob::traits::BlobProvider;
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
+use syneroym_fdae::Policy;
 use syneroym_mqtt_broker::{MqttBroker, SubscriptionHandle, namespace_topic};
 use syneroym_rpc::{
     CallerContext, ConversationDeliveryState, ConversationHost, ConversationMessage,
-    ConversationNotifier,
+    ConversationNotifier, ServiceProxy, WebSocketSenders,
 };
 use syneroym_sandbox_wasm::{HostState, MessagingContext, StreamContext, empty_service_proxy};
+use tokio::sync::{OnceCell, RwLock};
 
 use crate::{
     convert,
     host::{HostInner, NativeAppHost},
+    http::{HttpSink, WebSocketSink},
 };
 
 /// Everything the shim needs that outlives one call. One per native app
@@ -36,7 +43,7 @@ pub struct NativeHostFactory {
     blob_provider: Arc<dyn BlobProvider>,
     broker: Arc<MqttBroker>,
     endpoint_registry: EndpointRegistry,
-    logical_resolver: Arc<syneroym_app_orchestration::LogicalResolver>,
+    logical_resolver: Arc<LogicalResolver>,
     /// Live broker subscriptions, keyed by *namespaced* topic -- the native
     /// analogue of `AppSandboxEngine.subscriptions`.
     subscriptions: DashMap<String, SubscriptionHandle>,
@@ -52,6 +59,12 @@ pub struct NativeHostFactory {
     conversation: Arc<ConversationService>,
     /// The app's inbound conversation entry point, mirroring `sink` above.
     conversation_sink: OnceLock<Weak<dyn ConversationSink>>,
+    service_proxy: OnceLock<Weak<dyn ServiceProxy>>,
+    http_sink: OnceLock<Weak<dyn HttpSink>>,
+    websocket_sink: OnceLock<Weak<dyn WebSocketSink>>,
+    pub(crate) websocket_senders: Arc<WebSocketSenders>,
+    fdae_policy: RwLock<Option<Option<Arc<Policy>>>>,
+    fdae_policy_generation: AtomicU64,
 }
 
 /// Hand-written, not derived: `StorageProvider` has no `Debug` supertrait,
@@ -75,8 +88,9 @@ impl NativeHostFactory {
         blob_provider: Arc<dyn BlobProvider>,
         broker: Arc<MqttBroker>,
         endpoint_registry: EndpointRegistry,
-        logical_resolver: Arc<syneroym_app_orchestration::LogicalResolver>,
+        logical_resolver: Arc<LogicalResolver>,
         conversation: Arc<ConversationService>,
+        websocket_senders: Arc<WebSocketSenders>,
     ) -> Arc<Self> {
         let factory = Arc::new(Self {
             service_id: service_id.clone(),
@@ -90,6 +104,12 @@ impl NativeHostFactory {
             sink: OnceLock::new(),
             conversation: conversation.clone(),
             conversation_sink: OnceLock::new(),
+            service_proxy: OnceLock::new(),
+            http_sink: OnceLock::new(),
+            websocket_sink: OnceLock::new(),
+            websocket_senders,
+            fdae_policy: RwLock::new(None),
+            fdae_policy_generation: AtomicU64::new(0),
         });
         // `§6.5`: registers itself as this service's conversation
         // notification target, so the delivery worker wakes a natively-
@@ -103,6 +123,15 @@ impl NativeHostFactory {
             Arc::downgrade(&factory) as Weak<dyn ConversationNotifier>,
         );
         factory
+    }
+
+    /// Explicitly invalidates the memoized FDAE policy cache and bumps the
+    /// generation counter so in-flight loads from storage cannot resurrect a
+    /// stale policy.
+    pub async fn invalidate_fdae_policy(&self) {
+        self.fdae_policy_generation.fetch_add(1, Ordering::SeqCst);
+        let mut guard = self.fdae_policy.write().await;
+        *guard = None;
     }
 
     /// Sets the app's inbound message entry point. Panics if called twice --
@@ -122,6 +151,25 @@ impl NativeHostFactory {
             .expect("NativeHostFactory::set_conversation_sink called more than once");
     }
 
+    #[allow(clippy::expect_used)]
+    pub fn set_service_proxy(&self, proxy: Weak<dyn ServiceProxy>) {
+        self.service_proxy
+            .set(proxy)
+            .expect("NativeHostFactory::set_service_proxy called more than once");
+    }
+
+    #[allow(clippy::expect_used)]
+    pub fn set_http_sink(&self, sink: Weak<dyn HttpSink>) {
+        self.http_sink.set(sink).expect("NativeHostFactory::set_http_sink called more than once");
+    }
+
+    #[allow(clippy::expect_used)]
+    pub fn set_websocket_sink(&self, sink: Weak<dyn WebSocketSink>) {
+        self.websocket_sink
+            .set(sink)
+            .expect("NativeHostFactory::set_websocket_sink called more than once");
+    }
+
     #[must_use]
     pub fn service_id(&self) -> &str {
         &self.service_id
@@ -134,6 +182,95 @@ impl NativeHostFactory {
         self.host_with(caller, false)
     }
 
+    pub(crate) async fn config_generation(&self) -> u64 {
+        match self.storage_provider.get_latest_config_generation(&self.service_id).await {
+            Ok(Some((g, _))) => g,
+            Ok(None) => 0,
+            Err(e) => {
+                tracing::error!(
+                    service_id = %self.service_id,
+                    error = %e,
+                    "failed to fetch config generation"
+                );
+                0
+            }
+        }
+    }
+
+    pub(crate) async fn fdae_policy(&self) -> Option<Arc<Policy>> {
+        let generation_before = self.fdae_policy_generation.load(Ordering::SeqCst);
+        {
+            let guard = self.fdae_policy.read().await;
+            if let Some(memoized) = &*guard {
+                return memoized.clone();
+            }
+        }
+        let resolved = match self.storage_provider.load_fdae_policy(&self.service_id).await {
+            Ok(Some(doc)) => match syneroym_fdae::parse_and_validate(&doc) {
+                Ok(p) => Some(Arc::new(p)),
+                Err(e) => {
+                    tracing::error!(
+                        service_id = %self.service_id,
+                        error = %e,
+                        "FDAE policy failed to parse; treating as policy-absent"
+                    );
+                    None
+                }
+            },
+            Ok(None) => None,
+            Err(e) => {
+                tracing::error!(
+                    service_id = %self.service_id,
+                    error = %e,
+                    "failed to load FDAE policy"
+                );
+                return None;
+            }
+        };
+        let generation_after = self.fdae_policy_generation.load(Ordering::SeqCst);
+        if generation_before == generation_after {
+            let mut guard = self.fdae_policy.write().await;
+            if self.fdae_policy_generation.load(Ordering::SeqCst) == generation_before {
+                *guard = Some(resolved.clone());
+            }
+        }
+        resolved
+    }
+
+    pub(crate) async fn build_host_state(
+        &self,
+        caller: CallerContext,
+        read_only: bool,
+    ) -> HostState {
+        let service_proxy = self.service_proxy.get().cloned().unwrap_or_else(empty_service_proxy);
+        let app_instance = self
+            .endpoint_registry
+            .app_context_of(&self.service_id)
+            .map(|(instance, _name)| instance);
+        let config_gen = self.config_generation().await;
+        let fdae = self.fdae_policy().await;
+
+        HostState::new(
+            self.service_id.clone(),
+            None, // max_memory_bytes: no wasm memory to bound
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+            self.blob_provider.clone(),
+            caller,
+            config_gen,
+            MessagingContext { broker: self.broker.clone(), engine: Weak::new() },
+            StreamContext { registry: self.endpoint_registry.clone(), engine: Weak::new() },
+            service_proxy,
+            fdae,
+            read_only,
+            syneroym_rpc::empty_row_authorizer(),
+            app_instance,
+            self.logical_resolver.clone(),
+        )
+        .with_conversation(Arc::downgrade(&self.conversation) as Weak<dyn ConversationHost>)
+        .with_websocket_senders(self.websocket_senders.clone())
+    }
+
     /// Private, and deliberately not `pub`: nothing an app or an embedder can
     /// reach may ask for a read-only host, because nothing native produces
     /// the stage-4 context that flag belongs to. It exists so this crate's
@@ -144,27 +281,11 @@ impl NativeHostFactory {
         caller: CallerContext,
         read_only: bool,
     ) -> NativeAppHost {
-        let state = HostState::new(
-            self.service_id.clone(),
-            None, // max_memory_bytes: no wasm memory to bound
-            self.key_store.clone(),
-            self.storage_provider.clone(),
-            self.blob_provider.clone(),
-            caller,
-            0, // config_generation
-            MessagingContext { broker: self.broker.clone(), engine: Weak::new() },
-            StreamContext { registry: self.endpoint_registry.clone(), engine: Weak::new() },
-            empty_service_proxy(),
-            None, // fdae_policy: a linked app has no deploy record
-            read_only,
-            syneroym_rpc::empty_row_authorizer(),
-            None, // app_instance_id
-            self.logical_resolver.clone(),
-        )
-        .with_conversation(Arc::downgrade(&self.conversation) as Weak<dyn ConversationHost>);
         NativeAppHost::new(Arc::new(HostInner {
             factory: self.clone(),
-            state: tokio::sync::Mutex::new(state),
+            caller,
+            read_only,
+            state: OnceCell::new(),
         }))
     }
 
@@ -339,6 +460,7 @@ mod tests {
             endpoint_registry,
             syneroym_app_orchestration::empty_resolver(),
             conversation,
+            syneroym_rpc::WebSocketSenders::new(),
         );
         let host = factory.host_with(caller(), true);
 

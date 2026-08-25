@@ -182,6 +182,8 @@ async fn test_route_handler() -> (RouteHandler, HttpRouteRegistry) {
         app_sandbox_engine,
         messaging_broker,
         native_dispatch: NativeDispatchRegistry::default(),
+        native_http: Arc::new(DashMap::new()),
+        websocket_senders: syneroym_rpc::WebSocketSenders::new(),
         http_routes: http_routes.clone(),
         assets: Arc::new(DashMap::new()),
         sse_permits: Arc::new(DashMap::new()),

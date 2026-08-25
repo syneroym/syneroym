@@ -16,16 +16,28 @@
 use core::fmt;
 
 use syneroym_wit_interfaces::{
+    app_config::syneroym::app_config::app_config as cfg,
     blob_store::syneroym::blob_store::blob_store as bs,
     conversation::syneroym::conversation::conversation as conv,
-    data_layer::syneroym::data_layer::store as dl, messaging::syneroym::messaging::host_api as msg,
+    data_layer::syneroym::data_layer::store as dl,
+    http_guest::syneroym::http::{websocket as ws, websocket_types as wst},
+    messaging::syneroym::messaging::host_api as msg,
+    proxy::syneroym::proxy::proxy as px,
+    vault::syneroym::vault::vault as vlt,
 };
 
 use crate::{
-    AppBlobReader, AppBlobStore, AppBlobWriter, AppConversation, AppDataLayer, AppMessaging,
+    AppAppConfig, AppBlobReader, AppBlobStore, AppBlobWriter, AppConversation, AppDataLayer,
+    AppMessaging, AppProxy, AppVault, AppWebSocket,
     types::{
-        blob_store::BlobError, conversation::ConversationError, data_layer::*,
+        app_config::ConfigError,
+        blob_store::BlobError,
+        conversation::ConversationError,
+        data_layer::*,
+        http::FrameKind,
         messaging::MessagingError,
+        proxy::{CallOptions, CallTarget, ProxyError},
+        vault::VaultError,
     },
 };
 
@@ -278,6 +290,59 @@ impl AppConversation for GuestHost {
 
     async fn sync_now(&self, conversation: String) -> Result<(), ConversationError> {
         conv::sync_now(&conversation)
+    }
+}
+
+impl AppProxy for GuestHost {
+    async fn call(
+        &self,
+        target: CallTarget,
+        interface: String,
+        method: String,
+        params: String,
+        options: Option<CallOptions>,
+    ) -> Result<String, ProxyError> {
+        px::call(&target, &interface, &method, &params, options.as_ref())
+    }
+
+    async fn enqueue(
+        &self,
+        target: CallTarget,
+        interface: String,
+        method: String,
+        params: String,
+        options: Option<CallOptions>,
+    ) -> Result<(), ProxyError> {
+        px::enqueue(&target, &interface, &method, &params, options.as_ref())
+    }
+}
+
+impl AppAppConfig for GuestHost {
+    async fn get(&self, key: String) -> Result<Option<String>, ConfigError> {
+        cfg::get(&key)
+    }
+
+    async fn get_section(&self, prefix: String) -> Result<Vec<(String, String)>, ConfigError> {
+        cfg::get_section(&prefix)
+    }
+}
+
+impl AppVault for GuestHost {
+    async fn reveal(&self, key: String) -> Result<Vec<u8>, VaultError> {
+        vlt::reveal(&key)
+    }
+}
+
+fn frame_kind_out(kind: FrameKind) -> wst::FrameKind {
+    match kind {
+        FrameKind::Text => wst::FrameKind::Text,
+        FrameKind::Binary => wst::FrameKind::Binary,
+    }
+}
+
+impl AppWebSocket for GuestHost {
+    async fn send(&self, conn: String, frame: Vec<u8>, kind: FrameKind) -> Result<(), String> {
+        ws::send(&conn, &frame, frame_kind_out(kind))
     }
 }
 

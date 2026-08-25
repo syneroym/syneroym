@@ -153,6 +153,7 @@ async fn test_route_handler_with_proxy_components() -> Option<RouteHandler> {
         .unwrap(),
     );
     app_sandbox_engine.self_weak.set(Arc::downgrade(&app_sandbox_engine)).unwrap();
+    app_sandbox_engine.websocket_senders.set(syneroym_rpc::WebSocketSenders::new()).unwrap();
 
     app_sandbox_engine
         .deploy_wasm("proxy-caller", &wasm_deploy_manifest(proxy_test_bytes))
@@ -192,6 +193,8 @@ async fn test_route_handler_with_proxy_components() -> Option<RouteHandler> {
         app_sandbox_engine,
         messaging_broker,
         native_dispatch: NativeDispatchRegistry::default(),
+        native_http: Arc::new(DashMap::new()),
+        websocket_senders: syneroym_rpc::WebSocketSenders::new(),
         http_routes,
         assets: Arc::new(DashMap::new()),
         sse_permits: Arc::new(DashMap::new()),
@@ -271,6 +274,7 @@ async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, A
         .unwrap(),
     );
     app_sandbox_engine.self_weak.set(Arc::downgrade(&app_sandbox_engine)).unwrap();
+    app_sandbox_engine.websocket_senders.set(syneroym_rpc::WebSocketSenders::new()).unwrap();
 
     app_sandbox_engine
         .deploy_wasm("proxy-caller", &wasm_deploy_manifest(proxy_test_bytes))
@@ -306,6 +310,8 @@ async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, A
         app_sandbox_engine,
         messaging_broker,
         native_dispatch: NativeDispatchRegistry::default(),
+        native_http: Arc::new(DashMap::new()),
+        websocket_senders: syneroym_rpc::WebSocketSenders::new(),
         http_routes,
         assets: Arc::new(DashMap::new()),
         sse_permits: Arc::new(DashMap::new()),
@@ -571,6 +577,7 @@ async fn test_route_handler_with_self_native_data_layer(
         .unwrap(),
     );
     app_sandbox_engine.self_weak.set(Arc::downgrade(&app_sandbox_engine)).unwrap();
+    app_sandbox_engine.websocket_senders.set(syneroym_rpc::WebSocketSenders::new()).unwrap();
 
     app_sandbox_engine
         .deploy_wasm("proxy-caller", &wasm_deploy_manifest(proxy_test_bytes))
@@ -633,6 +640,8 @@ async fn test_route_handler_with_self_native_data_layer(
         app_sandbox_engine,
         messaging_broker,
         native_dispatch,
+        native_http: Arc::new(DashMap::new()),
+        websocket_senders: syneroym_rpc::WebSocketSenders::new(),
         http_routes,
         assets: Arc::new(DashMap::new()),
         sse_permits: Arc::new(DashMap::new()),
@@ -693,6 +702,7 @@ async fn test_route_handler_with_self_native_data_layer_and_stage4(
         .unwrap(),
     );
     app_sandbox_engine.self_weak.set(Arc::downgrade(&app_sandbox_engine)).unwrap();
+    app_sandbox_engine.websocket_senders.set(syneroym_rpc::WebSocketSenders::new()).unwrap();
 
     app_sandbox_engine
         .deploy_wasm("proxy-caller", &wasm_deploy_manifest(proxy_test_bytes))
@@ -760,6 +770,8 @@ async fn test_route_handler_with_self_native_data_layer_and_stage4(
         app_sandbox_engine,
         messaging_broker,
         native_dispatch,
+        native_http: Arc::new(DashMap::new()),
+        websocket_senders: syneroym_rpc::WebSocketSenders::new(),
         http_routes,
         assets: Arc::new(DashMap::new()),
         sse_permits: Arc::new(DashMap::new()),

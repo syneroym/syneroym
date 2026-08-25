@@ -9,7 +9,7 @@ mod stream;
 
 pub use engine::{
     AppSandboxEngine, FrameKind, GuestHttpFailure, GuestHttpOutcome, StreamRequestOutcome,
-    WasmResourceQuota,
+    WasmResourceQuota, WebSocketReceiver, WebSocketSender,
 };
 pub use host_capabilities::{HostState, MessagingContext, empty_service_proxy};
 pub use stream::{GuestStreamCursor, GuestStreamSink, StreamContext, StreamRegistry};

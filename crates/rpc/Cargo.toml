@@ -18,6 +18,7 @@ dashmap.workspace = true
 syneroym-ucan.workspace = true
 syneroym-fdae.workspace = true
 syneroym-identity.workspace = true
+syneroym-app-host.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

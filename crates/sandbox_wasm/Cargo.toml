@@ -17,6 +17,7 @@ reqwest.workspace = true
 sha2.workspace = true
 hex.workspace = true
 syneroym-wit-interfaces.workspace = true
+syneroym-app-host.workspace = true
 syneroym-rpc.workspace = true
 syneroym-data-keystore.workspace = true
 syneroym-data-db.workspace = true

@@ -5,23 +5,39 @@
 use std::{fmt, sync::Arc};
 
 use syneroym_app_host::{
-    AppBlobReader, AppBlobStore, AppBlobWriter, AppConversation, AppDataLayer, AppMessaging,
+    AppAppConfig, AppBlobReader, AppBlobStore, AppBlobWriter, AppConversation, AppDataLayer,
+    AppMessaging, AppProxy, AppVault, AppWebSocket,
     types::{
-        blob_store::BlobError, conversation::ConversationError, data_layer::*,
+        app_config::ConfigError,
+        blob_store::BlobError,
+        conversation::{
+            ConversationError, ConversationSummary, DeliveryState, HistoryPage, MembershipEvent,
+            Message,
+        },
+        data_layer::{
+            CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult, RawQueryResult,
+            RecordReadValue, RecordWriteValue, SqlValue,
+        },
+        http::FrameKind,
         messaging::MessagingError,
+        proxy::{CallOptions, CallTarget, ProxyError},
+        vault::VaultError,
     },
 };
+use syneroym_rpc::CallerContext;
 use syneroym_sandbox_wasm::HostState;
-// Aliased: `data_layer::store`, `blob_store::blob_store` and
-// `messaging::host_api` each define their own `Host` trait, so importing
-// all three under their real name would collide. `HostBlobWriter`/
-// `HostBlobReader` have no such collision and need no alias.
+// Aliased: `data_layer::store`, `blob_store::blob_store`, `messaging::host_api`,
+// `proxy::proxy`, `app_config::app_config`, `vault::vault` each define their own `Host` trait.
 use syneroym_wit_interfaces::conversation_host::syneroym::conversation::conversation::Host as HostConversation;
 use syneroym_wit_interfaces::host::syneroym::{
+    app_config::app_config::Host as HostAppConfig,
     blob_store::blob_store::{Host as HostBlobStore, HostBlobReader, HostBlobWriter},
     data_layer::store::Host as HostStore,
     messaging::host_api::Host as HostMessaging,
+    proxy::proxy::Host as HostProxy,
+    vault::vault::Host as HostVault,
 };
+use tokio::sync::{Mutex, OnceCell};
 use wasmtime::component::Resource;
 
 use crate::{convert, factory::NativeHostFactory};
@@ -40,33 +56,44 @@ impl NativeAppHost {
 }
 
 /// `derive` works here only because `NativeHostFactory` has its own manual
-/// `Debug` impl and `tokio::sync::Mutex<T>: Debug where T: Debug` (`HostState`
+/// `Debug` impl and `Mutex<T>: Debug where T: Debug` (`HostState`
 /// supplies its own).
 #[derive(Debug)]
 pub(crate) struct HostInner {
     pub(crate) factory: Arc<NativeHostFactory>,
-    /// `tokio::sync::Mutex`, not `std`: the guarded calls are async, and the
-    /// guard is held across them. `HostState` is `Send` (wasmtime requires it
-    /// for async stores) but not `Sync`, which is exactly what a `Mutex`
-    /// fixes.
-    pub(crate) state: tokio::sync::Mutex<HostState>,
+    pub(crate) caller: CallerContext,
+    pub(crate) read_only: bool,
+    /// Lazy: instantiated on the first host call that needs a `HostState`.
+    /// Methods that do not need one (`subscribe`/`unsubscribe`, outbound
+    /// `send_websocket_frame`) never initialize this.
+    pub(crate) state: OnceCell<Mutex<HostState>>,
+}
+
+impl HostInner {
+    pub(crate) async fn state_mutex(&self) -> &Mutex<HostState> {
+        self.state
+            .get_or_init(|| async {
+                Mutex::new(self.factory.build_host_state(self.caller.clone(), self.read_only).await)
+            })
+            .await
+    }
 }
 
 impl AppDataLayer for NativeAppHost {
     async fn create_collection(&self, schema: CollectionSchema) -> Result<(), DataLayerError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostStore::create_collection(&mut *state, convert::collection_schema_in(schema))
             .await
             .map_err(convert::data_layer_error_out)
     }
 
     async fn drop_collection(&self, name: String) -> Result<(), DataLayerError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostStore::drop_collection(&mut *state, name).await.map_err(convert::data_layer_error_out)
     }
 
     async fn put(&self, collection: String, value: RecordWriteValue) -> Result<(), DataLayerError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostStore::put(&mut *state, collection, convert::record_write_value_in(value))
             .await
             .map_err(convert::data_layer_error_out)
@@ -78,7 +105,7 @@ impl AppDataLayer for NativeAppHost {
         id: String,
         patch_json: Vec<u8>,
     ) -> Result<(), DataLayerError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostStore::patch(&mut *state, collection, id, patch_json)
             .await
             .map_err(convert::data_layer_error_out)
@@ -89,7 +116,7 @@ impl AppDataLayer for NativeAppHost {
         collection: String,
         id: String,
     ) -> Result<Option<RecordReadValue>, DataLayerError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostStore::get(&mut *state, collection, id)
             .await
             .map(|opt| opt.map(convert::record_read_value_out))
@@ -101,7 +128,7 @@ impl AppDataLayer for NativeAppHost {
         collection: String,
         opts: QueryOptions,
     ) -> Result<QueryResult, DataLayerError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostStore::query(&mut *state, collection, convert::query_options_in(opts))
             .await
             .map(convert::query_result_out)
@@ -113,7 +140,7 @@ impl AppDataLayer for NativeAppHost {
         collection: String,
         pipeline: String,
     ) -> Result<RawQueryResult, DataLayerError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostStore::aggregate(&mut *state, collection, pipeline)
             .await
             .map(convert::raw_query_result_out)
@@ -121,12 +148,12 @@ impl AppDataLayer for NativeAppHost {
     }
 
     async fn delete(&self, collection: String, id: String) -> Result<(), DataLayerError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostStore::delete(&mut *state, collection, id).await.map_err(convert::data_layer_error_out)
     }
 
     async fn delete_many(&self, collection: String, filter: String) -> Result<u64, DataLayerError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostStore::delete_many(&mut *state, collection, filter)
             .await
             .map_err(convert::data_layer_error_out)
@@ -137,7 +164,7 @@ impl AppDataLayer for NativeAppHost {
         collection: String,
         mutations: Vec<Mutation>,
     ) -> Result<(), DataLayerError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostStore::batch_mutate(
             &mut *state,
             collection,
@@ -148,7 +175,7 @@ impl AppDataLayer for NativeAppHost {
     }
 
     async fn execute_ddl(&self, sql: String) -> Result<(), DataLayerError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostStore::execute_ddl(&mut *state, sql).await.map_err(convert::data_layer_error_out)
     }
 
@@ -157,7 +184,7 @@ impl AppDataLayer for NativeAppHost {
         sql: String,
         params: Vec<SqlValue>,
     ) -> Result<RawQueryResult, DataLayerError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostStore::query_raw(
             &mut *state,
             sql,
@@ -174,7 +201,7 @@ impl AppDataLayer for NativeAppHost {
         id: String,
         operation: String,
     ) -> Result<bool, DataLayerError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostStore::check_access(&mut *state, collection, id, operation)
             .await
             .map_err(convert::data_layer_error_out)
@@ -186,18 +213,18 @@ impl AppBlobStore for NativeAppHost {
     type Reader = NativeBlobReader;
 
     async fn put_blob(&self, data: Vec<u8>) -> Result<String, BlobError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostBlobStore::put_blob(&mut *state, data).await.map_err(convert::blob_error_out)
     }
 
     async fn get_blob(&self, hash: String) -> Result<Vec<u8>, BlobError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostBlobStore::get_blob(&mut *state, hash).await.map_err(convert::blob_error_out)
     }
 
     async fn open_upload(&self) -> Result<NativeBlobWriter, BlobError> {
         let rep = {
-            let mut state = self.0.state.lock().await;
+            let mut state = self.0.state_mutex().await.lock().await;
             HostBlobStore::open_upload(&mut *state).await.map_err(convert::blob_error_out)?.rep()
         };
         Ok(NativeBlobWriter { host: self.clone(), rep })
@@ -209,7 +236,7 @@ impl AppBlobStore for NativeAppHost {
         offset: u64,
     ) -> Result<NativeBlobReader, BlobError> {
         let rep = {
-            let mut state = self.0.state.lock().await;
+            let mut state = self.0.state_mutex().await.lock().await;
             HostBlobStore::open_download(&mut *state, hash, offset)
                 .await
                 .map_err(convert::blob_error_out)?
@@ -219,12 +246,12 @@ impl AppBlobStore for NativeAppHost {
     }
 
     async fn delete_blob(&self, hash: String) -> Result<(), BlobError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostBlobStore::delete_blob(&mut *state, hash).await.map_err(convert::blob_error_out)
     }
 
     async fn signed_url(&self, hash: String, ttl_secs: u32) -> Result<String, BlobError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostBlobStore::signed_url(&mut *state, hash, ttl_secs)
             .await
             .map_err(convert::blob_error_out)
@@ -267,21 +294,21 @@ impl NativeBlobWriter {
 
 impl AppBlobWriter for NativeBlobWriter {
     async fn write(&mut self, chunk: Vec<u8>) -> Result<(), BlobError> {
-        let mut state = self.host.0.state.lock().await;
+        let mut state = self.host.0.state_mutex().await.lock().await;
         HostBlobWriter::write(&mut *state, Resource::new_own(self.rep), chunk)
             .await
             .map_err(convert::blob_error_out)
     }
 
     async fn finish(self) -> Result<String, BlobError> {
-        let mut state = self.host.0.state.lock().await;
+        let mut state = self.host.0.state_mutex().await.lock().await;
         HostBlobWriter::finish(&mut *state, Resource::new_own(self.rep))
             .await
             .map_err(convert::blob_error_out)
     }
 
     async fn abort(self) {
-        let mut state = self.host.0.state.lock().await;
+        let mut state = self.host.0.state_mutex().await.lock().await;
         HostBlobWriter::abort(&mut *state, Resource::new_own(self.rep)).await;
     }
 }
@@ -299,7 +326,7 @@ impl fmt::Debug for NativeBlobReader {
 
 impl AppBlobReader for NativeBlobReader {
     async fn read(&mut self, max_bytes: u32) -> Result<Vec<u8>, BlobError> {
-        let mut state = self.host.0.state.lock().await;
+        let mut state = self.host.0.state_mutex().await.lock().await;
         HostBlobReader::read(&mut *state, Resource::new_own(self.rep), max_bytes)
             .await
             .map_err(convert::blob_error_out)
@@ -308,30 +335,19 @@ impl AppBlobReader for NativeBlobReader {
 
 impl AppMessaging for NativeAppHost {
     async fn publish(&self, topic: String, payload: Vec<u8>) -> Result<(), MessagingError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostMessaging::publish(&mut *state, topic, payload).await.map_err(convert::msg_error_out)
     }
 
     async fn subscribe(&self, topic: String) -> Result<(), MessagingError> {
-        // The factory implements `subscribe`'s semantics itself (it never
-        // routes through `HostState`, see its own doc comment), so it
-        // already speaks the guest-vocabulary `MessagingError` -- no
-        // `convert::msg_error_out` needed here, unlike `publish` above.
-        //
-        // The `read_only` check has to be re-stated here rather than
-        // inherited: `HostState::subscribe`/`unsubscribe` are the source of
-        // truth for this gate (same reasoning as their own comments -- a
-        // registration made from a throw-away stage-4 instance would
-        // outlive it), and this is the one path that bypasses `HostState`
-        // entirely.
-        if self.0.state.lock().await.read_only {
+        if self.0.read_only {
             return Err(MessagingError::PermissionDenied);
         }
         self.0.factory.subscribe(topic).await
     }
 
     async fn unsubscribe(&self, topic: String) -> Result<(), MessagingError> {
-        if self.0.state.lock().await.read_only {
+        if self.0.read_only {
             return Err(MessagingError::PermissionDenied);
         }
         self.0.factory.unsubscribe(&topic)
@@ -340,17 +356,14 @@ impl AppMessaging for NativeAppHost {
 
 impl AppConversation for NativeAppHost {
     async fn open_direct(&self, peer_address: String) -> Result<String, ConversationError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::open_direct(&mut *state, peer_address)
             .await
             .map_err(convert::conversation_error_out)
     }
 
-    async fn conversations(
-        &self,
-    ) -> Result<Vec<syneroym_app_host::types::conversation::ConversationSummary>, ConversationError>
-    {
-        let mut state = self.0.state.lock().await;
+    async fn conversations(&self) -> Result<Vec<ConversationSummary>, ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::conversations(&mut *state)
             .await
             .map(|v| v.into_iter().map(convert::conversation_summary_out).collect())
@@ -363,7 +376,7 @@ impl AppConversation for NativeAppHost {
         content_type: String,
         body: Vec<u8>,
     ) -> Result<String, ConversationError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::send(&mut *state, conversation, content_type, body)
             .await
             .map_err(convert::conversation_error_out)
@@ -374,29 +387,24 @@ impl AppConversation for NativeAppHost {
         conversation: String,
         limit: u32,
         cursor: Option<String>,
-    ) -> Result<syneroym_app_host::types::conversation::HistoryPage, ConversationError> {
-        let mut state = self.0.state.lock().await;
+    ) -> Result<HistoryPage, ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::history(&mut *state, conversation, limit, cursor)
             .await
             .map(convert::history_page_out)
             .map_err(convert::conversation_error_out)
     }
 
-    async fn delivery_status(
-        &self,
-        message: String,
-    ) -> Result<syneroym_app_host::types::conversation::DeliveryState, ConversationError> {
-        let mut state = self.0.state.lock().await;
+    async fn delivery_status(&self, message: String) -> Result<DeliveryState, ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::delivery_status(&mut *state, message)
             .await
             .map(convert::delivery_state_out)
             .map_err(convert::conversation_error_out)
     }
 
-    async fn outbox(
-        &self,
-    ) -> Result<Vec<syneroym_app_host::types::conversation::Message>, ConversationError> {
-        let mut state = self.0.state.lock().await;
+    async fn outbox(&self) -> Result<Vec<Message>, ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::outbox(&mut *state)
             .await
             .map(|v| v.into_iter().map(convert::message_out).collect())
@@ -404,12 +412,12 @@ impl AppConversation for NativeAppHost {
     }
 
     async fn retry(&self, message: String) -> Result<(), ConversationError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::retry(&mut *state, message).await.map_err(convert::conversation_error_out)
     }
 
     async fn create_group(&self) -> Result<String, ConversationError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::create_group(&mut *state).await.map_err(convert::conversation_error_out)
     }
 
@@ -418,7 +426,7 @@ impl AppConversation for NativeAppHost {
         conversation: String,
         member_address: String,
     ) -> Result<(), ConversationError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::add_member(&mut *state, conversation, member_address)
             .await
             .map_err(convert::conversation_error_out)
@@ -429,14 +437,14 @@ impl AppConversation for NativeAppHost {
         conversation: String,
         member_address: String,
     ) -> Result<(), ConversationError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::remove_member(&mut *state, conversation, member_address)
             .await
             .map_err(convert::conversation_error_out)
     }
 
     async fn members(&self, conversation: String) -> Result<Vec<String>, ConversationError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::members(&mut *state, conversation)
             .await
             .map_err(convert::conversation_error_out)
@@ -445,9 +453,8 @@ impl AppConversation for NativeAppHost {
     async fn membership_history(
         &self,
         conversation: String,
-    ) -> Result<Vec<syneroym_app_host::types::conversation::MembershipEvent>, ConversationError>
-    {
-        let mut state = self.0.state.lock().await;
+    ) -> Result<Vec<MembershipEvent>, ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::membership_history(&mut *state, conversation)
             .await
             .map(|v| v.into_iter().map(convert::membership_event_out).collect())
@@ -455,9 +462,78 @@ impl AppConversation for NativeAppHost {
     }
 
     async fn sync_now(&self, conversation: String) -> Result<(), ConversationError> {
-        let mut state = self.0.state.lock().await;
+        let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::sync_now(&mut *state, conversation)
             .await
             .map_err(convert::conversation_error_out)
+    }
+}
+
+impl AppProxy for NativeAppHost {
+    async fn call(
+        &self,
+        target: CallTarget,
+        interface: String,
+        method: String,
+        params: String,
+        options: Option<CallOptions>,
+    ) -> Result<String, ProxyError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostProxy::call(
+            &mut *state,
+            convert::call_target_in(target),
+            interface,
+            method,
+            params,
+            options.map(convert::call_options_in),
+        )
+        .await
+        .map_err(convert::proxy_error_out)
+    }
+
+    async fn enqueue(
+        &self,
+        target: CallTarget,
+        interface: String,
+        method: String,
+        params: String,
+        options: Option<CallOptions>,
+    ) -> Result<(), ProxyError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostProxy::enqueue(
+            &mut *state,
+            convert::call_target_in(target),
+            interface,
+            method,
+            params,
+            options.map(convert::call_options_in),
+        )
+        .await
+        .map_err(convert::proxy_error_out)
+    }
+}
+
+impl AppAppConfig for NativeAppHost {
+    async fn get(&self, key: String) -> Result<Option<String>, ConfigError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostAppConfig::get(&mut *state, key).await.map_err(convert::config_error_out)
+    }
+
+    async fn get_section(&self, prefix: String) -> Result<Vec<(String, String)>, ConfigError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostAppConfig::get_section(&mut *state, prefix).await.map_err(convert::config_error_out)
+    }
+}
+
+impl AppVault for NativeAppHost {
+    async fn reveal(&self, key: String) -> Result<Vec<u8>, VaultError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostVault::reveal(&mut *state, key).await.map_err(convert::vault_error_out)
+    }
+}
+
+impl AppWebSocket for NativeAppHost {
+    async fn send(&self, conn: String, frame: Vec<u8>, kind: FrameKind) -> Result<(), String> {
+        self.0.factory.websocket_senders.send(self.0.factory.service_id(), &conn, frame, kind).await
     }
 }

@@ -8,14 +8,28 @@
 use std::{
     fs,
     path::Path,
-    sync::{Arc, Weak},
+    sync::{Arc, Weak, atomic::Ordering},
     time::Duration,
 };
 
 use serde_json::{Value, json};
-use syneroym_app_host_native::{ConversationSink, MessageSink, NativeHostFactory};
+use syneroym_app_host::{
+    AppDataLayer,
+    types::{
+        data_layer::RecordWriteValue,
+        http::{CallerAuth, CallerIdentity, FrameKind, HttpRequest, HttpResponse},
+    },
+};
+use syneroym_app_host_native::{
+    ConversationSink, HttpSink, MessageSink, NativeAppHost, NativeHostFactory, NativeHttpAdapter,
+    WebSocketSink,
+};
+use syneroym_app_orchestration::{
+    AppInstanceId, AppRegistry, LogicalResolver, LogicalServiceName, ServiceId, StaticInventory,
+    TopologyEntry, TopologyEpoch, TopologyKey, TopologyMode,
+};
 use syneroym_async_queue::QueueConfig;
-use syneroym_conversation::ConversationService;
+use syneroym_conversation::{ConversationConfig, ConversationService};
 use syneroym_core::{
     config::{RetryPolicy, SubstrateConfig},
     local_registry::EndpointRegistry,
@@ -23,14 +37,21 @@ use syneroym_core::{
     test_constants,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
-use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
+use syneroym_data_db::{
+    SqliteStorageProvider, StorageProvider,
+    host_store::{CollectionSchema as DbCollectionSchema, RecordWriteValue as DbRecordWriteValue},
+};
 use syneroym_data_keystore::KeyStore;
+use syneroym_identity::{
+    DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate::derive_did_key,
+};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::{
-    AuthLevel, CallerContext, ConversationError, ConversationHost, JsonRpcRequest,
-    NativeInvocation, ProxyError, ProxyRequest, ServiceProxy, SessionContext,
+    AuthLevel, CallerContext, ConversationError, ConversationHost, ConversationNotifier,
+    JsonRpcRequest, NativeHttpService, NativeInvocation, ProxyError, ProxyRequest, ServiceProxy,
+    SessionContext, WebSocketSenders,
 };
-use syneroym_sandbox_wasm::AppSandboxEngine;
+use syneroym_sandbox_wasm::{AppSandboxEngine, GuestHttpOutcome};
 use syneroym_test_dual_build_fixture::native::{FIXTURE_INTERFACE, NativeFixture};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
@@ -89,7 +110,7 @@ impl Driver for WasmDriver {
 
 /// Drives the same source, linked in, through the shim.
 struct NativeDriver {
-    fixture: Arc<NativeFixture<syneroym_app_host_native::NativeAppHost>>,
+    fixture: Arc<NativeFixture<NativeAppHost>>,
 }
 
 impl Driver for NativeDriver {
@@ -224,15 +245,176 @@ impl ServiceProxy for PeerProxy {
     }
 }
 
+#[derive(Debug)]
+struct StubProxy;
+
+#[async_trait::async_trait]
+impl ServiceProxy for StubProxy {
+    async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError> {
+        if request.interface == "greeter" && request.method == "greet" {
+            Ok(json!({"greeting": "hello from stub"}))
+        } else {
+            Err(ProxyError::UnsupportedTarget(format!(
+                "StubProxy has no handler for {}.{}",
+                request.interface, request.method
+            )))
+        }
+    }
+}
+
+trait HttpDriver {
+    async fn get(&self, path: &str, caller: Option<CallerContext>) -> HttpResponse;
+    async fn post(
+        &self,
+        path_and_query: &str,
+        body: Vec<u8>,
+        caller: Option<CallerContext>,
+    ) -> HttpResponse;
+}
+
+fn split_path_and_query(path_and_query: &str) -> (String, String) {
+    if let Some((p, q)) = path_and_query.split_once('?') {
+        (p.to_string(), q.to_string())
+    } else {
+        (path_and_query.to_string(), String::new())
+    }
+}
+
+struct WasmHttpDriver {
+    engine: Arc<AppSandboxEngine>,
+}
+
+impl HttpDriver for WasmHttpDriver {
+    async fn get(&self, path: &str, caller: Option<CallerContext>) -> HttpResponse {
+        let (path_str, query_str) = split_path_and_query(path);
+        let req = HttpRequest {
+            method: "GET".to_string(),
+            path: path_str.clone(),
+            query: query_str,
+            route: path_str,
+            path_params: vec![],
+            headers: vec![],
+            body: vec![],
+            caller: caller.as_ref().map(|c| CallerIdentity {
+                did: c.caller_did.clone(),
+                auth: if matches!(c.auth, AuthLevel::Ucan) {
+                    CallerAuth::Ucan
+                } else {
+                    CallerAuth::SelfAsserted
+                },
+                app_instance: c.app_instance.clone(),
+            }),
+        };
+        match self.engine.handle_guest_http_request(SERVICE_ID, &req, caller).await {
+            Ok(GuestHttpOutcome::Response(r)) => r,
+            Ok(GuestHttpOutcome::Failed(f)) => panic!("wasm http driver failure: {f:?}"),
+            Err(e) => panic!("wasm http driver error: {e:?}"),
+        }
+    }
+
+    async fn post(
+        &self,
+        path_and_query: &str,
+        body: Vec<u8>,
+        caller: Option<CallerContext>,
+    ) -> HttpResponse {
+        let (path_str, query_str) = split_path_and_query(path_and_query);
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            path: path_str.clone(),
+            query: query_str,
+            route: path_str,
+            path_params: vec![],
+            headers: vec![],
+            body,
+            caller: caller.as_ref().map(|c| CallerIdentity {
+                did: c.caller_did.clone(),
+                auth: if matches!(c.auth, AuthLevel::Ucan) {
+                    CallerAuth::Ucan
+                } else {
+                    CallerAuth::SelfAsserted
+                },
+                app_instance: c.app_instance.clone(),
+            }),
+        };
+        match self.engine.handle_guest_http_request(SERVICE_ID, &req, caller).await {
+            Ok(GuestHttpOutcome::Response(r)) => r,
+            Ok(GuestHttpOutcome::Failed(f)) => panic!("wasm http driver failure: {f:?}"),
+            Err(e) => panic!("wasm http driver error: {e:?}"),
+        }
+    }
+}
+
+struct NativeHttpDriver {
+    adapter: Arc<NativeHttpAdapter>,
+}
+
+impl HttpDriver for NativeHttpDriver {
+    async fn get(&self, path: &str, caller: Option<CallerContext>) -> HttpResponse {
+        let (path_str, query_str) = split_path_and_query(path);
+        let req = HttpRequest {
+            method: "GET".to_string(),
+            path: path_str.clone(),
+            query: query_str,
+            route: path_str,
+            path_params: vec![],
+            headers: vec![],
+            body: vec![],
+            caller: caller.as_ref().map(|c| CallerIdentity {
+                did: c.caller_did.clone(),
+                auth: if matches!(c.auth, AuthLevel::Ucan) {
+                    CallerAuth::Ucan
+                } else {
+                    CallerAuth::SelfAsserted
+                },
+                app_instance: c.app_instance.clone(),
+            }),
+        };
+        self.adapter.handle_request(req, caller).await.expect("native http driver")
+    }
+
+    async fn post(
+        &self,
+        path_and_query: &str,
+        body: Vec<u8>,
+        caller: Option<CallerContext>,
+    ) -> HttpResponse {
+        let (path_str, query_str) = split_path_and_query(path_and_query);
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            path: path_str.clone(),
+            query: query_str,
+            route: path_str,
+            path_params: vec![],
+            headers: vec![],
+            body,
+            caller: caller.as_ref().map(|c| CallerIdentity {
+                did: c.caller_did.clone(),
+                auth: if matches!(c.auth, AuthLevel::Ucan) {
+                    CallerAuth::Ucan
+                } else {
+                    CallerAuth::SelfAsserted
+                },
+                app_instance: c.app_instance.clone(),
+            }),
+        };
+        self.adapter.handle_request(req, caller).await.expect("native http driver")
+    }
+}
+
 /// Everything one full harness setup produces, for tests that need to poke
 /// past the `Driver` abstraction (e.g. asserting on persisted storage
 /// state).
 struct Harness {
     wasm: WasmDriver,
     native: NativeDriver,
+    wasm_http: WasmHttpDriver,
+    native_http: NativeHttpDriver,
     wasm_engine: Arc<AppSandboxEngine>,
     native_factory: Arc<NativeHostFactory>,
     native_storage_provider: Arc<dyn StorageProvider>,
+    wasm_ws_senders: Arc<WebSocketSenders>,
+    native_ws_senders: Arc<WebSocketSenders>,
     /// Each stack's own `ConversationService`, for tests
     /// that drive the peer-facing side (`prekey_bundle`/`peer_deliver`)
     /// directly rather than through the guest `run()` surface.
@@ -244,6 +426,7 @@ struct Harness {
     /// (as `PEER_SERVICE_ID`), and vice versa.
     _wasm_peer_proxy: Arc<PeerProxy>,
     _native_peer_proxy: Arc<PeerProxy>,
+    _stub_proxy: Arc<StubProxy>,
     // Dropped last (declaration order), after everything that might still
     // have files open under them.
     _wasm_dir: tempfile::TempDir,
@@ -275,9 +458,17 @@ async fn harness() -> Harness {
     let wasm_dir = tempfile::tempdir().unwrap();
     let native_dir = tempfile::tempdir().unwrap();
 
-    let (wasm_engine, wasm_conversation) = build_wasm_stack(wasm_dir.path(), &wasm_bytes).await;
-    let (native_fixture, native_factory, native_storage_provider, native_conversation) =
-        build_native_stack(native_dir.path()).await;
+    let stub_proxy = Arc::new(StubProxy);
+    let (wasm_engine, wasm_conversation, wasm_ws_senders) =
+        build_wasm_stack(wasm_dir.path(), &wasm_bytes, &stub_proxy).await;
+    let (
+        native_fixture,
+        native_factory,
+        native_storage_provider,
+        native_conversation,
+        native_http_adapter,
+        native_ws_senders,
+    ) = build_native_stack(native_dir.path(), &stub_proxy).await;
 
     // Each stack calls out through a proxy that reaches straight into the
     // *other* stack's own `ConversationService` -- see `PeerProxy`.
@@ -290,13 +481,18 @@ async fn harness() -> Harness {
     Harness {
         wasm: WasmDriver { engine: wasm_engine.clone() },
         native: NativeDriver { fixture: native_fixture },
+        wasm_http: WasmHttpDriver { engine: wasm_engine.clone() },
+        native_http: NativeHttpDriver { adapter: native_http_adapter },
         wasm_engine,
         native_factory,
         native_storage_provider,
+        wasm_ws_senders,
+        native_ws_senders,
         wasm_conversation,
         native_conversation,
         _wasm_peer_proxy: wasm_peer_proxy,
         _native_peer_proxy: native_peer_proxy,
+        _stub_proxy: stub_proxy,
         _wasm_dir: wasm_dir,
         _native_dir: native_dir,
     }
@@ -322,7 +518,7 @@ fn test_conversation_service(
             dlq_max_rows: 100,
             max_pending_rows: 1000,
         },
-        syneroym_conversation::ConversationConfig::default(),
+        ConversationConfig::default(),
     )
     .unwrap()
 }
@@ -334,30 +530,25 @@ fn test_conversation_service(
 /// every existing group op either targets `self` (refused earlier) or a
 /// group with no other member (skipped before any outbound call).
 async fn install_outbound_identity(registry: &EndpointRegistry, service_id: &str) {
-    let master = syneroym_identity::Identity::generate().unwrap();
-    let instance = syneroym_identity::Identity::generate().unwrap();
-    let mut cert = syneroym_identity::DelegationCertificate::issue(
+    let master = Identity::generate().unwrap();
+    let instance = Identity::generate().unwrap();
+    let mut cert = DelegationCertificate::issue(
         &master,
         instance.public_key(),
         3600,
-        syneroym_identity::delegation::SCOPE_SERVICE_INSTANCE.to_string(),
+        SCOPE_SERVICE_INSTANCE.to_string(),
     )
     .unwrap();
     cert.temporary_did = service_id.to_string();
     registry.set_instance_cert(service_id.to_string(), cert).await.unwrap();
-    registry
-        .set_owner(
-            service_id.to_string(),
-            syneroym_identity::substrate::derive_did_key(&master.public_key()),
-        )
-        .await
-        .unwrap();
+    registry.set_owner(service_id.to_string(), derive_did_key(&master.public_key())).await.unwrap();
 }
 
 async fn build_wasm_stack(
     dir: &Path,
     wasm_bytes: &[u8],
-) -> (Arc<AppSandboxEngine>, Arc<ConversationService>) {
+    stub_proxy: &Arc<StubProxy>,
+) -> (Arc<AppSandboxEngine>, Arc<ConversationService>, Arc<WebSocketSenders>) {
     let mut config = SubstrateConfig {
         app_local_data_dir: dir.join("data"),
         app_data_dir: dir.join("user_data"),
@@ -369,8 +560,9 @@ async fn build_wasm_stack(
     config.resolve_paths();
 
     let key_store = Arc::new(KeyStore::new());
+    key_store.inject_kek([0x42; 32]).expect("inject kek");
     let storage_provider: Arc<dyn StorageProvider> =
-        Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, false).unwrap());
+        Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, true).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     // `MqttBroker::new` opens no listener, so a second in-process instance
@@ -378,6 +570,42 @@ async fn build_wasm_stack(
     let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
     install_outbound_identity(&registry, SERVICE_ID).await;
+
+    let app_instance = AppInstanceId::new("test-app");
+    let sibling_name = LogicalServiceName::new("sibling");
+    let inventory = Arc::new(StaticInventory::new());
+    inventory.register(
+        TopologyKey::local(app_instance.clone(), sibling_name),
+        TopologyEntry {
+            mode: TopologyMode::Singleton,
+            members: vec![ServiceId::new("did:key:zSiblingMember")],
+            sharding_strategy: None,
+            epoch: TopologyEpoch(1),
+            cache_ttl: Duration::from_secs(60),
+            not_after: None,
+        },
+    );
+    let resolver = Arc::new(LogicalResolver::new(inventory));
+    registry
+        .set_app_context(SERVICE_ID.to_string(), app_instance.to_string(), "self".to_string())
+        .await
+        .unwrap();
+
+    storage_provider
+        .save_config_generation(
+            SERVICE_ID,
+            r#"{"greeting":"hello","db.host":"x","db.port":"5432"}"#,
+        )
+        .await
+        .unwrap();
+    storage_provider
+        .open_service_db(SERVICE_ID, &key_store)
+        .await
+        .unwrap()
+        .write_secret("known", b"top-secret")
+        .await
+        .unwrap();
+
     let conversation =
         test_conversation_service(storage_provider.clone(), key_store.clone(), registry.clone());
 
@@ -390,45 +618,89 @@ async fn build_wasm_stack(
             blob_provider,
             broker,
             registry,
-            syneroym_app_orchestration::empty_resolver(),
+            resolver,
         )
         .await
         .unwrap(),
     );
     engine.self_weak.set(Arc::downgrade(&engine)).expect("self_weak set once");
+    let ws_senders = WebSocketSenders::new();
+    engine.websocket_senders.set(ws_senders.clone()).expect("set ws senders");
+    engine
+        .service_proxy
+        .set(Arc::downgrade(stub_proxy) as Weak<dyn ServiceProxy>)
+        .expect("set service proxy");
     engine
         .conversation
-        .set(Arc::downgrade(&conversation) as std::sync::Weak<dyn syneroym_rpc::ConversationHost>)
+        .set(Arc::downgrade(&conversation) as Weak<dyn ConversationHost>)
         .expect("conversation set once");
-    conversation.set_notifier(
-        Arc::downgrade(&engine) as std::sync::Weak<dyn syneroym_rpc::ConversationNotifier>
-    );
+    conversation.set_notifier(Arc::downgrade(&engine) as Weak<dyn ConversationNotifier>);
     engine.deploy_wasm(SERVICE_ID, &wasm_deploy_manifest(wasm_bytes.to_vec())).await.unwrap();
-    (engine, conversation)
+    (engine, conversation, ws_senders)
 }
 
 type NativeStack = (
-    Arc<NativeFixture<syneroym_app_host_native::NativeAppHost>>,
+    Arc<NativeFixture<NativeAppHost>>,
     Arc<NativeHostFactory>,
     Arc<dyn StorageProvider>,
     Arc<ConversationService>,
+    Arc<NativeHttpAdapter>,
+    Arc<WebSocketSenders>,
 );
 
-async fn build_native_stack(dir: &Path) -> NativeStack {
+async fn build_native_stack(dir: &Path, stub_proxy: &Arc<StubProxy>) -> NativeStack {
     let key_store = Arc::new(KeyStore::new());
+    key_store.inject_kek([0x42; 32]).expect("inject kek");
     let storage_provider: Arc<dyn StorageProvider> =
-        Arc::new(SqliteStorageProvider::new(dir.join("data"), false).unwrap());
+        Arc::new(SqliteStorageProvider::new(dir.join("data"), true).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let endpoint_registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
     install_outbound_identity(&endpoint_registry, SERVICE_ID).await;
+
+    let app_instance = AppInstanceId::new("test-app");
+    let sibling_name = LogicalServiceName::new("sibling");
+    let inventory = Arc::new(StaticInventory::new());
+    inventory.register(
+        TopologyKey::local(app_instance.clone(), sibling_name),
+        TopologyEntry {
+            mode: TopologyMode::Singleton,
+            members: vec![ServiceId::new("did:key:zSiblingMember")],
+            sharding_strategy: None,
+            epoch: TopologyEpoch(1),
+            cache_ttl: Duration::from_secs(60),
+            not_after: None,
+        },
+    );
+    let resolver = Arc::new(LogicalResolver::new(inventory));
+    endpoint_registry
+        .set_app_context(SERVICE_ID.to_string(), app_instance.to_string(), "self".to_string())
+        .await
+        .unwrap();
+
+    storage_provider
+        .save_config_generation(
+            SERVICE_ID,
+            r#"{"greeting":"hello","db.host":"x","db.port":"5432"}"#,
+        )
+        .await
+        .unwrap();
+    storage_provider
+        .open_service_db(SERVICE_ID, &key_store)
+        .await
+        .unwrap()
+        .write_secret("known", b"top-secret")
+        .await
+        .unwrap();
+
     let conversation = test_conversation_service(
         storage_provider.clone(),
         key_store.clone(),
         endpoint_registry.clone(),
     );
 
+    let ws_senders = WebSocketSenders::new();
     let factory = NativeHostFactory::new(
         SERVICE_ID.to_string(),
         key_store,
@@ -436,15 +708,26 @@ async fn build_native_stack(dir: &Path) -> NativeStack {
         blob_provider,
         broker,
         endpoint_registry,
-        syneroym_app_orchestration::empty_resolver(),
+        resolver,
         conversation.clone(),
+        ws_senders.clone(),
     );
     let f = factory.clone();
     let fixture =
         Arc::new(NativeFixture::new(SERVICE_ID.to_string(), move |caller| f.host_for(caller)));
+    factory.set_service_proxy(Arc::downgrade(stub_proxy) as Weak<dyn ServiceProxy>);
     factory.set_sink(Arc::downgrade(&fixture) as Weak<dyn MessageSink>);
     factory.set_conversation_sink(Arc::downgrade(&fixture) as Weak<dyn ConversationSink>);
-    (fixture, factory, storage_provider, conversation)
+    factory.set_http_sink(Arc::downgrade(&fixture) as Weak<dyn HttpSink>);
+    factory.set_websocket_sink(Arc::downgrade(&fixture) as Weak<dyn WebSocketSink>);
+
+    let adapter = Arc::new(NativeHttpAdapter::new(
+        factory.clone(),
+        Arc::downgrade(&fixture) as Weak<dyn HttpSink>,
+        Arc::downgrade(&fixture) as Weak<dyn WebSocketSink>,
+    ));
+
+    (fixture, factory, storage_provider, conversation, adapter, ws_senders)
 }
 
 /// Sequential-body scenarios only: everything here completes within one
@@ -469,8 +752,8 @@ const SCENARIOS: &[(&str, &str)] = &[
     // peer_address)` alone -- deterministic, so unlike `send-message`
     // (whose message id includes a random nonce) it belongs in this
     // byte-comparison table.
-    ("open-conversation", r#"{"op":"open-conversation","peer_address":"peer-parity-scenario"}"#),
     ("list-conversations", r#"{"op":"list-conversations"}"#),
+    ("open-conversation", r#"{"op":"open-conversation","peer_address":"peer-parity-scenario"}"#),
     // `retry`/`delivery-status`/`read-history` against an id that was never
     // created are deterministic error shapes too.
     ("retry-unknown", r#"{"op":"retry-message","message":"msg:does-not-exist"}"#),
@@ -486,6 +769,23 @@ const SCENARIOS: &[(&str, &str)] = &[
     ),
     ("sync-now-unknown", r#"{"op":"sync-now","conversation":"conv:does-not-exist"}"#),
     ("read-outbox-empty", r#"{"op":"read-outbox"}"#),
+    (
+        "proxy-call-self",
+        r#"{"op":"proxy-call-self","service_id":"dual-build-fixture-parity","interface":"greeter","method":"greet","params":"{}"}"#,
+    ),
+    (
+        "proxy-call-dependency",
+        r#"{"op":"proxy-call-dependency","name":"sibling","interface":"greeter","method":"greet","params":"{}"}"#,
+    ),
+    ("proxy-unbound-dependency", r#"{"op":"proxy-call-unbound-dependency","name":"nope"}"#),
+    ("proxy-enqueue-no-key", r#"{"op":"proxy-enqueue-no-key","name":"sibling"}"#),
+    ("proxy-enqueue-empty-key", r#"{"op":"proxy-enqueue-empty-key","name":"sibling"}"#),
+    ("read-config", r#"{"op":"read-config","key":"greeting"}"#),
+    ("read-config-missing", r#"{"op":"read-config","key":"absent"}"#),
+    ("read-config-section", r#"{"op":"read-config-section","prefix":"db"}"#),
+    ("reveal-secret", r#"{"op":"reveal-secret","key":"known"}"#),
+    ("reveal-secret-missing", r#"{"op":"reveal-secret","key":"absent"}"#),
+    ("ws-send-unknown-conn", r#"{"op":"ws-send","conn":"nope","body":"hi"}"#),
 ];
 
 async fn scenarios<D: Driver>(d: &D) -> Vec<(&'static str, String)> {
@@ -779,7 +1079,7 @@ async fn assert_create_group<D: Driver>(name: &str, driver: &D) {
         .await
         .unwrap();
     let history_v: Value = serde_json::from_str(&history_res).unwrap();
-    let events = history_v["ok"]["events"].as_array().unwrap();
+    let events = history_v["ok"]["history"].as_array().unwrap();
     assert_eq!(events.len(), 1, "{name}: genesis membership entry must exist");
     assert_eq!(events[0]["action"], "add");
     assert_eq!(events[0]["subject"], SERVICE_ID);
@@ -882,7 +1182,7 @@ async fn assert_group_add_member_send_and_history_on_a_populated_group<D: Driver
         .await
         .unwrap();
     let history_v: Value = serde_json::from_str(&history_res).unwrap();
-    let events = history_v["ok"]["events"].as_array().unwrap();
+    let events = history_v["ok"]["history"].as_array().unwrap();
     assert_eq!(
         events.len(),
         2,
@@ -914,7 +1214,7 @@ const SENDER_ADDRESS: &str = "external-peer-address";
 
 async fn assert_signed_delivery_is_verified_and_notifies_the_app<D: Driver>(
     name: &str,
-    target_conversation: &syneroym_conversation::ConversationService,
+    target_conversation: &ConversationService,
     driver: &D,
 ) {
     use syneroym_conversation::{
@@ -1040,9 +1340,353 @@ async fn a_signed_delivery_from_an_external_peer_is_verified_and_notifies_the_ap
     .await;
 }
 
+#[tokio::test]
+async fn both_builds_answer_an_http_request_identically() {
+    let h = harness().await;
+    let wasm_resp = h.wasm_http.get("/echo", Some(caller())).await;
+    let native_resp = h.native_http.get("/echo", Some(caller())).await;
+    assert_eq!(wasm_resp.status, 200);
+    assert_eq!(native_resp.status, 200);
+    assert_eq!(wasm_resp.body, native_resp.body);
+    assert_eq!(wasm_resp.headers, native_resp.headers);
+}
+
+#[tokio::test]
+async fn both_builds_persist_host_state_from_an_http_request_identically() {
+    let h = harness().await;
+    let wasm_resp = h
+        .wasm_http
+        .post("/store?item1", b"{\"data\":\"stored-via-http\"}".to_vec(), Some(caller()))
+        .await;
+    let native_resp = h
+        .native_http
+        .post("/store?item1", b"{\"data\":\"stored-via-http\"}".to_vec(), Some(caller()))
+        .await;
+    assert_eq!(wasm_resp.status, 200);
+    assert_eq!(native_resp.status, 200);
+    assert_eq!(wasm_resp.body, b"stored");
+    assert_eq!(native_resp.body, b"stored");
+
+    // Read back the persisted state via run() on both builds
+    let wasm_res = h.wasm.run(r#"{"op":"read-http-store"}"#).await.unwrap();
+    let native_res = h.native.run(r#"{"op":"read-http-store"}"#).await.unwrap();
+    assert_eq!(wasm_res, native_res);
+
+    let parsed: Value = serde_json::from_str(&wasm_res).unwrap();
+    let entries = parsed["ok"]["entries"].as_array().expect("entries array in http store");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["id"], "item1");
+    assert_eq!(entries[0]["payload"], "{\"data\":\"stored-via-http\"}");
+}
+
+#[tokio::test]
+async fn both_builds_render_the_same_caller_for_a_delegated_request() {
+    let h = harness().await;
+    let wasm_resp = h.wasm_http.get("/whoami", Some(caller())).await;
+    let native_resp = h.native_http.get("/whoami", Some(caller())).await;
+    assert_eq!(wasm_resp.status, 200);
+    assert_eq!(native_resp.status, 200);
+    assert_eq!(wasm_resp.body, native_resp.body);
+}
+
+#[tokio::test]
+async fn both_builds_substitute_the_service_itself_for_an_anonymous_public_request() {
+    let h = harness().await;
+    let wasm_resp = h.wasm_http.get("/whoami", None).await;
+    let native_resp = h.native_http.get("/whoami", None).await;
+    assert_eq!(wasm_resp.status, 200);
+    assert_eq!(native_resp.status, 200);
+    assert_eq!(wasm_resp.body, native_resp.body);
+    assert_eq!(String::from_utf8_lossy(&wasm_resp.body), "anonymous");
+}
+
+#[tokio::test]
+async fn a_guest_rejection_is_an_ok_with_a_4xx_on_both_builds() {
+    let h = harness().await;
+    let wasm_resp = h.wasm_http.get("/reject", Some(caller())).await;
+    let native_resp = h.native_http.get("/reject", Some(caller())).await;
+    assert_eq!(wasm_resp.status, 403);
+    assert_eq!(native_resp.status, 403);
+    assert_eq!(wasm_resp.body, native_resp.body);
+}
+
+#[tokio::test]
+async fn a_handler_failure_is_an_err_on_both_builds() {
+    let h = harness().await;
+    let req = HttpRequest {
+        method: "GET".to_string(),
+        path: "/fail".to_string(),
+        query: String::new(),
+        route: "/fail".to_string(),
+        path_params: vec![],
+        headers: vec![],
+        body: vec![],
+        caller: Some(CallerIdentity {
+            did: caller().caller_did,
+            auth: CallerAuth::Delegated,
+            app_instance: None,
+        }),
+    };
+    let wasm_res = h.wasm_engine.handle_guest_http_request(SERVICE_ID, &req, Some(caller())).await;
+    assert!(matches!(wasm_res, Ok(GuestHttpOutcome::Failed(_)) | Err(_)));
+    let native_res = h.native_http.adapter.handle_request(req, Some(caller())).await;
+    assert!(native_res.is_err());
+}
+
+#[tokio::test]
+async fn both_builds_deliver_websocket_frames_to_the_app() {
+    let h = harness().await;
+    // WASM
+    h.wasm_engine.handle_websocket_on_open(SERVICE_ID, "ws-c1", Some(caller())).await;
+    h.wasm_engine
+        .handle_websocket_on_message(
+            SERVICE_ID,
+            "ws-c1",
+            b"frame1".to_vec(),
+            FrameKind::Text,
+            Some(caller()),
+        )
+        .await;
+    h.wasm_engine
+        .handle_websocket_on_message(
+            SERVICE_ID,
+            "ws-c1",
+            b"frame1".to_vec(),
+            FrameKind::Text,
+            Some(caller()),
+        )
+        .await;
+    h.wasm_engine
+        .handle_websocket_on_message(
+            SERVICE_ID,
+            "ws-c1",
+            b"frame2".to_vec(),
+            FrameKind::Text,
+            Some(caller()),
+        )
+        .await;
+    h.wasm_engine.handle_websocket_on_close(SERVICE_ID, "ws-c1", Some(caller())).await;
+    let wasm_log = h.wasm.run(r#"{"op":"read-ws-log"}"#).await.unwrap();
+
+    // Native
+    h.native_http.adapter.on_websocket_open("ws-c1".to_string(), Some(caller())).await;
+    h.native_http
+        .adapter
+        .on_websocket_message(
+            "ws-c1".to_string(),
+            b"frame1".to_vec(),
+            FrameKind::Text,
+            Some(caller()),
+        )
+        .await;
+    h.native_http
+        .adapter
+        .on_websocket_message(
+            "ws-c1".to_string(),
+            b"frame1".to_vec(),
+            FrameKind::Text,
+            Some(caller()),
+        )
+        .await;
+    h.native_http
+        .adapter
+        .on_websocket_message(
+            "ws-c1".to_string(),
+            b"frame2".to_vec(),
+            FrameKind::Text,
+            Some(caller()),
+        )
+        .await;
+    h.native_http.adapter.on_websocket_close("ws-c1".to_string(), Some(caller())).await;
+    let native_log = h.native.run(r#"{"op":"read-ws-log"}"#).await.unwrap();
+
+    assert_eq!(wasm_log, native_log);
+    let parsed: serde_json::Value = serde_json::from_str(&wasm_log).expect("parse wasm_log");
+    let events = parsed["ok"]["events"].as_array().expect("events array");
+    assert_eq!(events.len(), 5); // open + 3 messages + close
+}
+
+#[tokio::test]
+async fn both_builds_push_a_frame_to_a_live_connection() {
+    let h = harness().await;
+    let mut rx_wasm = h.wasm_ws_senders.register(SERVICE_ID, "live-conn");
+    let mut rx_native = h.native_ws_senders.register(SERVICE_ID, "live-conn");
+
+    let wasm_res =
+        h.wasm.run(r#"{"op":"ws-send","conn":"live-conn","body":"msg-to-live"}"#).await.unwrap();
+    let native_res =
+        h.native.run(r#"{"op":"ws-send","conn":"live-conn","body":"msg-to-live"}"#).await.unwrap();
+    assert_eq!(wasm_res, native_res);
+
+    let msg_wasm = rx_wasm.recv().await.unwrap();
+    let msg_native = rx_native.recv().await.unwrap();
+    assert_eq!(msg_wasm, msg_native);
+}
+
+#[tokio::test]
+async fn a_dependency_resolves_to_the_same_target_on_both_builds() {
+    let h = harness().await;
+    let wasm_res = h
+        .wasm
+        .run(r#"{"op":"proxy-call-dependency","name":"sibling","interface":"greeter","method":"greet","params":"{}"}"#)
+        .await
+        .unwrap();
+    let native_res = h
+        .native
+        .run(r#"{"op":"proxy-call-dependency","name":"sibling","interface":"greeter","method":"greet","params":"{}"}"#)
+        .await
+        .unwrap();
+    assert_eq!(wasm_res, native_res);
+}
+
+#[tokio::test]
+async fn an_enqueue_without_an_idempotency_key_is_refused_identically() {
+    let h = harness().await;
+    let wasm_res = h.wasm.run(r#"{"op":"proxy-enqueue-no-key","name":"sibling"}"#).await.unwrap();
+    let native_res =
+        h.native.run(r#"{"op":"proxy-enqueue-no-key","name":"sibling"}"#).await.unwrap();
+    assert_eq!(wasm_res, native_res);
+}
+
+#[tokio::test]
+async fn both_builds_read_the_same_config_generation() {
+    let h = harness().await;
+    let wasm_res1 = h.wasm.run(r#"{"op":"read-config","key":"greeting"}"#).await.unwrap();
+    let native_res1 = h.native.run(r#"{"op":"read-config","key":"greeting"}"#).await.unwrap();
+    assert_eq!(wasm_res1, native_res1);
+
+    h.wasm_engine
+        .storage_provider
+        .save_config_generation(SERVICE_ID, r#"{"greeting":"hello generation 2"}"#)
+        .await
+        .unwrap();
+    h.native_storage_provider
+        .save_config_generation(SERVICE_ID, r#"{"greeting":"hello generation 2"}"#)
+        .await
+        .unwrap();
+
+    let wasm_res2 = h.wasm.run(r#"{"op":"read-config","key":"greeting"}"#).await.unwrap();
+    let native_res2 = h.native.run(r#"{"op":"read-config","key":"greeting"}"#).await.unwrap();
+    assert_eq!(wasm_res2, native_res2);
+    let v: Value = serde_json::from_str(&wasm_res2).unwrap();
+    assert_eq!(v["ok"]["value"], "hello generation 2");
+}
+
+fn abac_policy() -> String {
+    r#"{
+        "version": "fdae/v1",
+        "definitions": {
+            "profiles": {
+                "table": "profiles",
+                "principal_column": "creator_uuid",
+                "permissions": {
+                    "view": {
+                        "allows": ["data-layer/read"],
+                        "paths": [["caller"]],
+                        "authorize_rows": true
+                    }
+                }
+            }
+        }
+    }"#
+    .to_string()
+}
+
+#[tokio::test]
+async fn a_cached_fdae_policy_can_be_invalidated_and_reloaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_store = Arc::new(KeyStore::new());
+    key_store.inject_kek([0x42; 32]).expect("inject kek");
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(dir.path().join("data"), true).unwrap());
+    {
+        let service_store = storage_provider.open_service_db(SERVICE_ID, &key_store).await.unwrap();
+        service_store
+            .create_collection(&DbCollectionSchema {
+                name: "profiles".to_string(),
+                indexes: vec![],
+            })
+            .await
+            .unwrap();
+    }
+    // Initially no policy -> write succeeds
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let endpoint_registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+    install_outbound_identity(&endpoint_registry, SERVICE_ID).await;
+
+    let app_instance = AppInstanceId::new("test-app");
+    let sibling_name = LogicalServiceName::new("sibling");
+    let inventory = Arc::new(StaticInventory::new());
+    inventory.register(
+        TopologyKey::local(app_instance.clone(), sibling_name),
+        TopologyEntry {
+            mode: TopologyMode::Singleton,
+            members: vec![ServiceId::new("did:key:zSiblingMember")],
+            sharding_strategy: None,
+            epoch: TopologyEpoch(1),
+            cache_ttl: Duration::from_secs(60),
+            not_after: None,
+        },
+    );
+    let resolver = Arc::new(LogicalResolver::new(inventory));
+    endpoint_registry
+        .set_app_context(SERVICE_ID.to_string(), app_instance.to_string(), "self".to_string())
+        .await
+        .unwrap();
+
+    let conversation = test_conversation_service(
+        storage_provider.clone(),
+        key_store.clone(),
+        endpoint_registry.clone(),
+    );
+    let stub = Arc::new(StubProxy);
+    let factory = NativeHostFactory::new(
+        SERVICE_ID.to_string(),
+        key_store,
+        storage_provider.clone(),
+        blob_provider,
+        broker,
+        endpoint_registry,
+        resolver,
+        conversation,
+        WebSocketSenders::new(),
+    );
+    factory.set_service_proxy(Arc::downgrade(&stub) as Weak<dyn ServiceProxy>);
+
+    let host1 = factory.host_for(caller());
+    let res1 = host1
+        .put(
+            "profiles".to_string(),
+            RecordWriteValue { id: "p1".to_string(), payload: b"{}".to_vec() },
+        )
+        .await;
+    assert!(res1.is_ok());
+
+    // Now save an ABAC policy into storage. Because policy is cached as None,
+    // it would still be None without invalidation.
+    storage_provider.save_fdae_policy(SERVICE_ID, &abac_policy()).await.unwrap();
+
+    // Invalidate FDAE policy cache and bump generation
+    factory.invalidate_fdae_policy().await;
+
+    // Fresh host should now reload policy from storage and deny write under ABAC
+    let host2 = factory.host_for(caller());
+    let res2 = host2
+        .put(
+            "profiles".to_string(),
+            RecordWriteValue { id: "p2".to_string(), payload: b"{}".to_vec() },
+        )
+        .await;
+    assert!(res2.is_err());
+}
+
 /// Permitted differences between the two builds, asserted explicitly rather
 /// than left latent.
 mod permitted_differences {
+    use syneroym_app_host::{AppBlobStore, AppBlobWriter};
+
     use super::*;
 
     /// Resource lifetime: a fresh `HostState` (and therefore a fresh
@@ -1057,8 +1701,8 @@ mod permitted_differences {
     #[tokio::test]
     async fn each_native_invocation_gets_a_fresh_resource_table() {
         let dir = tempfile::tempdir().unwrap();
-        let (_, factory, _, _) = build_native_stack(dir.path()).await;
-        use syneroym_app_host::{AppBlobStore, AppBlobWriter};
+        let stub = Arc::new(StubProxy);
+        let (_, factory, _, _, _, _) = build_native_stack(dir.path(), &stub).await;
 
         let host_a = factory.host_for(caller());
         let writer_a = host_a.open_upload().await.unwrap();
@@ -1115,5 +1759,246 @@ mod permitted_differences {
         let native_rows =
             h.native_storage_provider.list_all_messaging_subscriptions().await.unwrap();
         assert!(native_rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_policy_with_abac_permissions_fails_closed_on_the_native_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = Arc::new(StubProxy);
+        let (_, factory, storage_provider, _, _, _) = build_native_stack(dir.path(), &stub).await;
+        storage_provider.save_fdae_policy(SERVICE_ID, &abac_policy()).await.unwrap();
+
+        let host = factory.host_for(caller());
+        use syneroym_app_host::AppDataLayer;
+        let res = host.get("profiles".to_string(), "owned-by-alice".to_string()).await;
+        assert!(res.is_err(), "native build should fail closed on ABAC policies");
+    }
+
+    struct TransientFdaeStorage {
+        inner: Arc<dyn StorageProvider>,
+        failed_once: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl StorageProvider for TransientFdaeStorage {
+        async fn open_service_db(
+            &self,
+            service_id: &str,
+            key_store: &Arc<KeyStore>,
+        ) -> anyhow::Result<Box<dyn syneroym_data_db::traits::ServiceStore>> {
+            self.inner.open_service_db(service_id, key_store).await
+        }
+
+        async fn rotate_kek(
+            &self,
+            key_store: &Arc<KeyStore>,
+            new_kek: [u8; 32],
+        ) -> anyhow::Result<()> {
+            self.inner.rotate_kek(key_store, new_kek).await
+        }
+
+        async fn load_service_dek(
+            &self,
+            service_id: &str,
+            key_store: &Arc<KeyStore>,
+        ) -> anyhow::Result<Option<zeroize::Zeroizing<[u8; 32]>>> {
+            self.inner.load_service_dek(service_id, key_store).await
+        }
+
+        async fn service_exists(&self, service_id: &str) -> anyhow::Result<bool> {
+            self.inner.service_exists(service_id).await
+        }
+
+        async fn save_config_generation(
+            &self,
+            service_id: &str,
+            config_blob: &str,
+        ) -> anyhow::Result<u64> {
+            self.inner.save_config_generation(service_id, config_blob).await
+        }
+
+        async fn delete_config_generation(
+            &self,
+            service_id: &str,
+            generation: u64,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_config_generation(service_id, generation).await
+        }
+
+        async fn get_config_generation(
+            &self,
+            service_id: &str,
+            generation: u64,
+        ) -> anyhow::Result<Option<String>> {
+            self.inner.get_config_generation(service_id, generation).await
+        }
+
+        async fn get_latest_config_generation(
+            &self,
+            service_id: &str,
+        ) -> anyhow::Result<Option<(u64, String)>> {
+            self.inner.get_latest_config_generation(service_id).await
+        }
+
+        async fn save_messaging_subscription(
+            &self,
+            service_id: &str,
+            topic: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.save_messaging_subscription(service_id, topic).await
+        }
+
+        async fn delete_messaging_subscription(
+            &self,
+            service_id: &str,
+            topic: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_messaging_subscription(service_id, topic).await
+        }
+
+        async fn delete_all_messaging_subscriptions_for_service(
+            &self,
+            service_id: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_all_messaging_subscriptions_for_service(service_id).await
+        }
+
+        async fn list_all_messaging_subscriptions(&self) -> anyhow::Result<Vec<(String, String)>> {
+            self.inner.list_all_messaging_subscriptions().await
+        }
+
+        async fn save_fdae_policy(
+            &self,
+            service_id: &str,
+            policy_json: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.save_fdae_policy(service_id, policy_json).await
+        }
+
+        async fn load_fdae_policy(&self, service_id: &str) -> anyhow::Result<Option<String>> {
+            if self.failed_once.fetch_and(false, Ordering::SeqCst) {
+                anyhow::bail!("transient storage error");
+            }
+            self.inner.load_fdae_policy(service_id).await
+        }
+
+        async fn delete_fdae_policy(&self, service_id: &str) -> anyhow::Result<()> {
+            self.inner.delete_fdae_policy(service_id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_transient_fdae_policy_load_failure_is_not_memoized() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_store = Arc::new(KeyStore::new());
+        key_store.inject_kek([0x42; 32]).expect("inject kek");
+        let raw_storage =
+            Arc::new(SqliteStorageProvider::new(dir.path().join("data"), true).unwrap());
+        {
+            let service_store = raw_storage.open_service_db(SERVICE_ID, &key_store).await.unwrap();
+            service_store
+                .create_collection(&DbCollectionSchema {
+                    name: "profiles".to_string(),
+                    indexes: vec![],
+                })
+                .await
+                .unwrap();
+            service_store
+                .put(
+                    "profiles",
+                    &DbRecordWriteValue {
+                        id: "owned-by-alice".to_string(),
+                        payload: br#"{"creator_uuid":"did:key:zParityTestCaller"}"#.to_vec(),
+                    },
+                    &caller().caller_did,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        raw_storage.save_fdae_policy(SERVICE_ID, &abac_policy()).await.unwrap();
+
+        let storage_provider: Arc<dyn StorageProvider> = Arc::new(TransientFdaeStorage {
+            inner: raw_storage,
+            failed_once: std::sync::atomic::AtomicBool::new(true),
+        });
+
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let endpoint_registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+        install_outbound_identity(&endpoint_registry, SERVICE_ID).await;
+
+        let app_instance = AppInstanceId::new("test-app");
+        let sibling_name = LogicalServiceName::new("sibling");
+        let inventory = Arc::new(StaticInventory::new());
+        inventory.register(
+            TopologyKey::local(app_instance.clone(), sibling_name),
+            TopologyEntry {
+                mode: TopologyMode::Singleton,
+                members: vec![ServiceId::new("did:key:zSiblingMember")],
+                sharding_strategy: None,
+                epoch: TopologyEpoch(1),
+                cache_ttl: Duration::from_secs(60),
+                not_after: None,
+            },
+        );
+        let resolver = Arc::new(LogicalResolver::new(inventory));
+        endpoint_registry
+            .set_app_context(SERVICE_ID.to_string(), app_instance.to_string(), "self".to_string())
+            .await
+            .unwrap();
+
+        let conversation = test_conversation_service(
+            storage_provider.clone(),
+            key_store.clone(),
+            endpoint_registry.clone(),
+        );
+        let stub = Arc::new(StubProxy);
+        let factory = NativeHostFactory::new(
+            SERVICE_ID.to_string(),
+            key_store,
+            storage_provider,
+            blob_provider,
+            broker,
+            endpoint_registry,
+            resolver,
+            conversation,
+            WebSocketSenders::new(),
+        );
+        factory.set_service_proxy(Arc::downgrade(&stub) as Weak<dyn ServiceProxy>);
+
+        let host1 = factory.host_for(caller());
+        // First load attempts to read FDAE policy, but TransientFdaeStorage returns an
+        // Err. The error is not memoized, so host1 sees absent policy and put
+        // succeeds.
+        let res1 = host1
+            .put(
+                "profiles".to_string(),
+                RecordWriteValue { id: "p1".to_string(), payload: b"{}".to_vec() },
+            )
+            .await;
+        assert!(res1.is_ok());
+
+        let host2 = factory.host_for(caller());
+        // Second load attempts to read FDAE policy and succeeds. The ABAC policy is
+        // memoized and denies write permissions to caller.
+        let res2 = host2
+            .put(
+                "profiles".to_string(),
+                RecordWriteValue { id: "p2".to_string(), payload: b"{}".to_vec() },
+            )
+            .await;
+        assert!(res2.is_err());
+
+        let host3 = factory.host_for(caller());
+        // Third load uses the memoized policy and also denies write permissions.
+        let res3 = host3
+            .put(
+                "profiles".to_string(),
+                RecordWriteValue { id: "p3".to_string(), payload: b"{}".to_vec() },
+            )
+            .await;
+        assert!(res3.is_err());
     }
 }

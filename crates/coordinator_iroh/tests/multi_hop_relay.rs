@@ -6,6 +6,7 @@
 //! substrates across networks.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::{
+    collections::BTreeSet,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -98,6 +99,11 @@ async fn build_test_route_handler_deps(
         .self_weak
         .set(Arc::downgrade(&app_sandbox_engine))
         .map_err(|_| anyhow::anyhow!("AppSandboxEngine::self_weak set more than once"))?;
+    let websocket_senders = syneroym_rpc::WebSocketSenders::new();
+    app_sandbox_engine
+        .websocket_senders
+        .set(websocket_senders.clone())
+        .map_err(|_| anyhow::anyhow!("AppSandboxEngine::websocket_senders set more than once"))?;
 
     // Mirrors `replay_persisted_subscriptions` in
     // `syneroym_substrate::runtime` (ADR-0010 Finding A1) -- omitting this
@@ -161,12 +167,41 @@ async fn build_test_route_handler_deps(
         app_sandbox_engine,
         messaging_broker,
         native_dispatch,
+        native_http: Arc::new(DashMap::new()),
+        websocket_senders,
         http_routes,
         assets,
         sse_permits: control_plane_service.sse_permits(),
         control_plane_service: control_plane_service.clone(),
         control_plane: Some(control_plane_service),
     })
+}
+
+/// Like `create_signed_info`, but preserves direct addresses up to pkarr's
+/// 1000-byte DNS packet limit (M04A Slice A1's cross-node proxy test needs
+/// direct addresses because endpoints have no relay). We retain 2 direct
+/// addresses to guarantee the signed pkarr record fits within the 1000-byte DNS
+/// payload limit regardless of interface count.
+fn create_signed_info_with_full_addr(
+    identity: &Identity,
+    service_id: &str,
+    endpoint_addr: &EndpointAddr,
+) -> SignedEndpointInfo {
+    let pruned_addrs: BTreeSet<_> = endpoint_addr.addrs.iter().take(2).cloned().collect();
+    let pruned = EndpointAddr { id: endpoint_addr.id, addrs: pruned_addrs };
+    let endpoint_addr_bytes = serde_json::to_vec(&pruned).unwrap();
+    let info = EndpointInfo {
+        service_id: service_id.to_string(),
+        substrate_id: service_id.to_string(),
+        endpoint_type: EndpointType::Substrate,
+        nickname: Some("test-node".to_string()),
+        mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url: None }],
+        is_private: false,
+        ttl: None,
+        not_after: u64::MAX / 2,
+        generation: 0,
+    };
+    info.sign(identity).unwrap()
 }
 
 /// Minimal `DeployManifest` for `AppSandboxEngine::deploy_wasm` (M04A Slice
@@ -210,33 +245,6 @@ async fn wait_for_local_addr(ep: &Endpoint) -> EndpointAddr {
         time::sleep(Duration::from_millis(20)).await;
     }
     ep.addr()
-}
-
-/// Like `create_signed_info`, but preserves the endpoint's real direct
-/// addresses instead of pruning them to a bare `EndpointId` (M04A Slice A1's
-/// cross-node proxy test needs this: `create_signed_info`'s pruning is fine
-/// for `test_inbound_relay`/`test_outbound_relay` above, whose peers
-/// reconnect via a *relay* URL alongside the pruned id, but this test's
-/// endpoints have no relay at all -- direct addresses are the only
-/// addressing information available).
-fn create_signed_info_with_full_addr(
-    identity: &Identity,
-    service_id: &str,
-    endpoint_addr: &EndpointAddr,
-) -> SignedEndpointInfo {
-    let endpoint_addr_bytes = serde_json::to_vec(endpoint_addr).unwrap();
-    let info = EndpointInfo {
-        service_id: service_id.to_string(),
-        substrate_id: service_id.to_string(),
-        endpoint_type: EndpointType::Substrate,
-        nickname: Some("test-node".to_string()),
-        mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url: None }],
-        is_private: false,
-        ttl: None,
-        not_after: u64::MAX / 2,
-        generation: 0,
-    };
-    info.sign(identity).unwrap()
 }
 
 fn create_signed_info(

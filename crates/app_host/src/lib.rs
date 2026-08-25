@@ -20,26 +20,94 @@ pub mod guest;
 pub mod types;
 
 use types::{
+    app_config::ConfigError,
     blob_store::BlobError,
     conversation::{
         ConversationError, ConversationSummary, DeliveryState, HistoryPage, MembershipEvent,
         Message,
     },
     data_layer::*,
+    http::FrameKind,
     messaging::MessagingError,
+    proxy::{CallOptions, CallTarget, ProxyError},
+    vault::VaultError,
 };
 
 /// Everything an app may reach. One bound for an app to be generic over.
-///
-/// Requires `AppConversation`: both implementors (`GuestHost`,
-/// `NativeAppHost`) implement it for full capability access.
 pub trait AppHost:
-    AppDataLayer + AppBlobStore + AppMessaging + AppConversation + Send + Sync
+    AppDataLayer
+    + AppBlobStore
+    + AppMessaging
+    + AppConversation
+    + AppProxy
+    + AppAppConfig
+    + AppVault
+    + AppWebSocket
+    + Send
+    + Sync
 {
 }
 impl<T> AppHost for T where
-    T: AppDataLayer + AppBlobStore + AppMessaging + AppConversation + Send + Sync
+    T: AppDataLayer
+        + AppBlobStore
+        + AppMessaging
+        + AppConversation
+        + AppProxy
+        + AppAppConfig
+        + AppVault
+        + AppWebSocket
+        + Send
+        + Sync
 {
+}
+
+/// Mirrors `syneroym:proxy/proxy@0.1.0`, function for function. `saga` is
+/// deliberately absent: no consumer drives a multi-service workflow, and
+/// an untested trait is worse than a missing one.
+pub trait AppProxy {
+    fn call(
+        &self,
+        target: CallTarget,
+        interface: String,
+        method: String,
+        params: String,
+        options: Option<CallOptions>,
+    ) -> impl Future<Output = Result<String, ProxyError>> + Send;
+
+    fn enqueue(
+        &self,
+        target: CallTarget,
+        interface: String,
+        method: String,
+        params: String,
+        options: Option<CallOptions>,
+    ) -> impl Future<Output = Result<(), ProxyError>> + Send;
+}
+
+/// Mirrors `syneroym:app-config/app-config@0.1.0`.
+pub trait AppAppConfig {
+    fn get(&self, key: String) -> impl Future<Output = Result<Option<String>, ConfigError>> + Send;
+    fn get_section(
+        &self,
+        prefix: String,
+    ) -> impl Future<Output = Result<Vec<(String, String)>, ConfigError>> + Send;
+}
+
+/// Mirrors `syneroym:vault/vault@0.1.0`. One function, and it stays one:
+/// `D-06C-4` forbids using `reveal` to hand a signing key to an app.
+pub trait AppVault {
+    fn reveal(&self, key: String) -> impl Future<Output = Result<Vec<u8>, VaultError>> + Send;
+}
+
+/// Mirrors `syneroym:http/websocket@0.1.0` -- the *outbound* half of the
+/// WebSocket surface (the app pushing a frame to a live connection).
+pub trait AppWebSocket {
+    fn send(
+        &self,
+        conn: String,
+        frame: Vec<u8>,
+        kind: FrameKind,
+    ) -> impl Future<Output = Result<(), String>> + Send;
 }
 
 /// Mirrors `syneroym:data-layer/store@0.1.0`, function for function.

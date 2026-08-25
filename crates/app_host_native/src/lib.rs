@@ -8,7 +8,9 @@
 mod convert;
 mod factory;
 mod host;
+pub mod http;
 
 pub use factory::NativeHostFactory;
 pub use host::{NativeAppHost, NativeBlobReader, NativeBlobWriter};
+pub use http::{HttpSink, NativeHttpAdapter, WebSocketSink};
 pub use syneroym_app_host::{ConversationSink, MessageSink};

@@ -21,14 +21,19 @@ wit-bindgen.workspace = true
 # dependency (see its Cargo.toml): only the three interfaces this fixture's
 # `with:` remap references.
 syneroym-wit-interfaces = { path = "../../crates/wit_interfaces", default-features = false, features = [
-    "data-layer",
+    "app-config",
     "blob-store",
-    "messaging",
     "conversation",
+    "data-layer",
+    "http",
+    "messaging",
+    "proxy",
+    "vault",
 ] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 syneroym-rpc.workspace = true
+syneroym-app-host-native = { path = "../../crates/app_host_native" }
 async-trait.workspace = true
 
 [package.metadata.component.target.dependencies]
@@ -36,3 +41,7 @@ async-trait.workspace = true
 "syneroym:blob-store" = { path = "wit/deps/blob-store" }
 "syneroym:messaging" = { path = "wit/deps/messaging" }
 "syneroym:conversation" = { path = "wit/deps/conversation" }
+"syneroym:proxy" = { path = "wit/deps/proxy" }
+"syneroym:app-config" = { path = "wit/deps/app-config" }
+"syneroym:vault" = { path = "wit/deps/vault" }
+"syneroym:http" = { path = "wit/deps/http" }

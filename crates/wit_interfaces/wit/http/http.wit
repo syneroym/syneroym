@@ -150,3 +150,9 @@ interface websocket {
 world http-host {
     import websocket;
 }
+
+/// Import-only view of the host's WebSocket send capability, for
+/// bindgen consumers that push frames but do not define the handler.
+world websocket-import {
+    import websocket;
+}

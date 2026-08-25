@@ -452,9 +452,9 @@ async fn three_members_converge_to_byte_identical_transcripts() {
                 &json!({"op": "membership-history", "conversation": group_id}),
             )
             .await;
-            let mlen_a = mem_a["ok"]["events"].as_array().map_or(0, |v| v.len());
-            let mlen_b = mem_b["ok"]["events"].as_array().map_or(0, |v| v.len());
-            let mlen_c = mem_c["ok"]["events"].as_array().map_or(0, |v| v.len());
+            let mlen_a = mem_a["ok"]["history"].as_array().map_or(0, |v| v.len());
+            let mlen_b = mem_b["ok"]["history"].as_array().map_or(0, |v| v.len());
+            let mlen_c = mem_c["ok"]["history"].as_array().map_or(0, |v| v.len());
 
             len_a == 3 && len_b == 3 && len_c == 3 && mlen_a == 3 && mlen_b == 3 && mlen_c == 3
         }
@@ -528,10 +528,10 @@ async fn three_members_converge_to_byte_identical_transcripts() {
     // add. A vacuous comparison (three empty arrays, or three `null`s from a
     // failed call) must not pass — this is what let the B5-05 `member_list_hash`
     // regression through undetected.
-    let mem_a_events = mem_a["ok"]["events"].as_array().expect("membership-history events on A");
+    let mem_a_events = mem_a["ok"]["history"].as_array().expect("membership-history events on A");
     assert_eq!(mem_a_events.len(), 3, "A's membership history: {mem_a:?}");
-    assert_eq!(mem_a["ok"]["events"], mem_b["ok"]["events"]);
-    assert_eq!(mem_b["ok"]["events"], mem_c["ok"]["events"]);
+    assert_eq!(mem_a["ok"]["history"], mem_b["ok"]["history"]);
+    assert_eq!(mem_b["ok"]["history"], mem_c["ok"]["history"]);
 
     // No durable group content on the pub/sub broker
     let broker_a = fixture_run(&node_a, &did_a, &json!({"op": "read-inbox"})).await;

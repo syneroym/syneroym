@@ -52,6 +52,7 @@ async fn make_engine(dir: &Path) -> Arc<AppSandboxEngine> {
         .unwrap(),
     );
     engine.self_weak.set(Arc::downgrade(&engine)).expect("self_weak set once");
+    let _ = engine.websocket_senders.set(syneroym_rpc::WebSocketSenders::new());
     engine
 }
 
