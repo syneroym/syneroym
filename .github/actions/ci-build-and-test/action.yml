@@ -8,6 +8,18 @@ inputs:
 runs:
   using: "composite"
   steps:
+    # `syneroym-test-dual-build-fixture` is a real workspace member, so its
+    # component lands in the shared `target/wasm32-wasip2/`, which
+    # Swatinem/rust-cache restores from a previous run keyed on Cargo.lock
+    # (not on this fixture's source). A restored cache can leave Cargo's
+    # fingerprints believing a stale artifact is still up to date, so the
+    # dual-build parity suite ends up comparing today's native build against
+    # yesterday's wasm one. Wipe this one target triple before building it
+    # so the fixture is always compiled fresh, regardless of cache state.
+    - name: Clean cached wasm test-fixture artifacts
+      run: rm -rf target/wasm32-wasip2 target/wasm32-wasip1
+      shell: bash
+
     - name: Build WASM Test Components
       run: |
         mise run build:test-components

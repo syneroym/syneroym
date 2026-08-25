@@ -7,7 +7,8 @@ use syneroym_app_host::types::{
     conversation::{
         ConversationError as GuestConversationError, ConversationKind as GuestConversationKind,
         ConversationSummary as GuestConversationSummary, DeliveryState as GuestDeliveryState,
-        HistoryPage as GuestHistoryPage, Message as GuestMessage,
+        HistoryPage as GuestHistoryPage, MembershipEvent as GuestMembershipEvent,
+        Message as GuestMessage,
     },
     data_layer::{
         CollectionSchema as GuestCollectionSchema, DataLayerError as GuestDataLayerError,
@@ -23,7 +24,8 @@ use syneroym_wit_interfaces::{
     conversation_host::syneroym::conversation::conversation::{
         ConversationError as HostConversationError, ConversationKind as HostConversationKind,
         ConversationSummary as HostConversationSummary, DeliveryState as HostDeliveryState,
-        HistoryPage as HostHistoryPage, Message as HostMessage,
+        HistoryPage as HostHistoryPage, MembershipEvent as HostMembershipEvent,
+        Message as HostMessage,
     },
     host::syneroym::{
         blob_store::blob_store::BlobError as HostBlobError,
@@ -212,6 +214,16 @@ pub(crate) fn history_page_out(v: HostHistoryPage) -> GuestHistoryPage {
     GuestHistoryPage {
         messages: v.messages.into_iter().map(message_out).collect(),
         next_cursor: v.next_cursor,
+    }
+}
+
+pub(crate) fn membership_event_out(v: HostMembershipEvent) -> GuestMembershipEvent {
+    GuestMembershipEvent {
+        entry: v.entry,
+        action: v.action,
+        subject: v.subject,
+        epoch: v.epoch,
+        sender_timestamp: v.sender_timestamp,
     }
 }
 

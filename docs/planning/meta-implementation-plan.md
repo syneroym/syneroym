@@ -650,11 +650,16 @@ and the reason would otherwise be lost.
 >   The dual-build shim, person identity at the client gateway, the durable
 >   messaging host interface and Layer 3 delivery, outbox delivery state, and
 >   service-record visibility. These are gaps **G1–G4** in the experience spec.
->   Slices **B1–B5**, `task.md` written 2026-08-18. **B1–B3 Complete
->   (2026-08-20)**; B4–B5 not started.
-> - **M06C** — the Roym product itself, following the spec's four releases (a
->   usable local guild, the transaction vertical, cross-installation trust,
->   private group chat). Directory not yet created.
+>   Slices **B1–B5**, `task.md` written 2026-08-18, **all Complete** — B1–B2
+>   (2026-08-18), B3–B4 (2026-08-20), B5 (2026-08-24).
+> - **M06C** — [The Roym Product](./milestones/M06C-roym-product/task.md).
+>   The product itself, following the spec's four releases (a usable local
+>   guild, the transaction vertical, cross-installation trust, private group
+>   chat). Slices **C1–C10**, `task.md` written 2026-08-24. C1 completes the
+>   dual-build shim (`proxy`, `http` inbound, `app-config`, `vault` — the
+>   four traits `AppHost` still lacks); C2 the SynApp skeleton and Hub shell;
+>   C3 the signing interface and signed-record envelope. C4–C7 are R1 and
+>   close its gate at C7; C8 is R2, C9 is R3, C10 is R4.
 >
 > **Why this order.** M06A removes the only non-WASM piece of Roym — the spec's
 > Web entrypoint service, which exists purely because a component cannot serve
@@ -663,13 +668,19 @@ and the reason would otherwise be lost.
 > under product code, and it gives a foundation milestone a runnable exit gate
 > rather than "the interfaces exist".
 >
-> **External prerequisite.** M06C additionally needs
+> **External prerequisite — met.** M06C needed
 > [M05C](./milestones/M05C-logical-discovery-overlay/task.md) **S4's visibility
 > half** (ADR-0022 §5's per-logical-service "open to all" declaration).
 > Without it a client resolving an app on an unaffiliated node is refused
-> unless an operator pre-installed a token, which blocks both directory search
-> and every cross-installation flow. S4's *cross-app `Bind`* half stays parked
-> on its own gate — Roym does not supply the consumer it waits for. See
+> unless an operator pre-installed a token, which would block both directory
+> search and every cross-installation flow. **`D-06B-4` moved that half into
+> M06B as slice B2, which shipped 2026-08-18** — a service declaring
+> `topology_visibility = open` plus a registered `visibility` is now
+> resolvable by a caller on an unaffiliated installation with no pre-installed
+> token. **M06C has no open external gate.** S4's *cross-app `Bind`* half
+> stays parked on its own gate — Roym still does not supply the consumer it
+> waits for, since its six services share one app instance and everything
+> outside is addressed by DID at runtime. See
 > [deferred-backlog.md](./deferred-backlog.md) §3.
 
 **Goal:** Deliver the first cohesive product experience using the completed foundations, proving the value of the reference application.

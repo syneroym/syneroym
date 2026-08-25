@@ -57,6 +57,15 @@ pub struct ConversationSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationMembershipEvent {
+    pub entry: String,
+    pub action: String,
+    pub subject: String,
+    pub epoch: u64,
+    pub sender_timestamp: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationMessage {
     pub id: String,
     pub conversation: String,
@@ -126,6 +135,57 @@ pub trait ConversationHost: Send + Sync + Debug {
     -> Result<Vec<ConversationMessage>, ConversationError>;
 
     async fn retry(&self, service_id: &str, message: &str) -> Result<(), ConversationError>;
+
+    async fn create_group(&self, service_id: &str) -> Result<String, ConversationError>;
+
+    async fn add_member(
+        &self,
+        service_id: &str,
+        conversation: &str,
+        member_address: &str,
+    ) -> Result<(), ConversationError>;
+
+    async fn remove_member(
+        &self,
+        service_id: &str,
+        conversation: &str,
+        member_address: &str,
+    ) -> Result<(), ConversationError>;
+
+    async fn members(
+        &self,
+        service_id: &str,
+        conversation: &str,
+    ) -> Result<Vec<String>, ConversationError>;
+
+    async fn membership_history(
+        &self,
+        service_id: &str,
+        conversation: &str,
+    ) -> Result<Vec<ConversationMembershipEvent>, ConversationError>;
+
+    async fn sync_now(&self, service_id: &str, conversation: &str)
+    -> Result<(), ConversationError>;
+
+    /// Peer-facing: accepts DAG entries pushed by another member. The
+    /// bytes are a serde-encoded `GroupPushRequest`; both ends agree on
+    /// the encoding, so this trait need not name it.
+    async fn group_push(
+        &self,
+        service_id: &str,
+        requester_did: &str,
+        request: Vec<u8>,
+    ) -> Result<Vec<u8>, ConversationError>;
+
+    /// Peer-facing: serves entries this substrate holds past the
+    /// requester's cursor. Bytes are a serde-encoded `GroupSyncRequest`
+    /// / `GroupSyncResponse`.
+    async fn group_sync(
+        &self,
+        service_id: &str,
+        requester_did: &str,
+        request: Vec<u8>,
+    ) -> Result<Vec<u8>, ConversationError>;
 
     /// Peer-facing: serves this service's own X3DH prekey bundle to a
     /// verified requester, rate-limited per `requester_did`. The returned

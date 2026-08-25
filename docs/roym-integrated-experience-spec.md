@@ -198,8 +198,29 @@ do not exist yet — see [G1 and G2](#substrate-work-required).
 This table is the only normative scope statement in this document. The journey
 and technical sections that follow explain it; they do not extend it.
 
-Work is grouped into three releases. Each release must pass its acceptance
+Work is grouped into four releases. Each release must pass its acceptance
 tests before the next begins.
+
+> **Scheduled 2026-08-24.** All four releases are
+> [M06C](planning/milestones/M06C-roym-product/task.md), which exists to
+> build exactly this table. Owners:
+>
+> | Release | Slices |
+> |---|---|
+> | R1 — a usable local guild | **C4** (identity, profile, contacts, safety), **C5** (catalog, conversation), **C6** (directory search), **C7** (request → quote → agreement, cards). R1's gate closes at the end of C7 |
+> | R2 — the transaction vertical | **C8** |
+> | R3 — cross-installation trust | **C9** |
+> | R4 — private group chat | **C10** |
+>
+> Three earlier slices carry no release because they are groundwork the whole
+> table sits on: **C1** completes the dual-build shim, **C2** builds the
+> SynApp skeleton and the Hub shell, and **C3** builds the signing interface
+> and the signed-record envelope every row below depends on.
+>
+> **The Directory service deliberately spans two releases** — its search half
+> is R1 and its trust half is R3, and R2 has none of it (M06C `D-06C-6`).
+> That split is what keeps "the Directory is optional" enforceable rather
+> than aspirational.
 
 ### R1 — A usable local guild
 
@@ -219,7 +240,7 @@ tests before the next begins.
 | An agreement becomes scheduled work | Transaction state machine with named writer, permitted transitions, expiry, idempotency key, conflict rule | Consumer books a slot; a second consumer tries the same slot | Recurring bookings; multi-part jobs | Two concurrent bookings of one slot produce one confirmation and one named conflict, never two confirmations |
 | Payment can be recorded honestly | `payment-acknowledgement` record, separate from settlement; payment instruction bound into the signed agreement | Provider requests payment, consumer pays outside Roym, both acknowledge | Provider-verified settlement; escrow; refunds | The UI never labels an acknowledgement as verified payment; the payee shown matches the agreement |
 | Completion is recorded | Mutually signed `fulfilment-receipt` | Both sides sign off completed work | Ratings; feedback scores | Neither party can alter a signed receipt; corrections appear as separate records |
-| A person can leave with their data | Versioned, integrity-checked export of conversations, agreements, and receipts | Consumer exports everything, imports on a new install | Selective export; redaction | Cross-version fixture test passes; import reproduces verification status |
+| A person can leave with their data | Versioned, integrity-checked export of conversations, agreements, and receipts | Consumer exports everything, imports on a new install | Selective export; redaction | A same-version export/import round-trip passes; import reproduces verification status. **Reworded 2026-08-24** (M06C `D-06C-2`): this read *"Cross-version fixture test passes"*, which G5 going out of scope makes unmeetable — see [G5](#g5--public-contract-versioning). R1's listing row is unaffected and stands as written, since a same-version round-trip that preserves the version field is not cross-version work |
 | A person can recover from device loss | Encrypted backup with a tested restore path | Provider loses their machine and restores | Automatic cloud backup | Restore on a clean node passes the durability suite with no acknowledged transaction lost |
 
 ### R3 — Cross-installation trust
@@ -637,6 +658,36 @@ A card in a conversation is versioned, typed JSON. The client uses the type and
 version to render a quote, booking, or progress view. A client that meets an
 unknown card type renders it safely and never executes sender-supplied code.
 
+**Settled 2026-08-24** (M06C `D-06C-3`), because the producer (the Transaction
+service) and the consumer (the Hub) are built in different slices, and a rule
+decided inside either one gets decided twice, differently.
+
+The first release has **seven card types**, and no others:
+
+| Type | Signed by | Appears at |
+|---|---|---|
+| `request` | Consumer | C12 — the consumer describes a need |
+| `quote` | Provider | C13 — the provider's exact terms |
+| `agreement-receipt` | Both | C14 — both sides accepted those terms |
+| `booking-progress` | Provider's Transaction service | C16 — the shared progress view, driven by the state machine |
+| `payment-request` | Provider | C17 — payee comes from the signed agreement, never from a later message |
+| `payment-acknowledgement` | Each side, separately | C19 — what each party observed |
+| `fulfilment-receipt` | Both | C20 — both agreed the work was done |
+
+Each renders through a **fixed template chosen by `(type, version)`**. The Hub
+ships seven templates plus one fallback; it is not a general interpreter.
+
+"Renders it safely and never executes sender-supplied code" means, precisely:
+
+- No sender-supplied HTML, script, style, or markup is inserted into the page.
+  Card values are text to be displayed, never markup to be parsed.
+- No URL a card carries is fetched, prefetched, resolved, or navigated to
+  automatically. The one payment link is shown in full and followed only on an
+  explicit human click.
+- An unknown type — or a known type at an unknown version — renders as a
+  neutral block naming the type and saying this client does not understand it.
+  Never as an empty card, and never as a guess at what it might have meant.
+
 ### Search
 
 For the first release (D1):
@@ -767,6 +818,33 @@ Publications, search results, credentials, revocations, conversations,
 agreements, receipts, and export bundles all cross installation boundaries and
 all need explicit schema versions with cross-version fixtures, per the
 Interoperability and Portability baselines.
+
+> **Out of scope for the first release, deliberately. Scheduled 2026-08-24**
+> (M06C `D-06C-1`).
+>
+> **What is deferred:** cross-installation schema *versioning* as a discipline
+> — migration paths, compatibility shims, and cross-version fixtures. The
+> product is pre-release. There is no installed base to stay compatible with,
+> so a version ladder would be built against a population that does not exist
+> and would be wrong by the time one does.
+>
+> **What still ships:** an explicit `version` field on every signed record,
+> from its first byte. This is not a compatibility shim — it is the one part
+> that is cheap now and expensive later, because adding a field to a signed
+> structure afterwards changes its canonical bytes and invalidates every
+> signature already produced.
+>
+> **This makes one acceptance test above unmeetable as written**, and it is
+> reworded rather than left to fail: R2's export row now reads *"A same-version
+> export/import round-trip passes"*. R1's listing row is unaffected — a
+> same-version round-trip preserving the version field is not cross-version
+> work.
+>
+> **Pickup trigger: revisit before the first external release**, meaning
+> before any installation Syneroym does not control holds Roym data. G5 is the
+> one gap in this section with no milestone owner, so it is tracked in
+> [deferred-backlog.md](planning/deferred-backlog.md) §10 rather than resting
+> on this paragraph alone.
 
 ---
 

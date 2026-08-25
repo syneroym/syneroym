@@ -51,9 +51,49 @@ pub fn derive_message_id(
     format!("msg:{}", hex::encode(hasher.finalize().as_bytes()))
 }
 
+/// Minted by the owner, adopted verbatim by every other member. Not
+/// derived from the member list: membership changes and the id must not.
+#[must_use]
+pub fn derive_group_id(owner_address: &str, created_at_ms: i64, nonce: &[u8; 16]) -> String {
+    let mut h = Hasher::new();
+    h.update(b"group");
+    h.update(&[0u8]);
+    h.update(owner_address.as_bytes());
+    h.update(&[0u8]);
+    h.update(&created_at_ms.to_be_bytes());
+    h.update(nonce);
+    format!("conv:{}", hex::encode(h.finalize().as_bytes()))
+}
+
+/// Content-derived over the entry's own signed header, so two substrates
+/// that hold the same entry compute the same id and dedup on it.
+#[must_use]
+pub fn derive_entry_id(header: &[u8]) -> String {
+    format!("ent:{}", hex::encode(blake3::hash(header).as_bytes()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_id_differs_for_the_same_owner_at_the_same_millisecond() {
+        let owner = "svc-owner";
+        let ts = 123_456_789;
+        let id1 = derive_group_id(owner, ts, &[1u8; 16]);
+        let id2 = derive_group_id(owner, ts, &[2u8; 16]);
+        assert_ne!(id1, id2);
+        assert!(id1.starts_with("conv:"));
+    }
+
+    #[test]
+    fn entry_id_is_stable_for_identical_headers() {
+        let header = b"header-bytes-for-test";
+        let id1 = derive_entry_id(header);
+        let id2 = derive_entry_id(header);
+        assert_eq!(id1, id2);
+        assert!(id1.starts_with("ent:"));
+    }
 
     #[test]
     fn conversation_id_is_order_independent_and_identical_on_both_sides() {

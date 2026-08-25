@@ -8,7 +8,9 @@
 //! dependency `syneroym-sandbox-wasm` would drag into all three.
 
 pub mod crypto;
+pub mod dag;
 pub mod envelope;
+pub mod group;
 pub mod ids;
 mod outbox;
 pub mod store;
@@ -29,7 +31,8 @@ use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::{
     ConversationDeliveryState, ConversationError, ConversationHistoryPage, ConversationHost,
-    ConversationMessage, ConversationNotifier, ConversationSummary, ServiceProxy,
+    ConversationKind, ConversationMembershipEvent, ConversationMessage, ConversationNotifier,
+    ConversationSummary, ServiceProxy,
 };
 
 /// Node-level configuration, converted from `AppSandboxRole`'s
@@ -202,6 +205,110 @@ impl ConversationService {
         }
         ids.into_iter().collect()
     }
+
+    pub(crate) async fn fetch_prekey_bundle(
+        &self,
+        svc: &str,
+        peer_address: &str,
+    ) -> Result<crypto::PrekeyBundle, ConversationError> {
+        let bundle_json = match self
+            .call_peer(
+                svc,
+                peer_address,
+                "prekey-bundle",
+                serde_json::json!({}),
+                None,
+                // Comfortably inside `dispatch_epoch_timeout_secs` (5s, D-B5-20's own
+                // figure): an unreachable peer must still leave the caller enough of
+                // its guest budget to do something with the result, e.g. `add-member`
+                // still has time to persist a membership entry after this returns.
+                Some(std::time::Duration::from_secs(2)),
+            )
+            .await
+        {
+            Ok(json) => json,
+            Err(transport::Disposition::Unreachable) => {
+                return Err(ConversationError::Unreachable("peer unreachable".to_string()));
+            }
+            Err(transport::Disposition::Terminal(e)) => {
+                return Err(ConversationError::InvalidArgument(e));
+            }
+            Err(_) => {
+                return Err(ConversationError::Unreachable(
+                    "failed to fetch prekey bundle".to_string(),
+                ));
+            }
+        };
+        serde_json::from_value(bundle_json).map_err(|e| {
+            ConversationError::InvalidArgument(format!("undecodable prekey bundle: {e}"))
+        })
+    }
+
+    pub(crate) async fn enqueue_direct(
+        &self,
+        store: &ConversationStore,
+        service_id: &str,
+        peer_address: &str,
+        content_type: &str,
+        body: &[u8],
+        system: bool,
+    ) -> Result<String, ConversationError> {
+        let conv_id = derive_conversation_id(service_id, peer_address);
+        let now = store::now_ms();
+        store.get_or_create_direct(peer_address, &conv_id, now).map_err(internal)?;
+        if system {
+            let conn = store.conn().lock().expect("store lock poisoned");
+            let _ = conn.execute(
+                "UPDATE conversations SET system = 1 WHERE id = ?1 AND (SELECT COUNT(*) FROM \
+                 messages WHERE conversation_id = ?1 AND system = 0) = 0",
+                rusqlite::params![conv_id],
+            );
+        }
+
+        let mut nonce = [0u8; 16];
+        rand::rng().fill_bytes(&mut nonce);
+        let message_id =
+            ids::derive_message_id(service_id, &conv_id, now, content_type, body, &nonce);
+
+        let identity =
+            store.local_identity_or_generate(crypto::generate_identity_bytes).map_err(internal)?;
+        let sig_bytes: [u8; 32] =
+            identity.sig_secret.as_slice().try_into().map_err(|_| {
+                ConversationError::Internal("corrupt local signing key".to_string())
+            })?;
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&sig_bytes);
+        let signature = envelope::sign(
+            &signing_key,
+            &message_id,
+            &conv_id,
+            service_id,
+            now,
+            content_type,
+            body,
+        );
+
+        store
+            .insert_outgoing_and_enqueue(
+                &conv_id,
+                &message_id,
+                service_id,
+                now,
+                content_type,
+                body,
+                &signature,
+                peer_address,
+                now,
+                system,
+            )
+            .map_err(|e| {
+                if e.downcast_ref::<store::StoreError>().is_some() {
+                    ConversationError::QuotaExceeded
+                } else {
+                    internal(e)
+                }
+            })?;
+        Ok(message_id)
+    }
 }
 
 /// An always-empty `Weak<dyn ServiceProxy>` -- mirrors
@@ -272,23 +379,27 @@ impl ConversationHost for ConversationService {
     ) -> Result<Vec<ConversationSummary>, ConversationError> {
         let store = self.store_for(service_id).await.map_err(internal)?;
         let rows = store.list_conversations().map_err(internal)?;
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                let mut participants = vec![service_id.to_string()];
+        let mut summaries = Vec::new();
+        for r in rows {
+            let participants = if r.kind == ConversationKind::Group {
+                store.current_members(&r.id).unwrap_or_default()
+            } else {
+                let mut p = vec![service_id.to_string()];
                 if let Some(peer) = r.peer_address {
-                    participants.push(peer);
+                    p.push(peer);
                 }
-                participants.sort();
-                ConversationSummary {
-                    id: r.id,
-                    kind: r.kind,
-                    participants,
-                    created_at: r.created_at_ms,
-                    last_activity_at: r.last_activity_ms,
-                }
-            })
-            .collect())
+                p.sort();
+                p
+            };
+            summaries.push(ConversationSummary {
+                id: r.id,
+                kind: r.kind,
+                participants,
+                created_at: r.created_at_ms,
+                last_activity_at: r.last_activity_ms,
+            });
+        }
+        Ok(summaries)
     }
 
     async fn send(
@@ -306,55 +417,15 @@ impl ConversationHost for ConversationService {
             .get_conversation(conversation)
             .map_err(internal)?
             .ok_or(ConversationError::NotFound)?;
+        if conv.kind == ConversationKind::Group {
+            return self.send_group(service_id, &store, &conv, content_type, &body).await;
+        }
         let peer_address = conv.peer_address.ok_or_else(|| {
             ConversationError::Internal(
                 "direct conversation is missing its peer address".to_string(),
             )
         })?;
-
-        let now = store::now_ms();
-        let mut nonce = [0u8; 16];
-        rand::rng().fill_bytes(&mut nonce);
-        let message_id =
-            ids::derive_message_id(service_id, conversation, now, content_type, &body, &nonce);
-
-        let identity =
-            store.local_identity_or_generate(crypto::generate_identity_bytes).map_err(internal)?;
-        let sig_bytes: [u8; 32] =
-            identity.sig_secret.as_slice().try_into().map_err(|_| {
-                ConversationError::Internal("corrupt local signing key".to_string())
-            })?;
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(&sig_bytes);
-        let signature = envelope::sign(
-            &signing_key,
-            &message_id,
-            conversation,
-            service_id,
-            now,
-            content_type,
-            &body,
-        );
-
-        store
-            .insert_outgoing_and_enqueue(
-                conversation,
-                &message_id,
-                service_id,
-                now,
-                content_type,
-                &body,
-                &signature,
-                &peer_address,
-                now,
-            )
-            .map_err(|e| {
-                if e.downcast_ref::<store::StoreError>().is_some() {
-                    ConversationError::QuotaExceeded
-                } else {
-                    internal(e)
-                }
-            })?;
-        Ok(message_id)
+        self.enqueue_direct(&store, service_id, &peer_address, content_type, &body, false).await
     }
 
     async fn history(
@@ -411,22 +482,150 @@ impl ConversationHost for ConversationService {
             .get_conversation(&msg.conversation_id)
             .map_err(internal)?
             .ok_or(ConversationError::NotFound)?;
-        let peer_address = conv.peer_address.ok_or_else(|| {
-            ConversationError::Internal(
-                "direct conversation is missing its peer address".to_string(),
-            )
-        })?;
+        let now = store::now_ms();
         store.set_state(message, ConversationDeliveryState::Pending, None).map_err(internal)?;
-        let payload = serde_json::to_vec(&store::OutboxItem {
-            message_id: message.to_string(),
-            peer_address,
-        })
-        .map_err(internal)?;
-        store
-            .queue()
-            .enqueue(&msg.conversation_id, message, &payload, store::now_ms())
+
+        if conv.kind == ConversationKind::Group {
+            let failed_members = {
+                let conn = store
+                    .conn()
+                    .lock()
+                    .map_err(|_| ConversationError::Internal("store lock poisoned".to_string()))?;
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT member_address FROM message_recipients WHERE message_id = ?1 AND \
+                         state = 'failed'",
+                    )
+                    .map_err(internal)?;
+                let mut rows = stmt.query(rusqlite::params![message]).map_err(internal)?;
+                let mut failed = Vec::new();
+                while let Some(r) = rows.next().map_err(internal)? {
+                    failed.push(r.get::<_, String>(0).map_err(internal)?);
+                }
+                failed
+            };
+
+            for m in failed_members {
+                store
+                    .set_recipient_state(message, &m, ConversationDeliveryState::Pending, None)
+                    .map_err(internal)?;
+                let payload = serde_json::to_vec(&store::OutboxItem {
+                    message_id: message.to_string(),
+                    peer_address: m.clone(),
+                    group: Some(conv.id.clone()),
+                })
+                .map_err(internal)?;
+                store
+                    .queue()
+                    .enqueue(&conv.id, &format!("{message}:{m}"), &payload, now)
+                    .map_err(internal)?;
+            }
+        } else {
+            let peer_address = conv.peer_address.ok_or_else(|| {
+                ConversationError::Internal(
+                    "direct conversation is missing its peer address".to_string(),
+                )
+            })?;
+            let payload = serde_json::to_vec(&store::OutboxItem {
+                message_id: message.to_string(),
+                peer_address,
+                group: None,
+            })
             .map_err(internal)?;
+            store
+                .queue()
+                .enqueue(&msg.conversation_id, message, &payload, now)
+                .map_err(internal)?;
+        }
         Ok(())
+    }
+
+    async fn create_group(&self, service_id: &str) -> Result<String, ConversationError> {
+        self.create_group_impl(service_id).await
+    }
+
+    async fn add_member(
+        &self,
+        service_id: &str,
+        conversation: &str,
+        member_address: &str,
+    ) -> Result<(), ConversationError> {
+        self.change_membership_impl(service_id, conversation, member_address, "add").await
+    }
+
+    async fn remove_member(
+        &self,
+        service_id: &str,
+        conversation: &str,
+        member_address: &str,
+    ) -> Result<(), ConversationError> {
+        self.change_membership_impl(service_id, conversation, member_address, "remove").await
+    }
+
+    async fn members(
+        &self,
+        service_id: &str,
+        conversation: &str,
+    ) -> Result<Vec<String>, ConversationError> {
+        let store = self.store_for(service_id).await.map_err(internal)?;
+        let conv = store
+            .get_conversation(conversation)
+            .map_err(internal)?
+            .ok_or(ConversationError::NotFound)?;
+        if conv.kind != ConversationKind::Group {
+            return Err(ConversationError::InvalidArgument("not a group conversation".to_string()));
+        }
+        store.current_members(conversation).map_err(internal)
+    }
+
+    async fn membership_history(
+        &self,
+        service_id: &str,
+        conversation: &str,
+    ) -> Result<Vec<ConversationMembershipEvent>, ConversationError> {
+        let store = self.store_for(service_id).await.map_err(internal)?;
+        let conv = store
+            .get_conversation(conversation)
+            .map_err(internal)?
+            .ok_or(ConversationError::NotFound)?;
+        if conv.kind != ConversationKind::Group {
+            return Err(ConversationError::InvalidArgument("not a group conversation".to_string()));
+        }
+        store.membership_history(conversation).map_err(internal)
+    }
+
+    async fn sync_now(
+        &self,
+        service_id: &str,
+        conversation: &str,
+    ) -> Result<(), ConversationError> {
+        self.sync_now_impl(service_id, conversation).await
+    }
+
+    async fn group_push(
+        &self,
+        service_id: &str,
+        requester_did: &str,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, ConversationError> {
+        let req: crate::dag::GroupPushRequest = serde_json::from_slice(&payload).map_err(|e| {
+            ConversationError::InvalidArgument(format!("undecodable group-push payload: {e}"))
+        })?;
+        let ack = self.group_push_impl(service_id, requester_did, req).await?;
+        serde_json::to_vec(&ack).map_err(internal)
+    }
+
+    async fn group_sync(
+        &self,
+        service_id: &str,
+        requester_did: &str,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, ConversationError> {
+        let req: crate::dag::GroupSyncRequest = serde_json::from_slice(&payload).map_err(|e| {
+            ConversationError::InvalidArgument(format!("undecodable group-sync payload: {e}"))
+        })?;
+        let resp = self.group_sync_impl(service_id, requester_did, req).await?;
+        serde_json::to_vec(&resp).map_err(internal)
     }
 
     async fn prekey_bundle(

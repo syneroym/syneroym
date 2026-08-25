@@ -343,6 +343,24 @@ other is a bug in the shim, not in the test.
     detectable mistake refused at compile/submit time — `D-B2-14`(b) — since
     it would name members nobody can dial.)
 11. Every row of the failure and security matrix has a test.
+
+    > **Not strictly met at sign-off, recorded 2026-08-24.** The 13-row
+    > failure-and-security matrix above is covered. Slice B4's own plan
+    > (§10.2) additionally specifies a **17-row cross-node table**, and
+    > [status.md](status.md) records 13 of those as uncovered: dropped-ack
+    > retry, rate-limited prekey requests, per-conversation quota isolation
+    > under concurrent conversations, clock-skew rejection, alias
+    > canonicalization, the same-service exemption (`D-B4-26`, unit-tested
+    > but never over a real connection), cross-service capability-gate
+    > denial, and no-instance-certificate refusal. All are in
+    > [deferred-backlog.md](../../deferred-backlog.md) §5.
+    >
+    > **Disposition:**
+    > [M06C](../M06C-roym-product/task.md) `D-06C-7` adopts them into slice
+    > **C9**, because R3 stands up three real installations — the harness
+    > they were missing. The one exception is alias canonicalization, where
+    > `D-B4-29` is unimplemented and there is therefore nothing to test; it
+    > keeps its own backlog row and its own trigger.
 12. `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets
     --all-features`, `cargo test --workspace`, and `mise run test:e2e` are
     clean.

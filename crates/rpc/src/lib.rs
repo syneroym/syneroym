@@ -19,7 +19,8 @@ mod types;
 
 pub use conversation::{
     ConversationDeliveryState, ConversationError, ConversationHistoryPage, ConversationHost,
-    ConversationKind, ConversationMessage, ConversationNotifier, ConversationSummary,
+    ConversationKind, ConversationMembershipEvent, ConversationMessage, ConversationNotifier,
+    ConversationSummary,
 };
 pub use converter::JsonRpcConverter;
 pub use dispatch_registry::{NativeDispatchRegistry, WeakNativeDispatchRegistry};

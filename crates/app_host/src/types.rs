@@ -20,6 +20,6 @@ pub mod messaging {
 pub mod conversation {
     pub use syneroym_wit_interfaces::conversation::syneroym::conversation::conversation::{
         ConversationError, ConversationKind, ConversationSummary, DeliveryState, HistoryPage,
-        Message,
+        MembershipEvent, Message,
     };
 }

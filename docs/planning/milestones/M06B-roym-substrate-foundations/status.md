@@ -5,7 +5,7 @@
 [slice-b2-implementation-plan.md](slice-b2-implementation-plan.md) (B2),
 [slice-b3-implementation-plan.md](slice-b3-implementation-plan.md) (B3)
 
-**Overall:** Slices B1, B2, B3, and B4 complete (2026-08-21) — see B4's own status below.
+**Overall:** Slices B1, B2, B3, B4, and B5 complete (2026-08-24) — see B4's/B5's own status below.
 
 ---
 
@@ -17,7 +17,7 @@
 | B2 | Declared service visibility (G4) | **Complete (2026-08-18)** — [implementation plan](slice-b2-implementation-plan.md), evidence below | None (ADR-0018 Accepted) |
 | B3 | The dual-build shim (D2/D3) | **Complete (2026-08-20)** — [implementation plan](slice-b3-implementation-plan.md), evidence below | None |
 | B4 | Durable messaging: interface and 1:1 delivery (G1 part 1, G2) | **Complete (2026-08-21)** — [implementation plan](slice-b4-implementation-plan.md), evidence below | None — B3 met |
-| B5 | Group delivery (G1 part 2) | Pending | B4 |
+| B5 | Group delivery (G1 part 2) | **Complete (2026-08-24, after an errata pass)** — evidence below | None — B4 met |
 
 ---
 
@@ -1028,4 +1028,139 @@ restricted tests; with sandbox disabled all 358/358 pass cleanly.
 `cargo deny check` (`licenses`, `bans`, `sources`) all pass — `vodozemac`'s
 Apache-2.0 license and its transitive dependencies (`matrix-pickle`) are within
 the workspace's allowed-license list.
+
+---
+
+## B5 — What shipped
+
+Slice B5 builds the group half of `syneroym:conversation` — a gossip DAG
+(`crates/conversation/src/dag.rs`), epidemic routing (`group-push`/
+`group-sync`), and an owner-distributed, per-epoch group key, closing G1
+alongside B4's 1:1 half. It landed against a first-pass implementation whose
+own code review (2026-08-24, "Group Delivery Errata") found the self-deadlock
+fixed but a `member_list_hash` regression, a wire-key trust hole in the peer
+verbs, a stuck sync cursor, and several test/coverage gaps. This status
+reflects the tree after resolving that errata, not the first pass.
+
+### What the errata found and how it was resolved
+
+- **`member_list_hash` mismatch (regressed B5-05).** The owner signs the
+  hash over its own live roster; a joiner recomputes it from `group_members`
+  scoped to the entry's epoch. The group-key handler seeds that table ahead
+  of the DAG (so a member can send/verify before its own membership entry
+  has synced), but the seed hardcoded every member's `joined_epoch` to 1 —
+  wrong for anyone who joined later, and inflated the epoch-1 predicate's
+  member set. Root-caused two ways in the same pass: the seed now uses the
+  key message's *real* epoch (owner's own row stays epoch-1, correctly
+  special-cased), and `apply_membership` now lets a real, owner-signed DAG
+  entry unconditionally override a still-`zeroblob(32)` placeholder row
+  regardless of epoch ordering — closing a second, subtler version of the
+  same bug where a bystander first learned about through a *later* key
+  message got a placeholder epoch that was too late, and the epoch-ordering
+  guard then refused to let the true, earlier entry correct it.
+- **B5-24 (peer verbs trusted the wire key).** `group-push`/`group-sync`
+  used `req.from.sig_key` whenever the local `group_members` row was still a
+  placeholder — the caller's own self-asserted key, taken from the same
+  request whose signature it was about to verify. Replaced with
+  `pinned_member_sig_key`: prefer a DAG-confirmed key, then a pinned 1:1
+  session key, and only as a last resort pin the wire key once — into the
+  placeholder row itself — so two members who share only this group (never
+  a 1:1 conversation) can still verify each other, but a differently-keyed
+  assertion presented later fails against the key already on file instead
+  of being silently re-pinned.
+- **B5-29 (missing freshness check on `group-push`).** Added the same
+  `PeerAssertion` timestamp/skew bound `group-sync` already had.
+- **B5-26 (sync cursor never actually tracked what applied).** `next_seq`
+  was written to the cursor regardless of whether every entry in that page
+  validated, and the cursor didn't move at all when `has_more`. Fixed by
+  threading each entry's real store `seq` through `GroupSyncResponse` and
+  advancing the cursor to the highest `seq` whose `validate_and_insert`
+  returned `Ok`.
+- **B5-25 (one bad entry rolled back the whole batch).** `apply_pending_entries`
+  replayed every unapplied entry for a conversation inside one transaction;
+  a single unappliable entry rolled back every other entry replayed
+  alongside it, permanently, since the same batch replays every pass.
+  Switched to one transaction per entry, and message notification now only
+  fires for a transaction that actually committed.
+- **B5-28 (remove-before-add resurrection) / B5-03 (removal not a hard
+  authoring fence).** `apply_membership`'s `remove` branch silently dropped
+  a removal with no existing row — reachable since relay push is per-entry
+  and unordered — letting a reordered `add` resurrect the member. Now
+  records a tombstone (`joined_epoch == removed_epoch`) instead. Separately,
+  a removed member still held the epoch key from just before its removal
+  and could backdate an entry's `sender_timestamp_ms` to sort anywhere in
+  that epoch's history; `validate_and_insert` now bounds a removed member's
+  entries to before the moment its removal actually took effect
+  (`removed_epoch_created_at` + `max_clock_skew_secs`), not only within the
+  epoch-number window.
+- **B5-27 (epoch key silently overwritable).** `group_epochs`'s upsert had
+  become `DO UPDATE SET key = excluded.key`; a resent or reordered key
+  message for an epoch already in use would silently replace the key and
+  strand every unapplied entry at that epoch. Reverted to `DO NOTHING`.
+- **A previously-undiscovered gap surfaced while reproducing B5-25/28**: a
+  `remove` membership entry's relay-push targets were `current_members`
+  evaluated at push time — which already excludes the member the entry just
+  removed — so a removed member never learned of its own removal, and a
+  pull can't teach it either (its own `group-sync`/`group-push` calls are
+  now correctly refused once removed). Fixed narrowly: a `remove` entry is
+  relayed to current members *plus* the member it just removed; it is
+  simply never handed the new epoch's key, so this costs no confidentiality.
+- **Test/coverage gaps (B5-19, B5-20, B5-21, B5-15).** The e2e's membership
+  assertion (`assert_eq!(mem_a["events"], mem_b["events"])`) compared three
+  values only to each other, never to an expected count — now asserts 3
+  events before the cross-node comparison. The post-removal `send-message`
+  from a removed member is now actually asserted refused (with a
+  deterministic `sync-now` first, rather than racing the background pass).
+  Matrix row 7's removed-member half was added (a removed member's stored
+  message doesn't decrypt without its epoch key, same mechanism as a
+  pre-join message). Row 8 moved to a real test against `peer_deliver_impl`
+  (the original asserted nothing that exercised the rejection path). Row 10
+  (scheduled rekey with stable membership) gained its first test. The
+  background periodic sync pass now has its own budget
+  (`conversation_background_sync_budget_ms`, separate from the guest-facing
+  `sync-now` budget, which stays inside `dispatch_epoch_timeout_secs`) and a
+  rotating starting member so a large roster's tail members aren't starved
+  every tick. `fetch_prekey_bundle`'s timeout dropped from 30s (it had
+  matched nothing) to 2s, comfortably inside the 5s guest dispatch budget.
+
+### Not resolved in this pass
+
+Recorded in [deferred-backlog.md](../../deferred-backlog.md) §5 rather than
+silently dropped: `heads()`'s 8-parent cap has no fallback for a genuinely
+wide concurrent frontier (untested by this slice's own coverage, which stays
+in ordinary sequential traffic); a member the relay can never reach again
+(not merely the just-removed case above) has no settlement path distinct
+from an ordinary outbox retry; and `dual_build_parity.rs`'s group coverage
+still stops at the degenerate cases (`add-member` on self, `remove-member`
+on a non-member, `sync-now` with no other members) — a successful
+`add-member`/send/`membership-history` on a populated group needs a real
+`prekey-bundle` round trip the harness has no peer wiring for yet.
+
+### Verification
+
+```
+$ cargo test -p syneroym-conversation
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+```
+$ cargo test -p syneroym-app-host-native --test dual_build_parity
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+```
+$ cargo test -p syneroym-substrate --test group_conversation_e2e -- --test-threads=1
+test three_members_converge_to_byte_identical_transcripts ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+The real three-node e2e — group creation, two `add-member`s, three-way
+message convergence, membership-history byte-identical across all three
+nodes, an offline-then-`sync-now` catch-up, an owner `remove-member` and
+rekey, and a verified post-removal send refusal — passes end to end.
+
+`cargo +nightly fmt --all` clean. `cargo clippy --workspace --all-targets --all-features`
+clean (zero warnings). `cargo audit` reports no vulnerabilities. `cargo deny
+check licenses` passes. `mise run test:e2e` (Playwright WebRTC browser
+suite) passes (4/4 tests, exit 0).
 
