@@ -155,7 +155,7 @@ pub enum Request {
 
     // ---- C1 new verbs ----
     ProxyCallSelf {
-        service_id: Option<String>,
+        service_id: String,
         interface: String,
         method: String,
         params: String,
@@ -518,8 +518,7 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
             Ok(json!({ "entries": entries }))
         }
         Request::ProxyCallSelf { service_id, interface, method, params } => {
-            let target_service = service_id.unwrap_or_else(|| "dual-build-fixture".to_string());
-            let target = CallTarget::Service(target_service);
+            let target = CallTarget::Service(service_id);
             let res = host.call(target, interface, method, params, None).await.map_err(fmt_err)?;
             Ok(json!({ "result": res }))
         }
@@ -736,9 +735,23 @@ pub async fn on_conversation_state<H: AppHost>(
 }
 
 /// Echoes every field of the request back as JSON, or handles sub-paths.
-pub async fn handle_http<H: AppHost>(_host: &H, req: HttpRequest) -> Result<HttpResponse, String> {
+pub async fn handle_http<H: AppHost>(host: &H, req: HttpRequest) -> Result<HttpResponse, String> {
     let path = req.path.as_str();
     if path == "/echo" {
+        ensure_collection(host, "http_requests").await.map_err(fmt_err)?;
+        let _ = host
+            .put(
+                "http_requests".into(),
+                RecordWriteValue {
+                    id: format!("{}:{}", req.method, req.path),
+                    payload: serde_json::to_vec(&json!({
+                        "path": req.path,
+                        "caller": req.caller.as_ref().map(|c| &c.did),
+                    }))
+                    .unwrap_or_default(),
+                },
+            )
+            .await;
         let body = serde_json::to_vec(&json!({
             "method": req.method,
             "path": req.path,
@@ -763,6 +776,13 @@ pub async fn handle_http<H: AppHost>(_host: &H, req: HttpRequest) -> Result<Http
             headers: vec![("content-type".to_string(), "application/json".to_string())],
             body,
         })
+    } else if path.starts_with("/store") {
+        ensure_collection(host, "http_store").await.map_err(fmt_err)?;
+        let id = if req.query.is_empty() { "default".to_string() } else { req.query.clone() };
+        host.put("http_store".into(), RecordWriteValue { id, payload: req.body.clone() })
+            .await
+            .map_err(fmt_err)?;
+        Ok(HttpResponse { status: 200, headers: vec![], body: b"stored".to_vec() })
     } else if path == "/reject" {
         Ok(HttpResponse { status: 403, headers: vec![], body: b"forbidden".to_vec() })
     } else if path == "/fail" {
@@ -774,8 +794,6 @@ pub async fn handle_http<H: AppHost>(_host: &H, req: HttpRequest) -> Result<Http
         Ok(HttpResponse { status: 200, headers: vec![], body: b"ok".to_vec() })
     }
 }
-
-static WS_MSG_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 pub async fn on_ws_open<H: AppHost>(host: &H, conn: String) {
     if let Err(e) = ensure_collection(host, WS_LOG).await {
@@ -806,7 +824,16 @@ pub async fn on_ws_message<H: AppHost>(host: &H, conn: String, frame: Vec<u8>, k
         eprintln!("failed to ensure WS_LOG: {e}");
         return;
     }
-    let seq = WS_MSG_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let msg_count = match host
+        .query(WS_LOG.into(), QueryOptions { filter: None, limit: Some(1000), cursor: None })
+        .await
+    {
+        Ok(page) => {
+            page.records.iter().filter(|r| r.id.starts_with(&format!("{conn}:message:"))).count()
+        }
+        Err(_) => 0,
+    };
+    let seq = (msg_count + 1) as u64;
     let id = format!("{conn}:message:{seq}:{}", inbox_entry_id(&frame));
     if let Err(e) = host
         .put(

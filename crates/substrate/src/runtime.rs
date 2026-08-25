@@ -1080,6 +1080,16 @@ async fn init_dual_build_fixture(
             collection: None,
             topic: None,
             protocol: None,
+            public: false,
+        },
+        HttpRoute {
+            method: "GET".into(),
+            path: "/ws-public".into(),
+            target: "websocket".into(),
+            operation: "handle-upgrade".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
             public: true,
         },
     ];

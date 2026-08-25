@@ -269,10 +269,10 @@ impl HttpDriver for WasmHttpDriver {
             body: vec![],
             caller: caller.as_ref().map(|c| CallerIdentity {
                 did: c.caller_did.clone(),
-                auth: match c.auth {
-                    AuthLevel::Ucan => CallerAuth::Ucan,
-                    AuthLevel::Delegated => CallerAuth::Delegated,
-                    _ => CallerAuth::SelfAsserted,
+                auth: if matches!(c.auth, AuthLevel::Ucan) {
+                    CallerAuth::Ucan
+                } else {
+                    CallerAuth::SelfAsserted
                 },
                 app_instance: c.app_instance.clone(),
             }),
@@ -301,10 +301,10 @@ impl HttpDriver for NativeHttpDriver {
             body: vec![],
             caller: caller.as_ref().map(|c| CallerIdentity {
                 did: c.caller_did.clone(),
-                auth: match c.auth {
-                    AuthLevel::Ucan => CallerAuth::Ucan,
-                    AuthLevel::Delegated => CallerAuth::Delegated,
-                    _ => CallerAuth::SelfAsserted,
+                auth: if matches!(c.auth, AuthLevel::Ucan) {
+                    CallerAuth::Ucan
+                } else {
+                    CallerAuth::SelfAsserted
                 },
                 app_instance: c.app_instance.clone(),
             }),
@@ -1338,6 +1338,24 @@ async fn both_builds_deliver_websocket_frames_to_the_app() {
             Some(caller()),
         )
         .await;
+    h.wasm_engine
+        .handle_websocket_on_message(
+            SERVICE_ID,
+            "ws-c1",
+            b"frame1".to_vec(),
+            syneroym_sandbox_wasm::FrameKind::Text,
+            Some(caller()),
+        )
+        .await;
+    h.wasm_engine
+        .handle_websocket_on_message(
+            SERVICE_ID,
+            "ws-c1",
+            b"frame2".to_vec(),
+            syneroym_sandbox_wasm::FrameKind::Text,
+            Some(caller()),
+        )
+        .await;
     h.wasm_engine.handle_websocket_on_close(SERVICE_ID, "ws-c1", Some(caller())).await;
     let wasm_log = h.wasm.run(r#"{"op":"read-ws-log"}"#).await.unwrap();
 
@@ -1352,10 +1370,31 @@ async fn both_builds_deliver_websocket_frames_to_the_app() {
             Some(caller()),
         )
         .await;
+    h.native_http
+        .adapter
+        .on_websocket_message(
+            "ws-c1".to_string(),
+            b"frame1".to_vec(),
+            syneroym_sandbox_wasm::FrameKind::Text,
+            Some(caller()),
+        )
+        .await;
+    h.native_http
+        .adapter
+        .on_websocket_message(
+            "ws-c1".to_string(),
+            b"frame2".to_vec(),
+            syneroym_sandbox_wasm::FrameKind::Text,
+            Some(caller()),
+        )
+        .await;
     h.native_http.adapter.on_websocket_close("ws-c1".to_string(), Some(caller())).await;
     let native_log = h.native.run(r#"{"op":"read-ws-log"}"#).await.unwrap();
 
     assert_eq!(wasm_log, native_log);
+    let parsed: serde_json::Value = serde_json::from_str(&wasm_log).expect("parse wasm_log");
+    let events = parsed["ok"]["events"].as_array().expect("events array");
+    assert_eq!(events.len(), 5); // open + 3 messages + close
 }
 
 #[tokio::test]
@@ -1427,6 +1466,10 @@ async fn both_builds_read_the_same_config_generation() {
 /// Permitted differences between the two builds, asserted explicitly rather
 /// than left latent.
 mod permitted_differences {
+    use syneroym_app_host::{
+        AppBlobStore, AppBlobWriter, AppDataLayer, types::data_layer::RecordWriteValue,
+    };
+
     use super::*;
 
     fn abac_policy() -> String {
@@ -1463,7 +1506,6 @@ mod permitted_differences {
         let dir = tempfile::tempdir().unwrap();
         let stub = Arc::new(StubProxy);
         let (_, factory, _, _, _, _) = build_native_stack(dir.path(), &stub).await;
-        use syneroym_app_host::{AppBlobStore, AppBlobWriter};
 
         let host_a = factory.host_for(caller());
         let writer_a = host_a.open_upload().await.unwrap();
@@ -1730,7 +1772,6 @@ mod permitted_differences {
         factory.set_service_proxy(Arc::downgrade(&stub) as Weak<dyn ServiceProxy>);
 
         let host1 = factory.host_for(caller());
-        use syneroym_app_host::{AppDataLayer, types::data_layer::RecordWriteValue};
         // First load attempts to read FDAE policy, but TransientFdaeStorage returns an
         // Err. The error is not memoized, so host1 sees absent policy and put
         // succeeds.
@@ -1762,5 +1803,96 @@ mod permitted_differences {
             )
             .await;
         assert!(res3.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_cached_fdae_policy_can_be_invalidated_and_reloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_store = Arc::new(KeyStore::new());
+        key_store.inject_kek([0x42; 32]).expect("inject kek");
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(dir.path().join("data"), true).unwrap());
+        {
+            let service_store =
+                storage_provider.open_service_db(SERVICE_ID, &key_store).await.unwrap();
+            service_store
+                .create_collection(&syneroym_data_db::host_store::CollectionSchema {
+                    name: "profiles".to_string(),
+                    indexes: vec![],
+                })
+                .await
+                .unwrap();
+        }
+        // Initially no policy -> write succeeds
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let endpoint_registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+        install_outbound_identity(&endpoint_registry, SERVICE_ID).await;
+
+        let app_instance = AppInstanceId::new("test-app");
+        let sibling_name = LogicalServiceName::new("sibling");
+        let inventory = Arc::new(StaticInventory::new());
+        inventory.register(
+            TopologyKey::local(app_instance.clone(), sibling_name),
+            TopologyEntry {
+                mode: TopologyMode::Singleton,
+                members: vec![ServiceId::new("did:key:zSiblingMember")],
+                sharding_strategy: None,
+                epoch: TopologyEpoch(1),
+                cache_ttl: Duration::from_secs(60),
+                not_after: None,
+            },
+        );
+        let resolver = Arc::new(LogicalResolver::new(inventory));
+        endpoint_registry
+            .set_app_context(SERVICE_ID.to_string(), app_instance.to_string(), "self".to_string())
+            .await
+            .unwrap();
+
+        let conversation = test_conversation_service(
+            storage_provider.clone(),
+            key_store.clone(),
+            endpoint_registry.clone(),
+        );
+        let stub = Arc::new(StubProxy);
+        let factory = NativeHostFactory::new(
+            SERVICE_ID.to_string(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider,
+            broker,
+            endpoint_registry,
+            resolver,
+            conversation,
+            WebSocketSenders::new(),
+        );
+        factory.set_service_proxy(Arc::downgrade(&stub) as Weak<dyn ServiceProxy>);
+
+        let host1 = factory.host_for(caller());
+        let res1 = host1
+            .put(
+                "profiles".to_string(),
+                RecordWriteValue { id: "p1".to_string(), payload: b"{}".to_vec() },
+            )
+            .await;
+        assert!(res1.is_ok());
+
+        // Now save an ABAC policy into storage. Because policy is cached as None,
+        // it would still be None without invalidation.
+        storage_provider.save_fdae_policy(SERVICE_ID, &abac_policy()).await.unwrap();
+
+        // Invalidate FDAE policy cache and bump generation
+        factory.invalidate_fdae_policy().await;
+
+        // Fresh host should now reload policy from storage and deny write under ABAC
+        let host2 = factory.host_for(caller());
+        let res2 = host2
+            .put(
+                "profiles".to_string(),
+                RecordWriteValue { id: "p2".to_string(), payload: b"{}".to_vec() },
+            )
+            .await;
+        assert!(res2.is_err());
     }
 }

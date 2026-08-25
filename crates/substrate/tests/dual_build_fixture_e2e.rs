@@ -9,11 +9,13 @@
 
 mod common;
 
+use std::time::Duration;
+
 use common::{SubstrateTestContext, alloc_ports};
 use serde_json::json;
 use syneroym_sdk::TransportConnection;
 use syneroym_test_dual_build_fixture::native::FIXTURE_INTERFACE;
-use tokio::io::AsyncWriteExt;
+use tokio::{io::AsyncWriteExt, time};
 
 #[tokio::test]
 async fn a_client_reaches_the_linked_native_fixture_through_the_router() {
@@ -115,21 +117,89 @@ async fn a_websocket_reaches_the_linked_native_fixture_through_the_router() {
     let node_did = ctx.substrate_client.service_id().to_string();
     let TransportConnection::Iroh { conn, .. } =
         ctx.substrate_client.connection().expect("iroh connection");
-    let (mut send, mut recv) = conn.open_bi().await.unwrap();
 
-    let preamble = format!("http://http-native|{node_did}\n");
-    send.write_all(preamble.as_bytes()).await.unwrap();
-    let ws_upgrade = "GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: \
-                      Upgrade\r\nSec-WebSocket-Key: \
-                      dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
-    send.write_all(ws_upgrade.as_bytes()).await.unwrap();
+    // 1. Non-public /ws route without caller must fail with 401 Unauthorized
+    {
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        let preamble = format!("http://http-native|{node_did}\n");
+        send.write_all(preamble.as_bytes()).await.unwrap();
+        let ws_upgrade = "GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: \
+                          websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: \
+                          dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        send.write_all(ws_upgrade.as_bytes()).await.unwrap();
+        send.shutdown().await.unwrap();
 
-    let mut buf = [0u8; 1024];
-    let n = recv.read(&mut buf).await.unwrap().unwrap_or(0);
-    let resp = String::from_utf8_lossy(&buf[..n]);
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 512];
+        loop {
+            match recv.read(&mut chunk).await {
+                Ok(Some(n)) if n > 0 => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        let resp = String::from_utf8_lossy(&buf);
+        assert!(
+            resp.contains("401 Unauthorized") || resp.contains("HTTP/1.1 401"),
+            "expected 401 on non-public /ws, got: {resp}"
+        );
+    }
+
+    // 2. Public /ws-public route upgrades successfully to 101 Switching Protocols
+    {
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        let preamble = format!("http://http-native|{node_did}\n");
+        send.write_all(preamble.as_bytes()).await.unwrap();
+        let ws_upgrade = "GET /ws-public HTTP/1.1\r\nHost: localhost\r\nUpgrade: \
+                          websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: \
+                          dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        send.write_all(ws_upgrade.as_bytes()).await.unwrap();
+
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 512];
+        loop {
+            match recv.read(&mut chunk).await {
+                Ok(Some(n)) if n > 0 => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        let resp = String::from_utf8_lossy(&buf);
+        assert!(
+            resp.contains("101 Switching Protocols") || resp.contains("HTTP/1.1 101"),
+            "unexpected upgrade response: {resp}"
+        );
+    }
+
+    // 3. Verify on_open reached the native fixture by querying the stored WS log
+    time::sleep(Duration::from_millis(50)).await;
+    let response = ctx
+        .substrate_client
+        .request(
+            "dual-build-fixture",
+            "run",
+            serde_json::json!([serde_json::to_string(&serde_json::json!({
+                "op": "read-ws-log",
+            }))
+            .unwrap()]),
+        )
+        .await
+        .expect("request to native fixture");
+
+    let payload: String = serde_json::from_value(response.result).expect("fixture payload");
+    let parsed: serde_json::Value = serde_json::from_str(&payload).expect("fixture payload JSON");
+    let events = parsed["ok"]["events"].as_array().expect("events array in WS log");
     assert!(
-        resp.contains("101 Switching Protocols") || resp.contains("HTTP/1.1 101"),
-        "unexpected upgrade response: {resp}"
+        events.iter().any(|e| e["event"] == "open"),
+        "expected on_open event in native fixture WS log: {parsed:?}"
     );
 
     ctx.teardown().await;

@@ -42,8 +42,8 @@ Slice C1 completes the dual-build shim for the guest capabilities Roym requires:
 
 ### 3. Native App Host Implementation (`crates/app_host_native`)
 - Implemented full trait suite on `NativeAppHost`: `AppProxy`, `AppAppConfig`, `AppVault`, `AppDataLayer`, `AppBlobStore`, `AppMessaging`, `AppConversation`, `AppWebSocket`.
-- Implemented lazy FDAE policy loading in `NativeAppHostFactory` with `fdae_policy_generation` atomic concurrency guard, transient load error resilience, and fail-closed handling for ABAC policies.
-- Implemented per-invocation config reads reflecting monotonic config generations.
+- Implemented lazy FDAE policy loading in `NativeHostFactory` with `fdae_policy_generation` atomic concurrency guard, transient load error resilience, and fail-closed handling for ABAC policies.
+- Implemented per-invocation config reads via `get_latest_config_generation` against the service store.
 
 ### 4. Router Integration & Substrate Fixture (`crates/router`, `crates/substrate`)
 - Integrated native HTTP routing in `crates/router/src/route_handler/http.rs`, dispatching via `native_http` and issuing warnings if a native HTTP service shadows a deployed WASM service.
@@ -65,7 +65,7 @@ As specified in §14 of the implementation plan, the following structural differ
 3. **WebSocket Permits:** WASM bridge enforces `guest_websocket_permits`; native WebSocket connections register directly in the shared `WebSocketSenders` table.
 4. **Row Authorizer (Stage-4 ABAC):** WASM host instantiates guest `syneroym:data-layer/authorizer` for stage-4 post-query filtering; native host uses `empty_row_authorizer()` and fails closed for policies with ABAC rules.
 5. **Subscription Replay:** WASM engine replays stored subscriptions from `StorageProvider` on startup; native app subscription replay is deferred to C2 (`D-C1-9`).
-6. **Isolated Resource Tables:** WASM execution manages Wasmtime store-bound resource handles; native host allocates unique monotonic handle IDs per invocation.
+6. **Isolated Resource Tables:** WASM execution manages Wasmtime store-bound resource handles; native host allocates fresh resource tables per invocation (with handle IDs starting at `rep 0`), ensuring isolation without cross-invocation handle reuse.
 
 ---
 

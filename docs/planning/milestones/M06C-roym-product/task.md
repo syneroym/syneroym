@@ -394,8 +394,9 @@ discovery bug. Keeping the gates keeps each failure attributable.
   `syneroym:conversation` — deliberately **not** added to the
   `host-environment` world by default, so a component that does not import
   it deploys exactly as before.
-- **New traits on `AppHost`** for `proxy`, `http` inbound, `app-config`, and
-  `vault` (D-06C-10). This is a **breaking change to `syneroym-app-host`'s
+- **New traits on `AppHost`** for `proxy`, `app-config`, `vault`, and
+  outbound `websocket` (with HTTP inbound as native `HttpSink`/`WebSocketSink`
+  sink traits, D-06C-10). This is a **breaking change to `syneroym-app-host`'s
   own trait bound**: `AppHost`'s supertrait list grows, so every existing
   implementor must satisfy the new traits. Today there are exactly two
   (`GuestHost`, `NativeAppHost`) plus one fixture, all in-tree, so the cost
