@@ -52,6 +52,16 @@ pub struct WhoamiResponse {
     pub expires_at_secs: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalLoginRequest {
+    pub identity: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdentitiesResponse {
+    pub identities: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct PersonSession {
     pub person_did: String,
@@ -257,6 +267,11 @@ impl SessionStore {
     pub fn logout(&self, token: &str) -> bool {
         self.sessions.remove(token).is_some()
     }
+
+    #[must_use]
+    pub fn ttl_secs(&self) -> u64 {
+        self.ttl_secs
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -413,6 +428,8 @@ pub enum SessionRoute {
     Login,
     Logout,
     Whoami,
+    Identities,
+    LoginLocal,
     Unknown,
 }
 
@@ -435,8 +452,42 @@ pub fn classify(method: &str, path: &str) -> RequestKind {
         ("POST", "/_syneroym/session/login") => RequestKind::Session(SessionRoute::Login),
         ("POST", "/_syneroym/session/logout") => RequestKind::Session(SessionRoute::Logout),
         ("GET", "/_syneroym/session/whoami") => RequestKind::Session(SessionRoute::Whoami),
+        ("GET", "/_syneroym/session/identities") => RequestKind::Session(SessionRoute::Identities),
+        ("POST", "/_syneroym/session/login-local") => {
+            RequestKind::Session(SessionRoute::LoginLocal)
+        }
         _ => RequestKind::Session(SessionRoute::Unknown),
     }
+}
+
+/// Every `<name>.key` under `dir.join("identities")`, sorted, names only --
+/// `dir` is the same top-level `--dir` `roymctl` takes, and this walks the
+/// exact subdirectory `roymctl identity create` writes into.
+/// Returns an empty list for a missing or unreadable directory.
+#[must_use]
+pub fn list_person_identities(dir: &std::path::Path) -> Vec<String> {
+    let mut names = Vec::new();
+    let candidates = [dir.join("identities"), dir.to_path_buf()];
+    for search_dir in candidates {
+        if let Ok(entries) = std::fs::read_dir(search_dir) {
+            for entry in entries.filter_map(std::result::Result::ok) {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("key")
+                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                    && !stem.contains('/')
+                    && !stem.contains('\\')
+                    && !stem.contains("..")
+                    && !stem.contains('\0')
+                    && !names.contains(&stem.to_string())
+                {
+                    names.push(stem.to_string());
+                }
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
 }
 
 #[cfg(test)]
@@ -1046,9 +1097,35 @@ mod tests {
             RequestKind::Session(SessionRoute::Whoami)
         );
         assert_eq!(
+            classify("GET", "/_syneroym/session/identities"),
+            RequestKind::Session(SessionRoute::Identities)
+        );
+        assert_eq!(
+            classify("POST", "/_syneroym/session/login-local"),
+            RequestKind::Session(SessionRoute::LoginLocal)
+        );
+        assert_eq!(
             classify("GET", "/_syneroym/other"),
             RequestKind::Session(SessionRoute::Unknown)
         );
         assert_eq!(classify("GET", "/index.html"), RequestKind::Proxy);
+    }
+
+    #[test]
+    fn test_list_person_identities() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ids_dir = temp_dir.path().join("identities");
+        std::fs::create_dir_all(&ids_dir).unwrap();
+
+        std::fs::write(ids_dir.join("alice.key"), b"alice-key").unwrap();
+        std::fs::write(ids_dir.join("bob.key"), b"bob-key").unwrap();
+        std::fs::write(ids_dir.join("not-a-key.txt"), b"ignore").unwrap();
+
+        let listed = list_person_identities(temp_dir.path());
+        assert_eq!(listed, vec!["alice".to_string(), "bob".to_string()]);
+
+        // Non-existent directory returns empty list
+        let empty = list_person_identities(&temp_dir.path().join("non-existent"));
+        assert!(empty.is_empty());
     }
 }

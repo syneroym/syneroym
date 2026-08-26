@@ -126,7 +126,7 @@ pub async fn refresh_anchor_or_warn(registry_url: Option<&str>, master: &Identit
     let master_did = substrate::derive_did_key(&master.public_key());
     match registry_url {
         Some(url) => {
-            RegistryClient::new(true, Some(url.to_string()))
+            RegistryClient::new(false, Some(url.to_string()))
                 .refresh_master_anchor(master)
                 .await
                 .with_context(|| format!("failed to publish master anchor for {master_did}"))?;

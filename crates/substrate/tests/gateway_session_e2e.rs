@@ -1143,3 +1143,201 @@ async fn test_31_oversized_and_invalid_http_requests_return_400() {
 
     ctx.teardown().await;
 }
+
+async fn setup_gateway_test_node_with_options(
+    session_ttl_secs: Option<u64>,
+    person_identities_dir: Option<std::path::PathBuf>,
+) -> (SubstrateTestContext, u16, String, String, String) {
+    let _ = ring::default_provider().install_default();
+    let [iroh_port, registry_port, gateway_port] = common::alloc_ports::<3>();
+
+    let ctx = SubstrateTestContext::setup_with(iroh_port, registry_port, gateway_port, |config| {
+        config.storage.encryption = false;
+        config.substrate.enable_bep0044_dht = false;
+        config.roles.client_gateway = Some(ClientGatewayRole {
+            http_port: gateway_port,
+            session_ttl_secs: session_ttl_secs.unwrap_or(3600),
+            person_identities_dir,
+            ..Default::default()
+        });
+    })
+    .await;
+
+    let registry_url = format!("http://localhost:{registry_port}");
+    let service_identity = Identity::generate().unwrap();
+    let service_did = substrate::derive_did_key(&service_identity.public_key());
+
+    let wasm_bytes = fs::read(test_constants::http_guest_test_wasm_path()).expect("wasm artifact");
+    let http_routes = json!({
+        "http_routes": [
+            {
+                "method": "GET",
+                "path": "/echo",
+                "target": "guest",
+                "operation": "handle-request",
+                "public": true
+            },
+            {
+                "method": "POST",
+                "path": "/echo",
+                "target": "guest",
+                "operation": "handle-request",
+                "public": true
+            }
+        ]
+    });
+    let manifest = guest_wasm_manifest(wasm_bytes, http_routes);
+    deploy(&ctx.substrate_client, &service_did, manifest).await;
+
+    let info = EndpointInfo {
+        service_id: service_did.clone(),
+        substrate_id: ctx.substrate_client.service_id().to_string(),
+        endpoint_type: EndpointType::Service,
+        mechanisms: ctx.substrate_mechanisms.clone(),
+        nickname: Some("test-svc".to_string()),
+        is_private: false,
+        ttl: None,
+        not_after: u64::MAX / 2,
+        generation: 0,
+    };
+    let signed = info.sign(&service_identity).expect("failed to sign endpoint info");
+    let http = Client::new();
+    let reg_res = http
+        .post(format!("{registry_url}/register"))
+        .json(&signed)
+        .send()
+        .await
+        .expect("failed to register endpoint in HTTP registry");
+    assert!(reg_res.status().is_success());
+
+    let host = util::generate_service_host(
+        Some("test-svc"),
+        &service_did,
+        Some("http-native"),
+        "localhost",
+    )
+    .unwrap();
+
+    (ctx, gateway_port, registry_url, service_did, host)
+}
+
+/// Test 32: Unconfigured person_identities_dir returns 404 for identities and
+/// login-local.
+#[tokio::test]
+async fn test_32_unconfigured_identities_dir_returns_404() {
+    let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
+    let (ctx, gateway_port, _reg_url, _svc_did, _host) = setup_gateway_test_node(None).await;
+    let client = test_client();
+
+    let id_resp = client
+        .get(format!("http://127.0.0.1:{gateway_port}/_syneroym/session/identities"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(id_resp.status(), 404);
+
+    let login_resp = client
+        .post(format!("http://127.0.0.1:{gateway_port}/_syneroym/session/login-local"))
+        .json(&json!({"identity": "alice"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login_resp.status(), 404);
+
+    ctx.teardown().await;
+}
+
+/// Test 33: Local identities listing and local login lifecycle.
+#[tokio::test]
+async fn test_33_local_identities_and_login_lifecycle() {
+    let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let identities_dir = temp_dir.path().join("identities");
+    fs::create_dir_all(&identities_dir).unwrap();
+
+    let alice = Identity::generate().unwrap();
+    let alice_did = substrate::derive_did_key(&alice.public_key());
+    alice.save_to_path(identities_dir.join("alice.key")).unwrap();
+
+    let bob = Identity::generate().unwrap();
+    bob.save_to_path(identities_dir.join("bob.key")).unwrap();
+
+    let (ctx, gateway_port, _reg_url, _svc_did, host) =
+        setup_gateway_test_node_with_options(None, Some(temp_dir.path().to_path_buf())).await;
+    let client = test_client();
+
+    // 1. GET /_syneroym/session/identities returns exactly the names without key
+    //    bytes
+    let id_resp = client
+        .get(format!("http://127.0.0.1:{gateway_port}/_syneroym/session/identities"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(id_resp.status(), 200);
+    let id_val: Value = id_resp.json().await.unwrap();
+    assert_eq!(id_val["identities"], json!(["alice", "bob"]));
+
+    // 2. POST /_syneroym/session/login-local for unlisted identity -> 404
+    let unlisted_resp = client
+        .post(format!("http://127.0.0.1:{gateway_port}/_syneroym/session/login-local"))
+        .json(&json!({"identity": "charlie"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unlisted_resp.status(), 404);
+
+    // 3. POST /_syneroym/session/login-local with path traversal -> 404
+    let trav_resp = client
+        .post(format!("http://127.0.0.1:{gateway_port}/_syneroym/session/login-local"))
+        .json(&json!({"identity": "../alice"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(trav_resp.status(), 404);
+
+    // 4. POST /_syneroym/session/login-local for alice -> 200 + Set-Cookie
+    let login_resp = client
+        .post(format!("http://127.0.0.1:{gateway_port}/_syneroym/session/login-local"))
+        .json(&json!({"identity": "alice"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login_resp.status(), 200);
+
+    let cookie_header = login_resp.headers().get("set-cookie").unwrap().to_str().unwrap();
+    assert!(cookie_header.contains("HttpOnly"));
+    assert!(cookie_header.contains("SameSite=Strict"));
+
+    let cookie_val = cookie_header.split(';').next().unwrap();
+    let token = cookie_val.split('=').nth(1).unwrap();
+
+    // 5. GET /_syneroym/session/whoami with cookie -> reports alice DID and auth =
+    //    delegated
+    let whoami_resp = client
+        .get(format!("http://127.0.0.1:{gateway_port}/_syneroym/session/whoami"))
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(whoami_resp.status(), 200);
+    let whoami_val: Value = whoami_resp.json().await.unwrap();
+    assert_eq!(whoami_val["person_did"], alice_did);
+    assert_eq!(whoami_val["auth"], "delegated");
+
+    // 6. Proxied request under cookie reaches guest as delegated with alice DID
+    poll_until_guest_ready(&client, &format!("http://127.0.0.1:{gateway_port}"), &host).await;
+    let proxy_resp = client
+        .get(format!("http://127.0.0.1:{gateway_port}/echo"))
+        .header("Host", &host)
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={token}"))
+        .header("Connection", "close")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(proxy_resp.status(), 200);
+    let proxy_val: Value = proxy_resp.json().await.unwrap();
+    assert_eq!(proxy_val["caller"]["auth"], "delegated");
+    assert_eq!(proxy_val["caller"]["did"], alice_did);
+
+    ctx.teardown().await;
+}

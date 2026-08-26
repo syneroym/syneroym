@@ -387,6 +387,14 @@ pub struct RolesConfig {
     /// The App Supervisor (ADR-0021 §8). Absent = this node runs no
     /// supervisor, which is every deployment through A4.
     pub supervisor: Option<SupervisorRole>,
+    /// Linked native Roym product role (Slice C2).
+    pub roym: Option<RoymRole>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoymRole {
+    pub ui_bundle_path: Option<PathBuf>,
 }
 
 fn default_podman_path() -> String {
@@ -1148,6 +1156,13 @@ pub struct ClientGatewayRole {
     /// never outlive the authorization it rests on.
     #[serde(default = "default_session_ttl_secs")]
     pub session_ttl_secs: u64,
+    /// The **same top-level `--dir`** an operator passes to `roymctl`
+    /// (e.g. `roymctl identity create --dir <this>`), not a dedicated
+    /// directory of its own. `roymctl session login` reads a person key
+    /// from `<dir>/identities/<name>.key`.
+    /// Present enables the local login endpoints; absent leaves them 404.
+    #[serde(default)]
+    pub person_identities_dir: Option<PathBuf>,
 }
 
 impl Default for ClientGatewayRole {
@@ -1156,6 +1171,7 @@ impl Default for ClientGatewayRole {
             http_port: default_http_port(),
             resolve_ucan: None,
             session_ttl_secs: default_session_ttl_secs(),
+            person_identities_dir: None,
         }
     }
 }

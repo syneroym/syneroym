@@ -1144,10 +1144,15 @@ impl SyneroymClient {
                 // Use HTTP transport for passthrough of raw requests. The node
                 // pubkey is set along with any optional routing delegation so this
                 // connection presents caller identity to the downstream service.
+                let interface = if interface_name.is_empty() {
+                    "http-native".to_string()
+                } else {
+                    interface_name.to_string()
+                };
                 let preamble = RoutePreamble {
                     transport: RouteTransport::Http,
                     protocol: RouteProtocol::JsonRpc,
-                    interface: interface_name.to_string(),
+                    interface,
                     service_id: service_id.to_string(),
                     enc: None,
                     pubkey: Some(hex::encode(identity.public_key().to_bytes())),

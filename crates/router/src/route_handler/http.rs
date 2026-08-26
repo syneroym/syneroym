@@ -39,8 +39,8 @@ use hyper::{
     HeaderMap, Method, Request, Response, StatusCode,
     body::{Frame, Incoming},
     header::{
-        ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderName, HeaderValue,
-        IF_NONE_MATCH, RETRY_AFTER, X_CONTENT_TYPE_OPTIONS,
+        ACCEPT, CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderName,
+        HeaderValue, IF_NONE_MATCH, RETRY_AFTER, X_CONTENT_TYPE_OPTIONS,
     },
     service,
 };
@@ -879,6 +879,7 @@ impl HttpHandler {
             .header(CONTENT_LENGTH, entry.len.to_string())
             .header(ETAG, etag)
             .header(CACHE_CONTROL, cache_control)
+            .header(CONNECTION, "close")
             .header(X_CONTENT_TYPE_OPTIONS, "nosniff");
 
         if *method == Method::HEAD {

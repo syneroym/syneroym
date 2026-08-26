@@ -44,9 +44,27 @@ for component in greeter data-layer-test proxy-test stream-test messaging-pubsub
 done
 """
 
+[tasks."build:roym-ui"]
+description = "Build the Roym Hub UI bundle and pack it for the asset bundle"
+run = """
+if [ -d "crates/roym_web/ui" ]; then
+  (cd crates/roym_web/ui && (npm ci || npm install) && npm run build)
+  tar -czf crates/roym_web/ui/bundle.tar.gz -C crates/roym_web/ui/dist .
+fi
+"""
+
+[tasks."build:roym"]
+description = "Build every Roym service as a wasm32-wasip2 component"
+depends = ["build:roym-ui"]
+run = """
+for pkg in web conversation profile catalog transaction directory; do
+  cargo component build --release --target wasm32-wasip2 -p "syneroym-roym-$pkg"
+done
+"""
+
 [tasks."test:rust"]
 description = "Run all Rust unit and integration tests"
-depends = ["build:test-components"]
+depends = ["build:test-components", "build:roym"]
 run = "cargo test --workspace"
 
 [tasks."test:e2e"]

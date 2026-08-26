@@ -1,0 +1,66 @@
+[package]
+name = "syneroym-roym-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+syneroym-app-host.workspace = true
+syneroym-roym-core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen.workspace = true
+syneroym-wit-interfaces = { path = "../wit_interfaces", default-features = false, features = [
+    "app-config",
+    "blob-store",
+    "conversation",
+    "data-layer",
+    "http",
+    "messaging",
+    "proxy",
+    "vault",
+] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+syneroym-rpc.workspace = true
+syneroym-app-host-native = { path = "../app_host_native" }
+async-trait.workspace = true
+
+[dev-dependencies]
+syneroym-wit-interfaces.workspace = true
+syneroym-core = { workspace = true, features = ["test-utils"] }
+syneroym-data-db.workspace = true
+syneroym-data-blob.workspace = true
+syneroym-data-keystore.workspace = true
+syneroym-sandbox-wasm.workspace = true
+syneroym-app-orchestration.workspace = true
+syneroym-async-queue.workspace = true
+syneroym-conversation.workspace = true
+syneroym-mqtt-broker.workspace = true
+syneroym-identity.workspace = true
+syneroym-roym-conversation = { path = "../roym_conversation" }
+syneroym-roym-profile = { path = "../roym_profile" }
+syneroym-roym-catalog = { path = "../roym_catalog" }
+syneroym-roym-transaction = { path = "../roym_transaction" }
+syneroym-roym-directory = { path = "../roym_directory" }
+tokio = { workspace = true, features = ["full"] }
+tempfile.workspace = true
+
+
+[package.metadata.component.target.dependencies]
+"syneroym:data-layer" = { path = "wit/deps/data-layer" }
+"syneroym:blob-store" = { path = "wit/deps/blob-store" }
+"syneroym:messaging" = { path = "wit/deps/messaging" }
+"syneroym:conversation" = { path = "wit/deps/conversation" }
+"syneroym:proxy" = { path = "wit/deps/proxy" }
+"syneroym:app-config" = { path = "wit/deps/app-config" }
+"syneroym:vault" = { path = "wit/deps/vault" }
+"syneroym:http" = { path = "wit/deps/http" }

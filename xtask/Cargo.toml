@@ -11,3 +11,5 @@ serde_json.workspace = true
 sysinfo.workspace = true
 chrono.workspace = true
 walkdir = "2.5.0"
+toml.workspace = true
+

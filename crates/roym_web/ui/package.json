@@ -1,0 +1,20 @@
+{
+  "name": "syneroym-roym-hub-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "pack": "tar -czf bundle.tar.gz -C dist .",
+    "preview": "vite preview",
+    "lint": "eslint src/"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.4.0",
+    "vite": "^5.2.0"
+  }
+}

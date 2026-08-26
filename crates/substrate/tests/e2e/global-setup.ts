@@ -42,11 +42,25 @@ export default async function globalSetup() {
     throw new Error(`WASM artifact was not found at expected path: ${WASM_ARTIFACT}`);
   }
 
+  fs.mkdirSync(TEST_DIR, { recursive: true });
   const assetsArchive = path.join(TEST_DIR, 'miniapp-demo1-wasm-assets.tar.gz');
   // COPYFILE_DISABLE stops macOS tar from adding ._ AppleDouble entries, which
   // would land in the manifest as junk paths.
   execSync(`COPYFILE_DISABLE=1 tar -czf "${assetsArchive}" -C "${path.join(WASM_FIXTURE_DIR, 'static')}" .`,
            { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+
+  console.log('Building Roym Hub UI bundle...');
+  const roymUiDir = path.join(WORKSPACE_DIR, 'crates/roym_web/ui');
+  execSync('npm run build && npm run pack', { cwd: roymUiDir, stdio: 'inherit' });
+
+  console.log('Building Roym WASM components...');
+  const roymServices = ['profile', 'conversation', 'catalog', 'transaction', 'directory', 'web'];
+  for (const svc of roymServices) {
+    execSync(`cargo component build --release --target wasm32-wasip2 -p syneroym-roym-${svc}`, {
+      cwd: WORKSPACE_DIR,
+      stdio: 'inherit',
+    });
+  }
 
   console.log('Building Cargo binaries...');
   execSync(`cargo build ${buildFlag} --bin roymctl`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
@@ -95,6 +109,7 @@ bootstrap_page_bind_address = "0.0.0.0:7662"
 
 [roles.client_gateway]
 http_port = 7660
+person_identities_dir = "${path.join(TEST_DIR, 'identities')}"
 
 [parent_coordinator.iroh]
 url = "http://127.0.0.1:7664"
@@ -241,12 +256,77 @@ registry_url = "http://127.0.0.1:7661"
     `--custom-config "${path.join(WASM_FIXTURE_DIR, 'routes.json')}"`,
     { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
+  // Roym Hub & Services Setup
+  console.log('Creating alice person identity...');
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity create --name alice`, {
+    cwd: WORKSPACE_DIR,
+    stdio: 'inherit',
+  });
+
+  console.log('Creating Roym web service identity...');
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity create --name roym_web`, {
+    cwd: WORKSPACE_DIR,
+    stdio: 'inherit',
+  });
+  const roymWebIdentityOutput = execSync(
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity show --name roym_web`,
+    { cwd: WORKSPACE_DIR }
+  ).toString();
+  const roymWebDidMatch = roymWebIdentityOutput.match(/(did:key:[a-z0-9]+)/);
+  if (!roymWebDidMatch) throw new Error("Could not find Roym web DID in roymctl output");
+  const roymWebDid = roymWebDidMatch[1];
+  console.log('Roym Web DID:', roymWebDid);
+
+  console.log('Registering Roym web service in Community Registry...');
+  execSync(
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 registry register --identity roym_web --substrate ${substrateDid} --nickname roym`,
+    { cwd: WORKSPACE_DIR, stdio: 'inherit' }
+  );
+
+  const roymWebAliasOutput = execSync(
+    `"${ROYMCTL_BIN}" alias ${roymWebDid} --nickname roym --interface http-native`,
+    { cwd: WORKSPACE_DIR }
+  ).toString().trim();
+  const roymWebAlias = roymWebAliasOutput.split('\n').pop()?.trim();
+  if (!roymWebAlias) throw new Error("Could not calculate Roym web app alias");
+  console.log('Roym Web Alias:', roymWebAlias);
+
+  console.log('Deploying Roym Web Service...');
+  const roymWebWasm = path.join(WORKSPACE_DIR, 'target/wasm32-wasip2/release/syneroym_roym_web.wasm');
+  const roymWebAssets = path.join(WORKSPACE_DIR, 'crates/roym_web/ui/bundle.tar.gz');
+  const roymRoutes = path.join(TEST_DIR, 'roym-web-routes.json');
+  fs.writeFileSync(roymRoutes, JSON.stringify({
+    http_routes: [
+      { method: 'GET', path: '/health', target: 'guest', operation: 'handle-request', public: true },
+      { method: 'POST', path: '/rpc', target: 'guest', operation: 'handle-request', public: true },
+    ]
+  }));
+
+  const ROYM_WEB_IFACES = [
+    'syneroym:http/incoming-handler@0.1.0',
+    'syneroym:http/websocket-handler@0.1.0',
+    'syneroym:messaging/guest-api@0.1.0',
+    'syneroym:messaging/stream-types@0.1.0',
+  ].join(',');
+
+  execSync(
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 ` +
+    `--substrate ${substrateDid} --as owner svc deploy --svc-id ${roymWebDid} ` +
+    `--interfaces ${ROYM_WEB_IFACES} --wasm "${roymWebWasm}" ` +
+    `--assets "${roymWebAssets}" --asset-visibility public ` +
+    `--custom-config "${roymRoutes}"`,
+    { cwd: WORKSPACE_DIR, stdio: 'inherit' }
+  );
+
   // Set environment variables for tests
   process.env.SUBSTRATE_DID = substrateDid;
   process.env.APP_DID = appDid;
   process.env.APP_ALIAS = appAlias;
   process.env.WASM_APP_DID = wasmDid;
   process.env.WASM_APP_ALIAS = wasmAlias;
+  process.env.ROYM_WEB_DID = roymWebDid;
+  process.env.ROYM_WEB_ALIAS = roymWebAlias;
+  process.env.ROYM_HUB_URL = `http://${roymWebAlias}:7660`;
 
   console.log('--- E2E Global Setup Complete ---\n');
 }

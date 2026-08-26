@@ -1,12 +1,11 @@
 use std::{
-    cmp::Reverse,
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
     process::{Command, Stdio},
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use chrono::Utc;
 use serde_json::Value;
 use sysinfo::System;
@@ -36,7 +35,133 @@ fn get_sys_info() -> (String, String, String) {
     (os, cpu, memory)
 }
 
-fn main() -> Result<()> {
+fn check_roym_deps() -> Result<()> {
+    println!("Checking Roym service crate dependency hygiene...");
+    let siblings = [
+        "syneroym-roym-web",
+        "syneroym-roym-conversation",
+        "syneroym-roym-profile",
+        "syneroym-roym-catalog",
+        "syneroym-roym-transaction",
+        "syneroym-roym-directory",
+    ];
+
+    let crate_dirs = [
+        "crates/roym_web",
+        "crates/roym_conversation",
+        "crates/roym_profile",
+        "crates/roym_catalog",
+        "crates/roym_transaction",
+        "crates/roym_directory",
+    ];
+
+    let allowed_target_independent = [
+        "syneroym-app-host",
+        "syneroym-roym-core",
+        "serde",
+        "serde_json",
+        "async-trait",
+        "thiserror",
+    ];
+
+    let allowed_wasm32 = ["wit-bindgen", "syneroym-wit-interfaces"];
+
+    let mut violations = Vec::new();
+
+    for dir in &crate_dirs {
+        let manifest_path = Path::new(dir).join("Cargo.toml");
+        let content = fs::read_to_string(&manifest_path)?;
+        let manifest: toml::Value = toml::from_str(&content)?;
+
+        let this_pkg = manifest
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str())
+            .unwrap_or(dir);
+
+        // 1. Check target-independent [dependencies]
+        if let Some(deps) = manifest.get("dependencies").and_then(|d| d.as_table()) {
+            for dep in deps.keys() {
+                if siblings.contains(&dep.as_str()) {
+                    violations.push(format!(
+                        "{this_pkg}: [dependencies] contains sibling crate dependency '{dep}'"
+                    ));
+                } else if !allowed_target_independent.contains(&dep.as_str()) {
+                    violations.push(format!(
+                        "{this_pkg}: [dependencies] contains unallowed dependency '{dep}'"
+                    ));
+                }
+            }
+        }
+
+        // 2. Check [target.'cfg(target_arch = "wasm32")'.dependencies]
+        if let Some(target_wasm) = manifest
+            .get("target")
+            .and_then(|t| t.get("cfg(target_arch = \"wasm32\")"))
+            .and_then(|c| c.get("dependencies"))
+            .and_then(|d| d.as_table())
+        {
+            for dep in target_wasm.keys() {
+                if siblings.contains(&dep.as_str()) {
+                    violations.push(format!(
+                        "{this_pkg}: wasm32 dependencies contains sibling crate '{dep}'"
+                    ));
+                } else if !allowed_wasm32.contains(&dep.as_str()) {
+                    violations.push(format!(
+                        "{this_pkg}: wasm32 dependencies contains unallowed dependency '{dep}'"
+                    ));
+                }
+            }
+        }
+
+        // 3. Check [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+        if let Some(target_native) = manifest
+            .get("target")
+            .and_then(|t| t.get("cfg(not(target_arch = \"wasm32\"))"))
+            .and_then(|c| c.get("dependencies"))
+            .and_then(|d| d.as_table())
+        {
+            for dep in target_native.keys() {
+                if siblings.contains(&dep.as_str()) {
+                    violations.push(format!(
+                        "{this_pkg}: native dependencies contains sibling crate '{dep}'"
+                    ));
+                }
+            }
+        }
+
+        // 4. Check component metadata dependencies
+        if let Some(meta_deps) = manifest
+            .get("package")
+            .and_then(|p| p.get("metadata"))
+            .and_then(|m| m.get("component"))
+            .and_then(|c| c.get("target"))
+            .and_then(|t| t.get("dependencies"))
+            .and_then(|d| d.as_table())
+        {
+            for dep in meta_deps.keys() {
+                if siblings.contains(&dep.as_str()) {
+                    violations.push(format!(
+                        "{this_pkg}: component metadata dependencies contains sibling crate \
+                         '{dep}'"
+                    ));
+                }
+            }
+        }
+    }
+
+    if !violations.is_empty() {
+        for v in &violations {
+            eprintln!("ERROR: {v}");
+        }
+        bail!("Dependency hygiene check failed with {} violation(s)", violations.len());
+    }
+
+    println!("All Roym service crates adhere to dependency hygiene rules.");
+    Ok(())
+}
+
+fn perf_summary() -> Result<()> {
     println!("Gathering environment details...");
     let commit = get_git_commit();
     let (os, cpu, mem) = get_sys_info();
@@ -66,7 +191,6 @@ fn main() -> Result<()> {
                 && let Some(mean) =
                     json.get("mean").and_then(|m| m.get("point_estimate")).and_then(|p| p.as_f64())
             {
-                // Extract benchmark name from path
                 let parts: Vec<_> = entry.path().iter().collect();
                 if parts.len() >= 4 {
                     let name = parts[parts.len() - 3].to_string_lossy().to_string();
@@ -103,28 +227,19 @@ fn main() -> Result<()> {
         .stderr(Stdio::inherit())
         .status()?;
 
-    // find newest concurrency json
     let mut concurrency_rows = Vec::new();
-    let perf_results = Path::new("tests/perf/results");
-    if perf_results.exists() {
-        let mut concurrency_files: Vec<_> = fs::read_dir(perf_results)?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with("concurrency_"))
-            .collect();
-        concurrency_files.sort_by_key(|a| Reverse(a.metadata().unwrap().modified().unwrap()));
-        if let Some(file) = concurrency_files.first()
-            && let Ok(content) = fs::read_to_string(file.path())
-            && let Ok(json) = serde_json::from_str::<Value>(&content)
-            && let Some(summaries) = json.get("summaries").and_then(|s| s.as_array())
-        {
-            for s in summaries {
-                let name = s.get("name").and_then(|n| n.as_str()).unwrap_or("Unknown");
-                let thr = s.get("throughput_rps").and_then(|t| t.as_f64()).unwrap_or(0.0);
-                let err = s.get("error_rate").and_then(|e| e.as_f64()).unwrap_or(0.0) * 100.0;
-                let p95 = s.get("latency_p95_ms").and_then(|l| l.as_f64()).unwrap_or(0.0);
-                concurrency_rows
-                    .push(format!("| {} | {:.1} | {:.2}% | {:.2} ms |", name, thr, err, p95));
-            }
+    let concurrency_report = Path::new("target/perf/concurrency_report.json");
+    if concurrency_report.exists()
+        && let Ok(content) = fs::read_to_string(concurrency_report)
+        && let Ok(json) = serde_json::from_str::<Value>(&content)
+        && let Some(arr) = json.as_array()
+    {
+        for item in arr {
+            let sc = item.get("scenario").and_then(|s| s.as_str()).unwrap_or("unknown");
+            let thr = item.get("throughput").and_then(|t| t.as_f64()).unwrap_or(0.0);
+            let err = item.get("error_rate").and_then(|e| e.as_f64()).unwrap_or(0.0);
+            let p95 = item.get("p95_latency_ms").and_then(|p| p.as_f64()).unwrap_or(0.0);
+            concurrency_rows.push(format!("| {} | {:.1} | {:.2}% | {:.2} ms |", sc, thr, err, p95));
         }
     }
 
@@ -135,25 +250,18 @@ fn main() -> Result<()> {
         .stderr(Stdio::inherit())
         .status()?;
 
-    // find newest soak json
     let mut soak_rows = Vec::new();
-    if perf_results.exists() {
-        let mut soak_files: Vec<_> = fs::read_dir(perf_results)?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with("soak_"))
-            .collect();
-        soak_files.sort_by_key(|a| Reverse(a.metadata().unwrap().modified().unwrap()));
-        if let Some(file) = soak_files.first()
-            && let Ok(content) = fs::read_to_string(file.path())
-            && let Ok(json) = serde_json::from_str::<Value>(&content)
-        {
-            let dur = json.get("duration_secs").and_then(|d| d.as_u64()).unwrap_or(0);
-            let thr = json.get("rpc_throughput").and_then(|t| t.as_f64()).unwrap_or(0.0);
-            let pass = json.get("overall_pass").and_then(|p| p.as_bool()).unwrap_or(false);
-            let rss = json.get("rss_peak_mb").and_then(|r| r.as_f64()).unwrap_or(0.0);
-            let res = if pass { "✅ PASS" } else { "❌ FAIL" };
-            soak_rows.push(format!("| {}s | {:.1} | {:.1} MB | {} |", dur, thr, rss, res));
-        }
+    let soak_report = Path::new("target/perf/soak_report.json");
+    if soak_report.exists()
+        && let Ok(content) = fs::read_to_string(soak_report)
+        && let Ok(json) = serde_json::from_str::<Value>(&content)
+    {
+        let dur = json.get("duration_secs").and_then(|d| d.as_u64()).unwrap_or(0);
+        let thr = json.get("rpc_throughput").and_then(|t| t.as_f64()).unwrap_or(0.0);
+        let pass = json.get("overall_pass").and_then(|p| p.as_bool()).unwrap_or(false);
+        let rss = json.get("rss_peak_mb").and_then(|r| r.as_f64()).unwrap_or(0.0);
+        let res = if pass { "✅ PASS" } else { "❌ FAIL" };
+        soak_rows.push(format!("| {}s | {:.1} | {:.1} MB | {} |", dur, thr, rss, res));
     }
 
     println!("Updating PERF_SUMMARY.md...");
@@ -210,4 +318,13 @@ fn main() -> Result<()> {
 
     println!("Done! Results appended to PERF_SUMMARY.md");
     Ok(())
+}
+
+fn main() -> Result<()> {
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("check-roym-deps") => check_roym_deps(),
+        Some("perf-summary") | None => perf_summary(),
+        Some(other) => bail!("Unknown xtask command: {other}"),
+    }
 }

@@ -72,6 +72,13 @@ syneroym-conversation = { path = "crates/conversation" }
 miniapp-demo1-web = { path = "test-components/miniapp-demo1-web" }
 syneroym-test-dual-build-fixture = { path = "test-components/dual-build-fixture" }
 roymctl = { path = "apps/roymctl" }
+syneroym-roym-core = { path = "crates/roym_core" }
+syneroym-roym-web = { path = "crates/roym_web" }
+syneroym-roym-conversation = { path = "crates/roym_conversation" }
+syneroym-roym-profile = { path = "crates/roym_profile" }
+syneroym-roym-catalog = { path = "crates/roym_catalog" }
+syneroym-roym-transaction = { path = "crates/roym_transaction" }
+syneroym-roym-directory = { path = "crates/roym_directory" }
 
 # Networking & Async
 tokio = { version = "1.50", features = ["full"] }

@@ -6,7 +6,7 @@
 use std::{
     fmt::{self, Debug, Formatter},
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     str,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -22,7 +22,7 @@ use syneroym_core::{
     protocol_utils::{ROUTING_KEY_HEADER, SESSION_COOKIE_NAME, TargetHost, parse_target_host},
     util::load_or_generate_node_identity,
 };
-use syneroym_identity::{Identity, substrate};
+use syneroym_identity::{DelegationCertificate, Identity, delegation::SCOPE_ROUTING, substrate};
 use syneroym_rpc::CapabilityToken;
 use syneroym_sdk::{
     SyneroymClient,
@@ -62,6 +62,8 @@ fn read_capability_token(path: &Path) -> Result<CapabilityToken> {
 #[derive(Debug)]
 struct GatewayState {
     registry_url: String,
+    enable_bep0044_dht: bool,
+    person_identities_dir: Option<PathBuf>,
     clients: DashMap<String, Arc<Mutex<SyneroymClient>>>,
     /// The node's own identity (ADR-0016 §0.5) -- used for establishing
     /// connections and as the fallback self-asserted caller identity when
@@ -109,6 +111,10 @@ impl ClientGateway {
 
         let port = config.roles.client_gateway.as_ref().map_or(7000, |g| g.http_port);
         let registry_url = config.substrate.registry_url.clone().unwrap_or_default();
+        let enable_bep0044_dht = config.substrate.enable_bep0044_dht;
+        let person_identities_dir =
+            config.roles.client_gateway.as_ref().and_then(|g| g.person_identities_dir.clone());
+        info!("ClientGateway initialized with person_identities_dir: {:?}", person_identities_dir);
         let identity = load_or_generate_node_identity(config)?;
 
         let session_ttl_secs = config
@@ -120,7 +126,7 @@ impl ClientGateway {
         let sessions = SessionStore::new(node_did, session_ttl_secs);
 
         let anchor_lookup: Arc<dyn MasterAnchorResolver> = Arc::new(RegistryClient::new(
-            config.substrate.enable_bep0044_dht,
+            enable_bep0044_dht,
             config.substrate.registry_url.clone(),
         ));
 
@@ -162,6 +168,8 @@ impl ClientGateway {
 
         let state = Arc::new(GatewayState {
             registry_url,
+            enable_bep0044_dht,
+            person_identities_dir,
             clients: DashMap::new(),
             identity,
             app_host_resolver,
@@ -231,7 +239,7 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
     let mut bytes_read = 0;
 
     enum HeaderRead {
-        Complete(usize),
+        Complete { header_len: usize, bytes_read: usize },
         TooLarge,
         ParseError(String),
         Closed,
@@ -252,7 +260,9 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
                 let mut req = Request::new(&mut headers);
 
                 match req.parse(&buf[..bytes_read]) {
-                    Ok(Status::Complete(len)) => return Ok(HeaderRead::Complete(len)),
+                    Ok(Status::Complete(len)) => {
+                        return Ok(HeaderRead::Complete { header_len: len, bytes_read });
+                    }
                     Ok(Status::Partial) => {
                         if bytes_read >= MAX_HEADER_BYTES {
                             return Ok(HeaderRead::TooLarge);
@@ -264,8 +274,8 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
         })
         .await;
 
-    let header_len = match read_res {
-        Ok(Ok(HeaderRead::Complete(len))) => len,
+    let (header_len, total_bytes_read) = match read_res {
+        Ok(Ok(HeaderRead::Complete { header_len, bytes_read })) => (header_len, bytes_read),
         Ok(Ok(HeaderRead::TooLarge)) => {
             return write_json_rpc_error(&mut stream, 400, "Headers too large").await;
         }
@@ -287,10 +297,11 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
 
     let mut headers = [EMPTY_HEADER; 64];
     let mut req = Request::new(&mut headers);
-    let _ = req.parse(&buf[..bytes_read]);
+    let _ = req.parse(&buf[..header_len]);
 
     let method = req.method.unwrap_or("");
     let path = req.path.unwrap_or("");
+    info!("Gateway parsed request method='{}', path='{}'", method, path);
     let kind = session::classify(method, path);
     let credential = session::extract_credential(req.headers);
 
@@ -323,7 +334,7 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
             .await;
         }
 
-        let mut body = buf[header_len..bytes_read].to_vec();
+        let mut body = buf[header_len..total_bytes_read].to_vec();
         let mut chunk = [0u8; 1024];
         let body_read_res = time::timeout(READ_TIMEOUT, async {
             while body.len() < content_length {
@@ -437,7 +448,8 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
 
     let (forwarded_bytes, delegation) = match credential {
         Some((token, src)) => {
-            let stripped = session::strip_credential(&buf[..bytes_read], header_len, &token, src);
+            let stripped =
+                session::strip_credential(&buf[..total_bytes_read], header_len, &token, src);
             let s_opt = state.sessions.lookup(&token);
             if let Some(ref s) = s_opt {
                 debug!(person = %s.person_did, "gateway proxying under a person session");
@@ -446,20 +458,91 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
         }
         None => (None, None),
     };
-    let bytes_to_forward = forwarded_bytes.as_deref().unwrap_or(&buf[..bytes_read]);
+    let bytes_to_forward =
+        prepare_forwarded_bytes(&buf[..total_bytes_read], header_len, forwarded_bytes);
 
     let passthrough_identity = Identity::from_bytes(&state.identity.to_bytes());
     SyneroymClient::passthrough_with_conn(
         conn,
         &service_id,
         &interface,
-        bytes_to_forward,
+        &bytes_to_forward,
         &mut stream,
         &passthrough_identity,
         delegation.as_ref(),
     )
     .await?;
+    let _ = stream.shutdown().await;
     Ok(())
+}
+
+fn prepare_forwarded_bytes(raw: &[u8], header_len: usize, stripped: Option<Vec<u8>>) -> Vec<u8> {
+    let source_bytes = stripped.as_deref().unwrap_or(raw);
+    let mut headers = [EMPTY_HEADER; 64];
+    let mut req = Request::new(&mut headers);
+    let effective_header_len = if let Ok(Status::Complete(len)) = req.parse(source_bytes) {
+        len
+    } else {
+        header_len.min(source_bytes.len())
+    };
+
+    // WebSocket upgrade requests carry `Connection: Upgrade`; rewriting it to
+    // `Connection: close` kills the handshake. Return the bytes unmodified so
+    // the upstream receives the correct upgrade negotiation.
+    let is_ws_upgrade = req.headers.iter().any(|h| {
+        h.name.eq_ignore_ascii_case("upgrade") && h.value.eq_ignore_ascii_case(b"websocket")
+    });
+    if is_ws_upgrade {
+        return source_bytes.to_vec();
+    }
+
+    let head_bytes = &source_bytes[..effective_header_len];
+    let tail_bytes = &source_bytes[effective_header_len..];
+
+    let mut out_head = Vec::with_capacity(head_bytes.len() + 32);
+    let mut has_conn = false;
+
+    let mut remaining = head_bytes;
+    while !remaining.is_empty() {
+        let (line, rest) = match remaining.windows(2).position(|w| w == b"\r\n") {
+            Some(pos) => (&remaining[..pos], &remaining[pos + 2..]),
+            None => (remaining, &[][..]),
+        };
+        remaining = rest;
+
+        if line.is_empty() {
+            break;
+        }
+
+        if line.len() >= 11 && line[..11].eq_ignore_ascii_case(b"connection:") {
+            out_head.extend_from_slice(b"Connection: close\r\n");
+            has_conn = true;
+        } else {
+            out_head.extend_from_slice(line);
+            out_head.extend_from_slice(b"\r\n");
+        }
+    }
+
+    if !has_conn {
+        out_head.extend_from_slice(b"Connection: close\r\n");
+    }
+    out_head.extend_from_slice(b"\r\n");
+
+    let mut result = Vec::with_capacity(out_head.len() + tail_bytes.len());
+    result.extend_from_slice(&out_head);
+    result.extend_from_slice(tail_bytes);
+    result
+}
+
+async fn write_login_grant(stream: &mut TcpStream, grant: session::LoginResponse) -> Result<()> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let remaining_ttl = grant.expires_at_secs.saturating_sub(now);
+    let cookie = format!(
+        "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Strict",
+        SESSION_COOKIE_NAME, grant.token, remaining_ttl
+    );
+    let body_val = serde_json::to_value(&grant)?;
+    write_json(stream, 200, &body_val, Some(&cookie)).await
 }
 
 async fn handle_session_request(
@@ -489,19 +572,158 @@ async fn handle_session_request(
                 }
             };
             match state.sessions.login(&req, state.anchor_lookup.as_ref()).await {
-                Ok(grant) => {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    let remaining_ttl = grant.expires_at_secs.saturating_sub(now);
-                    let cookie = format!(
-                        "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Strict",
-                        SESSION_COOKIE_NAME, grant.token, remaining_ttl
-                    );
-                    let body_val = serde_json::to_value(&grant)?;
-                    write_json(stream, 200, &body_val, Some(&cookie)).await
+                Ok(grant) => write_login_grant(stream, grant).await,
+                Err(e) => {
+                    write_json(
+                        stream,
+                        e.http_status(),
+                        &serde_json::json!({"error": e.message()}),
+                        None,
+                    )
+                    .await
                 }
+            }
+        }
+        SessionRoute::Identities => {
+            let dir = match &state.person_identities_dir {
+                Some(d) => d,
+                None => {
+                    return write_json(
+                        stream,
+                        404,
+                        &serde_json::json!({"error": "local person identities are not configured"}),
+                        None,
+                    )
+                    .await;
+                }
+            };
+            let names = session::list_person_identities(dir);
+            info!("SessionRoute::Identities dir={:?}, found names: {:?}", dir, names);
+            let resp = session::IdentitiesResponse { identities: names };
+            let body_val = serde_json::to_value(&resp)?;
+            write_json(stream, 200, &body_val, None).await
+        }
+        SessionRoute::LoginLocal => {
+            let dir = match &state.person_identities_dir {
+                Some(d) => d,
+                None => {
+                    return write_json(
+                        stream,
+                        404,
+                        &serde_json::json!({"error": "local person identities are not configured"}),
+                        None,
+                    )
+                    .await;
+                }
+            };
+            let req: session::LocalLoginRequest = match serde_json::from_slice(body) {
+                Ok(r) => r,
+                Err(_) => {
+                    return write_json(
+                        stream,
+                        400,
+                        &serde_json::json!({"error": "malformed login request"}),
+                        None,
+                    )
+                    .await;
+                }
+            };
+            let available = session::list_person_identities(dir);
+            if !available.contains(&req.identity) {
+                return write_json(
+                    stream,
+                    404,
+                    &serde_json::json!({"error": "no such local identity"}),
+                    None,
+                )
+                .await;
+            }
+            let key_path = if dir.join("identities").join(format!("{}.key", req.identity)).exists()
+            {
+                dir.join("identities").join(format!("{}.key", req.identity))
+            } else {
+                dir.join(format!("{}.key", req.identity))
+            };
+            let person = match Identity::load_from_path(&key_path) {
+                Ok(id) => id,
+                Err(e) => {
+                    return write_json(
+                        stream,
+                        500,
+                        &serde_json::json!({"error": format!("could not load identity file {}: {e}", key_path.display())}),
+                        None,
+                    )
+                    .await;
+                }
+            };
+            let person_did = substrate::derive_did_key(&person.public_key());
+            let ch = state.sessions.issue_challenge();
+            let node = match substrate::resolve_did_key(&ch.node_did) {
+                Ok(pk) => pk,
+                Err(_) => {
+                    return write_json(
+                        stream,
+                        500,
+                        &serde_json::json!({"error": "invalid node DID in challenge"}),
+                        None,
+                    )
+                    .await;
+                }
+            };
+            let cert = match DelegationCertificate::issue(
+                &person,
+                node,
+                state.sessions.ttl_secs(),
+                SCOPE_ROUTING.to_string(),
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    return write_json(
+                        stream,
+                        500,
+                        &serde_json::json!({"error": format!("could not issue delegation certificate: {e}")}),
+                        None,
+                    )
+                    .await;
+                }
+            };
+            let assertion_val = session::assertion_value(&ch.node_did, &ch.nonce, &person_did);
+            let sig = match person.sign_json(&assertion_val) {
+                Ok(s) => s,
+                Err(e) => {
+                    return write_json(
+                        stream,
+                        500,
+                        &serde_json::json!({"error": format!("could not sign assertion: {e}")}),
+                        None,
+                    )
+                    .await;
+                }
+            };
+
+            if !state.registry_url.is_empty() {
+                let reg_client =
+                    RegistryClient::new(state.enable_bep0044_dht, Some(state.registry_url.clone()));
+                if let Err(e) = reg_client.refresh_master_anchor(&person).await {
+                    return write_json(
+                        stream,
+                        502,
+                        &serde_json::json!({"error": format!("could not publish this person's anchor: {e}")}),
+                        None,
+                    )
+                    .await;
+                }
+            }
+
+            let login_req = session::LoginRequest {
+                person_did,
+                nonce: ch.nonce,
+                signature: sig,
+                delegation: cert,
+            };
+
+            match state.sessions.login(&login_req, state.anchor_lookup.as_ref()).await {
+                Ok(grant) => write_login_grant(stream, grant).await,
                 Err(e) => {
                     write_json(
                         stream,
@@ -690,6 +912,8 @@ mod tests {
         let node_did = substrate::derive_did_key(&identity.public_key());
         GatewayState {
             registry_url: String::new(),
+            enable_bep0044_dht: false,
+            person_identities_dir: None,
             clients: DashMap::new(),
             identity,
             app_host_resolver: AppHostResolver::new(
