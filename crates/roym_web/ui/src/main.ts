@@ -1,5 +1,15 @@
 import { renderCard } from "./cards/render";
 
+declare global {
+  interface Window {
+    RoymRegistry?: { renderCard: typeof renderCard };
+  }
+}
+
+// Test hook: lets the e2e suite call the real card renderer directly with a
+// crafted fixture, instead of only ever seeing the sample gallery below.
+window.RoymRegistry = { renderCard };
+
 async function main() {
   const app = document.getElementById("app");
   if (!app) return;

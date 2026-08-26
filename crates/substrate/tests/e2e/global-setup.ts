@@ -298,15 +298,15 @@ registry_url = "http://127.0.0.1:7661"
   fs.writeFileSync(roymRoutes, JSON.stringify({
     http_routes: [
       { method: 'GET', path: '/health', target: 'guest', operation: 'handle-request', public: true },
-      { method: 'POST', path: '/rpc', target: 'guest', operation: 'handle-request', public: true },
+      { method: 'POST', path: '/rpc', target: 'guest', operation: 'handle-request', public: false },
     ]
   }));
 
+  // Matches crates/roym_web/wit/world.wit's actual exports -- web declares
+  // no messaging interfaces.
   const ROYM_WEB_IFACES = [
     'syneroym:http/incoming-handler@0.1.0',
     'syneroym:http/websocket-handler@0.1.0',
-    'syneroym:messaging/guest-api@0.1.0',
-    'syneroym:messaging/stream-types@0.1.0',
   ].join(',');
 
   execSync(
