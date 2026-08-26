@@ -19,7 +19,7 @@ pub async fn status<H: AppHost>(_host: &H) -> Result<String, String> {
 
 pub async fn invoke<H: AppHost>(_host: &H, req: Request) -> Response {
     match req.method.as_str() {
-        "transaction.ping" | "request.ping" | "quote.ping" | "agreement.ping" | "receipt.ping" => {
+        "request.ping" | "quote.ping" | "agreement.ping" | "receipt.ping" => {
             Response::ok(json!({ "service": services::TRANSACTION.name }))
         }
         other => Response::method_not_found(other),

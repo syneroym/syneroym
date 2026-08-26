@@ -1479,35 +1479,69 @@ async fn init_roym(
     if let Some(path) = config.roles.roym.as_ref().and_then(|r| r.ui_bundle_path.as_ref()) {
         match fs::read(path) {
             Ok(archive) => {
-                let mut written = BTreeSet::new();
-                let dek = shared
-                    .storage_provider
-                    .load_service_dek(&web_id, &shared.key_store)
-                    .await
-                    .unwrap_or(None);
-                let manifest = assets::unpack_asset_bundle(
-                    &web_id,
-                    &archive,
-                    None,
-                    &roym_http_routes(),
-                    &shared.blob_provider,
-                    dek.clone(),
-                    &mut written,
-                )
-                .await;
-                match manifest {
-                    Ok(m) => {
-                        let manifest_hash =
-                            assets::store_manifest(&web_id, &m, &shared.blob_provider, dek)
+                // A DEK load failure must not silently downgrade to
+                // unpacking the bundle unencrypted -- refuse the whole
+                // registration instead, the same way an unpack or
+                // manifest-store failure below does.
+                match shared.storage_provider.load_service_dek(&web_id, &shared.key_store).await {
+                    Ok(dek) => {
+                        let mut written = BTreeSet::new();
+                        let manifest = assets::unpack_asset_bundle(
+                            &web_id,
+                            &archive,
+                            None,
+                            &roym_http_routes(),
+                            &shared.blob_provider,
+                            dek.clone(),
+                            &mut written,
+                        )
+                        .await;
+                        match manifest {
+                            Ok(m) => {
+                                match assets::store_manifest(
+                                    &web_id,
+                                    &m,
+                                    &shared.blob_provider,
+                                    dek,
+                                )
                                 .await
-                                .unwrap_or_default();
-                        shared.assets.insert(
-                            web_id.clone(),
-                            ServiceAssets { manifest: Arc::new(m), public: true, manifest_hash },
-                        );
+                                {
+                                    Ok(manifest_hash) => {
+                                        shared.assets.insert(
+                                            web_id.clone(),
+                                            ServiceAssets {
+                                                manifest: Arc::new(m),
+                                                public: true,
+                                                manifest_hash,
+                                            },
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            ?path,
+                                            %e,
+                                            "Roym UI bundle manifest could not be stored; serving \
+                                             API without Hub"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    ?path,
+                                    %e,
+                                    "Roym UI bundle unpack failed; serving API without Hub"
+                                );
+                            }
+                        }
                     }
                     Err(e) => {
-                        tracing::warn!(?path, %e, "Roym UI bundle unpack failed; serving API without Hub");
+                        tracing::warn!(
+                            ?path,
+                            %e,
+                            "Roym UI bundle's service DEK could not be loaded; serving API \
+                             without Hub rather than unpacking it unencrypted"
+                        );
                     }
                 }
             }
