@@ -836,12 +836,16 @@ async fn scenario_8_status_on_all_six_services() {
     }
 }
 
+// The web app keeps no per-connection state (CON-1): with `WS_CONNS`
+// dropped, there is nothing left to assert registered/removed, so this
+// only checks the lifecycle calls are callable and return without error
+// on both drivers.
 #[tokio::test]
 async fn scenario_9_websocket_lifecycle_fires() {
     let h = harness().await;
     let conn_id = "test-ws-conn-123".to_string();
-
     let caller_ctx = caller();
+
     NativeWeb::on_open(&h.native.web, caller_ctx.clone(), conn_id.clone()).await;
     NativeWeb::on_message(
         &h.native.web,
@@ -852,6 +856,20 @@ async fn scenario_9_websocket_lifecycle_fires() {
     )
     .await;
     NativeWeb::on_close(&h.native.web, caller_ctx, conn_id.clone()).await;
+
+    let web_id = did_for_service("web");
+    h.wasm.engine.handle_websocket_on_open(&web_id, &conn_id, Some(caller())).await;
+    h.wasm
+        .engine
+        .handle_websocket_on_message(
+            &web_id,
+            &conn_id,
+            b"hello".to_vec(),
+            FrameKind::Text,
+            Some(caller()),
+        )
+        .await;
+    h.wasm.engine.handle_websocket_on_close(&web_id, &conn_id, Some(caller())).await;
 }
 
 #[tokio::test]

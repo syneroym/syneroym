@@ -1,7 +1,5 @@
 //! Web entrypoint service application logic, target-independent.
 
-use std::{collections::HashSet, sync::Mutex};
-
 use serde::Deserialize;
 use serde_json::{Value, json};
 use syneroym_app_host::{
@@ -17,8 +15,6 @@ use syneroym_roym_core::{
 };
 
 pub const SCHEMA_VERSION: u32 = 1;
-
-static WS_CONNS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 pub async fn status<H: AppHost>(_host: &H) -> Result<String, String> {
     Ok(json!({
@@ -238,12 +234,9 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
     }
 }
 
-pub async fn on_ws_open<H: AppHost>(_host: &H, conn: String) {
-    if let Ok(mut guard) = WS_CONNS.lock() {
-        let set = guard.get_or_insert_with(HashSet::new);
-        set.insert(conn);
-    }
-}
+// No websocket product behavior exists yet, and nothing reads connection
+// state, so these stay no-ops rather than carry state nothing consumes.
+pub async fn on_ws_open<H: AppHost>(_host: &H, _conn: String) {}
 
 pub async fn on_ws_message<H: AppHost>(
     _host: &H,
@@ -251,13 +244,6 @@ pub async fn on_ws_message<H: AppHost>(
     _frame: Vec<u8>,
     _kind: FrameKind,
 ) {
-    // In C2, echo nothing
 }
 
-pub async fn on_ws_close<H: AppHost>(_host: &H, conn: String) {
-    if let Ok(mut guard) = WS_CONNS.lock()
-        && let Some(set) = guard.as_mut()
-    {
-        set.remove(&conn);
-    }
-}
+pub async fn on_ws_close<H: AppHost>(_host: &H, _conn: String) {}
