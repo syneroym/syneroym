@@ -476,7 +476,10 @@ async fn harness() -> Harness {
 
     let app_instance = AppInstanceId::new("roym");
     let wasm_inventory = Arc::new(StaticInventory::new());
-    for svc in services::SIBLINGS {
+    // `conversation` is left out of web's topology deliberately: scenario 5
+    // needs a real unbound dependency, and every other scenario only
+    // exercises services this loop does bind.
+    for svc in services::SIBLINGS.into_iter().filter(|s| s.name != "conversation") {
         let svc_did = did_for_service(svc.name);
         wasm_inventory.register(
             TopologyKey::local(app_instance.clone(), LogicalServiceName::new(svc.name)),
@@ -554,7 +557,7 @@ async fn harness() -> Harness {
     let native_ws_senders = WebSocketSenders::new();
 
     let native_inventory = Arc::new(StaticInventory::new());
-    for svc in services::SIBLINGS {
+    for svc in services::SIBLINGS.into_iter().filter(|s| s.name != "conversation") {
         let svc_did = did_for_service(svc.name);
         native_inventory.register(
             TopologyKey::local(app_instance.clone(), LogicalServiceName::new(svc.name)),
@@ -797,6 +800,15 @@ async fn scenario_5_unbound_dependency_returns_32001() {
     let wasm_res = h.wasm.invoke_web(&req).await.unwrap();
     let native_res = h.native.invoke_web(&req).await.unwrap();
     assert_eq!(wasm_res, native_res);
+
+    // conversation is a declared dependency of web (see roym.toml), but
+    // this harness deploys web without an app instance, so it is unbound:
+    // the call must be refused with -32001, and the refusal must not
+    // repeat the dependency's DID back to the caller.
+    let resp: Response = serde_json::from_str(&wasm_res).unwrap();
+    let err = resp.error.unwrap_or_else(|| panic!("expected error, got: {wasm_res}"));
+    assert_eq!(err.code, -32001);
+    assert!(!err.message.contains("did:"), "error message must not leak a DID: {}", err.message);
 }
 
 #[tokio::test]
