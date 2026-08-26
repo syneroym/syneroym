@@ -45,3 +45,7 @@ coverage/
 *.profraw
 *.profdata
 lcov.info
+
+# Roym web UI build output packed by `npm run pack` -- rebuilt from
+# crates/roym_web/ui/src by `mise run build:roym-ui`, never hand-edited.
+crates/roym_web/ui/bundle.tar.gz
