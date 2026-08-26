@@ -25,6 +25,10 @@ runs:
         mise run build:test-components
       shell: bash
 
+    - name: Check Roym Service Crate Dependency Hygiene
+      run: cargo xtask check-roym-deps
+      shell: bash
+
     - name: Run Tests
       run: cargo test --workspace --all-targets --all-features ${{ inputs.release_flag }}
       shell: bash

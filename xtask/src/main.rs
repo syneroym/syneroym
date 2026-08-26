@@ -67,6 +67,8 @@ fn check_roym_deps() -> Result<()> {
 
     let allowed_wasm32 = ["wit-bindgen", "syneroym-wit-interfaces"];
 
+    let allowed_native = ["syneroym-rpc", "syneroym-app-host-native", "async-trait"];
+
     let mut violations = Vec::new();
 
     for dir in &crate_dirs {
@@ -126,6 +128,10 @@ fn check_roym_deps() -> Result<()> {
                 if siblings.contains(&dep.as_str()) {
                     violations.push(format!(
                         "{this_pkg}: native dependencies contains sibling crate '{dep}'"
+                    ));
+                } else if !allowed_native.contains(&dep.as_str()) {
+                    violations.push(format!(
+                        "{this_pkg}: native dependencies contains unallowed dependency '{dep}'"
                     ));
                 }
             }
