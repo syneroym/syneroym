@@ -1388,3 +1388,64 @@ async fn test_34_login_local_refuses_cross_site_sec_fetch_site() {
 
     ctx.teardown().await;
 }
+
+/// Test 35: a gateway restart forgets every session, so a cookie minted
+/// before the restart reports 401 afterward -- but login-local against the
+/// same person_identities_dir still works on the fresh instance.
+#[tokio::test]
+async fn test_35_restart_clears_session_but_login_local_still_works() {
+    let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let identities_dir = temp_dir.path().join("identities");
+    fs::create_dir_all(&identities_dir).unwrap();
+
+    let alice = Identity::generate().unwrap();
+    alice.save_to_path(identities_dir.join("alice.key")).unwrap();
+
+    let (ctx, gateway_port, _reg_url, _svc_did, _host) =
+        setup_gateway_test_node_with_options(None, Some(temp_dir.path().to_path_buf())).await;
+    let client = test_client();
+
+    let login_resp = client
+        .post(format!("http://127.0.0.1:{gateway_port}/_syneroym/session/login-local"))
+        .json(&json!({"identity": "alice"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login_resp.status(), 200);
+    let cookie_header = login_resp.headers().get("set-cookie").unwrap().to_str().unwrap();
+    let token = cookie_header.split(';').next().unwrap().split('=').nth(1).unwrap();
+
+    let whoami_resp = client
+        .get(format!("http://127.0.0.1:{gateway_port}/_syneroym/session/whoami"))
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(whoami_resp.status(), 200);
+
+    ctx.teardown().await;
+
+    let (ctx2, gateway_port2, _reg_url2, _svc_did2, _host2) =
+        setup_gateway_test_node_with_options(None, Some(temp_dir.path().to_path_buf())).await;
+
+    // The pre-restart cookie is now unrecognized.
+    let whoami_after_restart = client
+        .get(format!("http://127.0.0.1:{gateway_port2}/_syneroym/session/whoami"))
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(whoami_after_restart.status(), 401);
+
+    // login-local still works against the same identities directory.
+    let login_after_restart = client
+        .post(format!("http://127.0.0.1:{gateway_port2}/_syneroym/session/login-local"))
+        .json(&json!({"identity": "alice"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login_after_restart.status(), 200);
+
+    ctx2.teardown().await;
+}

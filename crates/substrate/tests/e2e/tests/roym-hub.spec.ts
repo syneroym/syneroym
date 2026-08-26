@@ -34,7 +34,16 @@ test.describe('Roym Hub E2E Tests', () => {
     await expect(sessionBar).toContainText('delegated');
   });
 
-  test('2. Restart / Session persistence and clean re-login state', async ({ page }) => {
+  // A real substrate restart isn't reachable from here: Playwright always
+  // runs test workers in a process separate from globalSetup.ts, which is
+  // the only place holding the spawned substrate's process handle
+  // (__SUBSTRATE_PROCESS__). The actual restart case (whoami -> 401 after
+  // a restart, login-local works again) lives in
+  // crates/substrate/tests/gateway_session_e2e.rs instead, which controls
+  // the substrate process directly. This test covers what a browser can
+  // actually observe: a session surviving a reload, and clearing cookies
+  // returning to a clean login state.
+  test('2. Session persists across reload; clearing cookies returns to login', async ({ page }) => {
     const hubUrl = process.env.ROYM_HUB_URL || 'http://127.0.0.1:7660';
     await page.goto(hubUrl);
     await page.waitForLoadState('networkidle');
@@ -72,48 +81,31 @@ test.describe('Roym Hub E2E Tests', () => {
     await page.goto(hubUrl);
     await page.waitForLoadState('networkidle');
 
-    // Test card rendering via registry and DOM
-    const cardResults = await page.evaluate(async () => {
-      const cards = [
-        { type: 'request', version: 1, title: 'Need plumbing fix', description: 'Leaking pipe' },
-        { type: 'quote', version: 1, amount: '$150', details: 'Pipe replacement parts' },
-        { type: 'agreement-receipt', version: 1, agreement_id: 'agr-123', status: 'signed' },
-        { type: 'booking-progress', version: 1, step: '2/4', message: 'Technician on way' },
-        { type: 'payment-request', version: 1, amount: '$150', currency: 'USD' },
-        { type: 'payment-acknowledgement', version: 1, tx_id: 'tx-789', status: 'paid' },
-        { type: 'fulfilment-receipt', version: 1, receipt_id: 'rec-456', summary: 'Completed' },
-        { type: 'not-a-real-type', version: 1, foo: 'bar' },
-        { type: 'quote', version: 99, amount: '$1000' },
-      ];
+    // Log in first: renderHome's own sample gallery (not a synthetic one
+    // built by this test) only renders once a session exists.
+    await page.locator('select').selectOption('alice');
+    await page.click('button:has-text("Log In")');
+    await page.waitForLoadState('networkidle');
+    await expect(page.locator('.session-bar')).toContainText('did:key:', { timeout: 10_000 });
 
-      // Dynamically render into DOM using window registry or custom renderer
-      const container = document.createElement('div');
-      container.id = 'test-cards-container';
-      document.body.appendChild(container);
-
-      // Access registered module or test rendering
-      const win = window as any;
-      const renderedTypes: string[] = [];
-
-      for (const card of cards) {
-        let el: HTMLElement;
-        if (win.RoymRegistry && win.RoymRegistry.renderCard) {
-          el = win.RoymRegistry.renderCard(card);
-        } else {
-          // Fallback renderer test
-          el = document.createElement('div');
-          el.className = 'roym-card';
-          el.setAttribute('data-card-type', card.type);
-          el.setAttribute('data-card-version', String(card.version));
-          el.textContent = `${card.type} v${card.version}`;
-        }
-        container.appendChild(el);
-        renderedTypes.push(card.type);
-      }
-      return renderedTypes;
-    });
-
-    expect(cardResults.length).toBe(9);
+    // The real gallery in main.ts's renderHome renders one sample per known
+    // card type plus two deliberately-unknown ones -- assert against the
+    // actual rendered DOM, not a fixture this test constructs.
+    const knownTypes = [
+      'request',
+      'quote',
+      'agreement-receipt',
+      'booking-progress',
+      'payment-request',
+      'payment-acknowledgement',
+      'fulfilment-receipt',
+    ];
+    for (const type of knownTypes) {
+      await expect(page.locator(`.card-${type}`)).toHaveCount(1);
+    }
+    // Two unknown samples: an unrecognized type, and a known type at an
+    // unrecognized version.
+    await expect(page.locator('.card-unknown')).toHaveCount(2);
   });
 
   test('4. Card safety: Malicious payload produces zero console errors, zero external requests, and literal text', async ({ page }) => {
@@ -131,7 +123,7 @@ test.describe('Roym Hub E2E Tests', () => {
     page.on('console', msg => {
       if (msg.type() === 'error') {
         const text = msg.text();
-        if (!text.includes('Failed to load resource') && !text.includes('Content Security Policy')) {
+        if (!text.includes('Failed to load resource')) {
           consoleErrors.push(text);
         }
       }
@@ -140,18 +132,26 @@ test.describe('Roym Hub E2E Tests', () => {
     await page.goto(hubUrl);
     await page.waitForLoadState('networkidle');
 
-    // Inject malicious payload as text content into DOM
-    const maliciousPayload = '<img src=x onerror=window.maliciousRan=true><script>window.maliciousScript=true</script><a href="javascript:window.maliciousLink=true">Click</a>';
+    // Drive the real card renderer (window.RoymRegistry, main.ts) with a
+    // malicious payload, the same object shape a `request` card's `invoke`
+    // response would carry -- not a hand-built div this test controls.
+    const maliciousPayload =
+      '<img src=x onerror=window.maliciousRan=true><script>window.maliciousScript=true</script>' +
+      '<a href="javascript:window.maliciousLink=true">Click</a>';
 
     await page.evaluate((payload) => {
+      const win = window as any;
+      if (!win.RoymRegistry?.renderCard) {
+        throw new Error('window.RoymRegistry.renderCard is not exposed by main.ts');
+      }
       const container = document.createElement('div');
       container.id = 'safety-test-container';
-      // Safely set text content
-      const cardEl = document.createElement('div');
-      cardEl.className = 'roym-card';
-      const textNode = document.createTextNode(payload);
-      cardEl.appendChild(textNode);
-      container.appendChild(cardEl);
+      const el = win.RoymRegistry.renderCard({
+        type: 'request',
+        version: 1,
+        data: { summary: payload },
+      });
+      container.appendChild(el);
       document.body.appendChild(container);
     }, maliciousPayload);
 
@@ -164,7 +164,9 @@ test.describe('Roym Hub E2E Tests', () => {
     expect(externalRequests).toEqual([]);
     expect(consoleErrors).toEqual([]);
 
-    // Assert markup appears as visible literal text
+    // Rendered through the real request-card template, so this asserts
+    // the product's own path renders the payload as literal text.
+    await expect(page.locator('#safety-test-container .card-request')).toHaveClass(/card-request/);
     const renderedText = await page.locator('#safety-test-container').innerText();
     expect(renderedText).toContain('<img src=x');
     expect(renderedText).toContain('<script>');

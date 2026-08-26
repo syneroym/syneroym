@@ -263,13 +263,27 @@ registry_url = "http://127.0.0.1:7661"
     stdio: 'inherit',
   });
 
-  console.log('Creating Roym web service identity...');
-  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity create --name roym_web`, {
-    cwd: WORKSPACE_DIR,
-    stdio: 'inherit',
-  });
+  // Deploys all six Roym services through the real app manifest
+  // (crates/roym_core/app/roym.toml), so depends_on, bindings, and
+  // topology_visibility are actually exercised in the browser path --
+  // not a lone `svc deploy` of just `web`. `--mint-masters` mints one
+  // member master identity per service (ADR-0020 Sec1) under
+  // <dir>/identities/member-roym#<service>-0.key; source/assets paths in
+  // the manifest are workspace-root-relative (its own header comment),
+  // which is why this runs with cwd: WORKSPACE_DIR like every other
+  // roymctl call here.
+  console.log('Deploying the Roym app (all six services)...');
+  const roymDeploymentJournal = path.join(TEST_DIR, 'roym-deployments.db');
+  execSync(
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 ` +
+    `--substrate ${substrateDid} --as owner app deploy roym crates/roym_core/app/roym.toml ` +
+    `--mint-masters --registry-url http://127.0.0.1:7661 ` +
+    `--journal-path "${roymDeploymentJournal}"`,
+    { cwd: WORKSPACE_DIR, stdio: 'inherit' }
+  );
+
   const roymWebIdentityOutput = execSync(
-    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity show --name roym_web`,
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity show --name "member-roym#web-0"`,
     { cwd: WORKSPACE_DIR }
   ).toString();
   const roymWebDidMatch = roymWebIdentityOutput.match(/(did:key:[a-z0-9]+)/);
@@ -277,9 +291,14 @@ registry_url = "http://127.0.0.1:7661"
   const roymWebDid = roymWebDidMatch[1];
   console.log('Roym Web DID:', roymWebDid);
 
-  console.log('Registering Roym web service in Community Registry...');
+  // `app deploy` mints and registers the member master itself, but with no
+  // nickname (nickname/privacy are a deliberately separate, operator-set
+  // registry annotation -- see deferred-backlog.md's "Endpoint-record
+  // metadata" row). Add the nickname the gateway hostname scheme needs.
+  console.log('Registering the Roym web service nickname...');
   execSync(
-    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 registry register --identity roym_web --substrate ${substrateDid} --nickname roym`,
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 registry register ` +
+    `--identity "member-roym#web-0" --substrate ${substrateDid} --nickname roym`,
     { cwd: WORKSPACE_DIR, stdio: 'inherit' }
   );
 
@@ -290,33 +309,6 @@ registry_url = "http://127.0.0.1:7661"
   const roymWebAlias = roymWebAliasOutput.split('\n').pop()?.trim();
   if (!roymWebAlias) throw new Error("Could not calculate Roym web app alias");
   console.log('Roym Web Alias:', roymWebAlias);
-
-  console.log('Deploying Roym Web Service...');
-  const roymWebWasm = path.join(WORKSPACE_DIR, 'target/wasm32-wasip2/release/syneroym_roym_web.wasm');
-  const roymWebAssets = path.join(WORKSPACE_DIR, 'crates/roym_web/ui/bundle.tar.gz');
-  const roymRoutes = path.join(TEST_DIR, 'roym-web-routes.json');
-  fs.writeFileSync(roymRoutes, JSON.stringify({
-    http_routes: [
-      { method: 'GET', path: '/health', target: 'guest', operation: 'handle-request', public: true },
-      { method: 'POST', path: '/rpc', target: 'guest', operation: 'handle-request', public: false },
-    ]
-  }));
-
-  // Matches crates/roym_web/wit/world.wit's actual exports -- web declares
-  // no messaging interfaces.
-  const ROYM_WEB_IFACES = [
-    'syneroym:http/incoming-handler@0.1.0',
-    'syneroym:http/websocket-handler@0.1.0',
-  ].join(',');
-
-  execSync(
-    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 ` +
-    `--substrate ${substrateDid} --as owner svc deploy --svc-id ${roymWebDid} ` +
-    `--interfaces ${ROYM_WEB_IFACES} --wasm "${roymWebWasm}" ` +
-    `--assets "${roymWebAssets}" --asset-visibility public ` +
-    `--custom-config "${roymRoutes}"`,
-    { cwd: WORKSPACE_DIR, stdio: 'inherit' }
-  );
 
   // Set environment variables for tests
   process.env.SUBSTRATE_DID = substrateDid;
