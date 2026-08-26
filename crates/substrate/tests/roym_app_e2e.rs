@@ -131,8 +131,24 @@ fn deploy_targets(
         .collect()
 }
 
-#[tokio::test]
-async fn test_roym_app_e2e_lifecycle() {
+/// Everything both `roym_app_e2e.rs` tests need: a live substrate with the
+/// six Roym services deployed through a real (unmanaged) `apply_plan`,
+/// exactly the way `roymctl app deploy` would deploy them.
+struct RoymDeployment {
+    ctx: SubstrateTestContext,
+    gateway_url: String,
+    registry_url: String,
+    web_did: String,
+    dir_did: String,
+    profile_did: String,
+    alice_did: String,
+    // Held for the deployment's lifetime: person_identities_dir in the
+    // substrate config points at this directory, and dropping the guard
+    // deletes it out from under a running gateway.
+    _person_identities_dir: tempfile::TempDir,
+}
+
+async fn deploy_roym_app() -> RoymDeployment {
     let _ = ring::default_provider().install_default();
     let [iroh_port, reg_port, gw_port] = alloc_ports::<3>();
 
@@ -154,7 +170,6 @@ async fn test_roym_app_e2e_lifecycle() {
 
     let gateway_url = format!("http://127.0.0.1:{gw_port}");
     let registry_url = format!("http://127.0.0.1:{reg_port}");
-    let client = Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
 
     // Prepare SynApp manifest
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -208,24 +223,53 @@ async fn test_roym_app_e2e_lifecycle() {
     .unwrap();
     assert!(report.is_complete(), "{:?}", report.failures);
 
-    // Find the web service DID
+    // Find each service's minted DID
     let web_svc =
         new_plan.services.iter().find(|s| s.logical_ref.service_name.as_str() == "web").unwrap();
-    let web_did = web_svc.service_id.as_str();
+    let web_did = web_svc.service_id.as_str().to_string();
 
     let dir_svc = new_plan
         .services
         .iter()
         .find(|s| s.logical_ref.service_name.as_str() == "directory")
         .unwrap();
-    let dir_did = dir_svc.service_id.as_str();
+    let dir_did = dir_svc.service_id.as_str().to_string();
 
     let profile_svc = new_plan
         .services
         .iter()
         .find(|s| s.logical_ref.service_name.as_str() == "profile")
         .unwrap();
-    let profile_did = profile_svc.service_id.as_str();
+    let profile_did = profile_svc.service_id.as_str().to_string();
+
+    RoymDeployment {
+        ctx,
+        gateway_url,
+        registry_url,
+        web_did,
+        dir_did,
+        profile_did,
+        alice_did,
+        _person_identities_dir: person_identities_dir,
+    }
+}
+
+#[tokio::test]
+async fn test_roym_app_e2e_lifecycle() {
+    let RoymDeployment {
+        ctx,
+        gateway_url,
+        registry_url,
+        web_did,
+        dir_did,
+        profile_did,
+        alice_did,
+        _person_identities_dir,
+    } = deploy_roym_app().await;
+    let web_did = web_did.as_str();
+    let dir_did = dir_did.as_str();
+    let profile_did = profile_did.as_str();
+    let client = Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
 
     // Login local via gateway
     let login_res = client
@@ -256,8 +300,10 @@ async fn test_roym_app_e2e_lifecycle() {
         .send()
         .await
         .unwrap();
-    assert_eq!(web_resp.status(), 200);
-    let web_html = web_resp.text().await.unwrap();
+    let web_resp_status = web_resp.status();
+    let web_resp_body_debug = web_resp.text().await.unwrap();
+    assert_eq!(web_resp_status, 200, "body={web_resp_body_debug}");
+    let web_html = web_resp_body_debug;
     assert!(
         web_html.contains("Content-Security-Policy"),
         "index.html must include CSP meta header"
@@ -347,6 +393,26 @@ async fn test_roym_app_e2e_lifecycle() {
     let anon_json: Value = anon_resp.json().await.unwrap();
     assert_eq!(anon_json["result"]["auth"], "self-asserted");
     assert_ne!(anon_json["result"]["did"], alice_did);
+
+    ctx.teardown().await;
+}
+
+/// An unaffiliated caller -- no session, no capability token, not even a
+/// person identity -- can still resolve `directory`'s registry record (`
+/// topology_visibility = "open"`, `roym.toml`), the same open-lookup path
+/// the client gateway and WebRTC coordinator both use with no grant. The
+/// same lookup for `profile` (declared `private`) is refused, since
+/// `private` publishes no registry record at all.
+#[tokio::test]
+async fn an_unaffiliated_caller_resolves_directorys_open_record_but_not_profiles() {
+    let RoymDeployment { ctx, registry_url, dir_did, profile_did, .. } = deploy_roym_app().await;
+
+    let unaffiliated_caller = RegistryClient::new(false, Some(registry_url));
+    let dir_lookup = unaffiliated_caller.lookup(&dir_did, false).await;
+    assert!(dir_lookup.is_ok(), "directory declares topology_visibility = open and must resolve");
+
+    let profile_lookup = unaffiliated_caller.lookup(&profile_did, false).await;
+    assert!(profile_lookup.is_err(), "profile is private and must not be published");
 
     ctx.teardown().await;
 }
