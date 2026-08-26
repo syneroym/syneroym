@@ -159,10 +159,14 @@ intra-app and works today.
   exempt from D2 and D3**. The original caveat still applies in spirit: the
   entrypoint holds no business logic, and if logic moves into it the WASM build
   stops being a complete Roym.
-- The bundle is embedded in the entrypoint for the first release, so it versions
-  with the app automatically. Serving it from `blob-store` instead would allow a
-  UI update without redeploying the service; that is a later convenience, not
-  first-release work.
+- **Shipped differently than planned here**: the UI bundle is a packed asset
+  bundle (`crates/roym_web/ui/bundle.tar.gz`, `mise run build:roym-ui`)
+  deployed alongside `web`'s manifest entry (`assets.archive`), not
+  compiled into the entrypoint binary itself. It still versions with the
+  app automatically, since a redeploy of `web` is how a UI update ships —
+  the outcome this bullet asked for, reached through the asset-bundle
+  mechanism `roym.toml`'s other services already use for their own
+  manifests, rather than a literal embed.
 
 **Today the gateway binds `127.0.0.1` and presents the node's own identity as
 the caller.** So for the first release the browser must run on the same machine

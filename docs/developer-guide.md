@@ -1391,6 +1391,49 @@ grant_resolve_to_node_did` stays the *operator*-side answer for a node's
 own apps' `restricted` services — the two are independent, not
 alternatives for the same case.
 
+#### The Roym Hub (M06C)
+
+Deploying the Roym product (`crates/roym_core/app/roym.toml`, six
+services: `web`, `profile`, `conversation`, `catalog`, `transaction`,
+`directory`) reaches the Hub's UI through the gateway hostname scheme
+above, in either form:
+
+```bash
+# Bare service form (roymctl svc deploy web standalone):
+roymctl alias <WEB_SERVICE_DID> --nickname roym --interface http-native
+# -> roym-s<web-did-hash>-ihttp-native.localhost
+
+# App-instance form (roymctl app deploy roym crates/roym_core/app/roym.toml):
+roymctl alias <APP_MASTER_DID> --nickname roym --service web --interface http-native
+# -> roym-a<app-did-hash>-sweb-ihttp-native.localhost
+```
+
+Two config keys the Hub needs that aren't documented anywhere else in
+this guide:
+
+```toml
+[roles.client_gateway]
+# Enables the Hub's local login picker (GET /_syneroym/session/identities,
+# POST /_syneroym/session/login-local). Only <dir>/identities/<name>.key
+# files are ever read.
+#
+# WARNING: do not point this at a directory a less-trusted local user on
+# this machine can read -- anyone who can read a key file here can log in
+# as that person.
+person_identities_dir = "/path/to/identities"
+
+[roles.roym]
+# The packed Hub UI bundle (mise run build:roym-ui produces
+# crates/roym_web/ui/bundle.tar.gz).
+ui_bundle_path = "/path/to/bundle.tar.gz"
+```
+
+`roles.roym` also needs the `roym` Cargo feature enabled at build time
+(`crates/substrate/Cargo.toml`); it links the six services in natively
+rather than deploying them as separate WASM components. Never enable it
+alongside a WASM deploy of the same app on the same node -- the router
+warns if it sees both.
+
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy
 
 > [!TIP]
