@@ -464,80 +464,20 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
         }
         None => (None, None),
     };
-    let bytes_to_forward =
-        prepare_forwarded_bytes(&buf[..total_bytes_read], header_len, forwarded_bytes);
+    let bytes_to_forward = forwarded_bytes.as_deref().unwrap_or(&buf[..total_bytes_read]);
 
     let passthrough_identity = Identity::from_bytes(&state.identity.to_bytes());
     SyneroymClient::passthrough_with_conn(
         conn,
         &service_id,
         &interface,
-        &bytes_to_forward,
+        bytes_to_forward,
         &mut stream,
         &passthrough_identity,
         delegation.as_ref(),
     )
     .await?;
-    let _ = stream.shutdown().await;
     Ok(())
-}
-
-fn prepare_forwarded_bytes(raw: &[u8], header_len: usize, stripped: Option<Vec<u8>>) -> Vec<u8> {
-    let source_bytes = stripped.as_deref().unwrap_or(raw);
-    let mut headers = [EMPTY_HEADER; 64];
-    let mut req = Request::new(&mut headers);
-    let effective_header_len = if let Ok(Status::Complete(len)) = req.parse(source_bytes) {
-        len
-    } else {
-        header_len.min(source_bytes.len())
-    };
-
-    // WebSocket upgrade requests carry `Connection: Upgrade`; rewriting it to
-    // `Connection: close` kills the handshake. Return the bytes unmodified so
-    // the upstream receives the correct upgrade negotiation.
-    let is_ws_upgrade = req.headers.iter().any(|h| {
-        h.name.eq_ignore_ascii_case("upgrade") && h.value.eq_ignore_ascii_case(b"websocket")
-    });
-    if is_ws_upgrade {
-        return source_bytes.to_vec();
-    }
-
-    let head_bytes = &source_bytes[..effective_header_len];
-    let tail_bytes = &source_bytes[effective_header_len..];
-
-    let mut out_head = Vec::with_capacity(head_bytes.len() + 32);
-    let mut has_conn = false;
-
-    let mut remaining = head_bytes;
-    while !remaining.is_empty() {
-        let (line, rest) = match remaining.windows(2).position(|w| w == b"\r\n") {
-            Some(pos) => (&remaining[..pos], &remaining[pos + 2..]),
-            None => (remaining, &[][..]),
-        };
-        remaining = rest;
-
-        if line.is_empty() {
-            break;
-        }
-
-        if line.len() >= 11 && line[..11].eq_ignore_ascii_case(b"connection:") {
-            out_head.extend_from_slice(b"Connection: close\r\n");
-            has_conn = true;
-        } else {
-            out_head.extend_from_slice(line);
-            out_head.extend_from_slice(b"\r\n");
-        }
-    }
-
-    if !has_conn {
-        out_head.extend_from_slice(b"Connection: close\r\n");
-    }
-    out_head.extend_from_slice(b"\r\n");
-
-    let mut result = Vec::with_capacity(out_head.len() + tail_bytes.len());
-    result.extend_from_slice(&out_head);
-    result.extend_from_slice(tail_bytes);
-    result
 }
 
 async fn write_login_grant(stream: &mut TcpStream, grant: session::LoginResponse) -> Result<()> {

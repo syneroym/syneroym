@@ -1,4 +1,5 @@
 use std::{
+    cmp::Reverse,
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
@@ -228,18 +229,26 @@ fn perf_summary() -> Result<()> {
         .status()?;
 
     let mut concurrency_rows = Vec::new();
-    let concurrency_report = Path::new("target/perf/concurrency_report.json");
-    if concurrency_report.exists()
-        && let Ok(content) = fs::read_to_string(concurrency_report)
-        && let Ok(json) = serde_json::from_str::<Value>(&content)
-        && let Some(arr) = json.as_array()
-    {
-        for item in arr {
-            let sc = item.get("scenario").and_then(|s| s.as_str()).unwrap_or("unknown");
-            let thr = item.get("throughput").and_then(|t| t.as_f64()).unwrap_or(0.0);
-            let err = item.get("error_rate").and_then(|e| e.as_f64()).unwrap_or(0.0);
-            let p95 = item.get("p95_latency_ms").and_then(|p| p.as_f64()).unwrap_or(0.0);
-            concurrency_rows.push(format!("| {} | {:.1} | {:.2}% | {:.2} ms |", sc, thr, err, p95));
+    let perf_results = Path::new("tests/perf/results");
+    if perf_results.exists() {
+        let mut concurrency_files: Vec<_> = fs::read_dir(perf_results)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("concurrency_"))
+            .collect();
+        concurrency_files.sort_by_key(|a| Reverse(a.metadata().unwrap().modified().unwrap()));
+        if let Some(file) = concurrency_files.first()
+            && let Ok(content) = fs::read_to_string(file.path())
+            && let Ok(json) = serde_json::from_str::<Value>(&content)
+            && let Some(summaries) = json.get("summaries").and_then(|s| s.as_array())
+        {
+            for s in summaries {
+                let name = s.get("name").and_then(|n| n.as_str()).unwrap_or("Unknown");
+                let thr = s.get("throughput_rps").and_then(|t| t.as_f64()).unwrap_or(0.0);
+                let err = s.get("error_rate").and_then(|e| e.as_f64()).unwrap_or(0.0) * 100.0;
+                let p95 = s.get("latency_p95_ms").and_then(|l| l.as_f64()).unwrap_or(0.0);
+                concurrency_rows
+                    .push(format!("| {} | {:.1} | {:.2}% | {:.2} ms |", name, thr, err, p95));
+            }
         }
     }
 
@@ -251,17 +260,23 @@ fn perf_summary() -> Result<()> {
         .status()?;
 
     let mut soak_rows = Vec::new();
-    let soak_report = Path::new("target/perf/soak_report.json");
-    if soak_report.exists()
-        && let Ok(content) = fs::read_to_string(soak_report)
-        && let Ok(json) = serde_json::from_str::<Value>(&content)
-    {
-        let dur = json.get("duration_secs").and_then(|d| d.as_u64()).unwrap_or(0);
-        let thr = json.get("rpc_throughput").and_then(|t| t.as_f64()).unwrap_or(0.0);
-        let pass = json.get("overall_pass").and_then(|p| p.as_bool()).unwrap_or(false);
-        let rss = json.get("rss_peak_mb").and_then(|r| r.as_f64()).unwrap_or(0.0);
-        let res = if pass { "✅ PASS" } else { "❌ FAIL" };
-        soak_rows.push(format!("| {}s | {:.1} | {:.1} MB | {} |", dur, thr, rss, res));
+    if perf_results.exists() {
+        let mut soak_files: Vec<_> = fs::read_dir(perf_results)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("soak_"))
+            .collect();
+        soak_files.sort_by_key(|a| Reverse(a.metadata().unwrap().modified().unwrap()));
+        if let Some(file) = soak_files.first()
+            && let Ok(content) = fs::read_to_string(file.path())
+            && let Ok(json) = serde_json::from_str::<Value>(&content)
+        {
+            let dur = json.get("duration_secs").and_then(|d| d.as_u64()).unwrap_or(0);
+            let thr = json.get("rpc_throughput").and_then(|t| t.as_f64()).unwrap_or(0.0);
+            let pass = json.get("overall_pass").and_then(|p| p.as_bool()).unwrap_or(false);
+            let rss = json.get("rss_peak_mb").and_then(|r| r.as_f64()).unwrap_or(0.0);
+            let res = if pass { "✅ PASS" } else { "❌ FAIL" };
+            soak_rows.push(format!("| {}s | {:.1} | {:.1} MB | {} |", dur, thr, rss, res));
+        }
     }
 
     println!("Updating PERF_SUMMARY.md...");
