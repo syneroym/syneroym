@@ -128,6 +128,7 @@ pub struct SubstrateTestContext {
     /// node). Exposed for tests that build an extra client of their own.
     #[allow(dead_code)]
     pub owner_did: String,
+    #[allow(dead_code)]
     pub owner: Identity,
     shutdown_tx: Sender<()>,
     substrate_handle: JoinHandle<()>,
