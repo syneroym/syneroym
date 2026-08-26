@@ -66,9 +66,15 @@ done
 description = "Check the Roym service crates' sibling/dependency hygiene"
 run = "cargo xtask check-roym-deps"
 
+[tasks."test:roym-ui"]
+description = "Run the Roym Hub UI's vitest suite"
+run = """
+(cd crates/roym_web/ui && (npm ci || npm install) && npm test)
+"""
+
 [tasks."test:rust"]
 description = "Run all Rust unit and integration tests"
-depends = ["build:test-components", "build:roym", "check:roym-deps"]
+depends = ["build:test-components", "build:roym", "check:roym-deps", "test:roym-ui"]
 run = "cargo test --workspace"
 
 [tasks."test:e2e"]

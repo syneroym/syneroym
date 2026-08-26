@@ -801,10 +801,11 @@ async fn scenario_5_unbound_dependency_returns_32001() {
     let native_res = h.native.invoke_web(&req).await.unwrap();
     assert_eq!(wasm_res, native_res);
 
-    // conversation is a declared dependency of web (see roym.toml), but
-    // this harness deploys web without an app instance, so it is unbound:
-    // the call must be refused with -32001, and the refusal must not
-    // repeat the dependency's DID back to the caller.
+    // conversation is a declared dependency of web (see roym.toml), but the
+    // topology-registration loops above deliberately filter it out (`s.name
+    // != "conversation"`), leaving it unbound: the call must be refused
+    // with -32001, and the refusal must not repeat the dependency's DID
+    // back to the caller.
     let resp: Response = serde_json::from_str(&wasm_res).unwrap();
     let err = resp.error.unwrap_or_else(|| panic!("expected error, got: {wasm_res}"));
     assert_eq!(err.code, -32001);

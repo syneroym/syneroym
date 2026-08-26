@@ -398,18 +398,21 @@ async fn test_roym_app_e2e_lifecycle() {
 }
 
 /// An unaffiliated caller -- no session, no capability token, not even a
-/// person identity -- can still resolve `directory`'s registry record (`
-/// topology_visibility = "open"`, `roym.toml`), the same open-lookup path
-/// the client gateway and WebRTC coordinator both use with no grant. The
-/// same lookup for `profile` (declared `private`) is refused, since
-/// `private` publishes no registry record at all.
+/// person identity -- can still resolve `directory`'s registry record
+/// (`visibility = "public"`, `roym.toml`), the same open-lookup path the
+/// client gateway and WebRTC coordinator both use with no grant. The same
+/// lookup for `profile` (declared `private`) is refused, since `private`
+/// publishes no registry record at all. This exercises `EndpointInfo`'s
+/// registry-record `visibility`, not `ServiceSpec.topology_visibility`
+/// (the `supervisor/resolve` path); that field is still uncovered here --
+/// see the deferred-backlog row for matrix row 18.
 #[tokio::test]
-async fn an_unaffiliated_caller_resolves_directorys_open_record_but_not_profiles() {
+async fn an_unaffiliated_caller_resolves_directorys_public_record_but_not_profiles() {
     let RoymDeployment { ctx, registry_url, dir_did, profile_did, .. } = deploy_roym_app().await;
 
     let unaffiliated_caller = RegistryClient::new(false, Some(registry_url));
     let dir_lookup = unaffiliated_caller.lookup(&dir_did, false).await;
-    assert!(dir_lookup.is_ok(), "directory declares topology_visibility = open and must resolve");
+    assert!(dir_lookup.is_ok(), "directory declares visibility = public and must resolve");
 
     let profile_lookup = unaffiliated_caller.lookup(&profile_did, false).await;
     assert!(profile_lookup.is_err(), "profile is private and must not be published");

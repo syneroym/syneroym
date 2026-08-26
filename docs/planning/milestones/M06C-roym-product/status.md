@@ -4,7 +4,7 @@
 [slice-c1-implementation-plan.md](slice-c1-implementation-plan.md) (C1),
 [slice-c2-implementation-plan.md](slice-c2-implementation-plan.md) (C2)
 
-**Overall:** Slice C2 complete — see C1's and C2's status, architectural decisions, permitted differences, and evidence below.
+**Overall:** Slice C2 complete — blocked on verification — see C1's and C2's status, architectural decisions, permitted differences, and evidence below.
 
 ---
 
@@ -13,7 +13,7 @@
 | Slice | Scope | Status | Gate |
 |---|---|---|---|
 | C1 | Complete the dual-build shim (Gap 2, D-06C-10) | **Complete (2026-08-25)** — [implementation plan](slice-c1-implementation-plan.md), evidence below | None — independently mergeable |
-| C2 | The SynApp skeleton and the Hub shell | **Complete** — [implementation plan](slice-c2-implementation-plan.md), evidence below | C1 |
+| C2 | The SynApp skeleton and the Hub shell | **Complete — blocked on verification** — [implementation plan](slice-c2-implementation-plan.md), evidence below; blocked on the two [deferred-backlog](../../deferred-backlog.md#10-product-surfaces--ux) rows for `GET /` on a WASM-deployed Hub and `roymctl app deploy`'s CLI timeout | C1 |
 | C3 | Signed records: host signing interface and envelope | Not started | C1 |
 | C4 | Identity, profile, contacts, and safety (R1 rows 1 and 6) | Not started | C3 |
 | C5 | Catalog and conversation in the product (R1 rows 2 and 3) | Not started | C4 |
@@ -131,11 +131,11 @@ An omitted `-i` segment resolves to `web`'s one app-declared interface (`http-na
 1. `cargo test -p syneroym-roym-web --test dual_build_parity`: **11 passed, 0 failed**
 2. `cargo test -p syneroym-roym-core`: **5 passed, 0 failed**
 3. `cargo test -p syneroym-substrate --test gateway_session_e2e`: **19 passed, 0 failed**
-4. `cargo test -p syneroym-substrate --test roym_app_e2e`: see the review-response completion report for this pass's full workspace run
+4. `cargo test -p syneroym-substrate --test roym_app_e2e`: `test_roym_app_e2e_lifecycle`'s first assertion fails — see the [deferred-backlog row](../../deferred-backlog.md#10-product-surfaces--ux) on `GET /` returning a 500 on a WASM-deployed Hub; the lifecycle test's remaining steps and this pass's `deploy_roym_app`-based tests are unaffected
 5. `cargo +nightly fmt --all`: **Clean**
 6. `cargo clippy --workspace --all-targets --all-features`: **Clean**
 7. `cargo audit`: **Clean (0 vulnerabilities)**
 8. `cargo deny check licenses`: **Clean (`licenses ok`)**
 9. `cargo xtask check-roym-deps`: **Clean, and confirmed to reject a planted violation**
-10. `mise run test:e2e`: **Not run in this pass's environment — see the review-response completion report for why**
+10. `mise run test:e2e`: **Not run** — `global-setup.ts`'s `roymctl app deploy` step times out deploying the six Roym services; see the [deferred-backlog row](../../deferred-backlog.md#10-product-surfaces--ux) on that CLI-driven deploy timeout
 

@@ -29,6 +29,10 @@ runs:
       run: cargo xtask check-roym-deps
       shell: bash
 
+    - name: Run Roym Hub UI Tests
+      run: mise run test:roym-ui
+      shell: bash
+
     - name: Run Tests
       run: cargo test --workspace --all-targets --all-features ${{ inputs.release_flag }}
       shell: bash
