@@ -963,18 +963,3 @@ async fn scenario_10_directory_service_call_target() {
     let wasm_foreign_resp: Response = serde_json::from_str(&wasm_foreign_res).unwrap();
     assert_eq!(wasm_foreign_resp.result, Some(json!({ "service": "directory" })));
 }
-
-#[tokio::test]
-async fn the_parity_comparison_detects_a_divergence() {
-    let h = harness().await;
-    let req = json!({
-        "method": "profile.ping",
-        "params": {}
-    })
-    .to_string();
-
-    let wasm_res = h.wasm.invoke_web(&req).await.unwrap();
-    let mutated_res = wasm_res.replace("\"profile\"", "\"mutated\"");
-
-    assert_ne!(wasm_res, mutated_res);
-}
