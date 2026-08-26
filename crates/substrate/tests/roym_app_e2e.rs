@@ -6,11 +6,10 @@
 //! 1. Static UI serving (`GET /`) from the asset bundle with CSP meta header.
 //! 2. `POST /rpc` `session.whoami` returns caller DID and `auth: "delegated"`
 //!    under a session cookie.
-//! 3. Gateway unscoped host routing `s<hash>.localhost:<port>`.
-//! 4. `POST /rpc` `profile.ping` proxy call reaches the sibling service.
-//! 5. Open topology on `directory` vs restricted/private on `profile`.
-//! 6. `Authorization: Bearer <token>` works without browser cookie.
-//! 7. Unauthenticated request reports `self-asserted:<node-did>`.
+//! 3. `POST /rpc` `profile.ping` proxy call reaches the sibling service.
+//! 4. Open topology on `directory` vs restricted/private on `profile`.
+//! 5. `Authorization: Bearer <token>` works without browser cookie.
+//! 6. Unauthenticated request reports `self-asserted:<node-did>`.
 
 use std::{
     collections::BTreeMap,
@@ -285,26 +284,7 @@ async fn test_roym_app_e2e_lifecycle() {
     assert_eq!(whoami_json["result"]["did"], alice_did);
     assert_eq!(whoami_json["result"]["auth"], "delegated");
 
-    // 3. Unscoped host form s<hash>.localhost reaches the same handler
-    let host_resp = client
-        .post(format!("{gateway_url}/rpc"))
-        .header("Host", &host_header)
-        .header("Cookie", format!("{SESSION_COOKIE_NAME}={token}"))
-        .json(&json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "session.whoami",
-            "params": {}
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(host_resp.status(), 200);
-    let host_json: Value = host_resp.json().await.unwrap();
-    assert_eq!(host_json["result"]["did"], alice_did);
-    assert_eq!(host_json["result"]["auth"], "delegated");
-
-    // 4. POST /rpc with profile.ping under the cookie reaches profile
+    // 3. POST /rpc with profile.ping under the cookie reaches profile
     let ping_resp = client
         .post(format!("{gateway_url}/rpc"))
         .header("Host", &host_header)
@@ -322,14 +302,14 @@ async fn test_roym_app_e2e_lifecycle() {
     let ping_json: Value = ping_resp.json().await.unwrap();
     assert_eq!(ping_json["result"]["service"], "profile");
 
-    // 5. Open topology on directory vs private on profile
+    // 4. Open topology on directory vs private on profile
     let reg_client = RegistryClient::new(false, Some(registry_url.clone()));
     let dir_lookup = reg_client.lookup(dir_did, false).await;
     assert!(dir_lookup.is_ok(), "directory is public and must resolve in registry");
     let profile_lookup = reg_client.lookup(profile_did, false).await;
     assert!(profile_lookup.is_err(), "profile is private and must not be published");
 
-    // 6. Plain HTTP client with Authorization: Bearer <token>
+    // 5. Plain HTTP client with Authorization: Bearer <token>
     let bearer_resp = client
         .post(format!("{gateway_url}/rpc"))
         .header("Host", &host_header)
@@ -348,7 +328,7 @@ async fn test_roym_app_e2e_lifecycle() {
     assert_eq!(bearer_json["result"]["did"], alice_did);
     assert_eq!(bearer_json["result"]["auth"], "delegated");
 
-    // 7. Unauthenticated request reports self-asserted (simulating second local
+    // 6. Unauthenticated request reports self-asserted (simulating second local
     //    process)
     let anon_client = Client::new();
     let anon_resp = anon_client

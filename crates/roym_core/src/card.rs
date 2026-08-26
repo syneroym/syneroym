@@ -27,11 +27,7 @@ mod tests {
     fn the_ui_card_registry_matches_this_crate() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let registry_path = manifest_dir.join("../roym_web/ui/src/cards/registry.ts");
-        if !registry_path.exists() {
-            // If the UI source hasn't been written yet in early pipeline steps, allow
-            // skipping this test until Step 10 creates it.
-            return;
-        }
+        assert!(registry_path.exists(), "missing ../roym_web/ui/src/cards/registry.ts");
 
         let content = fs::read_to_string(&registry_path)
             .expect("Failed to read ../roym_web/ui/src/cards/registry.ts");

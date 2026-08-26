@@ -261,8 +261,8 @@ struct Harness {
     wasm_http: WasmHttpDriver,
     native_http: NativeHttpDriver,
     native_factories: Vec<Arc<NativeHostFactory>>,
-    _wasm_proxy: Arc<TestWasmServiceProxy>,
-    _native_proxy: Arc<TestNativeServiceProxy>,
+    wasm_proxy: Arc<TestWasmServiceProxy>,
+    native_proxy: Arc<TestNativeServiceProxy>,
     _wasm_ws_senders: Arc<WebSocketSenders>,
     _native_ws_senders: Arc<WebSocketSenders>,
     _wasm_dir: tempfile::TempDir,
@@ -280,11 +280,13 @@ impl Drop for Harness {
 #[derive(Debug)]
 struct TestWasmServiceProxy {
     engine: Arc<AppSandboxEngine>,
+    invocations: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait::async_trait]
 impl ServiceProxy for TestWasmServiceProxy {
     async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError> {
+        self.invocations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let target = request.target_service.as_str();
         let service_id = if target == "did:key:hForeign" {
             did_for_service("directory")
@@ -333,11 +335,13 @@ struct TestNativeServiceProxy {
     catalog: Arc<NativeCatalog<NativeAppHost>>,
     transaction: Arc<NativeTransaction<NativeAppHost>>,
     directory: Arc<NativeDirectory<NativeAppHost>>,
+    invocations: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait::async_trait]
 impl ServiceProxy for TestNativeServiceProxy {
     async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError> {
+        self.invocations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let target = request.target_service.as_str();
         let svc: Arc<dyn NativeService> = if target == "did:key:hForeign" {
             self.directory.clone()
@@ -517,7 +521,10 @@ async fn harness() -> Harness {
         .set(Arc::downgrade(&wasm_conversation) as Weak<dyn ConversationHost>)
         .expect("conversation set once");
 
-    let wasm_proxy = Arc::new(TestWasmServiceProxy { engine: wasm_engine.clone() });
+    let wasm_proxy = Arc::new(TestWasmServiceProxy {
+        engine: wasm_engine.clone(),
+        invocations: std::sync::atomic::AtomicUsize::new(0),
+    });
     wasm_engine
         .service_proxy
         .set(Arc::downgrade(&wasm_proxy) as Weak<dyn ServiceProxy>)
@@ -630,6 +637,7 @@ async fn harness() -> Harness {
         catalog: native_catalog.clone(),
         transaction: native_transaction.clone(),
         directory: native_directory.clone(),
+        invocations: std::sync::atomic::AtomicUsize::new(0),
     });
 
     let native_factories = vec![
@@ -669,8 +677,8 @@ async fn harness() -> Harness {
         wasm_http: WasmHttpDriver { engine: wasm_engine.clone() },
         native_http: NativeHttpDriver { adapter: native_http_adapter },
         native_factories,
-        _wasm_proxy: wasm_proxy,
-        _native_proxy: native_proxy,
+        wasm_proxy,
+        native_proxy,
         _wasm_ws_senders: wasm_ws_senders,
         _native_ws_senders: native_ws_senders,
         _wasm_dir: wasm_dir,
@@ -766,6 +774,11 @@ async fn scenario_4_unlisted_method_returns_32601() {
     assert_eq!(wasm_res, native_res);
     let resp: Response = serde_json::from_str(&wasm_res).unwrap();
     assert_eq!(resp.error.unwrap().code, -32601);
+
+    // An unlisted method is rejected by web's own dispatch before it ever
+    // reaches the proxy, so no sibling call should have been attempted.
+    assert_eq!(h.wasm_proxy.invocations.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(h.native_proxy.invocations.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
