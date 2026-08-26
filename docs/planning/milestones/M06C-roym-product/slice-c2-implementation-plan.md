@@ -228,6 +228,27 @@ keeps the manifest, the caller, and the native registration from drifting.
 If every service exports a nullary `status` function, every service gets a
 readiness probe for one manifest line.
 
+### F15 — a WASM guest has no host import exposing its own real caller for a generic proxied call
+
+None of `AppHost`'s eight sub-traits (`AppDataLayer`, `AppBlobStore`,
+`AppMessaging`, `AppConversation`, `AppProxy`, `AppAppConfig`, `AppVault`,
+`AppWebSocket`) exposes "who is calling me right now" — confirmed by
+reading all eight in `crates/app_host/src/lib.rs`. The one interface that
+*does* carry caller identity to a guest, `syneroym:http/incoming-handler`,
+does so only because its own WIT author put a `caller` field directly on
+the `http-request` record, and the router explicitly populates it at the
+call site
+([guest_caller_identity, http.rs:492](../../../../crates/router/src/route_handler/http.rs#L492)).
+There is no *generic* mechanism carrying `HostState`'s own (correctly
+populated, for a genuinely remote or genuinely local caller alike)
+`Option<CallerContext>` into an arbitrary exported function's marshaled
+arguments — `execute_wasm_json`'s `caller` parameter feeds only
+`HostState.caller` (used for host-capability attribution: data-layer
+writes, FDAE, etc.), never a guest-visible value, for any interface except
+the one purpose-built for it. This is what makes `D-C2-4`'s original
+envelope-and-gate design unsound (§14 (1), (3)) and what makes the sound
+fix engine work rather than app work.
+
 ---
 
 ## §2 Decisions
@@ -237,8 +258,8 @@ readiness probe for one manifest line.
 | **D-C2-1** | **Seven crates: `crates/roym_core/` (`syneroym-roym-core`) plus one per service — `roym_web`, `roym_conversation`, `roym_profile`, `roym_catalog`, `roym_transaction`, `roym_directory`, packaged `syneroym-roym-<name>`.** All are ordinary workspace members (`crates/*` is already a glob), built as components with `cargo component build --target wasm32-wasip2 -p <pkg>` exactly as the fixture is. | `D-06C-9` states the rule and the naming, including that the `syneroym-roym-` prefix is a known cost. Per-service crates because each is separately deployed and separately certified. `roym_core` is `D-06C-9`'s "one crate holds the shared record, card, and dual-build wiring". |
 | **D-C2-2** | **Each service exports exactly one WIT interface with exactly two functions: `invoke: func(request: string) -> result<string, string>` and `status: func() -> result<string, string>`.** Package `syneroym-roym:<service>@0.1.0`, interface `api`. `request` is a JSON document; the JSON-RPC method name lives *inside* it, not in the WIT. | The alternative — one WIT function per product method — freezes signatures C4–C10 have not designed yet, and makes every new method a WIT change plus a redeploy of the interface list (F13). The string-in/string-out shape is the one the dual-build fixture already proved through both builds. The cost is real and named: **the sibling boundary is not typed by WIT**, so a malformed inner call is an application error, not a dispatch error. Backlog row in §15, trigger *"a sibling boundary needs typed WIT parameters"*. `status` exists so F14's probe costs one manifest line. |
 | **D-C2-3** | **The Web entrypoint holds a static routing table from JSON-RPC method prefix to (dependency name, interface constant), and nothing else.** No defaulting, no wildcard, no fallthrough: an unmatched prefix is JSON-RPC `-32601`. The table lives in `roym_core` and a unit test asserts it is total over the declared prefix set and unambiguous. | The spec's rule 4 — *"The Web entrypoint holds no business logic. It serves files and forwards calls."* A table with a default arm is a decision; a table without one is a lookup. Putting it in `roym_core` rather than `roym_web` is what lets the test compare it against the manifest's `depends_on` list. |
-| **D-C2-4** | **The person's identity travels to a sibling as an explicit `caller` envelope inside `invoke`'s `request` JSON, and a sibling accepts that envelope only when its own `CallerContext.auth == System`. Under any other auth level the envelope is ignored and the request is attributed to the wire caller's own DID.** The envelope carries `person_did`, `auth` (the `caller-auth` the entrypoint itself observed), and `origin` (the entrypoint's own service id, for logging only — see F1). | F2 makes this unavoidable: neither build forwards a caller through the proxy, so if the envelope is not carried, no Roym service except `web` can ever know who is asking, and exit criterion 3 is unmeetable. The `System` gate is sound because `CallerContext::service_system` is substrate-injected, carries `proof: None`, and therefore cannot cross a wire hop or be constructed from wire input — **provided** the service declares no `public: true` HTTP route (F3), which `D-C2-5` makes an invariant. The gate reads identically on both builds even though F1's divergence means the two see different `caller_did` values, because it tests `auth`, not `caller_did`. |
-| **D-C2-5** | **Only `web` declares `http_routes`, and only `web` declares an `assets` bundle. A test asserts the other five declare neither.** | Two independent reasons that happen to agree: it is what "one origin" means (spec, Client contract), and it is what makes `D-C2-4`'s `System` gate sound (F3). Written as one invariant with one test so neither reason can be relaxed without noticing the other. |
+| **D-C2-4** | **No sibling receives or trusts any forwarded person identity in C2. `web`'s `session.whoami` is the only place a person's DID is reported, and it reads `HttpRequest.caller` directly rather than forwarding anything to a sibling.** Confirmed unsound to do otherwise: a WASM sibling has no host import exposing its own real caller for a generic proxied call (F15) — `api.invoke`'s WIT signature carries no caller parameter, and the engine's marshaling layer does not inject one for any interface except `syneroym:http/incoming-handler`, which was purpose-built with a `caller` record field for exactly this reason. An earlier draft of this plan had the guest fabricate `service_system` unconditionally and gate an embedded envelope on it; that fabrication is indistinguishable, from the guest's own code, from a genuinely fabricated claim, so it accepted a forged envelope exactly as readily as an honest one — unsound precisely on the services `D-C2-13`'s manifest makes wire-reachable (`catalog`, `conversation`, `transaction`). Retracted rather than patched, because the sound fix (a host-verified caller parameter reaching the guest) needs an engine-level change: threading `HostState`'s already-correct `Option<CallerContext>` into the marshaled arguments of a proxied call is `execute_wasm_json`/`conversions.rs` work, not app work, and belongs behind its own decision (backlog row, §15), not inside a product skeleton slice. | This is a real, named gap against exit criterion 3's plural wording ("Roym's services see that person's DID") — C2 discharges it only for `web`. C4/C5, which DO need a sibling to know who is asking (a listing's owner, a quote's signer), inherit this gap and cannot build on an unsound mechanism; they need either the engine-level caller parameter above or real cross-service delegation (ADR-0015 UCAN, already backlogged per F2). Better to hand them an honest absence than a mechanism that looks solved and is not. |
+| **D-C2-5** | **Only `web` declares `http_routes`, and only `web` declares an `assets` bundle. A test asserts the other five declare neither.** | What "one origin" means (spec, Client contract): a second service answering HTTP would be a second origin. `D-C2-4`'s original rationale for this invariant (soundness of a `System`-caller gate) no longer applies — that gate was retracted — but the invariant stands on the spec's own reason alone, and is now also visible at the **WIT level**, not only at deploy time: §4.1's corrected worlds mean only `web`'s `world.wit` exports `incoming-handler`/`websocket-handler` at all, so a sibling that tried to answer HTTP would have to add that export first, a second, independent signal beside the manifest test. |
 | **D-C2-6** | **Browser login is a gateway-side local ceremony for the first release, structured so a browser-held WebAuthn/passkey signer can be added later as a second `SessionRoute` without changing the session wire format.** A new reserved endpoint `POST /_syneroym/session/login-local` takes `{"identity": "<name>"}`, loads that person key from a newly configured `roles.client_gateway.person_identities_dir`, refreshes the master anchor, runs the existing challenge/assert/delegate/login steps in-process, and returns the same `LoginResponse` + `Set-Cookie` the remote path already returns. `GET /_syneroym/session/identities` lists the available names and **no key material**. Absent config disables both with 404. | F9: the spec forbids the UI holding a private key, so the browser cannot be the signer for the first release, and the three primitives (z-base-32, RFC-8785, `did:key:h`) would otherwise have to be reimplemented in TypeScript and kept byte-compatible with Rust forever. The gateway binds `127.0.0.1` and D8 puts the browser on the same machine, so this adds no exposure that did not already exist: any local process that can call this endpoint can already read the same key file and run `roymctl session login`. That equivalence is the whole security argument and is stated in the endpoint's own doc comment. **Deferred, not rejected: a browser-held WebAuthn/passkey signer.** Confirmed addable later without a breaking change here — `LoginResponse`, the cookie, and `whoami` are unchanged either way; only the *login initiation* half (a third `SessionRoute`, e.g. `WebauthnLogin`, verifying an authenticator assertion instead of a bare ed25519 signature) would be new. It needs three things C2 does not build and must not accidentally foreclose: (1) **CORS on the community registry** (`crates/community_registry/src/registry.rs` — no CORS layer exists on any of its four Axum routes today), because a browser holding its own key publishes its own anchor directly to the registry rather than through the gateway, which is a cross-origin call the gateway-side ceremony never makes; (2) a **did:key scheme extension**, since `derive_did_key`/`resolve_did_key` hardcode the ed25519 multicodec (`0xed01`, [substrate.rs:142-166](../../../../crates/identity/src/substrate.rs#L142)) and reject anything else — a WebAuthn credential using ES256 (P-256, COSE alg `-7`) needs a second multicodec branch (P-256 is `0x1200`) threaded through `resolve_did_key` and `verify_json_signature`; an authenticator using EdDSA (COSE alg `-8`) needs none, so this is a per-authenticator gap, not a universal one; (3) a **WebAuthn assertion verifier** (challenge, `clientDataJSON`, `authenticatorData`, signature) — a different verification shape than `DelegationCertificate::verify`'s single z32 signature, so it is new code, not a reuse. None of this is C2's to build; C2's job is only to not paint it into a corner, which the two-`SessionRoute` shape (§10) achieves. Backlog rows for both gaps in §15. |
 | **D-C2-7** | **Identity *creation* stays in C4. C2's login endpoint operates only on an identity that already exists on disk.** When the directory is empty the Hub says so and names `roymctl identity create`. | R1 row 1 (device-bound identity, encrypted backup, import) is C4's, by `task.md`'s own slice table. C2 owes the *ceremony*, which is what the backlog row targeted at C2 actually asks for. |
 | **D-C2-8** | **The card renderer ships in the UI bundle as data-driven templates, and the canonical `(type, version)` set lives in `roym_core`. A unit test in `roym_core` reads the UI's own registry file and fails if the two lists differ.** | `D-06C-3` fixes seven types plus a fallback and requires the rule to be decided once. The producer is Rust (C7/C8) and the consumer is TypeScript, so "decided once" needs a mechanism, not a promise. Reading the TS file from a Rust test is ugly and cheap; a code generator is neither. |
@@ -246,7 +267,7 @@ readiness probe for one manifest line.
 | **D-C2-10** | **The native build's app context and dependency bindings are installed by the wiring function itself**, writing `EndpointRegistry::set_app_context` + `save_binding` and registering `TopologyKey::local(instance, name) -> TopologyEntry` into the same `StaticInventory` the node's `LogicalResolver` holds. This closes the backlog row targeted at `M06C C2`. | C1 §12 (10): `install_app_context` runs only on deploy, and a linked app has no deploy, so in production `app_context_of` returns `None` and every dependency-named proxy call fails `DependencyNotBound`. The wiring function is the linked app's deploy. Doing it anywhere else means a second place that knows Roym's service topology. |
 | **D-C2-11** | **The native build installs no instance certificates.** Sibling calls are local and do not need one; `enqueue` and cross-node `call` from the native build are refused, named as a permitted difference, and given a backlog row. | The certificate path (`roymctl identity certify-instance`, master minting, anchor publication) is a deploy-time ceremony with no in-process equivalent, and nothing in C2 needs it — the six services all live on one node in the native build. C9 is the slice that stands up three installations, and it uses the WASM build for them. Naming it beats discovering it in C5. |
 | **D-C2-12** | **Two suites, matching C1's split (C1 §12 (8)).** `crates/roym_web/tests/dual_build_parity.rs` drives the whole app through the entrypoint on both builds, in process, with a test `ServiceProxy` that dispatches sibling calls into whichever build is under test. `crates/substrate/tests/roym_app_e2e.rs` proves registration, the gateway hostname leg, the person session, and the routes — router-level, WASM build only. | Duplicating the router in the parity suite would test the router twice and the app once. The gateway leg cannot be proven in process at all. |
-| **D-C2-13** | **`roym_directory` is a full sibling in the manifest and in `depends_on`, even though a consumer reaches a *foreign* directory by DID.** `web → directory` by `call-target::dependency` is how the SynOrg owner administers their own directory; a consumer's chosen directories are `call-target::service(<did>)` at runtime. C2's suites exercise **both** shapes. | The spec's own service-boundaries section says Roym needs both, and `D-06C-10`'s stated reason for doing `proxy` first was that every Roym service makes dependency calls. If C2 exercised only one shape, the other would first be exercised in C6, on a foreign node, which is the worst place to find a defect in it. `D-06C-6a` (the Directory is optional) is untouched: nothing in C2 makes any flow require it. |
+| **D-C2-13** | **`roym_directory` is a full sibling in the manifest and in `depends_on`, even though a consumer reaches a *foreign* directory by DID.** `web → directory` by `call-target::dependency` is how the SynOrg owner administers their own directory; a consumer's chosen directories are `call-target::service(<did>)` at runtime, a shape **no C2 production code path emits** — `web`'s own `rpc`/`invoke` (§7.1) always dispatches by `Dependency`. The parity suite's scenario 10 proves the shim's `ServiceProxy` test double dispatches `CallTarget::Service` identically on both builds; it proves the shim, not the app. | The spec's own service-boundaries section says Roym needs both shapes, and `D-06C-10`'s stated reason for doing `proxy` first was that every Roym service makes dependency calls — but C2 declares zero search/discovery product behaviour (that is C6's), so there is nothing in C2 for `web` to call a foreign directory *about*. An earlier draft of this plan claimed C2's suites "exercise both shapes", which overstated what the harness-only coverage actually proves; corrected here rather than left to be discovered by a reader checking §16. `D-06C-6a` (the Directory is optional) is untouched: nothing in C2 makes any flow require it. |
 
 ---
 
@@ -269,6 +290,16 @@ crates/roym_directory/       syneroym-roym-directory
 dual-build fixture, they must be linkable into `syneroym-substrate`, so
 their host-target builds belong in the shared `target/`.
 
+**Lib crate names.** No crate in the tree overrides `[lib] name`
+(confirmed by inspection), so each package's lib crate is Cargo's default:
+hyphens become underscores, the `syneroym-` prefix is **not** stripped.
+`syneroym-roym-core` compiles to `syneroym_roym_core`, referenced in Rust
+as `syneroym_roym_core::…` throughout this plan — never the shorter
+`roym_core::…` an earlier draft used inconsistently. This plan does not
+add a `[lib] name` override for Roym's crates either, to stay consistent
+with every other crate in the workspace rather than introduce a new,
+undocumented naming exception.
+
 ### 3.2 Root `Cargo.toml` — `[workspace.dependencies]`
 
 Append, after the existing `syneroym-*` entries:
@@ -283,13 +314,75 @@ syneroym-roym-transaction = { path = "crates/roym_transaction" }
 syneroym-roym-directory = { path = "crates/roym_directory" }
 ```
 
-### 3.3 Per-service `Cargo.toml` — the exact shape
+### 3.3 Per-service `Cargo.toml` — the exact shape (corrected: every crate needs the full import set, not the full export set)
 
-Copy `test-components/dual-build-fixture/Cargo.toml` (F11) and change three
-things: the package name, the `wit_interfaces` feature list (enable **only**
-what this crate's `with:` remap names — C1 `F9`), and add
-`syneroym-roym-core.workspace = true`. For example,
-`crates/roym_profile/Cargo.toml`:
+**Every Roym service crate enables all eight `wit_interfaces` features and
+imports all eight interfaces — but does *not* need the fixture's export
+set (§4.1 corrects this too).** An earlier draft of this plan tried to
+narrow each sibling to only `data-layer` on the reasoning of C1's own `F9`
+("only the features that crate's own `with:` remap references"). That
+reasoning does not survive contact with `syneroym-app-host`'s own
+`Cargo.toml`
+([app_host/Cargo.toml:10-27](../../../../crates/app_host/Cargo.toml#L10)),
+which is **not target-gated** and unconditionally requests
+`default-features = false, features = ["app-config", "blob-store",
+"conversation", "data-layer", "http", "messaging", "proxy", "vault"]` on
+`syneroym-wit-interfaces`. Cargo feature unification means a single
+`cargo component build -p syneroym-roym-profile --target wasm32-wasip2`
+invocation resolves `syneroym-wit-interfaces` ONCE for that build graph,
+unioning whatever `roym_profile` itself requests with whatever
+`syneroym-app-host` (its own dependency) requests — so `roym_profile`
+ends up compiled against `wit_interfaces` with all eight features
+regardless of what its own `Cargo.toml` says. Each feature gates a
+separate `wit_bindgen::generate!` call inside `wit_interfaces`
+([wit_interfaces/Cargo.toml:11-21 for the comment, 22-32 for the feature list itself](../../../../crates/wit_interfaces/Cargo.toml#L11)),
+and each one embeds a `#[used]`-anchored, unstrippable component-type
+custom section describing *that* interface's own world.
+
+**A second, corrected pass over which of the fixture's own worlds those
+sections actually name matters here.** Every one of `syneroym-app-host`'s
+eight guest modules generates against an **import-only** world:
+`messaging.rs` targets `messaging-import`
+([messaging.rs](../../../../crates/wit_interfaces/src/messaging.rs)),
+whose own comment says the `-guest` variant was rejected precisely
+*because* "`messaging-guest`'s `stream-types`/`guest-api` exports would
+become an unmet requirement of every consumer's linked component" — the
+same reasoning applies, and is stated, for `conversation-import`,
+`data-layer-import`, `proxy-import`, and `websocket-import`, and
+`blob-store-guest`/`vault-guest`/`app-config-guest` are `-guest` in name
+only, each literally `world X-guest { import X; }`
+([blob-store.wit:40-42](../../../../crates/wit_interfaces/wit/blob-store/blob-store.wit#L40),
+similarly for `vault.wit`/`app-config.wit`). **So nothing in the linked
+bindings requires a Roym service's own `world.wit` to export
+`messaging/stream-types`, `messaging/guest-api`, `conversation/guest-api`,
+`http/incoming-handler`, or `http/websocket-handler`.** Only the eight
+**imports** are forced, by feature unification onto every crate's compiled
+`wit_interfaces` artifact regardless of what that crate's own `Cargo.toml`
+declares; the fixture's five **exports** exist because the fixture chose
+to implement `MessageSink`/`ConversationSink`/`HttpSink`/`WebSocketSink`
+end to end (C1's own reason for building it), not because anything forces
+them. A first draft of this section conflated the two and gave every Roym
+sibling the fixture's full export set too — corrected in §4.1, where the
+five siblings export only `api` and `web` alone carries the HTTP exports,
+because `web` alone implements them.
+
+So: every Roym service's `world.wit` imports all eight interfaces
+(matching the fixture); only `web`'s exports match the fixture's, because
+only `web` needs what those exports require implementing (§4.1).
+
+**The real fix for the forced-imports cost — splitting `AppHost` into a
+narrower supertrait bound so a service crate could genuinely import only
+what it uses — is out of scope for C2.** It would touch
+`syneroym-app-host`'s own trait definitions (`D-C1-4`'s supertrait growth,
+just shipped in C1), every existing implementor (`GuestHost`,
+`NativeAppHost`, and now every Roym service), and the fixture's own
+dual-build parity suite. Backlog row, §15, costed at the **import** side
+only — the export side has no forced cost to backlog.
+
+Copy `test-components/dual-build-fixture/Cargo.toml` (F11) and change two
+things: the package name, and add `syneroym-roym-core.workspace = true`.
+The `wit_interfaces` feature list is copied **verbatim**, all eight. For
+example, `crates/roym_profile/Cargo.toml`:
 
 ```toml
 [package]
@@ -313,7 +406,14 @@ serde_json.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wit-bindgen.workspace = true
 syneroym-wit-interfaces = { path = "../wit_interfaces", default-features = false, features = [
+    "app-config",
+    "blob-store",
+    "conversation",
     "data-layer",
+    "http",
+    "messaging",
+    "proxy",
+    "vault",
 ] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -323,37 +423,45 @@ async-trait.workspace = true
 
 [package.metadata.component.target.dependencies]
 "syneroym:data-layer" = { path = "wit/deps/data-layer" }
+"syneroym:blob-store" = { path = "wit/deps/blob-store" }
+"syneroym:messaging" = { path = "wit/deps/messaging" }
+"syneroym:conversation" = { path = "wit/deps/conversation" }
+"syneroym:proxy" = { path = "wit/deps/proxy" }
+"syneroym:app-config" = { path = "wit/deps/app-config" }
+"syneroym:vault" = { path = "wit/deps/vault" }
+"syneroym:http" = { path = "wit/deps/http" }
 ```
 
-Per-service feature lists for C2 (each service imports only what its
-skeleton actually touches; C4–C10 widen these as they add behaviour):
+Identical for all seven crates (`roym_web` included — it already needed
+`http`/`proxy`, and now carries the other six too, at the same cost every
+sibling pays).
 
-| Crate | `wit_interfaces` features | `wit/deps` symlinks |
-|---|---|---|
-| `roym_web` | `http`, `proxy` | `http`, `proxy` |
-| `roym_conversation` | `data-layer`, `conversation` | `data-layer`, `conversation` |
-| `roym_profile` | `data-layer` | `data-layer` |
-| `roym_catalog` | `data-layer` | `data-layer` |
-| `roym_transaction` | `data-layer` | `data-layer` |
-| `roym_directory` | `data-layer` | `data-layer` |
+`syneroym_roym_core` (§3.1's naming note) is target-independent: `serde`, `serde_json`, and
+`syneroym-app-host` (for the trait bounds and the `types::http`
+vocabulary) only. It declares **no** `wit-bindgen`, no `[lib]
+crate-type`, and no `[package.metadata.component]` — it is never a
+component itself.
 
-`roym_core` is target-independent: `serde`, `serde_json`, and
-`syneroym-app-host` (for the trait bounds and the `types::http` vocabulary)
-only. It declares **no** `wit-bindgen`, no `[lib] crate-type`, and no
-`[package.metadata.component]` — it is never a component itself.
+### 3.4 `wit/deps` symlinks (corrected: all eight, every crate)
 
-### 3.4 `wit/deps` symlinks
-
-For each service crate, per the table above, exactly as the fixture does
+For **every** service crate, all eight, exactly as the fixture does
 (C1 `D-C1-10.2`, verified: they are symlinks, not copies):
 
 ```bash
-mkdir -p crates/roym_web/wit/deps/http crates/roym_web/wit/deps/proxy
-ln -s ../../../../wit_interfaces/wit/http/http.wit   crates/roym_web/wit/deps/http/http.wit
-ln -s ../../../../wit_interfaces/wit/proxy/proxy.wit crates/roym_web/wit/deps/proxy/proxy.wit
+for iface in data-layer blob-store messaging conversation proxy app-config vault http; do
+  mkdir -p "crates/roym_profile/wit/deps/$iface"
+  ln -s "../../../../wit_interfaces/wit/$iface/$iface.wit" \
+        "crates/roym_profile/wit/deps/$iface/$iface.wit"
+done
 ```
 
-Note the depth differs from the fixture's (`crates/roym_web/wit/deps/http/`
+(`app-config`/`vault`/`http`/`proxy` live at
+`crates/wit_interfaces/wit/<name>/<name>.wit`, matching the fixture's own
+layout — verify the exact filename per interface against
+`crates/wit_interfaces/wit/` before symlinking, since not all of them
+follow the same `<dir>/<same-name>.wit` pattern.)
+
+Note the depth differs from the fixture's (`crates/roym_profile/wit/deps/…`
 is four levels below `crates/`, where `test-components/dual-build-fixture/`
 was five). Verify each link resolves before committing:
 `for f in $(find crates/roym_* -type l); do test -e "$f" || echo "BROKEN $f"; done`.
@@ -389,8 +497,18 @@ Add `"build:roym"` to `test:rust`'s `depends` list beside
 
 ### 4.1 One file per service crate: `crates/roym_<name>/wit/world.wit`
 
-Shown for `profile`; the other four siblings are identical with the package
-name changed.
+**Every service's world imports the fixture's full eight-interface set**
+(§3.3, forced by feature unification), **but exports only `api`** — the
+fixture's other five exports (`messaging/stream-types`,
+`messaging/guest-api`, `conversation/guest-api`, `http/incoming-handler`,
+`http/websocket-handler`) are not required by anything in the linked
+bindings; they are on the fixture's world because the fixture chose to
+implement `MessageSink`/`ConversationSink`/`HttpSink`/`WebSocketSink`, not
+because importing `messaging`/`conversation`/`http` obligates a consumer
+to export anything back. An earlier draft of this plan claimed the
+opposite and gave every sibling the fixture's export set too, unnecessary
+boilerplate this corrects. Shown for `profile`; the other four non-`web`
+siblings are identical with the package name changed.
 
 ```wit
 package syneroym-roym:profile@0.1.0;
@@ -400,13 +518,13 @@ package syneroym-roym:profile@0.1.0;
 /// set grows with the product, and a WIT function per method would make
 /// every added verb a change to the deployed interface list.
 ///
-/// `request` is a JSON object: `{ "method": string, "params": any,
-/// "caller": { "person-did": string|null, "auth": string, "origin":
-/// string } }`. The success value is a JSON object `{ "result": any }`;
-/// an application-level refusal is `{ "error": { "code": number,
-/// "message": string } }` inside the success arm, so the `Err` arm below
-/// carries only faults this service could not describe -- unparseable
-/// request JSON, and nothing else.
+/// `request` is a JSON object: `{ "method": string, "params": any }`. No
+/// caller field -- D-C2-4 forwards no identity to any sibling. The
+/// success value is a JSON object `{ "result": any }`; an
+/// application-level refusal is `{ "error": { "code": number, "message":
+/// string } }` inside the success arm, so the `Err` arm below carries
+/// only faults this service could not describe -- unparseable request
+/// JSON, and nothing else.
 interface api {
     invoke: func(request: string) -> result<string, string>;
 
@@ -418,11 +536,38 @@ interface api {
 
 world profile {
     import syneroym:data-layer/store@0.1.0;
+    import syneroym:blob-store/blob-store@0.1.0;
+    import syneroym:messaging/host-api@0.1.0;
+    import syneroym:conversation/conversation@0.1.0;
+    import syneroym:proxy/proxy@0.1.0;
+    import syneroym:app-config/app-config@0.1.0;
+    import syneroym:vault/vault@0.1.0;
+    import syneroym:http/websocket@0.1.0;
+
     export api;
 }
 ```
 
-`roym_web`'s world differs:
+No exports beyond `api` — confirmed against every guest module
+`syneroym-app-host` links against: `messaging.rs` generates
+`messaging-import`, not `messaging-guest`, and that module's own comment
+explains why in these exact terms — *"`messaging-guest`'s
+`stream-types`/`guest-api` exports would become an unmet requirement of
+every consumer's linked component"*
+([messaging.rs](../../../../crates/wit_interfaces/src/messaging.rs)).
+`conversation-import`, `data-layer-import`, `proxy-import`, and
+`websocket-import` follow the same rule; `blob-store-guest`,
+`vault-guest`, and `app-config-guest` are import-only worlds despite the
+`-guest` name
+([blob-store.wit:40-42](../../../../crates/wit_interfaces/wit/blob-store/blob-store.wit#L40)).
+The rule the fixture's own comment states is conditional — *if* a
+component exports `guest-api`, it must also export `stream-types`, because
+`guest-api` uses `stream-cursor`/`stream-sink` — not *if* a component
+imports `messaging`, it must export `guest-api`. `profile` imports
+`messaging` and exports nothing on it, which is exactly what an
+import-only world is for.
+
+`roym_web`'s world genuinely differs, not just in name:
 
 ```wit
 package syneroym-roym:web@0.1.0;
@@ -433,7 +578,13 @@ interface api {
 }
 
 world web {
+    import syneroym:data-layer/store@0.1.0;
+    import syneroym:blob-store/blob-store@0.1.0;
+    import syneroym:messaging/host-api@0.1.0;
+    import syneroym:conversation/conversation@0.1.0;
     import syneroym:proxy/proxy@0.1.0;
+    import syneroym:app-config/app-config@0.1.0;
+    import syneroym:vault/vault@0.1.0;
     import syneroym:http/websocket@0.1.0;
 
     export syneroym:http/incoming-handler@0.1.0;
@@ -442,12 +593,37 @@ world web {
 }
 ```
 
-`web` exports `api` too, so the parity suite can drive it without an HTTP
-stack — the same reason the fixture exports `test-driver`. Note that there
-is **no `roymctl svc call` verb** in the tree (`SvcCommands` is `Deploy`,
-`Remove`, `Restart`, `ProxyOutbox`, `ProxyDeadLetters`, `ProxyReplay`,
-`Sagas`, `SagaCompensate`, `EndpointInfo`), so this export is not reachable
-from the CLI today — see §14 (10).
+`web` exports `incoming-handler`/`websocket-handler` because it genuinely
+implements them (§7.2-7.3), not because anything forces it to. This also
+sharpens `D-C2-5`'s invariant ("only `web` declares `http_routes`, and only
+`web` declares an `assets` bundle") rather than sitting oddly next to it:
+a sibling that also exported `incoming-handler` would be asserting, at the
+WIT level, that it handles HTTP — which nothing about the five siblings is
+true of, and which the corrected worlds above no longer suggest. `web`'s
+own `api` export is kept (as the fixture keeps `test-driver`) so the
+parity suite can drive it without an HTTP stack.
+
+`profile`'s (and every non-`web` sibling's) `guest.rs` therefore needs
+only `export!(Profile)` for its own `api` — no `UnusedStreamCursor`/
+`UnusedStreamSink`, no stub `GuestApiGuest`/`ConversationGuestApiGuest`/
+`IncomingHandlerGuest`/`WebSocketHandlerGuest` impls, and none of the
+roughly forty lines an earlier draft of this plan claimed as unavoidable
+boilerplate per crate. That boilerplate belongs to `web` alone, where it
+is not boilerplate at all — `web`'s own `IncomingHandlerGuest`/
+`WebSocketHandlerGuest` impls have real bodies (§7.2), matching the
+fixture's own `guest.rs`, whose `handle_message`/`on_message`/
+`on_delivery_state` similarly delegate to real `crate::app::` handlers
+([guest.rs:61-95](../../../../test-components/dual-build-fixture/src/guest.rs#L61))
+— only the fixture's two streaming functions are `Err(...)` stubs, and
+Roym declares no streaming in C2 either, on `web` or anywhere else, so
+`web`'s own world (above) omits `messaging`/`conversation`'s guest-facing
+exports entirely rather than stubbing them.
+
+Note that there is **no `roymctl svc call` verb** in the tree
+(`SvcCommands` is `Deploy`, `Remove`, `Restart`, `ProxyOutbox`,
+`ProxyDeadLetters`, `ProxyReplay`, `Sagas`, `SagaCompensate`,
+`EndpointInfo`), so `web`'s own `api` export is not reachable from the CLI
+today — see §14 (10).
 
 ### 4.2 Interface-name constants (F13)
 
@@ -493,31 +669,17 @@ Five modules. None of them is product behaviour.
 ### 5.2 `src/envelope.rs` — the `invoke` request/response vocabulary
 
 ```rust
-/// What the Web entrypoint observed about the caller, forwarded to a
-/// sibling. Never trusted on its own -- see `CallerEnvelope::accept`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CallerEnvelope {
-    /// The person's master DID, when a person session was active. `None`
-    /// means the entrypoint saw no person -- an anonymous or node-identity
-    /// request.
-    pub person_did: Option<String>,
-    /// How the entrypoint's own inbound request was authenticated, as the
-    /// `syneroym:http` `caller-auth` enum spells it: "delegated", "ucan",
-    /// or "self-asserted". Copied, never inferred.
-    pub auth: String,
-    /// The forwarding service's own id. Diagnostic only: it is not proof
-    /// of anything, because a proxied call carries no caller identity on
-    /// either build (see the module doc).
-    pub origin: String,
-}
-
-/// One `invoke` request.
+/// One `invoke` request. Carries no caller field, deliberately -- see
+/// `D-C2-4`. Anything a sibling needs to know about who is asking has to
+/// come from a mechanism the receiving guest can itself verify, and no
+/// such mechanism exists yet for this interface shape (F15). A field that
+/// looked like identity but was not verifiable would be worse than no
+/// field at all.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub method: String,
     #[serde(default)]
     pub params: serde_json::Value,
-    pub caller: CallerEnvelope,
 }
 
 /// One `invoke` response. Exactly one of `result`/`error` is present.
@@ -525,27 +687,12 @@ pub struct Request {
 pub struct Response { /* result: Option<Value>, error: Option<RpcError> */ }
 ```
 
-The module doc carries `D-C2-4`'s reasoning verbatim — that a proxied call
-forwards no caller on either build (F1, F2), that this envelope is the
-substitute, and that it is admissible only under `AuthLevel::System`.
-
-`CallerEnvelope::accept`:
-
-```
-fn accept(envelope, observed: &CallerContext) -> Principal
-    if observed.auth == AuthLevel::System:
-        // Only in-node dispatch produces System. `service_system` sets
-        // proof: None, so it cannot cross a wire hop, and no service but
-        // `web` declares an http_routes entry (D-C2-5), which is the other
-        // way System is produced.
-        return Principal::from_envelope(envelope)
-    // A direct caller: attribute to who they actually are, and drop the
-    // envelope entirely rather than merging the two.
-    return Principal::direct(observed.caller_did, observed.auth)
-```
-
-`Principal` is `{ did: Option<String>, auth: Auth, trusted: bool }`. It is
-what C4–C10's authorization reads. C2 uses it only to answer `whoami`.
+No `CallerEnvelope`, no `Principal`, no `accept`. An earlier draft of this
+plan had all three; they are gone because the mechanism they implemented
+was unsound (D-C2-4's rewritten rationale, F15) and there is nothing in
+C2's own scope to replace them with — C4/C5 pick this back up once the
+substrate side (a host-verified caller parameter, or UCAN cross-service
+delegation) exists.
 
 ### 5.3 `src/router.rs` — the method-prefix table (`D-C2-3`)
 
@@ -632,8 +779,8 @@ pub fn extract_request_param(params: &serde_json::Value) -> Option<String>;
 Plus a generic `NativeApi<H: AppHost>` adapter implementing
 `syneroym_rpc::NativeService` over an app-supplied
 `fn(&H, Request) -> Response`, so each service's `native.rs` is roughly ten
-lines. Gate it `#[cfg(not(target_arch = "wasm32"))]` — `roym_core` must
-still compile for `wasm32`, where `syneroym-rpc` is absent.
+lines. Gate it `#[cfg(not(target_arch = "wasm32"))]` — `syneroym_roym_core`
+must still compile for `wasm32`, where `syneroym-rpc` is absent.
 
 ---
 
@@ -668,30 +815,23 @@ pub async fn status<H: AppHost>(_host: &H) -> Result<String, String> {
     }).to_string())
 }
 
-pub async fn invoke<H: AppHost>(host: &H, req: Request, observed: &CallerContext)
-    -> Response
-{
-    let principal = req.caller.accept(observed);
+pub async fn invoke<H: AppHost>(_host: &H, req: Request) -> Response {
     match req.method.as_str() {
-        // C2 declares no product verbs. `whoami` exists so the shared
-        // suite can prove, on both builds, that the person the gateway
-        // authenticated is the person this service sees.
-        "profile.whoami" => Response::ok(json!({
-            "did": principal.did,
-            "auth": principal.auth.as_str(),
-            "trusted": principal.trusted,
-        })),
+        // C2 declares no product verbs, and reports no caller identity
+        // (D-C2-4, F15): a sibling has no sound way to learn who is
+        // asking, so nothing here pretends to. `ping` exists only so the
+        // shared suite can prove, on both builds, that a request routed
+        // through `web` reaches this service and a real answer comes
+        // back -- reachability, not identity.
+        "profile.ping" => Response::ok(json!({ "service": services::PROFILE.name })),
         other => Response::method_not_found(other),
     }
 }
 ```
 
-`observed` is the `CallerContext` the host gave this invocation. On the
-native build it arrives as `NativeInvocation.caller`. **On the WASM build a
-guest cannot read its own `CallerContext`** — there is no host import for
-it. So the guest passes a synthesized `CallerContext` that names only what
-the guest can know. See §6.3 for exactly what, and §14 (3) for why this is a
-flagged asymmetry rather than a hidden one.
+No `observed`/caller parameter: this function receives exactly `req`, the
+JSON body `web` forwarded, nothing else. That is the direct consequence of
+`D-C2-4` — there is no honest caller value to pass in.
 
 ### 6.3 `src/guest.rs` — WASM wiring
 
@@ -705,8 +845,30 @@ mod bindings {
         path: "wit",
         world: "profile",
         with: {
+            // All eight remapped onto `syneroym-app-host`'s own bindings
+            // -- matching the fixture's own `with:` block (C1's guest.rs
+            // doc comment: a second `generate!` pass over the same
+            // imports, linked into one component, fails to encode) --
+            // but with none of the fixture's `generate` entries: those
+            // exist only for the shared types of an EXPORTED interface
+            // (`stream-types`, `websocket-types`, `incoming-handler`),
+            // and `profile`'s world (§4.1) exports none of them.
             "syneroym:data-layer/store@0.1.0":
                 syneroym_wit_interfaces::data_layer::syneroym::data_layer::store,
+            "syneroym:blob-store/blob-store@0.1.0":
+                syneroym_wit_interfaces::blob_store::syneroym::blob_store::blob_store,
+            "syneroym:messaging/host-api@0.1.0":
+                syneroym_wit_interfaces::messaging::syneroym::messaging::host_api,
+            "syneroym:conversation/conversation@0.1.0":
+                syneroym_wit_interfaces::conversation::syneroym::conversation::conversation,
+            "syneroym:proxy/proxy@0.1.0":
+                syneroym_wit_interfaces::proxy::syneroym::proxy::proxy,
+            "syneroym:app-config/app-config@0.1.0":
+                syneroym_wit_interfaces::app_config::syneroym::app_config::app_config,
+            "syneroym:vault/vault@0.1.0":
+                syneroym_wit_interfaces::vault::syneroym::vault::vault,
+            "syneroym:http/websocket@0.1.0":
+                syneroym_wit_interfaces::http_guest::syneroym::http::websocket,
         },
     });
     use super::Profile;
@@ -717,9 +879,8 @@ struct Profile;
 
 impl ApiGuest for Profile {
     fn invoke(request: String) -> Result<String, String> {
-        block_on(roym_core::dual_build::handle_invoke(
-            &GuestHost, &request,
-            |h, req| crate::app::invoke(h, req, &guest_caller()),
+        block_on(syneroym_roym_core::dual_build::handle_invoke(
+            &GuestHost, &request, crate::app::invoke,
         ))
     }
     fn status() -> Result<String, String> {
@@ -728,26 +889,14 @@ impl ApiGuest for Profile {
 }
 ```
 
-`guest_caller()` returns `CallerContext::service_system(<this service's
-name>)` — i.e. `auth: System`. That is *exactly* what the WASM host would
-have synthesized for a proxied call anyway (F1), so the envelope gate
-behaves identically on both builds. It is a synthesized value and the
-function's doc comment says so in one sentence: a WASM guest has no import
-that reveals its own caller, so the only honest thing it can assert is the
-auth level the host already guarantees for a proxied call.
-
-> **This is the load-bearing subtlety of the whole slice.** If the WASM
-> guest synthesized anything *other* than `System`, the envelope would be
-> rejected on the WASM build and accepted on the native build, and every
-> identity test would pass one way and fail the other. §12.2's first
-> scenario is written to fail loudly if that ever changes.
-
-`CallerContext` is a `syneroym-rpc` type and `syneroym-rpc` is not a
-`wasm32` dependency. So `roym_core` must define its own minimal
-`ObservedCaller { auth: Auth }` rather than reuse `CallerContext`, and the
-native side converts. Two lines, and it keeps `roym_core` free of
-`syneroym-rpc` on the guest target. **Do this**; do not add `syneroym-rpc`
-to the wasm32 dependency set.
+`export!(Profile)` — no other `impl` block, and no `UnusedStreamCursor`/
+`UnusedStreamSink` (§4.1's correction). No caller conversion here, and no
+`CallerContext` on the wasm32 target at all (`syneroym-rpc` stays a
+native-only dependency, exactly as the fixture already has it — see
+§3.3's per-target dependency table). `D-C2-4`'s retracted mechanism is
+what used to need one; without it, `app::invoke` takes only `req`, and
+this file carries none of an earlier draft's
+`guest_caller()`/`ObservedCaller` machinery.
 
 ### 6.4 `src/native.rs` — in-process wiring
 
@@ -761,7 +910,12 @@ pub struct NativeProfile<H: AppHost + 'static> {
 #[async_trait::async_trait]
 impl<H: AppHost + 'static> NativeService for NativeProfile<H> {
     async fn dispatch(&self, inv: NativeInvocation) -> RpcResult<NativeResponse> {
-        let observed = ObservedCaller::from(&inv.caller);
+        // `inv.caller` still builds a real, correctly-scoped `NativeAppHost`
+        // (host capability calls -- data-layer writes, etc. -- are
+        // attributed to it exactly as they already are on every other
+        // native-dispatched interface in the tree). It is not read for
+        // anything ELSE: `app::invoke` takes no caller parameter, per
+        // D-C2-4.
         let host = (self.host_for)(inv.caller);
         match inv.method.as_str() {
             "invoke" => { /* extract_request_param, app::invoke, wrap */ }
@@ -798,43 +952,61 @@ fn handle_http(host, request: HttpRequest) -> Result<HttpResponse, String>
                                     // arm is a defect check, not a path
 ```
 
-**`rpc`** — the forwarder, and the whole of `D-C2-3`.
+**`rpc`** — the forwarder, and the whole of `D-C2-3`. **Carries no
+caller identity to the sibling** — see `D-C2-4`'s rewritten decision row and
+F15: a WASM sibling has no way to read its own real caller for a generic
+`invoke` call, so any identity claim `web` attached to the payload would be
+unverifiable by the receiving guest and indistinguishable from one an
+attacker attached. Forwarding one anyway would be worse than not
+forwarding it — a false sense of authorization is worse than an honest
+absence of one.
 
 ```
 fn rpc(host, request: HttpRequest) -> HttpResponse
   1. body must parse as a JSON-RPC 2.0 Request object; else -32700/-32600
-  2. envelope = CallerEnvelope {
-         person_did: request.caller.filter(|c| c.auth == Delegated).map(did),
-         auth:       request.caller.map(auth_str).unwrap_or("none"),
-         origin:     <this service's own id, from app-config; see below>,
-     }
-     // person_did is Some ONLY for `delegated`. `self-asserted` on a
-     // gateway-proxied request is the NODE's key, identical for every
-     // visitor (http.wit's own words) -- treating it as a person would
-     // make every anonymous visitor the same person.
-  3. if method == "session.whoami": answer here, no sibling call
-  4. service = roym_core::router::route(method) else -32601
-  5. payload = Request { method, params, caller: envelope } as JSON string
-  6. out = host.call(
+  2. if method == "session.whoami": answer here, from request.caller,
+     no sibling call. This is the ONLY place in C2 that reports a person's
+     identity to anything -- see D-C2-4.
+  3. service = syneroym_roym_core::router::route(method) else -32601
+  4. payload = Request { method, params } as JSON string  // no caller field
+  5. out = host.call(
          CallTarget::Dependency(service.name.into()),
          service.interface.into(),
          "invoke".into(),
          json!([payload]).to_string(),
          Some(CallOptions { idempotent: false, ..default }),
      )
-  7. map ProxyError -> a JSON-RPC error object:
-       DependencyNotBound -> -32001 "service not available"
-       Timeout            -> -32002 "service did not answer in time"
-       Callee{code,msg}   -> pass the callee's own code and message through
-       everything else    -> -32603, with the variant name, never the detail
-  8. 200 with the JSON-RPC Response. A JSON-RPC *error* is still HTTP 200 --
-     the transport succeeded.
+  6. match out:
+       Ok(response_json) -> parse it as syneroym_roym_core::envelope::Response and
+         re-emit its OWN result/error verbatim as the outer JSON-RPC
+         response. An application-level refusal (D-C2-2's convention: an
+         `error` object inside the Ok arm) is therefore carried through
+         exactly, with no code translation -- there is nothing to
+         translate, since the callee already speaks JSON-RPC-shaped errors.
+       Err(proxy_error) -> the call itself failed (not an application
+         answer). Map the FEW proxy-error variants that are genuinely
+         distinguishable to a JSON-RPC error, and collapse the rest:
+           DependencyNotBound -> -32001 "service not available"
+           TimedOut           -> -32002 "service did not answer in time"
+           everything else (including Callee{..}) -> -32603, with the
+             variant name, never the detail. `Callee` specifically is NOT
+             passed through with its own code: the WIT Err arm this plan
+             gives `api.invoke` (§4.1) carries only a `string`, no code, so
+             there is no callee-supplied code to relay -- and even if there
+             were, the router's own `invoke_local` collapses every WASM
+             callee error to `Callee{code: -32603}` regardless of what the
+             guest returned (`crates/router/src/proxy.rs:709-730`, a
+             pre-existing, already-documented "known limitation, ... a
+             follow-up" comment at that call site, not something C2
+             introduces or is positioned to fix). Ordinary application
+             errors never take this path at all (they are `Ok` per D-C2-2),
+             so this collapse is confined to the rare case of a malformed
+             sibling request or a genuine host/engine fault, and the parity
+             suite (§12.2) asserts only that BOTH builds produce *an* error
+             response for that case, never that the CODE matches.
+  7. 200 with the JSON-RPC Response either way. A JSON-RPC *error* is still
+     HTTP 200 -- the transport succeeded.
 ```
-
-Step 2's `origin` comes from `host.get("service.id".into())` via
-`AppAppConfig` if the deploy sets it, and falls back to the constant
-`"web"`. It is diagnostic only (`D-C2-4`), so a fallback is honest here in a
-way it would not be for anything authorizing.
 
 **`invoke`** — `web`'s own `api`, for a non-HTTP caller. Same body as `rpc`
 minus the HTTP framing, so the parity suite and any future CLI verb drive
@@ -850,18 +1022,39 @@ fires on both builds and nothing more.
 
 ### 7.2 `src/guest.rs`
 
-The fixture's `guest.rs` is the template, including its `caller_auth_in` /
-`caller_identity_in` / `http_request_in` / `http_response_out` /
-`frame_kind_in` converters — **copy them, do not re-derive them.** They exist
-because `http.wit`'s records live inside an *exported* interface, so there
-is no shared generated type (C1 `F4`/`D-C1-3`). `world: "web"`, `with:` maps
-`syneroym:proxy/proxy@0.1.0` and `syneroym:http/websocket@0.1.0` onto
-`syneroym-app-host`'s bindings and `generate`s `websocket-types`,
-`incoming-handler`, `websocket-handler`.
+**Do not copy the fixture's `with:` block wholesale.** The fixture's own
+export shape is `incoming-handler` + `websocket-handler` +
+`messaging/stream-types` + `messaging/guest-api` + `conversation/guest-api`
++ `test-driver` ([world.wit](../../../../test-components/dual-build-fixture/wit/world.wit)),
+because the fixture also proves `MessageSink`/`ConversationSink`.
+`web`'s own world (§4.1) exports only `incoming-handler` +
+`websocket-handler` + `api` — narrower — so a `with:` block copied from
+the fixture unmodified would declare a `syneroym:messaging/stream-types@0.1.0":
+generate` entry for an export `web`'s world never declares, which does not
+match and should not be copied.
+
+What **is** worth copying from the fixture's `guest.rs`: its
+`caller_auth_in` / `caller_identity_in` / `http_request_in` /
+`http_response_out` / `frame_kind_in` converters — **copy those, do not
+re-derive them.** They exist because `http.wit`'s records live inside an
+*exported* interface, so there is no shared generated type (C1
+`F4`/`D-C1-3`), and that reasoning is identical for `web` and for the
+fixture.
+
+`web`'s own `with:` block, built for `web`'s own narrower export set: all
+eight imports remapped onto `syneroym-app-host`'s bindings (the same full
+set every sibling's `with:` block carries — §6.3's corrected example),
+**plus** exactly two `generate` entries — `syneroym:http/websocket-types@0.1.0`
+and `syneroym:http/incoming-handler@0.1.0` — needed because those are the
+shared types `web`'s own `incoming-handler`/`websocket-handler` exports
+use. No `syneroym:messaging/stream-types@0.1.0` entry, and no
+`messaging`/`conversation` `generate` entries of any kind: `web` implements
+HTTP, not messaging or conversation delivery, and its world (§4.1) exports
+only `incoming-handler`, `websocket-handler`, and `api`.
 
 ### 7.3 `src/native.rs`
 
-`NativeWeb<H: AppHost>` implementing **four** traits:
+`NativeWeb<H: AppHost>` implementing **three** traits:
 `syneroym_rpc::NativeService` (for `api`), `syneroym_app_host_native::HttpSink`,
 `syneroym_app_host_native::WebSocketSink`. Bodies delegate to `app.rs`
 exactly as `NativeFixture`'s do
@@ -881,7 +1074,7 @@ tree). Output `dist/`, packed to `bundle.tar.gz` by §3.5's task.
 |---|---|
 | Login | `GET /_syneroym/session/identities` → a picker. On choose, `POST /_syneroym/session/login-local`, then reload. Empty list → the message from `D-C2-7` naming `roymctl identity create`. |
 | Session bar | `GET /_syneroym/session/whoami` on load. A 401 renders **"the substrate restarted — log in again"** as an ordinary state, never an error banner (`task.md`'s carried-forward gateway limit; failure matrix row 17). |
-| Home | Calls `session.whoami` and one sibling's `whoami` through `POST /rpc`, and shows both DIDs. This is the shell's proof that the person reaches a service, and C4 replaces it with the real profile screen. |
+| Home | Calls `session.whoami` (shows the person's DID) and `profile.ping` (shows the sibling reached and answered, not an identity claim — `D-C2-4`), both through `POST /rpc`. This is the shell's proof that the person is authenticated *and* that a request reaches a service; C4 replaces it with the real profile screen. |
 | Card gallery | Renders one sample of each of the seven types plus the unknown-type fallback, from a local fixture file. Not reachable from the Home screen; it exists so the renderer and its tests have a subject before C7 produces a real card. |
 
 ### 8.2 The card renderer — `ui/src/cards/`
@@ -927,27 +1120,38 @@ belongs in its own commit.
 
 ## §9 The `SynAppManifest`
 
-### 9.1 Location and path rules (F10)
+### 9.1 Location and path rules (F10, corrected)
 
 `crates/roym_core/app/roym.toml`. `roym_core` because the manifest is the
 app as a whole, not any one service, and `roym_core` is already the crate
 that owns cross-service facts (§4.2, §5.3).
 
-Both path rules apply and differ, so state both in a comment at the top of
-the file:
+C2 deploys with **`roymctl app deploy`**, not `roymctl supervisor submit`
+(§9.3 below). Under `app deploy`, **both** `source` and `assets.archive`
+resolve the same way: `mapper.rs`'s `resolve_artifact_source`
+([mapper.rs:93-121](../../../../crates/sdk/src/mapper.rs#L93)) reads a bare
+path with `util::read_local_artifact`, cwd-relative, with **no** rebasing
+onto the manifest's own directory. The manifest-relative rule
+(`resolve_under(manifest_dir, …)`,
+[supervisor.rs:256](../../../../apps/roymctl/src/commands/supervisor.rs#L256))
+belongs to `supervisor submit` alone and does not apply here — confirmed
+by reading both call sites, not assumed. So both fields are written
+workspace-root-relative, and the deploy command must run from the
+workspace root:
 
-- `source` resolves against the **client process's cwd**, so every `source`
-  is written relative to the workspace root
-  (`target/wasm32-wasip2/release/syneroym_roym_web.wasm`), and the deploy
-  command must be run from the workspace root.
-- `assets.archive` resolves against the **manifest's own directory** for
-  `roymctl supervisor submit`, so it is written
-  `../../roym_web/ui/bundle.tar.gz`.
+```toml
+[services.web]
+source = "target/wasm32-wasip2/release/syneroym_roym_web.wasm"
+[services.web.assets]
+archive = "crates/roym_web/ui/bundle.tar.gz"
+```
 
-Verify the second empirically in §13 step 8 against the actual command used;
-if `roymctl app deploy`'s mapper uses cwd for `archive` too, change it to
-the workspace-relative form and record which command was used, rather than
-carrying a rule that is right for one path and wrong for the other.
+An earlier draft of this plan wrote `archive` manifest-relative (the
+`supervisor submit` rule) while using the `app deploy` command, which
+would have resolved outside the repository entirely. If a later slice
+switches the deploy command to `supervisor submit`, `archive` must move
+back to the manifest-relative form and this note must move with it — the
+two commands are not interchangeable for this field.
 
 ### 9.2 The services
 
@@ -969,7 +1173,7 @@ custom_config = '''{"http_routes":[
 ]}'''
 
 [services.web.assets]
-archive = "../../roym_web/ui/bundle.tar.gz"
+archive = "crates/roym_web/ui/bundle.tar.gz"
 visibility = "public"
 
 [services.web.health_check.rpc]
@@ -977,7 +1181,9 @@ interface = "syneroym-roym:web/api@0.1.0"
 method = "status"
 ```
 
-and, for each of the five siblings (shown for `catalog`):
+and, for each of the five siblings (shown for `catalog`, and for
+`directory`, which is the one service that also declares
+`topology_visibility`):
 
 ```toml
 [services.catalog]
@@ -989,17 +1195,39 @@ visibility = "public"
 [services.catalog.health_check.rpc]
 interface = "syneroym-roym:catalog/api@0.1.0"
 method = "status"
+
+[services.directory]
+service_type = "wasm"
+source = "target/wasm32-wasip2/release/syneroym_roym_directory.wasm"
+interfaces = ["syneroym-roym:directory/api@0.1.0"]
+visibility = "public"
+topology_visibility = "open"
+
+[services.directory.health_check.rpc]
+interface = "syneroym-roym:directory/api@0.1.0"
+method = "status"
 ```
+
+`topology_visibility` is written **only** on `directory` — every other
+service takes the default (`restricted`), and
+`ServiceSpec.topology_visibility`'s `#[serde(skip_serializing_if =
+"is_restricted")]` ([models.rs:574-586](../../../../crates/app_orchestration/src/models.rs#L574))
+means an absent key and an explicit `restricted` key are the same manifest,
+so there is nothing to write for `web`/`conversation`/`catalog`/
+`transaction`/`profile`. An earlier draft of this plan named `directory`'s
+`topology_visibility = "open"` in §9.3's table but never wrote the key into
+the TOML — the key above is what actually makes failure-matrix row 18 and
+§12.3 item 5 pass; the table alone does nothing.
 
 No sibling declares `custom_config` or `assets` (`D-C2-5`). No sibling
 declares `depends_on` — `web → siblings` is the only edge, so F12's cycle
 check is satisfied by construction.
 
 `/health` is `public: true` and every other route is not. That is
-deliberate and is the one place `D-C2-5`'s reasoning needs care: `public`
-routes produce a `System` caller (F3), but this is `web`, which is the
-service that *sends* envelopes and never accepts one, so the gate `D-C2-4`
-protects is not reachable through it. Say so in the manifest comment.
+deliberate: `public` routes produce a `System` caller (F3), but `web`
+never accepts an out-of-band caller claim (D-C2-4 dropped that mechanism
+entirely), so `/health`'s public reachability creates no exploitable path.
+Say so in the manifest comment.
 
 ### 9.3 Visibility, and what each value buys (`task.md`'s C2 row)
 
@@ -1019,8 +1247,7 @@ flags fails at `web`, and the C2 status note records that as expected.
 
 ### 9.4 The Hub's URL (F8, closing C1 §12 (11))
 
-`http://s<short_hash(<web service DID>)>.localhost:7960/`.
-
+**WASM build:** `http://s<short_hash(<web service DID>)>.localhost:7960/`.
 The `web` service's DID is minted at deploy, so the URL is per-install. Add
 a line to the deploy step in the developer guide showing how to compute it
 (`roymctl app deploy` already prints each service's resolved master DID;
@@ -1029,17 +1256,59 @@ a line to the deploy step in the developer guide showing how to compute it
 place, and is not used in C2: it needs a credential the unscoped form does
 not, and buys nothing here.
 
+**Native build (`roym` feature):** `http://s<short_hash(<node's own
+DID>)>.localhost:7960/` — the node's own address, not a per-service one.
+`D-C2-11` means the linked `web` mints no DID, so §11.3's `init_roym`
+registers its HTTP surface under the node's own service id as well as its
+own (mirroring `init_dual_build_fixture`'s existing precedent). This is a
+real, named difference between the two builds' reachable URLs, not an
+oversight — record it beside the WASM URL in the developer guide rather
+than only in this plan.
+
 ---
 
 ## §10 The gateway: browser person login (`D-C2-6`)
+
+### 10.0 Forward compatibility with a later WebAuthn/passkey signer
+
+Not built in C2. Recorded here because §10.1-10.4's shape is chosen partly
+to keep the door open, and a future session must not need this section
+rewritten to add a browser-held signer.
+
+- `SessionStore::login`, `LoginResponse`, the `Set-Cookie` construction, and
+  `whoami` are the **shared tail** of every login path. C2's
+  `login-local` and a future `login-webauthn` both end by calling the same
+  `SessionStore::login` with a `LoginRequest` they each assembled — the
+  session format never depends on how the signature was produced.
+- The only thing a WebAuthn path adds is a **third `SessionRoute`** that
+  verifies an authenticator assertion instead of reading a z32 signature
+  off disk, plus (per `D-C2-6`'s decision row) a did:key multicodec branch
+  for P-256 if the authenticator uses ES256, and CORS on the community
+  registry so the browser can publish its own anchor directly.
+- Nothing in this plan needs to anticipate the WebAuthn wire shape itself
+  (`navigator.credentials.*`, COSE key parsing) — that is real, separate
+  work for whichever slice picks up the two backlog rows in §15. C2's only
+  obligation is the one already met: don't hardcode an assumption that
+  login is always signed by a key file on the node's own disk anywhere
+  outside the `login-local` handler itself. Confirmed by inspection: the
+  UI's login screen (§8.1) calls `GET /_syneroym/session/identities` and
+  `POST /_syneroym/session/login-local` by name, not through a
+  generic "the only way to log in" assumption baked into the session bar or
+  `whoami` handling.
 
 ### 10.1 `crates/core/src/config.rs`
 
 `ClientGatewayRole` gains one field, defaulting to absent:
 
 ```rust
-    /// Directory of person identity key files (`<name>.key`), the same
-    /// layout `roymctl` uses under its own `--dir`. Present enables the
+    /// The **same top-level `--dir`** an operator passes to `roymctl`
+    /// (e.g. `roymctl identity create --dir <this>`), not a dedicated
+    /// directory of its own. `roymctl session login` reads a person key
+    /// from `<dir>/identities/<name>.key`
+    /// ([session.rs:135](../../../../apps/roymctl/src/commands/session.rs#L135));
+    /// this field's own code appends the same `identities/` segment, so one
+    /// directory serves both tools and an operator who already ran
+    /// `roymctl identity create` needs no second copy. Present enables the
     /// local login endpoints below; absent leaves them 404, which is what
     /// every configuration written before this field means.
     ///
@@ -1080,10 +1349,13 @@ New request/response types beside the existing ones:
 New free function, unit-testable without a socket:
 
 ```rust
-/// Every `<name>.key` in `dir`, sorted, names only. Returns an empty list
-/// for a missing or unreadable directory -- a login attempt against a name
-/// that is not there fails with the same 404 either way, so distinguishing
-/// them here would leak whether a path exists.
+/// Every `<name>.key` under `dir.join("identities")`, sorted, names only --
+/// `dir` is the same top-level `--dir` `roymctl` takes, and this walks the
+/// exact subdirectory `roymctl identity create` writes into
+/// ([session.rs:135](../../../../apps/roymctl/src/commands/session.rs#L135)).
+/// Returns an empty list for a missing or unreadable directory -- a login
+/// attempt against a name that is not there fails with the same 404 either
+/// way, so distinguishing them here would leak whether a path exists.
 pub fn list_person_identities(dir: &Path) -> Vec<String>;
 ```
 
@@ -1111,7 +1383,7 @@ SessionRoute::LoginLocal:
     parse LocalLoginRequest; malformed -> 400
     if !list_person_identities(dir).contains(&req.identity) -> 404
         {"error":"no such local identity"}
-    let person = Identity::load_from_path(dir.join(format!("{name}.key")))
+    let person = Identity::load_from_path(dir.join("identities").join(format!("{name}.key")))
         // io error -> 500, message names the file, not its contents
     let person_did = substrate::derive_did_key(&person.public_key())
 
@@ -1126,8 +1398,12 @@ SessionRoute::LoginLocal:
     // Publish the anchor BEFORE login, or step 4 of SessionStore::login
     // answers 409 AnchorUnresolvable. Failure here is reported, not
     // swallowed: a session that cannot be used is worse than a refusal.
-    if let Some(url) = &state.registry_url_if_configured() {
-        RegistryClient::new(dht, Some(url)).refresh_master_anchor(&person).await
+    // `state.registry_url` is a `String`, empty when unconfigured -- the
+    // gateway's own existing idiom (`gateway.rs:135`'s `fetcher` branch),
+    // reused here rather than inventing a second way to spell "unset".
+    if !state.registry_url.is_empty() {
+        RegistryClient::new(dht, Some(state.registry_url.clone()))
+            .refresh_master_anchor(&person).await
             -> on error, 502 {"error":"could not publish this person's anchor"}
     }
 
@@ -1194,25 +1470,37 @@ roym = [
 
 with the seven as `optional = true` workspace dependencies.
 
-### 11.2 `SharedNodeHandles` — two new fields (F5)
+### 11.2 `SharedNodeHandles` — one new field (F5, corrected)
+
+Only `assets` is genuinely new. An earlier draft of this plan also added
+`app_registry: Arc<StaticInventory>` for `init_roym` to register bindings
+into directly — wrong: `install_app_context` never touches a
+`StaticInventory` directly either. It calls
+`self.logical_resolver.register(...)`
+([orchestration.rs:670](../../../../crates/control_plane/src/service/orchestration.rs#L670)),
+and `LogicalResolver::register` is `self.registry.register(key, entry) +
+self.cache.evict(&key)` in one step
+([resolver.rs:687-689](../../../../crates/app_orchestration/src/resolver.rs#L687))
+— registering straight into the `StaticInventory` would skip that
+eviction, which is harmless only because nothing has cached the key yet at
+startup, and is the wrong shape to copy regardless: §11.3's own rule is
+that the linked build's wiring mirrors the deploy path's calls, not a
+shortcut around them. `logical_resolver` is **already** on
+`SharedNodeHandles` ([runtime.rs:855](../../../../crates/substrate/src/runtime.rs#L855)),
+so `init_roym` calls `shared.logical_resolver.register(...)` directly and
+no new field is needed for this.
 
 ```rust
     /// The static asset table. A linked native app has no deploy record,
     /// so nothing else would put its UI bundle here.
     #[cfg_attr(not(feature = "roym"), allow(dead_code))]
     assets: AssetRegistry,
-    /// The in-memory topology inventory the node's own `LogicalResolver`
-    /// reads. A linked app installs its own dependency bindings here
-    /// (`install_app_context`'s in-process equivalent).
-    #[cfg_attr(not(feature = "roym"), allow(dead_code))]
-    app_registry: Arc<StaticInventory>,
 ```
 
-Set both in the `SharedNodeHandles { … }` literal at
+Set it in the `SharedNodeHandles { … }` literal at
 [runtime.rs:1363](../../../../crates/substrate/src/runtime.rs#L1363) from
-the locals already in scope (`assets.clone()`, `app_registry.clone()`); note
-`assets` currently moves into `RouteHandlerDeps` at line 1389, so clone it
-before.
+the local already in scope (`assets.clone()`); note `assets` currently
+moves into `RouteHandlerDeps` at line 1389, so clone it before.
 
 Also extend the five existing `#[cfg_attr(not(feature = "dual_build_fixture"), …)]`
 attributes on `blob_provider`, `logical_resolver`, `http_routes`,
@@ -1243,7 +1531,7 @@ async fn init_roym(shared, endpoint_registry, node_service_id, config)
 {
   factories = []
   // 1. One factory + one NativeService per service.
-  for svc in roym_core::services::ALL:
+  for svc in syneroym_roym_core::services::ALL:
       let id = roym_dispatch_id(svc.name)
       let factory = NativeHostFactory::new(
           id.clone(), shared.key_store, shared.storage_provider,
@@ -1258,15 +1546,31 @@ async fn init_roym(shared, endpoint_registry, node_service_id, config)
           SubstrateEndpoint::NativeHostChannel { service_id: id.clone() }).await?
       factories.push(factory)
 
-  // 2. `web` alone gets the HTTP surface (D-C2-5).
+  // 2. `web` alone gets the HTTP surface (D-C2-5). Registered under BOTH
+  //    `web_id` and `node_service_id`, mirroring `init_dual_build_fixture`
+  //    exactly (`crates/substrate/src/runtime.rs:1049-1105`): a linked
+  //    Roym mints no instance certificate for `web` (D-C2-11), so there is
+  //    no DID `web_id` could ever have a signed `EndpointInfo` published
+  //    under, and the gateway's unscoped host form needs one (F8). The
+  //    node's OWN DID does have one. Registering under both means the
+  //    native build's Hub is reachable at the NODE's own address
+  //    (`s<short_hash(node_service_id)>.localhost`), not at a per-service
+  //    address the way the WASM build's deployed `web` is (§9.4) -- a
+  //    real, named asymmetry between the two builds, a direct consequence
+  //    of D-C2-11, and worth a line in the C2 status note (§15) rather
+  //    than a silent difference nobody documented.
   let web_id = roym_dispatch_id("web")
   factory_web.set_http_sink(downgrade(web) as Weak<dyn HttpSink>)
   factory_web.set_websocket_sink(downgrade(web) as Weak<dyn WebSocketSink>)
   let adapter = Arc::new(NativeHttpAdapter::new(factory_web.clone(),
                     downgrade(web), downgrade(web)))
-  shared.native_http.insert(web_id.clone(), adapter as Arc<dyn NativeHttpService>)
+  shared.native_http.insert(web_id.clone(), adapter.clone() as Arc<dyn NativeHttpService>)
+  shared.native_http.insert(node_service_id.to_string(), adapter as Arc<dyn NativeHttpService>)
   shared.http_routes.insert(web_id.clone(), roym_http_routes())
+  shared.http_routes.insert(node_service_id.to_string(), roym_http_routes())
   endpoint_registry.register(web_id.clone(), "http-native".into(),
+      NativeHostChannel { service_id: web_id.clone() }).await?
+  endpoint_registry.register(node_service_id.to_string(), "http-native".into(),
       NativeHostChannel { service_id: web_id.clone() }).await?
 
   // 3. App context and dependency bindings (D-C2-10). This is
@@ -1285,7 +1589,11 @@ async fn init_roym(shared, endpoint_registry, node_service_id, config)
           cache_ttl: Duration::from_secs(60),
           not_after: None,
       }
-      shared.app_registry.register(
+      // `LogicalResolver::register`, not a bare `StaticInventory` write:
+      // it evicts any cached entry for this key in the same call, matching
+      // `install_app_context`'s own call exactly
+      // (`crates/control_plane/src/service/orchestration.rs:670`).
+      shared.logical_resolver.register(
           TopologyKey::local(AppInstanceId::new(ROYM_APP_INSTANCE),
                              LogicalServiceName::new(dep.name)), entry.clone())
       endpoint_registry.save_binding(&web_id, ROYM_APP_INSTANCE, dep.name,
@@ -1377,11 +1685,30 @@ built with should be ignored, not rejected, exactly as the other roles are.
 
 | Suite | Level | Proves |
 |---|---|---|
-| `crates/roym_core/src/**` unit tests | in crate | the routing table (§5.3), the card set drift guard (§5.4), envelope acceptance (§5.2) |
+| `crates/roym_core/src/**` unit tests | in crate | the routing table (§5.3), the card set drift guard (§5.4) |
+| `xtask check-roym-deps` (§14 (9)) | build-graph, no runtime | no Roym crate depends on a host crate on either target — the D3 assertion, given a home |
 | `crates/roym_web/tests/dual_build_parity.rs` | in process, both builds | every §12.2 scenario, byte-identical |
 | `crates/substrate/tests/roym_app_e2e.rs` | router + gateway, WASM only | registration, routes, the Hub URL, the person session end to end, visibility |
 | `crates/substrate/tests/gateway_session_e2e.rs` | gateway | §10.4's six cases |
 | `crates/substrate/tests/e2e/tests/roym-hub.spec.ts` | real browser | login, the card gallery, and matrix row 4 |
+
+**`crates/core/src/test_constants.rs` gains six `roym_<name>_wasm_path()`
+functions** (`roym_web_wasm_path`, `roym_conversation_wasm_path`, …), one
+per service, mirroring `dual_build_fixture_wasm_path`'s own shared-`target/`
+form ([test_constants.rs:167-172](../../../../crates/core/src/test_constants.rs#L167))
+rather than the per-component form every other `*_wasm_path` helper uses —
+Roym crates are real workspace members (`D-C2-1`), so their artifacts land
+in the shared `target/wasm32-wasip2/release/`, exactly like the fixture's
+and unlike `greeter`/`data-layer-test`/etc.'s standalone ones. `dual_build_parity.rs`'s
+`harness()` panics loudly with build instructions if the fixture's artifact
+is missing rather than skipping silently
+([dual_build_parity.rs:437-448](../../../../crates/app_host_native/tests/dual_build_parity.rs#L437));
+`roym_web/tests/dual_build_parity.rs` follows the same pattern for all six.
+This makes a pre-build step (`mise run build:roym`) an undeclared
+prerequisite of bare `cargo test --workspace`, same as C1's own suite
+already made `mise run build:test-components` one — not a new cost C2
+introduces, the same cost C1 already accepted and documented, extended to
+a second set of artifacts.
 
 ### 12.2 The parity scenarios
 
@@ -1397,16 +1724,16 @@ the two harnesses differ, and the reason a real `ProxyRouter` is not used
 
 | # | Scenario | Assertion |
 |---|---|---|
-| 1 | `web.invoke` with `method: "profile.whoami"` and a `delegated` envelope naming `did:key:hAlice` | The response names `did:key:hAlice`, `trusted: true`. **Identical on both builds** — this is the test F1's divergence would break if `guest_caller()` (§6.3) ever stopped returning `System`. |
-| 2 | The same, with `auth: "self-asserted"` in the envelope | `person_did` is `null` and `trusted` is false: a self-asserted gateway request is the node's key, not a person. |
-| 3 | A sibling reached **directly** (not through `web`) with a caller whose `auth` is `Ucan` and an envelope claiming `did:key:hMallory` | The envelope is ignored; the response names the Ucan caller's own DID. `D-C2-4`'s gate, from the attacker's side. |
+| 1 | `web.invoke`, `method: "profile.ping"`, request body carries **no** caller field at all (D-C2-4 dropped it) | `{"service": "profile"}` comes back, byte-identical on both builds. Proves `web` reaches a sibling and a real answer returns — reachability, not identity. |
+| 2 | A JSON payload that **adds** a `caller`/`person_did`/`auth`-shaped object to `params` before proxying it to `profile.ping` (simulating what an earlier, retracted design would have sent) | The response is **identical** to scenario 1's — the extra field is inert. Proves `profile`'s own `invoke` genuinely never looks at any such field, on either build, not merely that `web` chooses not to send one. This is the scenario that stands in for what used to be "the envelope gate, from the attacker's side": there is no gate to attack because there is no mechanism to feed. |
+| 3 | `web`'s `session.whoami`, called under a `delegated` `HttpRequest.caller` naming `did:key:hAlice` | The response names `did:key:hAlice`, `auth: "delegated"`. This is the **only** scenario in this suite that asserts anything about a person's identity, and it is scoped to `web` alone — see D-C2-4's rationale for why no sibling-facing scenario makes an identity claim. |
 | 4 | `web.invoke`, `method: "nope.thing"` | JSON-RPC `-32601`, and **no** proxy call is made (the test proxy records zero invocations). |
 | 5 | `web.invoke` routed to a dependency the test proxy refuses with `DependencyNotBound` | `-32001`, with a message that names neither the DID nor the dependency's internals. |
 | 6 | `handle_http` `POST /rpc` with the same body as scenario 1 | HTTP 200 and a body byte-identical to scenario 1's. This is what proves `rpc` and `invoke` are one function (§7.1). |
 | 7 | `handle_http` `POST /rpc` with a malformed body | HTTP 200, JSON-RPC `-32700`. Never a 500 — a bad request is not a handler fault. |
 | 8 | Each of the six services' `status` | A JSON object naming that service and `schema_version: 1`. Six rows, one per service. |
 | 9 | WebSocket `on_open` → `on_message` → `on_close` against `web` | The lifecycle fires in order and the connection id is registered then removed. |
-| 10 | `web.invoke` with `method: "directory.<x>"` addressed by `CallTarget::Service("did:key:hForeign")` instead of by dependency | Reaches the same handler. `D-C2-13`'s second target shape, on both builds. |
+| 10 | `web.invoke` with `method: "directory.<x>"` addressed by `CallTarget::Service("did:key:hForeign")` instead of by dependency, against the **test proxy** | Reaches the same handler on both builds. Proves the **shim** dispatches both `call-target` shapes identically — it does **not** prove `web`'s own production code ever emits `Service`, because it never does in C2 (`D-C2-13`, narrowed). |
 
 ### 12.3 `crates/substrate/tests/roym_app_e2e.rs`
 
@@ -1420,9 +1747,10 @@ with `--mint-masters`; then:
 3. The same request through the gateway's unscoped host form
    `s<hash>.localhost:<gw port>` reaches the same handler — §9.4, and the
    answer to C1 §12 (11).
-4. `POST /rpc` with `profile.whoami` under the same cookie returns the same
-   person DID — the person reached a *sibling*, which is what `D-C2-4`
-   exists for.
+4. `POST /rpc` with `profile.ping` under the same cookie reaches `profile`
+   and returns `{"service": "profile"}` — proves the person's request
+   crosses the sibling boundary and gets a real answer, **not** that
+   `profile` learns who the person is (it does not, by `D-C2-4`).
 5. A caller on an unaffiliated identity resolves `directory`'s topology
    document with no pre-installed token, and the same call for `profile` is
    cleanly refused — **failure matrix row 18**, both halves. Model on
@@ -1466,25 +1794,29 @@ Each step compiles and its own tests pass before the next begins.
 
 | # | Step | Gate |
 |---|---|---|
-| 1 | `roym_core`: crate, `services.rs`, `envelope.rs`, `router.rs`, `card.rs` (without the drift test), `dual_build.rs` | `cargo test -p syneroym-roym-core`; `cargo build -p syneroym-roym-core --target wasm32-wasip2` |
-| 2 | `roym_profile` end to end (WIT, `app.rs`, `guest.rs`, `native.rs`, symlinks, `Cargo.toml`) — **one** sibling, complete, before the other four | `cargo component build --target wasm32-wasip2 -p syneroym-roym-profile`; `cargo build -p syneroym-roym-profile` |
+| 1 | `syneroym-roym-core`: crate, `services.rs`, `envelope.rs`, `router.rs`, `card.rs` (without the drift test), `dual_build.rs` | `cargo test -p syneroym-roym-core`; `cargo build -p syneroym-roym-core --target wasm32-wasip2` |
+| 2 | `roym_profile` end to end (WIT with the full 8-import/`api`-only-export shape, `app.rs`, `guest.rs` with the full 8-entry `with:` remap and no export stubs, `native.rs`, all eight symlinks, `Cargo.toml`) — **one** sibling, complete, before the other four | `cargo component build --target wasm32-wasip2 -p syneroym-roym-profile`; `cargo build -p syneroym-roym-profile` |
 | 3 | The other four siblings, by copying step 2 | same, per crate |
 | 4 | `roym_web`: WIT, `app.rs`, `guest.rs`, `native.rs` | both builds |
-| 5 | `crates/roym_web/tests/dual_build_parity.rs`, scenarios 1–10 | `cargo test -p syneroym-roym-web` |
-| 6 | Gateway: config field, `session.rs` routes, `gateway.rs` arms, the cookie helper extraction (§10) | `cargo test -p syneroym-client-gateway`; `cargo test -p syneroym-substrate --test gateway_session_e2e` |
-| 7 | `syneroym-substrate`: `roym` feature, `SharedNodeHandles` fields, `init_roym`, `RoymRole` | `cargo build -p syneroym-substrate --features roym`; `cargo build -p syneroym-substrate --all-features` |
-| 8 | The manifest (§9) and the `mise` tasks (§3.5); deploy it by hand once and record the exact command and the resolved Hub URL | `roymctl app deploy …` succeeds; `curl` reaches `/health` |
-| 9 | The UI bundle (§8), including the ESLint rule and the CSP meta; then `roym_core`'s card drift test | `mise run build:roym-ui`; `cargo test -p syneroym-roym-core` |
-| 10 | `crates/substrate/tests/roym_app_e2e.rs` | `cargo test -p syneroym-substrate --test roym_app_e2e` |
-| 11 | `roym-hub.spec.ts` and the `global-setup.ts` deploy | `mise run test:e2e` |
-| 12 | Docs and backlog (§15) | — |
-| 13 | Full gate | `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, `cargo test --workspace`, `cargo audit`, `cargo deny check licenses`, `mise run test:e2e` |
+| 5 | Six `roym_<name>_wasm_path()` helpers in `test_constants.rs` (§12.1), then `crates/roym_web/tests/dual_build_parity.rs`, scenarios 1–10 | `mise run build:roym`; `cargo test -p syneroym-roym-web` |
+| 6 | `xtask check-roym-deps` (§12.1, §14 (9)) | `cargo xtask check-roym-deps` fails on a deliberately-introduced host-crate dependency, then passes clean once reverted |
+| 7 | Gateway: config field, `session.rs` routes, `gateway.rs` arms, the cookie helper extraction (§10) | `cargo test -p syneroym-client-gateway`; `cargo test -p syneroym-substrate --test gateway_session_e2e` |
+| 8 | `syneroym-substrate`: `roym` feature, `SharedNodeHandles`'s one new field, `init_roym`, `RoymRole` | `cargo build -p syneroym-substrate --features roym`; `cargo build -p syneroym-substrate --all-features` |
+| 9 | The manifest (§9) and the `mise` tasks (§3.5); deploy it by hand once with `roymctl app deploy` from the workspace root and record the resolved Hub URL | `roymctl app deploy …` succeeds; `curl` reaches `/health` |
+| 10 | The UI bundle (§8), including the ESLint rule and the CSP meta; then `syneroym-roym-core`'s card drift test | `mise run build:roym-ui`; `cargo test -p syneroym-roym-core` |
+| 11 | `crates/substrate/tests/roym_app_e2e.rs` | `cargo test -p syneroym-substrate --test roym_app_e2e` |
+| 12 | `roym-hub.spec.ts` and the `global-setup.ts` deploy | `mise run test:e2e` |
+| 13 | Docs and backlog (§15) | — |
+| 14 | Full gate | `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, `cargo test --workspace`, `cargo audit`, `cargo deny check licenses`, `mise run test:e2e` |
 
 **Step 2 is the one to get right slowly.** Four crates are copied from it,
-and every mistake in the WIT/`generate!`/symlink triangle is copied four
-times. **Step 8 is the riskiest**, because it is the first time the two path
-rules (F10), the certificate requirement (F7), and the hostname form (F8)
-are exercised together, and none of them is provable before then.
+and every mistake in the WIT/`generate!`/symlink triangle — including a
+wrong `with:` remap entry (§6.3) — is copied four times. **Step 9 is
+the riskiest**, because it is the first time the path rule (F10, §9.1), the
+certificate requirement (F7), and the hostname form (F8) are exercised
+together, and none of them is provable before then — but unlike an earlier
+draft of this plan, the path rule is now a decided fact (§9.1), not
+something to discover live at this step.
 
 ---
 
@@ -1493,38 +1825,60 @@ are exercised together, and none of them is provable before then.
 Raised rather than guessed.
 
 1. **`task.md`'s C2 row says the entrypoint "forwards JSON-RPC" but the tree
-   forwards no caller identity with it.** F1 and F2 together mean the
+   forwards no caller identity with it, and no sound way to carry one at
+   the app level exists yet either.** F1, F2, and F15 together mean the
    person's DID cannot reach a sibling through any existing channel on
    either build. Neither `task.md` nor the spec names this, and exit
    criterion 3 (*"Roym's services see **that person's** DID with
-   `caller-auth = delegated`"*) reads as though it were solved. Resolved as
-   `D-C2-4` — an application-level envelope admitted only under an
-   `AuthLevel::System` caller. **This is the largest single design item in
-   C2 and it was not in the slice's budget.** If the implementing session
-   disagrees, the alternative is real cross-service caller delegation
-   (ADR-0015 UCAN), which is substrate work and belongs behind a decision,
-   not inside a product slice.
+   `caller-auth = delegated`"*) reads as though it were solved for every
+   service. **It is not, and this plan does not pretend otherwise.** An
+   earlier draft of this plan had the guest fabricate a `CallerContext` and
+   gate an embedded envelope on it (`D-C2-4`, first version); that
+   mechanism was retracted (see D-C2-4's current text) once it became
+   clear the fabrication is indistinguishable, from the guest's own code,
+   from an attacker's forgery — unsound precisely on the services C2 makes
+   wire-reachable (`catalog`, `conversation`, `transaction`). C2 now
+   discharges exit criterion 3 **only** for `web` (via `session.whoami`,
+   which reads the router-verified `HttpRequest.caller` directly, a
+   genuinely honest source) and explicitly does not claim it for any
+   sibling. **This is the largest single design item in C2 and it was not
+   in the slice's budget.** The sound fix is real substrate/engine work —
+   either a host-verified caller parameter threaded into a proxied WASM
+   call's marshaled arguments, or real cross-service caller delegation
+   (ADR-0015 UCAN) — and belongs behind its own decision, not inside a
+   product skeleton slice. Backlog rows, §15.
 
 2. **`ProxyRouter::invoke_local` behaves differently for a WASM callee and a
    native callee** (F1) — the WASM arm passes `None` and gets
    `service_system(<callee>)`, the native arm passes the caller's own
    `service_system(<caller>)`. By failure-matrix row 19's own rule
    (*"Any interface behaves differently on the WASM build and the native
-   build → the shared suite fails"*) this is a defect. C2 routes around it
-   rather than fixing it: `D-C2-4`'s gate reads `auth`, which is `System` on
-   both. Fixing it means changing what a proxied WASM callee sees as its
-   caller, which could change any deployed FDAE policy keyed on
-   `system:<own id>` — too large to fold into a skeleton slice. **Backlog
-   row, §15.**
+   build → the shared suite fails"*) this is a defect, independent of
+   item 1 above (it survives even after D-C2-4's retraction, since it is
+   about `HostState.caller`'s *content*, used for host-capability
+   attribution — data-layer writes and the like — not about anything C2's
+   own app code reads). Not fixed here: fixing it changes what a proxied
+   WASM callee sees as its caller, which could change any deployed FDAE
+   policy keyed on `system:<own id>` — too large to fold into a skeleton
+   slice. **Backlog row, §15.**
 
-3. **A WASM guest cannot read its own `CallerContext`** (§6.3). There is no
-   host import for it, so the guest synthesizes `System`. That is *correct*
-   for every path C2 has — a guest is reached either through the proxy
-   (where the host would have synthesized exactly that) or through
-   `web`'s HTTP handler (where the real caller arrives in `HttpRequest.caller`
-   instead). It stops being correct the moment a sibling is reachable
-   directly from the wire *and* wants to authorize on the caller — which is
-   C4's problem, not C2's. Named here so C4 does not inherit it silently.
+3. **F15 — a WASM guest has no host import exposing its own real caller
+   for a generic proxied (`api.invoke`-shaped) call, at all, on either
+   dispatch path.** Confirmed by inspection: none of `AppDataLayer` /
+   `AppBlobStore` / `AppMessaging` / `AppConversation` / `AppProxy` /
+   `AppAppConfig` / `AppVault` / `AppWebSocket` (C1's full trait list)
+   exposes anything like "who called me". The one interface that *does*
+   carry caller identity to a guest, `syneroym:http/incoming-handler`, does
+   so because its own WIT author put a `caller` field directly on the
+   `http-request` record and the router explicitly populates it
+   (`guest_caller_identity`,
+   [http.rs:492](../../../../crates/router/src/route_handler/http.rs#L492))
+   — there is no *generic* mechanism the engine applies to an arbitrary
+   exported function's parameters. This is the finding item 1's `D-C2-4`
+   retraction rests on, and it is why the sound fix is engine work
+   (threading `HostState`'s already-correct `Option<CallerContext>` into
+   `execute_wasm_json`'s parameter marshaling for a specific interface) and
+   not something an app crate can work around on its own.
 
 4. **`task.md` says the Web entrypoint forwards to "the four services below"**
    (the spec's own Client contract diagram shows four), while the C2 slice
@@ -1573,9 +1927,10 @@ Raised rather than guessed.
    Confirmed by construction — the crate's `[target.'cfg(not(wasm32))']`
    dependencies are `syneroym-rpc`, `syneroym-app-host-native`, and
    `async-trait`, and none of `syneroym-identity`, `syneroym-data-db`,
-   `syneroym-data-blob`, `syneroym-conversation` appears. **Add a
-   workspace-level test asserting exactly that** for all seven Roym crates,
-   so a future slice cannot add one without failing a build.
+   `syneroym-data-blob`, `syneroym-conversation` appears. `xtask
+   check-roym-deps` (§12.1, §13 step 6) is that test, given a home rather
+   than left as a one-sentence aspiration — so a future slice cannot add a
+   forbidden dependency without failing a build.
 
 10. **Exit criterion 2 names `roymctl` as a possible second client, and no
     such verb exists.** `SvcCommands` has no `call`
@@ -1594,17 +1949,36 @@ Raised rather than guessed.
     Confirmed by reading, and the grep exit criterion 12 asks for
     (`R1|R2|R3|R4|C[0-9]|M06`) matches nothing this plan introduces.
 
+12. **Exit criterion 2 says "every capability the UI uses is a public
+    JSON-RPC method", and the Hub's login screen calls
+    `/_syneroym/session/{identities,login-local,whoami}` — gateway
+    reserved paths, not `web`'s `api` interface or any JSON-RPC method at
+    all.** Not a violation, but the plan owes the one sentence reconciling
+    them rather than leaving a reader to wonder: session bootstrap is
+    infrastructure the *gateway* provides to every app alike (the same
+    `/_syneroym/session/challenge`/`login`/`logout`/`whoami` shape M06B
+    already shipped), not a Roym *capability*. Once logged in, every
+    capability Roym itself adds — everything `POST /rpc` reaches — **is**
+    a public JSON-RPC method, satisfying the criterion for the product
+    surface it actually describes. `D-C2-6`'s `login-local`/`identities`
+    additions extend the gateway's own bootstrap door, not Roym's API
+    surface, and are named as such in §10's own decision row.
+
 ---
 
 ## §15 Documents and backlog owed
 
 | Document | Edit |
 |---|---|
-| `docs/planning/milestones/M06C-roym-product/status.md` | C2's section: the six services and their visibility table (§9.3); `D-C2-4`'s envelope rule and why it exists; the F1 divergence, named as a permitted difference C2 routes around rather than fixes; `D-C2-11`'s no-instance-certificate limit; the resolved Hub URL form; and the §14 (4) reading of "four services" vs six. Update the slice table's C2 row |
+| `docs/planning/milestones/M06C-roym-product/status.md` | C2's section, with a **numbered permitted-differences list** (matching C1's own status.md shape, not buried inside a decision's prose): (1) no sibling receives or trusts a forwarded person identity — only `web`'s `session.whoami` reports one (`D-C2-4`, F15); (2) `ProxyRouter::invoke_local` synthesizes a different `caller_did` for a WASM vs. a native callee, both `AuthLevel::System` (F1); (3) the native build's Hub is reachable only at the node's own address, never a per-service one, because a linked Roym mints no instance certificate (`D-C2-11`, §9.4). Also record: the six services and their visibility table (§9.3); the resolved Hub URL form for both builds; and the §14 (4) reading of "four services" vs six. Update the slice table's C2 row |
 | [deferred-backlog.md](../../deferred-backlog.md) §5 | **Retarget** *"A natively linked app's message subscriptions do not survive a process restart"* (`M06C C2`). C2 does not close it: none of the six services subscribes to anything yet. Move to `M06C C5` (`roym_conversation` is its first consumer) with that reason, or restate the C1 `F12` argument — a linked app re-subscribes from its own startup path — now that `init_roym` **is** that startup path. Prefer the second: `init_roym` is where a `NativeHostFactory::start()` hook would go, and C2 is the first slice with a reason to want one |
 | [deferred-backlog.md](../../deferred-backlog.md) — the `M06C C2` app-context row | **Move to "Recently resolved"** with what shipped: `init_roym` writes `set_app_context` and `save_binding` for the linked build, and registers the same `TopologyEntry`s the deploy path registers (`D-C2-10`) |
-| [deferred-backlog.md](../../deferred-backlog.md) §7, browser-login row | **Move to "Recently resolved"**, recording `D-C2-6` — a gateway-side local login, not a browser-held key — and the security argument that makes it equivalent to `roymctl session login`. Note that WebAuthn/passkey is still not built and open a **narrower** row for it, target `TBD`, trigger *"a person's key must live somewhere the node cannot read"* |
-| [deferred-backlog.md](../../deferred-backlog.md) §3, new row | **A proxied call reaches a WASM callee with a different caller than a native callee** — `ProxyRouter::invoke_local` passes `None` for `WasmChannel` (synthesizing `service_system(<callee>)`) and the caller's own context for `NativeHostChannel` (`crates/router/src/proxy.rs:673,716`). Both are `AuthLevel::System`, so nothing in C2 depends on the difference (`D-C2-4` gates on `auth`), but it is a failure-matrix row 19 case. Target `TBD`, trigger *"a service authorizes on the identity of the sibling that called it"* |
+| [deferred-backlog.md](../../deferred-backlog.md) §7, browser-login row | **Move to "Recently resolved"**, recording `D-C2-6` — a gateway-side local login for the first release, not a browser-held key — and the security argument that makes it equivalent to `roymctl session login`. Note it is a deliberately deferred step, not a closed question: WebAuthn/passkey is confirmed as the intended next step (user decision, 2026-08-25), tracked by the two rows below rather than left implicit |
+| [deferred-backlog.md](../../deferred-backlog.md) §7, new row | **The community registry has no CORS layer**, so a browser holding its own key (a future WebAuthn signer) cannot call `/register_master` directly from the Hub's origin — only a server-to-server caller can today (`crates/community_registry/src/registry.rs:134-137`, no `tower_http::cors` or equivalent anywhere in the tree). Not needed by `D-C2-6`'s gateway-side ceremony, which calls the registry itself with no browser origin involved. Target `TBD`, trigger *"a browser-held signer must publish its own anchor"* |
+| [deferred-backlog.md](../../deferred-backlog.md) §3, new row | **`did:key` derivation and verification are hardcoded to the ed25519 multicodec** (`derive_did_key`/`resolve_did_key`, `crates/identity/src/substrate.rs:142-166`, rejecting anything whose prefix isn't `0xed01`). A WebAuthn authenticator using ES256 (P-256, COSE alg `-7` — the common case) cannot become a `did:key` without a second multicodec branch (P-256 is `0x1200`) threaded through both functions and `verify_json_signature`; an EdDSA authenticator (COSE alg `-8`) needs none. Target `TBD`, trigger *"a browser-held WebAuthn signer uses a non-Ed25519 authenticator"* |
+| [deferred-backlog.md](../../deferred-backlog.md) §3, new row | **A proxied call reaches a WASM callee with a different caller than a native callee** — `ProxyRouter::invoke_local` passes `None` for `WasmChannel` (synthesizing `service_system(<callee>)`) and the caller's own context for `NativeHostChannel` (`crates/router/src/proxy.rs:673,716`). Both are `AuthLevel::System`, and C2 (having retracted its own identity-forwarding mechanism, D-C2-4) reads nothing from `HostState.caller` at the app level on either build, so nothing in C2 is *broken* by the divergence today — but it is a failure-matrix row 19 case regardless, and it is exactly what a future host-verified caller parameter (the F15 backlog row below) would need fixed first. Target `TBD`, trigger *"a service authorizes on the identity of the sibling that called it"* |
+| [deferred-backlog.md](../../deferred-backlog.md) §3, new row | **No host mechanism lets a WASM guest read its own real caller for a generic proxied call** (F15) — only `syneroym:http/incoming-handler` carries one, purpose-built. A sibling cannot honestly know who is asking, on either build, for anything reached through `syneroym:proxy`. Closing this needs the `ProxyRouter` divergence above fixed *and* `execute_wasm_json`'s caller threaded into the marshaled arguments of a specific interface — real engine work. Target `TBD`, trigger *"a Roym sibling (or any other app's service) must authorize on the caller of a proxied call"*; this is the row C4/C5 need before a listing or a quote can honestly carry who signed it |
+| [deferred-backlog.md](../../deferred-backlog.md) §5, new row | **`syneroym-app-host`'s `AppHost` bound cannot be narrowed per service** — its own `Cargo.toml` requests all eight `wit_interfaces` guest features unconditionally (not target-gated), so Cargo feature unification forces every consumer's wasm32 component to *import* all eight interfaces (§3.3) regardless of what that service actually uses. The cost is the eight forced imports and the `with:` remap entries they need (§6.3) — **not** the export side: exports are the fixture's own choice, not something feature unification forces (§4.1's correction), so a Roym sibling's own `world.wit` stays as small as its exports genuinely need to be. Splitting `AppHost` into narrower supertraits (or otherwise letting a consumer opt out of unused guest modules) would remove the import-side cost but touches C1's just-shipped trait bound and every existing implementor. Target `TBD`, trigger *"a second multi-service SynApp hits the same forced-import cost, or it becomes a maintenance problem"* |
 | [deferred-backlog.md](../../deferred-backlog.md) §5, new row | **No cross-service caller delegation** — neither build forwards a caller through `syneroym:proxy` (`host_capabilities.rs:1350`), so an app must carry the person in its own payload (`D-C2-4`). Target `TBD`, trigger *"a Roym service must authorize a person it did not receive over HTTP"*; source ADR-0015 |
 | [deferred-backlog.md](../../deferred-backlog.md) §5, new row | **The Roym sibling boundary is not typed by WIT** — one `invoke: func(string) -> result<string,string>` per service (`D-C2-2`), so a malformed inner call is an application error rather than a dispatch error. Target `TBD`, trigger *"a sibling boundary needs typed WIT parameters"* |
 | [deferred-backlog.md](../../deferred-backlog.md) §8, new row | **A natively linked Roym holds no instance certificate** (`D-C2-11`), so `enqueue` and cross-node `call` are refused on that build. Target `TBD`, trigger *"the native build must reach another installation"* |
@@ -1631,8 +2005,12 @@ Raised rather than guessed.
    all ten scenarios in §12.2 with byte-identical results, and the mutant
    test still detects an injected divergence.
 5. A person logs in **from the browser**, and `POST /rpc` with
-   `profile.whoami` returns that person's DID with `auth = "delegated"` —
+   `session.whoami` returns that person's DID with `auth = "delegated"` —
    through the client gateway, from one origin, on the WASM build.
+   **`profile.ping` (or any sibling) reaching the person's identity is
+   explicitly not a done-criterion**: `D-C2-4` records that no sibling
+   sees it in C2, by design, and that gap is real and carried forward to
+   C4/C5, not closed here.
 6. A caller on an unaffiliated installation resolves `directory` with no
    pre-installed token, and the same call for `profile` is cleanly refused.
 7. The Hub renders all seven card types plus the unknown-type fallback, and
