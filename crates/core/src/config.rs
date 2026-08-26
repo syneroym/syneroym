@@ -387,7 +387,7 @@ pub struct RolesConfig {
     /// The App Supervisor (ADR-0021 §8). Absent = this node runs no
     /// supervisor, which is every deployment through A4.
     pub supervisor: Option<SupervisorRole>,
-    /// Linked native Roym product role (Slice C2).
+    /// Linked native Roym product role.
     pub roym: Option<RoymRole>,
 }
 

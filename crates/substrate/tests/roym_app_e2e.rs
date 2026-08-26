@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
-//! Substrate-level deployment integration test for the Roym SynApp (M06C Slice
-//! C2, §12.3).
+//! Substrate-level deployment integration test for the Roym SynApp.
 //!
 //! Deploys the six Roym services on a live substrate instance with a gateway
 //! and registry, and tests:

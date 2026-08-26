@@ -7564,8 +7564,8 @@ pub mod exports {
             /// every added verb a change to the deployed interface list.
             ///
             /// `request` is a JSON object: `{ "method": string, "params": any }`. No
-            /// caller field -- D-C2-4 forwards no identity to any sibling. The
-            /// success value is a JSON object `{ "result": any }`; an
+            /// caller field -- no sibling can verify who called it, so nothing here
+            /// claims to know. The success value is a JSON object `{ "result": any }`; an
             /// application-level refusal is `{ "error": { "code": number, "message":
             /// string } }` inside the success arm, so the `Err` arm below carries
             /// only faults this service could not describe -- unparseable request

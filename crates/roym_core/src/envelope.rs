@@ -3,10 +3,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// One `invoke` request. Carries no caller field, deliberately -- see
-/// `D-C2-4`. Anything a sibling needs to know about who is asking has to
-/// come from a mechanism the receiving guest can itself verify, and no
-/// such mechanism exists yet for this interface shape.
+/// One `invoke` request. Carries no caller field, deliberately: no sibling
+/// can verify who called it, so nothing here claims to know. Anything a
+/// sibling needs to know about who is asking has to come from a mechanism
+/// the receiving guest can itself verify, and no such mechanism exists yet
+/// for this interface shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub method: String,

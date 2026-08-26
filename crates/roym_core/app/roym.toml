@@ -13,8 +13,10 @@ interfaces = ["syneroym-roym:web/api@0.1.0"]
 depends_on = ["conversation", "profile", "catalog", "transaction", "directory"]
 visibility = "internal"
 # /health is public: true and every other route is not. That is deliberate:
-# public routes produce a System caller, but web never accepts an out-of-band
-# caller claim (D-C2-4), so /health's public reachability creates no exploitable path.
+# public routes produce a System caller, but web never accepts an
+# out-of-band caller claim -- no sibling can verify who called it, so
+# nothing here claims to know -- so /health's public reachability creates
+# no exploitable path.
 custom_config = '''{"http_routes":[
   {"method":"POST","path":"/rpc",   "target":"guest",    "operation":"handle-request","public":false},
   {"method":"GET", "path":"/health","target":"guest",    "operation":"handle-request","public":true},

@@ -90,11 +90,12 @@ dual_build_fixture = [
     "dep:syneroym-test-dual-build-fixture",
 ]
 # Links the Roym SynApp's native build in as six `NativeService`s plus one
-# inbound HTTP surface, proving M06C exit criterion 1 (built both ways from
-# one source tree). Off by default. Unlike `dual_build_fixture`, this is a
-# real product feature, not test scaffolding -- but it registers services
-# with no deploy record, so a node running it must not also deploy the WASM
-# build of the same app (the router warns; see `handle_guest_route`).
+# inbound HTTP surface, proving the dual-build shim builds a real product
+# both ways from one source tree. Off by default. Unlike
+# `dual_build_fixture`, this is a real product feature, not test
+# scaffolding -- but it registers services with no deploy record, so a
+# node running it must not also deploy the WASM build of the same app
+# (the router warns; see `handle_guest_route`).
 roym = [
     "dep:syneroym-app-host-native",
     "dep:syneroym-roym-core",
