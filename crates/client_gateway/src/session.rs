@@ -467,21 +467,18 @@ pub fn classify(method: &str, path: &str) -> RequestKind {
 #[must_use]
 pub fn list_person_identities(dir: &std::path::Path) -> Vec<String> {
     let mut names = Vec::new();
-    let candidates = [dir.join("identities"), dir.to_path_buf()];
-    for search_dir in candidates {
-        if let Ok(entries) = std::fs::read_dir(search_dir) {
-            for entry in entries.filter_map(std::result::Result::ok) {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("key")
-                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                    && !stem.contains('/')
-                    && !stem.contains('\\')
-                    && !stem.contains("..")
-                    && !stem.contains('\0')
-                    && !names.contains(&stem.to_string())
-                {
-                    names.push(stem.to_string());
-                }
+    if let Ok(entries) = std::fs::read_dir(dir.join("identities")) {
+        for entry in entries.filter_map(std::result::Result::ok) {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("key")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                && !stem.contains('/')
+                && !stem.contains('\\')
+                && !stem.contains("..")
+                && !stem.contains('\0')
+                && !names.contains(&stem.to_string())
+            {
+                names.push(stem.to_string());
             }
         }
     }

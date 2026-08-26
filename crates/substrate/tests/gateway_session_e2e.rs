@@ -1341,3 +1341,50 @@ async fn test_33_local_identities_and_login_lifecycle() {
 
     ctx.teardown().await;
 }
+
+/// Test 34: login-local refuses a request that carries a foreign
+/// `Sec-Fetch-Site` value, so a cross-site page cannot silently mint a
+/// person session on the user's behalf.
+#[tokio::test]
+async fn test_34_login_local_refuses_cross_site_sec_fetch_site() {
+    let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let identities_dir = temp_dir.path().join("identities");
+    fs::create_dir_all(&identities_dir).unwrap();
+
+    let alice = Identity::generate().unwrap();
+    alice.save_to_path(identities_dir.join("alice.key")).unwrap();
+
+    let (ctx, gateway_port, _reg_url, _svc_did, _host) =
+        setup_gateway_test_node_with_options(None, Some(temp_dir.path().to_path_buf())).await;
+    let client = test_client();
+
+    let cross_site_resp = client
+        .post(format!("http://127.0.0.1:{gateway_port}/_syneroym/session/login-local"))
+        .header("Sec-Fetch-Site", "cross-site")
+        .json(&json!({"identity": "alice"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cross_site_resp.status(), 403);
+
+    let same_site_resp = client
+        .post(format!("http://127.0.0.1:{gateway_port}/_syneroym/session/login-local"))
+        .header("Sec-Fetch-Site", "same-site")
+        .json(&json!({"identity": "alice"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(same_site_resp.status(), 403);
+
+    let same_origin_resp = client
+        .post(format!("http://127.0.0.1:{gateway_port}/_syneroym/session/login-local"))
+        .header("Sec-Fetch-Site", "same-origin")
+        .json(&json!({"identity": "alice"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(same_origin_resp.status(), 200);
+
+    ctx.teardown().await;
+}

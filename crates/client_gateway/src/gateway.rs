@@ -114,7 +114,6 @@ impl ClientGateway {
         let enable_bep0044_dht = config.substrate.enable_bep0044_dht;
         let person_identities_dir =
             config.roles.client_gateway.as_ref().and_then(|g| g.person_identities_dir.clone());
-        info!("ClientGateway initialized with person_identities_dir: {:?}", person_identities_dir);
         let identity = load_or_generate_node_identity(config)?;
 
         let session_ttl_secs = config
@@ -301,9 +300,15 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
 
     let method = req.method.unwrap_or("");
     let path = req.path.unwrap_or("");
-    info!("Gateway parsed request method='{}', path='{}'", method, path);
+    debug!("gateway parsed request method='{}' path='{}'", method, path);
     let kind = session::classify(method, path);
     let credential = session::extract_credential(req.headers);
+    let sec_fetch_site = req
+        .headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("sec-fetch-site"))
+        .and_then(|h| str::from_utf8(h.value).ok())
+        .map(str::to_string);
 
     if let RequestKind::Session(route) = kind {
         let has_expect_100 = req.headers.iter().any(|h| {
@@ -376,6 +381,7 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
             &state,
             route,
             credential.as_ref().map(|(t, _)| t.as_str()),
+            sec_fetch_site.as_deref(),
             &body,
         )
         .await;
@@ -550,6 +556,7 @@ async fn handle_session_request(
     state: &GatewayState,
     route: SessionRoute,
     credential: Option<&str>,
+    sec_fetch_site: Option<&str>,
     body: &[u8],
 ) -> Result<()> {
     match route {
@@ -598,12 +605,23 @@ async fn handle_session_request(
                 }
             };
             let names = session::list_person_identities(dir);
-            info!("SessionRoute::Identities dir={:?}, found names: {:?}", dir, names);
             let resp = session::IdentitiesResponse { identities: names };
             let body_val = serde_json::to_value(&resp)?;
             write_json(stream, 200, &body_val, None).await
         }
         SessionRoute::LoginLocal => {
+            if let Some(site) = sec_fetch_site
+                && site != "same-origin"
+                && site != "none"
+            {
+                return write_json(
+                    stream,
+                    403,
+                    &serde_json::json!({"error": "cross-site local login is not allowed"}),
+                    None,
+                )
+                .await;
+            }
             let dir = match &state.person_identities_dir {
                 Some(d) => d,
                 None => {
@@ -638,12 +656,7 @@ async fn handle_session_request(
                 )
                 .await;
             }
-            let key_path = if dir.join("identities").join(format!("{}.key", req.identity)).exists()
-            {
-                dir.join("identities").join(format!("{}.key", req.identity))
-            } else {
-                dir.join(format!("{}.key", req.identity))
-            };
+            let key_path = dir.join("identities").join(format!("{}.key", req.identity));
             let person = match Identity::load_from_path(&key_path) {
                 Ok(id) => id,
                 Err(e) => {
