@@ -25,6 +25,16 @@ runs:
         mise run build:test-components
       shell: bash
 
+    # `dual_build_parity` reads pre-built `target/wasm32-wasip2/release/*.wasm`
+    # artifacts for all six Roym services directly off disk (see
+    # `crates/roym_web/tests/dual_build_parity.rs`'s `harness`) -- nothing in
+    # `cargo test --workspace` triggers a `cargo component build` for them, so
+    # without this step the suite fails on every run, cache or no cache.
+    - name: Build Roym WASM Components
+      run: |
+        mise run build:roym
+      shell: bash
+
     - name: Check Roym Service Crate Dependency Hygiene
       run: cargo xtask check-roym-deps
       shell: bash
