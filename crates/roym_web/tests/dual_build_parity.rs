@@ -11,8 +11,12 @@ use std::{
 };
 
 use serde_json::{Value, json};
-use syneroym_app_host::types::http::{
-    CallerAuth, CallerIdentity, FrameKind, HttpRequest, HttpResponse,
+use syneroym_app_host::{
+    AppProxy,
+    types::{
+        http::{CallerAuth, CallerIdentity, FrameKind, HttpRequest, HttpResponse},
+        proxy::CallTarget,
+    },
 };
 use syneroym_app_host_native::{
     HttpSink, NativeAppHost, NativeHostFactory, NativeHttpAdapter, WebSocketSink,
@@ -41,9 +45,9 @@ use syneroym_roym_profile::native::NativeProfile;
 use syneroym_roym_transaction::native::NativeTransaction;
 use syneroym_roym_web::native::NativeWeb;
 use syneroym_rpc::{
-    AuthLevel, CallerContext, ConversationHost, JsonRpcRequest, NativeHttpService,
-    NativeInvocation, NativeService, ProxyError, ProxyRequest, ServiceProxy, SessionContext,
-    WebSocketSenders,
+    AuthLevel, CallOrigin, CallerContext, ConversationHost, JsonRpcRequest, NativeHttpService,
+    NativeInvocation, NativeService, ProxyError, ProxyProtocol, ProxyRequest, ServiceProxy,
+    SessionContext, WebSocketSenders,
 };
 use syneroym_sandbox_wasm::{AppSandboxEngine, GuestHttpOutcome};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
@@ -900,6 +904,52 @@ async fn scenario_10_directory_service_call_target() {
     assert_eq!(wasm_res, native_res);
     let resp: Response = serde_json::from_str(&wasm_res).unwrap();
     assert_eq!(resp.result, Some(json!({ "service": "directory" })));
+
+    // Both test proxies special-case the literal target "did:key:hForeign"
+    // as a stand-in for a caller-supplied foreign DID that happens to
+    // resolve to `directory`. Nothing in product code ever constructs that
+    // target, so drive it directly through each side's own call path to
+    // prove the branch actually behaves as the fixture claims.
+    let inner_request = json!({"method": "directory.ping", "params": {}}).to_string();
+    let call_params = json!([inner_request]).to_string();
+
+    let native_host = h.native_factories[0].host_for(caller());
+    let native_foreign_res = native_host
+        .call(
+            CallTarget::Service("did:key:hForeign".to_string()),
+            services::DIRECTORY.interface.to_string(),
+            "invoke".to_string(),
+            call_params.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+    let native_foreign_resp: Response = serde_json::from_str(&native_foreign_res).unwrap();
+    assert_eq!(native_foreign_resp.result, Some(json!({ "service": "directory" })));
+
+    // `AppSandboxEngine` gives WASM guests no Rust-callable `host.call`
+    // surface from outside the component, so this drives the WASM test
+    // proxy's own `ServiceProxy::invoke` directly with the same request
+    // shape a guest's `host.call` would produce.
+    let wasm_foreign_req = ProxyRequest {
+        target_service: "did:key:hForeign".to_string(),
+        interface: services::DIRECTORY.interface.to_string(),
+        method: "invoke".to_string(),
+        params: json!([inner_request]),
+        caller: caller(),
+        origin: CallOrigin::Guest { service_id: did_for_service("web") },
+        protocol: ProxyProtocol::JsonRpcV1,
+        idempotent: false,
+        idempotency_key: None,
+        timeout: None,
+    };
+    let wasm_foreign_val = h.wasm_proxy.invoke(wasm_foreign_req).await.unwrap();
+    let wasm_foreign_res = match wasm_foreign_val {
+        Value::String(s) => s,
+        other => other.to_string(),
+    };
+    let wasm_foreign_resp: Response = serde_json::from_str(&wasm_foreign_res).unwrap();
+    assert_eq!(wasm_foreign_resp.result, Some(json!({ "service": "directory" })));
 }
 
 #[tokio::test]
