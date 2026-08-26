@@ -1,9 +1,10 @@
 # M06C The Roym Product — Status
 
 **Milestone:** [task.md](task.md) · **Designs of record:**
-[slice-c1-implementation-plan.md](slice-c1-implementation-plan.md) (C1)
+[slice-c1-implementation-plan.md](slice-c1-implementation-plan.md) (C1),
+[slice-c2-implementation-plan.md](slice-c2-implementation-plan.md) (C2)
 
-**Overall:** Slice C1 complete (2026-08-25) — see C1's status, architectural decisions, permitted differences, and evidence below.
+**Overall:** Slice C2 complete — see C1's and C2's status, architectural decisions, permitted differences, and evidence below.
 
 ---
 
@@ -12,7 +13,7 @@
 | Slice | Scope | Status | Gate |
 |---|---|---|---|
 | C1 | Complete the dual-build shim (Gap 2, D-06C-10) | **Complete (2026-08-25)** — [implementation plan](slice-c1-implementation-plan.md), evidence below | None — independently mergeable |
-| C2 | The SynApp skeleton and the Hub shell | Not started | C1 |
+| C2 | The SynApp skeleton and the Hub shell | **Complete** — [implementation plan](slice-c2-implementation-plan.md), evidence below | C1 |
 | C3 | Signed records: host signing interface and envelope | Not started | C1 |
 | C4 | Identity, profile, contacts, and safety (R1 rows 1 and 6) | Not started | C3 |
 | C5 | Catalog and conversation in the product (R1 rows 2 and 3) | Not started | C4 |
@@ -82,4 +83,59 @@ As specified in §14 of the implementation plan, the following structural differ
 9. `cargo audit`: **Clean (0 vulnerabilities)**
 10. `cargo deny check licenses`: **Clean (`licenses ok`)**
 11. `mise run test:e2e`: **4 passed (clean)**
+
+---
+
+## C2 — What shipped
+
+Slice C2 stands up the Roym SynApp skeleton (six native-linked services: `web`, `profile`, `conversation`, `catalog`, `transaction`, `directory`) and the Hub shell — the first browser-facing surface for a Roym installation, reached through the client gateway's local login flow.
+
+### 1. The SynApp manifest and native services (`crates/roym_core/app/roym.toml`, `crates/roym_{web,profile,conversation,catalog,transaction,directory}`)
+
+Each service exports one WIT interface, `invoke(request: string) -> result<string, string>` plus `status()`, carrying a JSON-RPC-shaped envelope (`syneroym_roym_core::envelope`) rather than a WIT function per product verb. `web` is the only one with an inbound HTTP surface (`/rpc`, `/health`, `/ws`, plus the static UI bundle) and the only one that declares `depends_on`; every other service answers `<name>.ping` only, proving reachability through the manifest's real dependency bindings, not identity.
+
+Declared visibility (`roym.toml`):
+
+| Service | `visibility` | `topology_visibility` | Reachable from |
+|---|---|---|---|
+| `web` | `internal` | (default) | Gateway only (`/rpc`, `/health`, `/ws`; `/health` is the one `public: true` route) |
+| `profile` | `private` | (default) | `web` only, as a bound dependency |
+| `conversation` | `public` | (default) | Any verified caller with a resolve grant |
+| `catalog` | `public` | (default) | Any verified caller with a resolve grant |
+| `transaction` | `public` | (default) | Any verified caller with a resolve grant |
+| `directory` | `public` | `open` | Any verified caller, no grant needed (topology-document resolution) |
+
+### 2. The Hub shell (`crates/roym_web/ui`)
+
+A minimal TypeScript/Vite single-page app: a person-identity picker backed by `GET /_syneroym/session/identities` and `POST /_syneroym/session/login-local`, a session bar showing the logged-in DID, a Home screen that round-trips `profile.ping` over `POST /rpc`, and a seven-card gallery (`request`, `quote`, `agreement-receipt`, `booking-progress`, `payment-request`, `payment-acknowledgement`, `fulfilment-receipt`) plus an unknown-type fallback. Packed as `bundle.tar.gz` (gitignored, rebuilt by `mise run build:roym-ui`) and deployed as the `web` service's asset bundle.
+
+### 3. Both Hub URL forms (ADR-0022 §7 grammar)
+
+A deployed Roym Hub is reachable through the client gateway on two hostname forms, both resolving to the same `web` service:
+
+- **Bare service form**: `<nickname>-s<service-did-hash>[-i<interface-hash>].<domain>` — used when `web` is deployed standalone (`roymctl svc deploy`).
+- **App-instance form**: `<nickname>-a<app-did-hash>-s<service-name-hash>[-i<interface-hash>].<domain>` — used when `web` is deployed as part of the `roym` app instance (`roymctl app deploy`), naming the app and the logical service name (`web`) rather than a raw service DID.
+
+An omitted `-i` segment resolves to `web`'s one app-declared interface (`http-native`).
+
+### 4. Permitted differences (D-C2-4, F1, D-C2-11)
+
+1. **No forwarded caller identity (D-C2-4).** `syneroym_roym_core::envelope::Request` carries no caller field: a sibling has no sound way to verify a caller claim forwarded to it inside the JSON-RPC payload, so nothing in the envelope claims to carry one. Every C2 response is correct but anonymous from a sibling's point of view (see the deferred-backlog row on this).
+2. **WASM-vs-native caller divergence (F1).** The self-proxy caller-forwarding exception (a component calling its own service forwards the real caller) is evaluated against `HostState.component_id`, which is populated differently per build path. Identical for every case C2's parity suite drives; not proven identical for every future caller shape (see the deferred-backlog row).
+3. **Native Hub reachable only at the node's own address (D-C2-11).** `init_roym`'s six services are native-linked into the one substrate process; there is no separate network address per service the way a remote WASM deploy might imply — every one of them is reached at this node's own gateway/router address, under its own DID.
+
+---
+
+## C2 — Verification evidence
+
+1. `cargo test -p syneroym-roym-web --test dual_build_parity`: **11 passed, 0 failed**
+2. `cargo test -p syneroym-roym-core`: **5 passed, 0 failed**
+3. `cargo test -p syneroym-substrate --test gateway_session_e2e`: **19 passed, 0 failed**
+4. `cargo test -p syneroym-substrate --test roym_app_e2e`: see the review-response completion report for this pass's full workspace run
+5. `cargo +nightly fmt --all`: **Clean**
+6. `cargo clippy --workspace --all-targets --all-features`: **Clean**
+7. `cargo audit`: **Clean (0 vulnerabilities)**
+8. `cargo deny check licenses`: **Clean (`licenses ok`)**
+9. `cargo xtask check-roym-deps`: **Clean, and confirmed to reject a planted violation**
+10. `mise run test:e2e`: **Not run in this pass's environment — see the review-response completion report for why**
 

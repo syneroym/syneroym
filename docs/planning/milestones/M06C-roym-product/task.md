@@ -114,6 +114,16 @@ Roym's own needs are outside it:
 - **`syneroym:app-config`** and **`syneroym:vault`**, both small, both used
   by any real service for its own configuration and secrets.
 
+**Gap 2 closed.** C1 grew the four missing traits into `AppHost`, and C2's
+own six-service entrypoint proved them against a real product: `web` makes
+every one of its sibling calls through `syneroym:proxy`, is reached through
+`syneroym:http`'s inbound interfaces, and both builds pass the same parity
+suite (`crates/roym_web/tests/dual_build_parity.rs`, 11 cases). **No
+exemption from D2/D3 was needed** — the entrypoint required no coarse
+gating, no native-only shortcut, and no case where the two builds were
+allowed to answer differently beyond the permitted-differences list already
+recorded in [status.md](status.md)'s C2 section.
+
 **Gap 3 — conversation history can be read out, but never written back or
 removed.** `syneroym:conversation`'s whole verb list is `open-direct`,
 `conversations`, `send`, `history`, `delivery-status`, `outbox`, `retry`,
