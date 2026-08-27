@@ -90,17 +90,11 @@ These verify code correctness in isolation. Unit tests cover individual helper m
 ### Suite 2: Playwright WebRTC End-to-End Tests
 These verify fully integrated WebRTC signaling and client gateway browser scenarios.
 
-> **Orphaned processes from an interrupted run.** `global-setup` starts a
-> substrate and a `miniapp-demo1-web` on fixed ports (3000/3001, 7660-7665)
-> and `global-teardown` kills them. If a run is force-killed before teardown
-> (Ctrl-C on a wrapper, a killed CI step), those processes are orphaned and
-> keep holding the ports. The next run's miniapp then panics on its second
-> `bind`, and the tests run against the zombie whose SQLite file the new
-> setup already deleted -- static `GET`s still work, but `POST /api/comments`
-> and the WebSocket broadcast that depends on it fail, which looks like a
-> WebRTC bug. `global-setup` now fails fast with the offending port if this
-> happens; clear it with `lsof -ti tcp:3000 | xargs kill -9` (repeat for the
-> other ports) and re-run.
+> **"E2E ports already in use".** If a run is force-killed before
+> `global-teardown`, its substrate and `miniapp-demo1-web` stay bound to the
+> fixed ports. `global-setup` pre-flights those ports and fails naming the
+> one that is held -- clear it with `lsof -ti tcp:<port> | xargs kill -9` and
+> re-run.
 
 * **Run via Mise (Recommended):**
   ```bash
