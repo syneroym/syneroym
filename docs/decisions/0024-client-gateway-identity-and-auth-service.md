@@ -1,8 +1,10 @@
 # ADR-0024: Client Gateway Identity Modes and the Node Auth Service
 
-**Status**: Proposed (2026-08-27). Reshapes the person-session model M06B B1
-shipped ([task.md M06B B1](../planning/milestones/M06C-roym-product/task.md),
-line ~276; `crates/client_gateway/src/gateway.rs`,
+**Status**: Proposed (2026-08-27, amended the same day — see **Amendment 1**
+at the end). Reshapes the person-session model M06B B1 shipped (the "M06B B1"
+row of M06C's
+[dependency-gates table](../planning/milestones/M06C-roym-product/task.md);
+`crates/client_gateway/src/gateway.rs`,
 `crates/client_gateway/src/session.rs` on `main`). Depends on
 [ADR-0015](0015-ucan-capability-model.md) (UCAN capability tokens),
 [ADR-0001](0001-delegation-certificate-format.md) (delegation certificates),
@@ -386,3 +388,99 @@ between multiple DIDs on one node is `local` mode's job.
    usable.
 5. **Multi-tab / multi-DID in one browser** — one session cookie per origin;
    switching identity = logout + login. Acceptable for R1?
+
+---
+
+## Amendment 1 (2026-08-27) — defects found while planning slice C1.1
+
+A review of the C1.1 planning pass checked this ADR's claims against the tree
+and found five that do not hold as written. **None of them changes the
+decision** — a dumb gateway plus a node auth service is still the design.
+Each is recorded here as an open question, unresolved, because closing them
+is a design act and this ADR is otherwise settled. Slice
+[C1.1](../planning/milestones/M06C-roym-product/slice-c1.1-implementation-plan.md)
+carries all five and must answer them before it writes code.
+
+**A. §1 does not fix P1 in its path-prefix form — and P1 is this ADR's
+motivating problem.** `handle_connection` reads `Host` **once**, from the
+first request on a TCP connection, and `passthrough_with_conn` then hands the
+whole socket to one upstream stream for that connection's lifetime
+(`crates/client_gateway/src/gateway.rs`, which says so in its own comment;
+the router likewise resolves `pipeline.service` once per connection). §1's
+claim that "the service side already serves multiple requests per connection"
+is true **only for requests to the same service**. Under this ADR the session
+paths belong to the *auth service*, a different upstream from `web`. So:
+
+- If the auth service is reached by a **path prefix on `web`'s hostname**,
+  a browser's `fetch('/_syneroym/session/whoami')` reusing the page's
+  keep-alive connection still needs a second, different upstream on a
+  connection already pinned to the first. **P1 survives**, in the same
+  intermittent form.
+- If the auth service is reached by its **own Host**, the browser opens a
+  separate connection for that origin, `Host` is read fresh, and P1 is
+  genuinely fixed — but the login `fetch` becomes cross-origin, which raises
+  **B** below.
+
+§1 offers both forms and picks neither. **Only the separate-Host form fixes
+P1, and this ADR must be read as choosing it** — or P1 needs a different fix
+entirely. Open.
+
+**B. Cookie scope and CORS across two hostnames are unspecified.** The
+`syneroym_session` cookie is host-only today (`HttpOnly; SameSite=Strict`). If
+the auth service has its own gateway hostname (per A), a cookie it sets is
+never sent to `web`'s hostname, and the login call is cross-origin. This ADR
+names no `Domain`, `SameSite`, or `Secure` policy and no CORS rule. Open, and
+it is the same decision as A rather than a separate one.
+
+**C. The gateway strips the session cookie from forwarded requests today**
+(`session::strip_credential`, `crates/client_gateway/src/session.rs`) — it
+was the *gateway's* credential, deliberately not the service's. This ADR
+needs the opposite: the token must reach the service that verifies it. §1 and
+the Consequences table name only `SessionStore` and `session::classify` as
+what changes, and miss this. **Unstated consequence:** once forwarded, the
+token reaches every upstream the browser touches, including third-party apps
+on the same node. Whether that is acceptable, or whether the cookie is scoped
+so it cannot happen, is open.
+
+**D. §2's "sessions do not survive a restart" contradicts §3's
+self-contained token.** §3's token is a signed UCAN with an hours-long
+expiry, verified against the auth service's public key — and that key is a
+persisted file. Such a token verifies perfectly well after a restart. Either
+the auth service keeps server-side session state that verification consults
+(which §3 does not describe, and which would make the "shared verification
+helper" a network call rather than a signature check), or the
+non-durability property is simply false. Open; §2 and §3 cannot both stand
+as written.
+
+**E. Naming and representability, against the tree.**
+
+- `fct`, `exp`, and "subject" are UCAN-spec names. The tree's
+  `CapabilityToken` (`crates/ucan/src/token.rs`) has `facts`,
+  `expires_at_secs`, `audience_did`, and `anchor_did`. C1.1 must either use
+  the real names or say plainly that a new token type is being introduced.
+- **No rule is stated that a session token's `capabilities` must be empty and
+  that it must never be accepted as a capability proof.** As written, an
+  auth-service-issued token audienced to a person is a new, un-rooted issuer
+  entering `verify_chain`. The obvious floor is: empty `capabilities`, and
+  never a valid proof in a chain. Not decided here.
+- §1's `open` mode says the preamble carries "no transport identity", but
+  `passthrough_with_conn` always sets `pubkey: Some(...)` and
+  [ADR-0016](0016-native-dispatch-identity-threading.md) §3 makes
+  `verify_preamble` mandatory. Whether "none" is representable at all is
+  open. Related, and worth stating in the §1 table: `public: true` routes run
+  as `CallerContext::service_system` / `AuthLevel::System`, so `open` — the
+  mode that reaches only public routes — is the mode whose handlers run **as
+  the service itself**, not as a lesser principal.
+- "A new native service (`crates/auth` → `syneroym-auth`, a `SynSvc` …)" —
+  `SynSvc` is not a service kind in the tree. `SynSvcNativeService` is a
+  per-deployed-service helper; node-level native services register through
+  the native-dispatch and `NativeHttpRegistry` path. How a node-level service
+  with no deploy record, no nickname, and no published `EndpointInfo` is
+  addressed by a gateway hostname is itself open, and is the other half of A.
+
+**F. Nothing makes a service actually verify the token.** In `login` mode
+every request arrives carrying the gateway's node key, so a `public: false`
+route is reachable by any browser and is protected only by each service
+choosing to check the cookie. That makes open question 2 (the connection auth
+gate) **load-bearing rather than defence in depth**, and it needs a negative
+test either way.
