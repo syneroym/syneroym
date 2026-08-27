@@ -756,8 +756,17 @@ async fn setup_router(
 
     #[cfg(feature = "dual_build_fixture")]
     let fixture_factory = init_dual_build_fixture(&shared, &endpoint_registry, service_id).await?;
+    // Only wire the Roym SynApp's native build when this node actually
+    // runs the role. The `roym` feature can be compiled in (CI builds the
+    // whole workspace with `--all-features`) without every substrate boot
+    // wanting six extra `NativeService`s registered against no deploy
+    // record.
     #[cfg(feature = "roym")]
-    let roym_factories = init_roym(&shared, &endpoint_registry, service_id, config).await?;
+    let roym_factories = if config.roles.roym.is_some() {
+        init_roym(&shared, &endpoint_registry, service_id, config).await?
+    } else {
+        Vec::new()
+    };
 
     let router = ConnectionRouter::init(
         endpoint_registry.clone(),
@@ -1171,8 +1180,13 @@ async fn init_dual_build_fixture(
 const ROYM_APP_INSTANCE: &str = "roym";
 
 #[cfg(feature = "roym")]
+/// Internal dispatch id for one Roym service's native build -- the key its
+/// `NativeService`, its `endpoint_registry` `NativeHostChannel`, and every
+/// sibling `TopologyEntry` member share. Shaped as a `did:key:` string so
+/// it satisfies `ServiceId`'s invariant; it is never resolved as a real
+/// DID (native dispatch is in-process, no handshake), only matched.
 fn roym_dispatch_id(name: &str) -> String {
-    format!("roym-{name}")
+    format!("did:key:roym-{name}")
 }
 
 #[cfg(feature = "roym")]
