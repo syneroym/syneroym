@@ -6,11 +6,20 @@
 > `topology_visibility` / `visibility` declared so a foreign caller can
 > resolve what it should; the Web entrypoint as an ordinary WASM component
 > (`D-06B-1`) serving the UI bundle and forwarding JSON-RPC from one origin,
-> with no business logic in it; the Hub shell — a person logs in through the
-> gateway session and the guest sees *them* — plus the card renderer's fixed
-> templates and its unknown-type fallback (`D-06C-3`).
+> with no business logic in it; the Hub shell — a person logs in and the guest
+> sees *them* — plus the card renderer's fixed templates and its unknown-type
+> fallback (`D-06C-3`).
 >
-> **Depends on:** C1 (Complete 2026-08-25).
+> > **Revised 2026-08-27.** [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md) moves the login *mechanism* out of
+> > this slice and into slice
+> > [C1.1](slice-c1.1-implementation-plan.md): the person session is now a
+> > short-lived UCAN minted by a node **auth service** and verified per
+> > service, not a gateway-owned session that mints a preamble delegation.
+> > C2 keeps the browser half. **§10 is superseded — see its banner.** This
+> > plan is the as-built record of the held `feat/m06c-slice-c2` branch and
+> > is rewritten where marked when C2 rebases onto C1.1.
+>
+> **Depends on:** C1 (Complete 2026-08-25) and **C1.1** ([ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)).
 > **Blocks:** C4 and C5 (both need the skeleton to hang product code on).
 > **Runs in parallel with:** C3 — the two do not read each other
 > (`task.md`, "Dependency shape").
@@ -43,7 +52,7 @@ Five things C2 needs are **not** in the tree, and each is a section below:
 | 1 | Any product crate at all (`task.md` Gap 8) | §3–§7 |
 | 2 | A checked-in `SynAppManifest` — the tree has none; every existing manifest is built in Rust inside a test | §9 |
 | 3 | A way for a **natively linked** app to get an app context and dependency bindings, so `call-target::dependency` resolves (backlog row, targeted `M06C C2`; C1 §12 (10)) | §11.3 |
-| 4 | A browser login flow for a person session (backlog §7 row, targeted `M06C C2`) | §10 |
+| 4 | A browser login flow for a person session (backlog §7 row) — **retargeted 2026-08-27 to slice [C1.1](slice-c1.1-implementation-plan.md)** by [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md). C1.1 builds the node auth service, the session token, and its verification; C2 keeps only the browser half (the login screen driven by `GET /_syneroym/session/methods`, the IndexedDB temporary key, the challenge signing), rewritten when C2 rebases onto C1.1 | §10 — **superseded**, see its banner |
 | 5 | The client-gateway hostname leg for the app's own front door — C1 §12 (11) left it explicitly to C2 | §9.4, §12.4 |
 
 ---
@@ -260,7 +269,7 @@ fix engine work rather than app work.
 | **D-C2-3** | **The Web entrypoint holds a static routing table from JSON-RPC method prefix to (dependency name, interface constant), and nothing else.** No defaulting, no wildcard, no fallthrough: an unmatched prefix is JSON-RPC `-32601`. The table lives in `roym_core` and a unit test asserts it is total over the declared prefix set and unambiguous. | The spec's rule 4 — *"The Web entrypoint holds no business logic. It serves files and forwards calls."* A table with a default arm is a decision; a table without one is a lookup. Putting it in `roym_core` rather than `roym_web` is what lets the test compare it against the manifest's `depends_on` list. |
 | **D-C2-4** | **No sibling receives or trusts any forwarded person identity in C2. `web`'s `session.whoami` is the only place a person's DID is reported, and it reads `HttpRequest.caller` directly rather than forwarding anything to a sibling.** Confirmed unsound to do otherwise: a WASM sibling has no host import exposing its own real caller for a generic proxied call (F15) — `api.invoke`'s WIT signature carries no caller parameter, and the engine's marshaling layer does not inject one for any interface except `syneroym:http/incoming-handler`, which was purpose-built with a `caller` record field for exactly this reason. An earlier draft of this plan had the guest fabricate `service_system` unconditionally and gate an embedded envelope on it; that fabrication is indistinguishable, from the guest's own code, from a genuinely fabricated claim, so it accepted a forged envelope exactly as readily as an honest one — unsound precisely on the services `D-C2-13`'s manifest makes wire-reachable (`catalog`, `conversation`, `transaction`). Retracted rather than patched, because the sound fix (a host-verified caller parameter reaching the guest) needs an engine-level change: threading `HostState`'s already-correct `Option<CallerContext>` into the marshaled arguments of a proxied call is `execute_wasm_json`/`conversions.rs` work, not app work, and belongs behind its own decision (backlog row, §15), not inside a product skeleton slice. | This is a real, named gap against exit criterion 3's plural wording ("Roym's services see that person's DID") — C2 discharges it only for `web`. C4/C5, which DO need a sibling to know who is asking (a listing's owner, a quote's signer), inherit this gap and cannot build on an unsound mechanism; they need either the engine-level caller parameter above or real cross-service delegation (ADR-0015 UCAN, already backlogged per F2). Better to hand them an honest absence than a mechanism that looks solved and is not. |
 | **D-C2-5** | **Only `web` declares `http_routes`, and only `web` declares an `assets` bundle. A test asserts the other five declare neither.** | What "one origin" means (spec, Client contract): a second service answering HTTP would be a second origin. `D-C2-4`'s original rationale for this invariant (soundness of a `System`-caller gate) no longer applies — that gate was retracted — but the invariant stands on the spec's own reason alone, and is now also visible at the **WIT level**, not only at deploy time: §4.1's corrected worlds mean only `web`'s `world.wit` exports `incoming-handler`/`websocket-handler` at all, so a sibling that tried to answer HTTP would have to add that export first, a second, independent signal beside the manifest test. |
-| **D-C2-6** | **Browser login is a gateway-side local ceremony for the first release, structured so a browser-held WebAuthn/passkey signer can be added later as a second `SessionRoute` without changing the session wire format.** A new reserved endpoint `POST /_syneroym/session/login-local` takes `{"identity": "<name>"}`, loads that person key from a newly configured `roles.client_gateway.person_identities_dir`, refreshes the master anchor, runs the existing challenge/assert/delegate/login steps in-process, and returns the same `LoginResponse` + `Set-Cookie` the remote path already returns. `GET /_syneroym/session/identities` lists the available names and **no key material**. Absent config disables both with 404. | F9: the spec forbids the UI holding a private key, so the browser cannot be the signer for the first release, and the three primitives (z-base-32, RFC-8785, `did:key:h`) would otherwise have to be reimplemented in TypeScript and kept byte-compatible with Rust forever. The gateway binds `127.0.0.1` and D8 puts the browser on the same machine, so this adds no exposure that did not already exist: any local process that can call this endpoint can already read the same key file and run `roymctl session login`. That equivalence is the whole security argument and is stated in the endpoint's own doc comment. **Deferred, not rejected: a browser-held WebAuthn/passkey signer.** Confirmed addable later without a breaking change here — `LoginResponse`, the cookie, and `whoami` are unchanged either way; only the *login initiation* half (a third `SessionRoute`, e.g. `WebauthnLogin`, verifying an authenticator assertion instead of a bare ed25519 signature) would be new. It needs three things C2 does not build and must not accidentally foreclose: (1) **CORS on the community registry** (`crates/community_registry/src/registry.rs` — no CORS layer exists on any of its four Axum routes today), because a browser holding its own key publishes its own anchor directly to the registry rather than through the gateway, which is a cross-origin call the gateway-side ceremony never makes; (2) a **did:key scheme extension**, since `derive_did_key`/`resolve_did_key` hardcode the ed25519 multicodec (`0xed01`, [substrate.rs:142-166](../../../../crates/identity/src/substrate.rs#L142)) and reject anything else — a WebAuthn credential using ES256 (P-256, COSE alg `-7`) needs a second multicodec branch (P-256 is `0x1200`) threaded through `resolve_did_key` and `verify_json_signature`; an authenticator using EdDSA (COSE alg `-8`) needs none, so this is a per-authenticator gap, not a universal one; (3) a **WebAuthn assertion verifier** (challenge, `clientDataJSON`, `authenticatorData`, signature) — a different verification shape than `DelegationCertificate::verify`'s single z32 signature, so it is new code, not a reuse. None of this is C2's to build; C2's job is only to not paint it into a corner, which the two-`SessionRoute` shape (§10) achieves. Backlog rows for both gaps in §15. |
+| **D-C2-6** | **SUPERSEDED 2026-08-27 by [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md) — see §10's banner. As built on `feat/m06c-slice-c2`:** **Browser login is a gateway-side local ceremony for the first release, structured so a browser-held WebAuthn/passkey signer can be added later as a second `SessionRoute` without changing the session wire format.** A new reserved endpoint `POST /_syneroym/session/login-local` takes `{"identity": "<name>"}`, loads that person key from a newly configured `roles.client_gateway.person_identities_dir`, refreshes the master anchor, runs the existing challenge/assert/delegate/login steps in-process, and returns the same `LoginResponse` + `Set-Cookie` the remote path already returns. `GET /_syneroym/session/identities` lists the available names and **no key material**. Absent config disables both with 404. | F9: the spec forbids the UI holding a private key, so the browser cannot be the signer for the first release, and the three primitives (z-base-32, RFC-8785, `did:key:h`) would otherwise have to be reimplemented in TypeScript and kept byte-compatible with Rust forever. The gateway binds `127.0.0.1` and D8 puts the browser on the same machine, so this adds no exposure that did not already exist: any local process that can call this endpoint can already read the same key file and run `roymctl session login`. That equivalence is the whole security argument and is stated in the endpoint's own doc comment. **Deferred, not rejected: a browser-held WebAuthn/passkey signer.** Confirmed addable later without a breaking change here — `LoginResponse`, the cookie, and `whoami` are unchanged either way; only the *login initiation* half (a third `SessionRoute`, e.g. `WebauthnLogin`, verifying an authenticator assertion instead of a bare ed25519 signature) would be new. It needs three things C2 does not build and must not accidentally foreclose: (1) **CORS on the community registry** (`crates/community_registry/src/registry.rs` — no CORS layer exists on any of its four Axum routes today), because a browser holding its own key publishes its own anchor directly to the registry rather than through the gateway, which is a cross-origin call the gateway-side ceremony never makes; (2) a **did:key scheme extension**, since `derive_did_key`/`resolve_did_key` hardcode the ed25519 multicodec (`0xed01`, [substrate.rs:142-166](../../../../crates/identity/src/substrate.rs#L142)) and reject anything else — a WebAuthn credential using ES256 (P-256, COSE alg `-7`) needs a second multicodec branch (P-256 is `0x1200`) threaded through `resolve_did_key` and `verify_json_signature`; an authenticator using EdDSA (COSE alg `-8`) needs none, so this is a per-authenticator gap, not a universal one; (3) a **WebAuthn assertion verifier** (challenge, `clientDataJSON`, `authenticatorData`, signature) — a different verification shape than `DelegationCertificate::verify`'s single z32 signature, so it is new code, not a reuse. None of this is C2's to build; C2's job is only to not paint it into a corner, which the two-`SessionRoute` shape (§10) achieves. Backlog rows for both gaps in §15. |
 | **D-C2-7** | **Identity *creation* stays in C4. C2's login endpoint operates only on an identity that already exists on disk.** When the directory is empty the Hub says so and names `roymctl identity create`. | R1 row 1 (device-bound identity, encrypted backup, import) is C4's, by `task.md`'s own slice table. C2 owes the *ceremony*, which is what the backlog row targeted at C2 actually asks for. |
 | **D-C2-8** | **The card renderer ships in the UI bundle as data-driven templates, and the canonical `(type, version)` set lives in `roym_core`. A unit test in `roym_core` reads the UI's own registry file and fails if the two lists differ.** | `D-06C-3` fixes seven types plus a fallback and requires the rule to be decided once. The producer is Rust (C7/C8) and the consumer is TypeScript, so "decided once" needs a mechanism, not a promise. Reading the TS file from a Rust test is ugly and cheap; a code generator is neither. |
 | **D-C2-9** | **The native build registers the UI bundle by calling `unpack_asset_bundle` at startup against a path from config (`roles.roym.ui_bundle_path`), not by `include_bytes!`.** Absent path = no assets served natively; the JSON-RPC API is unaffected and the parity suite still passes. | F4: assets never cross the WIT boundary, so this is host wiring, not app code. `include_bytes!` would make `cargo build -p syneroym-substrate --features roym` depend on npm having run, which would break `cargo build --workspace` for everyone. |
@@ -1072,8 +1081,8 @@ tree). Output `dist/`, packed to `bundle.tar.gz` by §3.5's task.
 
 | Screen | Behaviour |
 |---|---|
-| Login | `GET /_syneroym/session/identities` → a picker. On choose, `POST /_syneroym/session/login-local`, then reload. Empty list → the message from `D-C2-7` naming `roymctl identity create`. |
-| Session bar | `GET /_syneroym/session/whoami` on load. A 401 renders **"the substrate restarted — log in again"** as an ordinary state, never an error banner (`task.md`'s carried-forward gateway limit; failure matrix row 17). |
+| Login | **Superseded by [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)** — rewritten at the C2 rebase onto C1.1 as a screen driven by `GET /_syneroym/session/methods`, offering "upload session key" (`delegated-key`) or "pick identity" (`local`) per what the node enables. *As built:* `GET /_syneroym/session/identities` → a picker. On choose, `POST /_syneroym/session/login-local`, then reload. Empty list → the message from `D-C2-7` naming `roymctl identity create`. |
+| Session bar | `GET /_syneroym/session/whoami` on load. A 401 renders **"the substrate restarted — log in again"** as an ordinary state, never an error banner (`task.md`'s carried-forward limit; failure matrix row 17). Unchanged by [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md): the endpoint keeps its path and its meaning, and only moves from the gateway to the auth service. |
 | Home | Calls `session.whoami` (shows the person's DID) and `profile.ping` (shows the sibling reached and answered, not an identity claim — `D-C2-4`), both through `POST /rpc`. This is the shell's proof that the person is authenticated *and* that a request reaches a service; C4 replaces it with the real profile screen. |
 | Card gallery | Renders one sample of each of the seven types plus the unknown-type fallback, from a local fixture file. Not reachable from the Home screen; it exists so the renderer and its tests have a subject before C7 produces a real card. |
 
@@ -1247,6 +1256,16 @@ flags fails at `web`, and the C2 status note records that as expected.
 
 ### 9.4 The Hub's URL (F8, closing C1 §12 (11))
 
+> **Forward reference (2026-08-27).** The *hostname* half of this section is
+> unaffected by [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md): both host forms, `short_hash`, and the
+> published `EndpointInfo` record work exactly as described. What changes is
+> the *identity* the gateway attaches to a request arriving at that hostname —
+> after slice [C1.1](slice-c1.1-implementation-plan.md) it is a function of
+> the gateway's configured `identity_mode` (its own node key, a configured
+> person delegation, or nothing), and the **person** identity arrives
+> separately as a verified `syneroym_session` cookie token. So a Hub URL that
+> resolves is no longer the same thing as a Hub URL that carries a person.
+
 **WASM build:** `http://s<short_hash(<web service DID>)>.localhost:7960/`.
 The `web` service's DID is minted at deploy, so the URL is per-install. Add
 a line to the deploy step in the developer guide showing how to compute it
@@ -1268,6 +1287,48 @@ than only in this plan.
 ---
 
 ## §10 The gateway: browser person login (`D-C2-6`)
+
+> ## ⚠ SUPERSEDED (2026-08-27) — do not implement this section as written
+>
+> **[ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)
+> replaces the model this whole section is built on.** The person session is
+> no longer a gateway-owned `SessionStore` entry that mints a delegation onto
+> the route preamble; it is a short-lived UCAN signed by a **node auth
+> service** (`crates/auth`), carried in the `syneroym_session` cookie, and
+> verified by each service. The client gateway becomes a dumb proxy with an
+> `identity_mode` and intercepts no session paths at all.
+>
+> **Three specific things below are dead, not merely restated:**
+>
+> 1. `D-C2-6`'s `POST /_syneroym/session/login-local` and `GET
+>    /_syneroym/session/identities` as *gateway* endpoints, and the
+>    `roles.client_gateway.person_identities_dir` key with them. The
+>    capability survives as the auth service's `local` **method**
+>    (ADR-0024 §4b); the location and the endpoint shape do not.
+> 2. `§10.0`'s forward-compatibility argument for a later WebAuthn/passkey
+>    signer. ADR-0024 §P3 rules WebAuthn out on principle — its keys live in
+>    an authenticator the person cannot export, which fights the premise that
+>    a person owns their DID and key. The replacement is `delegated-key`
+>    (§4a): a temporary keypair the master key delegates to, held in the
+>    browser as a non-extractable WebCrypto `CryptoKey`. The two backlog rows
+>    §15 raises off the WebAuthn argument (registry CORS, the `did:key`
+>    P-256 multicodec) lose their trigger with it.
+> 3. `§10.3`'s reliance on `SessionStore` and the preamble delegation. Both
+>    are deleted by slice **C1.1**.
+>
+> **The flow moves to slice
+> [C1.1](slice-c1.1-implementation-plan.md)** (the server half: the auth
+> service, the token, the verification helper, `roymctl session delegate`),
+> with the browser half — the login screen driven by `GET
+> /_syneroym/session/methods`, the IndexedDB temporary key, the challenge
+> signing — folded back into C2 when it resumes.
+>
+> **This section is kept, not deleted,** because the branch
+> `feat/m06c-slice-c2` built against it and is held unmerged. It is the
+> as-built record of what that branch contains. **It is rewritten against
+> ADR-0024 when C2 rebases onto C1.1** — that rebase is also where the
+> C2-branch backlog rows on the keep-alive bypass (ADR-0024 §P1, commit
+> `af9e814`, not on `main`) are reconciled.
 
 ### 10.0 Forward compatibility with a later WebAuthn/passkey signer
 
@@ -1688,7 +1749,7 @@ built with should be ignored, not rejected, exactly as the other roles are.
 | `crates/roym_core/src/**` unit tests | in crate | the routing table (§5.3), the card set drift guard (§5.4) |
 | `xtask check-roym-deps` (§14 (9)) | build-graph, no runtime | no Roym crate depends on a host crate on either target — the D3 assertion, given a home |
 | `crates/roym_web/tests/dual_build_parity.rs` | in process, both builds | every §12.2 scenario, byte-identical |
-| `crates/substrate/tests/roym_app_e2e.rs` | router + gateway, WASM only | registration, routes, the Hub URL, the person session end to end, visibility |
+| `crates/substrate/tests/roym_app_e2e.rs` | router + gateway, WASM only | registration, routes, the Hub URL, the person session end to end, visibility. **The person-session leg is rewritten at the C2 rebase** ([ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)): it asserts a verified session token whose subject is the person's master DID, not a gateway-minted preamble delegation |
 | `crates/substrate/tests/gateway_session_e2e.rs` | gateway | §10.4's six cases |
 | `crates/substrate/tests/e2e/tests/roym-hub.spec.ts` | real browser | login, the card gallery, and matrix row 4 |
 
@@ -1767,6 +1828,18 @@ with `--mint-masters`; then:
 
 ### 12.4 `crates/substrate/tests/e2e/tests/roym-hub.spec.ts`
 
+> **Tests 1 and 2 are superseded by [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md).** They are written
+> against the gateway-session login of §10 and must be rewritten for the real
+> `delegated-key` flow when C2 rebases onto slice
+> [C1.1](slice-c1.1-implementation-plan.md): Playwright injects the temporary
+> key into IndexedDB with `addInitScript`, or `global-setup` runs `roymctl
+> session delegate` and hands the result to the page. No virtual authenticator
+> is needed — that was a WebAuthn requirement, and [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md) §P3 rules
+> WebAuthn out. **Test 2 is also where ADR-0024 §P1 gets its regression
+> cover**: it is the browser reusing a keep-alive connection between a page
+> load and a session `fetch` that made the old login intermittently 405.
+> Tests 3 and 4 (the card gallery and card safety) are unaffected.
+
 Extend `global-setup.ts` to deploy Roym and export `ROYM_HUB_URL`. Four
 tests:
 
@@ -1831,7 +1904,13 @@ Raised rather than guessed.
    either build. Neither `task.md` nor the spec names this, and exit
    criterion 3 (*"Roym's services see **that person's** DID with
    `caller-auth = delegated`"*) reads as though it were solved for every
-   service. **It is not, and this plan does not pretend otherwise.** An
+   service. (**2026-08-27:** [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md) re-grounds that criterion's
+   *signal* — after slice C1.1 it is "a valid session token, subject = the
+   person's master DID", and `task.md`'s criterion 3 has been reworded to
+   match. It does **not** close the gap this item describes: how a person's
+   identity reaches a *sibling* through a proxied call is still unsolved, and
+   a session cookie the browser sends to `web` does not travel onward by
+   itself.) **It is not, and this plan does not pretend otherwise.** An
    earlier draft of this plan had the guest fabricate a `CallerContext` and
    gate an embedded envelope on it (`D-C2-4`, first version); that
    mechanism was retracted (see D-C2-4's current text) once it became
@@ -1955,9 +2034,13 @@ Raised rather than guessed.
     reserved paths, not `web`'s `api` interface or any JSON-RPC method at
     all.** Not a violation, but the plan owes the one sentence reconciling
     them rather than leaving a reader to wonder: session bootstrap is
-    infrastructure the *gateway* provides to every app alike (the same
+    infrastructure the *node* provides to every app alike (the same
     `/_syneroym/session/challenge`/`login`/`logout`/`whoami` shape M06B
-    already shipped), not a Roym *capability*. Once logged in, every
+    already shipped), not a Roym *capability*. (**2026-08-27:** [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)
+    moves that door from the gateway to the node **auth service**, which
+    makes the reconciliation stronger, not weaker — session bootstrap is now
+    literally another service reached through the same proxy, and Roym's own
+    surface is untouched.) Once logged in, every
     capability Roym itself adds — everything `POST /rpc` reaches — **is**
     a public JSON-RPC method, satisfying the criterion for the product
     surface it actually describes. `D-C2-6`'s `login-local`/`identities`
@@ -1973,9 +2056,9 @@ Raised rather than guessed.
 | `docs/planning/milestones/M06C-roym-product/status.md` | C2's section, with a **numbered permitted-differences list** (matching C1's own status.md shape, not buried inside a decision's prose): (1) no sibling receives or trusts a forwarded person identity — only `web`'s `session.whoami` reports one (`D-C2-4`, F15); (2) `ProxyRouter::invoke_local` synthesizes a different `caller_did` for a WASM vs. a native callee, both `AuthLevel::System` (F1); (3) the native build's Hub is reachable only at the node's own address, never a per-service one, because a linked Roym mints no instance certificate (`D-C2-11`, §9.4). Also record: the six services and their visibility table (§9.3); the resolved Hub URL form for both builds; and the §14 (4) reading of "four services" vs six. Update the slice table's C2 row |
 | [deferred-backlog.md](../../deferred-backlog.md) §5 | **Retarget** *"A natively linked app's message subscriptions do not survive a process restart"* (`M06C C2`). C2 does not close it: none of the six services subscribes to anything yet. Move to `M06C C5` (`roym_conversation` is its first consumer) with that reason, or restate the C1 `F12` argument — a linked app re-subscribes from its own startup path — now that `init_roym` **is** that startup path. Prefer the second: `init_roym` is where a `NativeHostFactory::start()` hook would go, and C2 is the first slice with a reason to want one |
 | [deferred-backlog.md](../../deferred-backlog.md) — the `M06C C2` app-context row | **Move to "Recently resolved"** with what shipped: `init_roym` writes `set_app_context` and `save_binding` for the linked build, and registers the same `TopologyEntry`s the deploy path registers (`D-C2-10`) |
-| [deferred-backlog.md](../../deferred-backlog.md) §7, browser-login row | **Move to "Recently resolved"**, recording `D-C2-6` — a gateway-side local login for the first release, not a browser-held key — and the security argument that makes it equivalent to `roymctl session login`. Note it is a deliberately deferred step, not a closed question: WebAuthn/passkey is confirmed as the intended next step (user decision, 2026-08-25), tracked by the two rows below rather than left implicit |
-| [deferred-backlog.md](../../deferred-backlog.md) §7, new row | **The community registry has no CORS layer**, so a browser holding its own key (a future WebAuthn signer) cannot call `/register_master` directly from the Hub's origin — only a server-to-server caller can today (`crates/community_registry/src/registry.rs:134-137`, no `tower_http::cors` or equivalent anywhere in the tree). Not needed by `D-C2-6`'s gateway-side ceremony, which calls the registry itself with no browser origin involved. Target `TBD`, trigger *"a browser-held signer must publish its own anchor"* |
-| [deferred-backlog.md](../../deferred-backlog.md) §3, new row | **`did:key` derivation and verification are hardcoded to the ed25519 multicodec** (`derive_did_key`/`resolve_did_key`, `crates/identity/src/substrate.rs:142-166`, rejecting anything whose prefix isn't `0xed01`). A WebAuthn authenticator using ES256 (P-256, COSE alg `-7` — the common case) cannot become a `did:key` without a second multicodec branch (P-256 is `0x1200`) threaded through both functions and `verify_json_signature`; an EdDSA authenticator (COSE alg `-8`) needs none. Target `TBD`, trigger *"a browser-held WebAuthn signer uses a non-Ed25519 authenticator"* |
+| [deferred-backlog.md](../../deferred-backlog.md) §7, browser-login row | **SUPERSEDED 2026-08-27 by [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md).** That row is now resolved by slice [C1.1](slice-c1.1-implementation-plan.md), and C2 owes no edit to it. *As planned:* **Move to "Recently resolved"**, recording `D-C2-6` — a gateway-side local login for the first release, not a browser-held key — and the security argument that makes it equivalent to `roymctl session login`. Note it is a deliberately deferred step, not a closed question: WebAuthn/passkey is confirmed as the intended next step (user decision, 2026-08-25), tracked by the two rows below rather than left implicit |
+| [deferred-backlog.md](../../deferred-backlog.md) §7, new row | **SUPERSEDED 2026-08-27 by [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md) §P3, which rules WebAuthn out** — this row's only trigger was a browser-held WebAuthn signer publishing its own anchor, and `delegated-key` login publishes nothing from the browser. Do not add it at the C2 rebase. *As planned:* **The community registry has no CORS layer**, so a browser holding its own key (a future WebAuthn signer) cannot call `/register_master` directly from the Hub's origin — only a server-to-server caller can today (`crates/community_registry/src/registry.rs:134-137`, no `tower_http::cors` or equivalent anywhere in the tree). Not needed by `D-C2-6`'s gateway-side ceremony, which calls the registry itself with no browser origin involved. Target `TBD`, trigger *"a browser-held signer must publish its own anchor"* |
+| [deferred-backlog.md](../../deferred-backlog.md) §3, new row | **SUPERSEDED 2026-08-27 by [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md) §P3** for the same reason as the row above: the P-256 branch was needed only for an ES256 WebAuthn authenticator, and `delegated-key` uses ed25519 throughout. Do not add it at the C2 rebase. *As planned:* **`did:key` derivation and verification are hardcoded to the ed25519 multicodec** (`derive_did_key`/`resolve_did_key`, `crates/identity/src/substrate.rs:142-166`, rejecting anything whose prefix isn't `0xed01`). A WebAuthn authenticator using ES256 (P-256, COSE alg `-7` — the common case) cannot become a `did:key` without a second multicodec branch (P-256 is `0x1200`) threaded through both functions and `verify_json_signature`; an EdDSA authenticator (COSE alg `-8`) needs none. Target `TBD`, trigger *"a browser-held WebAuthn signer uses a non-Ed25519 authenticator"* |
 | [deferred-backlog.md](../../deferred-backlog.md) §3, new row | **A proxied call reaches a WASM callee with a different caller than a native callee** — `ProxyRouter::invoke_local` passes `None` for `WasmChannel` (synthesizing `service_system(<callee>)`) and the caller's own context for `NativeHostChannel` (`crates/router/src/proxy.rs:673,716`). Both are `AuthLevel::System`, and C2 (having retracted its own identity-forwarding mechanism, D-C2-4) reads nothing from `HostState.caller` at the app level on either build, so nothing in C2 is *broken* by the divergence today — but it is a failure-matrix row 19 case regardless, and it is exactly what a future host-verified caller parameter (the F15 backlog row below) would need fixed first. Target `TBD`, trigger *"a service authorizes on the identity of the sibling that called it"* |
 | [deferred-backlog.md](../../deferred-backlog.md) §3, new row | **No host mechanism lets a WASM guest read its own real caller for a generic proxied call** (F15) — only `syneroym:http/incoming-handler` carries one, purpose-built. A sibling cannot honestly know who is asking, on either build, for anything reached through `syneroym:proxy`. Closing this needs the `ProxyRouter` divergence above fixed *and* `execute_wasm_json`'s caller threaded into the marshaled arguments of a specific interface — real engine work. Target `TBD`, trigger *"a Roym sibling (or any other app's service) must authorize on the caller of a proxied call"*; this is the row C4/C5 need before a listing or a quote can honestly carry who signed it |
 | [deferred-backlog.md](../../deferred-backlog.md) §5, new row | **`syneroym-app-host`'s `AppHost` bound cannot be narrowed per service** — its own `Cargo.toml` requests all eight `wit_interfaces` guest features unconditionally (not target-gated), so Cargo feature unification forces every consumer's wasm32 component to *import* all eight interfaces (§3.3) regardless of what that service actually uses. The cost is the eight forced imports and the `with:` remap entries they need (§6.3) — **not** the export side: exports are the fixture's own choice, not something feature unification forces (§4.1's correction), so a Roym sibling's own `world.wit` stays as small as its exports genuinely need to be. Splitting `AppHost` into narrower supertraits (or otherwise letting a consumer opt out of unused guest modules) would remove the import-side cost but touches C1's just-shipped trait bound and every existing implementor. Target `TBD`, trigger *"a second multi-service SynApp hits the same forced-import cost, or it becomes a maintenance problem"* |
@@ -1985,7 +2068,7 @@ Raised rather than guessed.
 | [deferred-backlog.md](../../deferred-backlog.md) §11 | Any `TODO`/`FIXME` this slice leaves — expected: one in `roym_web`'s `origin` fallback (§7.1) and one in each sibling's `invoke` where the verb table is empty. Each needs a matching row |
 | [roym-integrated-experience-spec.md](../../../roym-integrated-experience-spec.md) | §14 (5): the Client-contract bullet *"The bundle is embedded in the entrypoint … Serving it from `blob-store` instead would allow a UI update without redeploying the service; that is a later convenience"* is stale — M06A A1 made shipping-with-the-deploy and serving-from-blobs the same mechanism. One sentence, with a pointer to `assets` |
 | [task.md](./task.md) | Gap 2 recorded as **closed** (owed by C2 per the "Owed as slices land" table). Add the §14 (4) clarification that C2's `depends_on` set is five, not four |
-| [docs/developer-guide.md](../../../developer-guide.md) | The deploy command, the resolved Hub URL form (§9.4), and the new `roles.client_gateway.person_identities_dir` / `roles.roym.ui_bundle_path` keys |
+| [docs/developer-guide.md](../../../developer-guide.md) | The deploy command, the resolved Hub URL form (§9.4), and the new `roles.roym.ui_bundle_path` key. **`roles.client_gateway.person_identities_dir` is dropped** — [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md) replaces it with the auth service's `local` method and its own key directory, and the guide's session-endpoint section is [C1.1](slice-c1.1-implementation-plan.md)'s to rewrite |
 | [CLAUDE.md](../../../../CLAUDE.md) / [AGENTS.md](../../../../AGENTS.md) | The architecture section's component list gains the Roym crates in one sentence. **No** WIT-interface-list edit: C2 adds `syneroym-roym:*` packages, which are the app's own, not host interfaces. C3 owes that edit for the signing package |
 
 ---
@@ -2005,8 +2088,13 @@ Raised rather than guessed.
    all ten scenarios in §12.2 with byte-identical results, and the mutant
    test still detects an injected divergence.
 5. A person logs in **from the browser**, and `POST /rpc` with
-   `session.whoami` returns that person's DID with `auth = "delegated"` —
-   through the client gateway, from one origin, on the WASM build.
+   `session.whoami` returns that person's DID — through the client gateway,
+   from one origin, on the WASM build. (**Re-grounded 2026-08-27 by
+   [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md):** after C1.1 the login is the auth service's
+   `delegated-key` or `local` method, and what `whoami` reports comes from a
+   verified session token, not from `auth = "delegated"` on a
+   gateway-minted preamble delegation. The criterion is the same; its
+   mechanism is C1.1's.)
    **`profile.ping` (or any sibling) reaching the person's identity is
    explicitly not a done-criterion**: `D-C2-4` records that no sibling
    sees it in C2, by design, and that gap is real and carried forward to

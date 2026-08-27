@@ -80,6 +80,18 @@ least these before writing code:
 5. **Whether the master-anchor / `revoked_keys` check the handshake performs
    is reachable from a native service**, since §3's `delegated-key`
    verification needs exactly that check (ADR §4a step 4).
+6. **What to do with `AuthNormalizer`.** `crates/ucan/src/normalize.rs`
+   already defines a one-method trait — *normalize an external authentication
+   assertion into an internal `did:key`* — with one identity implementation
+   (`DidKeyNormalizer`) and, by M04A B1's own flag F4, **no wired consumer**.
+   It was built as "a place to hang OIDC/WebAuthn in M6". ADR-0024 does not
+   mention it, and its instruction not to build a plugin interface for a
+   single method (§4, YAGNI) reads oddly against a seam that already exists.
+   Three honest options: wire the auth service's methods behind it; leave it
+   untouched and unwired; or delete it as a seam the design no longer wants.
+   **Do not decide this silently** — whichever way it goes, record it here as
+   a decision, because it is the closest thing the tree has to the
+   provider-wrapper abstraction §10 says is out of scope.
 
 Findings from that read belong in this file, as a `§1` written over this one.
 

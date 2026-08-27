@@ -70,7 +70,7 @@ overturned an ADR is kept at the end, under
 | D5 | **Group chat uses an owner-distributed group key over a Gossip DAG, ordered by raw sender timestamps.** The group owner generates one symmetric key per epoch and sends it to each member over the existing 1:1 channel, then generates a new one on every join, every removal, and on a schedule. Not MLS. | **Revised 2026-08-13**, amending [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §6. MLS assumes a Delivery Service that gives every member the same order of Commits. We have no server, and a DAG sort does not supply that: a member can apply the only Commit it has seen, advance its epoch, then receive one that sorts earlier — and MLS epochs are forward-only. The ordering rule from §5 is unchanged and still correct. See [O1](#resolved-o1--group-key-management) for the full reasoning. |
 | D6 | **Clients talk to Roym as JSON-RPC through the client gateway.** The HTML UI is one such client, served by a thin Web entrypoint service that is also the single API origin. The API is the product boundary, not the UI. | Any other client — a different UI, a script, a CLI — can be written against the same API. **Revised 2026-08-18:** the entrypoint originally existed for two reasons, and only one survives. Five services would still mean five browser origins, so a single API origin is still worth a service. But "a WASM component cannot serve HTTP" stopped being true when [M06A](planning/milestones/M06A-app-platform-surface/task.md) completed (2026-08-17), so **the entrypoint is now an ordinary WASM component and is no longer exempt from D2 and D3** (M06B `D-06B-1`). See [Client contract](#client-contract). |
 | D7 | **The substrate signs on the person's behalf under delegation.** The user's Master DID delegates to the Substrate Node DID; Roym signs with the delegated key. Private user keys do not go into browser storage. | [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §1 already defines this delegation. It also means the gateway must learn which person is asking — see [gap G3](#substrate-work-required). |
-| D8 | **Every participant installs a substrate, including consumers.** There is no browser-only consumer path in the first release. | The client gateway binds `127.0.0.1` and authenticates no client. A hosted gateway serving browser consumers needs remote binding plus client authentication — see [gap G3](#substrate-work-required). The lightweight device identity from the requirements still applies; the person just runs it on their own machine. |
+| D8 | **Every participant installs a substrate, including consumers.** There is no browser-only consumer path in the first release. | The client gateway binds `127.0.0.1` and authenticates no client. A hosted gateway serving browser consumers needs remote binding plus client authentication — see [gap G3](#substrate-work-required). The lightweight device identity from the requirements still applies; the person just runs it on their own machine. **How the browser proves who it is** — a login against a node auth service, not a gateway-owned session — is settled by [ADR-0024](decisions/0024-client-gateway-identity-and-auth-service.md) and built in M06C slice C1.1. That ADR keeps this decision's assumption unchanged: the browser and the gateway are on the same machine, and untrusted-network browser access stays out of scope. |
 | D9 | **The Transaction service runs on the provider's substrate.** | It makes the provider the single writer for a transaction, which the requirements demand. Putting it on the SynOrg would make the group a required intermediary and would break providers who belong to no group. |
 | D10 | **Group chat is core, not a stretch.** Attachments and multi-device sync are not. | Group chat is a flagship demonstration and shares the Gossip DAG with nothing else in the release, so it cannot be added cheaply later. Attachments and multi-device sync are separate systems that no other core goal depends on. |
 
@@ -772,6 +772,16 @@ asking on a shared node.
 
 Needed: a local session model that binds an authenticated client to a person's
 identity, so D7's delegated signing is safe.
+
+**Closed by M06B slice B1 (2026-08-18), mechanism reshaped 2026-08-27.** B1
+bound a client to a person with a gateway-owned session that minted a
+delegation onto the route preamble.
+[ADR-0024](decisions/0024-client-gateway-identity-and-auth-service.md) keeps
+what this gap asked for and changes how: a node **auth service** is the
+identity provider, and the session is a short-lived signed token each service
+verifies. Built in M06C slice C1.1. **No scope change to this spec** — the
+login mechanism is a *how*, and D6's client contract, D7's delegated signing,
+and D8's same-machine assumption all stand as written.
 
 ### G4 — Declared service visibility
 
