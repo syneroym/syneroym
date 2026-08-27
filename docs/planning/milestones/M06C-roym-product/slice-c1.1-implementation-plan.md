@@ -71,9 +71,11 @@ least these before writing code:
 2. **What exactly `session::classify` reaches** in
    `crates/client_gateway/src/gateway.rs` besides the six paths, so the
    deletion in §2 is complete rather than partial.
-3. **How a native `SynSvc` is registered and addressed** through both the
-   native-dispatch registry and a gateway hostname, so §3 picks the same path
-   `crates/control_plane`'s services already use rather than a new one.
+3. **How a node-level native service is registered and addressed** through
+   both the native-dispatch registry and a gateway hostname — this is *not*
+   the `SynSvcNativeService` path `crates/control_plane`'s per-deployed
+   services use (§1's own earlier finding on this), so confirm §3 picks a
+   real existing path for a node-level service rather than assuming one.
 4. **What `roymctl session` does today** (`login`, `status`, `token`,
    `logout`) so §5's `delegate` verb fits the existing command rather than
    duplicating half of it.
@@ -501,8 +503,11 @@ comparing this plan against the ADR can see they were asked and answered:
    get a new one?~~ — **a new key, `[roles.auth]`** (`D-06C-1.1-11`).
 
 Eight more, found on 2026-08-27 when this plan's claims were checked against
-the tree. They are recorded in [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md) **Amendment 1** as defects in
-the ADR itself. **Questions 8 and 12 are the two that block starting.**
+the tree. All eight are recorded in
+[ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)
+**Amendment 1** as defects in the ADR itself: 8↔A (and E's `SynSvc` bullet),
+9↔B, 10↔C, 11↔E (its first two bullets), 12↔G, 13↔H, 14↔I, 15↔E (its third
+bullet). **Questions 8 and 12 are the two that block starting.**
 
 8. **How is the auth service addressed?** Its own gateway Host is what §2
    needs, but `resolve_target` is the deployed-service path — registry
@@ -644,9 +649,10 @@ clean, and do it *after* the auth service can already mint and verify a token
 1. `crates/client_gateway` holds **no** session store, **no** path
    classification table, and **no** person-delegation minting. `identity_mode`
    decides its one identity behaviour.
-2. `crates/auth` exists as a native `SynSvc` and serves all six endpoints.
-   `POST /login` accepts `delegated-key` and `local`, and rejects any other
-   `method` with 400.
+2. `crates/auth` exists as a node-level native service (native-dispatch /
+   `NativeHttpRegistry`, **not** `SynSvcNativeService`) and serves all six
+   endpoints. `POST /login` accepts `delegated-key` and `local`, and rejects
+   any other `method` with 400.
 3. A `delegated-key` login binds the token to the person's **master** DID; the
    temporary key never appears as a subject.
 4. The session token is verified by **one** implementation of the check, and

@@ -1835,9 +1835,13 @@ with `--mint-masters`; then:
 > key into IndexedDB with `addInitScript`, or `global-setup` runs `roymctl
 > session delegate` and hands the result to the page. No virtual authenticator
 > is needed — that was a WebAuthn requirement, and [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md) §P3 rules
-> WebAuthn out. **Test 2 is also where ADR-0024 §P1 gets its regression
-> cover**: it is the browser reusing a keep-alive connection between a page
-> load and a session `fetch` that made the old login intermittently 405.
+> WebAuthn out. **Test 2 does not cover ADR-0024 §P1** — corrected
+> 2026-08-27, an earlier draft of this note claimed it did. The P1
+> keep-alive regression is [C1.1](slice-c1.1-implementation-plan.md)’s own
+> test (that plan’s §12 item 2), driven against a page the e2e suite
+> already serves, since P1 is a client-gateway bug C1.1 fixes and not
+> something this Hub-specific test should carry. Test 2 keeps only its
+> original restart-state assertion.
 > Tests 3 and 4 (the card gallery and card safety) are unaffected.
 
 Extend `global-setup.ts` to deploy Roym and export `ROYM_HUB_URL`. Four

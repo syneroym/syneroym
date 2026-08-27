@@ -394,12 +394,13 @@ between multiple DIDs on one node is `local` mode's job.
 ## Amendment 1 (2026-08-27) — defects found while planning slice C1.1
 
 A review of the C1.1 planning pass checked this ADR's claims against the tree
-and found five that do not hold as written. **None of them changes the
-decision** — a dumb gateway plus a node auth service is still the design.
-Each is recorded here as an open question, unresolved, because closing them
-is a design act and this ADR is otherwise settled. Slice
+and found nine that do not hold as written, across six lettered items below
+(item E bundles three). **None of them changes the decision** — a dumb
+gateway plus a node auth service is still the design. Each is recorded here
+as an open question, unresolved, because closing them is a design act and
+this ADR is otherwise settled. Slice
 [C1.1](../planning/milestones/M06C-roym-product/slice-c1.1-implementation-plan.md)
-carries all five and must answer them before it writes code.
+carries all of them and must answer them before it writes code.
 
 **A. §1 does not fix P1 in its path-prefix form — and P1 is this ADR's
 motivating problem.** `handle_connection` reads `Host` **once**, from the
@@ -484,3 +485,29 @@ route is reachable by any browser and is protected only by each service
 choosing to check the cookie. That makes open question 2 (the connection auth
 gate) **load-bearing rather than defence in depth**, and it needs a negative
 test either way.
+
+**G. How a WASM guest reaches the "shared verification helper" is
+undecided.** The Consequences table puts it in `crates/rpc` / the service
+host — but `crates/rpc` depends on `tokio` and `syneroym-app-host`, which a
+`wasm32-wasip2` component cannot link. So "one shared helper" needs one of: a
+new WIT host import (a boundary change and a ninth `AppHost` trait, nobody has
+scheduled either); a guest-side crate compiled into every component (two
+implementations of the check, the exact divergence risk sharing one helper
+was meant to prevent); or the router verifying the cookie and populating
+`caller-identity` itself, so no guest verifies anything. Open, and it blocks
+starting alongside A/B.
+
+**H. `http.wit`'s `caller-auth` doc comments describe B1's gateway-minted
+delegation, and nothing here updates them.** After this ADR the host has no
+stated way to say "session token verified": either the router learns to
+verify the token and populate `caller`, or `caller.auth` stays
+`self-asserted` carrying the node's DID and the person lives entirely outside
+`caller`. Same decision as G, seen from the WIT side. Open.
+
+**I. `roymctl session login`/`status`/`token`/`logout` have no successor
+named.** The Consequences table lists `roymctl session delegate` as the one
+new verb, but the four existing verbs all target `--gateway-url` and drive
+endpoints §1 deletes. `token` exists specifically so a caller can use
+`Authorization: Bearer`; whether the shared verification helper accepts that
+form, or the cookie becomes the only carrier and `token` is retired, is
+unstated. Open.
