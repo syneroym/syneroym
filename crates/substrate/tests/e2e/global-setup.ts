@@ -109,7 +109,10 @@ bootstrap_page_bind_address = "0.0.0.0:7662"
 
 [roles.client_gateway]
 http_port = 7660
-person_identities_dir = "${path.join(TEST_DIR, 'identities')}"
+# The node's top-level data dir (the same path roymctl takes as --dir); the
+# gateway itself appends the "identities/" subdirectory that
+# "roymctl identity create" writes keys into.
+person_identities_dir = "${TEST_DIR}"
 
 [parent_coordinator.iroh]
 url = "http://127.0.0.1:7664"
@@ -128,48 +131,56 @@ registry_url = "http://127.0.0.1:7661"
   fs.writeFileSync(configPath, configContent);
 
   console.log('Starting Substrate...');
+  // Send the substrate's stdout/stderr straight to a file, not to a pipe this
+  // process reads. Every later step here shells out with `execSync`, which
+  // freezes node's event loop -- so a captured pipe would stop being drained
+  // mid-step, the substrate would fill its ~8 KiB stdout buffer while logging
+  // (the six-service Roym `app deploy` alone emits far more than that), block
+  // in a synchronous write inside its deploy handler, and never answer the
+  // deploy RPC. A file write never blocks, so the deadlock cannot form.
+  const substrateLogPath = path.join(TEST_DIR, 'substrate.log');
+  const substrateLogFd = fs.openSync(substrateLogPath, 'a');
   const substrateProcess = spawn(SUBSTRATE_BIN, ['run', '--config', configPath], {
     cwd: WORKSPACE_DIR,
-    env: { ...process.env, RUST_LOG: 'info', NO_COLOR: '1' }
+    env: { ...process.env, RUST_LOG: 'info', NO_COLOR: '1' },
+    stdio: ['ignore', substrateLogFd, substrateLogFd]
   });
+  fs.closeSync(substrateLogFd);
   (global as any).__SUBSTRATE_PROCESS__ = substrateProcess;
 
   let substrateDid = '';
-  let substrateOutputBuffer = '';
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Timeout waiting for substrate DID')), 20000);
-
-    substrateProcess.stdout.on('data', (data) => {
-      const output = data.toString();
-      substrateOutputBuffer += output;
-      process.stdout.write('[Substrate] ' + output);
-      const match = substrateOutputBuffer.match(/substrate identity initialized(?:.*?)did:\s*(did:key:[a-z0-9]+)/i);
-      if (match && !substrateDid) {
+    const deadline = Date.now() + 20000;
+    substrateProcess.on('error', reject);
+    const poll = setInterval(() => {
+      const log = fs.existsSync(substrateLogPath) ? fs.readFileSync(substrateLogPath, 'utf8') : '';
+      const match = log.match(/substrate identity initialized(?:.*?)did:\s*(did:key:[a-z0-9]+)/i);
+      if (match) {
         substrateDid = match[1];
-        clearTimeout(timer);
+        clearInterval(poll);
         resolve();
+      } else if (Date.now() > deadline) {
+        clearInterval(poll);
+        reject(new Error(`Timeout waiting for substrate DID (see ${substrateLogPath})`));
       }
-    });
-    substrateProcess.stderr.on('data', (data) => {
-      process.stdout.write('[Substrate ERR] ' + data.toString());
-    });
-    substrateProcess.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
+    }, 200);
   });
 
-  console.log('Substrate DID extracted:', substrateDid);
+  console.log('Substrate DID extracted:', substrateDid, '- substrate logs at', substrateLogPath);
 
   console.log('Starting miniapp-demo1-web...');
+  // Same reason as the substrate above: a captured pipe left undrained during
+  // an `execSync` step would deadlock this long-lived process on a full stdout
+  // buffer. Log to a file instead.
+  const miniappLogPath = path.join(TEST_DIR, 'miniapp.log');
+  const miniappLogFd = fs.openSync(miniappLogPath, 'a');
   const miniappProcess = spawn(MINIAPP_BIN, ['--port', '3000', '--data-dir', path.join(TEST_DIR, 'miniapp-data')], {
     cwd: WORKSPACE_DIR,
-    env: { ...process.env, RUST_LOG: 'info' }
+    env: { ...process.env, RUST_LOG: 'info' },
+    stdio: ['ignore', miniappLogFd, miniappLogFd]
   });
+  fs.closeSync(miniappLogFd);
   (global as any).__MINIAPP_PROCESS__ = miniappProcess;
-  
-  miniappProcess.stdout.on('data', data => process.stdout.write('[Miniapp] ' + data.toString()));
-  miniappProcess.stderr.on('data', data => process.stdout.write('[Miniapp ERR] ' + data.toString()));
 
   console.log('Waiting for components to be ready...');
   await new Promise(r => setTimeout(r, 4000));

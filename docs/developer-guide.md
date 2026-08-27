@@ -1414,13 +1414,14 @@ this guide:
 ```toml
 [roles.client_gateway]
 # Enables the Hub's local login picker (GET /_syneroym/session/identities,
-# POST /_syneroym/session/login-local). Only <dir>/identities/<name>.key
-# files are ever read.
+# POST /_syneroym/session/login-local). Set it to the node's top-level data
+# dir (the same path roymctl takes as --dir); only <dir>/identities/<name>.key
+# files under it are ever read.
 #
 # WARNING: do not point this at a directory a less-trusted local user on
 # this machine can read -- anyone who can read a key file here can log in
 # as that person.
-person_identities_dir = "/path/to/identities"
+person_identities_dir = "/path/to/node-data-dir"
 
 [roles.roym]
 # The packed Hub UI bundle (mise run build:roym-ui produces

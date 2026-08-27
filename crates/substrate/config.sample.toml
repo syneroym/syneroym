@@ -209,7 +209,7 @@ http_port = 7960
 # WARNING: do not point this at a directory a less-trusted local user on
 # this machine can read. Anyone who can read a key file here can log in as
 # that person.
-# person_identities_dir = "/path/to/identities"
+# person_identities_dir = "/path/to/node-data-dir"
 
 # Roym product role: links the Roym SynApp's native build in as six
 # services plus one inbound HTTP surface (requires the `roym` Cargo

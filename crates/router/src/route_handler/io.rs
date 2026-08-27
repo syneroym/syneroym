@@ -45,7 +45,7 @@ use crate::{
     handshake::{HandshakeVerifier, MasterAnchorResolver, VerifiedIdentity},
     net_iroh,
     net_iroh::{IrohStream, connect_with_retry},
-    preamble::RoutePreamble,
+    preamble::{RoutePreamble, RouteTransport},
     route_handler::encryption::{OwnedStream, apply_encryption_stage},
     routing::{RoutePipeline, ServiceStage, TransportStage},
     stop_signal::StopSignal,
@@ -54,6 +54,10 @@ use crate::{
 fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
+
+/// The reserved native-capability interface the M3C HTTP bridge dispatches
+/// through (`NATIVE_CAPABILITY_INTERFACES`, `syneroym_core::local_registry`).
+const HTTP_NATIVE_INTERFACE: &str = "http-native";
 
 /// Faithful generalization of `HandshakeVerifier::verify_preamble`'s
 /// delegation-cert revocation check (`handshake.rs:74-84`) to a UCAN chain:
@@ -360,6 +364,26 @@ impl RouteHandler {
         };
 
         // 2. Registry lookup & normalization
+        //
+        // An HTTP request with no interface hint (ADR-0022 §7's hostname omits
+        // `-i`) must reach the M3C HTTP bridge when the service declares guest
+        // routes or a static asset bundle: the bridge serves those, and serving
+        // an asset dispatches `blob-store/open-download` -- a native-capability
+        // interface, so the connection has to land on the service's
+        // `http-native` `NativeHostChannel`. `resolve_interface`'s empty case
+        // filters every native-capability name out, so left alone it picks the
+        // app-declared WASM channel and the asset dispatch is misrouted into the
+        // component (which imports, but never exports, `blob-store`). Prefer
+        // `http-native` here for exactly the services the bridge is meant for.
+        let service_id = preamble.service_id.as_str();
+        let bridged_over_http = preamble.transport == RouteTransport::Http
+            && preamble.interface.is_empty()
+            && (self.inner.http_routes.contains_key(service_id)
+                || self.inner.assets.contains_key(service_id));
+        if bridged_over_http {
+            preamble.interface = HTTP_NATIVE_INTERFACE.to_string();
+        }
+
         let lookup_result = self.inner.registry.lookup(&preamble.service_id, &preamble.interface);
 
         let (endpoint, canonical_interface) = if let Some(res) = lookup_result {
