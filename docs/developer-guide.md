@@ -90,6 +90,17 @@ These verify code correctness in isolation. Unit tests cover individual helper m
 ### Suite 2: Playwright WebRTC End-to-End Tests
 These verify fully integrated WebRTC signaling and client gateway browser scenarios.
 
+> **Local network requirement.** The `forceTunnel=false` cases in
+> `webrtc.spec.ts` open a real browser↔substrate WebRTC peer connection. That
+> needs working local UDP and a reachable STUN server
+> (`stun.l.google.com:19302`, from the e2e config). On a machine where the OS
+> blocks UDP, has broken link-local IPv6, or cannot reach that STUN server, the
+> ICE connection stalls mid-request and the `POST /api/comments` and
+> `WebSocket Echo` cases time out. The `forceTunnel=true` cases and the CI run
+> (`ci-e2e`, Linux) do not depend on this and are the source of truth for
+> whether the suite is green. If only those two WebRTC cases fail locally,
+> check your UDP/STUN path before assuming a code regression.
+
 * **Run via Mise (Recommended):**
   ```bash
   mise run test:e2e
