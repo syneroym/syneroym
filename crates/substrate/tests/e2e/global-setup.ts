@@ -1,8 +1,53 @@
 import { execSync, spawn } from 'child_process';
 import * as fs from 'fs';
+import * as net from 'net';
 import * as path from 'path';
 
 const TEST_DIR = path.join(process.cwd(), '.e2e-data');
+
+// Ports the harness binds. If a previous run was killed before global-teardown
+// ran (so its substrate / miniapp were never reaped), one of these is still
+// held -- the miniapp then panics on its second `bind`, the tests run against
+// the zombie whose SQLite file this setup just deleted, and only the
+// DB-touching cases (POST, WS broadcast) fail, which looks like a WebRTC bug.
+// Fail loudly here instead.
+const REQUIRED_PORTS = [3000, 3001, 7660, 7661, 7662, 7663, 7664, 7665];
+
+function portInUse(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once('error', (e: NodeJS.ErrnoException) => resolve(e.code === 'EADDRINUSE'));
+    srv.once('listening', () => srv.close(() => resolve(false)));
+    srv.listen(port, '0.0.0.0');
+  });
+}
+
+async function preflightPorts(): Promise<void> {
+  const busy: number[] = [];
+  for (const p of REQUIRED_PORTS) {
+    if (await portInUse(p)) busy.push(p);
+  }
+  if (busy.length > 0) {
+    throw new Error(
+      `E2E ports already in use: ${busy.join(', ')}. A previous run likely ` +
+      `left an orphaned substrate/miniapp. Kill it (e.g. ` +
+      `\`lsof -ti tcp:${busy[0]} | xargs kill -9\`) and re-run.`);
+  }
+}
+
+async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const res = await fetch(url);
+      if (res.ok || res.status === 404) return;
+    } catch {
+      // not up yet
+    }
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${url}`);
+    await new Promise(r => setTimeout(r, 200));
+  }
+}
 
 export default async function globalSetup() {
   console.log('\n--- E2E Global Setup ---');
@@ -12,6 +57,8 @@ export default async function globalSetup() {
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
   }
   fs.mkdirSync(TEST_DIR, { recursive: true });
+
+  await preflightPorts();
 
   const WORKSPACE_DIR = path.resolve(process.cwd(), '../../../../');
   const isRelease = process.env.CARGO_RELEASE_FLAG === '--release';
@@ -163,9 +210,20 @@ registry_url = "http://127.0.0.1:7661"
   });
   fs.closeSync(miniappLogFd);
   (global as any).__MINIAPP_PROCESS__ = miniappProcess;
+  miniappProcess.on('exit', (code) => {
+    if (code !== 0 && code !== null) {
+      console.error(`miniapp-demo1-web exited early with code ${code}; see ${miniappLogPath}`);
+    }
+  });
 
   console.log('Waiting for components to be ready...');
-  await new Promise(r => setTimeout(r, 4000));
+  // Poll the ports the next steps use rather than sleeping blindly: if the
+  // miniapp failed to start (e.g. a port collision) or the substrate never
+  // finished wiring its registry, this surfaces it here instead of 18 tests
+  // later.
+  await waitForHttp('http://127.0.0.1:3000/', 20000);        // miniapp
+  await waitForHttp('http://127.0.0.1:7661/', 20000);        // community registry
+  await new Promise(r => setTimeout(r, 1000));
 
   // Fixed 32-byte Key Encryption Key (KEK). Required for WASM services because
   // static asset unpacking, the data-layer store, and the blob store wrap their

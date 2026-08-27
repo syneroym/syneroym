@@ -90,16 +90,17 @@ These verify code correctness in isolation. Unit tests cover individual helper m
 ### Suite 2: Playwright WebRTC End-to-End Tests
 These verify fully integrated WebRTC signaling and client gateway browser scenarios.
 
-> **Local network requirement.** The `forceTunnel=false` cases in
-> `webrtc.spec.ts` open a real browser↔substrate WebRTC peer connection. That
-> needs working local UDP and a reachable STUN server
-> (`stun.l.google.com:19302`, from the e2e config). On a machine where the OS
-> blocks UDP, has broken link-local IPv6, or cannot reach that STUN server, the
-> ICE connection stalls mid-request and the `POST /api/comments` and
-> `WebSocket Echo` cases time out. The `forceTunnel=true` cases and the CI run
-> (`ci-e2e`, Linux) do not depend on this and are the source of truth for
-> whether the suite is green. If only those two WebRTC cases fail locally,
-> check your UDP/STUN path before assuming a code regression.
+> **Orphaned processes from an interrupted run.** `global-setup` starts a
+> substrate and a `miniapp-demo1-web` on fixed ports (3000/3001, 7660-7665)
+> and `global-teardown` kills them. If a run is force-killed before teardown
+> (Ctrl-C on a wrapper, a killed CI step), those processes are orphaned and
+> keep holding the ports. The next run's miniapp then panics on its second
+> `bind`, and the tests run against the zombie whose SQLite file the new
+> setup already deleted -- static `GET`s still work, but `POST /api/comments`
+> and the WebSocket broadcast that depends on it fail, which looks like a
+> WebRTC bug. `global-setup` now fails fast with the offending port if this
+> happens; clear it with `lsof -ti tcp:3000 | xargs kill -9` (repeat for the
+> other ports) and re-run.
 
 * **Run via Mise (Recommended):**
   ```bash
