@@ -1,6 +1,7 @@
 # D-04-01: UCAN Capability & Verification Model
 
-**Status**: Accepted (amended 2026-07-16 — see "Amendments" below)
+**Status**: Accepted (amended 2026-07-16 and 2026-08-27 — see "Amendments"
+below)
 
 **Context**:
 
@@ -323,3 +324,22 @@ revocable.
   marketplace is "eventually"), effort is structural, and the risk is
   philosophical — service owners would stop being independent roots and become
   the node's delegates. Interim: B7's binary deploy grant is a coarse ceiling.
+
+### A9. The browser session token is a UCAN issued by the node auth service
+
+**Added 2026-08-27,
+[ADR-0024](0024-client-gateway-identity-and-auth-service.md) §3.** The
+`syneroym_session` cookie a browser presents to the client gateway carries a
+short-lived UCAN **issued and signed by the node's auth service**, with the
+person's **master DID** as its subject and a `fct` block of account attributes
+the auth service vouches for. It is verified against the *auth service's*
+public key — never the person's — by each service that needs the caller
+identity, which is a different verification root from the delegation chains
+this ADR's §2 describes. Nothing about the ability vocabulary, attenuation
+rules, caveats, or revocation changes; this is one more issuer whose tokens
+enter the system, named here so the session token is not mistaken for an
+ordinary user-rooted chain. See
+[ADR-0016's 2026-08-27 amendment](0016-native-dispatch-identity-threading.md)
+for how it reaches a service, and M06C slice
+[C1.1](../planning/milestones/M06C-roym-product/slice-c1.1-implementation-plan.md)
+for the landing slice.

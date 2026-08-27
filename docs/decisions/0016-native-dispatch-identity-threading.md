@@ -1,6 +1,7 @@
 # D-04-05: Native-Dispatch Identity Threading
 
-**Status**: Accepted
+**Status**: Accepted (amended 2026-08-27 — see the dated amendment note at
+the end of **Decision**)
 
 **Context**:
 
@@ -98,6 +99,41 @@ capabilities this ADR carries.
    verifies those tokens locally and constructs a **fresh** `CallerContext`
    before dispatch. Capabilities are never trusted across the wire; only signed
    proofs are, and enforcement always happens at the node that owns the resource.
+
+**Amendment (2026-08-27, [ADR-0024](0024-client-gateway-identity-and-auth-service.md)).**
+For **gateway-origin traffic only**, the caller identity no longer arrives as
+a delegation certificate in the route preamble. ADR-0024 makes the client
+gateway a dumb proxy and moves person identity to a node **auth service**: the
+caller presents a short-lived UCAN session token in the `syneroym_session`
+cookie, signed by the auth service's key, and each service verifies that token
+itself (signature, `exp`, subject) rather than reading a preamble delegation
+the gateway minted.
+
+Concretely, for that path:
+
+- `AuthLevel::Delegated` as *"the client gateway vouched for this person"* is
+  replaced by *"a valid session token is present, subject = the person's
+  **master DID**"*. The `CallerContext` a gateway-origin request resolves to is
+  built from the verified token, not from `verify_preamble`'s delegation.
+- The token's `fct` claims (ADR-0024 §3) are the account attributes the auth
+  service vouches for. A service trusts them exactly as far as it trusts the
+  auth service's key — the same trust relationship §1's delegation cert had,
+  moved from the transport preamble to an application-layer cookie.
+- A shared "verify session token" helper serves both native and WASM services,
+  so the check is one implementation rather than per-service.
+
+**Everything else in this ADR is unchanged.** Direct peer connections,
+`roymctl`, and cross-node proxied calls still establish identity through the
+handshake and the preamble; §3's *"`verify_preamble` is mandatory"* rule,
+§4's `creator_id`, §5's Admin-capability gate, and §6's send-the-proof /
+re-verify-at-the-destination rule all stand as written. The transport-level
+identity the gateway itself puts on the preamble becomes a function of the
+gateway's configured `identity_mode` (ADR-0024 §1): the gateway's own node key
+in `login` mode, a configured person delegation in `fixed` mode, nothing in
+`open` mode.
+
+Landing slice: **M06C C1.1** —
+[slice-c1.1-implementation-plan.md](../planning/milestones/M06C-roym-product/slice-c1.1-implementation-plan.md).
 
 **Consequences**:
 
