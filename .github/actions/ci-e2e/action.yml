@@ -44,3 +44,12 @@ runs:
         name: playwright-report
         path: crates/substrate/tests/e2e/playwright-report/
         retention-days: 14
+
+    - name: Upload Substrate & Miniapp Logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: e2e-server-logs
+        path: crates/substrate/tests/e2e/e2e-logs/
+        retention-days: 14
+        if-no-files-found: ignore

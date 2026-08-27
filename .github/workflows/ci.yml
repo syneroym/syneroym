@@ -87,8 +87,10 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           release_flag: ${{ github.event.inputs.build_mode == 'release' && '--release' || '' }}
 
+      # Enforced on every push/PR to main so the suite cannot silently rot
+      # again. On workflow_dispatch it stays opt-in via the `e2e` input.
       - name: Run Playwright E2E
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.e2e == true }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.e2e == true }}
         uses: ./.github/actions/ci-e2e
         with:
           release_flag: ${{ github.event.inputs.build_mode == 'release' && '--release' || '' }}

@@ -90,6 +90,12 @@ These verify code correctness in isolation. Unit tests cover individual helper m
 ### Suite 2: Playwright WebRTC End-to-End Tests
 These verify fully integrated WebRTC signaling and client gateway browser scenarios.
 
+> **"E2E ports already in use".** If a run is force-killed before
+> `global-teardown`, its substrate and `miniapp-demo1-web` stay bound to the
+> fixed ports. `global-setup` pre-flights those ports and fails naming the
+> one that is held -- clear it with `lsof -ti tcp:<port> | xargs kill -9` and
+> re-run.
+
 * **Run via Mise (Recommended):**
   ```bash
   mise run test:e2e

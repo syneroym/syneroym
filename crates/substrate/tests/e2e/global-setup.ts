@@ -1,8 +1,53 @@
 import { execSync, spawn } from 'child_process';
 import * as fs from 'fs';
+import * as net from 'net';
 import * as path from 'path';
 
 const TEST_DIR = path.join(process.cwd(), '.e2e-data');
+
+// Ports the harness binds. If a previous run was killed before global-teardown
+// ran (so its substrate / miniapp were never reaped), one of these is still
+// held -- the miniapp then panics on its second `bind`, the tests run against
+// the zombie whose SQLite file this setup just deleted, and only the
+// DB-touching cases (POST, WS broadcast) fail, which looks like a WebRTC bug.
+// Fail loudly here instead.
+const REQUIRED_PORTS = [3000, 3001, 7660, 7661, 7662, 7663, 7664, 7665];
+
+function portInUse(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once('error', (e: NodeJS.ErrnoException) => resolve(e.code === 'EADDRINUSE'));
+    srv.once('listening', () => srv.close(() => resolve(false)));
+    srv.listen(port, '0.0.0.0');
+  });
+}
+
+async function preflightPorts(): Promise<void> {
+  const busy: number[] = [];
+  for (const p of REQUIRED_PORTS) {
+    if (await portInUse(p)) busy.push(p);
+  }
+  if (busy.length > 0) {
+    throw new Error(
+      `E2E ports already in use: ${busy.join(', ')}. A previous run likely ` +
+      `left an orphaned substrate/miniapp. Kill it (e.g. ` +
+      `\`lsof -ti tcp:${busy[0]} | xargs kill -9\`) and re-run.`);
+  }
+}
+
+async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const res = await fetch(url);
+      if (res.ok || res.status === 404) return;
+    } catch {
+      // not up yet
+    }
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${url}`);
+    await new Promise(r => setTimeout(r, 200));
+  }
+}
 
 export default async function globalSetup() {
   console.log('\n--- E2E Global Setup ---');
@@ -12,6 +57,8 @@ export default async function globalSetup() {
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
   }
   fs.mkdirSync(TEST_DIR, { recursive: true });
+
+  await preflightPorts();
 
   const WORKSPACE_DIR = path.resolve(process.cwd(), '../../../../');
   const isRelease = process.env.CARGO_RELEASE_FLAG === '--release';
@@ -113,51 +160,70 @@ registry_url = "http://127.0.0.1:7661"
   fs.writeFileSync(configPath, configContent);
 
   console.log('Starting Substrate...');
+  // Send the substrate's stdout/stderr straight to a file, not to a pipe this
+  // process reads. Every later step here shells out with `execSync`, which
+  // freezes node's event loop -- so a captured pipe would stop being drained
+  // mid-step, the substrate would fill its ~8 KiB stdout socket buffer while
+  // logging, block in a synchronous write inside its deploy RPC handler, and
+  // never answer the deploy. A file write never blocks, so the deadlock cannot
+  // form.
+  const substrateLogPath = path.join(TEST_DIR, 'substrate.log');
+  const substrateLogFd = fs.openSync(substrateLogPath, 'a');
   const substrateProcess = spawn(SUBSTRATE_BIN, ['run', '--config', configPath], {
     cwd: WORKSPACE_DIR,
-    env: { ...process.env, RUST_LOG: 'info', NO_COLOR: '1' }
+    env: { ...process.env, RUST_LOG: 'info', NO_COLOR: '1' },
+    stdio: ['ignore', substrateLogFd, substrateLogFd]
   });
+  fs.closeSync(substrateLogFd);
   (global as any).__SUBSTRATE_PROCESS__ = substrateProcess;
 
   let substrateDid = '';
-  let substrateOutputBuffer = '';
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Timeout waiting for substrate DID')), 20000);
-
-    substrateProcess.stdout.on('data', (data) => {
-      const output = data.toString();
-      substrateOutputBuffer += output;
-      process.stdout.write('[Substrate] ' + output);
-      const match = substrateOutputBuffer.match(/substrate identity initialized(?:.*?)did:\s*(did:key:[a-z0-9]+)/i);
-      if (match && !substrateDid) {
+    const deadline = Date.now() + 20000;
+    substrateProcess.on('error', reject);
+    const poll = setInterval(() => {
+      const log = fs.existsSync(substrateLogPath) ? fs.readFileSync(substrateLogPath, 'utf8') : '';
+      const match = log.match(/substrate identity initialized(?:.*?)did:\s*(did:key:[a-z0-9]+)/i);
+      if (match) {
         substrateDid = match[1];
-        clearTimeout(timer);
+        clearInterval(poll);
         resolve();
+      } else if (Date.now() > deadline) {
+        clearInterval(poll);
+        reject(new Error(`Timeout waiting for substrate DID (see ${substrateLogPath})`));
       }
-    });
-    substrateProcess.stderr.on('data', (data) => {
-      process.stdout.write('[Substrate ERR] ' + data.toString());
-    });
-    substrateProcess.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
+    }, 200);
   });
 
-  console.log('Substrate DID extracted:', substrateDid);
+  console.log('Substrate DID extracted:', substrateDid, '- substrate logs at', substrateLogPath);
 
   console.log('Starting miniapp-demo1-web...');
+  // Same reason as the substrate above: a captured pipe left undrained during
+  // an `execSync` step would deadlock this long-lived process on a full stdout
+  // buffer. Log to a file instead.
+  const miniappLogPath = path.join(TEST_DIR, 'miniapp.log');
+  const miniappLogFd = fs.openSync(miniappLogPath, 'a');
   const miniappProcess = spawn(MINIAPP_BIN, ['--port', '3000', '--data-dir', path.join(TEST_DIR, 'miniapp-data')], {
     cwd: WORKSPACE_DIR,
-    env: { ...process.env, RUST_LOG: 'info' }
+    env: { ...process.env, RUST_LOG: 'info' },
+    stdio: ['ignore', miniappLogFd, miniappLogFd]
   });
+  fs.closeSync(miniappLogFd);
   (global as any).__MINIAPP_PROCESS__ = miniappProcess;
-  
-  miniappProcess.stdout.on('data', data => process.stdout.write('[Miniapp] ' + data.toString()));
-  miniappProcess.stderr.on('data', data => process.stdout.write('[Miniapp ERR] ' + data.toString()));
+  miniappProcess.on('exit', (code) => {
+    if (code !== 0 && code !== null) {
+      console.error(`miniapp-demo1-web exited early with code ${code}; see ${miniappLogPath}`);
+    }
+  });
 
   console.log('Waiting for components to be ready...');
-  await new Promise(r => setTimeout(r, 4000));
+  // Poll the ports the next steps use rather than sleeping blindly: if the
+  // miniapp failed to start (e.g. a port collision) or the substrate never
+  // finished wiring its registry, this surfaces it here instead of 18 tests
+  // later.
+  await waitForHttp('http://127.0.0.1:3000/', 20000);        // miniapp
+  await waitForHttp('http://127.0.0.1:7661/', 20000);        // community registry
+  await new Promise(r => setTimeout(r, 1000));
 
   // Fixed 32-byte Key Encryption Key (KEK). Required for WASM services because
   // static asset unpacking, the data-layer store, and the blob store wrap their
