@@ -80,18 +80,12 @@ least these before writing code:
 5. **Whether the master-anchor / `revoked_keys` check the handshake performs
    is reachable from a native service**, since §3's `delegated-key`
    verification needs exactly that check (ADR §4a step 4).
-6. **What to do with `AuthNormalizer`.** `crates/ucan/src/normalize.rs`
-   already defines a one-method trait — *normalize an external authentication
-   assertion into an internal `did:key`* — with one identity implementation
-   (`DidKeyNormalizer`) and, by M04A B1's own flag F4, **no wired consumer**.
-   It was built as "a place to hang OIDC/WebAuthn in M6". ADR-0024 does not
-   mention it, and its instruction not to build a plugin interface for a
-   single method (§4, YAGNI) reads oddly against a seam that already exists.
-   Three honest options: wire the auth service's methods behind it; leave it
-   untouched and unwired; or delete it as a seam the design no longer wants.
-   **Do not decide this silently** — whichever way it goes, record it here as
-   a decision, because it is the closest thing the tree has to the
-   provider-wrapper abstraction §10 says is out of scope.
+6. **How much `AuthNormalizer`'s removal touches.** The decision itself is
+   made (`D-06C-1.1-9`: delete it), and the tree read only has to confirm the
+   blast radius. On 2026-08-27 it was two files —
+   `crates/ucan/src/normalize.rs` (50 lines) and one re-export line in
+   `crates/ucan/src/lib.rs` — plus that file's own unit tests, with **no other
+   consumer anywhere in `crates/` or `apps/`**. Re-check before deleting.
 
 Findings from that read belong in this file, as a `§1` written over this one.
 
@@ -141,7 +135,7 @@ registry, using the machinery C1 and earlier slices already built.
 
 | Endpoint | What it does |
 |---|---|
-| `GET /_syneroym/session/challenge` | Returns a nonce for the `delegated-key` flow (ADR §4a step 3) |
+| `GET /_syneroym/session/challenge` | Returns a nonce for the `delegated-key` flow (ADR §4a step 3). A separate `GET`, not folded into `login` — `D-06C-1.1-10` |
 | `POST /_syneroym/session/login` | One endpoint, `method` as a parameter. Dispatches on `method`; **rejects an unknown `method` with 400** (ADR §4, seam 1). Always answers the same way: `Set-Cookie: syneroym_session=<token>` + 200, or 401/403 |
 | `GET /_syneroym/session/methods` | The enabled login methods, so a client renders the right screen without knowing the node's config (ADR §4, seam 2) |
 | `GET /_syneroym/session/whoami` | The person's master DID and the token's `fct` claims |
@@ -158,8 +152,9 @@ checks the delegation's TTL and scope. On success it mints a token bound to
 the **master DID** — the temporary key never appears as the token's subject.
 
 **`local`** (ADR §4b) — the same-machine method. `{method: "local", identity:
-"alice"}` loads that person's key from a configured key directory and trusts
-that whoever reached this endpoint on this machine is authorized. This is
+"alice"}` loads that person's key from a key directory configured under the
+auth service's own config (`D-06C-1.1-11`), and trusts that whoever reached
+this endpoint on this machine is authorized. This is
 B1-era `login-local` + `person_identities_dir`, demoted from "the C2 login
 flow" to one explicit method among several. **It exists only when
 configured** (`D-06C-1.1-6`): with no key directory configured, `/methods`
@@ -278,6 +273,9 @@ It is genuinely single-identity. Switching between several DIDs on one node is
 | **D-06C-1.1-6** | `local` is enabled **only when a key directory is configured**. Absent that config, `/methods` does not list it and `/login` refuses it. | ADR-0024 §4b. A method that trusts "whoever reached this endpoint on this machine" must be opted into, never a default. |
 | **D-06C-1.1-7** | C1.1 writes **no browser code**. The temporary key's IndexedDB / non-extractable `CryptoKey` handling is C2's. C1.1 owes only the wire contract and `session-key.json`'s shape. | ADR-0024's breakdown puts the Hub login screen in item (2). A login page written before the endpoint it calls exists gets written twice. |
 | **D-06C-1.1-8** | Sessions do **not** survive a substrate restart. | ADR-0024 §2 keeps B1's deliberate choice for R1, and the Hub already treats "log in again" as an ordinary state. Durability is a separate decision with its own backlog row and its own consumer. |
+| **D-06C-1.1-9** | **`AuthNormalizer` and `DidKeyNormalizer` are deleted** (`crates/ucan/src/normalize.rs`, plus the re-export in `crates/ucan/src/lib.rs`), and [ADR-0015 §5](../../../decisions/0015-ucan-capability-model.md)'s external-auth normalizer seam is retired with them (see that ADR's `A9`). C1.1 puts nothing in their place. | The seam is shaped *external assertion → internal DID*, and [ADR-0024 §4c](../../../decisions/0024-client-gateway-identity-and-auth-service.md) rules that shape out: a provider proves an email or external account, **never** a DID — the DID comes from a separate delegated-key proof, and the two must be bound in one ceremony. So a future provider interface returns verified `fct` entries, not a DID. Keeping an unused trait that encodes the rejected shape is worse than keeping nothing: it is the first thing the external-provider slice will find, and it points straight at the unsound design §4c exists to warn about. It has no consumer in `crates/` or `apps/` (§1 item 6), so deleting it costs nothing. |
+| **D-06C-1.1-10** | **`challenge` stays a separate `GET /_syneroym/session/challenge`.** It is *not* folded into a two-legged `login` POST, which ADR-0024 §4a step 3 also permits. | Three reasons. The endpoint already exists and `roymctl session login` already drives it, so C1.1 keeps a working CLI path instead of rewriting one. A single-shot `/login` keeps seam 1 (§10) clean: a two-legged login would force every method added later to decide whether it is two-legged too. And the nonce state it needs is already covered by an existing backlog row, not new debt. **If that state proves awkward, the fallback is a signed stateless nonce** — but do not start there, and do not change the shape without updating C2's contract in the same pass. |
+| **D-06C-1.1-11** | **The `local` method's key directory is a new key on the auth service's own config** (`[roles.auth_service]`), not `roles.client_gateway.person_identities_dir`. | The gateway is losing every identity job it had; a path to person keys on a component that reads no keys is exactly the confusion ADR-0024 §P2 removes. Nearly free, too: `person_identities_dir` was only ever planned on the held `feat/m06c-slice-c2` branch and **is not on `main`**, so there is nothing to remove — only a key not to add. |
 
 ---
 
@@ -363,16 +361,15 @@ changes the decision.
 5. **Multi-tab / multi-DID in one browser.** One session cookie per origin, so
    switching identity is logout + login. Acceptable for R1?
 
-Two further questions this plan raises, both of ADR-0024's own making:
+Two further questions this plan raised, both of ADR-0024's own making, were
+**closed on 2026-08-27** rather than carried. They are recorded as
+`D-06C-1.1-10` and `D-06C-1.1-11` in §8, and are listed here only so a reader
+comparing this plan against the ADR can see they were asked and answered:
 
-6. **Is `challenge` a separate `GET`, or folded into a two-legged `login`
-   POST?** ADR §4a step 3 explicitly permits either and picks neither. §3.1
-   assumes the separate `GET`; if the implementing session folds it, update
-   §3.1 and C2's contract together.
-7. **Does the `local` method reuse B1's `person_identities_dir` config key, or
-   get a new one under the auth service's own config?** The ADR says "a
-   configured key directory it can access" and names neither. The gateway is
-   losing the key, so the auth service is the natural owner.
+6. ~~Is `challenge` a separate `GET`, or folded into a two-legged `login`
+   POST?~~ — **separate `GET`** (`D-06C-1.1-10`).
+7. ~~Does the `local` method reuse B1's `person_identities_dir` config key, or
+   get a new one?~~ — **a new key on the auth service** (`D-06C-1.1-11`).
 
 ---
 
@@ -417,6 +414,7 @@ reads in §1.
 |---|---|
 | [status.md](status.md) | A C1.1 section: what shipped, the answers to §11's open questions, §9's permitted differences as accepted, and the verification evidence in §15 |
 | [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md) | Status `Proposed` → `Accepted` when C1.1 lands, with a dated implementation amendment recording anything that shipped differently |
+| [ADR-0015](../../../decisions/0015-ucan-capability-model.md) | **Already amended (2026-08-27, `A9`)**: §5's external-auth normalizer seam is retired ahead of the deletion in `D-06C-1.1-9`. No further edit owed unless the deletion turns out not to be safe |
 | [developer-guide.md](../../../developer-guide.md) | **Owed, and not done before C1.1 lands.** Its "Reserved Endpoints (`/_syneroym/session/*`)" section documents the gateway-owned B1 endpoints, which is accurate for the code on `main` today and wrong the moment this slice merges. Rewrite it for the auth service, add `identity_mode` and the `fixed` keys, and document `roymctl session delegate` |
 | [slice-c2-implementation-plan.md](slice-c2-implementation-plan.md) | §10 is rewritten against this model when C2 rebases onto C1.1 (its `D-C2-6` `login-local` / `person_identities` design and its `10.0` WebAuthn forward-compatibility argument are both superseded by ADR-0024 §4/§P3) |
 | [deferred-backlog.md](../../deferred-backlog.md) §7 | The browser-login row moves to "Recently resolved" against C1.1. The B1 rows that name `SessionStore` are re-grounded or closed by the deletion in §2 |
@@ -439,6 +437,7 @@ Each step compiles and its tests pass before the next begins.
 | 6 | `local`, `/whoami`, `/logout`, `/refresh` | same |
 | 7 | Gateway: `identity_mode`, delete `SessionStore` / `session::classify`, the one auth-routing rule (§2) | `cargo test -p syneroym-client-gateway`, `cargo test -p syneroym-substrate` |
 | 8 | The ADR-0016 gateway-path rework (§6) | The direct-peer / `roymctl` / native-dispatch identity tests still pass untouched |
+| 8a | Delete `AuthNormalizer` / `DidKeyNormalizer` and their tests (`D-06C-1.1-9`) | `cargo build --workspace` — the deletion is only safe if nothing fails to compile |
 | 9 | `fixed` mode (§7) | Its own test configuration |
 | 10 | The P1 browser regression test (§12 item 2) | `mise run test:e2e` |
 | 11 | Docs and backlog (§13) | — |
@@ -471,7 +470,8 @@ clean, and do it *after* the auth service can already mint and verify a token
    unchanged, proven by its existing tests passing untouched.
 8. The three seams in §10 hold, proven by §12 item 5. Nothing from §10's
    "out of C1.1" list exists in the tree — no provider trait, no mapping
-   table, no OIDC config key.
+   table, no OIDC config key. `AuthNormalizer` and `DidKeyNormalizer` are
+   gone (`D-06C-1.1-9`), checked by grep.
 9. Every open question in §11 has a recorded answer, in this file or in
    [status.md](status.md).
 10. No planning identifier (`C1.1`, `D-06C-1.1-4`, …) appears in any name,
