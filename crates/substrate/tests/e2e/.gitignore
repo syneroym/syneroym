@@ -8,6 +8,9 @@ test-results/
 # Dynamic E2E test data
 .e2e-data*/
 
+# Substrate/miniapp logs kept by global-teardown after the data dir is wiped
+e2e-logs/
+
 # Temporary files created during binary file tests
 tests/test-file-*.txt
 tests/downloaded-test-file-*.txt

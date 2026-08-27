@@ -19,6 +19,18 @@ export default async function globalTeardown() {
     miniappProcess.kill('SIGKILL');
   }
 
+  // Keep the substrate/miniapp logs (global-setup writes them here) after the
+  // data dir is wiped -- they are the only record of a server-side failure
+  // during a test, and CI uploads them as an artifact.
+  const LOG_DIR = path.join(process.cwd(), 'e2e-logs');
+  if (fs.existsSync(TEST_DIR)) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    for (const name of ['substrate.log', 'miniapp.log']) {
+      const src = path.join(TEST_DIR, name);
+      if (fs.existsSync(src)) fs.copyFileSync(src, path.join(LOG_DIR, name));
+    }
+  }
+
   console.log('Cleaning up test data directory...');
   if (fs.existsSync(TEST_DIR)) {
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
