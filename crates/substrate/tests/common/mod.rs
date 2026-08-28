@@ -187,6 +187,7 @@ impl SubstrateTestContext {
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
         config.roles.client_gateway =
             Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
+        config.roles.auth = Some(syneroym_core::config::AuthRole::default());
 
         configure(&mut config);
 

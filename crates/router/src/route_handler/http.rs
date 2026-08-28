@@ -514,6 +514,29 @@ fn guest_caller_identity(
     }))
 }
 
+fn extract_session_token_from_hyper_headers(headers: &hyper::HeaderMap) -> Option<String> {
+    if let Some(cookie) = headers.get(hyper::header::COOKIE).and_then(|v| v.to_str().ok()) {
+        for pair in cookie.split(';') {
+            let mut parts = pair.splitn(2, '=');
+            if let (Some(k), Some(v)) = (parts.next(), parts.next())
+                && k.trim() == syneroym_core::protocol_utils::SESSION_COOKIE_NAME
+            {
+                return Some(v.trim().to_string());
+            }
+        }
+    }
+    if let Some(auth) = headers.get(hyper::header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
+        let trimmed = auth.trim();
+        if let Some(token) = trimmed.strip_prefix("Bearer ") {
+            return Some(token.trim().to_string());
+        }
+        if let Some(token) = trimmed.strip_prefix("bearer ") {
+            return Some(token.trim().to_string());
+        }
+    }
+    None
+}
+
 /// Turns a guest's answer into an HTTP response, or into the 500 failure-
 /// matrix row 6 requires (M06A D-A2-5). `Content-Length` is always the
 /// host's computed one, never the guest's -- a mismatch would be a
@@ -1523,19 +1546,14 @@ impl HttpHandler {
             ));
         }
 
-        // D-A2-7, BEFORE any engine work: an anonymous caller on a
-        // non-public route never instantiates anything. Same code and
-        // status shape `dispatch_native` uses, so one 401 taxonomy covers
-        // the whole bridge.
-        if self.caller.is_none() && !route.public {
-            return Ok(structured_rpc_error(
-                StatusCode::UNAUTHORIZED,
-                UNAUTHENTICATED_RPC_CODE,
-                format!("unauthenticated caller for guest route {} {}", route.method, route.path),
-            ));
-        }
+        let (parts, body) = req.into_parts();
+        let headers = match guest_request_headers(&parts.headers) {
+            Ok(headers) => headers,
+            Err((status, message)) => return Ok(http_error(status, message)),
+        };
 
-        let caller_identity = match guest_caller_identity(self.caller.as_ref(), &self.preamble) {
+        let mut caller_identity = match guest_caller_identity(self.caller.as_ref(), &self.preamble)
+        {
             Ok(identity) => identity,
             Err(reason) => {
                 return Ok(http_error(
@@ -1544,6 +1562,32 @@ impl HttpHandler {
                 ));
             }
         };
+
+        if let Some(token_str) = extract_session_token_from_hyper_headers(&parts.headers)
+            && let Ok(claims) = syneroym_auth::SessionToken::verify_any_issuer(&token_str)
+        {
+            let is_trusted_auth =
+                self.route_handler.inner.native_http.contains_key(&claims.issuer_did);
+            if is_trusted_auth {
+                caller_identity = Some(CallerIdentity {
+                    did: claims.person_did,
+                    auth: CallerAuth::Delegated,
+                    app_instance: None,
+                });
+            }
+        }
+
+        // D-A2-7, BEFORE any engine work: an unauthenticated caller on a
+        // non-public route never instantiates anything. Same code and
+        // status shape `dispatch_native` uses, so one 401 taxonomy covers
+        // the whole bridge.
+        if caller_identity.is_none() && !route.public {
+            return Ok(structured_rpc_error(
+                StatusCode::UNAUTHORIZED,
+                UNAUTHENTICATED_RPC_CODE,
+                format!("unauthenticated caller for guest route {} {}", route.method, route.path),
+            ));
+        }
 
         let native = self
             .route_handler
@@ -1578,11 +1622,6 @@ impl HttpHandler {
             Some(engine)
         };
 
-        let (parts, body) = req.into_parts();
-        let headers = match guest_request_headers(&parts.headers) {
-            Ok(headers) => headers,
-            Err((status, message)) => return Ok(http_error(status, message)),
-        };
         // Every rejection above happens before any engine call, so each
         // costs zero instantiations.
         let limited = Limited::new(body, MAX_GUEST_REQUEST_BODY_BYTES);

@@ -22,6 +22,7 @@ syneroym-data-blob.workspace = true
 syneroym-mqtt-broker.workspace = true
 syneroym-async-queue.workspace = true
 syneroym-app-orchestration.workspace = true
+syneroym-auth.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 

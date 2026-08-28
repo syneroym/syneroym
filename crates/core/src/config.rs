@@ -122,6 +122,26 @@ impl SubstrateConfig {
             }
         }
 
+        if let Some(auth) = &mut self.roles.auth {
+            if let Some(key_path) = &auth.key_path
+                && key_path.is_relative()
+            {
+                auth.key_path = Some(self.app_data_dir.join(key_path));
+            }
+            if let Some(dir) = &auth.person_identities_dir
+                && dir.is_relative()
+            {
+                auth.person_identities_dir = Some(self.app_data_dir.join(dir));
+            }
+        }
+
+        if let Some(gateway) = &mut self.roles.client_gateway
+            && let Some(fixed_del) = &gateway.fixed_delegation
+            && fixed_del.is_relative()
+        {
+            gateway.fixed_delegation = Some(self.app_data_dir.join(fixed_del));
+        }
+
         if let Some(tls) = &mut self.tls {
             if tls.cert_path.is_relative() {
                 tls.cert_path = self.app_config_dir.join(&tls.cert_path);
@@ -383,6 +403,7 @@ pub struct RolesConfig {
     pub community_registry: Option<ServiceRegistryRole>,
     pub coordinator: Option<CoordinatorRole>,
     pub client_gateway: Option<ClientGatewayRole>,
+    pub auth: Option<AuthRole>,
     pub observability: Option<ObservabilityRole>,
     /// The App Supervisor (ADR-0021 §8). Absent = this node runs no
     /// supervisor, which is every deployment through A4.
@@ -1129,6 +1150,19 @@ pub const fn default_session_ttl_secs() -> u64 {
     8 * 3600
 }
 
+fn default_auth_nonce_ttl_secs() -> u64 {
+    60
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IdentityMode {
+    #[default]
+    Open,
+    Login,
+    Fixed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClientGatewayRole {
@@ -1142,12 +1176,20 @@ pub struct ClientGatewayRole {
     /// unaffected either way.
     #[serde(default)]
     pub resolve_ucan: Option<PathBuf>,
-    /// Ceiling on how long a local person session stays valid. The
-    /// effective expiry is the earlier of this and the presented
-    /// delegation certificate's own `expires_at_secs` -- a session must
-    /// never outlive the authorization it rests on.
-    #[serde(default = "default_session_ttl_secs")]
-    pub session_ttl_secs: u64,
+    /// Identity mode for proxied client traffic: `open`, `login`, or `fixed`.
+    #[serde(default)]
+    pub identity_mode: IdentityMode,
+    /// Person master DID injected on all proxied traffic in `fixed` mode.
+    #[serde(default)]
+    pub fixed_identity_did: Option<String>,
+    /// Path to a delegation certificate injected on all proxied traffic in
+    /// `fixed` mode.
+    #[serde(default)]
+    pub fixed_delegation: Option<PathBuf>,
+    /// Optional connection gate in `login` mode: reject connections without a
+    /// valid session with 401.
+    #[serde(default)]
+    pub connection_auth_gate: bool,
 }
 
 impl Default for ClientGatewayRole {
@@ -1155,7 +1197,39 @@ impl Default for ClientGatewayRole {
         Self {
             http_port: default_http_port(),
             resolve_ucan: None,
+            identity_mode: IdentityMode::Open,
+            fixed_identity_did: None,
+            fixed_delegation: None,
+            connection_auth_gate: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AuthRole {
+    /// Lifetime in seconds of minted session tokens.
+    #[serde(default = "default_session_ttl_secs")]
+    pub session_ttl_secs: u64,
+    /// Lifetime in seconds of challenge nonces.
+    #[serde(default = "default_auth_nonce_ttl_secs")]
+    pub nonce_ttl_secs: u64,
+    /// Optional path to the auth service's private key file.
+    #[serde(default)]
+    pub key_path: Option<PathBuf>,
+    /// Directory containing person keys for the `local` login method.
+    /// When unset, the `local` method is disabled.
+    #[serde(default)]
+    pub person_identities_dir: Option<PathBuf>,
+}
+
+impl Default for AuthRole {
+    fn default() -> Self {
+        Self {
             session_ttl_secs: default_session_ttl_secs(),
+            nonce_ttl_secs: default_auth_nonce_ttl_secs(),
+            key_path: None,
+            person_identities_dir: None,
         }
     }
 }

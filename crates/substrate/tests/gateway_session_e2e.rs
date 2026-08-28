@@ -38,7 +38,7 @@ use reqwest::Client;
 use rustls::crypto::ring;
 use serde_json::{Value, json};
 use syneroym_core::{
-    config::ClientGatewayRole,
+    config::AuthRole,
     dht_registry::{EndpointInfo, EndpointType, RegistryClient},
     protocol_utils::{SESSION_COOKIE_NAME, gateway_session_assertion},
     test_constants, util,
@@ -102,11 +102,7 @@ async fn setup_gateway_test_node(
         config.storage.encryption = false;
         config.substrate.enable_bep0044_dht = false;
         if let Some(ttl) = session_ttl_secs {
-            config.roles.client_gateway = Some(ClientGatewayRole {
-                http_port: gateway_port,
-                session_ttl_secs: ttl,
-                ..Default::default()
-            });
+            config.roles.auth = Some(AuthRole { session_ttl_secs: ttl, ..Default::default() });
         }
     })
     .await;
@@ -502,7 +498,7 @@ async fn test_20_forged_login_is_rejected_with_401() {
     ctx.teardown().await;
 }
 
-/// Test 21: Gateway session token is stripped from proxied headers.
+/// Test 21: Gateway session token and raw headers are forwarded untouched.
 #[tokio::test]
 async fn test_21_gateway_session_token_is_stripped_from_proxied_headers() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -515,10 +511,11 @@ async fn test_21_gateway_session_token_is_stripped_from_proxied_headers() {
     let (token, _person_did) = login_to_gateway(&gateway_url, &person, &reg_url, 24).await;
 
     // A: Cookie with multiple entries
+    let expected_cookie = format!("other=1; {SESSION_COOKIE_NAME}={token}; third=2");
     let resp = client
         .get(format!("{gateway_url}/echo"))
         .header("Host", &host)
-        .header("Cookie", format!("other=1; {SESSION_COOKIE_NAME}={token}; third=2"))
+        .header("Cookie", &expected_cookie)
         .header("Connection", "close")
         .send()
         .await
@@ -527,7 +524,7 @@ async fn test_21_gateway_session_token_is_stripped_from_proxied_headers() {
     let body: Value = resp.json().await.unwrap();
     let headers: Vec<(String, String)> = serde_json::from_value(body["headers"].clone()).unwrap();
     let cookie_val = headers.iter().find(|(name, _)| name == "cookie").map(|(_, v)| v.as_str());
-    assert_eq!(cookie_val, Some("other=1; third=2"));
+    assert_eq!(cookie_val, Some(expected_cookie.as_str()));
 
     // B: Authorization Bearer (session token)
     let resp = client
@@ -541,10 +538,9 @@ async fn test_21_gateway_session_token_is_stripped_from_proxied_headers() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     let headers: Vec<(String, String)> = serde_json::from_value(body["headers"].clone()).unwrap();
-    assert!(
-        !headers.iter().any(|(name, _)| name == "authorization"),
-        "Authorization header with session token must be stripped"
-    );
+    let auth_val =
+        headers.iter().find(|(name, _)| name == "authorization").map(|(_, v)| v.as_str());
+    assert_eq!(auth_val, Some(format!("Bearer {token}").as_str()));
 
     // C: Authorization Basic (non-session auth preserved)
     let resp = client
@@ -562,8 +558,8 @@ async fn test_21_gateway_session_token_is_stripped_from_proxied_headers() {
         headers.iter().find(|(name, _)| name == "authorization").map(|(_, v)| v.as_str());
     assert_eq!(auth_val, Some("Basic dXNlcjpwYXNz"));
 
-    // D: Both Cookie (session) and Authorization (app bearer) -> Cookie stripped,
-    // Authorization preserved
+    // D: Both Cookie (session) and Authorization (app bearer) -> both forwarded
+    // untouched
     let resp = client
         .get(format!("{gateway_url}/echo"))
         .header("Host", &host)
@@ -576,7 +572,8 @@ async fn test_21_gateway_session_token_is_stripped_from_proxied_headers() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     let headers: Vec<(String, String)> = serde_json::from_value(body["headers"].clone()).unwrap();
-    assert!(!headers.iter().any(|(name, _)| name == "cookie"), "Session cookie must be stripped");
+    let cookie_val = headers.iter().find(|(name, _)| name == "cookie").map(|(_, v)| v.as_str());
+    assert_eq!(cookie_val, Some(format!("{SESSION_COOKIE_NAME}={token}").as_str()));
     let auth_val =
         headers.iter().find(|(name, _)| name == "authorization").map(|(_, v)| v.as_str());
     assert_eq!(auth_val, Some("Bearer app_secret_token_123"));
@@ -585,9 +582,8 @@ async fn test_21_gateway_session_token_is_stripped_from_proxied_headers() {
 }
 
 /// Test 22: Cookie takes priority over Bearer when both are present.
-/// The session cookie determines the caller identity and is stripped;
-/// the unrelated application Authorization Bearer header is forwarded
-/// untouched.
+/// The session cookie determines the caller identity and both headers are
+/// forwarded untouched.
 #[tokio::test]
 async fn test_22_cookie_takes_priority_over_bearer() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -617,12 +613,10 @@ async fn test_22_cookie_takes_priority_over_bearer() {
     assert_eq!(body["caller"]["auth"], "delegated");
     assert_eq!(body["caller"]["did"], person_a_did);
 
-    // Check that session cookie was stripped and app Bearer was forwarded untouched
+    // Check that both cookie and app Bearer were forwarded untouched
     let headers: Vec<(String, String)> = serde_json::from_value(body["headers"].clone()).unwrap();
-    assert!(
-        !headers.iter().any(|(name, _)| name == "cookie"),
-        "syneroym_session cookie must be stripped"
-    );
+    let cookie_val = headers.iter().find(|(name, _)| name == "cookie").map(|(_, v)| v.as_str());
+    assert_eq!(cookie_val, Some(format!("{SESSION_COOKIE_NAME}={token_a}").as_str()));
     let auth_header =
         headers.iter().find(|(name, _)| name == "authorization").map(|(_, v)| v.as_str());
     assert_eq!(auth_header, Some(format!("Bearer {app_token}").as_str()));
@@ -803,13 +797,12 @@ async fn test_25_expired_gateway_session_falls_back_to_self_asserted_node_did() 
 
     assert_eq!(body["caller"]["auth"], "self-asserted");
 
-    // Verify the expired token header is stripped even though lookup returned None
-    // (HIGH-3)
+    // Verify raw header is forwarded untouched while router falls back to
+    // self-asserted caller
     let headers: Vec<(String, String)> = serde_json::from_value(body["headers"].clone()).unwrap();
-    assert!(
-        !headers.iter().any(|(name, _)| name == "authorization"),
-        "Expired bearer token must be stripped from proxied request headers"
-    );
+    let auth_val =
+        headers.iter().find(|(name, _)| name == "authorization").map(|(_, v)| v.as_str());
+    assert_eq!(auth_val, Some(format!("Bearer {token}").as_str()));
 
     ctx.teardown().await;
 }
@@ -1010,6 +1003,9 @@ async fn test_29_roymctl_session_cli_lifecycle() {
     // 1. Login
     let login_cmd = roymctl::commands::session::SessionCommands::Login {
         gateway_url: gateway_url.clone(),
+        method: "delegated-key".to_string(),
+        session_key_file: None,
+        identity: None,
         registry_url: Some(reg_url),
         expires_hours: 24,
     };
@@ -1069,6 +1065,9 @@ async fn test_30_roymctl_session_cli_error_handling() {
     // 1. Missing --as flag
     let login_cmd = roymctl::commands::session::SessionCommands::Login {
         gateway_url: "http://localhost:7960".to_string(),
+        method: "delegated-key".to_string(),
+        session_key_file: None,
+        identity: None,
         registry_url: None,
         expires_hours: 24,
     };
@@ -1097,6 +1096,9 @@ async fn test_30_roymctl_session_cli_error_handling() {
 
     let login_cmd_no_reg = roymctl::commands::session::SessionCommands::Login {
         gateway_url,
+        method: "delegated-key".to_string(),
+        session_key_file: None,
+        identity: None,
         registry_url: None,
         expires_hours: 24,
     };

@@ -7434,6 +7434,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "syneroym-auth"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "dashmap",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "syneroym-app-host",
+ "syneroym-core",
+ "syneroym-identity",
+ "syneroym-rpc",
+ "syneroym-ucan",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "z32",
+]
+
+[[package]]
 name = "syneroym-chunk-transfer"
 version = "0.1.0"
 dependencies = [
@@ -7889,6 +7912,7 @@ dependencies = [
  "syneroym-app-host",
  "syneroym-app-orchestration",
  "syneroym-async-queue",
+ "syneroym-auth",
  "syneroym-control-plane",
  "syneroym-core",
  "syneroym-data-blob",
@@ -8068,6 +8092,7 @@ dependencies = [
  "syneroym-app-orchestration",
  "syneroym-app-supervisor",
  "syneroym-async-queue",
+ "syneroym-auth",
  "syneroym-client-gateway",
  "syneroym-community-registry",
  "syneroym-control-plane",

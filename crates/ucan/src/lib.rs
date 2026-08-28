@@ -4,11 +4,9 @@
 //! verified `SessionContext` a chain resolves into.
 
 mod capability;
-mod normalize;
 mod session;
 mod token;
 
 pub use capability::{Ability, Capability, ResourceUri};
-pub use normalize::{AuthNormalizer, DidKeyNormalizer};
 pub use session::SessionContext;
 pub use token::{CapabilityToken, ChainVerifyOpts, verify_chain};
