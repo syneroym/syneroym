@@ -1,6 +1,7 @@
 # D-04-01: UCAN Capability & Verification Model
 
-**Status**: Accepted (amended 2026-07-16 — see "Amendments" below)
+**Status**: Accepted (amended 2026-07-16 and 2026-08-27 — see "Amendments"
+below)
 
 **Context**:
 
@@ -87,6 +88,8 @@ Alternatives).
    and `DelegationCertificate`. External-auth normalization (OIDC/WebAuthn →
    internal DID, `system-requirements-spec.md:977`) is defined as a trait seam
    but only the `did:key` normalizer ships in M4.
+   **Amended 2026-08-27: the trait seam is retired — see A9 below.** The DID
+   half of this item stands; the normalization seam does not.
 
 **Consequences**:
 
@@ -323,3 +326,41 @@ revocable.
   marketplace is "eventually"), effort is structural, and the risk is
   philosophical — service owners would stop being independent roots and become
   the node's delegates. Interim: B7's binary deploy grant is a coarse ceiling.
+
+### A9. The browser session token is a UCAN issued by the node auth service
+
+**Added 2026-08-27,
+[ADR-0024](0024-client-gateway-identity-and-auth-service.md) §3.** The
+`syneroym_session` cookie a browser presents to the client gateway carries a
+short-lived UCAN **issued and signed by the node's auth service**, with the
+person's **master DID** as its subject and a `fct` block of account attributes
+the auth service vouches for. It is verified against the *auth service's*
+public key — never the person's — by each service that needs the caller
+identity, which is a different verification root from the delegation chains
+this ADR's §2 describes. Nothing about the ability vocabulary, attenuation
+rules, caveats, or revocation changes; this is one more issuer whose tokens
+enter the system, named here so the session token is not mistaken for an
+ordinary user-rooted chain. See
+[ADR-0016's 2026-08-27 amendment](0016-native-dispatch-identity-threading.md)
+for how it reaches a service, and M06C slice
+[C1.1](../planning/milestones/M06C-roym-product/slice-c1.1-implementation-plan.md)
+for the landing slice.
+
+**§5's external-auth normalizer seam is retired with it.** §5 required a trait
+seam shaped *external authentication assertion → internal DID*, of which only
+`DidKeyNormalizer` ever shipped (`crates/ucan/src/normalize.rs`, M04A slice B1
+flag F4: no wired consumer, "a place to hang OIDC/WebAuthn in M6").
+**ADR-0024 §4c rules that shape out.** An external provider proves an *email
+or external account*, never a DID; the DID always comes from a separate
+delegated-key proof, and the two must be bound into one ceremony and checked
+against an account mapping store. A provider interface is therefore *given
+this login, return verified `fct` entries, or fail* — not *return a DID*.
+
+Keeping the old seam is worse than having none: it is unused, and it invites
+whoever builds the external-provider slice to write precisely the unsound
+thing §4c warns about — proving possession of DID A while completing an
+external login as somebody else's account, and minting a token asserting
+both. So `AuthNormalizer` and `DidKeyNormalizer` are **deleted** in slice
+C1.1 (`D-06C-1.1-9`), and this ADR no longer requires a normalizer seam. The
+external-provider slice designs its own interface against ADR-0024 §4c when
+it has a real second implementation to design against.

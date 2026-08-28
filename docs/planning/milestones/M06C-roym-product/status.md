@@ -1,9 +1,11 @@
 # M06C The Roym Product — Status
 
 **Milestone:** [task.md](task.md) · **Designs of record:**
-[slice-c1-implementation-plan.md](slice-c1-implementation-plan.md) (C1)
+[slice-c1-implementation-plan.md](slice-c1-implementation-plan.md) (C1),
+[slice-c1.1-implementation-plan.md](slice-c1.1-implementation-plan.md) (C1.1,
+under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md))
 
-**Overall:** Slice C1 complete (2026-08-25) — see C1's status, architectural decisions, permitted differences, and evidence below.
+**Overall:** Slice C1 complete (2026-08-25) — see C1's status, architectural decisions, permitted differences, and evidence below. **Slice C1.1 added 2026-08-27** by ADR-0024, sequenced between C1 and C2: it makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a new node auth service. C2 and C3 now gate on it, because both are specified against the identity model it settles.
 
 ---
 
@@ -12,8 +14,9 @@
 | Slice | Scope | Status | Gate |
 |---|---|---|---|
 | C1 | Complete the dual-build shim (Gap 2, D-06C-10) | **Complete (2026-08-25)** — [implementation plan](slice-c1-implementation-plan.md), evidence below | None — independently mergeable |
-| C2 | The SynApp skeleton and the Hub shell | Not started | C1 |
-| C3 | Signed records: host signing interface and envelope | Not started | C1 |
+| C1.1 | The node auth service and the dumb client gateway (ADR-0024) | Not started | C1 |
+| C2 | The SynApp skeleton and the Hub shell | Not started | C1.1 |
+| C3 | Signed records: host signing interface and envelope | Not started | C1.1 |
 | C4 | Identity, profile, contacts, and safety (R1 rows 1 and 6) | Not started | C3 |
 | C5 | Catalog and conversation in the product (R1 rows 2 and 3) | Not started | C4 |
 | C6 | Directory: the search half (R1 row 5) | Not started | C5 |

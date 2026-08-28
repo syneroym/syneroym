@@ -657,9 +657,14 @@ and the reason would otherwise be lost.
 >   guild, the transaction vertical, cross-installation trust, private group
 >   chat). Slices **C1–C10**, `task.md` written 2026-08-24. C1 completes the
 >   dual-build shim (`proxy`, `http` inbound, `app-config`, `vault` — the
->   four traits `AppHost` still lacks); C2 the SynApp skeleton and Hub shell;
->   C3 the signing interface and signed-record envelope. C4–C7 are R1 and
->   close its gate at C7; C8 is R2, C9 is R3, C10 is R4.
+>   four traits `AppHost` still lacks); **C1.1** (added 2026-08-27 by
+>   [ADR-0024](../decisions/0024-client-gateway-identity-and-auth-service.md))
+>   makes the client gateway a dumb proxy with an `identity_mode` and moves
+>   the person session onto a new node auth service; C2 the SynApp skeleton
+>   and Hub shell; C3 the signing interface and signed-record envelope.
+>   C4–C7 are R1 and close its gate at C7; C8 is R2, C9 is R3, C10 is R4.
+>   C1.1 is sequenced ahead of C2 and C3 because both are specified against
+>   the identity model it settles.
 >
 > **Why this order.** M06A removes the only non-WASM piece of Roym — the spec's
 > Web entrypoint service, which exists purely because a component cannot serve
@@ -714,6 +719,18 @@ and the reason would otherwise be lost.
 > outbox folded into B4's interface rather than given its own, and gateway person
 > identity as **B1**. M06B adds two more the note above did not name: the D2/D3
 > dual-build shim (**B3**) and declared service visibility (**B2**).
+>
+> **Reshaped 2026-08-27.** B1 shipped person identity as a *gateway-minted
+> delegation on the route preamble*, and that mechanism did not survive
+> contact with a real browser: HTTP keep-alive made the gateway's own session
+> endpoints intermittently unreachable.
+> [ADR-0024](../decisions/0024-client-gateway-identity-and-auth-service.md)
+> replaces it — the gateway becomes a dumb proxy with an `identity_mode`, a
+> node **auth service** becomes the identity provider, and the person session
+> becomes a short-lived signed UCAN in the `syneroym_session` cookie that each
+> service verifies. **The gap B1 closed stays closed** (a guest handler still
+> sees the calling person) and **M06B stays Complete**; only the mechanism
+> moves, in M06C slice **C1.1**.
 
 ---
 

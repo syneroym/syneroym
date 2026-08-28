@@ -1,5 +1,16 @@
 # M06B Slice B1 — Person Identity at the Client Gateway: Implementation Plan
 
+> **Forward pointer (2026-08-27) — the mechanism below has been replaced.**
+> [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md) moves person identity out of the client gateway and into a node
+> **auth service**: the gateway becomes a dumb proxy with an `identity_mode`,
+> its `SessionStore` is deleted, and the person session becomes a short-lived
+> auth-service-signed UCAN in the `syneroym_session` cookie that each service
+> verifies — not a delegation the gateway mints onto the route preamble. The
+> reason is in that ADR's §P1–§P3; the replacement is built in [M06C slice C1.1](../M06C-roym-product/slice-c1.1-implementation-plan.md).
+> **B1 and M06B stay Complete and are not reopened**, and the gap B1 closed
+> (a guest handler sees the calling person) stays closed. This document
+> remains the accurate record of what B1 shipped.
+
 > **Scope.** Gap **G3** from
 > [roym-integrated-experience-spec.md](../../../roym-integrated-experience-spec.md#g3--person-identity-at-the-client-gateway),
 > slice **B1** of [task.md](task.md). A local session model that binds an

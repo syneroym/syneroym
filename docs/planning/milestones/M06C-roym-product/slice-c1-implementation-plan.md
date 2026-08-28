@@ -2271,6 +2271,19 @@ Raised rather than guessed, per the brief.
     obstacle this fixture has no way around), and should be named as a C2
     dependency rather than silently assumed solved.
 
+    **Split 2026-08-27 by
+    [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md).**
+    The gateway leg has two halves and they now land in different slices.
+    The **hostname** half — resolving `s<hash>` / `-a…-s…` to a service — is
+    unchanged by that ADR and stays C2's, exactly as this item describes.
+    The **identity** half — what caller the gateway presents for a request on
+    that hostname — moves to slice
+    [C1.1](slice-c1.1-implementation-plan.md): the gateway becomes a dumb
+    proxy with an `identity_mode`, and the person arrives as a verified
+    `syneroym_session` cookie token rather than a preamble delegation the
+    gateway minted. C1's own scope is untouched either way — it stops at the
+    router's `http-native` hop in both readings.
+
 ---
 
 ## §13 Order of work

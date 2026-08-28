@@ -7,6 +7,11 @@
 
 **Overall:** Slices B1, B2, B3, B4, and B5 complete (2026-08-24) — see B4's/B5's own status below.
 
+> **B1's mechanism replaced 2026-08-27, milestone unchanged.** [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)
+> moves the person session off the gateway and onto a node auth service; the
+> gateway keeps only an `identity_mode`. B1 stays **Complete** — the
+> capability it delivered survives, and the replacement lands in [M06C slice C1.1](../M06C-roym-product/slice-c1.1-implementation-plan.md).
+
 ---
 
 ## Slice status
