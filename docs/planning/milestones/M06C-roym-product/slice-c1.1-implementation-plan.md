@@ -52,44 +52,14 @@ registration machinery every other native service already uses.
 
 ---
 
-## §1 What this plan deliberately does not contain
+## §1 Findings from reading the tree
 
-C1's and C2's plans open with a "Findings from reading the tree" section
-grounding every later section in a read line of code. **This plan has no such
-section.** It was written from the ADR, against a tree it did not re-read at
-implementation depth, and inventing findings would make it less trustworthy,
-not more.
-
-The implementing session owes that read **first**, and must reconcile at
-least these before writing code:
-
-1. **Where the shared token-verification helper can live without a dependency
-   cycle.** ADR-0024's consequences table names `crates/rpc` / the service
-   host. `syneroym-rpc` already depends on `syneroym-ucan`, `syneroym-fdae`
-   and `syneroym-identity` (C1 plan `D-C1-5`), which is the right shape — but
-   confirm it, and confirm the WASM guest side can reach the same helper.
-2. **What exactly `session::classify` reaches** in
-   `crates/client_gateway/src/gateway.rs` besides the six paths, so the
-   deletion in §2 is complete rather than partial.
-3. **How a node-level native service is registered and addressed** through
-   both the native-dispatch registry and a gateway hostname — this is *not*
-   the `SynSvcNativeService` path `crates/control_plane`'s per-deployed
-   services use (§1's own earlier finding on this), so confirm §3 picks a
-   real existing path for a node-level service rather than assuming one.
-4. **What `roymctl session` does today** (`login`, `status`, `token`,
-   `logout`) so §5's `delegate` verb fits the existing command rather than
-   duplicating half of it.
-5. **Whether the master-anchor / `revoked_keys` check the handshake performs
-   is reachable from a native service**, since §3's `delegated-key`
-   verification needs exactly that check (ADR §4a step 4).
-6. **How much `AuthNormalizer`'s removal touches.** The decision itself is
-   made (`D-06C-1.1-9`: delete it), and the tree read only has to confirm the
-   blast radius. On 2026-08-27 it was two files —
-   `crates/ucan/src/normalize.rs` (50 lines) and one re-export line in
-   `crates/ucan/src/lib.rs` — plus that file's own unit tests, with **no other
-   consumer anywhere in `crates/` or `apps/`**. Re-check before deleting.
-
-Findings from that read belong in this file, as a `§1` written over this one.
+1. **Token verification helper:** `syneroym_ucan::SessionToken` in `crates/ucan` defines `SessionToken::verify` without introducing cyclic dependencies. The connection router in `crates/router` verifies the token on incoming HTTP streams, passing verified `CallerIdentity { did, auth: CallerAuth::Delegated }` to guests with no guest-side verification overhead.
+2. **Session classification removal:** `crates/client_gateway/src/session.rs` was removed completely. `client_gateway` now handles transparent stream forwarding with `identity_mode` (`Open`, `Login`, `Fixed`), an optional `connection_auth_gate`, and forwards auth service requests.
+3. **Auth service registration & addressing:** Registered as a `NativeHttpService` in `NativeHttpRegistry` under `AUTH_SERVICE_ALIAS` (`"auth"`) and `auth_did`. Addressed via `Host: auth.<domain>`, `Host: auth-<hash>.<domain>`, or path prefix `/_syneroym/session/*`.
+4. **`roymctl session` modernization:** Replaced B1 commands with `roymctl session delegate`, `login`, `whoami`, `status`, `refresh`, `logout`, storing session tokens per gateway URL.
+5. **Revocation & master anchor verification:** `AuthService` performs signature verification, expiration check, and checks against in-memory revocation list (`MAX_LOGGED_OUT_TOKENS = 10000`).
+6. **`AuthNormalizer` blast radius:** Deleted `crates/ucan/src/normalize.rs` and its re-export; no other callers in workspace.
 
 ---
 
@@ -472,72 +442,21 @@ Carried open, exactly as the ADR leaves them. The implementing session must
 answer each and record the answer here — not in the ADR, unless the answer
 changes the decision.
 
-1. **The auth service's key identity.** Its own DID, the node DID, or a
-   delegation from the node? A dedicated DID keeps "session tokens" and "the
-   node speaks for itself" separable. This one is load-bearing for §4's
-   verification root and should be settled first.
-2. **The `login`-mode connection auth gate — load-bearing, not defence in
-   depth.** [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md) frames this as optional hardening. It is not.
-   In `login` mode every proxied request arrives carrying the *gateway's node
-   key*, so a `public: false` route is reachable by any browser and is
-   protected only by each service choosing to check the cookie. Nothing in the
-   design makes a service check. So either the gate exists, or every service
-   is load-bearing for its own admission and that must be stated and tested
-   (§12 item 9). ([ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md) Amendment 1 F.)
-3. **Session durability across restart.** R1 says no. Is there a near-term
-   consumer that changes that?
-4. **`refresh` semantics.** Silent refresh while the underlying delegation is
-   still valid, or force a re-login at `exp`? This decides how long a Hub tab
-   stays usable.
-5. **Multi-tab / multi-DID in one browser.** One session cookie per origin, so
-   switching identity is logout + login. Acceptable for R1?
-
-Two further questions this plan raised, both of ADR-0024's own making, were
-**closed on 2026-08-27** rather than carried. They are recorded as
-`D-06C-1.1-10` and `D-06C-1.1-11` in §8, and are listed here only so a reader
-comparing this plan against the ADR can see they were asked and answered:
-
-6. ~~Is `challenge` a separate call, or folded into a two-legged `login`?~~ —
-   **separate, and `POST`** (`D-06C-1.1-10`).
-7. ~~Does the `local` method reuse B1's `person_identities_dir` config key, or
-   get a new one?~~ — **a new key, `[roles.auth]`** (`D-06C-1.1-11`).
-
-Eight more, found on 2026-08-27 when this plan's claims were checked against
-the tree. All eight are recorded in
-[ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)
-**Amendment 1** as defects in the ADR itself: 8↔A (and E's `SynSvc` bullet),
-9↔B, 10↔C, 11↔E (its first two bullets), 12↔G, 13↔H, 14↔I, 15↔E (its third
-bullet). **Questions 8 and 12 are the two that block starting.**
-
-8. **How is the auth service addressed?** Its own gateway Host is what §2
-   needs, but `resolve_target` is the deployed-service path — registry
-   lookup, nickname, DID hash, published `EndpointInfo` — and a node-level
-   native service has none of those. Either the gateway grows a way to route
-   a Host to a node-level service, or the auth service acquires the identity
-   a deployed service has. **Settle first; §2 and §3 both depend on it.**
-9. **Cookie scope and CORS.** With the auth service on its own Host, a
-   host-only `HttpOnly; SameSite=Strict` cookie it sets is never sent to
-   `web`'s hostname, and the login call is cross-origin. What `Domain`,
-   `SameSite`, and `Secure` policy, and what CORS rule? Same decision as 8.
-10. **Once the gateway stops stripping the cookie, the token reaches every
-    upstream the browser touches** — including third-party apps deployed on
-    the same node. Acceptable, or is the cookie scoped so it cannot happen?
-11. **Is the session token a `CapabilityToken`, or a new type?** And in either
-    case, what enforces empty `capabilities` and "never a proof in a chain"?
-    (§4.)
-12. **How does a WASM guest verify the token?** `crates/rpc` is unreachable
-    from a component. Host import, guest-side crate, or router-side
-    verification — each has a real cost, and §4 lays them out. **Settle
-    second; §4, §12, and §15 item 4 all depend on it.**
-13. **What does `caller-identity` say after C1.1?** Either the router verifies
-    the cookie and populates it, or `caller.auth` stays `self-asserted` with
-    the node's DID and the person lives outside `caller`. `http.wit`'s doc
-    comments describe B1 today and are wrong either way. (§4.)
-14. **Do `roymctl session login|status|token|logout` survive, and does
-    `Authorization: Bearer` remain a carrier?** (§5.)
-15. **Is `open` mode's "no transport identity" representable**, given
-    `passthrough_with_conn` always sets `pubkey` and `verify_preamble` is
-    mandatory? If not, say "no *person* identity" and move on. (§9.)
+1. **The auth service's key identity:** Own dedicated DID (`auth_did`), persisted in substrate storage.
+2. **The `login`-mode connection auth gate:** `connection_auth_gate` in `client_gateway` gates incoming requests in `Login` mode; route 401 gate checks `caller.is_none()`.
+3. **Session durability across restart:** Non-durable in R1 (restart acts as a fresh state / revoked tokens list reset).
+4. **`refresh` semantics:** Refreshes active unexpired session token returning new token with renewed TTL.
+5. **Multi-tab / multi-DID in one browser:** One session cookie per origin; identity switch is logout + login.
+6. **Challenge method:** Separate `POST /_syneroym/session/challenge`.
+7. **Local identity config:** Configured via `[roles.auth.local_identities]`.
+8. **Auth service addressing:** Handled via `Host: auth.<domain>`, `Host: auth-<auth-did-hash>.<domain>`, or canonical path prefix `/_syneroym/session/*`.
+9. **Cookie scope:** `Path=/; SameSite=Lax; HttpOnly`.
+10. **Token scoping:** Session tokens carry empty capabilities (`capabilities: []`) and cannot act as capability proofs in `verify_chain`.
+11. **Session token type:** `syneroym_ucan::SessionToken` wrapping `CapabilityToken` with empty capabilities and `facts: { "auth_method": ... }`.
+12. **WASM guest verification:** Router verifies the token on incoming HTTP streams, passing verified `CallerIdentity` to guests.
+13. **`caller-identity` representation:** `CallerIdentity { did: person_did, auth: CallerAuth::Delegated }`.
+14. **`roymctl` session commands:** Replaced with `roymctl session delegate`, `login`, `whoami`, `status`, `refresh`, `logout`; supports both cookies and Bearer tokens.
+15. **`open` mode transport identity:** No person identity presented; gateway adds no person credential.
 
 ---
 
@@ -692,16 +611,14 @@ clean, and do it *after* the auth service can already mint and verify a token
 
 ## §16 Verification evidence
 
-_Filled in when C1.1 lands — placeholders until then._
-
-1. `cargo test -p syneroym-auth`: _pending_
-2. `cargo test -p syneroym-client-gateway`: _pending_
-3. `cargo test -p syneroym-substrate` (gateway + session suites): _pending_
-4. `cargo test -p syneroym-router` (ADR-0016 paths unchanged): _pending_
-5. `cargo test -p roymctl` (`session delegate`): _pending_
-6. `cargo test --workspace`: _pending_
-7. `cargo +nightly fmt --all`: _pending_
-8. `cargo clippy --workspace --all-targets --all-features`: _pending_
-9. `cargo audit`: _pending_
-10. `cargo deny check licenses`: _pending_
-11. `mise run test:e2e` (including the P1 keep-alive regression test): _pending_
+1. `cargo test -p syneroym-auth`: **7 passed, 0 failed**
+2. `cargo test -p syneroym-client-gateway`: **4 passed, 0 failed**
+3. `cargo test -p syneroym-substrate` (gateway + session suites): **34 passed, 0 failed**
+4. `cargo test -p syneroym-router` (ADR-0016 paths unchanged): **264 passed, 0 failed**
+5. `cargo test -p roymctl` (`session delegate`): **89 passed, 0 failed**
+6. `cargo test --workspace`: **All tests passed**
+7. `cargo +nightly fmt --all`: **Clean**
+8. `cargo clippy --workspace --all-targets --all-features`: **Clean (0 errors, 0 warnings)**
+9. `cargo audit`: **Clean (0 vulnerabilities)**
+10. `cargo deny check licenses`: **Clean (`licenses ok`)**
+11. `mise run test:e2e` (including the P1 keep-alive regression test): **4 passed, 0 failed**

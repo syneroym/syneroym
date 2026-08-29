@@ -490,6 +490,8 @@ fn guest_request_headers(
 /// therefore mixed on purpose, one field from each -- collapsing this to a
 /// single source would let a caller self-label the stronger `ucan` value
 /// with a junk token.
+const SESSION_CALLER_MARKER: &str = "__syneroym_session_caller";
+
 fn guest_caller_identity(
     caller: Option<&CallerContext>,
     preamble: &RoutePreamble,
@@ -501,7 +503,7 @@ fn guest_caller_identity(
     ) {
         return Err("substrate-injected auth level on an inbound HTTP request".to_string());
     }
-    let auth = if caller.session.claims.contains_key(syneroym_ucan::CLAIM_AUTH_METHOD) {
+    let auth = if caller.session.claims.contains_key(SESSION_CALLER_MARKER) {
         CallerAuth::Delegated
     } else if matches!(caller.auth, AuthLevel::Ucan) {
         CallerAuth::Ucan
@@ -578,10 +580,7 @@ fn resolve_effective_session_caller(
 
     let mut session = caller.map(|c| c.session.clone()).unwrap_or_default();
     session.subject_did = claims.person_did.clone();
-    session.claims.insert(
-        syneroym_ucan::CLAIM_AUTH_METHOD.to_string(),
-        serde_json::Value::String("session".to_string()),
-    );
+    session.claims.insert(SESSION_CALLER_MARKER.to_string(), serde_json::Value::Bool(true));
 
     Some(CallerContext {
         caller_did: claims.person_did,
@@ -2502,10 +2501,10 @@ mod tests {
     #[test]
     fn guest_caller_identity_session_caller_is_delegated() {
         let mut caller = caller_context(AuthLevel::Delegated);
-        caller.session.claims.insert(
-            syneroym_ucan::CLAIM_AUTH_METHOD.to_string(),
-            serde_json::Value::String("session".to_string()),
-        );
+        caller
+            .session
+            .claims
+            .insert(SESSION_CALLER_MARKER.to_string(), serde_json::Value::Bool(true));
         let preamble = preamble_with(None, None);
         let identity = guest_caller_identity(Some(&caller), &preamble).unwrap().unwrap();
         assert_eq!(identity.auth, CallerAuth::Delegated);

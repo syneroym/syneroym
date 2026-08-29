@@ -518,10 +518,10 @@ unstated. Open.
 1. **First-class SessionToken Type (Resolving E)**:
    - `syneroym_ucan::SessionToken` wraps a `CapabilityToken` with empty capabilities (`capabilities: []`), `facts: { "auth_method": ... }`, `expires_at_secs`, and `audience_did` set to the person's DID.
    - Session tokens carry an empty capability list (`capabilities: []`), granting no capabilities when evaluated in a capability chain (`verify_chain` grants nothing).
-2. **Router Fail-Closed Session Resolution (Resolving F, G, H)**:
+2. **Router Fail-Closed Session Resolution & Gateway Gate (Resolving F, G, H)**:
    - The connection router (`crates/router/src/route_handler/http.rs`) extracts the session token from `Cookie: syneroym_session` or `Authorization: Bearer <token>` for gateway-origin requests, verifies it against the trusted local auth service DID, checks revocation against `AuthService`, and maps the request's `CallerContext` and `CallerIdentity` to `AuthLevel::Delegated` / `CallerAuth::Delegated` carrying the verified person's DID.
-   - Non-public routes (`public: false`) with no valid session token fail closed at the router boundary with 401 Unauthorized before instantiating any WASM or native handler.
+   - Non-public routes (`public: false`) with no caller identity (`self.caller.is_none()`) fail closed at the router boundary with 401 Unauthorized before instantiating any WASM or native handler. In `login` mode, unauthenticated browser traffic is gated at the gateway ingress by `connection_auth_gate`, ensuring requests without a valid session token never reach private routes.
    - Guests receive the resolved `CallerIdentity` through standard WIT interfaces with zero guest-side verification overhead or extra host traits.
 3. **CLI & Addressing Modernization (Resolving A, I)**:
-   - The auth service is addressed by hostname `auth-s00000000.<domain>` (or `auth.<domain>` via the path fallback) or via the canonical path fallback `/_syneroym/session/*` on any host.
+   - The auth service is addressed by hostname (`Host: auth.<domain>` or `Host: auth-<short_hash(auth_did)>.<domain>`) or via the canonical path prefix `/_syneroym/session/*` on any host.
    - `roymctl session` commands (`login`, `delegate`, `status`, `token`, `logout`) target the auth service endpoints, supporting both cookie storage and bearer token issuance.

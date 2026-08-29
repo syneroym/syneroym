@@ -1469,7 +1469,7 @@ To act as a verified person identity, a client opens a session with the gateway:
 
 ##### Auth Service Endpoints (`/_syneroym/session/*`)
 
-The node auth service is addressed by `Host: auth.<domain>` (or `Host: auth-s00000000.<domain>`), or via path fallback `/_syneroym/session/*` on the client gateway port (7960):
+The node auth service is addressed by `Host: auth.<domain>` (or `Host: auth-<auth-did-hash>.<domain>`), or via the canonical path prefix `/_syneroym/session/*` on the client gateway port (7960):
 - `POST /_syneroym/session/challenge`: Returns a cryptographic nonce, the node DID, and challenge expiry.
 - `POST /_syneroym/session/login`: Validates the signed challenge assertion and delegation certificate (`delegated-key`) or local identity (`local`), returning a signed UCAN session token and setting `Set-Cookie: syneroym_session=...; HttpOnly; SameSite=Lax; Path=/`.
 - `GET /_syneroym/session/methods`: Returns the list of enabled login methods on this node.

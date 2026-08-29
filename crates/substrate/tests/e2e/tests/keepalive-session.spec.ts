@@ -1,30 +1,43 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Gateway Keep-Alive Session Routing', () => {
-  test('retains proper host-based dispatch when Host changes across requests', async ({ request }) => {
-    const gatewayPort = 7660;
+test.describe('Gateway Keep-Alive Session Routing (P1 Regression)', () => {
+  test('browser keep-alive connection answers session requests after page load', async ({ page }) => {
+    const gatewayUrl = 'http://127.0.0.1:7660';
 
-    // 1. Request to auth host
-    const res1 = await request.post(`http://127.0.0.1:${gatewayPort}/_syneroym/session/challenge`, {
-      headers: {
-        'Host': 'auth.localhost',
-        'Connection': 'keep-alive',
-      },
-    });
+    // 1. Initial navigation loads session methods over HTTP/1.1 keep-alive
+    const response = await page.goto(`${gatewayUrl}/_syneroym/session/methods`);
+    expect(response?.status()).toBe(200);
+    const body = await response?.json();
+    expect(body.methods).toContain('delegated-key');
 
-    expect(res1.status()).toBe(200);
-    const data1 = await res1.json();
-    expect(data1.nonce).toBeDefined();
+    // 2. While the browser's keep-alive TCP socket is maintained,
+    // execute in-page fetch for POST /_syneroym/session/challenge
+    const challenge = await page.evaluate(async (url) => {
+      const res = await fetch(`${url}/_syneroym/session/challenge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      return {
+        status: res.status,
+        data: await res.json(),
+      };
+    }, gatewayUrl);
 
-    // 2. Query methods on auth host over keep-alive connection
-    const res2 = await request.get(`http://127.0.0.1:${gatewayPort}/_syneroym/session/methods`, {
-      headers: {
-        'Host': 'auth.localhost',
-        'Connection': 'keep-alive',
-      },
-    });
-    expect(res2.status()).toBe(200);
-    const data2 = await res2.json();
-    expect(data2.methods).toContain('delegated-key');
+    expect(challenge.status).toBe(200);
+    expect(challenge.data.nonce).toBeDefined();
+
+    // 3. Execute subsequent in-page fetch for GET /_syneroym/session/whoami
+    const whoami = await page.evaluate(async (url) => {
+      const res = await fetch(`${url}/_syneroym/session/whoami`, {
+        method: 'GET',
+      });
+      return {
+        status: res.status,
+        data: await res.json(),
+      };
+    }, gatewayUrl);
+
+    expect(whoami.status).toBe(200);
+    expect(whoami.data.auth).toBe('unauthenticated');
   });
 });

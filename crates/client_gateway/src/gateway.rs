@@ -234,8 +234,19 @@ impl ClientGateway {
     }
 }
 
-fn is_auth_service_alias(alias: &str) -> bool {
-    alias == AUTH_SERVICE_ALIAS || alias == "auth-00000000"
+fn is_auth_service_alias(alias: &str, state: &GatewayState) -> bool {
+    if alias == AUTH_SERVICE_ALIAS {
+        return true;
+    }
+    if let Ok(guard) = state.auth_service_did.read()
+        && let Some(did) = guard.as_ref()
+    {
+        let hash = syneroym_core::util::short_hash(did);
+        if alias == format!("{AUTH_SERVICE_ALIAS}-{hash}") || alias == hash {
+            return true;
+        }
+    }
+    false
 }
 
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -317,7 +328,9 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
     let target = match parse_target_host(host_header) {
         Some(t) => t,
         None => {
-            if path.starts_with("/_syneroym/session") {
+            let first_label =
+                host_header.split('.').next().unwrap_or("").split(':').next().unwrap_or("");
+            if first_label == AUTH_SERVICE_ALIAS || path.starts_with("/_syneroym/session") {
                 TargetHost::Service {
                     lookup_alias: AUTH_SERVICE_ALIAS.to_string(),
                     interface: String::new(),
@@ -330,7 +343,7 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
     };
 
     let is_auth_host = match &target {
-        TargetHost::Service { lookup_alias, .. } => is_auth_service_alias(lookup_alias),
+        TargetHost::Service { lookup_alias, .. } => is_auth_service_alias(lookup_alias, &state),
         TargetHost::App { .. } => false,
     };
 

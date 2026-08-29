@@ -257,7 +257,7 @@ async fn setup_gateway_test_node_with_mode(
     (ctx, gateway_port, registry_url, service_did, host)
 }
 
-const AUTH_HOST: &str = "auth-s00000000.localhost";
+const AUTH_HOST: &str = "auth.localhost";
 
 async fn login_to_gateway(
     gateway_url: &str,
