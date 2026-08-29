@@ -7583,8 +7583,7 @@ pub mod exports {
                 #[repr(u8)]
                 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
                 pub enum CallerAuth {
-                    /// A verified delegation certificate. A malformed one is refused at
-                    /// the handshake, so reaching a guest at all means it verified.
+                    /// A verified delegation certificate or a verified session token issued to the person's master DID.
                     Delegated,
                     /// A UCAN capability chain that verified, was not revoked, and
                     /// carried at least one capability -- a chain that fails any of
@@ -7603,9 +7602,9 @@ pub mod exports {
                     /// authenticated.** This is what an unauthenticated request proxied by the
                     /// local client gateway looks like (and there `did` is the
                     /// *node's* own key -- the same value for every visitor, saying
-                    /// nothing about who is at the keyboard). With a local person session
-                    /// attached, the gateway presents an owner->node delegation certificate,
-                    /// which reports `delegated` and names the person's master DID instead.
+                    /// nothing about who is at the keyboard). With a session token
+                    /// attached, the router verifies it and reports `delegated` naming
+                    /// the person's master DID instead.
                     SelfAsserted,
                 }
                 impl ::core::fmt::Debug for CallerAuth {

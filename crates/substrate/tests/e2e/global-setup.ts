@@ -95,6 +95,14 @@ export default async function globalSetup() {
   execSync(`COPYFILE_DISABLE=1 tar -czf "${assetsArchive}" -C "${path.join(WASM_FIXTURE_DIR, 'static')}" .`,
            { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
+  console.log('Building the Roym Hub UI bundle and service components...');
+  execSync('npm run build && npm run pack',
+           { cwd: path.join(WORKSPACE_DIR, 'crates/roym_web/ui'), stdio: 'inherit' });
+  for (const svc of ['profile', 'conversation', 'catalog', 'transaction', 'directory', 'web']) {
+    execSync(`cargo component build --release --target wasm32-wasip2 -p syneroym-roym-${svc}`,
+             { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  }
+
   console.log('Building Cargo binaries...');
   execSync(`cargo build ${buildFlag} --bin roymctl`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
   execSync(`cargo build ${buildFlag} --bin syneroym-substrate`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
@@ -142,6 +150,7 @@ bootstrap_page_bind_address = "0.0.0.0:7662"
 
 [roles.client_gateway]
 http_port = 7660
+identity_mode = "login"
 
 [roles.auth]
 
@@ -309,12 +318,66 @@ registry_url = "http://127.0.0.1:7661"
     `--custom-config "${path.join(WASM_FIXTURE_DIR, 'routes.json')}"`,
     { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
+  // --- Roym Hub: deploy the six-service SynApp and mint a delegated key ---
+
+  console.log('Creating the alice person identity...');
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity create --name alice`,
+           { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+
+  // Deploy all six services through the real manifest so depends_on,
+  // bindings, and topology_visibility are exercised in the browser path.
+  // --mint-masters writes one member master per service to
+  // <dir>/identities/member-roym#<service>-0.key; the manifest's
+  // source/assets paths are workspace-root-relative, hence cwd: WORKSPACE_DIR.
+  console.log('Deploying the Roym app (six services)...');
+  execSync(
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 ` +
+    `--substrate ${substrateDid} --as owner app deploy roym crates/roym_core/app/roym.toml ` +
+    `--mint-masters --registry-url http://127.0.0.1:7661 ` +
+    `--journal-path "${path.join(TEST_DIR, 'roym-deployments.db')}"`,
+    { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+
+  const roymWebIdentityOutput = execSync(
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity show --name "member-roym#web-0"`,
+    { cwd: WORKSPACE_DIR }).toString();
+  const roymWebDidMatch = roymWebIdentityOutput.match(/(did:key:[a-z0-9]+)/);
+  if (!roymWebDidMatch) throw new Error('Could not find Roym web DID in roymctl output');
+  const roymWebDid = roymWebDidMatch[1];
+  console.log('Roym Web DID:', roymWebDid);
+
+  // `app deploy` registers the member master with no nickname (a separate,
+  // operator-set annotation); add the one the gateway hostname scheme needs.
+  console.log('Registering the Roym web service nickname...');
+  execSync(
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 registry register ` +
+    `--identity "member-roym#web-0" --substrate ${substrateDid} --nickname roym`,
+    { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+
+  const roymWebAlias = execSync(
+    `"${ROYMCTL_BIN}" alias ${roymWebDid} --nickname roym --interface http-native`,
+    { cwd: WORKSPACE_DIR }).toString().trim().split('\n').pop()?.trim();
+  if (!roymWebAlias) throw new Error('Could not calculate the Roym web alias');
+  console.log('Roym Web Alias:', roymWebAlias);
+
+  // Mint a short-lived delegated key for alice and publish her master anchor,
+  // so the Hub's delegated-key login has a session-key.json to import.
+  const sessionKeyFile = path.join(TEST_DIR, 'alice-session-key.json');
+  console.log('Minting a delegated session key for alice...');
+  execSync(
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --as alice session delegate ` +
+    `--registry-url http://127.0.0.1:7661 --out "${sessionKeyFile}"`,
+    { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+
   // Set environment variables for tests
   process.env.SUBSTRATE_DID = substrateDid;
   process.env.APP_DID = appDid;
   process.env.APP_ALIAS = appAlias;
   process.env.WASM_APP_DID = wasmDid;
   process.env.WASM_APP_ALIAS = wasmAlias;
+  process.env.ROYM_WEB_DID = roymWebDid;
+  process.env.ROYM_WEB_ALIAS = roymWebAlias;
+  process.env.ROYM_HUB_URL = `http://${roymWebAlias}:7660`;
+  process.env.ROYM_SESSION_KEY_FILE = sessionKeyFile;
 
   console.log('--- E2E Global Setup Complete ---\n');
 }
