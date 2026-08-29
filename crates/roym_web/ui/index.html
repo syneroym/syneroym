@@ -5,8 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- frame-ancestors is intentionally omitted: it has no effect in a
        <meta> CSP (browsers ignore it and log a console error) and must be
-       delivered as an HTTP header instead. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'none'; base-uri 'none'">
+       delivered as an HTTP header instead.
+       connect-src also allows the auth service's own origin (auth.<domain>),
+       which the login flow calls cross-origin so a session fetch never rides
+       the Hub page's keep-alive connection (ADR-0024 P1). A real deployment
+       should deliver this policy as a header naming its actual auth origin
+       rather than the localhost pattern below. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' http://auth.localhost:* https://auth.localhost:*; form-action 'none'; base-uri 'none'">
   <title>Roym Hub</title>
   <link rel="stylesheet" href="/src/style.css">
 </head>
