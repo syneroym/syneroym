@@ -1,10 +1,12 @@
 import { renderCard } from "./cards/render";
 import {
+  authHeaders,
   fetchMethods,
   hasStoredKey,
   loginWithBundle,
   loginWithStoredKey,
   logout,
+  whoami,
   type SessionKeyBundle,
 } from "./session/login";
 
@@ -34,19 +36,11 @@ async function main() {
   contentArea.className = "content-area";
   app.appendChild(contentArea);
 
-  // Check current session. A 401 (or a restarted substrate) is an ordinary
-  // "log in again" state, never an error banner.
-  let whoamiData: { person_did?: string; auth?: string; did?: string } | null = null;
-  try {
-    const res = await fetch("/_syneroym/session/whoami");
-    if (res.status === 200) {
-      whoamiData = await res.json();
-    }
-  } catch {
-    // Network or server unreachable
-  }
+  // Check current session. No token, a 401, or a restarted substrate is an
+  // ordinary "log in again" state, never an error banner.
+  const whoamiData = await whoami();
 
-  const did = whoamiData?.person_did || whoamiData?.did;
+  const did = whoamiData?.person_did;
   if (did) {
     const didSpan = document.createElement("span");
     didSpan.textContent = `Logged in: ${did} (${whoamiData?.auth || "delegated"})`;
@@ -178,7 +172,7 @@ async function renderHome(container: HTMLElement, did: string) {
   try {
     const rpcRes = await fetch("/rpc", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 1,

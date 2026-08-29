@@ -1586,9 +1586,9 @@ built with should be ignored, not rejected, exactly as the other roles are.
 | `crates/roym_core/src/**` unit tests | in crate | the routing table (§5.3), the card set drift guard (§5.4) |
 | `xtask check-roym-deps` (§14 (9)) | build-graph, no runtime | no Roym crate depends on a host crate on either target — the D3 assertion, given a home |
 | `crates/roym_web/tests/dual_build_parity.rs` | in process, both builds | every §12.2 scenario, byte-identical |
-| `crates/substrate/tests/roym_app_e2e.rs` | router + gateway, WASM only | registration, routes, the Hub URL, the person session end to end, visibility. **The person-session leg is rewritten at the C2 rebase** ([ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)): it asserts a verified session token whose subject is the person's master DID, not a gateway-minted preamble delegation |
-| `crates/substrate/tests/gateway_session_e2e.rs` | gateway | §10.4's six cases |
-| `crates/substrate/tests/e2e/tests/roym-hub.spec.ts` | real browser | login, the card gallery, and matrix row 4 |
+| `crates/substrate/tests/roym_app_e2e.rs` | router + gateway, WASM only | registration, routes, the Hub URL, the person session end to end, visibility. **As built:** the person-session leg logs in through the auth service's `local` method (a Rust test, not the browser) and asserts `web`'s `session.whoami` returns the person's master DID with `auth: "delegated"` — the router-verified session cookie, not a gateway-minted preamble delegation |
+| `crates/substrate/tests/gateway_session_e2e.rs` | gateway | C1.1's auth-service suite, unchanged by C2 |
+| `crates/substrate/tests/e2e/tests/roym-hub.spec.ts` | real browser | delegated-key login, session persistence, the card gallery, and matrix row 4 |
 
 **`crates/core/src/test_constants.rs` gains six `roym_<name>_wasm_path()`
 functions** (`roym_web_wasm_path`, `roym_conversation_wasm_path`, …), one

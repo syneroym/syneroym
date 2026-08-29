@@ -6,12 +6,58 @@
 // file once, keeps the temporary private key in IndexedDB as a
 // non-extractable WebCrypto `CryptoKey` (page JS can sign with it, never
 // read it), signs the auth service's challenge, and posts the login.
+//
+// The auth service is a **separate origin** (`auth.<domain>`), not a path
+// on the Hub's own host: a browser opens its own connection pool for it, so
+// a session `fetch` never collides with the Hub page's keep-alive
+// connection (ADR-0024 §P1). Its response carries the session token in the
+// JSON body; the Hub keeps it in `sessionStorage` and sends it as
+// `Authorization: Bearer` on every later call — the HttpOnly cookie the
+// auth origin also sets is never visible to the Hub's own host.
 
-const SESSION_ENDPOINT = "/_syneroym/session";
+const TOKEN_KEY = "roym_session_token";
 
 const DB_NAME = "roym-hub-session";
 const DB_STORE = "delegated-key";
 const DB_RECORD = "current";
+
+/** The auth service's origin, derived from the Hub's own host. */
+export function authOrigin(): string {
+  const host = window.location.hostname;
+  const domain = host.includes(".") ? host.slice(host.indexOf(".") + 1) : host;
+  const port = window.location.port ? `:${window.location.port}` : "";
+  return `${window.location.protocol}//auth.${domain}${port}`;
+}
+
+export function storedToken(): string | null {
+  try {
+    return window.sessionStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function setToken(token: string): void {
+  try {
+    window.sessionStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    // sessionStorage unavailable (private mode); the session lasts this page only
+  }
+}
+
+function clearToken(): void {
+  try {
+    window.sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // nothing to clear
+  }
+}
+
+/** `Authorization` header for the current session, or `{}` when logged out. */
+export function authHeaders(): Record<string, string> {
+  const token = storedToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 /** One `session-key.json` produced by `roymctl session delegate`. */
 export interface SessionKeyBundle {
@@ -121,7 +167,7 @@ async function getStoredKey(): Promise<StoredKey | null> {
   return record;
 }
 
-export async function clearStoredKey(): Promise<void> {
+async function clearStoredKey(): Promise<void> {
   let db: IDBDatabase;
   try {
     db = await openDb();
@@ -143,9 +189,10 @@ export async function hasStoredKey(): Promise<boolean> {
 }
 
 async function completeLogin(stored: StoredKey): Promise<void> {
+  const auth = authOrigin();
   const masterDid = stored.certificate.master_did;
 
-  const challengeRes = await fetch(`${SESSION_ENDPOINT}/challenge`, {
+  const challengeRes = await fetch(`${auth}/_syneroym/session/challenge`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ master_did: masterDid }),
@@ -166,7 +213,7 @@ async function completeLogin(stored: StoredKey): Promise<void> {
     ),
   );
 
-  const loginRes = await fetch(`${SESSION_ENDPOINT}/login`, {
+  const loginRes = await fetch(`${auth}/_syneroym/session/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -187,6 +234,8 @@ async function completeLogin(stored: StoredKey): Promise<void> {
     }
     throw new Error(message);
   }
+  const grant: { token: string } = await loginRes.json();
+  setToken(grant.token);
 }
 
 /** Import a `session-key.json` bundle, persist its key, and log in. */
@@ -214,15 +263,43 @@ export interface SessionMethods {
 }
 
 export async function fetchMethods(): Promise<SessionMethods> {
-  const res = await fetch(`${SESSION_ENDPOINT}/methods`);
+  const res = await fetch(`${authOrigin()}/_syneroym/session/methods`);
   if (!res.ok) throw new Error(`methods failed: HTTP ${res.status}`);
   return res.json();
 }
 
-export async function logout(): Promise<void> {
+export interface Whoami {
+  person_did: string;
+  auth: string;
+}
+
+/** The current session, or null when there is no valid one. */
+export async function whoami(): Promise<Whoami | null> {
+  const token = storedToken();
+  if (!token) return null;
   try {
-    await fetch(`${SESSION_ENDPOINT}/logout`, { method: "POST" });
+    const res = await fetch(`${authOrigin()}/_syneroym/session/whoami`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status !== 200) {
+      clearToken();
+      return null;
+    }
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function logout(): Promise<void> {
+  const token = storedToken();
+  try {
+    await fetch(`${authOrigin()}/_syneroym/session/logout`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
   } finally {
+    clearToken();
     await clearStoredKey();
   }
 }

@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use hyper_util::rt::TokioIo;
-use syneroym_core::local_registry::EndpointRegistry;
+use syneroym_core::local_registry::{EndpointRegistry, SubstrateEndpoint};
 use syneroym_rpc::{
     Ability, AuthLevel, CallerContext, CallerProof, Capability, CapabilityToken, ChainVerifyOpts,
     ResourceUri, SessionContext, framing,
@@ -375,13 +375,19 @@ impl RouteHandler {
         // empty case filters every native-capability name out, so left alone it
         // picks the app-declared WASM channel and the asset dispatch is
         // misrouted into the component (which imports, but never exports,
-        // `blob-store`). Prefer `http-native` here for exactly the services the
-        // bridge is meant for.
+        // `blob-store`). Prefer `http-native` here -- but only when the empty
+        // interface would otherwise resolve to a `WasmChannel`. A node-level
+        // native service such as the auth service resolves its empty interface
+        // to its own `NativeHostChannel` and must be left alone.
         let service_id = preamble.service_id.as_str();
         let bridged_over_http = preamble.transport == RouteTransport::Http
             && preamble.interface.is_empty()
             && (self.inner.http_routes.contains_key(service_id)
-                || self.inner.assets.contains_key(service_id));
+                || self.inner.assets.contains_key(service_id))
+            && matches!(
+                self.inner.registry.lookup(service_id, ""),
+                Some((SubstrateEndpoint::WasmChannel { .. }, _))
+            );
         if bridged_over_http {
             preamble.interface = HTTP_NATIVE_INTERFACE.to_string();
         }

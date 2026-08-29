@@ -276,7 +276,15 @@ async fn test_roym_app_e2e_lifecycle() {
     let web_did = web_did.as_str();
     let dir_did = dir_did.as_str();
     let profile_did = profile_did.as_str();
-    let client = Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    // `pool_max_idle_per_host(0)` forces a fresh connection per request: the
+    // gateway pins a whole socket to one upstream after the first request
+    // (ADR-0024 §P1), and the login POST goes to the auth service while every
+    // later request goes to `web`.
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .pool_max_idle_per_host(0)
+        .build()
+        .unwrap();
 
     // Log in through the node auth service's `local` method (proxied by the
     // gateway on the reserved path).

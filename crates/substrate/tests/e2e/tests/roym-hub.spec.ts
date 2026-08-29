@@ -38,11 +38,14 @@ test.describe('Roym Hub', () => {
     await page.waitForLoadState('networkidle');
     await expect(page.locator('.session-bar')).toContainText('did:key:', { timeout: 15_000 });
 
-    // Clearing cookies and IndexedDB drops both the session and the stored
-    // key, so the Hub is back to a clean "Sign in" screen -- an ordinary
-    // state, not an error.
+    // Clearing the session token and the stored key drops the session, so
+    // the Hub is back to a clean "Sign in" screen -- an ordinary state, not
+    // an error.
     await page.context().clearCookies();
-    await page.evaluate(() => indexedDB.deleteDatabase('roym-hub-session'));
+    await page.evaluate(() => {
+      sessionStorage.clear();
+      indexedDB.deleteDatabase('roym-hub-session');
+    });
     await page.reload();
     await page.waitForLoadState('networkidle');
     await expect(page.locator('.login-picker h2')).toHaveText('Sign in');
