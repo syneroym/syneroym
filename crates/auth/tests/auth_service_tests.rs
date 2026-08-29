@@ -211,6 +211,55 @@ async fn delegated_key_login_flow_and_refusals() {
     assert_eq!(err.1, "invalid signature");
 }
 
+/// A caller that cannot canonicalize JSON (a browser) asks for the assertion
+/// string in the challenge response, signs those exact bytes, and logs in.
+#[tokio::test]
+async fn challenge_returns_the_assertion_string_a_browser_signs_verbatim() {
+    let auth_id = Identity::generate().unwrap();
+    let node_id = Identity::generate().unwrap();
+    let node_did = substrate::derive_did_key(&node_id.public_key());
+    let master_id = Identity::generate().unwrap();
+    let master_did = substrate::derive_did_key(&master_id.public_key());
+    let temp_id = Identity::generate().unwrap();
+    let temp_did = substrate::derive_did_key(&temp_id.public_key());
+
+    let resolver = Arc::new(MockAnchorResolver { resolvable: true, revoked: vec![] });
+    let service = AuthService::new(auth_id, node_did.clone(), 3600, 60, None, resolver);
+
+    let challenge = service.issue_challenge(Some(&master_did));
+    let assertion = challenge.assertion.expect("assertion present when master_did is given");
+    // It is exactly the canonical form of `gateway_session_assertion`.
+    let expected = serde_json::to_string(&substrate::canonicalize_json_value(
+        &gateway_session_assertion(&node_did, &challenge.nonce, &master_did),
+    ))
+    .unwrap();
+    assert_eq!(assertion, expected);
+
+    // Sign the bytes as given -- no local canonicalization -- z-base-32 encoded.
+    let signature = z32::encode(&temp_id.sign(assertion.as_bytes()).to_bytes());
+    let delegation = DelegationCertificate::issue(
+        &master_id,
+        temp_id.public_key(),
+        7200,
+        SCOPE_SESSION_AUTH.to_string(),
+    )
+    .unwrap();
+
+    let res = service
+        .login_delegated_key(&DelegatedKeyLoginParams {
+            temp_did,
+            delegation,
+            nonce: challenge.nonce,
+            signature,
+        })
+        .await
+        .unwrap();
+    assert_eq!(res.person_did, master_did);
+
+    // A challenge with no master_did carries no assertion.
+    assert!(service.issue_challenge(None).assertion.is_none());
+}
+
 #[tokio::test]
 async fn local_login_and_refusals() {
     let auth_id_bytes = Identity::generate().unwrap().to_bytes();
