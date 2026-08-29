@@ -1916,6 +1916,13 @@ Raised rather than guessed.
 
 ## §16 What "done" means for C2
 
+**Status 2026-08-29: met.** All items below hold on
+`feat/m06c-slice-c2-rebase`. Item 5's sibling-identity caveat and item 8's
+Gap-2 note stand as written; the sibling gap is carried to C4/C5 with a
+backlog row, not closed. Item 9's `cargo test --workspace` and
+`mise run test:e2e` pass with the sandbox off (see [status.md](status.md)'s
+C2 evidence for why).
+
 1. Seven crates exist under `crates/`, named per `D-06C-9`, and each of the
    six services builds **both** as a `wasm32-wasip2` component and as a
    host-target library linked into `syneroym-substrate` behind the `roym`

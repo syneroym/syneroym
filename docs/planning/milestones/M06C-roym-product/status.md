@@ -171,13 +171,17 @@ A TypeScript/Vite single-page app. Login is `delegated-key` only (`GET /_syneroy
 
 ## C2 — Verification evidence
 
-1. `cargo test -p syneroym-roym-core`: **pass**
+1. `cargo test -p syneroym-roym-core`: **5 passed, 0 failed**
 2. `cargo test -p syneroym-roym-web --test dual_build_parity`: **10 passed, 0 failed**
 3. `cargo test -p syneroym-substrate --test roym_app_e2e`: **2 passed, 0 failed**
-4. `cargo test -p syneroym-substrate --test gateway_session_e2e`: **pass** (C1.1's suite, unchanged)
-5. `cd crates/roym_web/ui && npm test`: **pass** (includes the z32 vector test against Rust output)
-6. `cargo xtask check-roym-deps`: **clean**
-7. `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, `cargo audit`, `cargo deny check licenses`: **clean**
-8. `mise run test:e2e`: **pass** (adds `roym-hub.spec.ts`: delegated-key login, session persistence, card gallery, card safety)
+4. `cargo test -p syneroym-auth`: **4 passed, 0 failed** (incl. the browser-signable challenge assertion)
+5. `cargo test -p syneroym-substrate --test gateway_session_e2e`: **20 passed, 0 failed** (C1.1's suite, unchanged by C2)
+6. `cd crates/roym_web/ui && npm test`: **9 passed** (incl. the z32 vector test against Rust output)
+7. `cargo xtask check-roym-deps`: **clean**
+8. `cargo test --workspace`: **0 failed** (run with the sandbox off — under the sandbox the substrate e2e tests fail on real binds / iroh and `cert_renewal_e2e` spins forever; this is an environment constraint, not the change)
+9. `cargo +nightly fmt --all`: **clean**
+10. `cargo clippy --workspace --all-targets --all-features`: **clean**
+11. `cargo audit`: **clean** · `cargo deny check licenses`: **`licenses ok`**
+12. `mise run test:e2e`: **23 passed (default config) + 4 passed (multi-hop)** — the four new `roym-hub.spec.ts` cases (delegated-key login, session persistence, card gallery, card safety) all pass
 
 
