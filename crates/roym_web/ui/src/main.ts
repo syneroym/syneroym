@@ -1,4 +1,12 @@
 import { renderCard } from "./cards/render";
+import {
+  fetchMethods,
+  hasStoredKey,
+  loginWithBundle,
+  loginWithStoredKey,
+  logout,
+  type SessionKeyBundle,
+} from "./session/login";
 
 declare global {
   interface Window {
@@ -26,7 +34,8 @@ async function main() {
   contentArea.className = "content-area";
   app.appendChild(contentArea);
 
-  // Check current session
+  // Check current session. A 401 (or a restarted substrate) is an ordinary
+  // "log in again" state, never an error banner.
   let whoamiData: { person_did?: string; auth?: string; did?: string } | null = null;
   try {
     const res = await fetch("/_syneroym/session/whoami");
@@ -47,7 +56,7 @@ async function main() {
     logoutBtn.className = "button";
     logoutBtn.textContent = "Log out";
     logoutBtn.onclick = async () => {
-      await fetch("/_syneroym/session/logout", { method: "POST" });
+      await logout();
       window.location.reload();
     };
     sessionBar.appendChild(logoutBtn);
@@ -57,7 +66,7 @@ async function main() {
     const anonSpan = document.createElement("span");
     anonSpan.textContent = "Not logged in";
     sessionBar.appendChild(anonSpan);
-    renderLogin(contentArea);
+    await renderLogin(contentArea);
   }
 }
 
@@ -66,60 +75,86 @@ async function renderLogin(container: HTMLElement) {
 
   const box = document.createElement("div");
   box.className = "login-picker";
-  const title = document.createElement("h2");
-  title.textContent = "Select Person Identity";
-  box.appendChild(title);
+  const heading = document.createElement("h2");
+  heading.textContent = "Sign in";
+  box.appendChild(heading);
 
+  const status = document.createElement("p");
+  status.className = "login-status";
+  const setStatus = (text: string) => {
+    status.textContent = text;
+  };
+
+  let methods: string[] = [];
   try {
-    const res = await fetch("/_syneroym/session/identities");
-    if (res.status === 200) {
-      const data: { identities: string[] } = await res.json();
-      if (!data.identities || data.identities.length === 0) {
-        const p = document.createElement("p");
-        p.textContent = "no person identities found in this node's person_identities_dir; create one with roymctl identity create";
-        box.appendChild(p);
-      } else {
-        const select = document.createElement("select");
-        select.style.width = "100%";
-        select.style.marginBottom = "12px";
-        select.style.padding = "6px";
-        for (const id of data.identities) {
-          const opt = document.createElement("option");
-          opt.value = id;
-          opt.textContent = id;
-          select.appendChild(opt);
-        }
-        box.appendChild(select);
-
-        const btn = document.createElement("button");
-        btn.className = "button";
-        btn.textContent = "Log In";
-        btn.onclick = async () => {
-          const chosen = select.value;
-          const loginRes = await fetch("/_syneroym/session/login-local", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ identity: chosen }),
-          });
-          if (loginRes.ok) {
-            window.location.reload();
-          } else {
-            alert(`Login failed: ${loginRes.statusText}`);
-          }
-        };
-        box.appendChild(btn);
-      }
-    } else {
-      const p = document.createElement("p");
-      p.textContent = "Local login is not available on this node.";
-      box.appendChild(p);
-    }
-  } catch (e) {
-    const p = document.createElement("p");
-    p.textContent = `Error fetching identities: ${e}`;
-    box.appendChild(p);
+    methods = (await fetchMethods()).methods;
+  } catch {
+    setStatus("Could not reach the auth service on this node.");
+    box.appendChild(status);
+    container.appendChild(box);
+    return;
   }
 
+  if (!methods.includes("delegated-key")) {
+    setStatus("This node has no browser login method enabled.");
+    box.appendChild(status);
+    container.appendChild(box);
+    return;
+  }
+
+  const intro = document.createElement("p");
+  intro.textContent =
+    "Load a session key file produced by " +
+    "`roymctl session delegate --as <name> --registry-url <registry>`. " +
+    "The key stays in this browser and cannot be read back by page code.";
+  box.appendChild(intro);
+
+  // Re-use a delegated key already held in this browser, if any.
+  if (await hasStoredKey()) {
+    const reuseBtn = document.createElement("button");
+    reuseBtn.className = "button";
+    reuseBtn.textContent = "Sign in with this browser's key";
+    reuseBtn.onclick = async () => {
+      reuseBtn.disabled = true;
+      setStatus("Signing in...");
+      try {
+        if (await loginWithStoredKey()) {
+          window.location.reload();
+          return;
+        }
+        setStatus("The stored key is gone; load a session key file.");
+      } catch (e) {
+        setStatus(`Sign-in failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      reuseBtn.disabled = false;
+    };
+    box.appendChild(reuseBtn);
+  }
+
+  const fileLabel = document.createElement("label");
+  fileLabel.className = "button file-button";
+  fileLabel.textContent = "Load session key file";
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = "application/json,.json";
+  fileInput.style.display = "none";
+  fileInput.onchange = async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    setStatus("Signing in...");
+    try {
+      const bundle = JSON.parse(await file.text()) as SessionKeyBundle;
+      await loginWithBundle(bundle);
+      window.location.reload();
+    } catch (e) {
+      setStatus(`Sign-in failed: ${e instanceof Error ? e.message : String(e)}`);
+      fileInput.value = "";
+    }
+  };
+  fileLabel.appendChild(fileInput);
+  box.appendChild(fileLabel);
+
+  box.appendChild(status);
   container.appendChild(box);
 }
 

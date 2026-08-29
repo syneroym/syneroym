@@ -41,3 +41,12 @@ body {
   border-radius: 4px;
   cursor: pointer;
 }
+.file-button {
+  display: inline-block;
+  margin-right: 8px;
+}
+.login-status {
+  margin-top: 12px;
+  min-height: 1em;
+  color: #b91c1c;
+}
