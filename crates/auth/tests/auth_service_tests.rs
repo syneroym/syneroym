@@ -67,7 +67,7 @@ async fn delegated_key_login_flow_and_refusals() {
     let service = AuthService::new(auth_id, node_did.clone(), 3600, 60, None, resolver.clone());
 
     // 1. Issue challenge
-    let challenge = service.issue_challenge();
+    let challenge = service.issue_challenge(None);
     assert_eq!(challenge.node_did, node_did);
 
     // 2. Mint delegation certificate with session-auth scope
@@ -104,7 +104,7 @@ async fn delegated_key_login_flow_and_refusals() {
     assert_eq!(err.1, "unknown or already used nonce");
 
     // 6. Routing scope refused (Finding 3)
-    let ch2a = service.issue_challenge();
+    let ch2a = service.issue_challenge(None);
     let routing_scope_delegation = DelegationCertificate::issue(
         &master_id,
         temp_id.public_key(),
@@ -127,7 +127,7 @@ async fn delegated_key_login_flow_and_refusals() {
     assert_eq!(err.1, "invalid delegation certificate");
 
     // 6b. Service instance scope refused
-    let ch2 = service.issue_challenge();
+    let ch2 = service.issue_challenge(None);
     let wrong_scope_delegation = DelegationCertificate::issue(
         &master_id,
         temp_id.public_key(),
@@ -154,7 +154,7 @@ async fn delegated_key_login_flow_and_refusals() {
         Arc::new(MockAnchorResolver { resolvable: true, revoked: vec![temp_did.clone()] });
     let auth_id_rev = Identity::generate().unwrap();
     let rev_service = AuthService::new(auth_id_rev, node_did.clone(), 3600, 60, None, rev_resolver);
-    let ch3 = rev_service.issue_challenge();
+    let ch3 = rev_service.issue_challenge(None);
     let sig3 =
         temp_id.sign_json(&gateway_session_assertion(&node_did, &ch3.nonce, &master_did)).unwrap();
     let err = rev_service
@@ -170,7 +170,7 @@ async fn delegated_key_login_flow_and_refusals() {
     assert_eq!(err.1, "delegated key is in master revoked_keys list");
 
     // 8. Expired delegation refused
-    let ch4 = service.issue_challenge();
+    let ch4 = service.issue_challenge(None);
     let mut expired_delegation = DelegationCertificate::issue(
         &master_id,
         temp_id.public_key(),
@@ -193,7 +193,7 @@ async fn delegated_key_login_flow_and_refusals() {
     assert_eq!(err.0, 401);
 
     // 9. Bad signature refused
-    let ch5 = service.issue_challenge();
+    let ch5 = service.issue_challenge(None);
     let other_temp = Identity::generate().unwrap();
     let bad_sig = other_temp
         .sign_json(&gateway_session_assertion(&node_did, &ch5.nonce, &master_did))
