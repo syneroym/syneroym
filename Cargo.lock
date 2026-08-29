@@ -7936,6 +7936,124 @@ dependencies = [
 ]
 
 [[package]]
+name = "syneroym-roym-catalog"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "syneroym-app-host",
+ "syneroym-app-host-native",
+ "syneroym-roym-core",
+ "syneroym-rpc",
+ "syneroym-wit-interfaces",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "syneroym-roym-conversation"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "syneroym-app-host",
+ "syneroym-app-host-native",
+ "syneroym-roym-core",
+ "syneroym-rpc",
+ "syneroym-wit-interfaces",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "syneroym-roym-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "syneroym-app-host",
+ "syneroym-rpc",
+]
+
+[[package]]
+name = "syneroym-roym-directory"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "syneroym-app-host",
+ "syneroym-app-host-native",
+ "syneroym-roym-core",
+ "syneroym-rpc",
+ "syneroym-wit-interfaces",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "syneroym-roym-profile"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "syneroym-app-host",
+ "syneroym-app-host-native",
+ "syneroym-roym-core",
+ "syneroym-rpc",
+ "syneroym-wit-interfaces",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "syneroym-roym-transaction"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "syneroym-app-host",
+ "syneroym-app-host-native",
+ "syneroym-roym-core",
+ "syneroym-rpc",
+ "syneroym-wit-interfaces",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "syneroym-roym-web"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "syneroym-app-host",
+ "syneroym-app-host-native",
+ "syneroym-app-orchestration",
+ "syneroym-async-queue",
+ "syneroym-conversation",
+ "syneroym-core",
+ "syneroym-data-blob",
+ "syneroym-data-db",
+ "syneroym-data-keystore",
+ "syneroym-identity",
+ "syneroym-mqtt-broker",
+ "syneroym-roym-catalog",
+ "syneroym-roym-conversation",
+ "syneroym-roym-core",
+ "syneroym-roym-directory",
+ "syneroym-roym-profile",
+ "syneroym-roym-transaction",
+ "syneroym-rpc",
+ "syneroym-sandbox-wasm",
+ "syneroym-wit-interfaces",
+ "tempfile",
+ "tokio",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "syneroym-rpc"
 version = "0.1.0"
 dependencies = [
@@ -8107,6 +8225,13 @@ dependencies = [
  "syneroym-mqtt-broker",
  "syneroym-observability",
  "syneroym-router",
+ "syneroym-roym-catalog",
+ "syneroym-roym-conversation",
+ "syneroym-roym-core",
+ "syneroym-roym-directory",
+ "syneroym-roym-profile",
+ "syneroym-roym-transaction",
+ "syneroym-roym-web",
  "syneroym-rpc",
  "syneroym-sandbox-podman",
  "syneroym-sandbox-wasm",

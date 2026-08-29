@@ -762,6 +762,17 @@ async fn setup_router(
 
     #[cfg(feature = "dual_build_fixture")]
     let fixture_factory = init_dual_build_fixture(&shared, &endpoint_registry, service_id).await?;
+    // Only wire the Roym SynApp's native build when this node actually
+    // runs the role. The `roym` feature can be compiled in (CI builds the
+    // whole workspace with `--all-features`) without every substrate boot
+    // wanting six extra `NativeService`s registered against no deploy
+    // record.
+    #[cfg(feature = "roym")]
+    let roym_factories = if config.roles.roym.is_some() {
+        init_roym(&shared, &endpoint_registry, service_id, config).await?
+    } else {
+        Vec::new()
+    };
 
     let router = ConnectionRouter::init(
         endpoint_registry.clone(),
@@ -779,6 +790,10 @@ async fn setup_router(
         shared.conversation.set_service_proxy(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>);
         #[cfg(feature = "dual_build_fixture")]
         if let Some(factory) = fixture_factory {
+            factory.set_service_proxy(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>);
+        }
+        #[cfg(feature = "roym")]
+        for factory in &roym_factories {
             factory.set_service_proxy(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>);
         }
     }
@@ -858,28 +873,32 @@ struct SharedNodeHandles {
     /// alert publication shares one broker with the rest of the node
     /// instead of standing up a second one.
     messaging_broker: Arc<MqttBroker>,
-    /// The `dual_build_fixture` role's `NativeHostFactory` needs the same
-    /// blob backend and logical resolver `build_route_handler_deps` already
-    /// built, rather than standing up its own.
-    #[cfg_attr(not(feature = "dual_build_fixture"), allow(dead_code))]
+    /// The `dual_build_fixture` and `roym` roles' `NativeHostFactory` need
+    /// the same blob backend and logical resolver `build_route_handler_deps`
+    /// already built, rather than standing up their own.
+    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
     blob_provider: Arc<dyn BlobProvider>,
-    #[cfg_attr(not(feature = "dual_build_fixture"), allow(dead_code))]
+    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
     logical_resolver: Arc<LogicalResolver>,
     /// Needed by `setup_router` to wire the real
     /// `ServiceProxy` in once `ConnectionRouter::init` has built it, and by
-    /// the `dual_build_fixture` role's `NativeHostFactory`.
+    /// the `dual_build_fixture`/`roym` roles' `NativeHostFactory`.
     conversation: Arc<ConversationService>,
     /// The per-service HTTP route table. A linked native app has no deploy
     /// record, so nothing else would ever put its routes here.
-    #[cfg_attr(not(feature = "dual_build_fixture"), allow(dead_code))]
+    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
     http_routes: HttpRouteRegistry,
     /// The `guest`/`websocket` route targets' native registry.
-    #[cfg_attr(not(feature = "dual_build_fixture"), allow(dead_code))]
+    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
     native_http: syneroym_rpc::NativeHttpRegistry,
     /// The shared live-WebSocket table (`AppSandboxEngine` holds the same
     /// `Arc`).
-    #[cfg_attr(not(feature = "dual_build_fixture"), allow(dead_code))]
+    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
     websocket_senders: Arc<syneroym_rpc::WebSocketSenders>,
+    /// The static asset table. A linked native app has no deploy record,
+    /// so nothing else would put its UI bundle here.
+    #[cfg_attr(not(feature = "roym"), allow(dead_code))]
+    assets: AssetRegistry,
 }
 
 /// The literal `native_dispatch` key the supervisor's `NativeService`
@@ -1444,6 +1463,400 @@ async fn init_dual_build_fixture(
     Ok(Some(factory))
 }
 
+#[cfg(feature = "roym")]
+const ROYM_APP_INSTANCE: &str = "roym";
+
+#[cfg(feature = "roym")]
+/// Internal dispatch id for one Roym service's native build -- the key its
+/// `NativeService`, its `endpoint_registry` `NativeHostChannel`, and every
+/// sibling `TopologyEntry` member share. Shaped as a `did:key:` string so
+/// it satisfies `ServiceId`'s invariant; it is never resolved as a real
+/// DID (native dispatch is in-process, no handshake), only matched.
+fn roym_dispatch_id(name: &str) -> String {
+    format!("did:key:roym-{name}")
+}
+
+#[cfg(feature = "roym")]
+fn roym_http_routes() -> Vec<syneroym_core::http_routes::HttpRoute> {
+    use syneroym_core::http_routes::HttpRoute;
+    vec![
+        HttpRoute {
+            method: "POST".into(),
+            path: "/rpc".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: false,
+        },
+        HttpRoute {
+            method: "GET".into(),
+            path: "/health".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "GET".into(),
+            path: "/ws".into(),
+            target: "websocket".into(),
+            operation: "handle-upgrade".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: false,
+        },
+    ]
+}
+
+#[cfg(feature = "roym")]
+async fn init_roym(
+    shared: &SharedNodeHandles,
+    endpoint_registry: &EndpointRegistry,
+    node_service_id: &str,
+    config: &SubstrateConfig,
+) -> anyhow::Result<Vec<Arc<syneroym_app_host_native::NativeHostFactory>>> {
+    use std::{collections::BTreeSet, fs, sync::Weak, time::Duration};
+
+    use syneroym_app_host_native::{HttpSink, NativeHostFactory, NativeHttpAdapter, WebSocketSink};
+    use syneroym_app_orchestration::{
+        AppInstanceId, LogicalServiceName, TopologyEntry, TopologyEpoch, TopologyKey, TopologyMode,
+        models::ServiceId,
+    };
+    use syneroym_control_plane::assets;
+    use syneroym_core::{asset_manifest::ServiceAssets, local_registry::SubstrateEndpoint};
+    use syneroym_roym_core::services;
+    use syneroym_rpc::{NativeHttpService, NativeService};
+
+    let mut factories = Vec::new();
+
+    // 1. One factory + one NativeService per service.
+    let factory_web = NativeHostFactory::new(
+        roym_dispatch_id(services::WEB.name),
+        shared.key_store.clone(),
+        shared.storage_provider.clone(),
+        shared.blob_provider.clone(),
+        shared.messaging_broker.clone(),
+        endpoint_registry.clone(),
+        shared.logical_resolver.clone(),
+        shared.conversation.clone(),
+        shared.websocket_senders.clone(),
+    );
+    let f_web = factory_web.clone();
+    let web = Arc::new(syneroym_roym_web::native::NativeWeb::new(
+        roym_dispatch_id(services::WEB.name),
+        move |caller| f_web.host_for(caller),
+    ));
+    shared
+        .native_dispatch
+        .insert(roym_dispatch_id(services::WEB.name), web.clone() as Arc<dyn NativeService>);
+    endpoint_registry
+        .register(
+            roym_dispatch_id(services::WEB.name),
+            services::WEB.interface.to_string(),
+            SubstrateEndpoint::NativeHostChannel {
+                service_id: roym_dispatch_id(services::WEB.name),
+            },
+        )
+        .await?;
+    factories.push(factory_web.clone());
+
+    let factory_profile = NativeHostFactory::new(
+        roym_dispatch_id(services::PROFILE.name),
+        shared.key_store.clone(),
+        shared.storage_provider.clone(),
+        shared.blob_provider.clone(),
+        shared.messaging_broker.clone(),
+        endpoint_registry.clone(),
+        shared.logical_resolver.clone(),
+        shared.conversation.clone(),
+        shared.websocket_senders.clone(),
+    );
+    let f_profile = factory_profile.clone();
+    let profile = Arc::new(syneroym_roym_profile::native::NativeProfile::new(
+        roym_dispatch_id(services::PROFILE.name),
+        move |caller| f_profile.host_for(caller),
+    ));
+    shared.native_dispatch.insert(
+        roym_dispatch_id(services::PROFILE.name),
+        profile.clone() as Arc<dyn NativeService>,
+    );
+    endpoint_registry
+        .register(
+            roym_dispatch_id(services::PROFILE.name),
+            services::PROFILE.interface.to_string(),
+            SubstrateEndpoint::NativeHostChannel {
+                service_id: roym_dispatch_id(services::PROFILE.name),
+            },
+        )
+        .await?;
+    factories.push(factory_profile);
+
+    let factory_conv = NativeHostFactory::new(
+        roym_dispatch_id(services::CONVERSATION.name),
+        shared.key_store.clone(),
+        shared.storage_provider.clone(),
+        shared.blob_provider.clone(),
+        shared.messaging_broker.clone(),
+        endpoint_registry.clone(),
+        shared.logical_resolver.clone(),
+        shared.conversation.clone(),
+        shared.websocket_senders.clone(),
+    );
+    let f_conv = factory_conv.clone();
+    let conv = Arc::new(syneroym_roym_conversation::native::NativeConversation::new(
+        roym_dispatch_id(services::CONVERSATION.name),
+        move |caller| f_conv.host_for(caller),
+    ));
+    shared.native_dispatch.insert(
+        roym_dispatch_id(services::CONVERSATION.name),
+        conv.clone() as Arc<dyn NativeService>,
+    );
+    endpoint_registry
+        .register(
+            roym_dispatch_id(services::CONVERSATION.name),
+            services::CONVERSATION.interface.to_string(),
+            SubstrateEndpoint::NativeHostChannel {
+                service_id: roym_dispatch_id(services::CONVERSATION.name),
+            },
+        )
+        .await?;
+    factories.push(factory_conv);
+
+    let factory_cat = NativeHostFactory::new(
+        roym_dispatch_id(services::CATALOG.name),
+        shared.key_store.clone(),
+        shared.storage_provider.clone(),
+        shared.blob_provider.clone(),
+        shared.messaging_broker.clone(),
+        endpoint_registry.clone(),
+        shared.logical_resolver.clone(),
+        shared.conversation.clone(),
+        shared.websocket_senders.clone(),
+    );
+    let f_cat = factory_cat.clone();
+    let cat = Arc::new(syneroym_roym_catalog::native::NativeCatalog::new(
+        roym_dispatch_id(services::CATALOG.name),
+        move |caller| f_cat.host_for(caller),
+    ));
+    shared
+        .native_dispatch
+        .insert(roym_dispatch_id(services::CATALOG.name), cat.clone() as Arc<dyn NativeService>);
+    endpoint_registry
+        .register(
+            roym_dispatch_id(services::CATALOG.name),
+            services::CATALOG.interface.to_string(),
+            SubstrateEndpoint::NativeHostChannel {
+                service_id: roym_dispatch_id(services::CATALOG.name),
+            },
+        )
+        .await?;
+    factories.push(factory_cat);
+
+    let factory_tx = NativeHostFactory::new(
+        roym_dispatch_id(services::TRANSACTION.name),
+        shared.key_store.clone(),
+        shared.storage_provider.clone(),
+        shared.blob_provider.clone(),
+        shared.messaging_broker.clone(),
+        endpoint_registry.clone(),
+        shared.logical_resolver.clone(),
+        shared.conversation.clone(),
+        shared.websocket_senders.clone(),
+    );
+    let f_tx = factory_tx.clone();
+    let tx = Arc::new(syneroym_roym_transaction::native::NativeTransaction::new(
+        roym_dispatch_id(services::TRANSACTION.name),
+        move |caller| f_tx.host_for(caller),
+    ));
+    shared
+        .native_dispatch
+        .insert(roym_dispatch_id(services::TRANSACTION.name), tx.clone() as Arc<dyn NativeService>);
+    endpoint_registry
+        .register(
+            roym_dispatch_id(services::TRANSACTION.name),
+            services::TRANSACTION.interface.to_string(),
+            SubstrateEndpoint::NativeHostChannel {
+                service_id: roym_dispatch_id(services::TRANSACTION.name),
+            },
+        )
+        .await?;
+    factories.push(factory_tx);
+
+    let factory_dir = NativeHostFactory::new(
+        roym_dispatch_id(services::DIRECTORY.name),
+        shared.key_store.clone(),
+        shared.storage_provider.clone(),
+        shared.blob_provider.clone(),
+        shared.messaging_broker.clone(),
+        endpoint_registry.clone(),
+        shared.logical_resolver.clone(),
+        shared.conversation.clone(),
+        shared.websocket_senders.clone(),
+    );
+    let f_dir = factory_dir.clone();
+    let dir = Arc::new(syneroym_roym_directory::native::NativeDirectory::new(
+        roym_dispatch_id(services::DIRECTORY.name),
+        move |caller| f_dir.host_for(caller),
+    ));
+    shared
+        .native_dispatch
+        .insert(roym_dispatch_id(services::DIRECTORY.name), dir.clone() as Arc<dyn NativeService>);
+    endpoint_registry
+        .register(
+            roym_dispatch_id(services::DIRECTORY.name),
+            services::DIRECTORY.interface.to_string(),
+            SubstrateEndpoint::NativeHostChannel {
+                service_id: roym_dispatch_id(services::DIRECTORY.name),
+            },
+        )
+        .await?;
+    factories.push(factory_dir);
+
+    // 2. `web` alone gets the HTTP surface.
+    let web_id = roym_dispatch_id("web");
+    factory_web.set_http_sink(Arc::downgrade(&web) as Weak<dyn HttpSink>);
+    factory_web.set_websocket_sink(Arc::downgrade(&web) as Weak<dyn WebSocketSink>);
+    let adapter = Arc::new(NativeHttpAdapter::new(
+        factory_web.clone(),
+        Arc::downgrade(&web) as Weak<dyn HttpSink>,
+        Arc::downgrade(&web) as Weak<dyn WebSocketSink>,
+    ));
+    shared.native_http.insert(web_id.clone(), adapter.clone() as Arc<dyn NativeHttpService>);
+    shared.native_http.insert(node_service_id.to_string(), adapter as Arc<dyn NativeHttpService>);
+    shared.http_routes.insert(web_id.clone(), roym_http_routes());
+    shared.http_routes.insert(node_service_id.to_string(), roym_http_routes());
+    endpoint_registry
+        .register(
+            web_id.clone(),
+            "http-native".to_string(),
+            SubstrateEndpoint::NativeHostChannel { service_id: web_id.clone() },
+        )
+        .await?;
+    endpoint_registry
+        .register(
+            node_service_id.to_string(),
+            "http-native".to_string(),
+            SubstrateEndpoint::NativeHostChannel { service_id: web_id.clone() },
+        )
+        .await?;
+
+    // 3. App context and dependency bindings.
+    for svc in services::ALL {
+        endpoint_registry
+            .set_app_context(
+                roym_dispatch_id(svc.name),
+                ROYM_APP_INSTANCE.to_string(),
+                svc.name.to_string(),
+            )
+            .await?;
+    }
+    for dep in services::SIBLINGS {
+        let entry = TopologyEntry {
+            mode: TopologyMode::Singleton,
+            members: vec![ServiceId::new(roym_dispatch_id(dep.name))],
+            sharding_strategy: None,
+            epoch: TopologyEpoch(1),
+            cache_ttl: Duration::from_secs(60),
+            not_after: None,
+        };
+        shared.logical_resolver.register(
+            TopologyKey::local(
+                AppInstanceId::new(ROYM_APP_INSTANCE),
+                LogicalServiceName::new(dep.name),
+            ),
+            entry.clone(),
+        );
+        endpoint_registry
+            .save_binding(&web_id, ROYM_APP_INSTANCE, dep.name, &serde_json::to_string(&entry)?)
+            .await?;
+    }
+
+    // 4. The UI bundle.
+    if let Some(path) = config.roles.roym.as_ref().and_then(|r| r.ui_bundle_path.as_ref()) {
+        match fs::read(path) {
+            Ok(archive) => {
+                // A DEK load failure must not silently downgrade to
+                // unpacking the bundle unencrypted -- refuse the whole
+                // registration instead, the same way an unpack or
+                // manifest-store failure below does.
+                match shared.storage_provider.load_service_dek(&web_id, &shared.key_store).await {
+                    Ok(dek) => {
+                        let mut written = BTreeSet::new();
+                        let manifest = assets::unpack_asset_bundle(
+                            &web_id,
+                            &archive,
+                            None,
+                            &roym_http_routes(),
+                            &shared.blob_provider,
+                            dek.clone(),
+                            &mut written,
+                        )
+                        .await;
+                        match manifest {
+                            Ok(m) => {
+                                match assets::store_manifest(
+                                    &web_id,
+                                    &m,
+                                    &shared.blob_provider,
+                                    dek,
+                                )
+                                .await
+                                {
+                                    Ok(manifest_hash) => {
+                                        shared.assets.insert(
+                                            web_id.clone(),
+                                            ServiceAssets {
+                                                manifest: Arc::new(m),
+                                                public: true,
+                                                manifest_hash,
+                                            },
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            ?path,
+                                            %e,
+                                            "Roym UI bundle manifest could not be stored; serving \
+                                             API without Hub"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    ?path,
+                                    %e,
+                                    "Roym UI bundle unpack failed; serving API without Hub"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            ?path,
+                            %e,
+                            "Roym UI bundle's service DEK could not be loaded; serving API \
+                             without Hub rather than unpacking it unencrypted"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(?path, %e, "Roym UI bundle could not be read; serving API without Hub");
+            }
+        }
+    } else {
+        tracing::info!("no roym.ui_bundle_path configured; serving the API without the Hub");
+    }
+
+    Ok(factories)
+}
+
 /// Rebuilds the in-memory `StaticInventory` from every dependency binding
 /// `EndpointRegistry` has persisted (A2, ADR-0021 §5) -- a restarted
 /// substrate must answer a guest's first call, and nothing re-pushes on
@@ -1659,6 +2072,7 @@ async fn build_route_handler_deps(
         http_routes: http_routes.clone(),
         native_http: native_http.clone(),
         websocket_senders: websocket_senders.clone(),
+        assets: assets.clone(),
     };
 
     #[cfg(feature = "auth")]

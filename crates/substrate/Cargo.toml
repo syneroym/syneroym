@@ -41,6 +41,13 @@ syneroym-conversation.workspace = true
 syneroym-async-queue.workspace = true
 syneroym-app-host-native = { workspace = true, optional = true }
 syneroym-test-dual-build-fixture = { workspace = true, optional = true }
+syneroym-roym-core = { workspace = true, optional = true }
+syneroym-roym-web = { workspace = true, optional = true }
+syneroym-roym-conversation = { workspace = true, optional = true }
+syneroym-roym-profile = { workspace = true, optional = true }
+syneroym-roym-catalog = { workspace = true, optional = true }
+syneroym-roym-transaction = { workspace = true, optional = true }
+syneroym-roym-directory = { workspace = true, optional = true }
 tracing.workspace = true
 reqwest.workspace = true
 z32.workspace = true
@@ -84,6 +91,23 @@ aws = ["syneroym-data-blob/aws"]
 dual_build_fixture = [
     "dep:syneroym-app-host-native",
     "dep:syneroym-test-dual-build-fixture",
+]
+# Links the Roym SynApp's native build in as six `NativeService`s plus one
+# inbound HTTP surface, proving the dual-build shim builds a real product
+# both ways from one source tree. Off by default. Unlike
+# `dual_build_fixture`, this is a real product feature, not test
+# scaffolding -- but it registers services with no deploy record, so a
+# node running it must not also deploy the WASM build of the same app
+# (the router warns; see `handle_guest_route`).
+roym = [
+    "dep:syneroym-app-host-native",
+    "dep:syneroym-roym-core",
+    "dep:syneroym-roym-web",
+    "dep:syneroym-roym-conversation",
+    "dep:syneroym-roym-profile",
+    "dep:syneroym-roym-catalog",
+    "dep:syneroym-roym-transaction",
+    "dep:syneroym-roym-directory",
 ]
 
 [dev-dependencies]

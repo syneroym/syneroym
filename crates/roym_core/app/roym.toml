@@ -1,0 +1,83 @@
+# Roym SynApp Manifest
+# Deployed with `roymctl app deploy roym crates/roym_core/app/roym.toml --mint-masters --registry-url <url>`
+# Paths are workspace-root-relative per `roymctl app deploy` artifact resolution rules.
+
+id = "syneroym:roym"
+version = "0.1.0"
+description = "Roym"
+
+[services.web]
+service_type = "wasm"
+source = "target/wasm32-wasip2/release/syneroym_roym_web.wasm"
+interfaces = ["syneroym-roym:web/api@0.1.0"]
+depends_on = ["conversation", "profile", "catalog", "transaction", "directory"]
+visibility = "internal"
+# /health is public: true and every other route is not. That is deliberate:
+# public routes produce a System caller, but web never accepts an
+# out-of-band caller claim -- no sibling can verify who called it, so
+# nothing here claims to know -- so /health's public reachability creates
+# no exploitable path.
+custom_config = '''{"http_routes":[
+  {"method":"POST","path":"/rpc",   "target":"guest",    "operation":"handle-request","public":false},
+  {"method":"GET", "path":"/health","target":"guest",    "operation":"handle-request","public":true},
+  {"method":"GET", "path":"/ws",    "target":"websocket","operation":"handle-upgrade","public":false}
+]}'''
+
+[services.web.assets]
+archive = "crates/roym_web/ui/bundle.tar.gz"
+visibility = "public"
+
+[services.web.health_check.rpc]
+interface = "syneroym-roym:web/api@0.1.0"
+method = "status"
+
+[services.profile]
+service_type = "wasm"
+source = "target/wasm32-wasip2/release/syneroym_roym_profile.wasm"
+interfaces = ["syneroym-roym:profile/api@0.1.0"]
+visibility = "private"
+
+[services.profile.health_check.rpc]
+interface = "syneroym-roym:profile/api@0.1.0"
+method = "status"
+
+[services.conversation]
+service_type = "wasm"
+source = "target/wasm32-wasip2/release/syneroym_roym_conversation.wasm"
+interfaces = ["syneroym-roym:conversation/api@0.1.0"]
+visibility = "public"
+
+[services.conversation.health_check.rpc]
+interface = "syneroym-roym:conversation/api@0.1.0"
+method = "status"
+
+[services.catalog]
+service_type = "wasm"
+source = "target/wasm32-wasip2/release/syneroym_roym_catalog.wasm"
+interfaces = ["syneroym-roym:catalog/api@0.1.0"]
+visibility = "public"
+
+[services.catalog.health_check.rpc]
+interface = "syneroym-roym:catalog/api@0.1.0"
+method = "status"
+
+[services.transaction]
+service_type = "wasm"
+source = "target/wasm32-wasip2/release/syneroym_roym_transaction.wasm"
+interfaces = ["syneroym-roym:transaction/api@0.1.0"]
+visibility = "public"
+
+[services.transaction.health_check.rpc]
+interface = "syneroym-roym:transaction/api@0.1.0"
+method = "status"
+
+[services.directory]
+service_type = "wasm"
+source = "target/wasm32-wasip2/release/syneroym_roym_directory.wasm"
+interfaces = ["syneroym-roym:directory/api@0.1.0"]
+visibility = "public"
+topology_visibility = "open"
+
+[services.directory.health_check.rpc]
+interface = "syneroym-roym:directory/api@0.1.0"
+method = "status"
