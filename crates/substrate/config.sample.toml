@@ -198,6 +198,39 @@ bootstrap_page_bind_address = "0.0.0.0:7962"
 [roles.client_gateway]
 # HTTP port for the gateway
 http_port = 7960
+# How the gateway attributes a request: "open" (no person identity),
+# "login" (a signed session cookie, verified per service), or "fixed" (one
+# configured person, unconditionally). Default "open".
+# identity_mode = "login"
+# In "login" mode only: refuse to proxy a connection whose first request
+# carries no valid session cookie (a 401 gate in front of the services).
+# connection_auth_gate = false
+# In "fixed" mode only: the single person this node always acts as.
+# fixed_identity_did = "did:key:..."
+
+# Auth service: the node's identity provider. Serves /_syneroym/session/*
+# (challenge, login, methods, whoami, logout, refresh) and mints the
+# session token the gateway's "login" mode and every service verify.
+[roles.auth]
+# Directory holding local person key files, one <name>.key per person.
+# Enables the "local" login method (POST /_syneroym/session/login with
+# {"method": "local", "identity": "<name>"}) for a same-machine client.
+# Absent by default -- "local" is unavailable unless configured.
+#
+# WARNING: do not point this at a directory a less-trusted local user on
+# this machine can read. Anyone who can read a key file here can log in as
+# that person.
+# person_identities_dir = "/path/to/identities"
+
+# Roym product role: links the Roym SynApp's native build in as six
+# services plus one inbound HTTP surface (requires the `roym` Cargo
+# feature; see crates/substrate/Cargo.toml). Never enable alongside a WASM
+# deploy of the same app on the same node -- the router warns if it sees
+# both.
+# [roles.roym]
+# Packed asset bundle for the Roym Hub UI (mise run build:roym-ui produces
+# crates/roym_web/ui/bundle.tar.gz).
+# ui_bundle_path = "/path/to/bundle.tar.gz"
 
 # Observability: Health checks, metrics, and tracing
 [roles.observability]

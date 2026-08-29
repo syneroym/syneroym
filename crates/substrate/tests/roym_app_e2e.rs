@@ -4,12 +4,16 @@
 //! Deploys the six Roym services on a live substrate instance with a gateway
 //! and registry, and tests:
 //! 1. Static UI serving (`GET /`) from the asset bundle with CSP meta header.
-//! 2. `POST /rpc` `session.whoami` returns caller DID and `auth: "delegated"`
-//!    under a session cookie.
+//! 2. `POST /rpc` `session.whoami` returns the person DID and `auth:
+//!    "delegated"` under a session cookie minted by the node auth service.
 //! 3. `POST /rpc` `profile.ping` proxy call reaches the sibling service.
 //! 4. Open topology on `directory` vs restricted/private on `profile`.
 //! 5. `Authorization: Bearer <token>` works without browser cookie.
 //! 6. Unauthenticated request reports `self-asserted:<node-did>`.
+//!
+//! Login here uses the auth service's `local` method (a same-machine
+//! convenience); the browser Hub uses `delegated-key` and is covered by the
+//! Playwright suite.
 
 use std::{
     collections::BTreeMap,
@@ -142,9 +146,9 @@ struct RoymDeployment {
     dir_did: String,
     profile_did: String,
     alice_did: String,
-    // Held for the deployment's lifetime: person_identities_dir in the
-    // substrate config points at this directory, and dropping the guard
-    // deletes it out from under a running gateway.
+    // Held for the deployment's lifetime: the auth role's
+    // `person_identities_dir` points inside this directory, and dropping the
+    // guard deletes it out from under a running auth service.
     _person_identities_dir: tempfile::TempDir,
 }
 
@@ -160,10 +164,13 @@ async fn deploy_roym_app() -> RoymDeployment {
     let alice_key_path = ids_dir.join("alice.key");
     alice.save_to_path(&alice_key_path).unwrap();
 
-    let p_dir = person_identities_dir.path().to_path_buf();
     let ctx = SubstrateTestContext::setup_with(iroh_port, reg_port, gw_port, move |cfg| {
+        cfg.roles.auth = Some(syneroym_core::config::AuthRole {
+            person_identities_dir: Some(ids_dir.clone()),
+            ..Default::default()
+        });
         if let Some(gw) = cfg.roles.client_gateway.as_mut() {
-            gw.person_identities_dir = Some(p_dir);
+            gw.identity_mode = syneroym_core::config::IdentityMode::Login;
         }
     })
     .await;
@@ -271,10 +278,11 @@ async fn test_roym_app_e2e_lifecycle() {
     let profile_did = profile_did.as_str();
     let client = Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
 
-    // Login local via gateway
+    // Log in through the node auth service's `local` method (proxied by the
+    // gateway on the reserved path).
     let login_res = client
-        .post(format!("{gateway_url}/_syneroym/session/login-local"))
-        .json(&json!({ "identity": "alice" }))
+        .post(format!("{gateway_url}/_syneroym/session/login"))
+        .json(&json!({ "method": "local", "identity": "alice" }))
         .send()
         .await
         .unwrap();

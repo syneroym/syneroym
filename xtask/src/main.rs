@@ -6,7 +6,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use chrono::Utc;
 use serde_json::Value;
 use sysinfo::System;
@@ -36,7 +36,139 @@ fn get_sys_info() -> (String, String, String) {
     (os, cpu, memory)
 }
 
-fn main() -> Result<()> {
+fn check_roym_deps() -> Result<()> {
+    println!("Checking Roym service crate dependency hygiene...");
+    let siblings = [
+        "syneroym-roym-web",
+        "syneroym-roym-conversation",
+        "syneroym-roym-profile",
+        "syneroym-roym-catalog",
+        "syneroym-roym-transaction",
+        "syneroym-roym-directory",
+    ];
+
+    let crate_dirs = [
+        "crates/roym_web",
+        "crates/roym_conversation",
+        "crates/roym_profile",
+        "crates/roym_catalog",
+        "crates/roym_transaction",
+        "crates/roym_directory",
+    ];
+
+    let allowed_target_independent = [
+        "syneroym-app-host",
+        "syneroym-roym-core",
+        "serde",
+        "serde_json",
+        "async-trait",
+        "thiserror",
+    ];
+
+    let allowed_wasm32 = ["wit-bindgen", "syneroym-wit-interfaces"];
+
+    let allowed_native = ["syneroym-rpc", "syneroym-app-host-native", "async-trait"];
+
+    let mut violations = Vec::new();
+
+    for dir in &crate_dirs {
+        let manifest_path = Path::new(dir).join("Cargo.toml");
+        let content = fs::read_to_string(&manifest_path)?;
+        let manifest: toml::Value = toml::from_str(&content)?;
+
+        let this_pkg = manifest
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str())
+            .unwrap_or(dir);
+
+        // 1. Check target-independent [dependencies]
+        if let Some(deps) = manifest.get("dependencies").and_then(|d| d.as_table()) {
+            for dep in deps.keys() {
+                if siblings.contains(&dep.as_str()) {
+                    violations.push(format!(
+                        "{this_pkg}: [dependencies] contains sibling crate dependency '{dep}'"
+                    ));
+                } else if !allowed_target_independent.contains(&dep.as_str()) {
+                    violations.push(format!(
+                        "{this_pkg}: [dependencies] contains unallowed dependency '{dep}'"
+                    ));
+                }
+            }
+        }
+
+        // 2. Check [target.'cfg(target_arch = "wasm32")'.dependencies]
+        if let Some(target_wasm) = manifest
+            .get("target")
+            .and_then(|t| t.get("cfg(target_arch = \"wasm32\")"))
+            .and_then(|c| c.get("dependencies"))
+            .and_then(|d| d.as_table())
+        {
+            for dep in target_wasm.keys() {
+                if siblings.contains(&dep.as_str()) {
+                    violations.push(format!(
+                        "{this_pkg}: wasm32 dependencies contains sibling crate '{dep}'"
+                    ));
+                } else if !allowed_wasm32.contains(&dep.as_str()) {
+                    violations.push(format!(
+                        "{this_pkg}: wasm32 dependencies contains unallowed dependency '{dep}'"
+                    ));
+                }
+            }
+        }
+
+        // 3. Check [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+        if let Some(target_native) = manifest
+            .get("target")
+            .and_then(|t| t.get("cfg(not(target_arch = \"wasm32\"))"))
+            .and_then(|c| c.get("dependencies"))
+            .and_then(|d| d.as_table())
+        {
+            for dep in target_native.keys() {
+                if siblings.contains(&dep.as_str()) {
+                    violations.push(format!(
+                        "{this_pkg}: native dependencies contains sibling crate '{dep}'"
+                    ));
+                } else if !allowed_native.contains(&dep.as_str()) {
+                    violations.push(format!(
+                        "{this_pkg}: native dependencies contains unallowed dependency '{dep}'"
+                    ));
+                }
+            }
+        }
+
+        // 4. Check component metadata dependencies
+        if let Some(meta_deps) = manifest
+            .get("package")
+            .and_then(|p| p.get("metadata"))
+            .and_then(|m| m.get("component"))
+            .and_then(|c| c.get("target"))
+            .and_then(|t| t.get("dependencies"))
+            .and_then(|d| d.as_table())
+        {
+            for dep in meta_deps.keys() {
+                if siblings.contains(&dep.as_str()) {
+                    violations.push(format!(
+                        "{this_pkg}: component metadata dependencies contains sibling crate \
+                         '{dep}'"
+                    ));
+                }
+            }
+        }
+    }
+
+    if !violations.is_empty() {
+        for v in &violations {
+            eprintln!("ERROR: {v}");
+        }
+        bail!("Dependency hygiene check failed with {} violation(s)", violations.len());
+    }
+
+    println!("All Roym service crates adhere to dependency hygiene rules.");
+    Ok(())
+}
+
+fn perf_summary() -> Result<()> {
     println!("Gathering environment details...");
     let commit = get_git_commit();
     let (os, cpu, mem) = get_sys_info();
@@ -66,7 +198,6 @@ fn main() -> Result<()> {
                 && let Some(mean) =
                     json.get("mean").and_then(|m| m.get("point_estimate")).and_then(|p| p.as_f64())
             {
-                // Extract benchmark name from path
                 let parts: Vec<_> = entry.path().iter().collect();
                 if parts.len() >= 4 {
                     let name = parts[parts.len() - 3].to_string_lossy().to_string();
@@ -103,7 +234,6 @@ fn main() -> Result<()> {
         .stderr(Stdio::inherit())
         .status()?;
 
-    // find newest concurrency json
     let mut concurrency_rows = Vec::new();
     let perf_results = Path::new("tests/perf/results");
     if perf_results.exists() {
@@ -135,7 +265,6 @@ fn main() -> Result<()> {
         .stderr(Stdio::inherit())
         .status()?;
 
-    // find newest soak json
     let mut soak_rows = Vec::new();
     if perf_results.exists() {
         let mut soak_files: Vec<_> = fs::read_dir(perf_results)?
@@ -210,4 +339,13 @@ fn main() -> Result<()> {
 
     println!("Done! Results appended to PERF_SUMMARY.md");
     Ok(())
+}
+
+fn main() -> Result<()> {
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("check-roym-deps") => check_roym_deps(),
+        Some("perf-summary") | None => perf_summary(),
+        Some(other) => bail!("Unknown xtask command: {other}"),
+    }
 }
