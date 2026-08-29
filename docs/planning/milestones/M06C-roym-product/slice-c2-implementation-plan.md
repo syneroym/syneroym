@@ -1286,224 +1286,61 @@ than only in this plan.
 
 ---
 
-## §10 The gateway: browser person login (`D-C2-6`)
+## §10 The Hub login screen (rebased onto C1.1)
 
-> ## ⚠ SUPERSEDED (2026-08-27) — do not implement this section as written
->
-> **[ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)
-> replaces the model this whole section is built on.** The person session is
-> no longer a gateway-owned `SessionStore` entry that mints a delegation onto
-> the route preamble; it is a short-lived UCAN signed by a **node auth
-> service** (`crates/auth`), carried in the `syneroym_session` cookie, and
-> verified by each service. The client gateway becomes a dumb proxy with an
-> `identity_mode` and intercepts no session paths at all.
->
-> **Three specific things below are dead, not merely restated:**
->
-> 1. `D-C2-6`'s `POST /_syneroym/session/login-local` and `GET
->    /_syneroym/session/identities` as *gateway* endpoints, and the
->    `roles.client_gateway.person_identities_dir` key with them. The
->    capability survives as the auth service's `local` **method**
->    (ADR-0024 §4b); the location and the endpoint shape do not.
-> 2. `§10.0`'s forward-compatibility argument for a later WebAuthn/passkey
->    signer. ADR-0024 §P3 rules WebAuthn out on principle — its keys live in
->    an authenticator the person cannot export, which fights the premise that
->    a person owns their DID and key. The replacement is `delegated-key`
->    (§4a): a temporary keypair the master key delegates to, held in the
->    browser as a non-extractable WebCrypto `CryptoKey`. The two backlog rows
->    §15 raises off the WebAuthn argument (registry CORS, the `did:key`
->    P-256 multicodec) lose their trigger with it.
-> 3. `§10.3`'s reliance on `SessionStore` and the preamble delegation. Both
->    are deleted by slice **C1.1**.
->
-> **The flow moves to slice
-> [C1.1](slice-c1.1-implementation-plan.md)** (the server half: the auth
-> service, the token, the verification helper, `roymctl session delegate`),
-> with the browser half — the login screen driven by `GET
-> /_syneroym/session/methods`, the IndexedDB temporary key, the challenge
-> signing — folded back into C2 when it resumes.
->
-> **This section is kept, not deleted,** because the branch
-> `feat/m06c-slice-c2` built against it and is held unmerged. It is the
-> as-built record of what that branch contains. **It is rewritten against
-> ADR-0024 when C2 rebases onto C1.1** — that rebase is also where the
-> C2-branch backlog rows on the keep-alive bypass (ADR-0024 §P1, commit
-> `af9e814`, not on `main`) are reconciled.
+> **As built** — this section was rewritten on 2026-08-29 when the branch
+> rebased onto slice C1.1. The gateway-owned `SessionStore`, the
+> `POST /_syneroym/session/login-local` / `GET /_syneroym/session/identities`
+> endpoints, and the `roles.client_gateway.person_identities_dir` key it
+> described are gone. The server half — the node auth service, the session
+> token, `roymctl session delegate` — is
+> [slice C1.1](slice-c1.1-implementation-plan.md). C2 owns only the browser
+> half.
 
-### 10.0 Forward compatibility with a later WebAuthn/passkey signer
+The person session is a short-lived UCAN minted by the node **auth
+service** ([ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)),
+carried in the `syneroym_session` cookie, and verified by the connection
+router for every gateway-origin request. In `login` mode the router hands
+`web` the person's master DID as `HttpRequest.caller` — so `web`'s
+`session.whoami` needs no cookie parsing of its own (see `D-C2-4`).
 
-Not built in C2. Recorded here because §10.1-10.4's shape is chosen partly
-to keep the door open, and a future session must not need this section
-rewritten to add a browser-held signer.
+The Hub's login screen (`crates/roym_web/ui/src/session/login.ts`,
+`main.ts`) does three things:
 
-- `SessionStore::login`, `LoginResponse`, the `Set-Cookie` construction, and
-  `whoami` are the **shared tail** of every login path. C2's
-  `login-local` and a future `login-webauthn` both end by calling the same
-  `SessionStore::login` with a `LoginRequest` they each assembled — the
-  session format never depends on how the signature was produced.
-- The only thing a WebAuthn path adds is a **third `SessionRoute`** that
-  verifies an authenticator assertion instead of reading a z32 signature
-  off disk, plus (per `D-C2-6`'s decision row) a did:key multicodec branch
-  for P-256 if the authenticator uses ES256, and CORS on the community
-  registry so the browser can publish its own anchor directly.
-- Nothing in this plan needs to anticipate the WebAuthn wire shape itself
-  (`navigator.credentials.*`, COSE key parsing) — that is real, separate
-  work for whichever slice picks up the two backlog rows in §15. C2's only
-  obligation is the one already met: don't hardcode an assumption that
-  login is always signed by a key file on the node's own disk anywhere
-  outside the `login-local` handler itself. Confirmed by inspection: the
-  UI's login screen (§8.1) calls `GET /_syneroym/session/identities` and
-  `POST /_syneroym/session/login-local` by name, not through a
-  generic "the only way to log in" assumption baked into the session bar or
-  `whoami` handling.
+1. **`GET /_syneroym/session/methods`** drives the screen. C1.1 enables
+   `delegated-key` always and `local` only when a key directory is
+   configured on `[roles.auth]`. The Hub offers `delegated-key` only —
+   `local` is a same-machine `roymctl` / config convenience, not a browser
+   flow (its identity names are not enumerable over the wire). A node with
+   no browser method enabled renders "no browser login method enabled".
+2. **Import the delegated key once.** The person runs
+   `roymctl session delegate --as <name> --registry-url <registry>`, which
+   mints a short-TTL `DelegationCertificate` for a fresh temporary key pair
+   and writes `session-key.json`. The Hub's file input reads it, imports the
+   temporary private key into **IndexedDB as a non-extractable WebCrypto
+   Ed25519 `CryptoKey`** (page JS can sign, never read the bytes), and keeps
+   the certificate beside it.
+3. **Sign the challenge.**
+   `POST /_syneroym/session/challenge {master_did}` returns a nonce and the
+   exact RFC 8785 canonical `assertion` string to sign (C1.1 added the
+   `assertion` field precisely so the browser does not canonicalize JSON).
+   The Hub signs those bytes with the `CryptoKey`, z-base-32-encodes the
+   signature (matching the Rust `z32` crate — `login.ts`'s `z32Encode`, with
+   a vector test against Rust output), and
+   `POST /_syneroym/session/login {method: "delegated-key", temp_did,
+   delegation, nonce, signature}`. On 200 the auth service sets the cookie;
+   the Hub reloads.
 
-### 10.1 `crates/core/src/config.rs`
+`whoami` and `logout` keep their paths and meanings; `logout` also clears
+the IndexedDB key. A returning visitor with the key still in IndexedDB gets
+a "Sign in with this browser's key" button that re-runs step 3 with no file
+import.
 
-`ClientGatewayRole` gains one field, defaulting to absent:
-
-```rust
-    /// The **same top-level `--dir`** an operator passes to `roymctl`
-    /// (e.g. `roymctl identity create --dir <this>`), not a dedicated
-    /// directory of its own. `roymctl session login` reads a person key
-    /// from `<dir>/identities/<name>.key`
-    /// ([session.rs:135](../../../../apps/roymctl/src/commands/session.rs#L135));
-    /// this field's own code appends the same `identities/` segment, so one
-    /// directory serves both tools and an operator who already ran
-    /// `roymctl identity create` needs no second copy. Present enables the
-    /// local login endpoints below; absent leaves them 404, which is what
-    /// every configuration written before this field means.
-    ///
-    /// A local login signs with a key on this machine. That is not new
-    /// exposure: any process that can reach this loopback endpoint can
-    /// already read the same file and run `roymctl session login`. Do not
-    /// point this at a directory reachable by a less-trusted local user.
-    #[serde(default)]
-    pub person_identities_dir: Option<PathBuf>,
-```
-
-Update `ClientGatewayRole::default()` and `config.sample.toml` (a commented
-example plus the sentence above).
-
-### 10.2 `crates/client_gateway/src/session.rs`
-
-Two new `SessionRoute` variants and two `classify` arms:
-
-```rust
-pub enum SessionRoute { Challenge, Login, Logout, Whoami, Identities, LoginLocal, Unknown }
-```
-```rust
-    ("GET",  "/_syneroym/session/identities")  => Session(SessionRoute::Identities),
-    ("POST", "/_syneroym/session/login-local") => Session(SessionRoute::LoginLocal),
-```
-
-Both are under `GATEWAY_RESERVED_PATH_PREFIX`, so `classify`'s existing
-guard already keeps them from ever being proxied to a guest — the property
-`gateway_session_e2e.rs` already pins.
-
-New request/response types beside the existing ones:
-
-```rust
-#[derive(Deserialize)] pub struct LocalLoginRequest { pub identity: String }
-#[derive(Serialize)]   pub struct IdentitiesResponse { pub identities: Vec<String> }
-```
-
-New free function, unit-testable without a socket:
-
-```rust
-/// Every `<name>.key` under `dir.join("identities")`, sorted, names only --
-/// `dir` is the same top-level `--dir` `roymctl` takes, and this walks the
-/// exact subdirectory `roymctl identity create` writes into
-/// ([session.rs:135](../../../../apps/roymctl/src/commands/session.rs#L135)).
-/// Returns an empty list for a missing or unreadable directory -- a login
-/// attempt against a name that is not there fails with the same 404 either
-/// way, so distinguishing them here would leak whether a path exists.
-pub fn list_person_identities(dir: &Path) -> Vec<String>;
-```
-
-`list_person_identities` refuses any name containing a path separator, `..`,
-or a NUL, and the login path re-checks the chosen name against the listed
-set rather than joining caller-supplied text onto `dir`. Two guards, because
-the second one is the one that actually holds if the first is ever moved.
-
-### 10.3 `crates/client_gateway/src/gateway.rs`
-
-`GatewayState` gains `person_identities_dir: Option<PathBuf>` and
-`registry_url` is already present. `ClientGateway::init` reads the new
-config field.
-
-`handle_session_request` gains two arms:
-
-```
-SessionRoute::Identities:
-    let Some(dir) = state.person_identities_dir else -> 404
-        {"error":"local person identities are not configured"}
-    200 { "identities": list_person_identities(dir) }
-
-SessionRoute::LoginLocal:
-    let Some(dir) = state.person_identities_dir else -> 404 (same body)
-    parse LocalLoginRequest; malformed -> 400
-    if !list_person_identities(dir).contains(&req.identity) -> 404
-        {"error":"no such local identity"}
-    let person = Identity::load_from_path(dir.join("identities").join(format!("{name}.key")))
-        // io error -> 500, message names the file, not its contents
-    let person_did = substrate::derive_did_key(&person.public_key())
-
-    // Same five steps `roymctl session login` performs, in the same order,
-    // with no network hop to this gateway because we are it.
-    let ch   = state.sessions.issue_challenge()
-    let node = substrate::resolve_did_key(&ch.node_did)
-    let cert = DelegationCertificate::issue(
-                   &person, node, session_ttl_secs, SCOPE_ROUTING)
-    let sig  = person.sign_json(&assertion_value(&ch.node_did, &ch.nonce, &person_did))
-
-    // Publish the anchor BEFORE login, or step 4 of SessionStore::login
-    // answers 409 AnchorUnresolvable. Failure here is reported, not
-    // swallowed: a session that cannot be used is worse than a refusal.
-    // `state.registry_url` is a `String`, empty when unconfigured -- the
-    // gateway's own existing idiom (`gateway.rs:135`'s `fetcher` branch),
-    // reused here rather than inventing a second way to spell "unset".
-    if !state.registry_url.is_empty() {
-        RegistryClient::new(dht, Some(state.registry_url.clone()))
-            .refresh_master_anchor(&person).await
-            -> on error, 502 {"error":"could not publish this person's anchor"}
-    }
-
-    match state.sessions.login(&LoginRequest{person_did, nonce: ch.nonce, signature: sig,
-                                             delegation: cert},
-                               state.anchor_lookup.as_ref()).await {
-        Ok(grant)  => 200 + the SAME Set-Cookie the remote Login arm builds
-        Err(e)     => e.http_status(), {"error": e.message()}
-    }
-```
-
-**Factor the `Set-Cookie` construction and the 200 body out of the existing
-`SessionRoute::Login` arm into one helper and call it from both.** Two
-places building a session cookie is exactly how one of them ends up without
-`HttpOnly`.
-
-`expires_hours` is deliberately not a request parameter: the delegation is
-issued for `session_ttl_secs`, and `SessionStore::login` already takes the
-earlier of that and its own ceiling. A caller-chosen lifetime would let a
-local page mint a longer-lived delegation than the operator configured.
-
-### 10.4 Tests (`crates/substrate/tests/gateway_session_e2e.rs`)
-
-Extend the existing file rather than starting a new one — it already boots
-a substrate with a gateway and has the helpers.
-
-1. `identities` with no configured dir → 404, and `login-local` likewise.
-2. `identities` lists exactly the `.key` files present, names only, and the
-   response body contains no key bytes.
-3. `login-local` for a listed identity → 200, a `Set-Cookie` with
-   `HttpOnly` and `SameSite=Strict`, and a following `whoami` with that
-   cookie reports that person's DID with `auth = "delegated"`.
-4. A proxied request under that cookie reaches a guest as
-   `caller-auth = delegated` with the person's DID — the same assertion the
-   existing cookie test makes, through the new door.
-5. `login-local` for an unlisted name → 404; for `../something` → 404 and
-   **no** file outside `dir` is opened.
-6. Restart the substrate → `whoami` is 401 (sessions are in-memory by
-   design), and `login-local` works again immediately.
+**WebCrypto Ed25519 only** — no JS ed25519 fallback for older browsers in
+C2 (ADR-0024 §9.6 permits one; not built). **No WebAuthn** — ADR-0024 §P3
+rules it out, so §10.0's forward-compatibility argument and the two backlog
+rows it raised (registry CORS, the `did:key` P-256 multicodec) are dropped,
+not carried.
 
 ---
 

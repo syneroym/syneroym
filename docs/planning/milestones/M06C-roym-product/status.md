@@ -3,9 +3,10 @@
 **Milestone:** [task.md](task.md) · **Designs of record:**
 [slice-c1-implementation-plan.md](slice-c1-implementation-plan.md) (C1),
 [slice-c1.1-implementation-plan.md](slice-c1.1-implementation-plan.md) (C1.1,
-under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md))
+under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)),
+[slice-c2-implementation-plan.md](slice-c2-implementation-plan.md) (C2)
 
-**Overall:** Slice C1 complete (2026-08-25) — see C1's status, architectural decisions, permitted differences, and evidence below. **Slice C1.1 added 2026-08-27** by ADR-0024, sequenced between C1 and C2: it makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a new node auth service. C2 and C3 now gate on it, because both are specified against the identity model it settles.
+**Overall:** Slices C1 (2026-08-25), C1.1 (2026-08-28), and C2 (2026-08-29) complete. C1.1, added by ADR-0024, makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a node auth service; C2 builds the six-service Roym SynApp skeleton and the Hub shell on top of that model. The held `feat/m06c-slice-c2` branch (built before C1.1) was ported onto it rather than rebased commit-by-commit.
 
 ---
 
@@ -15,7 +16,7 @@ under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-servic
 |---|---|---|---|
 | C1 | Complete the dual-build shim (Gap 2, D-06C-10) | **Complete (2026-08-25)** — [implementation plan](slice-c1-implementation-plan.md), evidence below | None — independently mergeable |
 | C1.1 | The node auth service and the dumb client gateway (ADR-0024) | **Complete (2026-08-28)** — [implementation plan](slice-c1.1-implementation-plan.md), evidence below | C1 |
-| C2 | The SynApp skeleton and the Hub shell | Not started | C1.1 |
+| C2 | The SynApp skeleton and the Hub shell | **Complete (2026-08-29)** — [implementation plan](slice-c2-implementation-plan.md), evidence below | C1.1 |
 | C3 | Signed records: host signing interface and envelope | Not started | C1.1 |
 | C4 | Identity, profile, contacts, and safety (R1 rows 1 and 6) | Not started | C3 |
 | C5 | Catalog and conversation in the product (R1 rows 2 and 3) | Not started | C4 |
@@ -138,5 +139,45 @@ Slice C1.1 implements the node auth service and simplifies the client gateway to
 11. `cargo audit`: **Clean (0 vulnerabilities)**
 12. `cargo deny check licenses`: **Clean (`licenses ok`)**
 13. `mise run test:e2e`: **23 passed (clean — 19 passed default config + 4 passed multi-hop config)**
+
+---
+
+## C2 — What shipped
+
+Slice C2 stands up the Roym SynApp skeleton (seven crates: `syneroym-roym-core` plus one per service — `web`, `profile`, `conversation`, `catalog`, `transaction`, `directory`) and the Hub shell. The held `feat/m06c-slice-c2` branch was built before C1.1; its server-side login half (a gateway-owned `SessionStore`, `POST /_syneroym/session/login-local`, `GET /_syneroym/session/identities`, `roles.client_gateway.person_identities_dir`) was dropped and the browser half rewritten against C1.1's auth service.
+
+### 1. The SynApp manifest and services (`crates/roym_core/app/roym.toml`, `crates/roym_*`)
+
+Each service exports one WIT interface — `invoke(request: string) -> result<string, string>` plus `status()` — carrying a JSON-RPC-shaped envelope (`syneroym_roym_core::envelope`) rather than a WIT function per verb. `web` is the only inbound HTTP surface (`/rpc`, `/health` public, `/ws`, and the static UI bundle) and the only service with `depends_on`; the other five answer `<name>.ping` only, proving reachability through the manifest's real dependency bindings. Both builds pass one parity suite (`crates/roym_web/tests/dual_build_parity.rs`), and behind the `roym` Cargo feature the six services link natively into `syneroym-substrate` through `init_roym`.
+
+Declared visibility (`roym.toml`): `web` `internal`, `profile` `private`, `conversation`/`catalog`/`transaction` `public`, `directory` `public` + `topology_visibility = "open"`.
+
+### 2. The Hub shell (`crates/roym_web/ui`)
+
+A TypeScript/Vite single-page app. Login is `delegated-key` only (`GET /_syneroym/session/methods` drives the screen): the person runs `roymctl session delegate`, the Hub imports the resulting `session-key.json` into IndexedDB as a non-extractable WebCrypto Ed25519 key, signs the auth service's challenge (the challenge returns the exact canonical assertion string, so the browser never canonicalizes JSON), and posts the login. A session bar shows the logged-in DID; a Home screen round-trips `profile.ping` over `/rpc`; a seven-card gallery plus an unknown-type fallback exercises the renderer. Packed as `bundle.tar.gz` (gitignored, `mise run build:roym-ui`) and deployed as `web`'s asset bundle.
+
+### 3. What C2 discharges, and what it does not
+
+**Discharges:** the six services exist and are addressable both ways (dependency binding and gateway hostname); a request from a logged-in person's browser reaches `web` and comes back; `web`'s `session.whoami` reports that person's DID, because after C1.1 the connection router verifies the session cookie and hands `web` the person's DID as `HttpRequest.caller` (no guest-side crypto).
+
+**Does not discharge:** a **sibling** never learns who is asking. `syneroym_roym_core::envelope::Request` carries no caller field — a sibling cannot verify a claim forwarded in the payload, and no host-attested channel threads the caller past `web`'s own dispatch. C4/C5 need this and inherit the gap (deferred-backlog, targeted at M6's cross-service caller-identity spec). The native build installs no instance certificates and no per-service admission control (permitted differences, carried from C1). WebCrypto Ed25519 has no JS fallback for older browsers. `local` login is a `roymctl`/config convenience, not a browser method.
+
+### 4. Answers to the plan's open items
+
+- **C1.1 §11 question 13** (what identity a service receives): resolved in code. The router's `resolve_effective_session_caller` (`crates/router/src/route_handler/http.rs`) verifies the `syneroym_session` cookie / `Authorization: Bearer` for gateway-origin requests and produces `CallerContext { caller_did: person_did, auth: Delegated }`, surfaced to a guest as `CallerIdentity { did: person_did, auth: CallerAuth::Delegated }`. So `D-C2-4`'s worry ("caller is the gateway node key") does not apply to the merged C1.1 — `web`'s `session.whoami` reads `request.caller` and gets the person.
+- **`GET /` on a WASM-deployed Hub returned 500** — fixed in `crates/router/src/route_handler/io.rs`: an HTTP request with an empty interface routes to `http-native` when the service declares guest routes or an asset bundle *and* actually has an `http-native` channel (a deployed service does; a node-level native service such as the auth service does not, and keeps resolving through its own interface).
+
+---
+
+## C2 — Verification evidence
+
+1. `cargo test -p syneroym-roym-core`: **pass**
+2. `cargo test -p syneroym-roym-web --test dual_build_parity`: **10 passed, 0 failed**
+3. `cargo test -p syneroym-substrate --test roym_app_e2e`: **2 passed, 0 failed**
+4. `cargo test -p syneroym-substrate --test gateway_session_e2e`: **pass** (C1.1's suite, unchanged)
+5. `cd crates/roym_web/ui && npm test`: **pass** (includes the z32 vector test against Rust output)
+6. `cargo xtask check-roym-deps`: **clean**
+7. `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, `cargo audit`, `cargo deny check licenses`: **clean**
+8. `mise run test:e2e`: **pass** (adds `roym-hub.spec.ts`: delegated-key login, session persistence, card gallery, card safety)
 
 
