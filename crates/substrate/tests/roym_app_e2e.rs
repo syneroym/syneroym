@@ -32,6 +32,7 @@ use syneroym_app_orchestration::{
     models::{ServiceId, SubstrateAlias, SynAppManifest},
 };
 use syneroym_core::{
+    config::{AuthRole, IdentityMode},
     dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, RegistryClient},
     util::short_hash,
 };
@@ -165,12 +166,10 @@ async fn deploy_roym_app() -> RoymDeployment {
     alice.save_to_path(&alice_key_path).unwrap();
 
     let ctx = SubstrateTestContext::setup_with(iroh_port, reg_port, gw_port, move |cfg| {
-        cfg.roles.auth = Some(syneroym_core::config::AuthRole {
-            person_identities_dir: Some(ids_dir.clone()),
-            ..Default::default()
-        });
+        cfg.roles.auth =
+            Some(AuthRole { person_identities_dir: Some(ids_dir.clone()), ..Default::default() });
         if let Some(gw) = cfg.roles.client_gateway.as_mut() {
-            gw.identity_mode = syneroym_core::config::IdentityMode::Login;
+            gw.identity_mode = IdentityMode::Login;
         }
     })
     .await;
