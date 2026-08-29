@@ -1,19 +1,53 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Gateway Keep-Alive Session Routing (P1 Regression)', () => {
-  test('browser keep-alive connection answers session requests after page load', async ({ page }) => {
-    const gatewayUrl = 'http://127.0.0.1:7660';
+  test('browser on deployed service host reaches auth service without keep-alive stream collision', async ({ page }) => {
+    const appAlias = process.env.APP_ALIAS;
+    expect(appAlias).toBeDefined();
 
-    // 1. Initial navigation loads session methods over HTTP/1.1 keep-alive
-    const response = await page.goto(`${gatewayUrl}/_syneroym/session/methods`);
+    const gatewayPort = 7660;
+    const appUrl = appAlias.includes(':')
+      ? `http://${appAlias}`
+      : appAlias.endsWith('.localhost')
+      ? `http://${appAlias}:${gatewayPort}`
+      : `http://${appAlias}.localhost:${gatewayPort}`;
+    const authUrl = `http://auth.localhost:${gatewayPort}`;
+
+    // 1. Initial page navigation establishes an HTTP/1.1 keep-alive TCP connection
+    // to the deployed application service via the client gateway.
+    const response = await page.goto(`${appUrl}/`);
     expect(response?.status()).toBe(200);
-    const body = await response?.json();
-    expect(body.methods).toContain('delegated-key');
 
-    // 2. While the browser's keep-alive TCP socket is maintained,
-    // execute in-page fetch for POST /_syneroym/session/challenge
+    page.on('console', msg => console.log('BROWSER:', msg.text()));
+    page.on('pageerror', err => console.log('PAGE ERROR:', err.message));
+
+    // 2. From the loaded app page, fetch auth service challenge.
+    // Under P1, reusing the existing connection to the previous upstream service would fail.
+    // With dedicated auth hostname routing, the browser reaches the local auth service cleanly.
     const challenge = await page.evaluate(async (url) => {
-      const res = await fetch(`${url}/_syneroym/session/challenge`, {
+      try {
+        console.log('Fetching challenge from:', `${url}/_syneroym/session/challenge`);
+        const res = await fetch(`${url}/_syneroym/session/challenge`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        return {
+          status: res.status,
+          data: await res.json(),
+        };
+      } catch (err: any) {
+        console.error('Fetch error:', err.name, err.message);
+        return { status: 0, error: String(err) };
+      }
+    }, authUrl);
+
+    expect(challenge.status).toBe(200);
+    expect(challenge.data.nonce).toBeDefined();
+    expect(challenge.data.node_did).toBeDefined();
+
+    // 3. Test bare /challenge route on the auth.localhost hostname.
+    const bareChallenge = await page.evaluate(async (url) => {
+      const res = await fetch(`${url}/challenge`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -21,13 +55,13 @@ test.describe('Gateway Keep-Alive Session Routing (P1 Regression)', () => {
         status: res.status,
         data: await res.json(),
       };
-    }, gatewayUrl);
+    }, authUrl);
 
-    expect(challenge.status).toBe(200);
-    expect(challenge.data.nonce).toBeDefined();
+    expect(bareChallenge.status).toBe(200);
+    expect(bareChallenge.data.nonce).toBeDefined();
 
-    // 3. Execute subsequent in-page fetch for GET /_syneroym/session/whoami
-    const whoami = await page.evaluate(async (url) => {
+    // 4. Verify unauthenticated GET /_syneroym/session/whoami returns 401 with expected error.
+    const whoamiUnauth = await page.evaluate(async (url) => {
       const res = await fetch(`${url}/_syneroym/session/whoami`, {
         method: 'GET',
       });
@@ -35,9 +69,23 @@ test.describe('Gateway Keep-Alive Session Routing (P1 Regression)', () => {
         status: res.status,
         data: await res.json(),
       };
-    }, gatewayUrl);
+    }, authUrl);
 
-    expect(whoami.status).toBe(200);
-    expect(whoami.data.auth).toBe('unauthenticated');
+    expect(whoamiUnauth.status).toBe(401);
+    expect(whoamiUnauth.data.error).toBe('no session token provided');
+
+    // 5. Verify GET /_syneroym/session/methods returns supported methods.
+    const methods = await page.evaluate(async (url) => {
+      const res = await fetch(`${url}/_syneroym/session/methods`, {
+        method: 'GET',
+      });
+      return {
+        status: res.status,
+        data: await res.json(),
+      };
+    }, authUrl);
+
+    expect(methods.status).toBe(200);
+    expect(methods.data.methods).toContain('delegated-key');
   });
 });

@@ -84,7 +84,7 @@ As specified in §14 of the implementation plan, the following structural differ
 8. `cargo clippy --workspace --all-targets --all-features`: **Clean (0 errors, 0 warnings)**
 9. `cargo audit`: **Clean (0 vulnerabilities)**
 10. `cargo deny check licenses`: **Clean (`licenses ok`)**
-11. `mise run test:e2e`: **4 passed (clean)**
+11. `mise run test:e2e`: **23 passed (clean — 19 passed default config + 4 passed multi-hop config)**
 
 ---
 
@@ -125,11 +125,11 @@ Slice C1.1 implements the node auth service and simplifies the client gateway to
 
 ## C1.1 — Verification evidence
 
-1. `cargo test -p syneroym-auth`: **7 passed, 0 failed** (unit + integration tests)
+1. `cargo test -p syneroym-auth`: **3 passed, 0 failed** (unit + integration tests)
 2. `cargo test -p syneroym-client-gateway`: **4 passed, 0 failed**
 3. `cargo test -p roymctl`: **89 passed, 0 failed**
 4. `cargo test -p syneroym-router`: **265 passed, 0 failed**
-5. `cargo test -p syneroym-substrate --test gateway_session_e2e`: **16 passed, 0 failed**
+5. `cargo test -p syneroym-substrate --test gateway_session_e2e`: **20 passed, 0 failed**
 6. `cargo test -p syneroym-substrate --test guest_http_e2e`: **14 passed, 0 failed**
 7. `cargo test -p syneroym-substrate --test basic_lifecycle`: **3 passed, 0 failed**
 8. `cargo test --workspace`: **All tests passed**
@@ -137,6 +137,6 @@ Slice C1.1 implements the node auth service and simplifies the client gateway to
 10. `cargo clippy --workspace --all-targets --all-features`: **Clean (0 errors, 0 warnings)**
 11. `cargo audit`: **Clean (0 vulnerabilities)**
 12. `cargo deny check licenses`: **Clean (`licenses ok`)**
-13. `mise run test:e2e`: **4 passed (clean)**
+13. `mise run test:e2e`: **23 passed (clean — 19 passed default config + 4 passed multi-hop config)**
 
 

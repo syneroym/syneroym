@@ -472,6 +472,10 @@ fn guest_request_headers(
     Ok(out)
 }
 
+/// Internal session marker set in `CallerContext.session.claims` when an HTTP
+/// request carries a valid session token issued by the local auth service.
+const SESSION_CALLER_MARKER: &str = "__syneroym_session_caller";
+
 /// The router's view of `CallerContext` as a guest may see it (M06A
 /// D-A2-12). `Err` on a substrate-injected `AuthLevel`, which cannot
 /// legitimately reach an inbound HTTP request -- fail closed rather than
@@ -483,15 +487,14 @@ fn guest_request_headers(
 /// is assigned to *every* verified preamble, including the client gateway's
 /// unchallenged node-DID pubkey -- while the preamble's own `delegation`
 /// field can, since a malformed certificate is a hard reject before this
-/// point. Conversely `preamble.ucan.is_some()` says only that a token was
-/// *attached*, not that it verified (`build_caller` fails open on a bad
-/// chain), while `CallerContext.auth == AuthLevel::Ucan` is set only on a
-/// verified, unrevoked, capability-bearing chain. The two sources are
-/// therefore mixed on purpose, one field from each -- collapsing this to a
-/// single source would let a caller self-label the stronger `ucan` value
-/// with a junk token.
-const SESSION_CALLER_MARKER: &str = "__syneroym_session_caller";
-
+/// point. A session caller carrying `SESSION_CALLER_MARKER` from a verified
+/// session token presents `CallerAuth::Delegated`. Conversely
+/// `preamble.ucan.is_some()` says only that a token was *attached*, not that it
+/// verified (`build_caller` fails open on a bad chain), while
+/// `CallerContext.auth == AuthLevel::Ucan` is set only on a verified,
+/// unrevoked, capability-bearing chain. The two sources are therefore mixed on
+/// purpose, one field from each -- collapsing this to a single source would let
+/// a caller self-label the stronger `ucan` value with a junk token.
 fn guest_caller_identity(
     caller: Option<&CallerContext>,
     preamble: &RoutePreamble,

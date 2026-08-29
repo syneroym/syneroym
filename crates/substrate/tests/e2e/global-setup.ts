@@ -143,6 +143,8 @@ bootstrap_page_bind_address = "0.0.0.0:7662"
 [roles.client_gateway]
 http_port = 7660
 
+[roles.auth]
+
 [parent_coordinator.iroh]
 url = "http://127.0.0.1:7664"
 

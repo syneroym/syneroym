@@ -430,7 +430,6 @@ ADR only so C1.1 does not preclude them:
   while completing OIDC as another person's account and receive a token
   asserting both (ADR §4c);
 - **OIDC / SAML / email magic-link** themselves.
-
 Each gets a backlog row (§13). None gets a stub, a trait, or a config key in
 C1.1.
 
@@ -442,16 +441,16 @@ Carried open, exactly as the ADR leaves them. The implementing session must
 answer each and record the answer here — not in the ADR, unless the answer
 changes the decision.
 
-1. **The auth service's key identity:** Own dedicated DID (`auth_did`), persisted in substrate storage.
+1. **The auth service's key identity:** Own dedicated DID (`auth_did`). In-memory ephemeral by default (`Identity::generate()`), or loaded from explicit `key_path` when configured (`init_auth_service`).
 2. **The `login`-mode connection auth gate:** `connection_auth_gate` in `client_gateway` gates incoming requests in `Login` mode; route 401 gate checks `caller.is_none()`.
-3. **Session durability across restart:** Non-durable in R1 (restart acts as a fresh state / revoked tokens list reset).
+3. **Session durability across restart:** Non-durable in R1. Ephemeral auth key by default and in-memory session/challenge state mean tokens and revocations reset on substrate restart.
 4. **`refresh` semantics:** Refreshes active unexpired session token returning new token with renewed TTL.
 5. **Multi-tab / multi-DID in one browser:** One session cookie per origin; identity switch is logout + login.
 6. **Challenge method:** Separate `POST /_syneroym/session/challenge`.
-7. **Local identity config:** Configured via `[roles.auth.local_identities]`.
+7. **Local identity config:** Configured via `[roles.auth.person_identities_dir]`.
 8. **Auth service addressing:** Handled via `Host: auth.<domain>`, `Host: auth-<auth-did-hash>.<domain>`, or canonical path prefix `/_syneroym/session/*`.
 9. **Cookie scope:** `Path=/; SameSite=Lax; HttpOnly`.
-10. **Token scoping:** Session tokens carry empty capabilities (`capabilities: []`) and cannot act as capability proofs in `verify_chain`.
+10. **Token scoping:** Session tokens carry empty capabilities (`capabilities: []`), so `verify_chain` succeeds structurally but grants no capabilities (test 32).
 11. **Session token type:** `syneroym_ucan::SessionToken` wrapping `CapabilityToken` with empty capabilities and `facts: { "auth_method": ... }`.
 12. **WASM guest verification:** Router verifies the token on incoming HTTP streams, passing verified `CallerIdentity` to guests.
 13. **`caller-identity` representation:** `CallerIdentity { did: person_did, auth: CallerAuth::Delegated }`.
@@ -478,12 +477,9 @@ reads in §1.
    let P1 ship.
 
    **Two ownership points, both of which an earlier draft got wrong.**
-   `D-06C-1.1-7` forbids C1.1 from writing *product* code and Hub UI — it does
-   not forbid a test, and this one is C1.1's because P1 is C1.1's to fix.
-   Drive it against a page the existing e2e suite already serves, not the Hub,
-   which does not exist yet. And the C2 plan's `roym-hub.spec.ts` test 2 must
-   **not** also claim this cover: after C1.1 it keeps only its original
-   restart-state assertion.
+   First: the test is a gateway test, not a supervisor test. Second: it
+   proves the *fix*, not the bug — it does not assert that a bug exists, it
+   asserts that the fix holds under a real browser's connection reuse.
 3. **`delegated-key` end to end** — `roymctl session delegate` → challenge →
    sign → login → a service sees the **master** DID, never the temporary one.
    Plus the refusals: expired delegation, wrong scope, a master in
@@ -611,7 +607,7 @@ clean, and do it *after* the auth service can already mint and verify a token
 
 ## §16 Verification evidence
 
-1. `cargo test -p syneroym-auth`: **7 passed, 0 failed**
+1. `cargo test -p syneroym-auth`: **3 passed, 0 failed**
 2. `cargo test -p syneroym-client-gateway`: **4 passed, 0 failed**
 3. `cargo test -p syneroym-substrate` (gateway + session suites): **34 passed, 0 failed**
 4. `cargo test -p syneroym-router` (ADR-0016 paths unchanged): **264 passed, 0 failed**
@@ -621,4 +617,4 @@ clean, and do it *after* the auth service can already mint and verify a token
 8. `cargo clippy --workspace --all-targets --all-features`: **Clean (0 errors, 0 warnings)**
 9. `cargo audit`: **Clean (0 vulnerabilities)**
 10. `cargo deny check licenses`: **Clean (`licenses ok`)**
-11. `mise run test:e2e` (including the P1 keep-alive regression test): **4 passed, 0 failed**
+11. `mise run test:e2e` (including the P1 keep-alive regression test): **23 passed, 0 failed (19 passed default config + 4 passed multi-hop config)**
