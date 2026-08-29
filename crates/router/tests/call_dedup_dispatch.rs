@@ -123,6 +123,7 @@ async fn harness() -> Harness {
         sse_permits: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
+        session_revocation: None,
     };
     let handler = RouteHandler::init(
         "test-orchestrator".to_string(),

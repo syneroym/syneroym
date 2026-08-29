@@ -189,6 +189,7 @@ async fn test_route_handler() -> (RouteHandler, HttpRouteRegistry) {
         sse_permits: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(RecordingNativeService::default()),
         control_plane: None,
+        session_revocation: None,
     };
 
     let route_handler = RouteHandler::init(

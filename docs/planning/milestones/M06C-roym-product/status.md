@@ -14,7 +14,7 @@ under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-servic
 | Slice | Scope | Status | Gate |
 |---|---|---|---|
 | C1 | Complete the dual-build shim (Gap 2, D-06C-10) | **Complete (2026-08-25)** — [implementation plan](slice-c1-implementation-plan.md), evidence below | None — independently mergeable |
-| C1.1 | The node auth service and the dumb client gateway (ADR-0024) | Not started | C1 |
+| C1.1 | The node auth service and the dumb client gateway (ADR-0024) | **Complete (2026-08-28)** — [implementation plan](slice-c1.1-implementation-plan.md), evidence below | C1 |
 | C2 | The SynApp skeleton and the Hub shell | Not started | C1.1 |
 | C3 | Signed records: host signing interface and envelope | Not started | C1.1 |
 | C4 | Identity, profile, contacts, and safety (R1 rows 1 and 6) | Not started | C3 |
@@ -84,5 +84,59 @@ As specified in §14 of the implementation plan, the following structural differ
 8. `cargo clippy --workspace --all-targets --all-features`: **Clean (0 errors, 0 warnings)**
 9. `cargo audit`: **Clean (0 vulnerabilities)**
 10. `cargo deny check licenses`: **Clean (`licenses ok`)**
-11. `mise run test:e2e`: **4 passed (clean)**
+11. `mise run test:e2e`: **23 passed (clean — 19 passed default config + 4 passed multi-hop config)**
+
+---
+
+## C1.1 — What shipped
+
+Slice C1.1 implements the node auth service and simplifies the client gateway to a dumb reverse proxy per [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md).
+
+### 1. New Auth Service Crate (`crates/auth`, package `syneroym-auth`)
+- `SessionToken` minting, parsing, and verification against node auth service public key / DID (D-06C-1.1-1).
+- Session tokens are `CapabilityToken` instances with empty `capabilities` and `proofs` (who, not what).
+- Native HTTP service implementing endpoints:
+  - `POST /_syneroym/session/challenge`: issues random single-use nonces with configurable TTL.
+  - `POST /_syneroym/session/login`: supports `delegated-key` and `local` login methods; returns `200 OK` with JSON session grant + `Set-Cookie: syneroym_session=...; HttpOnly; SameSite=Lax; Path=/`.
+  - `GET /_syneroym/session/methods`: returns list of enabled login methods.
+  - `GET /_syneroym/session/whoami`: inspects `Cookie` or `Authorization: Bearer` and returns caller DID and auth facts.
+  - `POST /_syneroym/session/logout`: revokes session token and clears cookie (`Max-Age=0`).
+  - `POST /_syneroym/session/refresh`: extends valid unexpired session.
+
+### 2. Client Gateway Refactoring (`crates/client_gateway`)
+- Removed `SessionStore`, in-memory session tracking, and pre-login credential minting (D-06C-1.1-2).
+- Added `IdentityMode` configuration (`Open`, `Login`, `Fixed`).
+- Proxies `/_syneroym/session/*` to local `"auth"` native service without requiring `Host` header.
+- Returns `404 Not Found` for unknown reserved `/_syneroym/*` endpoints.
+- Proxies raw `Cookie` and `Authorization` headers untouched to target services.
+- Added optional `connection_auth_gate` in login mode.
+
+### 3. CLI Session Commands (`apps/roymctl`)
+- `roymctl session delegate`: creates temporary keypair and signs `DelegationCertificate` under person master key with `session-auth` scope.
+- `roymctl session login`: supports `delegated-key` (using `--session-key-file`) and `local` (using `--identity`).
+- `roymctl session whoami`, `status`, `refresh`, `logout`: sends `Cookie` and `Authorization: Bearer` tokens.
+
+### 4. Router & Substrate Integration (`crates/router`, `crates/substrate`)
+- Substrate registers `AuthService` in `NativeHttpRegistry` and registers public routes in `HttpRouteRegistry`.
+- Router extracts `syneroym_session` token from `Cookie` or `Authorization: Bearer` on guest HTTP requests, verifies against trusted native auth service, and populates `CallerIdentity { did: person_did, auth: CallerAuth::Delegated }`.
+- Deleted deprecated `crates/ucan/src/normalize.rs` per D-06C-1.1-9.
+
+---
+
+## C1.1 — Verification evidence
+
+1. `cargo test -p syneroym-auth`: **3 passed, 0 failed** (unit + integration tests)
+2. `cargo test -p syneroym-client-gateway`: **4 passed, 0 failed**
+3. `cargo test -p roymctl`: **89 passed, 0 failed**
+4. `cargo test -p syneroym-router`: **265 passed, 0 failed**
+5. `cargo test -p syneroym-substrate --test gateway_session_e2e`: **20 passed, 0 failed**
+6. `cargo test -p syneroym-substrate --test guest_http_e2e`: **14 passed, 0 failed**
+7. `cargo test -p syneroym-substrate --test basic_lifecycle`: **3 passed, 0 failed**
+8. `cargo test --workspace`: **All tests passed**
+9. `cargo +nightly fmt --all`: **Clean**
+10. `cargo clippy --workspace --all-targets --all-features`: **Clean (0 errors, 0 warnings)**
+11. `cargo audit`: **Clean (0 vulnerabilities)**
+12. `cargo deny check licenses`: **Clean (`licenses ok`)**
+13. `mise run test:e2e`: **23 passed (clean — 19 passed default config + 4 passed multi-hop config)**
+
 

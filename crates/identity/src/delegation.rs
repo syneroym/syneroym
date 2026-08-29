@@ -11,6 +11,9 @@ use crate::{Identity, substrate};
 /// A key delegated to route connections under its master's identity -- an
 /// operator's device key, a client session key.
 pub const SCOPE_ROUTING: &str = "routing";
+/// A session authentication delegation minted by a person's master key for a
+/// browser/client key.
+pub const SCOPE_SESSION_AUTH: &str = "session-auth";
 /// A substrate-derived instance key certified by a member master, so the
 /// instance speaks as that member (ADR-0020 §1).
 pub const SCOPE_SERVICE_INSTANCE: &str = "service-instance";

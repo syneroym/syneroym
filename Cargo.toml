@@ -69,6 +69,7 @@ syneroym-chunk-transfer = { path = "crates/chunk_transfer" }
 syneroym-app-supervisor = { path = "crates/app_supervisor" }
 syneroym-async-queue = { path = "crates/async_queue" }
 syneroym-conversation = { path = "crates/conversation" }
+syneroym-auth = { path = "crates/auth" }
 miniapp-demo1-web = { path = "test-components/miniapp-demo1-web" }
 syneroym-test-dual-build-fixture = { path = "test-components/dual-build-fixture" }
 roymctl = { path = "apps/roymctl" }

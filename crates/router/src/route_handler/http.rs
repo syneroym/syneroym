@@ -137,6 +137,7 @@ const HOST_OWNED_HEADERS: [&str; 8] = [
 ///
 /// It wraps a `RouteHandler`, a connection-level `RoutePreamble`, and the
 /// planned `RoutePipeline`.
+#[derive(Clone)]
 pub struct HttpHandler {
     pub route_handler: RouteHandler,
     pub preamble: RoutePreamble,
@@ -471,6 +472,10 @@ fn guest_request_headers(
     Ok(out)
 }
 
+/// Internal session marker set in `CallerContext.session.claims` when an HTTP
+/// request carries a valid session token issued by the local auth service.
+const SESSION_CALLER_MARKER: &str = "__syneroym_session_caller";
+
 /// The router's view of `CallerContext` as a guest may see it (M06A
 /// D-A2-12). `Err` on a substrate-injected `AuthLevel`, which cannot
 /// legitimately reach an inbound HTTP request -- fail closed rather than
@@ -482,13 +487,14 @@ fn guest_request_headers(
 /// is assigned to *every* verified preamble, including the client gateway's
 /// unchallenged node-DID pubkey -- while the preamble's own `delegation`
 /// field can, since a malformed certificate is a hard reject before this
-/// point. Conversely `preamble.ucan.is_some()` says only that a token was
-/// *attached*, not that it verified (`build_caller` fails open on a bad
-/// chain), while `CallerContext.auth == AuthLevel::Ucan` is set only on a
-/// verified, unrevoked, capability-bearing chain. The two sources are
-/// therefore mixed on purpose, one field from each -- collapsing this to a
-/// single source would let a caller self-label the stronger `ucan` value
-/// with a junk token.
+/// point. A session caller carrying `SESSION_CALLER_MARKER` from a verified
+/// session token presents `CallerAuth::Delegated`. Conversely
+/// `preamble.ucan.is_some()` says only that a token was *attached*, not that it
+/// verified (`build_caller` fails open on a bad chain), while
+/// `CallerContext.auth == AuthLevel::Ucan` is set only on a verified,
+/// unrevoked, capability-bearing chain. The two sources are therefore mixed on
+/// purpose, one field from each -- collapsing this to a single source would let
+/// a caller self-label the stronger `ucan` value with a junk token.
 fn guest_caller_identity(
     caller: Option<&CallerContext>,
     preamble: &RoutePreamble,
@@ -500,7 +506,9 @@ fn guest_caller_identity(
     ) {
         return Err("substrate-injected auth level on an inbound HTTP request".to_string());
     }
-    let auth = if matches!(caller.auth, AuthLevel::Ucan) {
+    let auth = if caller.session.claims.contains_key(SESSION_CALLER_MARKER) {
+        CallerAuth::Delegated
+    } else if matches!(caller.auth, AuthLevel::Ucan) {
         CallerAuth::Ucan
     } else if preamble.delegation.is_some() {
         CallerAuth::Delegated
@@ -512,6 +520,78 @@ fn guest_caller_identity(
         auth,
         app_instance: caller.app_instance.clone(),
     }))
+}
+
+fn extract_session_token_from_hyper_headers(headers: &hyper::HeaderMap) -> Option<String> {
+    if let Some(cookie) = headers.get(hyper::header::COOKIE).and_then(|v| v.to_str().ok()) {
+        for pair in cookie.split(';') {
+            let mut parts = pair.splitn(2, '=');
+            if let (Some(k), Some(v)) = (parts.next(), parts.next())
+                && k.trim() == syneroym_core::protocol_utils::SESSION_COOKIE_NAME
+            {
+                return Some(v.trim().to_string());
+            }
+        }
+    }
+    if let Some(auth) = headers.get(hyper::header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
+        let trimmed = auth.trim();
+        if let Some(token) = trimmed.strip_prefix("Bearer ") {
+            return Some(token.trim().to_string());
+        }
+        if let Some(token) = trimmed.strip_prefix("bearer ") {
+            return Some(token.trim().to_string());
+        }
+    }
+    None
+}
+
+fn resolve_effective_session_caller(
+    route_handler: &RouteHandler,
+    preamble: &RoutePreamble,
+    caller: Option<&CallerContext>,
+    headers: &hyper::HeaderMap,
+) -> Option<CallerContext> {
+    // Only gateway-origin traffic may use session cookies / bearer tokens (Finding
+    // 2 & 10)
+    let is_gateway_origin = caller.is_some_and(|c| {
+        c.caller_did == route_handler.inner.node_did && preamble.delegation.is_none()
+    });
+
+    if !is_gateway_origin {
+        return None;
+    }
+
+    let token_str = extract_session_token_from_hyper_headers(headers)?;
+
+    // Check revocation (Finding 1)
+    let is_revoked =
+        route_handler.inner.session_revocation.as_ref().is_some_and(|r| r.is_revoked(&token_str));
+
+    if is_revoked {
+        return None;
+    }
+
+    // Fail closed: if no auth service is configured on this node, reject all
+    // session tokens
+    let auth_did = route_handler
+        .inner
+        .native_http
+        .get(syneroym_core::protocol_utils::AUTH_SERVICE_ALIAS)
+        .and_then(|svc| svc.service_id().map(ToString::to_string))?;
+
+    let claims = syneroym_ucan::SessionToken::verify(&token_str, &auth_did).ok()?;
+
+    let mut session = caller.map(|c| c.session.clone()).unwrap_or_default();
+    session.subject_did = claims.person_did.clone();
+    session.claims.insert(SESSION_CALLER_MARKER.to_string(), serde_json::Value::Bool(true));
+
+    Some(CallerContext {
+        caller_did: claims.person_did,
+        auth: syneroym_rpc::AuthLevel::Delegated,
+        app_instance: None,
+        session,
+        proof: None,
+    })
 }
 
 /// Turns a guest's answer into an HTTP response, or into the 500 failure-
@@ -676,6 +756,21 @@ impl HttpHandler {
     }
 
     async fn try_handle_http_request(&self, req: Request<Incoming>) -> Result<Response<HttpBody>> {
+        let effective_caller = resolve_effective_session_caller(
+            &self.route_handler,
+            &self.preamble,
+            self.caller.as_ref(),
+            req.headers(),
+        )
+        .or_else(|| self.caller.clone());
+
+        let handler = Self {
+            route_handler: self.route_handler.clone(),
+            preamble: self.preamble.clone(),
+            pipeline: self.pipeline.clone(),
+            caller: effective_caller,
+        };
+
         let method = req.method().clone();
         let path = req.uri().path().to_string();
 
@@ -683,7 +778,7 @@ impl HttpHandler {
             && let Some(hash) = blob_hash_from_path(&path)
         {
             let query = req.uri().query().unwrap_or("").to_string();
-            return self.handle_blob_get(hash, &query).await;
+            return handler.handle_blob_get(hash, &query).await;
         }
 
         // M06A A1: static assets, exact-path plus a trailing-slash
@@ -692,15 +787,15 @@ impl HttpHandler {
         // (D-A1-4), so this ordering is never actually ambiguous at
         // request time; it exists to keep resolve_asset a cheap, sandbox-
         // free check (D-06A-1) ahead of the route table lookup.
-        if let Some(resp) = self.try_handle_asset(&method, &path, &req).await? {
+        if let Some(resp) = handler.try_handle_asset(&method, &path, &req).await? {
             return Ok(resp);
         }
 
-        if let Some((route, path_param)) = self.resolve_route(&method, &path) {
-            return self.dispatch_route(&route, path_param, req).await;
+        if let Some((route, path_param)) = handler.resolve_route(&method, &path) {
+            return handler.dispatch_route(&route, path_param, req).await;
         }
 
-        self.handle_json_rpc_bridge(req).await
+        handler.handle_json_rpc_bridge(req).await
     }
 
     /// The original `POST`+`application/json` JSON-RPC bridge, wrapped in the
@@ -1523,7 +1618,18 @@ impl HttpHandler {
             ));
         }
 
-        // D-A2-7, BEFORE any engine work: an anonymous caller on a
+        let (parts, body) = req.into_parts();
+        let headers = match guest_request_headers(&parts.headers) {
+            Ok(headers) => headers,
+            Err((status, message)) => return Ok(http_error(status, message)),
+        };
+
+        let caller_identity = match guest_caller_identity(self.caller.as_ref(), &self.preamble) {
+            Ok(id) => id,
+            Err(e) => return Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
+        };
+
+        // D-A2-7, BEFORE any engine work: an unauthenticated caller on a
         // non-public route never instantiates anything. Same code and
         // status shape `dispatch_native` uses, so one 401 taxonomy covers
         // the whole bridge.
@@ -1534,16 +1640,6 @@ impl HttpHandler {
                 format!("unauthenticated caller for guest route {} {}", route.method, route.path),
             ));
         }
-
-        let caller_identity = match guest_caller_identity(self.caller.as_ref(), &self.preamble) {
-            Ok(identity) => identity,
-            Err(reason) => {
-                return Ok(http_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("unexpected caller context: {reason}"),
-                ));
-            }
-        };
 
         let native = self
             .route_handler
@@ -1578,11 +1674,6 @@ impl HttpHandler {
             Some(engine)
         };
 
-        let (parts, body) = req.into_parts();
-        let headers = match guest_request_headers(&parts.headers) {
-            Ok(headers) => headers,
-            Err((status, message)) => return Ok(http_error(status, message)),
-        };
         // Every rejection above happens before any engine call, so each
         // costs zero instantiations.
         let limited = Limited::new(body, MAX_GUEST_REQUEST_BODY_BYTES);
@@ -2406,6 +2497,18 @@ mod tests {
     fn guest_caller_identity_delegation_present_is_delegated() {
         let caller = caller_context(AuthLevel::Delegated);
         let preamble = preamble_with(Some(()), None);
+        let identity = guest_caller_identity(Some(&caller), &preamble).unwrap().unwrap();
+        assert_eq!(identity.auth, CallerAuth::Delegated);
+    }
+
+    #[test]
+    fn guest_caller_identity_session_caller_is_delegated() {
+        let mut caller = caller_context(AuthLevel::Delegated);
+        caller
+            .session
+            .claims
+            .insert(SESSION_CALLER_MARKER.to_string(), serde_json::Value::Bool(true));
+        let preamble = preamble_with(None, None);
         let identity = guest_caller_identity(Some(&caller), &preamble).unwrap().unwrap();
         assert_eq!(identity.auth, CallerAuth::Delegated);
     }

@@ -159,10 +159,14 @@ pub async fn init(config: SubstrateConfig) -> anyhow::Result<InitializedRuntime>
     // composition root has built them, is injected into `RuntimeServices`
     // afterward instead of changing when either call runs.
     let mut services = RuntimeServices::init(&config).await?;
-    let (connection_router, endpoint_registry, supervisor, conversation) =
+    let (connection_router, endpoint_registry, supervisor, conversation, auth_did) =
         setup_connection_router(&config).await?;
     services.set_supervisor(supervisor);
     services.set_conversation(conversation);
+    #[cfg(feature = "client_gateway")]
+    if let Some(gateway) = services.client_gateway.as_ref() {
+        gateway.set_auth_did(auth_did);
+    }
 
     Ok(InitializedRuntime { observability, services, connection_router, endpoint_registry })
 }
@@ -642,6 +646,7 @@ async fn setup_connection_router(
     EndpointRegistry,
     Option<Arc<SupervisorHandle>>,
     Arc<ConversationService>,
+    Option<String>,
 )> {
     let (service_id, secret_key, verified_controller) = setup_identity_and_storage(config).await?;
 
@@ -673,10 +678,10 @@ async fn setup_connection_router(
         );
     }
 
-    let (router, endpoint_registry, _publisher, supervisor, conversation) =
+    let (router, endpoint_registry, _publisher, supervisor, conversation, auth_did) =
         setup_router(config, &service_id, secret_key).await?;
 
-    Ok((router, endpoint_registry, supervisor, conversation))
+    Ok((router, endpoint_registry, supervisor, conversation, auth_did))
 }
 
 async fn setup_identity_and_storage(
@@ -704,6 +709,7 @@ async fn setup_router(
     Option<Arc<EndpointPublisher>>,
     Option<Arc<SupervisorHandle>>,
     Arc<ConversationService>,
+    Option<String>,
 )> {
     let data_store = registry_store::init_store(config).await?;
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
@@ -824,7 +830,12 @@ async fn setup_router(
         }
     }
 
-    Ok((router, endpoint_registry, publisher, supervisor, shared.conversation.clone()))
+    let auth_did = shared
+        .native_http
+        .get(syneroym_core::protocol_utils::AUTH_SERVICE_ALIAS)
+        .and_then(|svc| svc.service_id().map(ToString::to_string));
+
+    Ok((router, endpoint_registry, publisher, supervisor, shared.conversation.clone(), auth_did))
 }
 
 /// Handles the supervisor role (and any future post-router role that must
@@ -979,6 +990,282 @@ async fn init_supervisor(
         "[roles.supervisor] is configured but this binary was built without the `supervisor` \
          feature"
     ))
+}
+
+#[cfg(feature = "auth")]
+async fn init_auth_service(
+    config: &SubstrateConfig,
+    shared: &SharedNodeHandles,
+    endpoint_registry: &EndpointRegistry,
+    node_service_id: &str,
+) -> anyhow::Result<Option<Arc<syneroym_auth::AuthService>>> {
+    use syneroym_auth::AuthService;
+    use syneroym_core::{http_routes::HttpRoute, protocol_utils::AUTH_SERVICE_ALIAS};
+    use syneroym_rpc::NativeHttpService;
+
+    let Some(auth_cfg) = &config.roles.auth else {
+        return Ok(None);
+    };
+
+    let auth_identity = if let Some(key_path) = &auth_cfg.key_path {
+        Identity::load_from_path(key_path)?
+    } else {
+        Identity::generate()?
+    };
+
+    let anchor_resolver = Arc::new(RegistryClient::new(
+        config.substrate.enable_bep0044_dht,
+        config.substrate.registry_url.clone(),
+    ));
+
+    let auth_service = Arc::new(AuthService::new(
+        auth_identity,
+        node_service_id.to_string(),
+        auth_cfg.session_ttl_secs,
+        auth_cfg.nonce_ttl_secs,
+        auth_cfg.person_identities_dir.clone(),
+        anchor_resolver,
+    ));
+
+    let auth_did = auth_service.auth_did().to_string();
+
+    shared
+        .native_http
+        .insert(AUTH_SERVICE_ALIAS.to_string(), auth_service.clone() as Arc<dyn NativeHttpService>);
+    shared.native_http.insert(auth_did.clone(), auth_service.clone() as Arc<dyn NativeHttpService>);
+
+    let auth_routes = vec![
+        HttpRoute {
+            method: "POST".into(),
+            path: "/challenge".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "POST".into(),
+            path: "/login".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "GET".into(),
+            path: "/methods".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "GET".into(),
+            path: "/whoami".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "POST".into(),
+            path: "/logout".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "POST".into(),
+            path: "/refresh".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "POST".into(),
+            path: "/_syneroym/session/challenge".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "POST".into(),
+            path: "/_syneroym/session/login".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "GET".into(),
+            path: "/_syneroym/session/methods".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "GET".into(),
+            path: "/_syneroym/session/whoami".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "POST".into(),
+            path: "/_syneroym/session/logout".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "POST".into(),
+            path: "/_syneroym/session/refresh".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "POST".into(),
+            path: "/_syneroym/session/{endpoint}".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "GET".into(),
+            path: "/_syneroym/session/{endpoint}".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "OPTIONS".into(),
+            path: "/challenge".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "OPTIONS".into(),
+            path: "/login".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "OPTIONS".into(),
+            path: "/methods".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "OPTIONS".into(),
+            path: "/whoami".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "OPTIONS".into(),
+            path: "/logout".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "OPTIONS".into(),
+            path: "/refresh".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "OPTIONS".into(),
+            path: "/_syneroym/session/{endpoint}".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+    ];
+
+    shared.http_routes.insert(AUTH_SERVICE_ALIAS.to_string(), auth_routes.clone());
+    shared.http_routes.insert(auth_did.clone(), auth_routes);
+
+    endpoint_registry
+        .register(
+            AUTH_SERVICE_ALIAS.to_string(),
+            "default".to_string(),
+            SubstrateEndpoint::NativeHostChannel { service_id: AUTH_SERVICE_ALIAS.to_string() },
+        )
+        .await?;
+    endpoint_registry
+        .register(
+            auth_did.clone(),
+            "default".to_string(),
+            SubstrateEndpoint::NativeHostChannel { service_id: auth_did },
+        )
+        .await?;
+
+    Ok(Some(auth_service))
 }
 
 /// The reserved `native_dispatch` key the dual-build-shim fixture registers
@@ -1374,6 +1661,11 @@ async fn build_route_handler_deps(
         websocket_senders: websocket_senders.clone(),
     };
 
+    #[cfg(feature = "auth")]
+    let auth_service = init_auth_service(config, &shared, registry, service_id).await?;
+    #[cfg(not(feature = "auth"))]
+    let auth_service: Option<Arc<dyn syneroym_core::protocol_utils::SessionRevocationCheck>> = None;
+
     Ok((
         RouteHandlerDeps {
             logical_resolver: logical_resolver.clone(),
@@ -1389,6 +1681,8 @@ async fn build_route_handler_deps(
             sse_permits: control_plane_service.sse_permits(),
             control_plane_service: control_plane_service.clone(),
             control_plane: Some(control_plane_service),
+            session_revocation: auth_service
+                .map(|a| a as Arc<dyn syneroym_core::protocol_utils::SessionRevocationCheck>),
         },
         shared,
     ))

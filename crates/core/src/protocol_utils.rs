@@ -81,6 +81,14 @@ pub const GATEWAY_RESERVED_PATH_PREFIX: &str = "/_syneroym/";
 /// the gateway; it is never forwarded to the target service.
 pub const SESSION_COOKIE_NAME: &str = "syneroym_session";
 
+/// The reserved alias for the node auth service (ADR-0024).
+pub const AUTH_SERVICE_ALIAS: &str = "auth";
+
+/// Trait for querying if a session token has been revoked / logged out.
+pub trait SessionRevocationCheck: Send + Sync {
+    fn is_revoked(&self, token: &str) -> bool;
+}
+
 /// The statement a person signs to open a local gateway session. Domain-
 /// separated by `typ` so a signature harvested here can never be replayed
 /// as a delegation certificate or a UCAN payload, and bound to `node_did`

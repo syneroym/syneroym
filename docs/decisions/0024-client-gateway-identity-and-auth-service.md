@@ -1,7 +1,6 @@
 # ADR-0024: Client Gateway Identity Modes and the Node Auth Service
 
-**Status**: Proposed (2026-08-27, amended the same day — see **Amendment 1**
-at the end). Reshapes the person-session model M06B B1 shipped (the "M06B B1"
+**Status**: Accepted (2026-08-29). Reshapes the person-session model M06B B1 shipped (the "M06B B1"
 row of M06C's
 [dependency-gates table](../planning/milestones/M06C-roym-product/task.md);
 `crates/client_gateway/src/gateway.rs`,
@@ -511,3 +510,18 @@ endpoints §1 deletes. `token` exists specifically so a caller can use
 `Authorization: Bearer`; whether the shared verification helper accepts that
 form, or the cookie becomes the only carrier and `token` is retired, is
 unstated. Open.
+
+---
+
+## Amendment 2: Implementation Decisions (Resolved in Slice C1.1)
+
+1. **First-class SessionToken Type (Resolving E)**:
+   - `syneroym_ucan::SessionToken` wraps a `CapabilityToken` with empty capabilities (`capabilities: []`), `facts: { "auth_method": ... }`, `expires_at_secs`, and `audience_did` set to the person's DID.
+   - Session tokens carry an empty capability list (`capabilities: []`), granting no capabilities when evaluated in a capability chain (`verify_chain` grants nothing).
+2. **Router Fail-Closed Session Resolution & Gateway Gate (Resolving F, G, H)**:
+   - The connection router (`crates/router/src/route_handler/http.rs`) extracts the session token from `Cookie: syneroym_session` or `Authorization: Bearer <token>` for gateway-origin requests, verifies it against the trusted local auth service DID, checks revocation against `AuthService`, and maps the request's `CallerContext` and `CallerIdentity` to `AuthLevel::Delegated` / `CallerAuth::Delegated` carrying the verified person's DID.
+   - Non-public routes (`public: false`) with no caller identity (`self.caller.is_none()`) fail closed at the router boundary with 401 Unauthorized before instantiating any WASM or native handler. In `login` mode, unauthenticated browser traffic is gated at the gateway ingress by `connection_auth_gate`, ensuring requests without a valid session token never reach private routes.
+   - Guests receive the resolved `CallerIdentity` through standard WIT interfaces with zero guest-side verification overhead or extra host traits.
+3. **CLI & Addressing Modernization (Resolving A, I)**:
+   - The auth service is addressed by hostname (`Host: auth.<domain>` or `Host: auth-<short_hash(auth_did)>.<domain>`) or via the canonical path prefix `/_syneroym/session/*` on any host.
+   - `roymctl session` commands (`login`, `delegate`, `status`, `token`, `logout`) target the auth service endpoints, supporting both cookie storage and bearer token issuance.

@@ -382,7 +382,6 @@ async fn test_through_the_gateway_a_non_public_route_is_reached_and_reports_self
         .expect("reading the gateway response timed out")
         .expect("failed to read gateway response");
     let resp = parse_http_response(&raw);
-
     assert_eq!(
         resp.status, 200,
         "the 401 gate must not fire through the gateway -- it always presents a usable pubkey"

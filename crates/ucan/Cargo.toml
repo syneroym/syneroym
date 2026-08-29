@@ -13,6 +13,7 @@ syneroym-identity.workspace = true
 anyhow.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+z32.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
