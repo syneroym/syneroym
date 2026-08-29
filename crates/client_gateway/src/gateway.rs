@@ -8,7 +8,7 @@ use std::{
     fs,
     path::Path,
     str,
-    sync::Arc,
+    sync::{Arc, RwLock},
     time::Duration,
 };
 
@@ -64,6 +64,8 @@ struct GatewayState {
     fixed_delegation: Option<DelegationCertificate>,
     /// Optional connection gate in `login` mode.
     connection_auth_gate: bool,
+    /// DID of the local auth service if available.
+    auth_service_did: Arc<RwLock<Option<String>>>,
 }
 
 /// `ClientGateway`: Acts as an entry point for local HTTP/WebSocket clients to
@@ -85,12 +87,30 @@ impl Debug for ClientGateway {
 }
 
 impl ClientGateway {
+    pub fn set_auth_did(&self, did: Option<String>) {
+        if let Ok(mut lock) = self.state.auth_service_did.write() {
+            *lock = did;
+        }
+    }
+
     pub async fn init(config: &SubstrateConfig) -> Result<Self> {
         info!("initializing client gateway");
 
         let port = config.roles.client_gateway.as_ref().map_or(7000, |g| g.http_port);
         let registry_url = config.substrate.registry_url.clone().unwrap_or_default();
         let identity = load_or_generate_node_identity(config)?;
+
+        let auth_service_did = Arc::new(RwLock::new(config.roles.auth.as_ref().and_then(|a| {
+            if let Some(path) = &a.key_path
+                && path.exists()
+            {
+                Identity::load_from_path(path)
+                    .ok()
+                    .map(|id| substrate::derive_did_key(&id.public_key()))
+            } else {
+                None
+            }
+        })));
 
         let role_cfg = config.roles.client_gateway.as_ref();
         let identity_mode = role_cfg.map_or(IdentityMode::Open, |g| g.identity_mode);
@@ -154,6 +174,7 @@ impl ClientGateway {
             fixed_identity_did,
             fixed_delegation,
             connection_auth_gate,
+            auth_service_did,
         });
 
         Ok(Self { port, state, shutdown_tx: None })
@@ -211,6 +232,10 @@ impl ClientGateway {
 
         Ok(())
     }
+}
+
+fn is_auth_service_alias(alias: &str) -> bool {
+    alias == AUTH_SERVICE_ALIAS || alias == "auth-00000000"
 }
 
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -305,9 +330,7 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
     };
 
     let is_auth_host = match &target {
-        TargetHost::Service { lookup_alias, .. } => {
-            lookup_alias == AUTH_SERVICE_ALIAS || lookup_alias.starts_with("auth-")
-        }
+        TargetHost::Service { lookup_alias, .. } => is_auth_service_alias(lookup_alias),
         TargetHost::App { .. } => false,
     };
 
@@ -363,8 +386,11 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
             None
         });
 
-        let is_valid =
-            token_opt.as_ref().is_some_and(|tok| SessionToken::verify_any_issuer(tok).is_ok());
+        let expected_auth_did = state.auth_service_did.read().ok().and_then(|g| g.clone());
+        let is_valid = match (token_opt.as_deref(), expected_auth_did.as_deref()) {
+            (Some(tok), Some(did)) => SessionToken::verify(tok, did).is_ok(),
+            _ => false,
+        };
 
         if !is_valid {
             let body = serde_json::json!({"error": "unauthorized: valid session required"});
@@ -398,12 +424,7 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
     debug!("Proxying to interface (hash): {}, service_id (alias): {}", interface, service_id);
 
     let node_did = substrate::derive_did_key(&state.identity.public_key());
-    let connect_service_id = if service_id == AUTH_SERVICE_ALIAS || service_id.starts_with("auth-")
-    {
-        node_did.clone()
-    } else {
-        service_id.clone()
-    };
+    let connect_service_id = if is_auth_host { node_did.clone() } else { service_id.clone() };
 
     let client_arc = state
         .clients
@@ -424,7 +445,7 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
             error!("Gateway failed to connect to service {}: {}", connect_service_id, e);
             return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
         }
-        let resolved_id = if service_id == AUTH_SERVICE_ALIAS || service_id.starts_with("auth-") {
+        let resolved_id = if is_auth_host {
             AUTH_SERVICE_ALIAS.to_string()
         } else {
             client.service_id().to_string()
@@ -527,6 +548,7 @@ mod tests {
             fixed_identity_did: None,
             fixed_delegation: None,
             connection_auth_gate: false,
+            auth_service_did: Arc::new(RwLock::new(None)),
         }
     }
 

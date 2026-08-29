@@ -501,7 +501,9 @@ fn guest_caller_identity(
     ) {
         return Err("substrate-injected auth level on an inbound HTTP request".to_string());
     }
-    let auth = if matches!(caller.auth, AuthLevel::Ucan) {
+    let auth = if caller.session.claims.contains_key(syneroym_ucan::CLAIM_AUTH_METHOD) {
+        CallerAuth::Delegated
+    } else if matches!(caller.auth, AuthLevel::Ucan) {
         CallerAuth::Ucan
     } else if preamble.delegation.is_some() {
         CallerAuth::Delegated
@@ -538,70 +540,55 @@ fn extract_session_token_from_hyper_headers(headers: &hyper::HeaderMap) -> Optio
     None
 }
 
-fn resolve_effective_caller_identity(
+fn resolve_effective_session_caller(
     route_handler: &RouteHandler,
     preamble: &RoutePreamble,
     caller: Option<&CallerContext>,
     headers: &hyper::HeaderMap,
-) -> Result<Option<CallerIdentity>, String> {
-    let base_identity = guest_caller_identity(caller, preamble)?;
-
+) -> Option<CallerContext> {
     // Only gateway-origin traffic may use session cookies / bearer tokens (Finding
     // 2 & 10)
     let is_gateway_origin = caller.is_some_and(|c| {
         c.caller_did == route_handler.inner.node_did && preamble.delegation.is_none()
     });
 
-    if is_gateway_origin && let Some(token_str) = extract_session_token_from_hyper_headers(headers)
-    {
-        // Check revocation (Finding 1)
-        let is_revoked = route_handler
-            .inner
-            .session_revocation
-            .as_ref()
-            .is_some_and(|r| r.is_revoked(&token_str));
-
-        if !is_revoked {
-            // Find trusted auth DID (Finding 11)
-            let auth_did = route_handler
-                .inner
-                .native_http
-                .get(syneroym_core::protocol_utils::AUTH_SERVICE_ALIAS)
-                .and_then(|svc| svc.service_id().map(ToString::to_string));
-
-            let claims = if let Some(expected_did) = auth_did.as_deref() {
-                syneroym_ucan::SessionToken::verify(&token_str, expected_did).ok()
-            } else {
-                syneroym_ucan::SessionToken::verify_any_issuer(&token_str).ok()
-            };
-
-            if let Some(claims) = claims {
-                return Ok(Some(CallerIdentity {
-                    did: claims.person_did,
-                    auth: CallerAuth::Delegated,
-                    app_instance: None,
-                }));
-            }
-        }
+    if !is_gateway_origin {
+        return None;
     }
 
-    Ok(base_identity)
-}
+    let token_str = extract_session_token_from_hyper_headers(headers)?;
 
-fn caller_context_from_identity(
-    base_caller: Option<&CallerContext>,
-    identity: &Option<CallerIdentity>,
-) -> Option<CallerContext> {
-    identity.as_ref().map(|id| CallerContext {
-        caller_did: id.did.clone(),
-        auth: match id.auth {
-            CallerAuth::Delegated => syneroym_rpc::AuthLevel::Delegated,
-            CallerAuth::Ucan => syneroym_rpc::AuthLevel::Ucan,
-            CallerAuth::SelfAsserted => syneroym_rpc::AuthLevel::System,
-        },
-        app_instance: id.app_instance.clone(),
-        session: base_caller.map(|c| c.session.clone()).unwrap_or_default(),
-        proof: base_caller.and_then(|c| c.proof.clone()),
+    // Check revocation (Finding 1)
+    let is_revoked =
+        route_handler.inner.session_revocation.as_ref().is_some_and(|r| r.is_revoked(&token_str));
+
+    if is_revoked {
+        return None;
+    }
+
+    // Fail closed: if no auth service is configured on this node, reject all
+    // session tokens
+    let auth_did = route_handler
+        .inner
+        .native_http
+        .get(syneroym_core::protocol_utils::AUTH_SERVICE_ALIAS)
+        .and_then(|svc| svc.service_id().map(ToString::to_string))?;
+
+    let claims = syneroym_ucan::SessionToken::verify(&token_str, &auth_did).ok()?;
+
+    let mut session = caller.map(|c| c.session.clone()).unwrap_or_default();
+    session.subject_did = claims.person_did.clone();
+    session.claims.insert(
+        syneroym_ucan::CLAIM_AUTH_METHOD.to_string(),
+        serde_json::Value::String("session".to_string()),
+    );
+
+    Some(CallerContext {
+        caller_did: claims.person_did,
+        auth: syneroym_rpc::AuthLevel::Delegated,
+        app_instance: None,
+        session,
+        proof: None,
     })
 }
 
@@ -767,15 +754,14 @@ impl HttpHandler {
     }
 
     async fn try_handle_http_request(&self, req: Request<Incoming>) -> Result<Response<HttpBody>> {
-        let caller_identity = resolve_effective_caller_identity(
+        let effective_caller = resolve_effective_session_caller(
             &self.route_handler,
             &self.preamble,
             self.caller.as_ref(),
             req.headers(),
         )
-        .unwrap_or(None);
+        .or_else(|| self.caller.clone());
 
-        let effective_caller = caller_context_from_identity(self.caller.as_ref(), &caller_identity);
         let handler = Self {
             route_handler: self.route_handler.clone(),
             preamble: self.preamble.clone(),
@@ -1636,21 +1622,16 @@ impl HttpHandler {
             Err((status, message)) => return Ok(http_error(status, message)),
         };
 
-        let caller_identity = self.caller.as_ref().map(|c| CallerIdentity {
-            did: c.caller_did.clone(),
-            auth: match c.auth {
-                AuthLevel::Ucan => CallerAuth::Ucan,
-                AuthLevel::Delegated => CallerAuth::Delegated,
-                _ => CallerAuth::SelfAsserted,
-            },
-            app_instance: c.app_instance.clone(),
-        });
+        let caller_identity = match guest_caller_identity(self.caller.as_ref(), &self.preamble) {
+            Ok(id) => id,
+            Err(e) => return Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
+        };
 
         // D-A2-7, BEFORE any engine work: an unauthenticated caller on a
         // non-public route never instantiates anything. Same code and
         // status shape `dispatch_native` uses, so one 401 taxonomy covers
         // the whole bridge.
-        if caller_identity.is_none() && !route.public {
+        if self.caller.is_none() && !route.public {
             return Ok(structured_rpc_error(
                 StatusCode::UNAUTHORIZED,
                 UNAUTHENTICATED_RPC_CODE,
@@ -2514,6 +2495,18 @@ mod tests {
     fn guest_caller_identity_delegation_present_is_delegated() {
         let caller = caller_context(AuthLevel::Delegated);
         let preamble = preamble_with(Some(()), None);
+        let identity = guest_caller_identity(Some(&caller), &preamble).unwrap().unwrap();
+        assert_eq!(identity.auth, CallerAuth::Delegated);
+    }
+
+    #[test]
+    fn guest_caller_identity_session_caller_is_delegated() {
+        let mut caller = caller_context(AuthLevel::Delegated);
+        caller.session.claims.insert(
+            syneroym_ucan::CLAIM_AUTH_METHOD.to_string(),
+            serde_json::Value::String("session".to_string()),
+        );
+        let preamble = preamble_with(None, None);
         let identity = guest_caller_identity(Some(&caller), &preamble).unwrap().unwrap();
         assert_eq!(identity.auth, CallerAuth::Delegated);
     }

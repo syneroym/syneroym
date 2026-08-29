@@ -169,6 +169,94 @@ async fn setup_gateway_test_node(
     (ctx, gateway_port, registry_url, service_did, host)
 }
 
+async fn setup_gateway_test_node_with_mode(
+    mode: Option<syneroym_core::config::IdentityMode>,
+    connection_auth_gate: bool,
+    fixed_did: Option<String>,
+) -> (SubstrateTestContext, u16, String, String, String) {
+    let _ = ring::default_provider().install_default();
+    time::sleep(Duration::from_millis(1000)).await;
+    let [iroh_port, registry_port, gateway_port] = common::alloc_ports::<3>();
+
+    let ctx =
+        SubstrateTestContext::setup_with(iroh_port, registry_port, gateway_port, move |config| {
+            config.storage.encryption = false;
+            config.substrate.enable_bep0044_dht = false;
+            if let Some(m) = mode
+                && let Some(gw) = &mut config.roles.client_gateway
+            {
+                gw.identity_mode = m;
+                gw.connection_auth_gate = connection_auth_gate;
+                gw.fixed_identity_did = fixed_did.clone();
+            }
+        })
+        .await;
+
+    let registry_url = format!("http://127.0.0.1:{registry_port}");
+    let service_identity = Identity::generate().unwrap();
+    let service_did = substrate::derive_did_key(&service_identity.public_key());
+
+    let wasm_bytes = fs::read(test_constants::http_guest_test_wasm_path()).expect("wasm artifact");
+    let http_routes = json!({
+        "http_routes": [
+            {
+                "method": "GET",
+                "path": "/whoami",
+                "target": "guest",
+                "operation": "handle-request",
+                "public": true
+            },
+            {
+                "method": "GET",
+                "path": "/echo",
+                "target": "guest",
+                "operation": "handle-request",
+                "public": true
+            },
+            {
+                "method": "POST",
+                "path": "/echo",
+                "target": "guest",
+                "operation": "handle-request",
+                "public": true
+            }
+        ]
+    });
+    let manifest = guest_wasm_manifest(wasm_bytes, http_routes);
+    deploy(&ctx.substrate_client, &service_did, manifest).await;
+
+    let info = EndpointInfo {
+        service_id: service_did.clone(),
+        substrate_id: ctx.substrate_client.service_id().to_string(),
+        endpoint_type: EndpointType::Service,
+        mechanisms: ctx.substrate_mechanisms.clone(),
+        nickname: Some("test-svc".to_string()),
+        is_private: false,
+        ttl: None,
+        not_after: u64::MAX / 2,
+        generation: 0,
+    };
+    let signed = info.sign(&service_identity).expect("failed to sign endpoint info");
+    let http = Client::new();
+    let reg_res = http
+        .post(format!("{registry_url}/register"))
+        .json(&signed)
+        .send()
+        .await
+        .expect("failed to register endpoint in HTTP registry");
+    assert!(reg_res.status().is_success());
+
+    let host = util::generate_service_host(
+        Some("test-svc"),
+        &service_did,
+        Some("http-native"),
+        "localhost",
+    )
+    .unwrap();
+
+    (ctx, gateway_port, registry_url, service_did, host)
+}
+
 const AUTH_HOST: &str = "auth-s00000000.localhost";
 
 async fn login_to_gateway(
@@ -1180,7 +1268,6 @@ async fn test_31_oversized_and_invalid_http_requests_return_400() {
 #[tokio::test]
 async fn test_32_session_token_refused_as_capability_proof() {
     let auth_id = Identity::generate().unwrap();
-    let _auth_did = substrate::derive_did_key(&auth_id.public_key());
     let person_id = Identity::generate().unwrap();
     let person_did = substrate::derive_did_key(&person_id.public_key());
 
@@ -1190,17 +1277,14 @@ async fn test_32_session_token_refused_as_capability_proof() {
     let cap_token = session_token.into_inner();
 
     let opts = syneroym_ucan::ChainVerifyOpts {
-        expected_audience_did: "did:key:zWrongAudience",
-        is_trusted_root: &|_iss, _cap| false,
-        now_secs: 1000,
+        expected_audience_did: &cap_token.audience_did,
+        is_trusted_root: &|_iss, _cap| true,
+        now_secs: cap_token.not_before_secs + 10,
     };
-    let err = syneroym_ucan::verify_chain(&cap_token, &opts).unwrap_err();
+    let granted = syneroym_ucan::verify_chain(&cap_token, &opts).unwrap();
     assert!(
-        err.to_string().contains("audience")
-            || err.to_string().contains("capability")
-            || err.to_string().contains("empty")
-            || err.to_string().contains("unrooted"),
-        "verifying session token as capability chain should fail: {err}"
+        granted.is_empty(),
+        "verifying session token as capability chain must yield empty capabilities"
     );
 }
 
@@ -1213,10 +1297,9 @@ async fn test_33_delegated_key_login_handoff_from_file() {
 
     let temp_dir = tempfile::tempdir().unwrap();
     let identities_dir = temp_dir.path().join("identities");
-    fs::create_dir_all(&identities_dir).unwrap();
+    std::fs::create_dir_all(&identities_dir).unwrap();
 
     let person = Identity::generate().unwrap();
-    let _person_did = substrate::derive_did_key(&person.public_key());
     person.save_to_path(identities_dir.join("alice.key")).unwrap();
 
     let key_file = temp_dir.path().join("session-key.json");
@@ -1250,4 +1333,160 @@ async fn test_33_delegated_key_login_handoff_from_file() {
     roymctl::commands::session::handle(&status_cmd, temp_dir.path(), None).await.unwrap();
 
     ctx.teardown().await;
+}
+
+/// Test 34: Revoked session token is refused and falls back to self-asserted
+/// caller.
+#[tokio::test]
+async fn test_34_revoked_token_refused_at_guest_route() {
+    let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
+    let (ctx, gateway_port, reg_url, _svc_did, host) = setup_gateway_test_node(None).await;
+    let client = test_client();
+    let gateway_url = format!("http://127.0.0.1:{gateway_port}");
+    poll_until_guest_ready(&client, &gateway_url, &host).await;
+
+    // Log in
+    let person = Identity::generate().unwrap();
+    let (token, person_did) = login_to_gateway(&gateway_url, &person, &reg_url, 24).await;
+
+    // Call guest route with token -> sees delegated person DID
+    let resp = client
+        .get(format!("{gateway_url}/echo"))
+        .header("Host", &host)
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={token}"))
+        .header("Connection", "close")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let val: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(val["caller"]["did"], person_did);
+    assert_eq!(val["caller"]["auth"], "delegated");
+
+    // Logout to revoke the token
+    let logout_resp = client
+        .post(format!("{gateway_url}/_syneroym/session/logout"))
+        .header("Host", AUTH_HOST)
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={token}"))
+        .header("Connection", "close")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(logout_resp.status(), reqwest::StatusCode::OK);
+
+    // Call guest route again with revoked token -> falls back to self-asserted
+    // caller
+    let resp_after = client
+        .get(format!("{gateway_url}/echo"))
+        .header("Host", &host)
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={token}"))
+        .header("Connection", "close")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp_after.status(), reqwest::StatusCode::OK);
+    let val_after: serde_json::Value = resp_after.json().await.unwrap();
+    assert_eq!(val_after["caller"]["auth"], "self-asserted");
+    assert_ne!(val_after["caller"]["did"], person_did);
+
+    ctx.teardown().await;
+}
+
+/// Test 35: Gateway identity modes: Open, Login with connection_auth_gate,
+/// Fixed.
+#[tokio::test]
+async fn test_35_gateway_identity_modes_open_login_fixed() {
+    let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
+    let client = test_client();
+
+    // 1. Test Open mode (unauthenticated requests admitted as self-asserted caller)
+    let (ctx_open, gw_open_port, _reg_url, _svc_did, host_open) =
+        setup_gateway_test_node_with_mode(
+            Some(syneroym_core::config::IdentityMode::Open),
+            false,
+            None,
+        )
+        .await;
+    let gw_open_url = format!("http://127.0.0.1:{gw_open_port}");
+    let open_resp = client
+        .get(format!("{gw_open_url}/echo"))
+        .header("Host", &host_open)
+        .header("Connection", "close")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(open_resp.status(), reqwest::StatusCode::OK);
+    let open_val: serde_json::Value = open_resp.json().await.unwrap();
+    assert_eq!(open_val["caller"]["auth"], "self-asserted");
+    ctx_open.teardown().await;
+
+    // 2. Test Login mode with connection_auth_gate enabled
+    let (ctx_login, gw_login_port, reg_url, _svc_did, host) = setup_gateway_test_node_with_mode(
+        Some(syneroym_core::config::IdentityMode::Login),
+        true,
+        None,
+    )
+    .await;
+    let gw_login_url = format!("http://127.0.0.1:{gw_login_port}");
+
+    // Visiting non-auth host without session token -> 401 Unauthorized
+    let unauth_resp = client
+        .get(format!("{gw_login_url}/echo"))
+        .header("Host", &host)
+        .header("Connection", "close")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauth_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    // Visiting auth challenge endpoint is permitted without prior session
+    let challenge_resp = client
+        .post(format!("{gw_login_url}/_syneroym/session/challenge"))
+        .header("Host", AUTH_HOST)
+        .header("Connection", "close")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(challenge_resp.status(), reqwest::StatusCode::OK);
+
+    // Log in and verify access is admitted
+    let person = Identity::generate().unwrap();
+    let (token, _) = login_to_gateway(&gw_login_url, &person, &reg_url, 24).await;
+
+    let auth_resp = client
+        .get(format!("{gw_login_url}/echo"))
+        .header("Host", &host)
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={token}"))
+        .header("Connection", "close")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(auth_resp.status(), reqwest::StatusCode::OK);
+
+    ctx_login.teardown().await;
+
+    // 2. Test Fixed identity mode
+    let fixed_person = Identity::generate().unwrap();
+    let fixed_person_did = substrate::derive_did_key(&fixed_person.public_key());
+    let (ctx_fixed, gw_fixed_port, _reg_url, _svc_did, _host) = setup_gateway_test_node_with_mode(
+        Some(syneroym_core::config::IdentityMode::Fixed),
+        false,
+        Some(fixed_person_did.clone()),
+    )
+    .await;
+    let gw_fixed_url = format!("http://127.0.0.1:{gw_fixed_port}");
+
+    let whoami_resp = client
+        .get(format!("{gw_fixed_url}/_syneroym/session/whoami"))
+        .header("Host", AUTH_HOST)
+        .header("Connection", "close")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(whoami_resp.status(), reqwest::StatusCode::OK);
+    let whoami_json: serde_json::Value = whoami_resp.json().await.unwrap();
+    assert_eq!(whoami_json["auth"], "fixed");
+    assert_eq!(whoami_json["person_did"], fixed_person_did);
+
+    ctx_fixed.teardown().await;
 }

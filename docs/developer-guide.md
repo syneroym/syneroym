@@ -1469,9 +1469,9 @@ To act as a verified person identity, a client opens a session with the gateway:
 
 ##### Auth Service Endpoints (`/_syneroym/session/*`)
 
-The node auth service serves session lifecycle endpoints:
+The node auth service is addressed by `Host: auth.<domain>` (or `Host: auth-s00000000.<domain>`), or via path fallback `/_syneroym/session/*` on the client gateway port (7960):
 - `POST /_syneroym/session/challenge`: Returns a cryptographic nonce, the node DID, and challenge expiry.
-- `POST /_syneroym/session/login`: Validates the signed challenge assertion and delegation certificate (`delegated-key`) or local identity (`local`), returning a signed UCAN session token and setting `Set-Cookie: syneroym_session=...; HttpOnly; SameSite=Strict`.
+- `POST /_syneroym/session/login`: Validates the signed challenge assertion and delegation certificate (`delegated-key`) or local identity (`local`), returning a signed UCAN session token and setting `Set-Cookie: syneroym_session=...; HttpOnly; SameSite=Lax; Path=/`.
 - `GET /_syneroym/session/methods`: Returns the list of enabled login methods on this node.
 - `GET /_syneroym/session/whoami`: Returns the active session's person DID, auth method, and expiration.
 - `POST /_syneroym/session/refresh`: Re-issues a session token bounded by the original delegation lifetime.
@@ -1482,14 +1482,14 @@ The node auth service serves session lifecycle endpoints:
 ```toml
 [roles.client_gateway]
 http_port = 7960
-# Identity mode: "login" (default), "open", or "fixed"
-identity_mode = "login"
+# Identity mode: "open" (default), "login", or "fixed"
+identity_mode = "open"
 
 [roles.auth]
 # Session lifetime in seconds (defaults to 28800 = 8 hours)
 session_ttl_secs = 28800
-# Challenge nonce lifetime in seconds (defaults to 300 = 5 minutes)
-nonce_ttl_secs = 300
+# Challenge nonce lifetime in seconds (defaults to 60 = 1 minute)
+nonce_ttl_secs = 60
 ```
 
 

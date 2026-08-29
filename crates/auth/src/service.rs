@@ -147,27 +147,24 @@ impl AuthService {
     }
 
     pub fn record_logout(&self, token_str: &str) {
+        // Only record logout for a token that verifies against this auth service's own
+        // identity key
+        let Ok(claims) = SessionToken::verify(token_str, &self.auth_did) else {
+            return;
+        };
+
         let now = now_secs();
         self.sweep_logged_out_tokens(now);
 
-        let expires_at = if let Ok(claims) = SessionToken::verify_any_issuer(token_str) {
-            claims.expires_at_secs
-        } else {
-            now + self.session_ttl_secs
-        };
-
-        if self.logged_out_tokens.len() >= MAX_LOGGED_OUT_TOKENS {
-            let oldest = self
-                .logged_out_tokens
-                .iter()
-                .min_by_key(|entry| *entry.value())
-                .map(|entry| entry.key().clone());
-            if let Some(key) = oldest {
-                self.logged_out_tokens.remove(&key);
-            }
+        if claims.expires_at_secs <= now {
+            return;
         }
 
-        self.logged_out_tokens.insert(token_str.to_string(), expires_at);
+        if self.logged_out_tokens.len() >= MAX_LOGGED_OUT_TOKENS {
+            return;
+        }
+
+        self.logged_out_tokens.insert(token_str.to_string(), claims.expires_at_secs);
     }
 
     pub fn is_logged_out(&self, token_str: &str) -> bool {
@@ -479,6 +476,20 @@ impl AuthService {
         None
     }
 
+    fn is_allowed_origin(origin: &str) -> bool {
+        let trimmed = origin.trim();
+        trimmed.starts_with("http://localhost:")
+            || trimmed.starts_with("https://localhost:")
+            || trimmed == "http://localhost"
+            || trimmed == "https://localhost"
+            || trimmed.starts_with("http://127.0.0.1:")
+            || trimmed.starts_with("https://127.0.0.1:")
+            || trimmed == "http://127.0.0.1"
+            || trimmed == "https://127.0.0.1"
+            || (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+                && (trimmed.contains(".localhost:") || trimmed.ends_with(".localhost"))
+    }
+
     fn cors_headers(origin: Option<&str>) -> Vec<(String, String)> {
         let mut headers = vec![
             ("access-control-allow-methods".to_string(), "GET, POST, OPTIONS".to_string()),
@@ -487,12 +498,12 @@ impl AuthService {
                 "content-type, authorization, x-syneroym-routing-key".to_string(),
             ),
         ];
-        if let Some(orig) = origin {
+        if let Some(orig) = origin
+            && Self::is_allowed_origin(orig)
+        {
             headers.push(("access-control-allow-origin".to_string(), orig.to_string()));
             headers.push(("access-control-allow-credentials".to_string(), "true".to_string()));
             headers.push(("vary".to_string(), "Origin".to_string()));
-        } else {
-            headers.push(("access-control-allow-origin".to_string(), "*".to_string()));
         }
         headers
     }

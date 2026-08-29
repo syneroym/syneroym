@@ -116,7 +116,7 @@ pub fn gateway_session_assertion(
 /// The exact character width of a `short_hash` (`z32::encode` of a 5-byte
 /// SHA-256 prefix), used to tell an `-a`/`-s` segment apart from a nickname
 /// segment that merely starts with the same letter (§0.12).
-pub(crate) const SHORT_HASH_LEN: usize = 8;
+pub const SHORT_HASH_LEN: usize = 8;
 
 /// What a gateway host names (ADR-0022 §7). One grammar:
 ///

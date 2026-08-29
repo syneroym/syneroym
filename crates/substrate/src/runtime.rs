@@ -159,10 +159,14 @@ pub async fn init(config: SubstrateConfig) -> anyhow::Result<InitializedRuntime>
     // composition root has built them, is injected into `RuntimeServices`
     // afterward instead of changing when either call runs.
     let mut services = RuntimeServices::init(&config).await?;
-    let (connection_router, endpoint_registry, supervisor, conversation) =
+    let (connection_router, endpoint_registry, supervisor, conversation, auth_did) =
         setup_connection_router(&config).await?;
     services.set_supervisor(supervisor);
     services.set_conversation(conversation);
+    #[cfg(feature = "client_gateway")]
+    if let Some(gateway) = services.client_gateway.as_ref() {
+        gateway.set_auth_did(auth_did);
+    }
 
     Ok(InitializedRuntime { observability, services, connection_router, endpoint_registry })
 }
@@ -642,6 +646,7 @@ async fn setup_connection_router(
     EndpointRegistry,
     Option<Arc<SupervisorHandle>>,
     Arc<ConversationService>,
+    Option<String>,
 )> {
     let (service_id, secret_key, verified_controller) = setup_identity_and_storage(config).await?;
 
@@ -673,10 +678,10 @@ async fn setup_connection_router(
         );
     }
 
-    let (router, endpoint_registry, _publisher, supervisor, conversation) =
+    let (router, endpoint_registry, _publisher, supervisor, conversation, auth_did) =
         setup_router(config, &service_id, secret_key).await?;
 
-    Ok((router, endpoint_registry, supervisor, conversation))
+    Ok((router, endpoint_registry, supervisor, conversation, auth_did))
 }
 
 async fn setup_identity_and_storage(
@@ -704,6 +709,7 @@ async fn setup_router(
     Option<Arc<EndpointPublisher>>,
     Option<Arc<SupervisorHandle>>,
     Arc<ConversationService>,
+    Option<String>,
 )> {
     let data_store = registry_store::init_store(config).await?;
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
@@ -824,7 +830,12 @@ async fn setup_router(
         }
     }
 
-    Ok((router, endpoint_registry, publisher, supervisor, shared.conversation.clone()))
+    let auth_did = shared
+        .native_http
+        .get(syneroym_core::protocol_utils::AUTH_SERVICE_ALIAS)
+        .and_then(|svc| svc.service_id().map(ToString::to_string));
+
+    Ok((router, endpoint_registry, publisher, supervisor, shared.conversation.clone(), auth_did))
 }
 
 /// Handles the supervisor role (and any future post-router role that must
@@ -1024,6 +1035,66 @@ async fn init_auth_service(
     shared.native_http.insert(auth_did.clone(), auth_service.clone() as Arc<dyn NativeHttpService>);
 
     let auth_routes = vec![
+        HttpRoute {
+            method: "POST".into(),
+            path: "/challenge".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "POST".into(),
+            path: "/login".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "GET".into(),
+            path: "/methods".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "GET".into(),
+            path: "/whoami".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "POST".into(),
+            path: "/logout".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "POST".into(),
+            path: "/refresh".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
         HttpRoute {
             method: "POST".into(),
             path: "/_syneroym/session/challenge".into(),
