@@ -41,6 +41,9 @@
 //! multi-node fixture in this directory keeps its own near-verbatim copy for
 //! the same reason.
 
+#[allow(dead_code)]
+mod common;
+
 use std::time::Duration;
 
 use ed25519_dalek::VerifyingKey;
@@ -66,22 +69,6 @@ use tokio::{
     sync::{Mutex, mpsc, mpsc::Sender},
     task::JoinHandle,
 };
-
-// Every `#[tokio::test]` in one file runs concurrently by default, so each
-// test here needs its own non-overlapping block. Spaced by 100, not 10:
-// `coordinator_iroh`'s "/v1/info" server always binds `http_bind_address`'s
-// port + 10, which is why every other multi-node harness in this crate uses
-// the same spacing. Continues past the highest block already in use
-// (`binding_push_e2e.rs`, 10_900).
-const NODE_A_IROH_PORT: u16 = 12300;
-const NODE_A_REGISTRY_PORT: u16 = 12301;
-const NODE_A_GATEWAY_PORT: u16 = 12302;
-const NODE_B_IROH_PORT: u16 = 12400;
-const NODE_B_REGISTRY_PORT: u16 = 12401;
-const NODE_B_GATEWAY_PORT: u16 = 12402;
-const REVOCATION_IROH_PORT: u16 = 12500;
-const REVOCATION_REGISTRY_PORT: u16 = 12501;
-const REVOCATION_GATEWAY_PORT: u16 = 12502;
 
 /// Not sharing a port block keeps the tests here from colliding, but they
 /// still each boot full substrate instances (real iroh QUIC socket,
@@ -130,21 +117,21 @@ impl Node {
         config.roles.coordinator = Some(CoordinatorRole {
             iroh: Some(CoordinatorIrohConfig {
                 enable_relay: true,
-                http_bind_address: format!("0.0.0.0:{iroh_port}"),
+                http_bind_address: format!("127.0.0.1:{iroh_port}"),
                 ..Default::default()
             }),
             ..Default::default()
         });
         config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("0.0.0.0:{registry_port}"),
+            http_bind_address: format!("127.0.0.1:{registry_port}"),
             ..Default::default()
         });
         let effective_registry_url =
-            shared_registry_url.unwrap_or_else(|| format!("http://localhost:{registry_port}"));
+            shared_registry_url.unwrap_or_else(|| format!("http://127.0.0.1:{registry_port}"));
         config.substrate.registry_url = Some(effective_registry_url.clone());
         config.substrate.enable_bep0044_dht = false;
         config.parent_coordinator.iroh =
-            Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
+            Some(IrohParentConfig { url: format!("http://127.0.0.1:{iroh_port}") });
         config.roles.client_gateway =
             Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
@@ -287,19 +274,15 @@ async fn renew_cert_installs_over_the_real_wire_and_refuses_a_certificate_for_th
     let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();
 
+    let [node_a_iroh, node_a_reg, node_a_gw] = common::alloc_ports::<3>();
+    let [node_b_iroh, node_b_reg, node_b_gw] = common::alloc_ports::<3>();
+
     let operator = Identity::generate().unwrap();
-    let mut node_a =
-        Node::boot(NODE_A_IROH_PORT, NODE_A_REGISTRY_PORT, NODE_A_GATEWAY_PORT, None, &operator)
-            .await;
+    let mut node_a = Node::boot(node_a_iroh, node_a_reg, node_a_gw, None, &operator).await;
     let shared_registry = node_a.registry_url.clone();
-    let node_b = Node::boot(
-        NODE_B_IROH_PORT,
-        NODE_B_REGISTRY_PORT,
-        NODE_B_GATEWAY_PORT,
-        Some(shared_registry.clone()),
-        &operator,
-    )
-    .await;
+    let node_b =
+        Node::boot(node_b_iroh, node_b_reg, node_b_gw, Some(shared_registry.clone()), &operator)
+            .await;
 
     // Default `storage.encryption = true` needs a KEK before any deployed
     // service's native-capability endpoints can be set up -- the same
@@ -442,18 +425,13 @@ async fn a_revoked_instance_key_handshake_fails_while_a_fresh_one_verifies() {
     let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();
 
+    let [rev_iroh, rev_reg, rev_gw] = common::alloc_ports::<3>();
+
     let operator = Identity::generate().unwrap();
     // One node is enough here: what is under test is the registry
     // round trip between the revocation writer and the ingress check, and
     // the substrate's role in it is to host the registry.
-    let node = Node::boot(
-        REVOCATION_IROH_PORT,
-        REVOCATION_REGISTRY_PORT,
-        REVOCATION_GATEWAY_PORT,
-        None,
-        &operator,
-    )
-    .await;
+    let node = Node::boot(rev_iroh, rev_reg, rev_gw, None, &operator).await;
     node.substrate_client.inject_kek("cc".repeat(32)).await.expect("inject_kek failed");
 
     let member_master = Identity::generate().unwrap();

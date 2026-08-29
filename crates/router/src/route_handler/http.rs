@@ -137,6 +137,7 @@ const HOST_OWNED_HEADERS: [&str; 8] = [
 ///
 /// It wraps a `RouteHandler`, a connection-level `RoutePreamble`, and the
 /// planned `RoutePipeline`.
+#[derive(Clone)]
 pub struct HttpHandler {
     pub route_handler: RouteHandler,
     pub preamble: RoutePreamble,
@@ -537,6 +538,73 @@ fn extract_session_token_from_hyper_headers(headers: &hyper::HeaderMap) -> Optio
     None
 }
 
+fn resolve_effective_caller_identity(
+    route_handler: &RouteHandler,
+    preamble: &RoutePreamble,
+    caller: Option<&CallerContext>,
+    headers: &hyper::HeaderMap,
+) -> Result<Option<CallerIdentity>, String> {
+    let base_identity = guest_caller_identity(caller, preamble)?;
+
+    // Only gateway-origin traffic may use session cookies / bearer tokens (Finding
+    // 2 & 10)
+    let is_gateway_origin = caller.is_some_and(|c| {
+        c.caller_did == route_handler.inner.node_did && preamble.delegation.is_none()
+    });
+
+    if is_gateway_origin && let Some(token_str) = extract_session_token_from_hyper_headers(headers)
+    {
+        // Check revocation (Finding 1)
+        let is_revoked = route_handler
+            .inner
+            .session_revocation
+            .as_ref()
+            .is_some_and(|r| r.is_revoked(&token_str));
+
+        if !is_revoked {
+            // Find trusted auth DID (Finding 11)
+            let auth_did = route_handler
+                .inner
+                .native_http
+                .get(syneroym_core::protocol_utils::AUTH_SERVICE_ALIAS)
+                .and_then(|svc| svc.service_id().map(ToString::to_string));
+
+            let claims = if let Some(expected_did) = auth_did.as_deref() {
+                syneroym_ucan::SessionToken::verify(&token_str, expected_did).ok()
+            } else {
+                syneroym_ucan::SessionToken::verify_any_issuer(&token_str).ok()
+            };
+
+            if let Some(claims) = claims {
+                return Ok(Some(CallerIdentity {
+                    did: claims.person_did,
+                    auth: CallerAuth::Delegated,
+                    app_instance: None,
+                }));
+            }
+        }
+    }
+
+    Ok(base_identity)
+}
+
+fn caller_context_from_identity(
+    base_caller: Option<&CallerContext>,
+    identity: &Option<CallerIdentity>,
+) -> Option<CallerContext> {
+    identity.as_ref().map(|id| CallerContext {
+        caller_did: id.did.clone(),
+        auth: match id.auth {
+            CallerAuth::Delegated => syneroym_rpc::AuthLevel::Delegated,
+            CallerAuth::Ucan => syneroym_rpc::AuthLevel::Ucan,
+            CallerAuth::SelfAsserted => syneroym_rpc::AuthLevel::System,
+        },
+        app_instance: id.app_instance.clone(),
+        session: base_caller.map(|c| c.session.clone()).unwrap_or_default(),
+        proof: base_caller.and_then(|c| c.proof.clone()),
+    })
+}
+
 /// Turns a guest's answer into an HTTP response, or into the 500 failure-
 /// matrix row 6 requires (M06A D-A2-5). `Content-Length` is always the
 /// host's computed one, never the guest's -- a mismatch would be a
@@ -699,6 +767,22 @@ impl HttpHandler {
     }
 
     async fn try_handle_http_request(&self, req: Request<Incoming>) -> Result<Response<HttpBody>> {
+        let caller_identity = resolve_effective_caller_identity(
+            &self.route_handler,
+            &self.preamble,
+            self.caller.as_ref(),
+            req.headers(),
+        )
+        .unwrap_or(None);
+
+        let effective_caller = caller_context_from_identity(self.caller.as_ref(), &caller_identity);
+        let handler = Self {
+            route_handler: self.route_handler.clone(),
+            preamble: self.preamble.clone(),
+            pipeline: self.pipeline.clone(),
+            caller: effective_caller,
+        };
+
         let method = req.method().clone();
         let path = req.uri().path().to_string();
 
@@ -706,7 +790,7 @@ impl HttpHandler {
             && let Some(hash) = blob_hash_from_path(&path)
         {
             let query = req.uri().query().unwrap_or("").to_string();
-            return self.handle_blob_get(hash, &query).await;
+            return handler.handle_blob_get(hash, &query).await;
         }
 
         // M06A A1: static assets, exact-path plus a trailing-slash
@@ -715,15 +799,15 @@ impl HttpHandler {
         // (D-A1-4), so this ordering is never actually ambiguous at
         // request time; it exists to keep resolve_asset a cheap, sandbox-
         // free check (D-06A-1) ahead of the route table lookup.
-        if let Some(resp) = self.try_handle_asset(&method, &path, &req).await? {
+        if let Some(resp) = handler.try_handle_asset(&method, &path, &req).await? {
             return Ok(resp);
         }
 
-        if let Some((route, path_param)) = self.resolve_route(&method, &path) {
-            return self.dispatch_route(&route, path_param, req).await;
+        if let Some((route, path_param)) = handler.resolve_route(&method, &path) {
+            return handler.dispatch_route(&route, path_param, req).await;
         }
 
-        self.handle_json_rpc_bridge(req).await
+        handler.handle_json_rpc_bridge(req).await
     }
 
     /// The original `POST`+`application/json` JSON-RPC bridge, wrapped in the
@@ -1552,30 +1636,15 @@ impl HttpHandler {
             Err((status, message)) => return Ok(http_error(status, message)),
         };
 
-        let mut caller_identity = match guest_caller_identity(self.caller.as_ref(), &self.preamble)
-        {
-            Ok(identity) => identity,
-            Err(reason) => {
-                return Ok(http_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("unexpected caller context: {reason}"),
-                ));
-            }
-        };
-
-        if let Some(token_str) = extract_session_token_from_hyper_headers(&parts.headers)
-            && let Ok(claims) = syneroym_auth::SessionToken::verify_any_issuer(&token_str)
-        {
-            let is_trusted_auth =
-                self.route_handler.inner.native_http.contains_key(&claims.issuer_did);
-            if is_trusted_auth {
-                caller_identity = Some(CallerIdentity {
-                    did: claims.person_did,
-                    auth: CallerAuth::Delegated,
-                    app_instance: None,
-                });
-            }
-        }
+        let caller_identity = self.caller.as_ref().map(|c| CallerIdentity {
+            did: c.caller_did.clone(),
+            auth: match c.auth {
+                AuthLevel::Ucan => CallerAuth::Ucan,
+                AuthLevel::Delegated => CallerAuth::Delegated,
+                _ => CallerAuth::SelfAsserted,
+            },
+            app_instance: c.app_instance.clone(),
+        });
 
         // D-A2-7, BEFORE any engine work: an unauthenticated caller on a
         // non-public route never instantiates anything. Same code and

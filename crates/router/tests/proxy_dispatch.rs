@@ -200,6 +200,7 @@ async fn test_route_handler_with_proxy_components() -> Option<RouteHandler> {
         sse_permits: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
+        session_revocation: None,
     };
 
     Some(
@@ -317,6 +318,7 @@ async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, A
         sse_permits: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
+        session_revocation: None,
     };
 
     Some((
@@ -647,6 +649,7 @@ async fn test_route_handler_with_self_native_data_layer(
         sse_permits: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
+        session_revocation: None,
     };
 
     let route_handler = RouteHandler::init(
@@ -777,6 +780,7 @@ async fn test_route_handler_with_self_native_data_layer_and_stage4(
         sse_permits: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
+        session_revocation: None,
     };
 
     let route_handler = RouteHandler::init(

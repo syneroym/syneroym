@@ -18,7 +18,9 @@ use httparse::{EMPTY_HEADER, Request, Status};
 use syneroym_app_orchestration::{LogicalResolver, StaticInventory};
 use syneroym_core::{
     config::{IdentityMode, SubstrateConfig},
-    protocol_utils::{ROUTING_KEY_HEADER, SESSION_COOKIE_NAME, TargetHost, parse_target_host},
+    protocol_utils::{
+        AUTH_SERVICE_ALIAS, ROUTING_KEY_HEADER, SESSION_COOKIE_NAME, TargetHost, parse_target_host,
+    },
     util::load_or_generate_node_identity,
 };
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
@@ -29,6 +31,7 @@ use syneroym_sdk::{
         AppHostResolver, CredentialWarning, RegistryTopologyFetcher, Tier2Fetch, credential_warning,
     },
 };
+use syneroym_ucan::SessionToken;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -276,10 +279,42 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
 
     let path = req.path.unwrap_or("");
 
-    // In fixed mode, if a whoami request arrives and is not addressed to another
-    // service, answer directly
+    if path.starts_with("/_syneroym/") && !path.starts_with("/_syneroym/session") {
+        return write_json_rpc_error(&mut stream, 404, "Not Found").await;
+    }
+
+    let host_header = req
+        .headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("host"))
+        .map_or("", |h| str::from_utf8(h.value).unwrap_or(""));
+
+    let target = match parse_target_host(host_header) {
+        Some(t) => t,
+        None => {
+            if path.starts_with("/_syneroym/session") {
+                TargetHost::Service {
+                    lookup_alias: AUTH_SERVICE_ALIAS.to_string(),
+                    interface: String::new(),
+                }
+            } else {
+                return write_json_rpc_error(&mut stream, 400, "Missing or invalid Host header")
+                    .await;
+            }
+        }
+    };
+
+    let is_auth_host = match &target {
+        TargetHost::Service { lookup_alias, .. } => {
+            lookup_alias == AUTH_SERVICE_ALIAS || lookup_alias.starts_with("auth-")
+        }
+        TargetHost::App { .. } => false,
+    };
+
+    // In fixed mode, if a whoami request arrives for auth, answer directly
     if state.identity_mode == IdentityMode::Fixed
-        && (path == "/_syneroym/session/whoami" || path.ends_with("/whoami"))
+        && is_auth_host
+        && (path == "/_syneroym/session/whoami" || path == "/whoami")
     {
         let fixed_did = state.fixed_identity_did.clone().unwrap_or_default();
         let resp = serde_json::json!({
@@ -301,70 +336,38 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
         return Ok(());
     }
 
-    let is_session_path = matches!(
-        path,
-        "/_syneroym/session/challenge"
-            | "/_syneroym/session/login"
-            | "/_syneroym/session/methods"
-            | "/_syneroym/session/whoami"
-            | "/_syneroym/session/logout"
-            | "/_syneroym/session/refresh"
-            | "/_syneroym/session"
-    );
-
-    if path.starts_with("/_syneroym/") && !is_session_path {
-        let body = serde_json::json!({"error": "unknown gateway endpoint"});
-        let body_bytes = serde_json::to_vec(&body)?;
-        let response = format!(
-            "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: \
-             {}\r\nConnection: close\r\n\r\n",
-            body_bytes.len()
-        );
-        stream.write_all(response.as_bytes()).await?;
-        stream.write_all(&body_bytes).await?;
-        return Ok(());
-    }
-
-    let host_header = req
-        .headers
-        .iter()
-        .find(|h| h.name.eq_ignore_ascii_case("host"))
-        .map_or("", |h| str::from_utf8(h.value).unwrap_or(""));
-
-    let target = if is_session_path {
-        TargetHost::Service { lookup_alias: "auth".to_string(), interface: "default".to_string() }
-    } else {
-        match parse_target_host(host_header) {
-            Some(t) => t,
-            None => {
-                return write_json_rpc_error(&mut stream, 400, "Missing or invalid Host header")
-                    .await;
-            }
-        }
-    };
-
     // Connection auth gate in login mode: if enabled and not visiting auth service,
-    // verify presence of session credential
-    if state.identity_mode == IdentityMode::Login && state.connection_auth_gate {
-        let has_session_credential = req.headers.iter().any(|h| {
+    // verify presence of a valid, signed, unexpired session credential
+    if state.identity_mode == IdentityMode::Login && state.connection_auth_gate && !is_auth_host {
+        let token_opt = req.headers.iter().find_map(|h| {
             if h.name.eq_ignore_ascii_case("cookie") {
                 let v = str::from_utf8(h.value).unwrap_or("");
-                v.contains(SESSION_COOKIE_NAME)
+                for pair in v.split(';') {
+                    let mut parts = pair.splitn(2, '=');
+                    if let (Some(k), Some(val)) = (parts.next(), parts.next())
+                        && k.trim() == SESSION_COOKIE_NAME
+                    {
+                        return Some(val.trim().to_string());
+                    }
+                }
             } else if h.name.eq_ignore_ascii_case("authorization") {
                 let v = str::from_utf8(h.value).unwrap_or("");
-                v.to_lowercase().starts_with("bearer ")
-            } else {
-                false
+                let trimmed = v.trim();
+                if let Some(tok) = trimmed.strip_prefix("Bearer ") {
+                    return Some(tok.trim().to_string());
+                }
+                if let Some(tok) = trimmed.strip_prefix("bearer ") {
+                    return Some(tok.trim().to_string());
+                }
             }
+            None
         });
 
-        let is_auth_host = match &target {
-            TargetHost::Service { lookup_alias, .. } => lookup_alias.starts_with("auth"),
-            TargetHost::App { .. } => false,
-        };
+        let is_valid =
+            token_opt.as_ref().is_some_and(|tok| SessionToken::verify_any_issuer(tok).is_ok());
 
-        if !has_session_credential && !is_auth_host {
-            let body = serde_json::json!({"error": "unauthorized: session required"});
+        if !is_valid {
+            let body = serde_json::json!({"error": "unauthorized: valid session required"});
             let body_bytes = serde_json::to_vec(&body)?;
             let response = format!(
                 "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: \
@@ -395,8 +398,12 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
     debug!("Proxying to interface (hash): {}, service_id (alias): {}", interface, service_id);
 
     let node_did = substrate::derive_did_key(&state.identity.public_key());
-    let connect_service_id =
-        if service_id == "auth" { node_did.clone() } else { service_id.clone() };
+    let connect_service_id = if service_id == AUTH_SERVICE_ALIAS || service_id.starts_with("auth-")
+    {
+        node_did.clone()
+    } else {
+        service_id.clone()
+    };
 
     let client_arc = state
         .clients
@@ -417,8 +424,11 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
             error!("Gateway failed to connect to service {}: {}", connect_service_id, e);
             return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
         }
-        let resolved_id =
-            if service_id == "auth" { "auth".to_string() } else { client.service_id().to_string() };
+        let resolved_id = if service_id == AUTH_SERVICE_ALIAS || service_id.starts_with("auth-") {
+            AUTH_SERVICE_ALIAS.to_string()
+        } else {
+            client.service_id().to_string()
+        };
         (client.connection().ok_or_else(|| anyhow::anyhow!("Connection lost"))?, resolved_id)
     };
 

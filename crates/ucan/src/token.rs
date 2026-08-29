@@ -15,7 +15,7 @@ use crate::capability::Capability;
 
 /// Clock-skew tolerance for `not_before` (mirrors `DelegationCertificate`'s
 /// 300 s future-issue tolerance).
-const CLOCK_SKEW_SECS: u64 = 300;
+pub(crate) const CLOCK_SKEW_SECS: u64 = 300;
 
 /// Upper bound on the total number of tokens (leaf + every proof,
 /// transitively) a single chain may contain. Verifying a chain costs one
@@ -80,7 +80,7 @@ impl CapabilityToken {
     /// serializing `self` whole would serialize the entire nested `proofs`
     /// subtree first only to discard it, making per-node verification cost
     /// O(subtree size) and the whole chain walk quadratic in chain length.
-    fn signing_value(&self) -> Value {
+    pub(crate) fn signing_value(&self) -> Value {
         serde_json::json!({
             "issuer_did": self.issuer_did,
             "audience_did": self.audience_did,

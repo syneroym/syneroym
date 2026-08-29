@@ -107,3 +107,4 @@ syneroym-coordinator-webrtc.workspace = true
 tokio-stream.workspace = true
 ed25519-dalek.workspace = true
 roymctl.workspace = true
+syneroym-ucan.workspace = true

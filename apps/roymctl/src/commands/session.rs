@@ -14,11 +14,9 @@ use clap::Subcommand;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use syneroym_core::protocol_utils::gateway_session_assertion;
+use syneroym_core::protocol_utils::{SESSION_COOKIE_NAME, gateway_session_assertion};
 use syneroym_identity::{
-    DelegationCertificate, Identity,
-    delegation::{SCOPE_ROUTING, SCOPE_SESSION_AUTH},
-    substrate,
+    DelegationCertificate, Identity, delegation::SCOPE_SESSION_AUTH, substrate,
 };
 
 use super::member_identity;
@@ -35,6 +33,9 @@ pub enum SessionCommands {
         /// Output path for the session key JSON bundle.
         #[arg(long, default_value = "session-key.json")]
         out: PathBuf,
+        /// Community registry to publish this person's master anchor to.
+        #[arg(long)]
+        registry_url: Option<String>,
     },
     /// Open a person session at the auth service.
     Login {
@@ -173,7 +174,7 @@ fn load_session_file(path: &Path) -> Result<StoredSession> {
 
 pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>) -> Result<()> {
     match command {
-        SessionCommands::Delegate { expires_hours, out } => {
+        SessionCommands::Delegate { expires_hours, out, registry_url } => {
             let identity_name =
                 run_as.context("session delegate requires --as <name> for the master identity")?;
             let key_path = dir.join("identities").join(format!("{identity_name}.key"));
@@ -182,6 +183,10 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
             }
             let master_identity = Identity::load_from_path(&key_path)?;
 
+            // Publish/refresh anchor on registry
+            member_identity::refresh_anchor_or_warn(registry_url.as_deref(), &master_identity)
+                .await?;
+
             let temp_identity = Identity::generate()?;
             let temp_did = substrate::derive_did_key(&temp_identity.public_key());
 
@@ -189,7 +194,7 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
                 &master_identity,
                 temp_identity.public_key(),
                 expires_hours.saturating_mul(3600),
-                SCOPE_ROUTING.to_string(),
+                SCOPE_SESSION_AUTH.to_string(),
             )?;
 
             let bundle = SessionKeyBundle {
@@ -204,7 +209,24 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
                 fs::create_dir_all(parent)?;
             }
             let data = serde_json::to_string_pretty(&bundle)?;
-            fs::write(out, data)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut file = fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(out)
+                    .with_context(|| {
+                        format!("failed to create session key file at {}", out.display())
+                    })?;
+                file.write_all(data.as_bytes())?;
+            }
+            #[cfg(not(unix))]
+            {
+                fs::write(out, data)?;
+            }
 
             println!(
                 "Minted session delegation certificate for temporary DID {} -> {}",
@@ -395,7 +417,7 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
             let resp = client
                 .get(&whoami_url)
                 .header("Authorization", format!("Bearer {}", session.token))
-                .header("Cookie", format!("syneroym_session={}", session.token))
+                .header("Cookie", format!("{}={}", SESSION_COOKIE_NAME, session.token))
                 .send()
                 .await
                 .with_context(|| format!("failed to connect to auth service at {whoami_url}"))?;
@@ -431,7 +453,7 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
             let resp = client
                 .post(&refresh_url)
                 .header("Authorization", format!("Bearer {}", session.token))
-                .header("Cookie", format!("syneroym_session={}", session.token))
+                .header("Cookie", format!("{}={}", SESSION_COOKIE_NAME, session.token))
                 .send()
                 .await
                 .with_context(|| format!("failed to connect to auth service at {refresh_url}"))?;
@@ -461,7 +483,7 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
                     let _ = client
                         .post(&logout_url)
                         .header("Authorization", format!("Bearer {}", session.token))
-                        .header("Cookie", format!("syneroym_session={}", session.token))
+                        .header("Cookie", format!("{}={}", SESSION_COOKIE_NAME, session.token))
                         .send()
                         .await;
                 }

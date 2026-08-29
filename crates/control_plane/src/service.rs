@@ -60,6 +60,7 @@ const SECURITY_INTERFACE: &str = "security";
 /// overwrite the dispatch entry `init_supervisor` registered, taking over
 /// every later `supervisor://` call.
 pub const SUPERVISOR_RESERVED_SERVICE_ID: &str = "supervisor";
+pub const AUTH_RESERVED_SERVICE_ID: &str = syneroym_core::protocol_utils::AUTH_SERVICE_ALIAS;
 
 /// The Substrate Service (The Control Plane Orchestrator)
 /// This service handles the deployment and lifecycle of applications

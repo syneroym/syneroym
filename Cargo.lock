@@ -7482,6 +7482,7 @@ dependencies = [
  "syneroym-identity",
  "syneroym-rpc",
  "syneroym-sdk",
+ "syneroym-ucan",
  "tokio",
  "tracing",
 ]
@@ -7912,7 +7913,6 @@ dependencies = [
  "syneroym-app-host",
  "syneroym-app-orchestration",
  "syneroym-async-queue",
- "syneroym-auth",
  "syneroym-control-plane",
  "syneroym-core",
  "syneroym-data-blob",
@@ -8112,6 +8112,7 @@ dependencies = [
  "syneroym-sandbox-wasm",
  "syneroym-sdk",
  "syneroym-test-dual-build-fixture",
+ "syneroym-ucan",
  "syneroym-wit-interfaces",
  "tar",
  "tempfile",
@@ -8149,6 +8150,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syneroym-identity",
+ "z32",
 ]
 
 [[package]]

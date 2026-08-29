@@ -6,26 +6,27 @@ use std::{
 };
 
 use anyhow::Result;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use syneroym_app_host::types::http::{FrameKind, HttpRequest, HttpResponse};
 use syneroym_core::{
     dht_registry::MasterAnchorResolver,
-    protocol_utils::{SESSION_COOKIE_NAME, gateway_session_assertion},
+    protocol_utils::{SESSION_COOKIE_NAME, SessionRevocationCheck, gateway_session_assertion},
 };
 use syneroym_identity::{
-    DelegationCertificate, Identity,
-    delegation::{SCOPE_ROUTING, SCOPE_SESSION_AUTH},
-    substrate,
+    DelegationCertificate, Identity, delegation::SCOPE_SESSION_AUTH, substrate,
 };
 use syneroym_rpc::{CallerContext, NativeHttpService};
 use tracing::warn;
 
-use crate::token::{AUTH_METHOD_DELEGATED_KEY, AUTH_METHOD_LOCAL, SessionToken};
+use crate::token::{
+    AUTH_METHOD_DELEGATED_KEY, AUTH_METHOD_LOCAL, CLAIM_DELEGATION_EXPIRES_AT_SECS, SessionToken,
+};
 
-pub const MAX_PENDING_CHALLENGES: usize = 64;
+pub const MAX_PENDING_CHALLENGES: usize = 4096;
+pub const MAX_LOGGED_OUT_TOKENS: usize = 10000;
 pub const DEFAULT_NONCE_TTL_SECS: u64 = 60;
 pub const DEFAULT_SESSION_TTL_SECS: u64 = 8 * 3600;
 
@@ -53,14 +54,10 @@ pub struct LocalLoginParams {
     pub identity: String,
 }
 
-fn default_login_method() -> String {
-    AUTH_METHOD_DELEGATED_KEY.to_string()
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginRequest {
-    #[serde(default = "default_login_method")]
-    pub method: String,
+    #[serde(default)]
+    pub method: Option<String>,
     #[serde(default)]
     pub temp_did: Option<String>,
     #[serde(default)]
@@ -103,7 +100,7 @@ pub struct AuthService {
     session_ttl_secs: u64,
     nonce_ttl_secs: u64,
     challenges: DashMap<String, u64>,
-    logged_out_tokens: DashSet<String>,
+    logged_out_tokens: DashMap<String, u64>,
     person_identities_dir: Option<PathBuf>,
     anchor_resolver: Arc<dyn MasterAnchorResolver>,
 }
@@ -125,7 +122,7 @@ impl AuthService {
             session_ttl_secs,
             nonce_ttl_secs,
             challenges: DashMap::new(),
-            logged_out_tokens: DashSet::new(),
+            logged_out_tokens: DashMap::new(),
             person_identities_dir,
             anchor_resolver,
         }
@@ -143,6 +140,46 @@ impl AuthService {
 
     fn sweep_challenges(&self, now: u64) {
         self.challenges.retain(|_, expires_at| *expires_at > now);
+    }
+
+    fn sweep_logged_out_tokens(&self, now: u64) {
+        self.logged_out_tokens.retain(|_, expires_at| *expires_at > now);
+    }
+
+    pub fn record_logout(&self, token_str: &str) {
+        let now = now_secs();
+        self.sweep_logged_out_tokens(now);
+
+        let expires_at = if let Ok(claims) = SessionToken::verify_any_issuer(token_str) {
+            claims.expires_at_secs
+        } else {
+            now + self.session_ttl_secs
+        };
+
+        if self.logged_out_tokens.len() >= MAX_LOGGED_OUT_TOKENS {
+            let oldest = self
+                .logged_out_tokens
+                .iter()
+                .min_by_key(|entry| *entry.value())
+                .map(|entry| entry.key().clone());
+            if let Some(key) = oldest {
+                self.logged_out_tokens.remove(&key);
+            }
+        }
+
+        self.logged_out_tokens.insert(token_str.to_string(), expires_at);
+    }
+
+    pub fn is_logged_out(&self, token_str: &str) -> bool {
+        let now = now_secs();
+        if let Some(exp) = self.logged_out_tokens.get(token_str) {
+            if *exp > now {
+                return true;
+            }
+            drop(exp);
+            self.logged_out_tokens.remove(token_str);
+        }
+        false
     }
 
     pub fn issue_challenge(&self) -> ChallengeResponse {
@@ -188,7 +225,7 @@ impl AuthService {
             return Err((401, "temporary DID does not match delegation"));
         }
 
-        let accepted_scopes = [SCOPE_ROUTING, SCOPE_SESSION_AUTH];
+        let accepted_scopes = [SCOPE_SESSION_AUTH];
         if let Err(e) = params.delegation.verify(&params.delegation.master_did, &accepted_scopes) {
             warn!(error = %e, "delegation certificate verification failed");
             return Err((401, "invalid delegation certificate"));
@@ -244,11 +281,17 @@ impl AuthService {
             return Err((401, "delegation certificate has expired"));
         }
 
+        let mut additional_facts = Map::new();
+        additional_facts.insert(
+            CLAIM_DELEGATION_EXPIRES_AT_SECS.to_string(),
+            Value::from(params.delegation.expires_at_secs),
+        );
+
         let session_token = SessionToken::mint(
             &self.auth_identity,
             &params.delegation.master_did,
             AUTH_METHOD_DELEGATED_KEY,
-            None,
+            Some(additional_facts),
             token_ttl,
         )
         .map_err(|_| (500, "failed to mint session token"))?;
@@ -347,22 +390,24 @@ impl AuthService {
     }
 
     pub fn whoami(&self, token_str: &str) -> Result<WhoamiResponse, (u16, &'static str)> {
-        if self.logged_out_tokens.contains(token_str) {
+        if self.is_logged_out(token_str) {
             return Err((401, "session token has been logged out"));
         }
         let claims = SessionToken::verify(token_str, &self.auth_did)
             .map_err(|_| (401, "invalid or expired session token"))?;
 
+        let auth_method = claims.auth_method().unwrap_or(AUTH_METHOD_DELEGATED_KEY).to_string();
+
         Ok(WhoamiResponse {
             person_did: claims.person_did,
-            auth: "delegated".to_string(),
+            auth: auth_method,
             expires_at_secs: claims.expires_at_secs,
             facts: claims.facts,
         })
     }
 
     pub fn refresh(&self, token_str: &str) -> Result<LoginResponse, (u16, &'static str)> {
-        if self.logged_out_tokens.contains(token_str) {
+        if self.is_logged_out(token_str) {
             return Err((401, "session token has been logged out"));
         }
         let claims = SessionToken::verify(token_str, &self.auth_did)
@@ -371,12 +416,27 @@ impl AuthService {
         let now = now_secs();
         let auth_method = claims.auth_method().unwrap_or(AUTH_METHOD_DELEGATED_KEY).to_string();
 
+        // Enforce delegation expiry cap if present
+        let token_ttl = if let Some(del_exp) = claims.delegation_expires_at_secs() {
+            if now >= del_exp {
+                return Err((401, "delegation certificate has expired"));
+            }
+            let remaining = del_exp.saturating_sub(now);
+            remaining.min(self.session_ttl_secs)
+        } else {
+            self.session_ttl_secs
+        };
+
+        if token_ttl == 0 {
+            return Err((401, "delegation certificate has expired"));
+        }
+
         let new_token = SessionToken::mint(
             &self.auth_identity,
             &claims.person_did,
             &auth_method,
             Some(claims.facts),
-            self.session_ttl_secs,
+            token_ttl,
         )
         .map_err(|_| (500, "failed to refresh session token"))?;
 
@@ -386,7 +446,7 @@ impl AuthService {
         Ok(LoginResponse {
             token: token_str,
             person_did: claims.person_did,
-            expires_at_secs: now + self.session_ttl_secs,
+            expires_at_secs: now + token_ttl,
         })
     }
 
@@ -419,16 +479,28 @@ impl AuthService {
         None
     }
 
-    fn cors_headers() -> Vec<(String, String)> {
-        vec![
-            ("access-control-allow-origin".to_string(), "*".to_string()),
-            ("access-control-allow-credentials".to_string(), "true".to_string()),
+    fn cors_headers(origin: Option<&str>) -> Vec<(String, String)> {
+        let mut headers = vec![
             ("access-control-allow-methods".to_string(), "GET, POST, OPTIONS".to_string()),
             (
                 "access-control-allow-headers".to_string(),
                 "content-type, authorization, x-syneroym-routing-key".to_string(),
             ),
-        ]
+        ];
+        if let Some(orig) = origin {
+            headers.push(("access-control-allow-origin".to_string(), orig.to_string()));
+            headers.push(("access-control-allow-credentials".to_string(), "true".to_string()));
+            headers.push(("vary".to_string(), "Origin".to_string()));
+        } else {
+            headers.push(("access-control-allow-origin".to_string(), "*".to_string()));
+        }
+        headers
+    }
+}
+
+impl SessionRevocationCheck for AuthService {
+    fn is_revoked(&self, token: &str) -> bool {
+        self.is_logged_out(token)
     }
 }
 
@@ -442,28 +514,25 @@ impl NativeHttpService for AuthService {
         let method = request.method.to_uppercase();
         let path = request.path.trim();
 
-        let mut headers = Self::cors_headers();
+        let origin = request
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("origin"))
+            .map(|(_, v)| v.as_str());
+
+        let mut headers = Self::cors_headers(origin);
         headers.push(("content-type".to_string(), "application/json".to_string()));
 
         if method == "OPTIONS" {
             return Ok(HttpResponse { status: 204, headers, body: vec![] });
         }
 
-        let is_challenge = path == "/challenge"
-            || path == "/_syneroym/session/challenge"
-            || path.ends_with("/challenge");
-        let is_login =
-            path == "/login" || path == "/_syneroym/session/login" || path.ends_with("/login");
-        let is_methods = path == "/methods"
-            || path == "/_syneroym/session/methods"
-            || path.ends_with("/methods");
-        let is_whoami =
-            path == "/whoami" || path == "/_syneroym/session/whoami" || path.ends_with("/whoami");
-        let is_logout =
-            path == "/logout" || path == "/_syneroym/session/logout" || path.ends_with("/logout");
-        let is_refresh = path == "/refresh"
-            || path == "/_syneroym/session/refresh"
-            || path.ends_with("/refresh");
+        let is_challenge = path == "/challenge" || path == "/_syneroym/session/challenge";
+        let is_login = path == "/login" || path == "/_syneroym/session/login";
+        let is_methods = path == "/methods" || path == "/_syneroym/session/methods";
+        let is_whoami = path == "/whoami" || path == "/_syneroym/session/whoami";
+        let is_logout = path == "/logout" || path == "/_syneroym/session/logout";
+        let is_refresh = path == "/refresh" || path == "/_syneroym/session/refresh";
 
         if method == "POST" && is_challenge {
             let ch = self.issue_challenge();
@@ -489,7 +558,15 @@ impl NativeHttpService for AuthService {
                 }
             };
 
-            let res = match req.method.as_str() {
+            let Some(req_method) = req.method else {
+                let body = serde_json::to_vec(
+                    &serde_json::json!({"error": "missing required method parameter"}),
+                )
+                .map_err(|e| e.to_string())?;
+                return Ok(HttpResponse { status: 400, headers, body });
+            };
+
+            let res = match req_method.as_str() {
                 AUTH_METHOD_DELEGATED_KEY => {
                     let temp_did = req
                         .temp_did
@@ -523,7 +600,7 @@ impl NativeHttpService for AuthService {
                 }
                 _ => {
                     let body = serde_json::to_vec(
-                        &serde_json::json!({"error": format!("unknown login method: {}", req.method)}),
+                        &serde_json::json!({"error": format!("unknown login method: {}", req_method)}),
                     )
                     .map_err(|e| e.to_string())?;
                     return Ok(HttpResponse { status: 400, headers, body });
@@ -573,7 +650,7 @@ impl NativeHttpService for AuthService {
 
         if method == "POST" && is_logout {
             if let Some(token) = self.extract_token(&request) {
-                self.logged_out_tokens.insert(token);
+                self.record_logout(&token);
             }
             let cookie =
                 format!("{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax", SESSION_COOKIE_NAME);

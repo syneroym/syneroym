@@ -28,6 +28,7 @@ use syneroym_core::{
     dht_registry::RegistryClient,
     http_routes::{HttpRouteRegistry, SsePermitRegistry},
     local_registry::EndpointRegistry,
+    protocol_utils::SessionRevocationCheck,
     storage::MockStorage,
 };
 use syneroym_data_db::traits::StorageProvider;
@@ -166,6 +167,8 @@ pub struct RouteHandlerInner {
     /// same guard and the same records. `None` in coordinator mode, where
     /// there is no per-service storage to remember a key in.
     pub dedup_guard: Option<Arc<CallDedupGuard>>,
+    /// Session revocation store (ADR-0024).
+    pub session_revocation: Option<Arc<dyn SessionRevocationCheck>>,
 }
 
 impl Debug for RouteHandler {
@@ -219,6 +222,8 @@ pub struct RouteHandlerDeps {
     /// service_proxy` already needs, for the identical ordering reason);
     /// nothing else reads it.
     pub control_plane: Option<Arc<ControlPlaneService>>,
+    /// Optional session revocation checker (ADR-0024).
+    pub session_revocation: Option<Arc<dyn SessionRevocationCheck>>,
 }
 
 impl Debug for RouteHandlerDeps {
@@ -390,6 +395,7 @@ impl RouteHandler {
             node_did: service_id.clone(),
             _proxy: Some(proxy),
             dedup_guard: Some(dedup_guard),
+            session_revocation: deps.session_revocation,
         });
 
         let s = Self { inner };
@@ -436,6 +442,7 @@ impl RouteHandler {
             // to, and no per-service storage to fence a keyed call with.
             _proxy: None,
             dedup_guard: None,
+            session_revocation: None,
         });
         Self { inner }
     }

@@ -74,6 +74,7 @@ async fn test_route_handler() -> RouteHandler {
         sse_permits: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
+        session_revocation: None,
     };
     RouteHandler::init("test-orchestrator".to_string(), &config, registry, [11u8; 32], None, deps)
         .await

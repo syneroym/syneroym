@@ -64,8 +64,8 @@ static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 /// outbound connection that releases the port moments later; that's what
 /// made a hardcoded port in that range (`gateway_hostname_e2e.rs`'s old
 /// `42_600`) an intermittent CI failure.
-const PORT_POOL_START: u16 = 12_000;
-const PORT_POOL_END: u16 = 32_000;
+const PORT_POOL_START: u16 = 18_000;
+const PORT_POOL_END: u16 = 38_000;
 
 static NEXT_PORT_HINT: AtomicU16 = AtomicU16::new(0);
 
@@ -73,21 +73,17 @@ fn probe_bind(port: u16) -> Option<StdTcpListener> {
     StdTcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).ok()
 }
 
-/// Reserve `N` distinct free ports below the OS ephemeral range, each
-/// verified by an actual bind (immediately released) rather than trusting a
-/// hand-tracked constant. Self-correcting against both leftover local
-/// sockets and other test binaries racing for the same numbers: a losing
-/// probe just moves the search on to the next candidate block instead of
-/// failing the caller. There's a small window between the probe release
-/// here and the caller's own real bind; outside the ephemeral range the
-/// only realistic contender is another test binary doing the same probe at
-/// the same instant, which is rare enough in practice that this hasn't
-/// needed a stronger guarantee (e.g. the OS reporting its own resolved
-/// port back to the caller instead of pre-allocating one).
+/// Reserve `N` distinct free ports below the OS ephemeral range.
 pub fn alloc_ports<const N: usize>() -> [u16; N] {
     let span = PORT_POOL_END - PORT_POOL_START;
+    let seed = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        % (span as u128)) as u16;
+    let _ = NEXT_PORT_HINT.compare_exchange(0, seed, Ordering::Relaxed, Ordering::Relaxed);
     loop {
-        let offset = NEXT_PORT_HINT.fetch_add(N as u16, Ordering::Relaxed) % span;
+        let offset = NEXT_PORT_HINT.fetch_add(16, Ordering::Relaxed) % span;
         let start = PORT_POOL_START + offset;
         if start as u32 + N as u32 > PORT_POOL_END as u32 {
             continue; // wrapped mid-block; the next fetch_add tries elsewhere
@@ -171,20 +167,20 @@ impl SubstrateTestContext {
         config.roles.coordinator = Some(CoordinatorRole {
             iroh: Some(CoordinatorIrohConfig {
                 enable_relay: true,
-                http_bind_address: format!("0.0.0.0:{iroh_port}"),
+                http_bind_address: format!("127.0.0.1:{iroh_port}"),
                 ..Default::default()
             }),
             ..Default::default()
         });
         config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("0.0.0.0:{registry_port}"),
+            http_bind_address: format!("127.0.0.1:{registry_port}"),
             ..Default::default()
         });
-        let registry_url = format!("http://localhost:{registry_port}");
+        let registry_url = format!("http://127.0.0.1:{registry_port}");
         config.substrate.registry_url = Some(registry_url.clone());
         config.substrate.enable_bep0044_dht = false;
         config.parent_coordinator.iroh =
-            Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
+            Some(IrohParentConfig { url: format!("http://127.0.0.1:{iroh_port}") });
         config.roles.client_gateway =
             Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         config.roles.auth = Some(syneroym_core::config::AuthRole::default());
@@ -255,6 +251,7 @@ impl SubstrateTestContext {
         let _ = time::timeout(Duration::from_secs(20), self.substrate_handle)
             .await
             .map_err(|_| eprintln!("[teardown] substrate_handle join TIMED OUT"));
+        tokio::time::sleep(Duration::from_millis(500)).await;
         eprintln!("[teardown] done");
     }
 }

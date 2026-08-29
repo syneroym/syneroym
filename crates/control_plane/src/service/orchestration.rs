@@ -52,7 +52,7 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 use tokio::task;
 use tracing::info;
 
-use super::{ControlPlaneService, SUPERVISOR_RESERVED_SERVICE_ID};
+use super::{AUTH_RESERVED_SERVICE_ID, ControlPlaneService, SUPERVISOR_RESERVED_SERVICE_ID};
 use crate::{assets, config_utils, http_routes, synsvc_native::SynSvcNativeService};
 
 /// The ceiling `verify_installed_instance_cert` enforces on an installed
@@ -1416,7 +1416,10 @@ impl ControlPlaneService {
         // `validate_service_id` reserves either string -- both are ordinary,
         // deployable-looking ids otherwise. Checked before ownership/
         // capability below so the rejection reason is unambiguous.
-        if service_id == self.node_did || service_id == SUPERVISOR_RESERVED_SERVICE_ID {
+        if service_id == self.node_did
+            || service_id == SUPERVISOR_RESERVED_SERVICE_ID
+            || service_id == AUTH_RESERVED_SERVICE_ID
+        {
             return Err(format!(
                 "service_id '{service_id}' is reserved for this substrate's own dispatch and \
                  cannot be deployed to"

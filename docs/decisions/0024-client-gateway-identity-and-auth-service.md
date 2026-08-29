@@ -1,7 +1,6 @@
 # ADR-0024: Client Gateway Identity Modes and the Node Auth Service
 
-**Status**: Proposed (2026-08-27, amended the same day — see **Amendment 1**
-at the end). Reshapes the person-session model M06B B1 shipped (the "M06B B1"
+**Status**: Accepted (2026-08-29). Reshapes the person-session model M06B B1 shipped (the "M06B B1"
 row of M06C's
 [dependency-gates table](../planning/milestones/M06C-roym-product/task.md);
 `crates/client_gateway/src/gateway.rs`,

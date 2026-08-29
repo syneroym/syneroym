@@ -757,9 +757,6 @@ async fn setup_router(
     #[cfg(feature = "dual_build_fixture")]
     let fixture_factory = init_dual_build_fixture(&shared, &endpoint_registry, service_id).await?;
 
-    #[cfg(feature = "auth")]
-    let _auth_service = init_auth_service(config, &shared, &endpoint_registry, service_id).await?;
-
     let router = ConnectionRouter::init(
         endpoint_registry.clone(),
         config.clone(),
@@ -992,7 +989,7 @@ async fn init_auth_service(
     node_service_id: &str,
 ) -> anyhow::Result<Option<Arc<syneroym_auth::AuthService>>> {
     use syneroym_auth::AuthService;
-    use syneroym_core::http_routes::HttpRoute;
+    use syneroym_core::{http_routes::HttpRoute, protocol_utils::AUTH_SERVICE_ALIAS};
     use syneroym_rpc::NativeHttpService;
 
     let Some(auth_cfg) = &config.roles.auth else {
@@ -1023,7 +1020,7 @@ async fn init_auth_service(
 
     shared
         .native_http
-        .insert("auth".to_string(), auth_service.clone() as Arc<dyn NativeHttpService>);
+        .insert(AUTH_SERVICE_ALIAS.to_string(), auth_service.clone() as Arc<dyn NativeHttpService>);
     shared.native_http.insert(auth_did.clone(), auth_service.clone() as Arc<dyn NativeHttpService>);
 
     let auth_routes = vec![
@@ -1087,17 +1084,36 @@ async fn init_auth_service(
             protocol: None,
             public: true,
         },
+        HttpRoute {
+            method: "POST".into(),
+            path: "/_syneroym/session/{endpoint}".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
+        HttpRoute {
+            method: "GET".into(),
+            path: "/_syneroym/session/{endpoint}".into(),
+            target: "guest".into(),
+            operation: "handle-request".into(),
+            collection: None,
+            topic: None,
+            protocol: None,
+            public: true,
+        },
     ];
 
-    shared.http_routes.insert("auth".to_string(), auth_routes.clone());
-    shared.http_routes.insert(auth_did.clone(), auth_routes.clone());
-    shared.http_routes.insert(node_service_id.to_string(), auth_routes);
+    shared.http_routes.insert(AUTH_SERVICE_ALIAS.to_string(), auth_routes.clone());
+    shared.http_routes.insert(auth_did.clone(), auth_routes);
 
     endpoint_registry
         .register(
-            "auth".to_string(),
+            AUTH_SERVICE_ALIAS.to_string(),
             "default".to_string(),
-            SubstrateEndpoint::NativeHostChannel { service_id: "auth".to_string() },
+            SubstrateEndpoint::NativeHostChannel { service_id: AUTH_SERVICE_ALIAS.to_string() },
         )
         .await?;
     endpoint_registry
@@ -1504,6 +1520,11 @@ async fn build_route_handler_deps(
         websocket_senders: websocket_senders.clone(),
     };
 
+    #[cfg(feature = "auth")]
+    let auth_service = init_auth_service(config, &shared, registry, service_id).await?;
+    #[cfg(not(feature = "auth"))]
+    let auth_service: Option<Arc<dyn syneroym_core::protocol_utils::SessionRevocationCheck>> = None;
+
     Ok((
         RouteHandlerDeps {
             logical_resolver: logical_resolver.clone(),
@@ -1519,6 +1540,8 @@ async fn build_route_handler_deps(
             sse_permits: control_plane_service.sse_permits(),
             control_plane_service: control_plane_service.clone(),
             control_plane: Some(control_plane_service),
+            session_revocation: auth_service
+                .map(|a| a as Arc<dyn syneroym_core::protocol_utils::SessionRevocationCheck>),
         },
         shared,
     ))

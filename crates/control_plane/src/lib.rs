@@ -12,5 +12,5 @@ pub mod http_routes;
 mod service;
 mod synsvc_native;
 
-pub use service::{ControlPlaneService, SUPERVISOR_RESERVED_SERVICE_ID};
+pub use service::{AUTH_RESERVED_SERVICE_ID, ControlPlaneService, SUPERVISOR_RESERVED_SERVICE_ID};
 pub use synsvc_native::SynSvcNativeService;

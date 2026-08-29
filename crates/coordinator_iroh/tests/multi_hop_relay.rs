@@ -174,6 +174,7 @@ async fn build_test_route_handler_deps(
         sse_permits: control_plane_service.sse_permits(),
         control_plane_service: control_plane_service.clone(),
         control_plane: Some(control_plane_service),
+        session_revocation: None,
     })
 }
 

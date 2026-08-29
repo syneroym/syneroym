@@ -12,6 +12,7 @@ syneroym-core.workspace = true
 syneroym-sdk.workspace = true
 syneroym-rpc.workspace = true
 syneroym-identity.workspace = true
+syneroym-ucan.workspace = true
 syneroym-app-orchestration.workspace = true
 anyhow.workspace = true
 tokio.workspace = true

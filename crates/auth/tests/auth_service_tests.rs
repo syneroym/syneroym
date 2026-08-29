@@ -18,7 +18,7 @@ use syneroym_core::{
 };
 use syneroym_identity::{
     DelegationCertificate, Identity,
-    delegation::{SCOPE_ROUTING, SCOPE_SERVICE_INSTANCE},
+    delegation::{SCOPE_ROUTING, SCOPE_SERVICE_INSTANCE, SCOPE_SESSION_AUTH},
     substrate,
 };
 use syneroym_rpc::NativeHttpService;
@@ -70,12 +70,12 @@ async fn delegated_key_login_flow_and_refusals() {
     let challenge = service.issue_challenge();
     assert_eq!(challenge.node_did, node_did);
 
-    // 2. Mint delegation certificate
+    // 2. Mint delegation certificate with session-auth scope
     let delegation = DelegationCertificate::issue(
         &master_id,
         temp_id.public_key(),
         7200,
-        SCOPE_ROUTING.to_string(),
+        SCOPE_SESSION_AUTH.to_string(),
     )
     .unwrap();
 
@@ -103,7 +103,30 @@ async fn delegated_key_login_flow_and_refusals() {
     assert_eq!(err.0, 401);
     assert_eq!(err.1, "unknown or already used nonce");
 
-    // 6. Wrong scope refused
+    // 6. Routing scope refused (Finding 3)
+    let ch2a = service.issue_challenge();
+    let routing_scope_delegation = DelegationCertificate::issue(
+        &master_id,
+        temp_id.public_key(),
+        7200,
+        SCOPE_ROUTING.to_string(),
+    )
+    .unwrap();
+    let sig2a =
+        temp_id.sign_json(&gateway_session_assertion(&node_did, &ch2a.nonce, &master_did)).unwrap();
+    let err = service
+        .login_delegated_key(&DelegatedKeyLoginParams {
+            temp_did: temp_did.clone(),
+            delegation: routing_scope_delegation,
+            nonce: ch2a.nonce,
+            signature: sig2a,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.0, 401);
+    assert_eq!(err.1, "invalid delegation certificate");
+
+    // 6b. Service instance scope refused
     let ch2 = service.issue_challenge();
     let wrong_scope_delegation = DelegationCertificate::issue(
         &master_id,
@@ -152,7 +175,7 @@ async fn delegated_key_login_flow_and_refusals() {
         &master_id,
         temp_id.public_key(),
         100,
-        SCOPE_ROUTING.to_string(),
+        SCOPE_SESSION_AUTH.to_string(),
     )
     .unwrap();
     expired_delegation.expires_at_secs = now_secs() - 10;
@@ -289,6 +312,20 @@ async fn http_interface_endpoints_and_unknown_method() {
     let bad_resp = service.handle_request(bad_login_req, None).await.unwrap();
     assert_eq!(bad_resp.status, 400);
 
+    // Missing method -> 400 (Finding 26)
+    let missing_method_req = HttpRequest {
+        method: "POST".to_string(),
+        path: "/_syneroym/session/login".to_string(),
+        query: "".to_string(),
+        route: "/_syneroym/session/login".to_string(),
+        path_params: vec![],
+        headers: vec![("content-type".to_string(), "application/json".to_string())],
+        body: serde_json::to_vec(&json!({"identity": "alice"})).unwrap(),
+        caller: None,
+    };
+    let missing_resp = service.handle_request(missing_method_req, None).await.unwrap();
+    assert_eq!(missing_resp.status, 400);
+
     // Local login via HTTP
     let local_login_req = HttpRequest {
         method: "POST".to_string(),
@@ -296,19 +333,31 @@ async fn http_interface_endpoints_and_unknown_method() {
         query: "".to_string(),
         route: "/_syneroym/session/login".to_string(),
         path_params: vec![],
-        headers: vec![("content-type".to_string(), "application/json".to_string())],
+        headers: vec![
+            ("content-type".to_string(), "application/json".to_string()),
+            ("origin".to_string(), "http://web.localhost:7960".to_string()),
+        ],
         body: serde_json::to_vec(&json!({"method": "local", "identity": "alice"})).unwrap(),
         caller: None,
     };
     let login_resp = service.handle_request(local_login_req, None).await.unwrap();
     assert_eq!(login_resp.status, 200);
+
+    // CORS origin echo (Finding 12)
+    let allow_origin =
+        login_resp.headers.iter().find(|(k, _)| k == "access-control-allow-origin").unwrap();
+    assert_eq!(allow_origin.1, "http://web.localhost:7960");
+    let allow_cred =
+        login_resp.headers.iter().find(|(k, _)| k == "access-control-allow-credentials").unwrap();
+    assert_eq!(allow_cred.1, "true");
+
     let cookie_header = login_resp.headers.iter().find(|(k, _)| k == "set-cookie").unwrap();
     assert!(cookie_header.1.contains("syneroym_session="));
 
     let grant: syneroym_auth::LoginResponse = serde_json::from_slice(&login_resp.body).unwrap();
     assert_eq!(grant.person_did, alice_did);
 
-    // Whoami endpoint with cookie
+    // Whoami endpoint with cookie reports auth = local (Finding 22)
     let whoami_req = HttpRequest {
         method: "GET".to_string(),
         path: "/_syneroym/session/whoami".to_string(),
@@ -324,7 +373,7 @@ async fn http_interface_endpoints_and_unknown_method() {
     let whoami_data: syneroym_auth::WhoamiResponse =
         serde_json::from_slice(&whoami_resp.body).unwrap();
     assert_eq!(whoami_data.person_did, alice_did);
-    assert_eq!(whoami_data.auth, "delegated");
+    assert_eq!(whoami_data.auth, "local");
 
     // Whoami endpoint with Authorization Bearer
     let whoami_bearer_req = HttpRequest {
@@ -361,7 +410,7 @@ async fn http_interface_endpoints_and_unknown_method() {
         query: "".to_string(),
         route: "/_syneroym/session/logout".to_string(),
         path_params: vec![],
-        headers: vec![],
+        headers: vec![("cookie".to_string(), format!("syneroym_session={}", grant.token))],
         body: vec![],
         caller: None,
     };
@@ -369,4 +418,18 @@ async fn http_interface_endpoints_and_unknown_method() {
     assert_eq!(logout_resp.status, 200);
     let logout_cookie = logout_resp.headers.iter().find(|(k, _)| k == "set-cookie").unwrap();
     assert!(logout_cookie.1.contains("Max-Age=0"));
+
+    // After logout, token fails whoami (Finding 1)
+    let whoami_after_logout = HttpRequest {
+        method: "GET".to_string(),
+        path: "/_syneroym/session/whoami".to_string(),
+        query: "".to_string(),
+        route: "/_syneroym/session/whoami".to_string(),
+        path_params: vec![],
+        headers: vec![("cookie".to_string(), format!("syneroym_session={}", grant.token))],
+        body: vec![],
+        caller: None,
+    };
+    let after_resp = service.handle_request(whoami_after_logout, None).await.unwrap();
+    assert_eq!(after_resp.status, 401);
 }

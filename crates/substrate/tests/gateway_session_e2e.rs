@@ -43,7 +43,9 @@ use syneroym_core::{
     protocol_utils::{SESSION_COOKIE_NAME, gateway_session_assertion},
     test_constants, util,
 };
-use syneroym_identity::{DelegationCertificate, Identity, delegation::SCOPE_ROUTING, substrate};
+use syneroym_identity::{
+    DelegationCertificate, Identity, delegation::SCOPE_SESSION_AUTH, substrate,
+};
 use syneroym_sdk::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, SyneroymClient, WasmManifest,
 };
@@ -96,6 +98,7 @@ async fn setup_gateway_test_node(
     session_ttl_secs: Option<u64>,
 ) -> (SubstrateTestContext, u16, String, String, String) {
     let _ = ring::default_provider().install_default();
+    time::sleep(Duration::from_millis(1000)).await;
     let [iroh_port, registry_port, gateway_port] = common::alloc_ports::<3>();
 
     let ctx = SubstrateTestContext::setup_with(iroh_port, registry_port, gateway_port, |config| {
@@ -107,7 +110,7 @@ async fn setup_gateway_test_node(
     })
     .await;
 
-    let registry_url = format!("http://localhost:{registry_port}");
+    let registry_url = format!("http://127.0.0.1:{registry_port}");
     let service_identity = Identity::generate().unwrap();
     let service_did = substrate::derive_did_key(&service_identity.public_key());
 
@@ -166,6 +169,8 @@ async fn setup_gateway_test_node(
     (ctx, gateway_port, registry_url, service_did, host)
 }
 
+const AUTH_HOST: &str = "auth-s00000000.localhost";
+
 async fn login_to_gateway(
     gateway_url: &str,
     person: &Identity,
@@ -178,6 +183,7 @@ async fn login_to_gateway(
     // 1. Challenge
     let ch_resp: Value = client
         .post(format!("{gateway_url}/_syneroym/session/challenge"))
+        .header("Host", AUTH_HOST)
         .send()
         .await
         .unwrap()
@@ -193,7 +199,7 @@ async fn login_to_gateway(
         person,
         node_pubkey,
         expires_hours * 3600,
-        SCOPE_ROUTING.to_string(),
+        SCOPE_SESSION_AUTH.to_string(),
     )
     .unwrap();
     let assertion = gateway_session_assertion(node_did, nonce, &person_did);
@@ -205,6 +211,7 @@ async fn login_to_gateway(
 
     // 4. Login
     let login_body = json!({
+        "method": "delegated-key",
         "person_did": person_did,
         "nonce": nonce,
         "signature": sig,
@@ -212,6 +219,7 @@ async fn login_to_gateway(
     });
     let login_resp = client
         .post(format!("{gateway_url}/_syneroym/session/login"))
+        .header("Host", AUTH_HOST)
         .json(&login_body)
         .send()
         .await
@@ -321,6 +329,7 @@ async fn test_18_two_people_logged_in_each_whoami_and_echo_returns_own_did() {
     // Whoami for Alice
     let resp_whoami_a = client
         .get(format!("{gateway_url}/_syneroym/session/whoami"))
+        .header("Host", AUTH_HOST)
         .header("Authorization", format!("Bearer {token_a}"))
         .header("Connection", "close")
         .send()
@@ -329,11 +338,12 @@ async fn test_18_two_people_logged_in_each_whoami_and_echo_returns_own_did() {
     assert_eq!(resp_whoami_a.status(), 200);
     let val_whoami_a: Value = resp_whoami_a.json().await.unwrap();
     assert_eq!(val_whoami_a["person_did"], person_a_did);
-    assert_eq!(val_whoami_a["auth"], "delegated");
+    assert_eq!(val_whoami_a["auth"], "delegated-key");
 
     // Whoami for Bob
     let resp_whoami_b = client
         .get(format!("{gateway_url}/_syneroym/session/whoami"))
+        .header("Host", AUTH_HOST)
         .header("Authorization", format!("Bearer {token_b}"))
         .header("Connection", "close")
         .send()
@@ -342,11 +352,12 @@ async fn test_18_two_people_logged_in_each_whoami_and_echo_returns_own_did() {
     assert_eq!(resp_whoami_b.status(), 200);
     let val_whoami_b: Value = resp_whoami_b.json().await.unwrap();
     assert_eq!(val_whoami_b["person_did"], person_b_did);
-    assert_eq!(val_whoami_b["auth"], "delegated");
+    assert_eq!(val_whoami_b["auth"], "delegated-key");
 
     // Re-verify Alice whoami still returns Alice
     let resp_whoami_a_re = client
         .get(format!("{gateway_url}/_syneroym/session/whoami"))
+        .header("Host", AUTH_HOST)
         .header("Authorization", format!("Bearer {token_a}"))
         .header("Connection", "close")
         .send()
@@ -449,6 +460,7 @@ async fn test_20_forged_login_is_rejected_with_401() {
     // 1. Challenge
     let ch_resp: Value = client
         .post(format!("{gateway_url}/_syneroym/session/challenge"))
+        .header("Host", AUTH_HOST)
         .send()
         .await
         .unwrap()
@@ -460,14 +472,19 @@ async fn test_20_forged_login_is_rejected_with_401() {
 
     // 2. Eve signs the assertion claiming Alice's DID
     let node_pubkey = substrate::resolve_did_key(node_did).unwrap();
-    let cert =
-        DelegationCertificate::issue(&alice, node_pubkey, 24 * 3600, SCOPE_ROUTING.to_string())
-            .unwrap();
+    let cert = DelegationCertificate::issue(
+        &alice,
+        node_pubkey,
+        24 * 3600,
+        SCOPE_SESSION_AUTH.to_string(),
+    )
+    .unwrap();
     let assertion = gateway_session_assertion(node_did, nonce, &alice_did);
     let forged_sig = eve.sign_json(&assertion).unwrap();
 
     // 3. Forged login attempt -> 401
     let login_body = json!({
+        "method": "delegated-key",
         "person_did": alice_did,
         "nonce": nonce,
         "signature": forged_sig,
@@ -475,6 +492,7 @@ async fn test_20_forged_login_is_rejected_with_401() {
     });
     let login_resp = client
         .post(format!("{gateway_url}/_syneroym/session/login"))
+        .header("Host", AUTH_HOST)
         .json(&login_body)
         .send()
         .await
@@ -500,7 +518,7 @@ async fn test_20_forged_login_is_rejected_with_401() {
 
 /// Test 21: Gateway session token and raw headers are forwarded untouched.
 #[tokio::test]
-async fn test_21_gateway_session_token_is_stripped_from_proxied_headers() {
+async fn test_21_gateway_session_token_is_forwarded_in_proxied_headers() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
     let (ctx, gateway_port, reg_url, _svc_did, host) = setup_gateway_test_node(None).await;
     let gateway_url = format!("http://127.0.0.1:{gateway_port}");
@@ -640,6 +658,7 @@ async fn test_23_login_with_no_published_anchor_is_refused_with_409() {
     // 1. Challenge
     let ch_resp: Value = client
         .post(format!("{gateway_url}/_syneroym/session/challenge"))
+        .header("Host", AUTH_HOST)
         .send()
         .await
         .unwrap()
@@ -651,14 +670,19 @@ async fn test_23_login_with_no_published_anchor_is_refused_with_409() {
 
     // 2. Sign delegation & challenge, but DO NOT publish master anchor
     let node_pubkey = substrate::resolve_did_key(node_did).unwrap();
-    let cert =
-        DelegationCertificate::issue(&person, node_pubkey, 24 * 3600, SCOPE_ROUTING.to_string())
-            .unwrap();
+    let cert = DelegationCertificate::issue(
+        &person,
+        node_pubkey,
+        24 * 3600,
+        SCOPE_SESSION_AUTH.to_string(),
+    )
+    .unwrap();
     let assertion = gateway_session_assertion(node_did, nonce, &person_did);
     let sig = person.sign_json(&assertion).unwrap();
 
     // 3. Login attempt -> 409
     let login_body = json!({
+        "method": "delegated-key",
         "person_did": person_did,
         "nonce": nonce,
         "signature": sig,
@@ -666,6 +690,7 @@ async fn test_23_login_with_no_published_anchor_is_refused_with_409() {
     });
     let login_resp = client
         .post(format!("{gateway_url}/_syneroym/session/login"))
+        .header("Host", AUTH_HOST)
         .json(&login_body)
         .send()
         .await
@@ -707,6 +732,7 @@ async fn test_24_expect_100_continue_handshake() {
     // 1. Challenge
     let ch_resp: Value = client
         .post(format!("{gateway_url}/_syneroym/session/challenge"))
+        .header("Host", AUTH_HOST)
         .send()
         .await
         .unwrap()
@@ -717,9 +743,13 @@ async fn test_24_expect_100_continue_handshake() {
     let node_did = ch_resp["node_did"].as_str().unwrap();
 
     let node_pubkey = substrate::resolve_did_key(node_did).unwrap();
-    let cert =
-        DelegationCertificate::issue(&person, node_pubkey, 24 * 3600, SCOPE_ROUTING.to_string())
-            .unwrap();
+    let cert = DelegationCertificate::issue(
+        &person,
+        node_pubkey,
+        24 * 3600,
+        SCOPE_SESSION_AUTH.to_string(),
+    )
+    .unwrap();
     let assertion = gateway_session_assertion(node_did, nonce, &person_did);
     let sig = person.sign_json(&assertion).unwrap();
 
@@ -727,6 +757,7 @@ async fn test_24_expect_100_continue_handshake() {
     reg_client.refresh_master_anchor(&person).await.unwrap();
 
     let login_body = serde_json::to_vec(&json!({
+        "method": "delegated-key",
         "person_did": person_did,
         "nonce": nonce,
         "signature": sig,
@@ -737,7 +768,7 @@ async fn test_24_expect_100_continue_handshake() {
     // Connect raw TCP stream
     let mut tcp = TcpStream::connect(format!("127.0.0.1:{gateway_port}")).await.unwrap();
     let req_headers = format!(
-        "POST /_syneroym/session/login HTTP/1.1\r\nHost: localhost:{gateway_port}\r\nExpect: \
+        "POST /_syneroym/session/login HTTP/1.1\r\nHost: {AUTH_HOST}\r\nExpect: \
          100-continue\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: \
          close\r\n\r\n",
         login_body.len()
@@ -873,6 +904,7 @@ async fn test_27_reserved_path_challenge_login_whoami_logout_lifecycle() {
     // 1. Challenge
     let ch_resp = client
         .post(format!("{gateway_url}/_syneroym/session/challenge"))
+        .header("Host", AUTH_HOST)
         .header("Connection", "close")
         .send()
         .await
@@ -884,9 +916,13 @@ async fn test_27_reserved_path_challenge_login_whoami_logout_lifecycle() {
 
     // 2. Sign delegation & assertion
     let node_pubkey = substrate::resolve_did_key(node_did).unwrap();
-    let cert =
-        DelegationCertificate::issue(&person, node_pubkey, 24 * 3600, SCOPE_ROUTING.to_string())
-            .unwrap();
+    let cert = DelegationCertificate::issue(
+        &person,
+        node_pubkey,
+        24 * 3600,
+        SCOPE_SESSION_AUTH.to_string(),
+    )
+    .unwrap();
     let assertion = gateway_session_assertion(node_did, nonce, &person_did);
     let sig = person.sign_json(&assertion).unwrap();
 
@@ -896,6 +932,7 @@ async fn test_27_reserved_path_challenge_login_whoami_logout_lifecycle() {
 
     // 4. Login
     let login_body = json!({
+        "method": "delegated-key",
         "person_did": person_did,
         "nonce": nonce,
         "signature": sig,
@@ -903,6 +940,7 @@ async fn test_27_reserved_path_challenge_login_whoami_logout_lifecycle() {
     });
     let login_resp = client
         .post(format!("{gateway_url}/_syneroym/session/login"))
+        .header("Host", AUTH_HOST)
         .json(&login_body)
         .header("Connection", "close")
         .send()
@@ -917,6 +955,7 @@ async fn test_27_reserved_path_challenge_login_whoami_logout_lifecycle() {
     // 5. Whoami
     let whoami_resp = client
         .get(format!("{gateway_url}/_syneroym/session/whoami"))
+        .header("Host", AUTH_HOST)
         .header("Authorization", format!("Bearer {token}"))
         .header("Connection", "close")
         .send()
@@ -925,11 +964,12 @@ async fn test_27_reserved_path_challenge_login_whoami_logout_lifecycle() {
     assert_eq!(whoami_resp.status(), 200);
     let whoami_val: Value = whoami_resp.json().await.unwrap();
     assert_eq!(whoami_val["person_did"], person_did);
-    assert_eq!(whoami_val["auth"], "delegated");
+    assert_eq!(whoami_val["auth"], "delegated-key");
 
     // 6. Logout
     let logout_resp = client
         .post(format!("{gateway_url}/_syneroym/session/logout"))
+        .header("Host", AUTH_HOST)
         .header("Authorization", format!("Bearer {token}"))
         .header("Connection", "close")
         .send()
@@ -942,6 +982,7 @@ async fn test_27_reserved_path_challenge_login_whoami_logout_lifecycle() {
     // 7. Whoami after logout
     let whoami_after = client
         .get(format!("{gateway_url}/_syneroym/session/whoami"))
+        .header("Host", AUTH_HOST)
         .header("Authorization", format!("Bearer {token}"))
         .header("Connection", "close")
         .send()
@@ -952,35 +993,24 @@ async fn test_27_reserved_path_challenge_login_whoami_logout_lifecycle() {
     ctx.teardown().await;
 }
 
-/// Test 28: Reserved path is never proxied to guest handlers.
+/// Test 28: Unknown auth endpoints return 404.
 #[tokio::test]
-async fn test_28_reserved_path_is_never_proxied_to_guest() {
+async fn test_28_unknown_auth_endpoint_returns_404() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
-    let (ctx, gateway_port, _reg_url, _svc_did, host) = setup_gateway_test_node(None).await;
+    let (ctx, gateway_port, _reg_url, _svc_did, _host) = setup_gateway_test_node(None).await;
     let gateway_url = format!("http://127.0.0.1:{gateway_port}");
     let client = test_client();
-    poll_until_guest_ready(&client, &gateway_url, &host).await;
 
-    // Unknown endpoint under reserved prefix
     let resp = client
-        .get(format!("{gateway_url}/_syneroym/unknown"))
-        .header("Host", &host)
+        .post(format!("{gateway_url}/_syneroym/session/custom"))
+        .header("Host", AUTH_HOST)
         .header("Connection", "close")
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
     let val: Value = resp.json().await.unwrap();
-    assert_eq!(val["error"], "unknown gateway endpoint");
-
-    let resp2 = client
-        .post(format!("{gateway_url}/_syneroym/session/custom"))
-        .header("Host", &host)
-        .header("Connection", "close")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp2.status(), 404);
+    assert_eq!(val["error"], "unknown auth endpoint");
 
     ctx.teardown().await;
 }
@@ -1142,6 +1172,82 @@ async fn test_31_oversized_and_invalid_http_requests_return_400() {
         resp_large.contains("Headers too large"),
         "body must mention Headers too large: {resp_large}"
     );
+
+    ctx.teardown().await;
+}
+
+/// Test 32: Session token is refused as capability proof in chain.
+#[tokio::test]
+async fn test_32_session_token_refused_as_capability_proof() {
+    let auth_id = Identity::generate().unwrap();
+    let _auth_did = substrate::derive_did_key(&auth_id.public_key());
+    let person_id = Identity::generate().unwrap();
+    let person_did = substrate::derive_did_key(&person_id.public_key());
+
+    let session_token =
+        syneroym_ucan::SessionToken::mint(&auth_id, &person_did, "delegated-key", None, 3600)
+            .unwrap();
+    let cap_token = session_token.into_inner();
+
+    let opts = syneroym_ucan::ChainVerifyOpts {
+        expected_audience_did: "did:key:zWrongAudience",
+        is_trusted_root: &|_iss, _cap| false,
+        now_secs: 1000,
+    };
+    let err = syneroym_ucan::verify_chain(&cap_token, &opts).unwrap_err();
+    assert!(
+        err.to_string().contains("audience")
+            || err.to_string().contains("capability")
+            || err.to_string().contains("empty")
+            || err.to_string().contains("unrooted"),
+        "verifying session token as capability chain should fail: {err}"
+    );
+}
+
+/// Test 33: Delegated key login handoff from session-key file.
+#[tokio::test]
+async fn test_33_delegated_key_login_handoff_from_file() {
+    let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
+    let (ctx, gateway_port, reg_url, _svc_did, _host) = setup_gateway_test_node(None).await;
+    let gateway_url = format!("http://127.0.0.1:{gateway_port}");
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let identities_dir = temp_dir.path().join("identities");
+    fs::create_dir_all(&identities_dir).unwrap();
+
+    let person = Identity::generate().unwrap();
+    let _person_did = substrate::derive_did_key(&person.public_key());
+    person.save_to_path(identities_dir.join("alice.key")).unwrap();
+
+    let key_file = temp_dir.path().join("session-key.json");
+
+    // 1. Delegate to file
+    let delegate_cmd = roymctl::commands::session::SessionCommands::Delegate {
+        expires_hours: 24,
+        out: key_file.clone(),
+        registry_url: Some(reg_url.clone()),
+    };
+    roymctl::commands::session::handle(&delegate_cmd, temp_dir.path(), Some("alice"))
+        .await
+        .unwrap();
+
+    assert!(key_file.exists());
+
+    // 2. Login using the session key file
+    let login_cmd = roymctl::commands::session::SessionCommands::Login {
+        gateway_url: gateway_url.clone(),
+        method: "delegated-key".to_string(),
+        session_key_file: Some(key_file),
+        identity: None,
+        registry_url: Some(reg_url),
+        expires_hours: 24,
+    };
+    roymctl::commands::session::handle(&login_cmd, temp_dir.path(), None).await.unwrap();
+
+    // 3. Verify status
+    let status_cmd =
+        roymctl::commands::session::SessionCommands::Status { gateway_url: gateway_url.clone() };
+    roymctl::commands::session::handle(&status_cmd, temp_dir.path(), None).await.unwrap();
 
     ctx.teardown().await;
 }

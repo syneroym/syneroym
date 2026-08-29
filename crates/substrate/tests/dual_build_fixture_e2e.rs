@@ -15,10 +15,14 @@ use common::{SubstrateTestContext, alloc_ports};
 use serde_json::json;
 use syneroym_sdk::TransportConnection;
 use syneroym_test_dual_build_fixture::native::FIXTURE_INTERFACE;
-use tokio::{io::AsyncWriteExt, time};
+use tokio::{io::AsyncWriteExt, sync::Mutex, time};
+
+static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[tokio::test]
 async fn a_client_reaches_the_linked_native_fixture_through_the_router() {
+    let _lock = SUBSTRATE_TEST_LOCK.lock().await;
+    time::sleep(Duration::from_millis(300)).await;
     let [iroh_port, registry_port, gateway_port] = alloc_ports();
     let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     // The fixture's own `data-layer` calls (`create-collection`/`put`/
@@ -45,6 +49,8 @@ async fn a_client_reaches_the_linked_native_fixture_through_the_router() {
 
 #[tokio::test]
 async fn an_http_request_reaches_the_linked_native_fixture_through_the_router() {
+    let _lock = SUBSTRATE_TEST_LOCK.lock().await;
+    time::sleep(Duration::from_millis(300)).await;
     let [iroh_port, registry_port, gateway_port] = alloc_ports();
     let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("40".repeat(32)).await.expect("inject_kek failed");
@@ -73,6 +79,8 @@ async fn an_http_request_reaches_the_linked_native_fixture_through_the_router() 
 
 #[tokio::test]
 async fn a_cross_service_call_by_did_is_gated_on_native_build() {
+    let _lock = SUBSTRATE_TEST_LOCK.lock().await;
+    time::sleep(Duration::from_millis(300)).await;
     let [iroh_port, registry_port, gateway_port] = alloc_ports();
     let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("40".repeat(32)).await.expect("inject_kek failed");
@@ -110,6 +118,8 @@ async fn a_cross_service_call_by_did_is_gated_on_native_build() {
 
 #[tokio::test]
 async fn a_websocket_reaches_the_linked_native_fixture_through_the_router() {
+    let _lock = SUBSTRATE_TEST_LOCK.lock().await;
+    time::sleep(Duration::from_millis(300)).await;
     let [iroh_port, registry_port, gateway_port] = alloc_ports();
     let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("40".repeat(32)).await.expect("inject_kek failed");
