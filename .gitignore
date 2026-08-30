@@ -49,3 +49,9 @@ lcov.info
 # Roym web UI build output packed by `npm run pack` -- rebuilt from
 # crates/roym_web/ui/src by `mise run build:roym-ui`, never hand-edited.
 crates/roym_web/ui/bundle.tar.gz
+
+# wit-bindgen's `generate!` macro produces these in memory at compile time
+# (crates/roym_*/src/guest.rs) -- a file by this name next to it is a stray
+# output of a manual wit-bindgen/cargo-expand run, unreferenced by any
+# `mod`/`include!`, and must never be committed.
+crates/roym_*/src/bindings.rs
