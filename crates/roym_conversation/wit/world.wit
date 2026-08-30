@@ -1,0 +1,19 @@
+package syneroym-roym:conversation@0.1.0;
+
+interface api {
+    invoke: func(request: string) -> result<string, string>;
+    status: func() -> result<string, string>;
+}
+
+world conversation {
+    import syneroym:data-layer/store@0.1.0;
+    import syneroym:blob-store/blob-store@0.1.0;
+    import syneroym:messaging/host-api@0.1.0;
+    import syneroym:conversation/conversation@0.1.0;
+    import syneroym:proxy/proxy@0.1.0;
+    import syneroym:app-config/app-config@0.1.0;
+    import syneroym:vault/vault@0.1.0;
+    import syneroym:http/websocket@0.1.0;
+
+    export api;
+}

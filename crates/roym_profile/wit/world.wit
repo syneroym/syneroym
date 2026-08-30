@@ -1,0 +1,35 @@
+package syneroym-roym:profile@0.1.0;
+
+/// One service of the Roym SynApp. The JSON-RPC method name and its
+/// parameters travel inside `request`, not in this signature: the method
+/// set grows with the product, and a WIT function per method would make
+/// every added verb a change to the deployed interface list.
+///
+/// `request` is a JSON object: `{ "method": string, "params": any }`. No
+/// caller field -- no sibling can verify who called it, so nothing here
+/// claims to know. The success value is a JSON object `{ "result": any }`; an
+/// application-level refusal is `{ "error": { "code": number, "message":
+/// string } }` inside the success arm, so the `Err` arm below carries
+/// only faults this service could not describe -- unparseable request
+/// JSON, and nothing else.
+interface api {
+    invoke: func(request: string) -> result<string, string>;
+
+    /// Liveness plus the service's own schema version, as a JSON object.
+    /// Any non-error return is a readiness pass; the manifest points its
+    /// `health_check` here.
+    status: func() -> result<string, string>;
+}
+
+world profile {
+    import syneroym:data-layer/store@0.1.0;
+    import syneroym:blob-store/blob-store@0.1.0;
+    import syneroym:messaging/host-api@0.1.0;
+    import syneroym:conversation/conversation@0.1.0;
+    import syneroym:proxy/proxy@0.1.0;
+    import syneroym:app-config/app-config@0.1.0;
+    import syneroym:vault/vault@0.1.0;
+    import syneroym:http/websocket@0.1.0;
+
+    export api;
+}

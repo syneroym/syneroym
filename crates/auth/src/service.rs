@@ -34,11 +34,26 @@ fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ChallengeRequest {
+    /// When set, the response carries the exact canonical assertion string to
+    /// sign, so a caller that cannot canonicalize JSON itself (a browser)
+    /// does not have to.
+    #[serde(default)]
+    pub master_did: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChallengeResponse {
     pub nonce: String,
     pub node_did: String,
     pub expires_at_secs: u64,
+    /// The RFC 8785 canonical JSON of `gateway_session_assertion(node_did,
+    /// nonce, master_did)`, present only when the request named a
+    /// `master_did`. Sign these exact bytes; the auth service recomputes and
+    /// compares on `/login`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assertion: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +118,8 @@ pub struct AuthService {
     logged_out_tokens: DashMap<String, u64>,
     person_identities_dir: Option<PathBuf>,
     anchor_resolver: Arc<dyn MasterAnchorResolver>,
+    allowed_origins: Vec<String>,
+    secure_cookies: bool,
 }
 
 impl AuthService {
@@ -125,7 +142,21 @@ impl AuthService {
             logged_out_tokens: DashMap::new(),
             person_identities_dir,
             anchor_resolver,
+            allowed_origins: Vec::new(),
+            secure_cookies: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_allowed_origins(mut self, origins: Vec<String>) -> Self {
+        self.allowed_origins = origins;
+        self
+    }
+
+    #[must_use]
+    pub fn with_secure_cookies(mut self, secure: bool) -> Self {
+        self.secure_cookies = secure;
+        self
     }
 
     #[must_use]
@@ -179,7 +210,7 @@ impl AuthService {
         false
     }
 
-    pub fn issue_challenge(&self) -> ChallengeResponse {
+    pub fn issue_challenge(&self, master_did: Option<&str>) -> ChallengeResponse {
         let now = now_secs();
         self.sweep_challenges(now);
 
@@ -200,7 +231,13 @@ impl AuthService {
         let expires_at_secs = now + self.nonce_ttl_secs;
         self.challenges.insert(nonce.clone(), expires_at_secs);
 
-        ChallengeResponse { nonce, node_did: self.node_did.clone(), expires_at_secs }
+        let assertion = master_did.map(|md| {
+            let value = gateway_session_assertion(&self.node_did, &nonce, md);
+            let canonical = substrate::canonicalize_json_value(&value);
+            serde_json::to_string(&canonical).unwrap_or_default()
+        });
+
+        ChallengeResponse { nonce, node_did: self.node_did.clone(), expires_at_secs, assertion }
     }
 
     pub async fn login_delegated_key(
@@ -476,8 +513,11 @@ impl AuthService {
         None
     }
 
-    fn is_allowed_origin(origin: &str) -> bool {
+    fn is_allowed_origin(&self, origin: &str) -> bool {
         let trimmed = origin.trim();
+        if self.allowed_origins.iter().any(|allowed| allowed == trimmed) {
+            return true;
+        }
         trimmed.starts_with("http://localhost:")
             || trimmed.starts_with("https://localhost:")
             || trimmed == "http://localhost"
@@ -490,7 +530,7 @@ impl AuthService {
                 && (trimmed.contains(".localhost:") || trimmed.ends_with(".localhost"))
     }
 
-    fn cors_headers(origin: Option<&str>) -> Vec<(String, String)> {
+    fn cors_headers(&self, origin: Option<&str>) -> Vec<(String, String)> {
         let mut headers = vec![
             ("access-control-allow-methods".to_string(), "GET, POST, OPTIONS".to_string()),
             (
@@ -499,13 +539,17 @@ impl AuthService {
             ),
         ];
         if let Some(orig) = origin
-            && Self::is_allowed_origin(orig)
+            && self.is_allowed_origin(orig)
         {
             headers.push(("access-control-allow-origin".to_string(), orig.to_string()));
             headers.push(("access-control-allow-credentials".to_string(), "true".to_string()));
             headers.push(("vary".to_string(), "Origin".to_string()));
         }
         headers
+    }
+
+    fn cookie_attribute(&self) -> &'static str {
+        if self.secure_cookies { "; Secure" } else { "" }
     }
 }
 
@@ -531,7 +575,7 @@ impl NativeHttpService for AuthService {
             .find(|(k, _)| k.eq_ignore_ascii_case("origin"))
             .map(|(_, v)| v.as_str());
 
-        let mut headers = Self::cors_headers(origin);
+        let mut headers = self.cors_headers(origin);
         headers.push(("content-type".to_string(), "application/json".to_string()));
 
         if method == "OPTIONS" {
@@ -546,7 +590,8 @@ impl NativeHttpService for AuthService {
         let is_refresh = path == "/refresh" || path == "/_syneroym/session/refresh";
 
         if method == "POST" && is_challenge {
-            let ch = self.issue_challenge();
+            let req: ChallengeRequest = serde_json::from_slice(&request.body).unwrap_or_default();
+            let ch = self.issue_challenge(req.master_did.as_deref());
             let body = serde_json::to_vec(&ch).map_err(|e| e.to_string())?;
             return Ok(HttpResponse { status: 200, headers, body });
         }
@@ -600,6 +645,13 @@ impl NativeHttpService for AuthService {
                     .await
                 }
                 AUTH_METHOD_LOCAL => {
+                    if origin.is_some() {
+                        let body = serde_json::to_vec(
+                            &serde_json::json!({"error": "local login method is not allowed from a browser origin"}),
+                        )
+                        .map_err(|e| e.to_string())?;
+                        return Ok(HttpResponse { status: 403, headers, body });
+                    }
                     let Some(identity) = req.identity else {
                         let body = serde_json::to_vec(
                             &serde_json::json!({"error": "missing identity parameter for local login"}),
@@ -623,8 +675,11 @@ impl NativeHttpService for AuthService {
                     let now = now_secs();
                     let remaining_ttl = grant.expires_at_secs.saturating_sub(now);
                     let cookie = format!(
-                        "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax",
-                        SESSION_COOKIE_NAME, grant.token, remaining_ttl
+                        "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax{}",
+                        SESSION_COOKIE_NAME,
+                        grant.token,
+                        remaining_ttl,
+                        self.cookie_attribute()
                     );
                     headers.push(("set-cookie".to_string(), cookie));
                     let body = serde_json::to_vec(&grant).map_err(|e| e.to_string())?;
@@ -663,8 +718,11 @@ impl NativeHttpService for AuthService {
             if let Some(token) = self.extract_token(&request) {
                 self.record_logout(&token);
             }
-            let cookie =
-                format!("{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax", SESSION_COOKIE_NAME);
+            let cookie = format!(
+                "{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax{}",
+                SESSION_COOKIE_NAME,
+                self.cookie_attribute()
+            );
             headers.push(("set-cookie".to_string(), cookie));
             let body = serde_json::to_vec(&serde_json::json!({"status": "ended"}))
                 .map_err(|e| e.to_string())?;
@@ -684,8 +742,11 @@ impl NativeHttpService for AuthService {
                     let now = now_secs();
                     let remaining_ttl = grant.expires_at_secs.saturating_sub(now);
                     let cookie = format!(
-                        "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax",
-                        SESSION_COOKIE_NAME, grant.token, remaining_ttl
+                        "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax{}",
+                        SESSION_COOKIE_NAME,
+                        grant.token,
+                        remaining_ttl,
+                        self.cookie_attribute()
                     );
                     headers.push(("set-cookie".to_string(), cookie));
                     let body = serde_json::to_vec(&grant).map_err(|e| e.to_string())?;

@@ -10,19 +10,32 @@
 
 use bindings::exports::{
     syneroym::{
-        conversation::guest_api::Guest as ConversationGuestApiGuest,
+        conversation::guest_api::{
+            DeliveryState as WitDeliveryState, Guest as ConversationGuestApiGuest,
+            Message as WitMessage,
+        },
         http::{
-            incoming_handler::Guest as IncomingHandlerGuest,
-            websocket_handler::Guest as WebSocketHandlerGuest,
+            incoming_handler::{
+                CallerAuth as WitCallerAuth, CallerIdentity as WitCallerIdentity,
+                Guest as IncomingHandlerGuest, HttpRequest as WitHttpRequest,
+                HttpResponse as WitHttpResponse,
+            },
+            websocket_handler::{FrameKind as WitFrameKind, Guest as WebSocketHandlerGuest},
         },
         messaging::{
             guest_api::Guest as GuestApiGuest,
-            stream_types::{Guest as StreamTypesGuest, GuestStreamCursor, GuestStreamSink},
+            stream_types::{
+                Guest as StreamTypesGuest, GuestStreamCursor, GuestStreamSink, StreamCursor,
+                StreamSink,
+            },
         },
     },
     syneroym_test::dual_build_fixture::test_driver::Guest as TestDriverGuest,
 };
-use syneroym_app_host::guest::{GuestHost, block_on};
+use syneroym_app_host::{
+    guest::{GuestHost, block_on},
+    types::http::{CallerAuth, CallerIdentity, FrameKind, HttpRequest, HttpResponse},
+};
 
 /// The only place generated `unsafe` enters this crate, so the workspace's
 /// `unsafe_code = "deny"` is relaxed here and nowhere else -- the crate keeps
@@ -68,7 +81,7 @@ impl GuestApiGuest for Fixture {
         _protocol: String,
         _peer_id: String,
         _request_data: Vec<u8>,
-    ) -> Result<bindings::exports::syneroym::messaging::stream_types::StreamCursor, String> {
+    ) -> Result<StreamCursor, String> {
         Err("streaming not supported by this fixture".to_string())
     }
 
@@ -76,56 +89,35 @@ impl GuestApiGuest for Fixture {
         _protocol: String,
         _peer_id: String,
         _metadata: String,
-    ) -> Result<bindings::exports::syneroym::messaging::stream_types::StreamSink, String> {
+    ) -> Result<StreamSink, String> {
         Err("streaming not supported by this fixture".to_string())
     }
 }
 
 impl ConversationGuestApiGuest for Fixture {
-    fn on_message(
-        msg: bindings::exports::syneroym::conversation::guest_api::Message,
-    ) -> Result<(), String> {
+    fn on_message(msg: WitMessage) -> Result<(), String> {
         block_on(crate::app::on_conversation_message(&GuestHost, msg))
     }
 
-    fn on_delivery_state(
-        msg: String,
-        state: bindings::exports::syneroym::conversation::guest_api::DeliveryState,
-    ) -> Result<(), String> {
+    fn on_delivery_state(msg: String, state: WitDeliveryState) -> Result<(), String> {
         block_on(crate::app::on_conversation_state(&GuestHost, msg, state))
     }
 }
 
-fn caller_auth_in(
-    auth: bindings::exports::syneroym::http::incoming_handler::CallerAuth,
-) -> syneroym_app_host::types::http::CallerAuth {
+fn caller_auth_in(auth: WitCallerAuth) -> CallerAuth {
     match auth {
-        bindings::exports::syneroym::http::incoming_handler::CallerAuth::Delegated => {
-            syneroym_app_host::types::http::CallerAuth::Delegated
-        }
-        bindings::exports::syneroym::http::incoming_handler::CallerAuth::Ucan => {
-            syneroym_app_host::types::http::CallerAuth::Ucan
-        }
-        bindings::exports::syneroym::http::incoming_handler::CallerAuth::SelfAsserted => {
-            syneroym_app_host::types::http::CallerAuth::SelfAsserted
-        }
+        WitCallerAuth::Delegated => CallerAuth::Delegated,
+        WitCallerAuth::Ucan => CallerAuth::Ucan,
+        WitCallerAuth::SelfAsserted => CallerAuth::SelfAsserted,
     }
 }
 
-fn caller_identity_in(
-    id: bindings::exports::syneroym::http::incoming_handler::CallerIdentity,
-) -> syneroym_app_host::types::http::CallerIdentity {
-    syneroym_app_host::types::http::CallerIdentity {
-        did: id.did,
-        auth: caller_auth_in(id.auth),
-        app_instance: id.app_instance,
-    }
+fn caller_identity_in(id: WitCallerIdentity) -> CallerIdentity {
+    CallerIdentity { did: id.did, auth: caller_auth_in(id.auth), app_instance: id.app_instance }
 }
 
-fn http_request_in(
-    req: bindings::exports::syneroym::http::incoming_handler::HttpRequest,
-) -> syneroym_app_host::types::http::HttpRequest {
-    syneroym_app_host::types::http::HttpRequest {
+fn http_request_in(req: WitHttpRequest) -> HttpRequest {
+    HttpRequest {
         method: req.method,
         path: req.path,
         query: req.query,
@@ -137,33 +129,19 @@ fn http_request_in(
     }
 }
 
-fn http_response_out(
-    resp: syneroym_app_host::types::http::HttpResponse,
-) -> bindings::exports::syneroym::http::incoming_handler::HttpResponse {
-    bindings::exports::syneroym::http::incoming_handler::HttpResponse {
-        status: resp.status,
-        headers: resp.headers,
-        body: resp.body,
-    }
+fn http_response_out(resp: HttpResponse) -> WitHttpResponse {
+    WitHttpResponse { status: resp.status, headers: resp.headers, body: resp.body }
 }
 
-fn frame_kind_in(
-    kind: bindings::exports::syneroym::http::websocket_handler::FrameKind,
-) -> syneroym_app_host::types::http::FrameKind {
+fn frame_kind_in(kind: WitFrameKind) -> FrameKind {
     match kind {
-        bindings::exports::syneroym::http::websocket_handler::FrameKind::Text => {
-            syneroym_app_host::types::http::FrameKind::Text
-        }
-        bindings::exports::syneroym::http::websocket_handler::FrameKind::Binary => {
-            syneroym_app_host::types::http::FrameKind::Binary
-        }
+        WitFrameKind::Text => FrameKind::Text,
+        WitFrameKind::Binary => FrameKind::Binary,
     }
 }
 
 impl IncomingHandlerGuest for Fixture {
-    fn handle_request(
-        request: bindings::exports::syneroym::http::incoming_handler::HttpRequest,
-    ) -> Result<bindings::exports::syneroym::http::incoming_handler::HttpResponse, String> {
+    fn handle_request(request: WitHttpRequest) -> Result<WitHttpResponse, String> {
         let out = block_on(crate::app::handle_http(&GuestHost, http_request_in(request)))?;
         Ok(http_response_out(out))
     }
@@ -174,11 +152,7 @@ impl WebSocketHandlerGuest for Fixture {
         block_on(crate::app::on_ws_open(&GuestHost, conn));
     }
 
-    fn on_message(
-        conn: String,
-        frame: Vec<u8>,
-        kind: bindings::exports::syneroym::http::websocket_handler::FrameKind,
-    ) {
+    fn on_message(conn: String, frame: Vec<u8>, kind: WitFrameKind) {
         block_on(crate::app::on_ws_message(&GuestHost, conn, frame, frame_kind_in(kind)));
     }
 

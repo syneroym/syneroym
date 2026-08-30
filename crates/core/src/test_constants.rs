@@ -168,3 +168,33 @@ pub fn dual_build_fixture_wasm_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/wasm32-wasip2/release/syneroym_test_dual_build_fixture.wasm")
 }
+
+pub fn roym_web_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-wasip2/release/syneroym_roym_web.wasm")
+}
+
+pub fn roym_conversation_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-wasip2/release/syneroym_roym_conversation.wasm")
+}
+
+pub fn roym_profile_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-wasip2/release/syneroym_roym_profile.wasm")
+}
+
+pub fn roym_catalog_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-wasip2/release/syneroym_roym_catalog.wasm")
+}
+
+pub fn roym_transaction_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-wasip2/release/syneroym_roym_transaction.wasm")
+}
+
+pub fn roym_directory_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-wasip2/release/syneroym_roym_directory.wasm")
+}

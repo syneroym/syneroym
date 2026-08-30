@@ -1397,6 +1397,47 @@ grant_resolve_to_node_did` stays the *operator*-side answer for a node's
 own apps' `restricted` services — the two are independent, not
 alternatives for the same case.
 
+#### The Roym Hub
+
+Deploying the Roym product (`crates/roym_core/app/roym.toml`, six services:
+`web`, `profile`, `conversation`, `catalog`, `transaction`, `directory`)
+reaches the Hub UI through the gateway hostname scheme above, in either
+form:
+
+```bash
+# Bare service form (roymctl svc deploy web standalone):
+roymctl alias <WEB_SERVICE_DID> --nickname roym --interface http-native
+# -> roym-s<web-did-hash>-ihttp-native.localhost
+
+# App-instance form (roymctl app deploy roym crates/roym_core/app/roym.toml):
+roymctl alias <APP_MASTER_DID> --nickname roym --service web --interface http-native
+# -> roym-a<app-did-hash>-sweb-ihttp-native.localhost
+```
+
+The Hub logs a person in through the node **auth service** (see "Reserved
+Endpoints (`/_syneroym/session/*`)" above): the login screen reads
+`GET /_syneroym/session/methods` and offers `delegated-key` — a temporary
+key delegated from the person's master by `roymctl session delegate`,
+imported once and held in the browser's IndexedDB. Run the gateway in
+`login` mode so the router verifies the `syneroym_session` cookie and each
+Roym service sees the person's DID:
+
+```toml
+[roles.client_gateway]
+identity_mode = "login"
+
+[roles.roym]
+# The packed Hub UI bundle (mise run build:roym-ui produces
+# crates/roym_web/ui/bundle.tar.gz).
+ui_bundle_path = "/path/to/bundle.tar.gz"
+```
+
+`roles.roym` also needs the `roym` Cargo feature enabled at build time
+(`crates/substrate/Cargo.toml`); it links the six services in natively
+rather than deploying them as separate WASM components. Never enable it
+alongside a WASM deploy of the same app on the same node — the router warns
+if it sees both.
+
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy
 
 > [!TIP]

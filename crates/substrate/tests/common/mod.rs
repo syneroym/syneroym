@@ -124,6 +124,8 @@ pub struct SubstrateTestContext {
     /// node). Exposed for tests that build an extra client of their own.
     #[allow(dead_code)]
     pub owner_did: String,
+    #[allow(dead_code)]
+    pub owner: Identity,
     shutdown_tx: Sender<()>,
     substrate_handle: JoinHandle<()>,
     #[allow(dead_code)]
@@ -214,6 +216,7 @@ impl SubstrateTestContext {
             .expect("Substrate failed to run");
         });
 
+        let owner_clone = Identity::from_bytes(&owner.to_bytes());
         let mut substrate_client = SyneroymClient::new_with_identity(
             substrate_service_id.clone(),
             registry_url.clone(),
@@ -235,6 +238,7 @@ impl SubstrateTestContext {
             registry_url,
             substrate_mechanisms,
             owner_did,
+            owner: owner_clone,
             shutdown_tx,
             substrate_handle,
             temp_dir,

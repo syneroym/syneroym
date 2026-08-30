@@ -10,7 +10,10 @@ use bindings::{
     exports::{
         syneroym::messaging::{
             guest_api::Guest as GuestApiGuest,
-            stream_types::{Guest as StreamTypesGuest, GuestStreamCursor, GuestStreamSink},
+            stream_types::{
+                Guest as StreamTypesGuest, GuestStreamCursor, GuestStreamSink, StreamCursor,
+                StreamSink,
+            },
         },
         syneroym_test::messaging_pubsub_test::test_driver::Guest as TestDriverGuest,
     },
@@ -132,7 +135,7 @@ impl GuestApiGuest for MessagingPubsubTestComponent {
         _protocol: String,
         _peer_id: String,
         _request_data: Vec<u8>,
-    ) -> Result<bindings::exports::syneroym::messaging::stream_types::StreamCursor, String> {
+    ) -> Result<StreamCursor, String> {
         Err("streaming not supported by this fixture".to_string())
     }
 
@@ -140,7 +143,7 @@ impl GuestApiGuest for MessagingPubsubTestComponent {
         _protocol: String,
         _peer_id: String,
         _metadata: String,
-    ) -> Result<bindings::exports::syneroym::messaging::stream_types::StreamSink, String> {
+    ) -> Result<StreamSink, String> {
         Err("streaming not supported by this fixture".to_string())
     }
 }
