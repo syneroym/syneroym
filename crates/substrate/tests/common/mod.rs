@@ -83,15 +83,16 @@ pub fn alloc_ports<const N: usize>() -> [u16; N] {
         % (span as u128)) as u16;
     let _ = NEXT_PORT_HINT.compare_exchange(0, seed, Ordering::Relaxed, Ordering::Relaxed);
     loop {
-        let offset = NEXT_PORT_HINT.fetch_add(16, Ordering::Relaxed) % span;
+        let block_size = 16u16.max(N as u16);
+        let offset = NEXT_PORT_HINT.fetch_add(block_size, Ordering::Relaxed) % span;
         let start = PORT_POOL_START + offset;
-        if start as u32 + N as u32 > PORT_POOL_END as u32 {
+        if start as u32 + block_size as u32 > PORT_POOL_END as u32 {
             continue; // wrapped mid-block; the next fetch_add tries elsewhere
         }
 
-        let mut listeners = Vec::with_capacity(N);
+        let mut listeners = Vec::with_capacity(block_size as usize);
         let mut all_free = true;
-        for port in start..start + N as u16 {
+        for port in start..start + block_size {
             match probe_bind(port) {
                 Some(listener) => listeners.push(listener),
                 None => {
@@ -104,8 +105,11 @@ pub fn alloc_ports<const N: usize>() -> [u16; N] {
             continue;
         }
 
-        let ports: Vec<u16> =
-            listeners.iter().map(|l| l.local_addr().expect("bound listener").port()).collect();
+        let ports: Vec<u16> = listeners
+            .iter()
+            .take(N)
+            .map(|l| l.local_addr().expect("bound listener").port())
+            .collect();
         drop(listeners);
         return ports.try_into().expect("exactly N ports collected");
     }
