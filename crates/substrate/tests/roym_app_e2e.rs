@@ -182,6 +182,27 @@ async fn deploy_roym_app() -> RoymDeployment {
     let manifest_path = root.join("crates/roym_core/app/roym.toml");
     let manifest_toml = fs::read_to_string(&manifest_path).unwrap();
     let manifest: SynAppManifest = toml::from_str(&manifest_toml).unwrap();
+
+    // Verify pre-built WASM artifacts exist before compiling the deployment plan
+    for (svc_name, svc) in &manifest.services {
+        let wasm_path = root.join(&svc.config.source);
+        if !wasm_path.exists() {
+            panic!(
+                "roym_app_e2e: WASM artifact for service '{svc_name}' not found at {wasm_path:?} \
+                 -- run `mise run build:roym`"
+            );
+        }
+        if let Some(assets) = &svc.config.assets {
+            let bundle_path = root.join(&assets.archive);
+            if !bundle_path.exists() {
+                panic!(
+                    "roym_app_e2e: UI bundle for service '{svc_name}' not found at \
+                     {bundle_path:?} -- run `mise run build:roym-ui`"
+                );
+            }
+        }
+    }
+
     let catalog = LocalFilesystemCatalog::new(root.clone());
     let compiled = compile(AppInstanceId::new("roym"), &manifest, &catalog).await.unwrap();
     let plan = compiled.plans.last().unwrap().clone();

@@ -2,7 +2,7 @@ use std::{
     cmp::Reverse,
     fs::{self, OpenOptions},
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -47,14 +47,26 @@ fn check_roym_deps() -> Result<()> {
         "syneroym-roym-directory",
     ];
 
-    let crate_dirs = [
-        "crates/roym_web",
-        "crates/roym_conversation",
-        "crates/roym_profile",
-        "crates/roym_catalog",
-        "crates/roym_transaction",
-        "crates/roym_directory",
-    ];
+    let workspace_root = if Path::new("crates").exists() {
+        PathBuf::from(".")
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap_or(Path::new(".")).to_path_buf()
+    };
+
+    let mut crate_dirs = Vec::new();
+    let crates_dir = workspace_root.join("crates");
+    if let Ok(entries) = fs::read_dir(&crates_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir()
+                && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name.starts_with("roym_")
+            {
+                crate_dirs.push(path);
+            }
+        }
+    }
+    crate_dirs.sort();
 
     let allowed_target_independent = [
         "syneroym-app-host",
@@ -72,7 +84,7 @@ fn check_roym_deps() -> Result<()> {
     let mut violations = Vec::new();
 
     for dir in &crate_dirs {
-        let manifest_path = Path::new(dir).join("Cargo.toml");
+        let manifest_path = dir.join("Cargo.toml");
         let content = fs::read_to_string(&manifest_path)?;
         let manifest: toml::Value = toml::from_str(&content)?;
 
@@ -80,7 +92,7 @@ fn check_roym_deps() -> Result<()> {
             .get("package")
             .and_then(|p| p.get("name"))
             .and_then(|n| n.as_str())
-            .unwrap_or(dir);
+            .unwrap_or_else(|| dir.to_str().unwrap_or("unknown"));
 
         // 1. Check target-independent [dependencies]
         if let Some(deps) = manifest.get("dependencies").and_then(|d| d.as_table()) {

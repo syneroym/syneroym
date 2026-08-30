@@ -287,6 +287,7 @@ export async function whoami(): Promise<Whoami | null> {
     }
     return await res.json();
   } catch {
+    clearToken();
     return null;
   }
 }

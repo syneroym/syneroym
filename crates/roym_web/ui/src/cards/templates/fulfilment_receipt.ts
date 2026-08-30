@@ -9,7 +9,10 @@ export function renderFulfilmentReceipt(data?: FulfilmentReceiptData): HTMLEleme
   title.textContent = "Fulfilment Receipt";
   div.appendChild(title);
   const p = document.createElement("p");
-  p.textContent = data?.tracking ? `Tracking: ${data.tracking}` : "Fulfilment Receipt v1";
+  p.textContent =
+    data?.tracking !== undefined && data?.tracking !== null && data?.tracking !== ""
+      ? `Tracking: ${data.tracking}`
+      : "Fulfilment Receipt v1";
   div.appendChild(p);
   return div;
 }

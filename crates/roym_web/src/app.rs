@@ -10,7 +10,7 @@ use syneroym_app_host::{
     },
 };
 use syneroym_roym_core::{
-    envelope::{Request, Response},
+    envelope::{self, Request, Response},
     router, services,
 };
 
@@ -132,7 +132,8 @@ pub async fn rpc<H: AppHost>(host: &H, request: HttpRequest) -> Result<HttpRespo
     let service = match router::route(&method) {
         Some(s) => s,
         None => {
-            let err_val = json_rpc_error(id, -32601, format!("Method '{method}' not found"));
+            let safe_method = envelope::truncate_method(&method);
+            let err_val = json_rpc_error(id, -32601, format!("Method '{safe_method}' not found"));
             return Ok(HttpResponse {
                 status: 200,
                 headers: vec![("content-type".into(), "application/json".into())],

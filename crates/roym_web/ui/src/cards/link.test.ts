@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderLink } from "./link";
+import { renderCard } from "./render";
+import { renderPaymentRequest } from "./templates/payment_request";
 
 describe("renderLink", () => {
   it("renders an https URL as a link", () => {
@@ -33,5 +35,29 @@ describe("renderLink", () => {
     const node = renderLink("not a url");
     expect(node.nodeName).toBe("#text");
     expect(node.textContent).toBe("not a url");
+  });
+
+  it("renders payment-request card with a safe URL as a link", () => {
+    const el = renderPaymentRequest({
+      amount: "100",
+      currency: "USD",
+      url: "https://pay.example.com/invoice1",
+    });
+    const link = el.querySelector(".payment-link a") as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link?.href).toBe("https://pay.example.com/invoice1");
+    expect(link?.textContent).toBe("https://pay.example.com/invoice1");
+  });
+
+  it("renders payment-request card via renderCard with javascript: URL as plain text", () => {
+    const el = renderCard({
+      type: "payment-request",
+      version: 1,
+      data: { amount: 50, url: "javascript:evil()" },
+    });
+    const link = el.querySelector(".payment-link a");
+    expect(link).toBeNull();
+    const paymentLinkP = el.querySelector(".payment-link");
+    expect(paymentLinkP?.textContent).toBe("javascript:evil()");
   });
 });

@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use hyper_util::rt::TokioIo;
-use syneroym_core::local_registry::{EndpointRegistry, SubstrateEndpoint};
+use syneroym_core::local_registry::{EndpointRegistry, HTTP_NATIVE_INTERFACE, SubstrateEndpoint};
 use syneroym_rpc::{
     Ability, AuthLevel, CallerContext, CallerProof, Capability, CapabilityToken, ChainVerifyOpts,
     ResourceUri, SessionContext, framing,
@@ -54,11 +54,6 @@ use crate::{
 fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
-
-/// The reserved native-capability interface the inbound HTTP bridge
-/// dispatches through (`NATIVE_CAPABILITY_INTERFACES`,
-/// `syneroym_core::local_registry`).
-const HTTP_NATIVE_INTERFACE: &str = "http-native";
 
 /// Faithful generalization of `HandshakeVerifier::verify_preamble`'s
 /// delegation-cert revocation check (`handshake.rs:74-84`) to a UCAN chain:
@@ -379,17 +374,19 @@ impl RouteHandler {
         // interface would otherwise resolve to a `WasmChannel`. A node-level
         // native service such as the auth service resolves its empty interface
         // to its own `NativeHostChannel` and must be left alone.
-        let service_id = preamble.service_id.as_str();
-        let bridged_over_http = preamble.transport == RouteTransport::Http
-            && preamble.interface.is_empty()
-            && (self.inner.http_routes.contains_key(service_id)
-                || self.inner.assets.contains_key(service_id))
-            && matches!(
-                self.inner.registry.lookup(service_id, ""),
-                Some((SubstrateEndpoint::WasmChannel { .. }, _))
-            );
-        if bridged_over_http {
-            preamble.interface = HTTP_NATIVE_INTERFACE.to_string();
+        if preamble.transport == RouteTransport::Http && preamble.interface.is_empty() {
+            let service_id = preamble.service_id.as_str();
+            let has_routes_or_assets = self.inner.http_routes.contains_key(service_id)
+                || self.inner.assets.contains_key(service_id);
+            if has_routes_or_assets {
+                let empty_ep = self.inner.registry.lookup(service_id, "").map(|(ep, _)| ep);
+                maybe_rewrite_http_native_interface(
+                    preamble.transport,
+                    &mut preamble.interface,
+                    has_routes_or_assets,
+                    empty_ep.as_ref(),
+                );
+            }
         }
 
         let lookup_result = self.inner.registry.lookup(&preamble.service_id, &preamble.interface);
@@ -585,6 +582,24 @@ impl RouteHandler {
         // which maps `Declined` to HTTP 403).
         let _ = outcome;
         Ok(())
+    }
+}
+
+pub(crate) fn maybe_rewrite_http_native_interface(
+    transport: RouteTransport,
+    interface: &mut String,
+    has_http_routes_or_assets: bool,
+    empty_interface_endpoint: Option<&SubstrateEndpoint>,
+) -> bool {
+    let bridged_over_http = transport == RouteTransport::Http
+        && interface.is_empty()
+        && has_http_routes_or_assets
+        && matches!(empty_interface_endpoint, Some(SubstrateEndpoint::WasmChannel { .. }));
+    if bridged_over_http {
+        *interface = HTTP_NATIVE_INTERFACE.to_string();
+        true
+    } else {
+        false
     }
 }
 
@@ -1788,5 +1803,48 @@ mod tests {
                 .session
                 .has_capability(&resource, &Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()))
         );
+    }
+
+    #[test]
+    fn rewrite_happens_for_wasm_service_with_assets_or_routes() {
+        let mut interface = String::new();
+        let wasm_ep = SubstrateEndpoint::WasmChannel { service_id: "did:key:zTest".to_string() };
+        let rewritten = maybe_rewrite_http_native_interface(
+            RouteTransport::Http,
+            &mut interface,
+            true,
+            Some(&wasm_ep),
+        );
+        assert!(rewritten);
+        assert_eq!(interface, HTTP_NATIVE_INTERFACE);
+    }
+
+    #[test]
+    fn no_rewrite_for_node_level_native_service() {
+        let mut interface = String::new();
+        let native_ep =
+            SubstrateEndpoint::NativeHostChannel { service_id: "did:key:zAuth".to_string() };
+        let rewritten = maybe_rewrite_http_native_interface(
+            RouteTransport::Http,
+            &mut interface,
+            true,
+            Some(&native_ep),
+        );
+        assert!(!rewritten);
+        assert_eq!(interface, "");
+    }
+
+    #[test]
+    fn no_rewrite_when_preamble_already_names_an_interface() {
+        let mut interface = "custom-api".to_string();
+        let wasm_ep = SubstrateEndpoint::WasmChannel { service_id: "did:key:zTest".to_string() };
+        let rewritten = maybe_rewrite_http_native_interface(
+            RouteTransport::Http,
+            &mut interface,
+            true,
+            Some(&wasm_ep),
+        );
+        assert!(!rewritten);
+        assert_eq!(interface, "custom-api");
     }
 }

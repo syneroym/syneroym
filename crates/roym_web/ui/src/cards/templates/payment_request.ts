@@ -1,6 +1,9 @@
+import { renderLink } from "../link.js";
+
 export interface PaymentRequestData {
-  amount?: string;
+  amount?: string | number;
   currency?: string;
+  url?: string;
 }
 
 export function renderPaymentRequest(data?: PaymentRequestData): HTMLElement {
@@ -10,7 +13,21 @@ export function renderPaymentRequest(data?: PaymentRequestData): HTMLElement {
   title.textContent = "Payment Request";
   div.appendChild(title);
   const p = document.createElement("p");
-  p.textContent = data?.amount ? `Amount: ${data.amount}` : "Payment Request v1";
+  if (data?.amount !== undefined && data?.amount !== null && data?.amount !== "") {
+    p.textContent = data.currency ? `Amount: ${data.amount} ${data.currency}` : `Amount: ${data.amount}`;
+  } else {
+    p.textContent = "Payment Request v1";
+  }
   div.appendChild(p);
+
+  if (data?.url) {
+    const pLink = document.createElement("p");
+    pLink.className = "payment-link";
+    pLink.appendChild(renderLink(data.url));
+    div.appendChild(pLink);
+  }
+
   return div;
 }
+
+

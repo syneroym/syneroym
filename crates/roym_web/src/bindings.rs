@@ -8214,6 +8214,18 @@ pub mod exports {
     }
     pub mod syneroym_roym {
         pub mod web {
+            /// One service of the Roym SynApp. The JSON-RPC method name and its
+            /// parameters travel inside `request`, not in this signature: the method
+            /// set grows with the product, and a WIT function per method would make
+            /// every added verb a change to the deployed interface list.
+            ///
+            /// `request` is a JSON object: `{ "method": string, "params": any }`. No
+            /// caller field -- no sibling can verify who called it, so nothing here
+            /// claims to know. The success value is a JSON object `{ "result": any }`; an
+            /// application-level refusal is `{ "error": { "code": number, "message":
+            /// string } }` inside the success arm, so the `Err` arm below carries
+            /// only faults this service could not describe -- unparseable request
+            /// JSON, and nothing else.
             #[allow(dead_code, async_fn_in_trait, unused_imports, clippy::all)]
             pub mod api {
                 #[used]
@@ -8349,6 +8361,9 @@ pub mod exports {
                 }
                 pub trait Guest {
                     fn invoke(request: _rt::String) -> Result<_rt::String, _rt::String>;
+                    /// Liveness plus the service's own schema version, as a JSON object.
+                    /// Any non-error return is a readiness pass; the manifest points its
+                    /// `health_check` here.
                     fn status() -> Result<_rt::String, _rt::String>;
                 }
                 #[doc(hidden)]

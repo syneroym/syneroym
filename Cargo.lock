@@ -7974,6 +7974,7 @@ dependencies = [
  "serde_json",
  "syneroym-app-host",
  "syneroym-rpc",
+ "toml 1.1.4+spec-1.1.0",
 ]
 
 [[package]]

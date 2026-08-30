@@ -26,6 +26,34 @@ test.describe('Roym Hub', () => {
 
     await expect(page.locator('h1')).toHaveText('Roym Hub');
     await loginWithDelegatedKey(page);
+
+    // Verify POST /rpc session.whoami with the stored bearer token returns
+    // the delegated person DID matching the session bar.
+    const whoamiResult = await page.evaluate(async () => {
+      const win = window as unknown as {
+        RoymSession?: { authHeaders: () => Record<string, string> };
+      };
+      const headers = win.RoymSession?.authHeaders() ?? {};
+      const res = await fetch('/rpc', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...headers,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'session.whoami',
+          params: {},
+        }),
+      });
+      return await res.json();
+    });
+    expect(whoamiResult.result?.auth).toBe('delegated');
+    const whoamiDid = whoamiResult.result?.did;
+    expect(whoamiDid).toBeTruthy();
+    const sessionBarText = await page.locator('.session-bar').textContent();
+    expect(sessionBarText).toContain(whoamiDid);
   });
 
   test('2. session survives a reload; clearing browser state returns to login', async ({ page }) => {
@@ -33,7 +61,7 @@ test.describe('Roym Hub', () => {
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
 
-    // A plain reload keeps the session (the cookie rides along).
+    // A plain reload keeps the session (sessionStorage bearer token rides along).
     await page.reload();
     await page.waitForLoadState('networkidle');
     await expect(page.locator('.session-bar')).toContainText('did:key:', { timeout: 15_000 });
@@ -41,7 +69,6 @@ test.describe('Roym Hub', () => {
     // Clearing the session token and the stored key drops the session, so
     // the Hub is back to a clean "Sign in" screen -- an ordinary state, not
     // an error.
-    await page.context().clearCookies();
     await page.evaluate(() => {
       sessionStorage.clear();
       indexedDB.deleteDatabase('roym-hub-session');
@@ -76,8 +103,13 @@ test.describe('Roym Hub', () => {
 
   test('4. card safety: a malicious payload yields no script, no request, literal text', async ({ page }) => {
     const externalRequests: string[] = [];
+    const hubOrigin = new URL(HUB_URL).origin;
+    const authOrigin = 'http://auth.localhost:7660';
     page.on('request', req => {
-      if (!req.url().includes(':7660')) externalRequests.push(req.url());
+      const url = req.url();
+      if (!url.startsWith(hubOrigin) && !url.startsWith(authOrigin)) {
+        externalRequests.push(url);
+      }
     });
     const consoleErrors: string[] = [];
     page.on('console', msg => {

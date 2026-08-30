@@ -43,7 +43,8 @@ impl Response {
     }
 
     pub fn method_not_found(method: &str) -> Self {
-        Self::err(-32601, format!("Method '{method}' not found"))
+        let safe_method = truncate_method(method);
+        Self::err(-32601, format!("Method '{safe_method}' not found"))
     }
 
     pub fn invalid_params(message: impl Into<String>) -> Self {
@@ -52,5 +53,17 @@ impl Response {
 
     pub fn internal_error(message: impl Into<String>) -> Self {
         Self::err(-32603, message)
+    }
+}
+
+pub fn truncate_method(method: &str) -> String {
+    if method.len() > 128 {
+        let mut end = 125;
+        while !method.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        format!("{}...", &method[..end])
+    } else {
+        method.to_string()
     }
 }

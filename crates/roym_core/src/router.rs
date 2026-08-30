@@ -77,4 +77,44 @@ mod tests {
         let expected: HashSet<&'static str> = SIBLINGS.iter().map(|s| s.name).collect();
         assert_eq!(reachable, expected);
     }
+
+    #[test]
+    fn manifest_depends_on_equals_siblings() {
+        let manifest_str = include_str!("../app/roym.toml");
+        let manifest: toml::Value = toml::from_str(manifest_str).expect("parse roym.toml");
+        let web_deps: HashSet<&str> = manifest["services"]["web"]["depends_on"]
+            .as_array()
+            .expect("web depends_on is array")
+            .iter()
+            .map(|v| v.as_str().expect("dep is string"))
+            .collect();
+        let expected: HashSet<&str> = SIBLINGS.iter().map(|s| s.name).collect();
+        assert_eq!(web_deps, expected);
+    }
+
+    #[test]
+    fn only_web_declares_http_routes_and_assets_in_manifest() {
+        let manifest_str = include_str!("../app/roym.toml");
+        let manifest: toml::Value = toml::from_str(manifest_str).expect("parse roym.toml");
+        let services_table = manifest["services"].as_table().expect("services table");
+
+        assert!(services_table["web"].get("assets").is_some());
+        assert!(services_table["web"].get("custom_config").is_some());
+
+        for (name, service_val) in services_table {
+            if name != "web" {
+                assert!(
+                    service_val.get("assets").is_none(),
+                    "Service '{name}' must not declare assets"
+                );
+                if let Some(custom_config) = service_val.get("custom_config") {
+                    let cfg_str = custom_config.as_str().unwrap_or_default();
+                    assert!(
+                        !cfg_str.contains("http_routes"),
+                        "Service '{name}' must not declare http_routes"
+                    );
+                }
+            }
+        }
+    }
 }

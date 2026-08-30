@@ -21,6 +21,18 @@ module.exports = {
         selector: "CallExpression[callee.property.name='insertAdjacentHTML']",
         message: 'insertAdjacentHTML is forbidden for security. Use textContent or DOM construction.',
       },
+      {
+        selector: "CallExpression[callee.property.name='write']",
+        message: 'document.write is forbidden for security. Use DOM construction.',
+      },
+      {
+        selector: "CallExpression[callee.property.name='writeln']",
+        message: 'document.writeln is forbidden for security. Use DOM construction.',
+      },
+      {
+        selector: "CallExpression[callee.property.name='createContextualFragment']",
+        message: 'createContextualFragment is forbidden for security. Use DOM construction.',
+      },
     ],
   },
 };

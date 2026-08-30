@@ -333,19 +333,27 @@ async fn http_interface_endpoints_and_unknown_method() {
         resolver,
     ));
 
-    // Methods endpoint
+    // Methods endpoint (with CORS origin)
     let req = HttpRequest {
         method: "GET".to_string(),
         path: "/_syneroym/session/methods".to_string(),
         query: "".to_string(),
         route: "/_syneroym/session/methods".to_string(),
         path_params: vec![],
-        headers: vec![],
+        headers: vec![("origin".to_string(), "http://web.localhost:7960".to_string())],
         body: vec![],
         caller: None,
     };
     let resp = service.handle_request(req, None).await.unwrap();
     assert_eq!(resp.status, 200);
+
+    // CORS origin echo on methods endpoint (Finding 12)
+    let allow_origin =
+        resp.headers.iter().find(|(k, _)| k == "access-control-allow-origin").unwrap();
+    assert_eq!(allow_origin.1, "http://web.localhost:7960");
+    let allow_cred =
+        resp.headers.iter().find(|(k, _)| k == "access-control-allow-credentials").unwrap();
+    assert_eq!(allow_cred.1, "true");
 
     // Unknown method -> 400 (Seam 1)
     let bad_login_req = HttpRequest {
@@ -375,30 +383,19 @@ async fn http_interface_endpoints_and_unknown_method() {
     let missing_resp = service.handle_request(missing_method_req, None).await.unwrap();
     assert_eq!(missing_resp.status, 400);
 
-    // Local login via HTTP
+    // Local login via HTTP (same-machine CLI caller, no Origin header)
     let local_login_req = HttpRequest {
         method: "POST".to_string(),
         path: "/_syneroym/session/login".to_string(),
         query: "".to_string(),
         route: "/_syneroym/session/login".to_string(),
         path_params: vec![],
-        headers: vec![
-            ("content-type".to_string(), "application/json".to_string()),
-            ("origin".to_string(), "http://web.localhost:7960".to_string()),
-        ],
+        headers: vec![("content-type".to_string(), "application/json".to_string())],
         body: serde_json::to_vec(&json!({"method": "local", "identity": "alice"})).unwrap(),
         caller: None,
     };
     let login_resp = service.handle_request(local_login_req, None).await.unwrap();
     assert_eq!(login_resp.status, 200);
-
-    // CORS origin echo (Finding 12)
-    let allow_origin =
-        login_resp.headers.iter().find(|(k, _)| k == "access-control-allow-origin").unwrap();
-    assert_eq!(allow_origin.1, "http://web.localhost:7960");
-    let allow_cred =
-        login_resp.headers.iter().find(|(k, _)| k == "access-control-allow-credentials").unwrap();
-    assert_eq!(allow_cred.1, "true");
 
     let cookie_header = login_resp.headers.iter().find(|(k, _)| k == "set-cookie").unwrap();
     assert!(cookie_header.1.contains("syneroym_session="));
@@ -481,4 +478,149 @@ async fn http_interface_endpoints_and_unknown_method() {
     };
     let after_resp = service.handle_request(whoami_after_logout, None).await.unwrap();
     assert_eq!(after_resp.status, 401);
+}
+
+#[tokio::test]
+async fn challenge_issued_for_one_master_cannot_be_used_with_delegation_for_another() {
+    let auth_id = Identity::generate().unwrap();
+    let node_id = Identity::generate().unwrap();
+    let node_did = substrate::derive_did_key(&node_id.public_key());
+    let master_id_1 = Identity::generate().unwrap();
+    let master_did_1 = substrate::derive_did_key(&master_id_1.public_key());
+    let master_id_2 = Identity::generate().unwrap();
+    let temp_id = Identity::generate().unwrap();
+    let temp_did = substrate::derive_did_key(&temp_id.public_key());
+
+    let resolver = Arc::new(MockAnchorResolver { resolvable: true, revoked: vec![] });
+    let service = AuthService::new(auth_id, node_did.clone(), 3600, 60, None, resolver);
+
+    // 1. Issue challenge specifically naming master 1
+    let challenge = service.issue_challenge(Some(&master_did_1));
+    let assertion = challenge.assertion.expect("assertion present");
+
+    // 2. Browser signs assertion for master 1
+    let signature = z32::encode(&temp_id.sign(assertion.as_bytes()).to_bytes());
+
+    // 3. But login presents delegation from master 2
+    let delegation_from_master_2 = DelegationCertificate::issue(
+        &master_id_2,
+        temp_id.public_key(),
+        7200,
+        SCOPE_SESSION_AUTH.to_string(),
+    )
+    .unwrap();
+
+    // 4. Verification fails because auth service recomputes assertion from master
+    //    2's DID
+    let err = service
+        .login_delegated_key(&DelegatedKeyLoginParams {
+            temp_did,
+            delegation: delegation_from_master_2,
+            nonce: challenge.nonce,
+            signature,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.0, 401);
+    assert_eq!(err.1, "invalid signature");
+}
+
+#[tokio::test]
+async fn local_login_refused_when_origin_header_is_present() {
+    let auth_id = Identity::generate().unwrap();
+    let node_id = Identity::generate().unwrap();
+    let node_did = substrate::derive_did_key(&node_id.public_key());
+    let temp = tempdir().unwrap();
+    let alice_id = Identity::generate().unwrap();
+    fs::write(temp.path().join("alice.key"), alice_id.to_bytes()).unwrap();
+
+    let resolver = Arc::new(MockAnchorResolver { resolvable: true, revoked: vec![] });
+    let service =
+        AuthService::new(auth_id, node_did, 3600, 60, Some(temp.path().to_path_buf()), resolver);
+
+    // Request with Origin header must be refused with 403
+    let req = HttpRequest {
+        method: "POST".to_string(),
+        path: "/_syneroym/session/login".to_string(),
+        query: "".to_string(),
+        route: "/_syneroym/session/login".to_string(),
+        path_params: vec![],
+        headers: vec![
+            ("content-type".to_string(), "application/json".to_string()),
+            ("origin".to_string(), "http://evil.localhost:7660".to_string()),
+        ],
+        body: serde_json::to_vec(&serde_json::json!({
+            "method": "local",
+            "identity": "alice"
+        }))
+        .unwrap(),
+        caller: None,
+    };
+    let resp = service.handle_request(req, None).await.unwrap();
+    assert_eq!(resp.status, 403);
+
+    // Same request without Origin header succeeds
+    let cli_req = HttpRequest {
+        method: "POST".to_string(),
+        path: "/_syneroym/session/login".to_string(),
+        query: "".to_string(),
+        route: "/_syneroym/session/login".to_string(),
+        path_params: vec![],
+        headers: vec![("content-type".to_string(), "application/json".to_string())],
+        body: serde_json::to_vec(&serde_json::json!({
+            "method": "local",
+            "identity": "alice"
+        }))
+        .unwrap(),
+        caller: None,
+    };
+    let cli_resp = service.handle_request(cli_req, None).await.unwrap();
+    assert_eq!(cli_resp.status, 200);
+}
+
+#[tokio::test]
+async fn configured_allowed_origins_are_reflected_in_cors() {
+    let auth_id = Identity::generate().unwrap();
+    let node_id = Identity::generate().unwrap();
+    let node_did = substrate::derive_did_key(&node_id.public_key());
+    let resolver = Arc::new(MockAnchorResolver { resolvable: true, revoked: vec![] });
+    let service = AuthService::new(auth_id, node_did, 3600, 60, None, resolver)
+        .with_allowed_origins(vec!["https://hub.example.com".to_string()]);
+
+    let req_allowed = HttpRequest {
+        method: "OPTIONS".to_string(),
+        path: "/_syneroym/session/challenge".to_string(),
+        query: "".to_string(),
+        route: "/_syneroym/session/challenge".to_string(),
+        path_params: vec![],
+        headers: vec![("origin".to_string(), "https://hub.example.com".to_string())],
+        body: vec![],
+        caller: None,
+    };
+    let resp_allowed = service.handle_request(req_allowed, None).await.unwrap();
+    assert_eq!(resp_allowed.status, 204);
+    assert_eq!(
+        resp_allowed
+            .headers
+            .iter()
+            .find(|(k, _)| k == "access-control-allow-origin")
+            .map(|(_, v)| v.as_str()),
+        Some("https://hub.example.com")
+    );
+
+    let req_disallowed = HttpRequest {
+        method: "OPTIONS".to_string(),
+        path: "/_syneroym/session/challenge".to_string(),
+        query: "".to_string(),
+        route: "/_syneroym/session/challenge".to_string(),
+        path_params: vec![],
+        headers: vec![("origin".to_string(), "https://evil.com".to_string())],
+        body: vec![],
+        caller: None,
+    };
+    let resp_disallowed = service.handle_request(req_disallowed, None).await.unwrap();
+    assert_eq!(resp_disallowed.status, 204);
+    assert!(
+        resp_disallowed.headers.iter().find(|(k, _)| k == "access-control-allow-origin").is_none()
+    );
 }

@@ -1229,6 +1229,13 @@ pub struct AuthRole {
     /// When unset, the `local` method is disabled.
     #[serde(default)]
     pub person_identities_dir: Option<PathBuf>,
+    /// Additional origins permitted for CORS requests. Localhost patterns
+    /// (`localhost`, `127.0.0.1`, `*.localhost`) are always allowed.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+    /// Whether to mark session cookies with `; Secure`.
+    #[serde(default)]
+    pub secure_cookies: bool,
 }
 
 impl Default for AuthRole {
@@ -1238,6 +1245,8 @@ impl Default for AuthRole {
             nonce_ttl_secs: default_auth_nonce_ttl_secs(),
             key_path: None,
             person_identities_dir: None,
+            allowed_origins: Vec::new(),
+            secure_cookies: false,
         }
     }
 }

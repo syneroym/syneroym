@@ -118,6 +118,8 @@ pub struct AuthService {
     logged_out_tokens: DashMap<String, u64>,
     person_identities_dir: Option<PathBuf>,
     anchor_resolver: Arc<dyn MasterAnchorResolver>,
+    allowed_origins: Vec<String>,
+    secure_cookies: bool,
 }
 
 impl AuthService {
@@ -140,7 +142,21 @@ impl AuthService {
             logged_out_tokens: DashMap::new(),
             person_identities_dir,
             anchor_resolver,
+            allowed_origins: Vec::new(),
+            secure_cookies: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_allowed_origins(mut self, origins: Vec<String>) -> Self {
+        self.allowed_origins = origins;
+        self
+    }
+
+    #[must_use]
+    pub fn with_secure_cookies(mut self, secure: bool) -> Self {
+        self.secure_cookies = secure;
+        self
     }
 
     #[must_use]
@@ -497,8 +513,11 @@ impl AuthService {
         None
     }
 
-    fn is_allowed_origin(origin: &str) -> bool {
+    fn is_allowed_origin(&self, origin: &str) -> bool {
         let trimmed = origin.trim();
+        if self.allowed_origins.iter().any(|allowed| allowed == trimmed) {
+            return true;
+        }
         trimmed.starts_with("http://localhost:")
             || trimmed.starts_with("https://localhost:")
             || trimmed == "http://localhost"
@@ -511,7 +530,7 @@ impl AuthService {
                 && (trimmed.contains(".localhost:") || trimmed.ends_with(".localhost"))
     }
 
-    fn cors_headers(origin: Option<&str>) -> Vec<(String, String)> {
+    fn cors_headers(&self, origin: Option<&str>) -> Vec<(String, String)> {
         let mut headers = vec![
             ("access-control-allow-methods".to_string(), "GET, POST, OPTIONS".to_string()),
             (
@@ -520,13 +539,17 @@ impl AuthService {
             ),
         ];
         if let Some(orig) = origin
-            && Self::is_allowed_origin(orig)
+            && self.is_allowed_origin(orig)
         {
             headers.push(("access-control-allow-origin".to_string(), orig.to_string()));
             headers.push(("access-control-allow-credentials".to_string(), "true".to_string()));
             headers.push(("vary".to_string(), "Origin".to_string()));
         }
         headers
+    }
+
+    fn cookie_attribute(&self) -> &'static str {
+        if self.secure_cookies { "; Secure" } else { "" }
     }
 }
 
@@ -552,7 +575,7 @@ impl NativeHttpService for AuthService {
             .find(|(k, _)| k.eq_ignore_ascii_case("origin"))
             .map(|(_, v)| v.as_str());
 
-        let mut headers = Self::cors_headers(origin);
+        let mut headers = self.cors_headers(origin);
         headers.push(("content-type".to_string(), "application/json".to_string()));
 
         if method == "OPTIONS" {
@@ -622,6 +645,13 @@ impl NativeHttpService for AuthService {
                     .await
                 }
                 AUTH_METHOD_LOCAL => {
+                    if origin.is_some() {
+                        let body = serde_json::to_vec(
+                            &serde_json::json!({"error": "local login method is not allowed from a browser origin"}),
+                        )
+                        .map_err(|e| e.to_string())?;
+                        return Ok(HttpResponse { status: 403, headers, body });
+                    }
                     let Some(identity) = req.identity else {
                         let body = serde_json::to_vec(
                             &serde_json::json!({"error": "missing identity parameter for local login"}),
@@ -645,8 +675,11 @@ impl NativeHttpService for AuthService {
                     let now = now_secs();
                     let remaining_ttl = grant.expires_at_secs.saturating_sub(now);
                     let cookie = format!(
-                        "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax",
-                        SESSION_COOKIE_NAME, grant.token, remaining_ttl
+                        "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax{}",
+                        SESSION_COOKIE_NAME,
+                        grant.token,
+                        remaining_ttl,
+                        self.cookie_attribute()
                     );
                     headers.push(("set-cookie".to_string(), cookie));
                     let body = serde_json::to_vec(&grant).map_err(|e| e.to_string())?;
@@ -685,8 +718,11 @@ impl NativeHttpService for AuthService {
             if let Some(token) = self.extract_token(&request) {
                 self.record_logout(&token);
             }
-            let cookie =
-                format!("{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax", SESSION_COOKIE_NAME);
+            let cookie = format!(
+                "{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax{}",
+                SESSION_COOKIE_NAME,
+                self.cookie_attribute()
+            );
             headers.push(("set-cookie".to_string(), cookie));
             let body = serde_json::to_vec(&serde_json::json!({"status": "ended"}))
                 .map_err(|e| e.to_string())?;
@@ -706,8 +742,11 @@ impl NativeHttpService for AuthService {
                     let now = now_secs();
                     let remaining_ttl = grant.expires_at_secs.saturating_sub(now);
                     let cookie = format!(
-                        "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax",
-                        SESSION_COOKIE_NAME, grant.token, remaining_ttl
+                        "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax{}",
+                        SESSION_COOKIE_NAME,
+                        grant.token,
+                        remaining_ttl,
+                        self.cookie_attribute()
                     );
                     headers.push(("set-cookie".to_string(), cookie));
                     let body = serde_json::to_vec(&grant).map_err(|e| e.to_string())?;

@@ -964,3 +964,60 @@ async fn scenario_10_directory_service_call_target() {
     let wasm_foreign_resp: Response = serde_json::from_str(&wasm_foreign_res).unwrap();
     assert_eq!(wasm_foreign_resp.result, Some(json!({ "service": "directory" })));
 }
+
+struct Mutant<'a, D>(&'a D);
+
+impl<D: Driver> Driver for Mutant<'_, D> {
+    async fn invoke_web(&self, request: &str) -> Result<String, String> {
+        self.0.invoke_web(request).await.map(|s| s.replace("\"result\"", "\"mutated_result\""))
+    }
+    async fn status(&self, service_name: &str) -> Result<String, String> {
+        self.0
+            .status(service_name)
+            .await
+            .map(|s| s.replace("\"schema_version\":1", "\"schema_version\":2"))
+    }
+}
+
+/// A passing parity comparison is not evidence of anything unless the
+/// comparison is known to detect a real divergence.
+#[tokio::test]
+async fn the_parity_comparison_detects_a_divergence() {
+    let h = harness().await;
+    // Bound siblings in the test topology:
+    let bound_methods = [
+        "profile.ping",
+        "listing.ping",
+        "request.ping",
+        "quote.ping",
+        "agreement.ping",
+        "receipt.ping",
+        "directory.ping",
+    ];
+    let mutant = Mutant(&h.native);
+
+    for method in bound_methods {
+        let req = json!({
+            "method": method,
+            "params": {}
+        })
+        .to_string();
+        let wasm_res = h.wasm.invoke_web(&req).await.unwrap();
+        let mutant_res = mutant.invoke_web(&req).await.unwrap();
+        assert_ne!(wasm_res, mutant_res, "invoke_web mutant divergence failed for {method}");
+    }
+
+    let all_services = [
+        services::WEB.name,
+        services::PROFILE.name,
+        services::CONVERSATION.name,
+        services::CATALOG.name,
+        services::TRANSACTION.name,
+        services::DIRECTORY.name,
+    ];
+    for svc_name in all_services {
+        let wasm_status = h.wasm.status(svc_name).await.unwrap();
+        let mutant_status = mutant.status(svc_name).await.unwrap();
+        assert_ne!(wasm_status, mutant_status, "status mutant divergence failed for {svc_name}");
+    }
+}

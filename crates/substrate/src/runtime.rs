@@ -1037,14 +1037,18 @@ async fn init_auth_service(
         config.substrate.registry_url.clone(),
     ));
 
-    let auth_service = Arc::new(AuthService::new(
-        auth_identity,
-        node_service_id.to_string(),
-        auth_cfg.session_ttl_secs,
-        auth_cfg.nonce_ttl_secs,
-        auth_cfg.person_identities_dir.clone(),
-        anchor_resolver,
-    ));
+    let auth_service = Arc::new(
+        AuthService::new(
+            auth_identity,
+            node_service_id.to_string(),
+            auth_cfg.session_ttl_secs,
+            auth_cfg.nonce_ttl_secs,
+            auth_cfg.person_identities_dir.clone(),
+            anchor_resolver,
+        )
+        .with_allowed_origins(auth_cfg.allowed_origins.clone())
+        .with_secure_cookies(auth_cfg.secure_cookies),
+    );
 
     let auth_did = auth_service.auth_did().to_string();
 
@@ -1472,6 +1476,11 @@ const ROYM_APP_INSTANCE: &str = "roym";
 /// sibling `TopologyEntry` member share. Shaped as a `did:key:` string so
 /// it satisfies `ServiceId`'s invariant; it is never resolved as a real
 /// DID (native dispatch is in-process, no handshake), only matched.
+///
+/// An inbound remote stream naming this id fails the E2E handshake because
+/// no ed25519 private key exists for `did:key:roym-*`, and native services
+/// are registered only in the local registry (`EndpointRegistry::register`),
+/// never published to the external community registry.
 fn roym_dispatch_id(name: &str) -> String {
     format!("did:key:roym-{name}")
 }
@@ -1488,7 +1497,7 @@ fn roym_http_routes() -> Vec<syneroym_core::http_routes::HttpRoute> {
             collection: None,
             topic: None,
             protocol: None,
-            public: false,
+            public: true,
         },
         HttpRoute {
             method: "GET".into(),
@@ -1508,7 +1517,7 @@ fn roym_http_routes() -> Vec<syneroym_core::http_routes::HttpRoute> {
             collection: None,
             topic: None,
             protocol: None,
-            public: false,
+            public: true,
         },
     ]
 }
@@ -1733,14 +1742,14 @@ async fn init_roym(
     endpoint_registry
         .register(
             web_id.clone(),
-            "http-native".to_string(),
+            syneroym_core::local_registry::HTTP_NATIVE_INTERFACE.to_string(),
             SubstrateEndpoint::NativeHostChannel { service_id: web_id.clone() },
         )
         .await?;
     endpoint_registry
         .register(
             node_service_id.to_string(),
-            "http-native".to_string(),
+            syneroym_core::local_registry::HTTP_NATIVE_INTERFACE.to_string(),
             SubstrateEndpoint::NativeHostChannel { service_id: web_id.clone() },
         )
         .await?;
@@ -1781,9 +1790,9 @@ async fn init_roym(
         match fs::read(path) {
             Ok(archive) => {
                 // A DEK load failure must not silently downgrade to
-                // unpacking the bundle unencrypted -- refuse the whole
-                // registration instead, the same way an unpack or
-                // manifest-store failure below does.
+                // unpacking the bundle unencrypted -- skip bundle
+                // registration and log a warning instead, the same way
+                // an unpack or manifest-store failure below does.
                 match shared.storage_provider.load_service_dek(&web_id, &shared.key_store).await {
                     Ok(dek) => {
                         let mut written = BTreeSet::new();

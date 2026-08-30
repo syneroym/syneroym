@@ -9,7 +9,10 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
   title.textContent = "Agreement Receipt";
   div.appendChild(title);
   const p = document.createElement("p");
-  p.textContent = data?.agreement_id ? `Agreement ID: ${data.agreement_id}` : "Agreement Receipt v1";
+  p.textContent =
+    data?.agreement_id !== undefined && data?.agreement_id !== null && data?.agreement_id !== ""
+      ? `Agreement ID: ${data.agreement_id}`
+      : "Agreement Receipt v1";
   div.appendChild(p);
   return div;
 }

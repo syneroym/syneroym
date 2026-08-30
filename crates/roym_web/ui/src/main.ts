@@ -6,6 +6,7 @@ import {
   loginWithBundle,
   loginWithStoredKey,
   logout,
+  storedToken,
   whoami,
   type SessionKeyBundle,
 } from "./session/login";
@@ -13,12 +14,18 @@ import {
 declare global {
   interface Window {
     RoymRegistry?: { renderCard: typeof renderCard };
+    RoymSession?: {
+      storedToken: typeof storedToken;
+      authHeaders: typeof authHeaders;
+      whoami: typeof whoami;
+    };
   }
 }
 
 // Test hook: lets the e2e suite call the real card renderer directly with a
 // crafted fixture, instead of only ever seeing the sample gallery below.
 window.RoymRegistry = { renderCard };
+window.RoymSession = { storedToken, authHeaders, whoami };
 
 async function main() {
   const app = document.getElementById("app");

@@ -9,7 +9,10 @@ export function renderRequest(data?: RequestData): HTMLElement {
   title.textContent = "Request Card";
   div.appendChild(title);
   const p = document.createElement("p");
-  p.textContent = data?.summary ? `Summary: ${data.summary}` : "Request Card v1";
+  p.textContent =
+    data?.summary !== undefined && data?.summary !== null && data?.summary !== ""
+      ? `Summary: ${data.summary}`
+      : "Request Card v1";
   div.appendChild(p);
   return div;
 }

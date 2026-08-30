@@ -1,5 +1,5 @@
 export interface QuoteData {
-  price?: string;
+  price?: string | number;
   terms?: string;
 }
 
@@ -10,7 +10,11 @@ export function renderQuote(data?: QuoteData): HTMLElement {
   title.textContent = "Quote Card";
   div.appendChild(title);
   const p = document.createElement("p");
-  p.textContent = data?.price ? `Price: ${data.price}` : "Quote Card v1";
+  if (data?.price !== undefined && data?.price !== null && data?.price !== "") {
+    p.textContent = data.terms ? `Price: ${data.price} (${data.terms})` : `Price: ${data.price}`;
+  } else {
+    p.textContent = "Quote Card v1";
+  }
   div.appendChild(p);
   return div;
 }

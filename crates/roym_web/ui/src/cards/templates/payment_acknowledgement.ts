@@ -9,7 +9,10 @@ export function renderPaymentAcknowledgement(data?: PaymentAcknowledgementData):
   title.textContent = "Payment Acknowledgement";
   div.appendChild(title);
   const p = document.createElement("p");
-  p.textContent = data?.receipt_id ? `Receipt ID: ${data.receipt_id}` : "Payment Acknowledgement v1";
+  p.textContent =
+    data?.receipt_id !== undefined && data?.receipt_id !== null && data?.receipt_id !== ""
+      ? `Receipt ID: ${data.receipt_id}`
+      : "Payment Acknowledgement v1";
   div.appendChild(p);
   return div;
 }
