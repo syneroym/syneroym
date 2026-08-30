@@ -4,12 +4,20 @@
 
 use bindings::exports::{
     syneroym::http::{
-        incoming_handler::Guest as IncomingHandlerGuest,
-        websocket_handler::Guest as WebSocketHandlerGuest,
+        incoming_handler::{
+            CallerAuth as WitCallerAuth, CallerIdentity as WitCallerIdentity,
+            Guest as IncomingHandlerGuest, HttpRequest as WitHttpRequest,
+            HttpResponse as WitHttpResponse,
+        },
+        websocket_handler::{FrameKind as WitFrameKind, Guest as WebSocketHandlerGuest},
     },
     syneroym_roym::web::api::Guest as ApiGuest,
 };
-use syneroym_app_host::guest::{GuestHost, block_on};
+use syneroym_app_host::{
+    guest::{GuestHost, block_on},
+    types::http::{CallerAuth, CallerIdentity, FrameKind, HttpRequest, HttpResponse},
+};
+use syneroym_roym_core::dual_build;
 
 #[allow(unsafe_code)]
 mod bindings {
@@ -45,11 +53,7 @@ struct Web;
 
 impl ApiGuest for Web {
     fn invoke(request: String) -> Result<String, String> {
-        block_on(syneroym_roym_core::dual_build::handle_invoke(
-            &GuestHost,
-            &request,
-            crate::app::invoke,
-        ))
+        block_on(dual_build::handle_invoke(&GuestHost, &request, crate::app::invoke))
     }
 
     fn status() -> Result<String, String> {
@@ -57,36 +61,20 @@ impl ApiGuest for Web {
     }
 }
 
-fn caller_auth_in(
-    auth: bindings::exports::syneroym::http::incoming_handler::CallerAuth,
-) -> syneroym_app_host::types::http::CallerAuth {
+fn caller_auth_in(auth: WitCallerAuth) -> CallerAuth {
     match auth {
-        bindings::exports::syneroym::http::incoming_handler::CallerAuth::Delegated => {
-            syneroym_app_host::types::http::CallerAuth::Delegated
-        }
-        bindings::exports::syneroym::http::incoming_handler::CallerAuth::Ucan => {
-            syneroym_app_host::types::http::CallerAuth::Ucan
-        }
-        bindings::exports::syneroym::http::incoming_handler::CallerAuth::SelfAsserted => {
-            syneroym_app_host::types::http::CallerAuth::SelfAsserted
-        }
+        WitCallerAuth::Delegated => CallerAuth::Delegated,
+        WitCallerAuth::Ucan => CallerAuth::Ucan,
+        WitCallerAuth::SelfAsserted => CallerAuth::SelfAsserted,
     }
 }
 
-fn caller_identity_in(
-    id: bindings::exports::syneroym::http::incoming_handler::CallerIdentity,
-) -> syneroym_app_host::types::http::CallerIdentity {
-    syneroym_app_host::types::http::CallerIdentity {
-        did: id.did,
-        auth: caller_auth_in(id.auth),
-        app_instance: id.app_instance,
-    }
+fn caller_identity_in(id: WitCallerIdentity) -> CallerIdentity {
+    CallerIdentity { did: id.did, auth: caller_auth_in(id.auth), app_instance: id.app_instance }
 }
 
-fn http_request_in(
-    req: bindings::exports::syneroym::http::incoming_handler::HttpRequest,
-) -> syneroym_app_host::types::http::HttpRequest {
-    syneroym_app_host::types::http::HttpRequest {
+fn http_request_in(req: WitHttpRequest) -> HttpRequest {
+    HttpRequest {
         method: req.method,
         path: req.path,
         query: req.query,
@@ -98,33 +86,19 @@ fn http_request_in(
     }
 }
 
-fn http_response_out(
-    resp: syneroym_app_host::types::http::HttpResponse,
-) -> bindings::exports::syneroym::http::incoming_handler::HttpResponse {
-    bindings::exports::syneroym::http::incoming_handler::HttpResponse {
-        status: resp.status,
-        headers: resp.headers,
-        body: resp.body,
-    }
+fn http_response_out(resp: HttpResponse) -> WitHttpResponse {
+    WitHttpResponse { status: resp.status, headers: resp.headers, body: resp.body }
 }
 
-fn frame_kind_in(
-    kind: bindings::exports::syneroym::http::websocket_handler::FrameKind,
-) -> syneroym_app_host::types::http::FrameKind {
+fn frame_kind_in(kind: WitFrameKind) -> FrameKind {
     match kind {
-        bindings::exports::syneroym::http::websocket_handler::FrameKind::Text => {
-            syneroym_app_host::types::http::FrameKind::Text
-        }
-        bindings::exports::syneroym::http::websocket_handler::FrameKind::Binary => {
-            syneroym_app_host::types::http::FrameKind::Binary
-        }
+        WitFrameKind::Text => FrameKind::Text,
+        WitFrameKind::Binary => FrameKind::Binary,
     }
 }
 
 impl IncomingHandlerGuest for Web {
-    fn handle_request(
-        request: bindings::exports::syneroym::http::incoming_handler::HttpRequest,
-    ) -> Result<bindings::exports::syneroym::http::incoming_handler::HttpResponse, String> {
+    fn handle_request(request: WitHttpRequest) -> Result<WitHttpResponse, String> {
         let out = block_on(crate::app::handle_http(&GuestHost, http_request_in(request)))?;
         Ok(http_response_out(out))
     }
@@ -135,11 +109,7 @@ impl WebSocketHandlerGuest for Web {
         block_on(crate::app::on_ws_open(&GuestHost, conn));
     }
 
-    fn on_message(
-        conn: String,
-        frame: Vec<u8>,
-        kind: bindings::exports::syneroym::http::websocket_handler::FrameKind,
-    ) {
+    fn on_message(conn: String, frame: Vec<u8>, kind: WitFrameKind) {
         block_on(crate::app::on_ws_message(&GuestHost, conn, frame, frame_kind_in(kind)));
     }
 

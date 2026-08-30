@@ -3,6 +3,7 @@
 
 use bindings::exports::syneroym_roym::directory::api::Guest as ApiGuest;
 use syneroym_app_host::guest::{GuestHost, block_on};
+use syneroym_roym_core::dual_build;
 
 #[allow(unsafe_code)]
 mod bindings {
@@ -37,11 +38,7 @@ struct Directory;
 
 impl ApiGuest for Directory {
     fn invoke(request: String) -> Result<String, String> {
-        block_on(syneroym_roym_core::dual_build::handle_invoke(
-            &GuestHost,
-            &request,
-            crate::app::invoke,
-        ))
+        block_on(dual_build::handle_invoke(&GuestHost, &request, crate::app::invoke))
     }
 
     fn status() -> Result<String, String> {
