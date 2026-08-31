@@ -14,7 +14,7 @@ export default defineConfig({
   workers: 1, // Running sequentially to avoid port conflicts with the substrate daemon
   globalTimeout: 300_000,
   timeout: 60_000,
-  reporter: 'html',
+  reporter: [['list'], ['html']],
   globalSetup: require.resolve('./global-setup.ts'),
   globalTeardown: require.resolve('./global-teardown.ts'),
   use: {

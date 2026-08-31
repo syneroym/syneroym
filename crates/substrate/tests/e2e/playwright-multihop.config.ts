@@ -8,7 +8,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: 1, // Running sequentially to avoid port conflicts with the substrate deamons
-  reporter: 'html',
+  reporter: [['list'], ['html']],
   globalSetup: require.resolve('./global-setup-multihop.ts'),
   globalTeardown: require.resolve('./global-teardown-multihop.ts'),
   use: {
