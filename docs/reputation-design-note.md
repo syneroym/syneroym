@@ -313,6 +313,31 @@ The fundamental mechanism is therefore:
 
 > **Commit → Randomly challenge → Selectively disclose → Verify.**
 
+### Maintaining the Reputation History
+
+Reputation history is naturally append-only: completed interactions and their evaluations are added over time and should not be modified or removed from an existing committed history.
+
+An append-oriented authenticated structure such as a **Merkle Mountain Range (MMR)** is well suited to this purpose.
+
+A participant can maintain a compact current commitment to an arbitrarily large history:
+
+```text id="x6h2za"
+T1 → T2 → T3 → ... → T100000 → ...
+                 |
+                 v
+          MMR commitment
+```
+
+Each new record extends the history and produces a new commitment that is cryptographically linked to the previous one. Earlier committed history therefore cannot be silently rewritten without changing subsequent commitments.
+
+The full historical tree does not need to be stored by every participant. Nodes may retain only the portions needed to serve the audits they are willing or required to support, while counterparties and other peers may independently retain historical evidence.
+
+Pruning historical data therefore affects **future auditability**, not the integrity of the commitment itself. A participant that can no longer produce an old record can honestly report that the record is no longer available for audit.
+
+Where long-term auditability is important, historical evidence can be replicated among interested counterparties or other peers. The current commitment can also be independently witnessed or retained by other peers, making rollback to an earlier state detectable.
+
+The objective is not to make every node an archive of every transaction. It is to maintain a **tamper-evident, append-only history whose evidence can be preserved and audited in a distributed manner.**
+
 ---
 
 ## 11. No Trusted Aggregator is Required
