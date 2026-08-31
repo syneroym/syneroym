@@ -6,7 +6,7 @@ use std::{fmt, sync::Arc};
 
 use syneroym_app_host::{
     AppAppConfig, AppBlobReader, AppBlobStore, AppBlobWriter, AppConversation, AppDataLayer,
-    AppMessaging, AppProxy, AppVault, AppWebSocket,
+    AppMessaging, AppProxy, AppSigning, AppVault, AppWebSocket,
     types::{
         app_config::ConfigError,
         blob_store::BlobError,
@@ -21,6 +21,7 @@ use syneroym_app_host::{
         http::FrameKind,
         messaging::MessagingError,
         proxy::{CallOptions, CallTarget, ProxyError},
+        signing::{Principal, RecordDraft, SigningError, SigningIdentity},
         vault::VaultError,
     },
 };
@@ -29,13 +30,16 @@ use syneroym_sandbox_wasm::HostState;
 // Aliased: `data_layer::store`, `blob_store::blob_store`, `messaging::host_api`,
 // `proxy::proxy`, `app_config::app_config`, `vault::vault` each define their own `Host` trait.
 use syneroym_wit_interfaces::conversation_host::syneroym::conversation::conversation::Host as HostConversation;
-use syneroym_wit_interfaces::host::syneroym::{
-    app_config::app_config::Host as HostAppConfig,
-    blob_store::blob_store::{Host as HostBlobStore, HostBlobReader, HostBlobWriter},
-    data_layer::store::Host as HostStore,
-    messaging::host_api::Host as HostMessaging,
-    proxy::proxy::Host as HostProxy,
-    vault::vault::Host as HostVault,
+use syneroym_wit_interfaces::{
+    host::syneroym::{
+        app_config::app_config::Host as HostAppConfig,
+        blob_store::blob_store::{Host as HostBlobStore, HostBlobReader, HostBlobWriter},
+        data_layer::store::Host as HostStore,
+        messaging::host_api::Host as HostMessaging,
+        proxy::proxy::Host as HostProxy,
+        vault::vault::Host as HostVault,
+    },
+    signing_host::syneroym::signing::signing::Host as HostSigning,
 };
 use tokio::sync::{Mutex, OnceCell};
 use wasmtime::component::Resource;
@@ -529,6 +533,31 @@ impl AppVault for NativeAppHost {
     async fn reveal(&self, key: String) -> Result<Vec<u8>, VaultError> {
         let mut state = self.0.state_mutex().await.lock().await;
         HostVault::reveal(&mut *state, key).await.map_err(convert::vault_error_out)
+    }
+}
+
+impl AppSigning for NativeAppHost {
+    async fn sign_record(
+        &self,
+        draft: RecordDraft,
+        as_principal: Principal,
+    ) -> Result<String, SigningError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostSigning::sign_record(
+            &mut *state,
+            convert::draft_out(draft),
+            convert::principal_out(as_principal),
+        )
+        .await
+        .map_err(convert::signing_error_guest)
+    }
+
+    async fn signing_identity(&self) -> Result<SigningIdentity, SigningError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostSigning::identity(&mut *state)
+            .await
+            .map(convert::signing_identity_guest)
+            .map_err(convert::signing_error_guest)
     }
 }
 

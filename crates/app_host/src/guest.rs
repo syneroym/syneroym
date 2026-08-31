@@ -23,12 +23,13 @@ use syneroym_wit_interfaces::{
     http_guest::syneroym::http::{websocket as ws, websocket_types as wst},
     messaging::syneroym::messaging::host_api as msg,
     proxy::syneroym::proxy::proxy as px,
+    signing::syneroym::signing::signing as sgn,
     vault::syneroym::vault::vault as vlt,
 };
 
 use crate::{
     AppAppConfig, AppBlobReader, AppBlobStore, AppBlobWriter, AppConversation, AppDataLayer,
-    AppMessaging, AppProxy, AppVault, AppWebSocket,
+    AppMessaging, AppProxy, AppSigning, AppVault, AppWebSocket,
     types::{
         app_config::ConfigError,
         blob_store::BlobError,
@@ -37,6 +38,7 @@ use crate::{
         http::FrameKind,
         messaging::MessagingError,
         proxy::{CallOptions, CallTarget, ProxyError},
+        signing::{Principal, RecordDraft, SigningError, SigningIdentity},
         vault::VaultError,
     },
 };
@@ -330,6 +332,20 @@ impl AppAppConfig for GuestHost {
 impl AppVault for GuestHost {
     async fn reveal(&self, key: String) -> Result<Vec<u8>, VaultError> {
         vlt::reveal(&key)
+    }
+}
+
+impl AppSigning for GuestHost {
+    async fn sign_record(
+        &self,
+        draft: RecordDraft,
+        as_principal: Principal,
+    ) -> Result<String, SigningError> {
+        sgn::sign_record(&draft, &as_principal)
+    }
+
+    async fn signing_identity(&self) -> Result<SigningIdentity, SigningError> {
+        sgn::identity()
     }
 }
 

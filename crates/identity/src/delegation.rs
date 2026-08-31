@@ -17,6 +17,12 @@ pub const SCOPE_SESSION_AUTH: &str = "session-auth";
 /// A substrate-derived instance key certified by a member master, so the
 /// instance speaks as that member (ADR-0020 §1).
 pub const SCOPE_SERVICE_INSTANCE: &str = "service-instance";
+/// A person's master key delegating to a substrate-derived service signing
+/// key, for signing product records under that person's DID. Deliberately
+/// **not** in `TRANSPORT_SCOPES`: a certificate minted to sign records must
+/// never be replayable onto a connection preamble, and must never stand in
+/// for an ADR-0020 instance certificate.
+pub const SCOPE_RECORD_SIGNING: &str = "record-signing";
 /// Scopes admissible as *transport* identity on an inbound connection: a
 /// human operator's delegated device key and a service instance both route a
 /// connection under a master's identity, and the router cannot tell from the
@@ -449,6 +455,11 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains(SCOPE_ROUTING), "message should name the presented scope");
         assert!(message.contains(SCOPE_SERVICE_INSTANCE), "message should name the accepted scope");
+    }
+
+    #[test]
+    fn record_signing_scope_is_not_in_transport_scopes() {
+        assert!(!TRANSPORT_SCOPES.contains(&SCOPE_RECORD_SIGNING));
     }
 
     #[test]

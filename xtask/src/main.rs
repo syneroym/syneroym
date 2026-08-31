@@ -71,6 +71,7 @@ fn check_roym_deps() -> Result<()> {
     let allowed_target_independent = [
         "syneroym-app-host",
         "syneroym-roym-core",
+        "syneroym-signed-record",
         "serde",
         "serde_json",
         "async-trait",

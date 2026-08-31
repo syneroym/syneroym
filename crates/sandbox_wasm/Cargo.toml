@@ -25,6 +25,7 @@ syneroym-data-blob.workspace = true
 syneroym-fdae.workspace = true
 syneroym-mqtt-broker.workspace = true
 syneroym-chunk-transfer.workspace = true
+syneroym-signed-record.workspace = true
 
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true

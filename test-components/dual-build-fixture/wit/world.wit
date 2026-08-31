@@ -19,6 +19,7 @@ world dual-build-fixture {
     import syneroym:app-config/app-config@0.1.0;
     import syneroym:vault/vault@0.1.0;
     import syneroym:http/websocket@0.1.0;
+    import syneroym:signing/signing@0.1.0;
 
     // Exported, not imported: `guest-api` uses `stream-cursor`/`stream-sink`
     // from `stream-types`, which are guest-implemented, so the world must

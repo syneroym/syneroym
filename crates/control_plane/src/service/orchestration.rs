@@ -2166,6 +2166,7 @@ impl ControlPlaneService {
                 installed_instance_cert.clone(),
             ));
             native_service.set_conversation(self.current_conversation());
+            native_service.set_record_signer_from(self);
             native_dispatch.insert(service_id.clone(), native_service as Arc<dyn NativeService>);
         } else {
             tracing::error!(
@@ -3140,6 +3141,7 @@ impl ControlPlaneService {
                 Some(cert),
             ));
             native_service.set_conversation(self.current_conversation());
+            native_service.set_record_signer_from(self);
             native_dispatch.insert(service_id.clone(), native_service as Arc<dyn NativeService>);
             Ok(())
         } else {
@@ -3772,6 +3774,20 @@ mod tests {
         let dynamic: Arc<dyn ServiceProxy> = proxy.clone();
         let weak: Weak<dyn ServiceProxy> = Arc::downgrade(&dynamic);
         service.service_proxy.set(weak).expect("service_proxy already set");
+    }
+
+    #[test]
+    fn both_synsvcnativeservice_new_call_sites_thread_the_record_signer() {
+        // Code-structure assertion: verify that `set_record_signer_from` is called at
+        // both call sites.
+        let code = include_str!("orchestration.rs");
+        let target = concat!("native_service.", "set_record_signer_from(self)");
+        let count = code.matches(target).count();
+        assert_eq!(
+            count, 2,
+            "SynSvcNativeService::new is called at two orchestration sites (deploy and \
+             renew_cert_impl); both must call set_record_signer_from"
+        );
     }
 
     /// M04A Slice B7b: a caller holding node-wide orchestrator authority on

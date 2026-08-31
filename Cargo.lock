@@ -7536,6 +7536,7 @@ dependencies = [
  "syneroym-rpc",
  "syneroym-sandbox-podman",
  "syneroym-sandbox-wasm",
+ "syneroym-signed-record",
  "syneroym-wit-interfaces",
  "tar",
  "tempfile",
@@ -7701,7 +7702,9 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "syneroym-identity",
+ "syneroym-signed-record",
  "tempfile",
+ "thiserror 2.0.20",
  "tls-parser",
  "tokio",
  "tracing",
@@ -7974,6 +7977,7 @@ dependencies = [
  "serde_json",
  "syneroym-app-host",
  "syneroym-rpc",
+ "syneroym-signed-record",
  "toml 1.1.4+spec-1.1.0",
 ]
 
@@ -8116,6 +8120,7 @@ dependencies = [
  "syneroym-identity",
  "syneroym-mqtt-broker",
  "syneroym-rpc",
+ "syneroym-signed-record",
  "syneroym-wit-interfaces",
  "tempfile",
  "tokio",
@@ -8150,6 +8155,18 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "syneroym-signed-record"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "syneroym-identity",
+ "thiserror 2.0.20",
+ "z32",
 ]
 
 [[package]]
@@ -8237,6 +8254,7 @@ dependencies = [
  "syneroym-sandbox-podman",
  "syneroym-sandbox-wasm",
  "syneroym-sdk",
+ "syneroym-signed-record",
  "syneroym-test-dual-build-fixture",
  "syneroym-ucan",
  "syneroym-wit-interfaces",
@@ -8263,6 +8281,7 @@ dependencies = [
  "syneroym-app-host",
  "syneroym-app-host-native",
  "syneroym-rpc",
+ "syneroym-signed-record",
  "syneroym-wit-interfaces",
  "wit-bindgen",
 ]

@@ -201,6 +201,8 @@ pub struct AppSandboxEngine {
     /// `ConversationService` and this engine are constructed independently
     /// at the composition root and wired to each other afterward.
     pub conversation: OnceLock<Weak<dyn syneroym_rpc::ConversationHost>>,
+    /// The node's record signer (`syneroym:signing`).
+    pub record_signer: OnceLock<Arc<syneroym_core::record_signer::NodeRecordSigner>>,
     /// Live guest-delivery subscriptions, keyed `(service_id,
     /// namespaced_topic)`. Dropping an entry unsubscribes from the broker
     /// (see `SubscriptionHandle::drop`).
@@ -596,6 +598,7 @@ impl AppSandboxEngine {
             self_weak: OnceLock::new(),
             service_proxy: OnceLock::new(),
             conversation: OnceLock::new(),
+            record_signer: OnceLock::new(),
             subscriptions: DashMap::new(),
             endpoint_registry,
             logical_resolver,
@@ -758,6 +761,10 @@ impl AppSandboxEngine {
             HasSelf<HostState>,
         >(&mut linker, |state| state)?;
         conversation::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
+        syneroym_wit_interfaces::signing_host::syneroym::signing::signing::add_to_linker::<
+            _,
+            HasSelf<HostState>,
+        >(&mut linker, |state| state)?;
         Ok(linker)
     }
 
@@ -1301,7 +1308,8 @@ impl AppSandboxEngine {
             self.logical_resolver.clone(),
         )
         .with_conversation(conversation)
-        .with_websocket_senders(self.websocket_senders());
+        .with_websocket_senders(self.websocket_senders())
+        .with_record_signer(self.record_signer.get().cloned());
 
         debug!("created wasi ctx and host state");
 
@@ -3252,6 +3260,7 @@ mod tests {
             messaging_broker: Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
             self_weak: OnceLock::new(),
             service_proxy: OnceLock::new(),
+            record_signer: OnceLock::new(),
             conversation: OnceLock::new(),
             subscriptions: DashMap::new(),
             endpoint_registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
@@ -3400,6 +3409,7 @@ mod tests {
             messaging_broker: Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
             self_weak: OnceLock::new(),
             service_proxy: OnceLock::new(),
+            record_signer: OnceLock::new(),
             conversation: OnceLock::new(),
             subscriptions: DashMap::new(),
             endpoint_registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),

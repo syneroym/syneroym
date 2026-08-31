@@ -9,6 +9,7 @@ pub mod endpoint_publisher;
 pub mod http_routes;
 pub mod local_registry;
 pub mod protocol_utils;
+pub mod record_signer;
 pub mod retry;
 pub mod storage;
 pub mod streaming;

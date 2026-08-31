@@ -12,7 +12,7 @@ use dashmap::DashMap;
 use syneroym_app_host::{ConversationSink, MessageSink, types::messaging::MessagingError};
 use syneroym_app_orchestration::LogicalResolver;
 use syneroym_conversation::ConversationService;
-use syneroym_core::local_registry::EndpointRegistry;
+use syneroym_core::{local_registry::EndpointRegistry, record_signer::NodeRecordSigner};
 use syneroym_data_blob::traits::BlobProvider;
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
@@ -65,6 +65,7 @@ pub struct NativeHostFactory {
     pub(crate) websocket_senders: Arc<WebSocketSenders>,
     fdae_policy: RwLock<Option<Option<Arc<Policy>>>>,
     fdae_policy_generation: AtomicU64,
+    record_signer: OnceLock<Arc<NodeRecordSigner>>,
 }
 
 /// Hand-written, not derived: `StorageProvider` has no `Debug` supertrait,
@@ -110,6 +111,7 @@ impl NativeHostFactory {
             websocket_senders,
             fdae_policy: RwLock::new(None),
             fdae_policy_generation: AtomicU64::new(0),
+            record_signer: OnceLock::new(),
         });
         // `§6.5`: registers itself as this service's conversation
         // notification target, so the delivery worker wakes a natively-
@@ -132,6 +134,10 @@ impl NativeHostFactory {
         self.fdae_policy_generation.fetch_add(1, Ordering::SeqCst);
         let mut guard = self.fdae_policy.write().await;
         *guard = None;
+    }
+
+    pub fn set_record_signer(&self, signer: Arc<NodeRecordSigner>) {
+        let _ = self.record_signer.set(signer);
     }
 
     /// Sets the app's inbound message entry point. Panics if called twice --
@@ -269,6 +275,7 @@ impl NativeHostFactory {
         )
         .with_conversation(Arc::downgrade(&self.conversation) as Weak<dyn ConversationHost>)
         .with_websocket_senders(self.websocket_senders.clone())
+        .with_record_signer(self.record_signer.get().cloned())
     }
 
     /// Private, and deliberately not `pub`: nothing an app or an embedder can

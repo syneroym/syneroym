@@ -33,6 +33,7 @@ use syneroym_conversation::{ConversationConfig, ConversationService};
 use syneroym_core::{
     config::{RetryPolicy, SubstrateConfig},
     local_registry::EndpointRegistry,
+    record_signer::NodeRecordSigner,
     storage::MockStorage,
     test_constants,
 };
@@ -617,7 +618,7 @@ async fn build_wasm_stack(
             storage_provider,
             blob_provider,
             broker,
-            registry,
+            registry.clone(),
             resolver,
         )
         .await
@@ -635,6 +636,9 @@ async fn build_wasm_stack(
         .set(Arc::downgrade(&conversation) as Weak<dyn ConversationHost>)
         .expect("conversation set once");
     conversation.set_notifier(Arc::downgrade(&engine) as Weak<dyn ConversationNotifier>);
+    let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+    let record_signer = NodeRecordSigner::new(node_identity, registry.clone());
+    engine.record_signer.set(record_signer).expect("set record_signer");
     engine.deploy_wasm(SERVICE_ID, &wasm_deploy_manifest(wasm_bytes.to_vec())).await.unwrap();
     (engine, conversation, ws_senders)
 }
@@ -707,7 +711,7 @@ async fn build_native_stack(dir: &Path, stub_proxy: &Arc<StubProxy>) -> NativeSt
         storage_provider.clone(),
         blob_provider,
         broker,
-        endpoint_registry,
+        endpoint_registry.clone(),
         resolver,
         conversation.clone(),
         ws_senders.clone(),
@@ -716,6 +720,9 @@ async fn build_native_stack(dir: &Path, stub_proxy: &Arc<StubProxy>) -> NativeSt
     let fixture =
         Arc::new(NativeFixture::new(SERVICE_ID.to_string(), move |caller| f.host_for(caller)));
     factory.set_service_proxy(Arc::downgrade(stub_proxy) as Weak<dyn ServiceProxy>);
+    let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+    let record_signer = NodeRecordSigner::new(node_identity, endpoint_registry.clone());
+    factory.set_record_signer(record_signer);
     factory.set_sink(Arc::downgrade(&fixture) as Weak<dyn MessageSink>);
     factory.set_conversation_sink(Arc::downgrade(&fixture) as Weak<dyn ConversationSink>);
     factory.set_http_sink(Arc::downgrade(&fixture) as Weak<dyn HttpSink>);
@@ -2001,4 +2008,77 @@ mod permitted_differences {
             .await;
         assert!(res3.is_err());
     }
+}
+
+async fn assert_signing_identity<D: Driver>(name: &str, driver: &D) {
+    let result = driver.run(r#"{"op":"signing-identity"}"#).await.unwrap();
+    let v: Value = serde_json::from_str(&result).unwrap();
+    let ok = &v["ok"];
+    assert!(ok["signing_did"].is_string(), "{name}: signing_did must be string, got {v}");
+    assert!(ok["pubkey_hex"].is_string(), "{name}: pubkey_hex must be string, got {v}");
+}
+
+#[tokio::test]
+async fn signing_identity_returns_valid_did_and_pubkey_on_both_builds() {
+    let h = harness().await;
+    assert_signing_identity("wasm", &h.wasm).await;
+    assert_signing_identity("native", &h.native).await;
+}
+
+async fn assert_sign_as_service_and_verify<D: Driver>(name: &str, driver: &D) {
+    let draft_req = json!({
+        "op": "sign-as-service",
+        "draft": {
+            "version": 1,
+            "record_type": "listing",
+            "subject": "sub1",
+            "payload": r#"{"price":100}"#,
+            "expires_at_secs": 2_000_000_000,
+        }
+    });
+    let result = driver.run(&draft_req.to_string()).await.unwrap();
+    let v: Value = serde_json::from_str(&result).unwrap();
+    let signed_json =
+        v["ok"].as_str().unwrap_or_else(|| panic!("{name}: expected ok string, got {v}"));
+
+    let verify_req = json!({
+        "op": "verify-record",
+        "signed_json": signed_json
+    });
+    let verify_res = driver.run(&verify_req.to_string()).await.unwrap();
+    let verify_v: Value = serde_json::from_str(&verify_res).unwrap();
+    assert_eq!(
+        verify_v["ok"]["valid"], true,
+        "{name}: verified record must be valid, got {verify_v}"
+    );
+    assert_eq!(verify_v["ok"]["subject"], "sub1", "{name}: subject mismatch");
+}
+
+#[tokio::test]
+async fn sign_as_service_and_verify_succeeds_on_both_builds() {
+    let h = harness().await;
+    assert_sign_as_service_and_verify("wasm", &h.wasm).await;
+    assert_sign_as_service_and_verify("native", &h.native).await;
+}
+
+async fn assert_sign_with_invalid_float_payload_fails<D: Driver>(name: &str, driver: &D) {
+    let draft_req = json!({
+        "op": "sign-as-service",
+        "draft": {
+            "version": 1,
+            "record_type": "listing",
+            "subject": "sub1",
+            "payload": r#"{"price":100.5}"#,
+        }
+    });
+    let result = driver.run(&draft_req.to_string()).await.unwrap();
+    let v: Value = serde_json::from_str(&result).unwrap();
+    assert!(v["err"].is_string(), "{name}: float in draft payload must be refused, got {v}");
+}
+
+#[tokio::test]
+async fn sign_with_float_payload_is_refused_on_both_builds() {
+    let h = harness().await;
+    assert_sign_with_invalid_float_payload_fails("wasm", &h.wasm).await;
+    assert_sign_with_invalid_float_payload_fails("native", &h.native).await;
 }

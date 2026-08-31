@@ -39,6 +39,8 @@ mod bindings {
                 syneroym_wit_interfaces::app_config::syneroym::app_config::app_config,
             "syneroym:vault/vault@0.1.0":
                 syneroym_wit_interfaces::vault::syneroym::vault::vault,
+            "syneroym:signing/signing@0.1.0":
+                syneroym_wit_interfaces::signing::syneroym::signing::signing,
             "syneroym:http/websocket@0.1.0":
                 syneroym_wit_interfaces::http_guest::syneroym::http::websocket,
             "syneroym:http/websocket-types@0.1.0": generate,

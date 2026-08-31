@@ -39,7 +39,7 @@ use crate::{
 /// end to end during M3B Slice 7's own verification).
 pub const HTTP_NATIVE_INTERFACE: &str = "http-native";
 
-pub const NATIVE_CAPABILITY_INTERFACES: [&str; 7] = [
+pub const NATIVE_CAPABILITY_INTERFACES: [&str; 8] = [
     "data-layer",
     "vault",
     "app-config",
@@ -47,6 +47,7 @@ pub const NATIVE_CAPABILITY_INTERFACES: [&str; 7] = [
     "messaging",
     HTTP_NATIVE_INTERFACE,
     "conversation",
+    "signing",
 ];
 
 /// `orchestrator`/`security`: every substrate registers these under its

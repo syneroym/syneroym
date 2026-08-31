@@ -18,6 +18,8 @@ pub mod http_guest;
 pub mod messaging;
 #[cfg(feature = "proxy")]
 pub mod proxy;
+#[cfg(feature = "signing")]
+pub mod signing;
 #[cfg(feature = "supervisor")]
 pub mod supervisor;
 #[cfg(feature = "vault")]
@@ -31,3 +33,6 @@ pub mod http_host;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod conversation_host;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod signing_host;

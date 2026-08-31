@@ -132,3 +132,4 @@ tokio-stream.workspace = true
 ed25519-dalek.workspace = true
 roymctl.workspace = true
 syneroym-ucan.workspace = true
+syneroym-signed-record.workspace = true

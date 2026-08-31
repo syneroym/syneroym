@@ -3,9 +3,11 @@
 //! Defines the primary `Identity` struct utilizing Ed25519 dalek for key
 //! generation, secure storage, signing, and DID document generation.
 
+#[cfg(unix)]
+use std::io;
 use std::{
     fmt::{self, Debug, Formatter},
-    fs, io, mem,
+    fs, mem,
     path::Path,
     slice,
 };
@@ -21,14 +23,14 @@ use crate::{IdentityDoc, substrate};
 /// Helper function to lock memory pages to RAM and prevent them from being
 /// written to swap or core dumps. Gracefully degrades with a warning log if it
 /// fails.
-pub fn lock_memory(ptr: *const u8, len: usize) {
+pub fn lock_memory(_ptr: *const u8, _len: usize) {
     #[cfg(unix)]
     {
         // Safety: ptr is valid and points to initialized memory, len is the size of the
         // key bytes.
         #[allow(unsafe_code)]
         unsafe {
-            if libc::mlock(ptr as *const libc::c_void, len) != 0 {
+            if libc::mlock(_ptr as *const libc::c_void, _len) != 0 {
                 let err = io::Error::last_os_error();
                 tracing::warn!(
                     "Failed to lock memory using mlock: {}. Key memory might be swapped to disk.",
@@ -43,7 +45,7 @@ pub fn lock_memory(ptr: *const u8, len: usize) {
             // Let's use MADV_DONTDUMP if it is defined in libc.
             #[cfg(target_os = "linux")]
             {
-                if libc::madvise(ptr as *mut libc::c_void, len, libc::MADV_DONTDUMP) != 0 {
+                if libc::madvise(_ptr as *mut libc::c_void, _len, libc::MADV_DONTDUMP) != 0 {
                     let err = io::Error::last_os_error();
                     tracing::warn!(
                         "Failed to set MADV_DONTDUMP via madvise: {}. Key memory might be \

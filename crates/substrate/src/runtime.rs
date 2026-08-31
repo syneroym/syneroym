@@ -35,6 +35,7 @@ use syneroym_core::{
     endpoint_publisher::EndpointPublisher,
     http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
+    record_signer::NodeRecordSigner,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, registry_store, traits::StorageProvider};
@@ -899,6 +900,8 @@ struct SharedNodeHandles {
     /// so nothing else would put its UI bundle here.
     #[cfg_attr(not(feature = "roym"), allow(dead_code))]
     assets: AssetRegistry,
+    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
+    record_signer: Arc<NodeRecordSigner>,
 }
 
 /// The literal `native_dispatch` key the supervisor's `NativeService`
@@ -1336,6 +1339,7 @@ async fn init_dual_build_fixture(
         shared.conversation.clone(),
         shared.websocket_senders.clone(),
     );
+    factory.set_record_signer(shared.record_signer.clone());
     let f = factory.clone();
     let fixture =
         Arc::new(NativeFixture::new(service_id.clone(), move |caller| f.host_for(caller)));
@@ -1863,6 +1867,23 @@ async fn init_roym(
         tracing::info!("no roym.ui_bundle_path configured; serving the API without the Hub");
     }
 
+    for factory in &factories {
+        factory.set_record_signer(shared.record_signer.clone());
+    }
+
+    if let Some(owner_did) = config.roles.roym.as_ref().and_then(|r| r.owner_did.as_ref()) {
+        for name in &[
+            services::WEB.name,
+            services::PROFILE.name,
+            services::CONVERSATION.name,
+            services::CATALOG.name,
+            services::TRANSACTION.name,
+            services::DIRECTORY.name,
+        ] {
+            endpoint_registry.set_owner(roym_dispatch_id(name), owner_did.clone()).await?;
+        }
+    }
+
     Ok(factories)
 }
 
@@ -2041,6 +2062,9 @@ async fn build_route_handler_deps(
     conversation
         .set_notifier(Arc::downgrade(&app_sandbox_engine) as Weak<dyn ConversationNotifier>);
 
+    let record_signer = NodeRecordSigner::new(node_identity.clone(), registry.clone());
+    let _ = app_sandbox_engine.record_signer.set(record_signer.clone());
+
     let control_plane_service = ControlPlaneService::init(
         service_id.to_string(),
         service_id.to_string(),
@@ -2060,6 +2084,7 @@ async fn build_route_handler_deps(
     )
     .await?;
     let control_plane_service = Arc::new(control_plane_service);
+    control_plane_service.set_record_signer(record_signer.clone());
     // Unlike `service_proxy`/`row_authorizer` (which need `ProxyRouter`,
     // built later in `ConnectionRouter::init`), `ConversationService`
     // already exists at this point, so it is wired in here rather than
@@ -2082,6 +2107,7 @@ async fn build_route_handler_deps(
         native_http: native_http.clone(),
         websocket_senders: websocket_senders.clone(),
         assets: assets.clone(),
+        record_signer,
     };
 
     #[cfg(feature = "auth")]

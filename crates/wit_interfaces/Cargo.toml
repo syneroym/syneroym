@@ -20,7 +20,7 @@ workspace = true
 # the real toolchain, not by inspection. Default-on so every existing
 # (host-only) consumer is unaffected; a wasm32 consumer must opt out of
 # `default-features` and enable only the interfaces it actually imports.
-default = ["app-config", "blob-store", "control-plane", "conversation", "data-layer", "http", "messaging", "proxy", "supervisor", "vault"]
+default = ["app-config", "blob-store", "control-plane", "conversation", "data-layer", "http", "messaging", "proxy", "signing", "supervisor", "vault"]
 app-config = []
 blob-store = []
 control-plane = []
@@ -29,6 +29,7 @@ data-layer = []
 http = []
 messaging = []
 proxy = []
+signing = []
 supervisor = []
 vault = []
 

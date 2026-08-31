@@ -12,6 +12,7 @@ use syneroym_app_host::{
         data_layer::{CollectionSchema, Mutation, QueryOptions, RecordWriteValue},
         http::{CallerAuth, FrameKind, HttpRequest, HttpResponse},
         proxy::{CallOptions, CallTarget},
+        signing::{Principal, RecordDraft},
     },
 };
 
@@ -201,6 +202,19 @@ pub enum Request {
     },
     ReadWsLog,
     ReadHttpStore,
+
+    // ---- C3 signing verbs ----
+    SignAsService {
+        draft: RecordDraft,
+    },
+    SignAsDelegated {
+        draft: RecordDraft,
+        delegation_json: String,
+    },
+    SigningIdentity,
+    VerifyRecord {
+        signed_json: String,
+    },
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -662,6 +676,44 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
                 })
                 .collect();
             Ok(json!({ "entries": entries }))
+        }
+        Request::SignAsService { draft } => {
+            let signed_json = host.sign_record(draft, Principal::Service).await.map_err(fmt_err)?;
+            Ok(json!(signed_json))
+        }
+        Request::SignAsDelegated { draft, delegation_json } => {
+            let signed_json = host
+                .sign_record(draft, Principal::Delegated(delegation_json))
+                .await
+                .map_err(fmt_err)?;
+            Ok(json!(signed_json))
+        }
+        Request::SigningIdentity => {
+            let id = host.signing_identity().await.map_err(fmt_err)?;
+            Ok(json!({
+                "signing_did": id.signing_did,
+                "pubkey_hex": id.pubkey_hex,
+                "owner_did": id.owner_did,
+            }))
+        }
+        Request::VerifyRecord { signed_json } => {
+            let env: syneroym_signed_record::Envelope =
+                serde_json::from_str(&signed_json).map_err(fmt_err)?;
+            let now_secs = env.issued_at_secs;
+            let rec = syneroym_signed_record::verify(
+                &env,
+                &syneroym_signed_record::VerifyOptions::new(now_secs),
+            )
+            .map_err(fmt_err)?;
+            Ok(json!({
+                "record_id": rec.record_id,
+                "signer_did": rec.signer_did,
+                "asserter_did": rec.issuer,
+                "subject": rec.subject,
+                "payload": rec.payload,
+                "supersedes": rec.supersedes,
+                "valid": true,
+            }))
         }
     }
 }

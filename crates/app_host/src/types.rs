@@ -30,6 +30,12 @@ pub mod proxy {
     };
 }
 
+pub mod signing {
+    pub use syneroym_wit_interfaces::signing::syneroym::signing::signing::{
+        Principal, RecordDraft, SigningError, SigningIdentity,
+    };
+}
+
 pub mod app_config {
     pub use syneroym_wit_interfaces::app_config::syneroym::app_config::app_config::ConfigError;
 }

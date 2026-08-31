@@ -416,6 +416,7 @@ pub struct RolesConfig {
 #[serde(default)]
 pub struct RoymRole {
     pub ui_bundle_path: Option<PathBuf>,
+    pub owner_did: Option<String>,
 }
 
 fn default_podman_path() -> String {

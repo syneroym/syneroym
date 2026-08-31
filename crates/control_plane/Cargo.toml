@@ -33,6 +33,7 @@ syneroym-data-db.workspace = true
 syneroym-data-blob.workspace = true
 syneroym-fdae.workspace = true
 syneroym-identity.workspace = true
+syneroym-signed-record.workspace = true
 syneroym-mqtt-broker.workspace = true
 hex.workspace = true
 jsonschema.workspace = true
