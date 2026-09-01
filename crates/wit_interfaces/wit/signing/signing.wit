@@ -85,9 +85,9 @@ interface signing {
         /// `orchestrator/resolve-instance-identity` reports and a
         /// certificate is minted over.
         pubkey-hex: string,
-        /// The DID recorded as this service's deployer. Whoever holds that
-        /// key is the one who can mint a `record-signing` certificate this
-        /// host will accept. Absent for a service with no recorded owner.
+        /// The DID recorded as this service's deployer. Always present for a
+        /// service deployed through substrate; wrapped in `option<string>` for
+        /// interface compatibility.
         owner-did: option<string>,
     }
 

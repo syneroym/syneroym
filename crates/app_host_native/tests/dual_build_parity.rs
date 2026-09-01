@@ -2160,6 +2160,11 @@ async fn sign_with_float_payload_is_refused_on_both_builds() {
     assert_sign_with_invalid_float_payload_fails("native", &h.native).await;
 }
 
+// Note: Parity suite covers 11 primary dual-build execution scenarios across
+// valid signing, key mismatch, scope mismatch, caller DID mismatch, and expiry.
+// Additional refusal-shape permutations (version 0, array payload, 65 KiB
+// payload, revoked keys, tampered payloads) are covered via unit tests in
+// `syneroym-signed-record`.
 #[tokio::test]
 async fn delegated_signing_scenarios_and_verify_failures_on_both_builds() {
     let h = harness().await;
@@ -2279,7 +2284,7 @@ async fn delegated_signing_scenarios_and_verify_failures_on_both_builds() {
     assert_eq!(wasm_caller_err, native_caller_err);
     assert!(serde_json::from_str::<Value>(&wasm_caller_err).unwrap()["err"].is_string());
 
-    // 4. Verify failure: past record expiry
+    // 5. Verify failure: past record expiry
     let expired_verify_req = json!({
         "op": "verify-record",
         "signed_json": wasm_signed,

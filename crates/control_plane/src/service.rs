@@ -499,13 +499,24 @@ impl NativeService for ControlPlaneService {
             };
             match invocation.method.as_str() {
                 "identity" => {
-                    let target_service_id =
+                    let target_service_id = if invocation.params.is_null()
+                        || invocation.params.as_array().is_some_and(|a| a.is_empty())
+                    {
+                        self.service_id.clone()
+                    } else if let Ok((s,)) =
                         serde_json::from_value::<(String,)>(invocation.params.clone())
-                            .map(|(s,)| s)
-                            .or_else(|_| {
-                                serde_json::from_value::<String>(invocation.params.clone())
-                            })
-                            .unwrap_or_else(|_| self.service_id.clone());
+                    {
+                        s
+                    } else if let Ok(s) =
+                        serde_json::from_value::<String>(invocation.params.clone())
+                    {
+                        s
+                    } else {
+                        return Err(RpcError::InvalidParams(
+                            "signing identity expects optional service_id string parameter"
+                                .to_string(),
+                        ));
+                    };
                     let id = signer
                         .identity(&target_service_id)
                         .map_err(crate::synsvc_native::signing_error)?;

@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! End-to-end integration tests for record signing over a live substrate
-//! instance (M06C Slice C3).
+//! instance.
 
 mod common;
 #[path = "common/retry.rs"]
@@ -75,5 +75,31 @@ async fn record_signing_e2e_service_and_delegated_flow() {
         deploy::certify_record_signing(client, &other_master, &service_id, 24).await.unwrap_err();
     assert!(err.to_string().contains("does not match service owner"));
 
+    // 4. Sign record over JSON-RPC via signing interface
+    let draft = syneroym_signed_record::RecordDraft {
+        version: 1,
+        record_type: "listing".to_string(),
+        subject: "e2e_item".to_string(),
+        payload: serde_json::json!({"title":"test item"}),
+        expires_at_secs: Some(now + 3600),
+        supersedes: None,
+    };
+    let signed_val = call_with_reconnect!(
+        client,
+        client.request("signing", "sign-record", serde_json::json!([draft, "service"])).await
+    );
+    let envelope_json_str: String =
+        serde_json::from_value(signed_val.result).expect("extract signed envelope string");
+    let envelope: syneroym_signed_record::Envelope =
+        serde_json::from_str(&envelope_json_str).expect("parse signed record envelope");
+    assert_eq!(envelope.record_type, "listing");
+    assert_eq!(envelope.subject, "e2e_item");
+
+    let verified =
+        syneroym_signed_record::verify(&envelope, &syneroym_signed_record::VerifyOptions::new(now))
+            .expect("verify signed record envelope signature and validity window");
+    assert_eq!(verified.issuer, id_info.signing_did);
+
+    let _ = service_client.shutdown().await;
     ctx.teardown().await;
 }

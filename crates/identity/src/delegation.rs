@@ -196,6 +196,10 @@ impl DelegationCertificate {
         self.verify_chain_at(expected_master_did, accepted_scopes, now_secs)
     }
 
+    /// Verifies signature, validity window, scope, and master DID of a
+    /// delegation certificate against an explicit timestamp `now_secs`
+    /// without enforcing current wall-clock expiry (used for historical
+    /// verification).
     pub fn verify_chain_at(
         &self,
         expected_master_did: &str,
@@ -222,12 +226,8 @@ impl DelegationCertificate {
             return Err(anyhow!("Delegation certificate has non-positive validity window"));
         }
 
-        // Reject certs issued more than 300 seconds in the future (clock skew
-        // tolerance). Monotonic, not a lapse: real time only advances, so a
-        // certificate that clears this check once clears it forever after --
-        // unlike wall-clock expiry, deferring it to `verify` would buy
-        // nothing and would let a forged future `issued_at` slip past a
-        // reader.
+        // Reject certs issued more than 300 seconds in the future relative to
+        // `now_secs` (clock skew tolerance).
         if self.issued_at_secs > now_secs + 300 {
             return Err(anyhow!("Delegation certificate issued_at is in the future"));
         }
@@ -259,6 +259,9 @@ impl DelegationCertificate {
         Ok(())
     }
 
+    /// Verifies a delegation certificate against current system wall-clock
+    /// time. Use this at every trust boundary that presents, publishes, or
+    /// installs a certificate as a live credential.
     pub fn verify(&self, expected_master_did: &str, accepted_scopes: &[&str]) -> Result<()> {
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -267,6 +270,9 @@ impl DelegationCertificate {
         self.verify_at(expected_master_did, accepted_scopes, now_secs)
     }
 
+    /// Verifies a delegation certificate against an explicit timestamp
+    /// `now_secs`, checking signature, window, scope, and wall-clock
+    /// expiry.
     pub fn verify_at(
         &self,
         expected_master_did: &str,

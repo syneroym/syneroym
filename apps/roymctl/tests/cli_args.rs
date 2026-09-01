@@ -405,3 +405,19 @@ fn roymctl_alias_with_a_service_and_no_nickname_is_refused() -> Result<(), Box<d
         .stderr(contains("--nickname"));
     Ok(())
 }
+
+/// `identity certify-signing --help` parses flags (--master,
+/// --service, --hours).
+#[test]
+fn identity_certify_signing_help() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("identity")
+        .arg("certify-signing")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--master"))
+        .stdout(contains("--service"))
+        .stdout(contains("--expires-hours"));
+    Ok(())
+}

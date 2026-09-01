@@ -50,6 +50,7 @@ use syneroym_wit_interfaces::{
         proxy::{proxy, saga},
         vault::vault,
     },
+    signing_host::syneroym::signing::signing,
 };
 use tokio::{
     fs as tokio_fs,
@@ -761,10 +762,7 @@ impl AppSandboxEngine {
             HasSelf<HostState>,
         >(&mut linker, |state| state)?;
         conversation::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
-        syneroym_wit_interfaces::signing_host::syneroym::signing::signing::add_to_linker::<
-            _,
-            HasSelf<HostState>,
-        >(&mut linker, |state| state)?;
+        signing::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         Ok(linker)
     }
 
