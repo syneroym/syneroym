@@ -113,6 +113,11 @@ async fn test_run_finishes_on_ctrl_c() {
 
     let mut command = Command::cargo_bin("syneroym-substrate").unwrap();
 
+    // This test detects "running" by scanning the child's stdout for the
+    // client gateway's `info!` startup line, so it needs `info` regardless
+    // of the ambient default (`.cargo/config.toml` sets `RUST_LOG=warn`).
+    command.env("RUST_LOG", "info");
+
     // Spawn the substrate process with piped stdout
     let mut child = command
         .arg("run")

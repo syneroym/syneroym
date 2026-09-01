@@ -101,7 +101,19 @@ Crate names are `syneroym-<dir>` (e.g. `crates/data_db` → `syneroym-data-db`, 
 - **Security and Dependencies**: Do not exfiltrate secrets. Use minimal, pinned, widely-used libraries. Update manifests appropriately.
 - **Git Commit Messages (Conventional Commits + 50/72 Rule)**: Prefix the subject line with a [Conventional Commits](https://www.conventionalcommits.org/) type (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `build`, `ci`, `style`, `revert`), plus an optional scope, e.g. `fix(data-db): ...`. The description after the colon is lowercase, in the imperative mood, with no trailing period, and the whole subject line stays at or under 50 characters where practical. The second line must be empty. The body (lines 3+) must be wrapped at 72 characters and explain the what and why, not the how.
 - **Pull Request CLA Checkbox**: `.github/workflows/cla-enforcer.yml` fails any PR whose description doesn't contain this exact line, checked and unmodified, on its own line: `- [x] I have read and agree to the [Syneroym CLA](https://github.com/syneroym/syneroym/blob/main/CLA.md).` `gh pr create --body` overrides `.github/PULL_REQUEST_TEMPLATE.md` entirely, so always include this line verbatim in any PR body you author.
-- **Context Budget**: This is a large workspace, so avoid letting noise from clean runs fill the context window. When a workspace-wide command (`cargo test --workspace`, `cargo clippy --workspace --all-targets --all-features`, `mise run test:all`, etc.) succeeds, don't paste its full passing/clean output — a short "N tests passed" / "clippy clean" suffices. The instant a command fails, show its full relevant output (the failing test's output, the clippy diagnostic, the panic/backtrace) — never trim or summarize a failure or anything you're actively diagnosing. Likewise prefer targeted `Read` ranges over re-reading whole files you've already seen, and push pure exploration/search legs of a task (finding call sites, scanning logs) into a subagent so only the distilled answer lands in the main thread.
+- **Context Budget**: This is a large workspace, so avoid letting noise from clean runs fill the context window. When a workspace-wide command (`cargo test --workspace`, `cargo clippy --workspace --all-targets --all-features`, `mise run test:all`, etc.) succeeds, don't paste its full passing/clean output — a short "N tests passed" / "clippy clean" suffices. The instant a command fails, show its full relevant output (the failing test's output, the clippy diagnostic, the panic/backtrace) — never trim or summarize a failure or anything you're actively diagnosing. Keep the *tool result itself* small. While iterating, prefer a targeted `cargo test -p syneroym-<crate> --quiet`. For a full run, send everything to a file so only the exit code and a short tail enter context (`--quiet` alone is not enough — the substrate's `tracing` output goes to the real stdout fd, past libtest's capture):
+
+```bash
+cargo test --workspace --quiet > target/test-run.log 2>&1; echo "exit=$?"; tail -n 15 target/test-run.log
+```
+
+On `exit=0` you are done. On failure, find the failing test in the file and read only that region — don't cat the whole log:
+
+```bash
+grep -nE 'error\[|panicked|test result: FAILED|^test .* FAILED' target/test-run.log
+```
+
+The substrate's log level already defaults to `warn` (`.cargo/config.toml` `[env]`); don't add `RUST_LOG=info`/`debug` or `-- --nocapture` to a routine run — only when actively diagnosing a specific failure. Likewise prefer targeted `Read` ranges over re-reading whole files you've already seen, and push pure exploration/search legs of a task (finding call sites, scanning logs) into a subagent so only the distilled answer lands in the main thread.
 
 ## Repository Structure and Key Components
 - **Workspace Layout**: This is a Rust workspace with multiple crates in `crates/`, apps in `apps/`, documentation in `docs/`, and test components in `test-components/`. Key files include `Cargo.toml` (workspace config) and `mise.toml` (tool versions).
