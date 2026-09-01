@@ -11,11 +11,14 @@ pub const MAX_SUBJECT_LEN: usize = 256;
 pub const RECORD_ID_PREFIX: &str = "rec_";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct RecordDraft {
     pub version: u32,
+    #[serde(alias = "record_type")]
     pub record_type: String,
     pub subject: String,
     pub payload: Value,
+    #[serde(alias = "expires_at_secs")]
     pub expires_at_secs: Option<u64>,
     pub supersedes: Option<String>,
 }
@@ -367,5 +370,18 @@ mod tests {
     fn envelope_without_envelope_version_fails_to_parse() {
         let json_str = r#"{"version":1,"record_type":"listing","issuer":"did:key:z6M123","subject":"","issued_at_secs":100,"payload":{},"signature":""}"#;
         assert!(Envelope::from_json(json_str).is_err());
+    }
+
+    #[test]
+    fn record_draft_deserializes_kebab_and_snake_case() {
+        let kebab = r#"{"version":1,"record-type":"listing","subject":"s1","payload":{},"expires-at-secs":100}"#;
+        let d1: RecordDraft = serde_json::from_str(kebab).unwrap();
+        assert_eq!(d1.record_type, "listing");
+        assert_eq!(d1.expires_at_secs, Some(100));
+
+        let snake = r#"{"version":1,"record_type":"listing","subject":"s1","payload":{},"expires_at_secs":100}"#;
+        let d2: RecordDraft = serde_json::from_str(snake).unwrap();
+        assert_eq!(d2.record_type, "listing");
+        assert_eq!(d2.expires_at_secs, Some(100));
     }
 }

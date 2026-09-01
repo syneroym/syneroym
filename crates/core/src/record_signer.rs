@@ -78,21 +78,23 @@ impl NodeRecordSigner {
         Arc::new(Self { node_identity, registry, clock })
     }
 
-    fn service_identity(&self, service_id: &str) -> Identity {
-        let owner = self
-            .registry
-            .owner_of(service_id)
-            .unwrap_or_else(|| derive_did_key(&self.node_identity.public_key()));
-        self.node_identity.derive_service_identity(&owner, service_id)
+    fn service_identity(&self, service_id: &str) -> Result<(Identity, String), SigningError> {
+        let owner = self.registry.owner_of(service_id).ok_or_else(|| {
+            SigningError::Internal(format!(
+                "service '{service_id}' has no recorded owner in endpoint registry"
+            ))
+        })?;
+        let key = self.node_identity.derive_service_identity(&owner, service_id);
+        Ok((key, owner))
     }
 
-    pub fn identity(&self, service_id: &str) -> SigningIdentity {
-        let key = self.service_identity(service_id);
-        SigningIdentity {
+    pub fn identity(&self, service_id: &str) -> Result<SigningIdentity, SigningError> {
+        let (key, owner_did) = self.service_identity(service_id)?;
+        Ok(SigningIdentity {
             signing_did: derive_did_key(&key.public_key()),
             pubkey_hex: hex::encode(key.public_key().to_bytes()),
-            owner_did: self.registry.owner_of(service_id),
-        }
+            owner_did: Some(owner_did),
+        })
     }
 
     pub fn sign_record(
@@ -110,12 +112,21 @@ impl NodeRecordSigner {
             RecordClock::Fixed(t) => t,
         };
 
-        let key = self.service_identity(service_id);
+        let (key, _owner_did) = self.service_identity(service_id)?;
         let key_did = derive_did_key(&key.public_key());
 
         let (issuer, delegation) = match principal {
             SigningPrincipal::Service => (key_did, None),
             SigningPrincipal::Delegated { delegation_json } => {
+                const MAX_DELEGATION_JSON_BYTES: usize = 16 * 1024;
+                if delegation_json.len() > MAX_DELEGATION_JSON_BYTES {
+                    return Err(SigningError::NoDelegation(format!(
+                        "delegation certificate length ({}) exceeds maximum limit ({})",
+                        delegation_json.len(),
+                        MAX_DELEGATION_JSON_BYTES
+                    )));
+                }
+
                 let cert = DelegationCertificate::from_json(delegation_json).map_err(|e| {
                     SigningError::NoDelegation(format!("not a delegation certificate: {e}"))
                 })?;
@@ -127,7 +138,7 @@ impl NodeRecordSigner {
                     )));
                 }
 
-                cert.verify(&cert.master_did, &[SCOPE_RECORD_SIGNING])
+                cert.verify_at(&cert.master_did, &[SCOPE_RECORD_SIGNING], now)
                     .map_err(|e| SigningError::NoDelegation(e.to_string()))?;
 
                 if let CallerBinding::Verified(caller_did) = caller
@@ -174,7 +185,29 @@ mod tests {
     }
 
     async fn make_registry() -> EndpointRegistry {
-        EndpointRegistry::new(Arc::new(MockStorage::new())).await.unwrap()
+        let reg = EndpointRegistry::new(Arc::new(MockStorage::new())).await.unwrap();
+        reg.set_owner("svc1".to_string(), "did:key:zDefaultOwner".to_string()).await.unwrap();
+        reg
+    }
+
+    #[tokio::test]
+    async fn unowned_service_is_refused_by_record_signer() {
+        let node_id = Arc::new(Identity::generate().unwrap());
+        let registry = EndpointRegistry::new(Arc::new(MockStorage::new())).await.unwrap();
+        let signer = NodeRecordSigner::new(node_id, registry);
+
+        let err = signer.identity("unowned_svc").unwrap_err();
+        assert!(matches!(err, SigningError::Internal(_)));
+
+        let err = signer
+            .sign_record(
+                "unowned_svc",
+                sample_draft(),
+                &SigningPrincipal::Service,
+                CallerBinding::Internal,
+            )
+            .unwrap_err();
+        assert!(matches!(err, SigningError::Internal(_)));
     }
 
     #[tokio::test]
@@ -192,7 +225,7 @@ mod tests {
             )
             .unwrap();
 
-        let id = signer.identity("svc1");
+        let id = signer.identity("svc1").unwrap();
         let opts =
             VerifyOptions::new(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
         let verified = verify_json(&json_str, &opts.expecting(&id.signing_did)).unwrap();
@@ -208,7 +241,7 @@ mod tests {
         registry.set_owner("svc1".to_string(), owner_did.clone()).await.unwrap();
 
         let signer = NodeRecordSigner::new(node_id.clone(), registry);
-        let id_signer = signer.identity("svc1");
+        let id_signer = signer.identity("svc1").unwrap();
 
         let expected_key = node_id.derive_service_identity(&owner_did, "svc1");
         let expected_did = derive_did_key(&expected_key.public_key());
@@ -254,7 +287,7 @@ mod tests {
         let registry = make_registry().await;
         let signer = NodeRecordSigner::new(node_id, registry);
 
-        let id = signer.identity("svc1");
+        let id = signer.identity("svc1").unwrap();
         let pubkey = resolve_did_key(&id.signing_did).unwrap();
 
         let cert =
@@ -280,7 +313,7 @@ mod tests {
         let registry = make_registry().await;
         let signer = NodeRecordSigner::new(node_id, registry);
 
-        let id = signer.identity("svc1");
+        let id = signer.identity("svc1").unwrap();
         let pubkey = resolve_did_key(&id.signing_did).unwrap();
 
         let cert =
@@ -307,7 +340,7 @@ mod tests {
         let registry = make_registry().await;
         let signer = NodeRecordSigner::new(node_id, registry);
 
-        let id = signer.identity("svc1");
+        let id = signer.identity("svc1").unwrap();
         let pubkey = resolve_did_key(&id.signing_did).unwrap();
 
         let cert =
@@ -343,7 +376,7 @@ mod tests {
         let registry = make_registry().await;
         let signer = NodeRecordSigner::new(node_id, registry);
 
-        let id = signer.identity("svc1");
+        let id = signer.identity("svc1").unwrap();
         let pubkey = resolve_did_key(&id.signing_did).unwrap();
 
         let cert =

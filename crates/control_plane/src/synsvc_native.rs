@@ -1658,7 +1658,12 @@ impl SynSvcNativeService {
                 to_payload(&signed_json)
             }
             "identity" => {
-                let id = signer.identity(&self.service_id);
+                let target_service_id =
+                    serde_json::from_value::<(String,)>(invocation.params.clone())
+                        .map(|(s,)| s)
+                        .or_else(|_| serde_json::from_value::<String>(invocation.params.clone()))
+                        .unwrap_or_else(|_| self.service_id.clone());
+                let id = signer.identity(&target_service_id).map_err(signing_error)?;
                 to_payload(&serde_json::json!({
                     "signing_did": id.signing_did,
                     "pubkey_hex": id.pubkey_hex,
@@ -1671,7 +1676,7 @@ impl SynSvcNativeService {
 }
 
 fn parse_principal(v: &Value) -> RpcResult<SigningPrincipal> {
-    if v == "service" || v == &Value::String("service".to_string()) {
+    if v == "service" {
         return Ok(SigningPrincipal::Service);
     }
     if let Some(obj) = v.as_object()
@@ -1684,7 +1689,7 @@ fn parse_principal(v: &Value) -> RpcResult<SigningPrincipal> {
     ))
 }
 
-fn signing_error(err: syneroym_core::record_signer::SigningError) -> RpcError {
+pub(crate) fn signing_error(err: syneroym_core::record_signer::SigningError) -> RpcError {
     use syneroym_core::record_signer::SigningError as SE;
     match err {
         SE::NoDelegation(msg) => RpcError::Custom(-32030, msg, None),
@@ -1745,6 +1750,40 @@ mod tests {
         ));
         assert!(matches!(
             data_layer_error(DataLayerError::Internal("boom".to_string())),
+            RpcError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn parse_principal_handles_service_and_delegated() {
+        let p1 = parse_principal(&serde_json::json!("service")).unwrap();
+        assert!(matches!(p1, SigningPrincipal::Service));
+
+        let p2 = parse_principal(&serde_json::json!({"delegated": "cert_json"})).unwrap();
+        assert!(
+            matches!(p2, SigningPrincipal::Delegated { delegation_json } if delegation_json == "cert_json")
+        );
+
+        assert!(parse_principal(&serde_json::json!("invalid")).is_err());
+    }
+
+    #[test]
+    fn signing_error_maps_every_variant_to_expected_rpc_error() {
+        use syneroym_core::record_signer::SigningError as SE;
+        assert!(matches!(
+            signing_error(SE::NoDelegation("no cert".to_string())),
+            RpcError::Custom(-32030, _, _)
+        ));
+        assert!(matches!(
+            signing_error(SE::InvalidRecord("bad record".to_string())),
+            RpcError::InvalidParams(_)
+        ));
+        assert!(matches!(
+            signing_error(SE::PermissionDenied),
+            RpcError::Custom(PERMISSION_DENIED_CODE, _, _)
+        ));
+        assert!(matches!(
+            signing_error(SE::Internal("internal err".to_string())),
             RpcError::InternalError(_)
         ));
     }

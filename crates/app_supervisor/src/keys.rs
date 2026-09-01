@@ -567,7 +567,8 @@ mod tests {
         let layer = tracing_subscriber::fmt::layer().with_writer(make_writer);
         let subscriber = tracing_subscriber::registry().with(layer);
 
-        let result = tracing::subscriber::with_default(subscriber, || rt.block_on(f()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let result = rt.block_on(f());
 
         let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
         (result, logs_content)

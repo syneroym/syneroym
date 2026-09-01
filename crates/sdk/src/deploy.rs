@@ -629,16 +629,22 @@ pub async fn certify_record_signing(
     expires_hours: u64,
 ) -> Result<DelegationCertificate> {
     let master_did = substrate::derive_did_key(&master.public_key());
-    if master_did != service_id {
-        anyhow::bail!(
-            "master identity resolves to {master_did}, which does not match service_id \
-             {service_id} -- a certificate for this pair would be rejected at sign time"
-        );
-    }
     let signing_identity = client
         .signing_identity(service_id)
         .await
         .context("failed to query the substrate for its derived signing identity")?;
+
+    match signing_identity.owner_did.as_deref() {
+        Some(owner) if owner == master_did => {}
+        Some(owner) => anyhow::bail!(
+            "master identity resolves to {master_did}, which does not match service owner {owner} \
+             -- a certificate for this pair would be rejected at sign time"
+        ),
+        None => anyhow::bail!(
+            "service {service_id} has no recorded owner -- cannot certify signing identity"
+        ),
+    }
+
     let temp_pubkey = substrate::resolve_did_key(&signing_identity.signing_did)
         .context("failed to resolve signing DID key")?;
 

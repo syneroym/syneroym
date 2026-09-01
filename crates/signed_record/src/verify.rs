@@ -1,7 +1,7 @@
 use serde_json::Value;
 use syneroym_identity::{delegation::DelegationCertificate, substrate};
 
-use crate::envelope::{DraftError, ENVELOPE_VERSION, Envelope, RecordDraft};
+use crate::envelope::{ENVELOPE_VERSION, Envelope, RecordDraft};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RevocationCheck {
@@ -152,10 +152,7 @@ pub fn verify(e: &Envelope, o: &VerifyOptions<'_>) -> Result<VerifiedRecord, Ver
         supersedes: e.supersedes.clone(),
     };
     if let Err(d_err) = draft.validate(0) {
-        match d_err {
-            DraftError::ExpiryInPast { .. } => (),
-            other => return Err(VerifyError::Malformed(other.to_string())),
-        }
+        return Err(VerifyError::Malformed(d_err.to_string()));
     }
 
     if let Some(want) = o.expected_issuer
@@ -184,7 +181,7 @@ pub fn verify(e: &Envelope, o: &VerifyOptions<'_>) -> Result<VerifiedRecord, Ver
         Some(json) => {
             let cert = DelegationCertificate::from_json(json)
                 .map_err(|err| VerifyError::BadDelegation(err.to_string()))?;
-            cert.verify_chain(&e.issuer, o.accepted_scopes)
+            cert.verify_chain_at(&e.issuer, o.accepted_scopes, o.now_secs)
                 .map_err(|err| VerifyError::BadDelegation(err.to_string()))?;
             if e.issued_at_secs < cert.issued_at_secs || e.issued_at_secs >= cert.expires_at_secs {
                 return Err(VerifyError::BadDelegation(format!(

@@ -1872,6 +1872,8 @@ async fn init_roym(
     }
 
     if let Some(owner_did) = config.roles.roym.as_ref().and_then(|r| r.owner_did.as_ref()) {
+        syneroym_identity::substrate::resolve_did_key(owner_did)
+            .map_err(|e| anyhow::anyhow!("invalid roym.owner_did '{owner_did}': {e}"))?;
         for name in &[
             services::WEB.name,
             services::PROFILE.name,

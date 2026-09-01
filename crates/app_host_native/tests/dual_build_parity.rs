@@ -33,7 +33,7 @@ use syneroym_conversation::{ConversationConfig, ConversationService};
 use syneroym_core::{
     config::{RetryPolicy, SubstrateConfig},
     local_registry::EndpointRegistry,
-    record_signer::NodeRecordSigner,
+    record_signer::{NodeRecordSigner, RecordClock},
     storage::MockStorage,
     test_constants,
 };
@@ -83,13 +83,27 @@ trait Driver {
     async fn run(&self, request: &str) -> Result<String, String>;
 }
 
+fn caller_with_did(did: &str) -> CallerContext {
+    CallerContext {
+        caller_did: did.to_string(),
+        app_instance: None,
+        session: SessionContext { subject_did: did.to_string(), ..Default::default() },
+        auth: AuthLevel::Ucan,
+        proof: None,
+    }
+}
+
 /// Drives the component through the real sandbox engine.
 struct WasmDriver {
     engine: Arc<AppSandboxEngine>,
 }
 
-impl Driver for WasmDriver {
-    async fn run(&self, request: &str) -> Result<String, String> {
+impl WasmDriver {
+    async fn run_with_caller(
+        &self,
+        request: &str,
+        caller: CallerContext,
+    ) -> Result<String, String> {
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: "run".to_string(),
@@ -99,7 +113,7 @@ impl Driver for WasmDriver {
         };
         let result = self
             .engine
-            .execute_wasm_json(SERVICE_ID, FIXTURE_INTERFACE, &req, Some(caller()))
+            .execute_wasm_json(SERVICE_ID, FIXTURE_INTERFACE, &req, Some(caller))
             .await
             .map_err(|e| e.to_string())?;
         match result {
@@ -109,25 +123,41 @@ impl Driver for WasmDriver {
     }
 }
 
+impl Driver for WasmDriver {
+    async fn run(&self, request: &str) -> Result<String, String> {
+        self.run_with_caller(request, caller()).await
+    }
+}
+
 /// Drives the same source, linked in, through the shim.
 struct NativeDriver {
     fixture: Arc<NativeFixture<NativeAppHost>>,
 }
 
-impl Driver for NativeDriver {
-    async fn run(&self, request: &str) -> Result<String, String> {
+impl NativeDriver {
+    async fn run_with_caller(
+        &self,
+        request: &str,
+        caller: CallerContext,
+    ) -> Result<String, String> {
         use syneroym_rpc::NativeService;
         let inv = NativeInvocation {
             interface: "test-driver".to_string(),
             method: "run".to_string(),
             params: json!([request]),
-            caller: caller(),
+            caller,
         };
         let response = self.fixture.dispatch(inv).await.map_err(|e| e.to_string())?;
         match response.payload {
             Value::String(s) => Ok(s),
             other => Err(format!("expected a string result, got {other:?}")),
         }
+    }
+}
+
+impl Driver for NativeDriver {
+    async fn run(&self, request: &str) -> Result<String, String> {
+        self.run_with_caller(request, caller()).await
     }
 }
 
@@ -411,6 +441,8 @@ struct Harness {
     native: NativeDriver,
     wasm_http: WasmHttpDriver,
     native_http: NativeHttpDriver,
+    master_identity: Arc<Identity>,
+    _node_identity: Arc<Identity>,
     wasm_engine: Arc<AppSandboxEngine>,
     native_factory: Arc<NativeHostFactory>,
     native_storage_provider: Arc<dyn StorageProvider>,
@@ -460,8 +492,19 @@ async fn harness() -> Harness {
     let native_dir = tempfile::tempdir().unwrap();
 
     let stub_proxy = Arc::new(StubProxy);
-    let (wasm_engine, wasm_conversation, wasm_ws_senders) =
-        build_wasm_stack(wasm_dir.path(), &wasm_bytes, &stub_proxy).await;
+    let node_identity = Arc::new(Identity::generate().unwrap());
+    let master_identity = Arc::new(Identity::generate().unwrap());
+    let clock = RecordClock::Fixed(1_800_000_000);
+
+    let (wasm_engine, wasm_conversation, wasm_ws_senders) = build_wasm_stack(
+        wasm_dir.path(),
+        &wasm_bytes,
+        &stub_proxy,
+        node_identity.clone(),
+        &master_identity,
+        clock,
+    )
+    .await;
     let (
         native_fixture,
         native_factory,
@@ -469,7 +512,14 @@ async fn harness() -> Harness {
         native_conversation,
         native_http_adapter,
         native_ws_senders,
-    ) = build_native_stack(native_dir.path(), &stub_proxy).await;
+    ) = build_native_stack(
+        native_dir.path(),
+        &stub_proxy,
+        node_identity.clone(),
+        &master_identity,
+        clock,
+    )
+    .await;
 
     // Each stack calls out through a proxy that reaches straight into the
     // *other* stack's own `ConversationService` -- see `PeerProxy`.
@@ -484,6 +534,8 @@ async fn harness() -> Harness {
         native: NativeDriver { fixture: native_fixture },
         wasm_http: WasmHttpDriver { engine: wasm_engine.clone() },
         native_http: NativeHttpDriver { adapter: native_http_adapter },
+        master_identity,
+        _node_identity: node_identity,
         wasm_engine,
         native_factory,
         native_storage_provider,
@@ -530,11 +582,14 @@ fn test_conversation_service(
 /// identity to a peer, not exercised by any test before this one since
 /// every existing group op either targets `self` (refused earlier) or a
 /// group with no other member (skipped before any outbound call).
-async fn install_outbound_identity(registry: &EndpointRegistry, service_id: &str) {
-    let master = Identity::generate().unwrap();
+async fn install_outbound_identity(
+    registry: &EndpointRegistry,
+    service_id: &str,
+    master: &Identity,
+) {
     let instance = Identity::generate().unwrap();
     let mut cert = DelegationCertificate::issue(
-        &master,
+        master,
         instance.public_key(),
         3600,
         SCOPE_SERVICE_INSTANCE.to_string(),
@@ -549,6 +604,9 @@ async fn build_wasm_stack(
     dir: &Path,
     wasm_bytes: &[u8],
     stub_proxy: &Arc<StubProxy>,
+    node_identity: Arc<Identity>,
+    master: &Identity,
+    clock: RecordClock,
 ) -> (Arc<AppSandboxEngine>, Arc<ConversationService>, Arc<WebSocketSenders>) {
     let mut config = SubstrateConfig {
         app_local_data_dir: dir.join("data"),
@@ -570,7 +628,7 @@ async fn build_wasm_stack(
     // per stack costs nothing and binds no port.
     let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
-    install_outbound_identity(&registry, SERVICE_ID).await;
+    install_outbound_identity(&registry, SERVICE_ID, master).await;
 
     let app_instance = AppInstanceId::new("test-app");
     let sibling_name = LogicalServiceName::new("sibling");
@@ -636,8 +694,7 @@ async fn build_wasm_stack(
         .set(Arc::downgrade(&conversation) as Weak<dyn ConversationHost>)
         .expect("conversation set once");
     conversation.set_notifier(Arc::downgrade(&engine) as Weak<dyn ConversationNotifier>);
-    let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
-    let record_signer = NodeRecordSigner::new(node_identity, registry.clone());
+    let record_signer = NodeRecordSigner::with_clock(node_identity, registry.clone(), clock);
     engine.record_signer.set(record_signer).expect("set record_signer");
     engine.deploy_wasm(SERVICE_ID, &wasm_deploy_manifest(wasm_bytes.to_vec())).await.unwrap();
     (engine, conversation, ws_senders)
@@ -652,7 +709,13 @@ type NativeStack = (
     Arc<WebSocketSenders>,
 );
 
-async fn build_native_stack(dir: &Path, stub_proxy: &Arc<StubProxy>) -> NativeStack {
+async fn build_native_stack(
+    dir: &Path,
+    stub_proxy: &Arc<StubProxy>,
+    node_identity: Arc<Identity>,
+    master: &Identity,
+    clock: RecordClock,
+) -> NativeStack {
     let key_store = Arc::new(KeyStore::new());
     key_store.inject_kek([0x42; 32]).expect("inject kek");
     let storage_provider: Arc<dyn StorageProvider> =
@@ -661,7 +724,7 @@ async fn build_native_stack(dir: &Path, stub_proxy: &Arc<StubProxy>) -> NativeSt
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let endpoint_registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
-    install_outbound_identity(&endpoint_registry, SERVICE_ID).await;
+    install_outbound_identity(&endpoint_registry, SERVICE_ID, master).await;
 
     let app_instance = AppInstanceId::new("test-app");
     let sibling_name = LogicalServiceName::new("sibling");
@@ -720,8 +783,8 @@ async fn build_native_stack(dir: &Path, stub_proxy: &Arc<StubProxy>) -> NativeSt
     let fixture =
         Arc::new(NativeFixture::new(SERVICE_ID.to_string(), move |caller| f.host_for(caller)));
     factory.set_service_proxy(Arc::downgrade(stub_proxy) as Weak<dyn ServiceProxy>);
-    let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
-    let record_signer = NodeRecordSigner::new(node_identity, endpoint_registry.clone());
+    let record_signer =
+        NodeRecordSigner::with_clock(node_identity, endpoint_registry.clone(), clock);
     factory.set_record_signer(record_signer);
     factory.set_sink(Arc::downgrade(&fixture) as Weak<dyn MessageSink>);
     factory.set_conversation_sink(Arc::downgrade(&fixture) as Weak<dyn ConversationSink>);
@@ -1621,7 +1684,8 @@ async fn a_cached_fdae_policy_can_be_invalidated_and_reloaded() {
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let endpoint_registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
-    install_outbound_identity(&endpoint_registry, SERVICE_ID).await;
+    let master = Identity::generate().unwrap();
+    install_outbound_identity(&endpoint_registry, SERVICE_ID, &master).await;
 
     let app_instance = AppInstanceId::new("test-app");
     let sibling_name = LogicalServiceName::new("sibling");
@@ -1709,7 +1773,11 @@ mod permitted_differences {
     async fn each_native_invocation_gets_a_fresh_resource_table() {
         let dir = tempfile::tempdir().unwrap();
         let stub = Arc::new(StubProxy);
-        let (_, factory, _, _, _, _) = build_native_stack(dir.path(), &stub).await;
+        let node_id = Arc::new(Identity::generate().unwrap());
+        let master = Identity::generate().unwrap();
+        let clock = RecordClock::Fixed(1_800_000_000);
+        let (_, factory, _, _, _, _) =
+            build_native_stack(dir.path(), &stub, node_id, &master, clock).await;
 
         let host_a = factory.host_for(caller());
         let writer_a = host_a.open_upload().await.unwrap();
@@ -1772,7 +1840,11 @@ mod permitted_differences {
     async fn a_policy_with_abac_permissions_fails_closed_on_the_native_build() {
         let dir = tempfile::tempdir().unwrap();
         let stub = Arc::new(StubProxy);
-        let (_, factory, storage_provider, _, _, _) = build_native_stack(dir.path(), &stub).await;
+        let node_id = Arc::new(Identity::generate().unwrap());
+        let master = Identity::generate().unwrap();
+        let clock = RecordClock::Fixed(1_800_000_000);
+        let (_, factory, storage_provider, _, _, _) =
+            build_native_stack(dir.path(), &stub, node_id, &master, clock).await;
         storage_provider.save_fdae_policy(SERVICE_ID, &abac_policy()).await.unwrap();
 
         let host = factory.host_for(caller());
@@ -1934,7 +2006,8 @@ mod permitted_differences {
             Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
         let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
         let endpoint_registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
-        install_outbound_identity(&endpoint_registry, SERVICE_ID).await;
+        let master = Identity::generate().unwrap();
+        install_outbound_identity(&endpoint_registry, SERVICE_ID, &master).await;
 
         let app_instance = AppInstanceId::new("test-app");
         let sibling_name = LogicalServiceName::new("sibling");
@@ -2010,22 +2083,24 @@ mod permitted_differences {
     }
 }
 
-async fn assert_signing_identity<D: Driver>(name: &str, driver: &D) {
+async fn assert_signing_identity<D: Driver>(name: &str, driver: &D) -> Value {
     let result = driver.run(r#"{"op":"signing-identity"}"#).await.unwrap();
     let v: Value = serde_json::from_str(&result).unwrap();
     let ok = &v["ok"];
     assert!(ok["signing_did"].is_string(), "{name}: signing_did must be string, got {v}");
     assert!(ok["pubkey_hex"].is_string(), "{name}: pubkey_hex must be string, got {v}");
+    ok.clone()
 }
 
 #[tokio::test]
 async fn signing_identity_returns_valid_did_and_pubkey_on_both_builds() {
     let h = harness().await;
-    assert_signing_identity("wasm", &h.wasm).await;
-    assert_signing_identity("native", &h.native).await;
+    let wasm_id = assert_signing_identity("wasm", &h.wasm).await;
+    let native_id = assert_signing_identity("native", &h.native).await;
+    assert_eq!(wasm_id, native_id, "signing_identity must be identical across builds");
 }
 
-async fn assert_sign_as_service_and_verify<D: Driver>(name: &str, driver: &D) {
+async fn assert_sign_as_service_and_verify<D: Driver>(name: &str, driver: &D) -> String {
     let draft_req = json!({
         "op": "sign-as-service",
         "draft": {
@@ -2052,13 +2127,15 @@ async fn assert_sign_as_service_and_verify<D: Driver>(name: &str, driver: &D) {
         "{name}: verified record must be valid, got {verify_v}"
     );
     assert_eq!(verify_v["ok"]["subject"], "sub1", "{name}: subject mismatch");
+    signed_json.to_string()
 }
 
 #[tokio::test]
-async fn sign_as_service_and_verify_succeeds_on_both_builds() {
+async fn sign_as_service_and_verify_succeeds_and_is_byte_identical_on_both_builds() {
     let h = harness().await;
-    assert_sign_as_service_and_verify("wasm", &h.wasm).await;
-    assert_sign_as_service_and_verify("native", &h.native).await;
+    let wasm_signed = assert_sign_as_service_and_verify("wasm", &h.wasm).await;
+    let native_signed = assert_sign_as_service_and_verify("native", &h.native).await;
+    assert_eq!(wasm_signed, native_signed, "signed envelopes must be byte-identical across builds");
 }
 
 async fn assert_sign_with_invalid_float_payload_fails<D: Driver>(name: &str, driver: &D) {
@@ -2081,4 +2158,120 @@ async fn sign_with_float_payload_is_refused_on_both_builds() {
     let h = harness().await;
     assert_sign_with_invalid_float_payload_fails("wasm", &h.wasm).await;
     assert_sign_with_invalid_float_payload_fails("native", &h.native).await;
+}
+
+#[tokio::test]
+async fn delegated_signing_scenarios_and_verify_failures_on_both_builds() {
+    let h = harness().await;
+    let wasm_id = assert_signing_identity("wasm", &h.wasm).await;
+    let signing_did = wasm_id["signing_did"].as_str().unwrap();
+    let temp_pubkey = syneroym_identity::substrate::resolve_did_key(signing_did).unwrap();
+
+    // 1. Valid delegation certificate
+    let cert = DelegationCertificate::issue(
+        &h.master_identity,
+        temp_pubkey,
+        86400 * 365,
+        syneroym_identity::delegation::SCOPE_RECORD_SIGNING.to_string(),
+    )
+    .unwrap();
+    let cert_json = serde_json::to_string(&cert).unwrap();
+
+    let draft = json!({
+        "version": 1,
+        "record_type": "listing",
+        "subject": "sub_del",
+        "payload": r#"{"item":"book"}"#,
+        "expires_at_secs": 2_000_000_000,
+    });
+
+    let del_req = json!({
+        "op": "sign-as-delegated",
+        "draft": draft,
+        "delegation_json": cert_json,
+    });
+
+    let master_did = syneroym_identity::substrate::derive_did_key(&h.master_identity.public_key());
+    let master_caller = caller_with_did(&master_did);
+
+    let wasm_res =
+        h.wasm.run_with_caller(&del_req.to_string(), master_caller.clone()).await.unwrap();
+    let wasm_v: Value = serde_json::from_str(&wasm_res).unwrap();
+    let wasm_signed = wasm_v["ok"].as_str().expect("wasm delegated signed string");
+
+    let native_res =
+        h.native.run_with_caller(&del_req.to_string(), master_caller.clone()).await.unwrap();
+    let native_v: Value = serde_json::from_str(&native_res).unwrap();
+    let native_signed = native_v["ok"].as_str().expect("native delegated signed string");
+
+    assert_eq!(wasm_signed, native_signed, "delegated signed envelopes must be byte-identical");
+
+    // Verify on both builds
+    let verify_req = json!({
+        "op": "verify-record",
+        "signed_json": wasm_signed,
+        "now_secs": 1_800_000_000,
+    });
+    let wasm_ver = h.wasm.run(&verify_req.to_string()).await.unwrap();
+    let native_ver = h.native.run(&verify_req.to_string()).await.unwrap();
+    assert_eq!(wasm_ver, native_ver);
+    let ver_val: Value = serde_json::from_str(&wasm_ver).unwrap();
+    assert_eq!(ver_val["ok"]["valid"], true);
+    assert_eq!(
+        ver_val["ok"]["asserter_did"],
+        syneroym_identity::substrate::derive_did_key(&h.master_identity.public_key())
+    );
+
+    // 2. Refuse cert over wrong key
+    let wrong_identity = Identity::generate().unwrap();
+    let wrong_cert = DelegationCertificate::issue(
+        &h.master_identity,
+        wrong_identity.public_key(),
+        3600,
+        syneroym_identity::delegation::SCOPE_RECORD_SIGNING.to_string(),
+    )
+    .unwrap();
+    let wrong_del_req = json!({
+        "op": "sign-as-delegated",
+        "draft": draft,
+        "delegation_json": wrong_cert.to_json().unwrap(),
+    });
+    let wasm_err =
+        h.wasm.run_with_caller(&wrong_del_req.to_string(), master_caller.clone()).await.unwrap();
+    let native_err =
+        h.native.run_with_caller(&wrong_del_req.to_string(), master_caller.clone()).await.unwrap();
+    assert_eq!(wasm_err, native_err);
+    let err_val: Value = serde_json::from_str(&wasm_err).unwrap();
+    assert!(err_val["err"].is_string());
+
+    // 3. Refuse cert with wrong scope
+    let scope_cert = DelegationCertificate::issue(
+        &h.master_identity,
+        temp_pubkey,
+        3600,
+        syneroym_identity::delegation::SCOPE_SERVICE_INSTANCE.to_string(),
+    )
+    .unwrap();
+    let scope_del_req = json!({
+        "op": "sign-as-delegated",
+        "draft": draft,
+        "delegation_json": scope_cert.to_json().unwrap(),
+    });
+    let wasm_scope_err =
+        h.wasm.run_with_caller(&scope_del_req.to_string(), master_caller.clone()).await.unwrap();
+    let native_scope_err =
+        h.native.run_with_caller(&scope_del_req.to_string(), master_caller).await.unwrap();
+    assert_eq!(wasm_scope_err, native_scope_err);
+    assert!(serde_json::from_str::<Value>(&wasm_scope_err).unwrap()["err"].is_string());
+
+    // 4. Verify failure: past record expiry
+    let expired_verify_req = json!({
+        "op": "verify-record",
+        "signed_json": wasm_signed,
+        "now_secs": 2_000_000_001,
+    });
+    let wasm_exp_ver = h.wasm.run(&expired_verify_req.to_string()).await.unwrap();
+    let native_exp_ver = h.native.run(&expired_verify_req.to_string()).await.unwrap();
+    assert_eq!(wasm_exp_ver, native_exp_ver);
+    assert!(serde_json::from_str::<Value>(&wasm_exp_ver).unwrap()["err"].is_string());
 }

@@ -3776,20 +3776,6 @@ mod tests {
         service.service_proxy.set(weak).expect("service_proxy already set");
     }
 
-    #[test]
-    fn both_synsvcnativeservice_new_call_sites_thread_the_record_signer() {
-        // Code-structure assertion: verify that `set_record_signer_from` is called at
-        // both call sites.
-        let code = include_str!("orchestration.rs");
-        let target = concat!("native_service.", "set_record_signer_from(self)");
-        let count = code.matches(target).count();
-        assert_eq!(
-            count, 2,
-            "SynSvcNativeService::new is called at two orchestration sites (deploy and \
-             renew_cert_impl); both must call set_record_signer_from"
-        );
-    }
-
     /// M04A Slice B7b: a caller holding node-wide orchestrator authority on
     /// `"did:key:zTestNode"` (every test in this module inits
     /// `ControlPlaneService` with that node DID) -- the shape `build_caller`

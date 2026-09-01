@@ -573,7 +573,8 @@ impl signing::Host for HostState {
                 "this node has no record signer configured".to_string(),
             ));
         };
-        Ok(convert_identity_out(signer.identity(&self.component_id)))
+        let id = signer.identity(&self.component_id).map_err(convert_signing_error_out)?;
+        Ok(convert_identity_out(id))
     }
 }
 
@@ -3926,5 +3927,25 @@ pub(crate) mod tests {
             proxy.last_saga_begin.lock().unwrap().is_none(),
             "the fake proxy must not be reached"
         );
+    }
+
+    #[tokio::test]
+    async fn a_read_only_host_state_refuses_sign_record() {
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = saga_host(true, &proxy, temp_dir.path());
+
+        let draft = WitRecordDraft {
+            version: 1,
+            record_type: "listing".to_string(),
+            subject: "sub".to_string(),
+            payload: "{}".to_string(),
+            expires_at_secs: None,
+            supersedes: None,
+        };
+
+        let err =
+            signing::Host::sign_record(&mut host, draft, WitPrincipal::Service).await.unwrap_err();
+        assert!(matches!(err, WitSigningError::PermissionDenied));
     }
 }

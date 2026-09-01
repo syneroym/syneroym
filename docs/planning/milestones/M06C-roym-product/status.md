@@ -214,9 +214,9 @@ Slice C3 implements the host record signing interface (`syneroym:signing`), cano
 
 ## C3 — Verification evidence
 
-1. `cargo test -p syneroym-signed-record`: **26 passed, 0 failed**
-2. `cargo test -p syneroym-identity`: **12 passed, 0 failed**
-3. `cargo test -p syneroym-app-host-native --test dual_build_parity`: **37 passed, 0 failed**
+1. `cargo test -p syneroym-signed-record`: **27 passed, 0 failed**
+2. `cargo test -p syneroym-identity`: **14 passed, 0 failed**
+3. `cargo test -p syneroym-app-host-native --test dual_build_parity`: **39 passed, 0 failed**
 4. `cargo test -p syneroym-substrate --test record_signing_e2e`: **1 passed, 0 failed**
 5. `cargo check -p roymctl`: **Clean**
 6. `cargo xtask check-roym-deps`: **Clean**

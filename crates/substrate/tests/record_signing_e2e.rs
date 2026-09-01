@@ -1,92 +1,77 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! End-to-end integration tests for record signing (M06C Slice C3).
+//! End-to-end integration tests for record signing over a live substrate
+//! instance (M06C Slice C3).
 
-use std::sync::Arc;
+mod common;
+#[path = "common/retry.rs"]
+mod retry;
 
-use serde_json::json;
-use syneroym_core::{
-    local_registry::EndpointRegistry,
-    record_signer::{CallerBinding, NodeRecordSigner, SigningError, SigningPrincipal},
-    storage::MockStorage,
-};
-use syneroym_identity::{
-    Identity,
-    delegation::{DelegationCertificate, SCOPE_RECORD_SIGNING},
-    substrate::derive_did_key,
-};
-use syneroym_signed_record::{Envelope, RecordDraft, VerifyOptions, verify};
+use common::{SubstrateTestContext, alloc_ports};
+use syneroym_core::dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType};
+use syneroym_identity::{Identity, delegation::SCOPE_RECORD_SIGNING, substrate};
+use syneroym_sdk::{SyneroymClient, deploy};
 
 #[tokio::test]
 async fn record_signing_e2e_service_and_delegated_flow() {
-    let node_id = Arc::new(Identity::generate().unwrap());
-    let owner_id = Identity::generate().unwrap();
-    let owner_did = derive_did_key(&owner_id.public_key());
+    let [iroh_port, registry_port, gateway_port] = alloc_ports();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
+    let wasm_bytes = std::fs::read(syneroym_core::test_constants::greeter_wasm_path())
+        .expect("Failed to read compiled test WASM component");
+    let service_identity = Identity::generate().unwrap();
+    let service_id = substrate::derive_did_key(&service_identity.public_key());
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let record = EndpointInfo {
+        service_id: service_id.clone(),
+        substrate_id: ctx.substrate_client.service_id().to_string(),
+        endpoint_type: EndpointType::Service,
+        mechanisms: vec![],
+        nickname: None,
+        is_private: false,
+        ttl: None,
+        not_after: now + DEFAULT_ENDPOINT_NOT_AFTER_SECS,
+        generation: 0,
+    }
+    .sign(&service_identity)
+    .unwrap();
 
-    let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
-    let service_id = "did:key:zService1";
-
-    registry.set_owner(service_id.to_string(), owner_did.clone()).await.unwrap();
-
-    let signer = NodeRecordSigner::new(node_id.clone(), registry);
-
-    // 1. Check identity
-    let id_info = signer.identity(service_id);
-    assert_eq!(id_info.owner_did.as_deref(), Some(owner_did.as_str()));
-
-    // 2. Sign as service
-    let draft = RecordDraft {
-        version: 1,
-        record_type: "listing".to_string(),
-        subject: "subj_123".to_string(),
-        payload: json!({"price": 100}),
-        expires_at_secs: Some(2_000_000_000),
-        supersedes: None,
-    };
-
-    let signed_json = signer
-        .sign_record(service_id, draft.clone(), &SigningPrincipal::Service, CallerBinding::Internal)
-        .expect("sign_record service");
-
-    let envelope: Envelope = serde_json::from_str(&signed_json).expect("parse envelope");
-    let verified =
-        verify(&envelope, &VerifyOptions::new(envelope.issued_at_secs)).expect("verify record");
-    assert_eq!(verified.subject, "subj_123");
-    assert_eq!(verified.issuer, id_info.signing_did);
-
-    // 3. Sign as delegated
-    let temp_key = node_id.derive_service_identity(&owner_did, service_id).public_key();
-    let cert =
-        DelegationCertificate::issue(&owner_id, temp_key, 3600, SCOPE_RECORD_SIGNING.to_string())
-            .unwrap();
-    let cert_json = serde_json::to_string(&cert).unwrap();
-
-    let signed_del_json = signer
-        .sign_record(
-            service_id,
-            draft,
-            &SigningPrincipal::Delegated { delegation_json: cert_json },
-            CallerBinding::Verified(&owner_did),
+    ctx.substrate_client
+        .deploy_svc_wasm(
+            service_id.clone(),
+            vec!["greeter".to_string()],
+            wasm_bytes,
+            syneroym_sdk::Publication::Public(record),
+            None,
         )
-        .expect("sign_record delegated");
+        .await
+        .expect("deploy test service");
 
-    let del_envelope: Envelope =
-        serde_json::from_str(&signed_del_json).expect("parse del envelope");
-    let del_verified = verify(&del_envelope, &VerifyOptions::new(del_envelope.issued_at_secs))
-        .expect("verify del record");
-    assert_eq!(del_verified.issuer, owner_did);
-    assert_eq!(del_verified.signer_did, id_info.signing_did);
+    let mut service_client = SyneroymClient::new_with_identity(
+        service_id.to_string(),
+        ctx.registry_url.clone(),
+        Identity::from_bytes(&ctx.owner.to_bytes()),
+    )
+    .with_registry_dht(false);
+    service_client.connect().await.expect("failed to connect service client");
+    let client = &mut service_client;
 
-    // 4. Refuse invalid float payload
-    let float_draft = RecordDraft {
-        version: 1,
-        record_type: "listing".to_string(),
-        subject: "subj_123".to_string(),
-        payload: json!({"price": 100.5}),
-        expires_at_secs: None,
-        supersedes: None,
-    };
-    let err = signer
-        .sign_record(service_id, float_draft, &SigningPrincipal::Service, CallerBinding::Internal)
-        .unwrap_err();
-    assert!(matches!(err, SigningError::InvalidRecord(_)));
+    // 1. Query signing identity over JSON-RPC via client
+    let id_info = call_with_reconnect!(client, client.signing_identity(&service_id).await);
+    assert!(id_info.signing_did.starts_with("did:key:"));
+    assert!(!id_info.pubkey_hex.is_empty());
+    assert_eq!(id_info.owner_did.as_deref(), Some(ctx.owner_did.as_str()));
+
+    // 2. Certify record signing using client & master key
+    let cert = call_with_reconnect!(
+        client,
+        deploy::certify_record_signing(client, &ctx.owner, &service_id, 24).await
+    );
+    assert_eq!(cert.master_did, ctx.owner_did);
+    assert_eq!(cert.temporary_did, id_info.signing_did);
+    assert_eq!(cert.scope, SCOPE_RECORD_SIGNING);
+
+    // 3. Certifying for a non-owner master identity is rejected
+    let other_master = Identity::generate().unwrap();
+    let err =
+        deploy::certify_record_signing(client, &other_master, &service_id, 24).await.unwrap_err();
+    assert!(err.to_string().contains("does not match service owner"));
 }

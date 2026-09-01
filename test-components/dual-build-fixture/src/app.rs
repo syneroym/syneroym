@@ -203,7 +203,7 @@ pub enum Request {
     ReadWsLog,
     ReadHttpStore,
 
-    // ---- C3 signing verbs ----
+    // ---- Record signing verbs ----
     SignAsService {
         draft: RecordDraft,
     },
@@ -214,6 +214,8 @@ pub enum Request {
     SigningIdentity,
     VerifyRecord {
         signed_json: String,
+        #[serde(alias = "now_secs")]
+        now_secs: Option<u64>,
     },
 }
 
@@ -696,13 +698,13 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
                 "owner_did": id.owner_did,
             }))
         }
-        Request::VerifyRecord { signed_json } => {
+        Request::VerifyRecord { signed_json, now_secs } => {
             let env: syneroym_signed_record::Envelope =
                 serde_json::from_str(&signed_json).map_err(fmt_err)?;
-            let now_secs = env.issued_at_secs;
+            let check_now = now_secs.unwrap_or(env.issued_at_secs);
             let rec = syneroym_signed_record::verify(
                 &env,
-                &syneroym_signed_record::VerifyOptions::new(now_secs),
+                &syneroym_signed_record::VerifyOptions::new(check_now),
             )
             .map_err(fmt_err)?;
             Ok(json!({

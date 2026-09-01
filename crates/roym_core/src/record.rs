@@ -4,13 +4,17 @@ pub use syneroym_signed_record::{
     Envelope, RecordDraft, VerifiedRecord, VerifyError, VerifyOptions, verify,
 };
 
-/// Known Roym record types.
+/// Known Roym record types (spec D-C3-14).
 pub const RECORD_TYPES: &[&str] = &[
-    "profile.v1",
-    "catalog.listing.v1",
-    "catalog.review.v1",
-    "transaction.receipt.v1",
-    "directory.attestation.v1",
+    "listing",
+    "request",
+    "quote",
+    "agreement-receipt",
+    "payment-acknowledgement",
+    "fulfilment-receipt",
+    "membership-credential",
+    "revocation",
+    "moderation-decision",
 ];
 
 /// Returns true if `record_type` is one of the known Roym record types.
@@ -24,11 +28,19 @@ mod tests {
 
     #[test]
     fn test_known_record_types() {
-        assert!(is_known_record("profile.v1"));
-        assert!(is_known_record("catalog.listing.v1"));
-        assert!(is_known_record("catalog.review.v1"));
-        assert!(is_known_record("transaction.receipt.v1"));
-        assert!(is_known_record("directory.attestation.v1"));
-        assert!(!is_known_record("unknown.v1"));
+        for t in RECORD_TYPES {
+            assert!(is_known_record(t));
+            let draft = RecordDraft {
+                version: 1,
+                record_type: t.to_string(),
+                subject: "sub".to_string(),
+                payload: serde_json::json!({"k": "v"}),
+                expires_at_secs: None,
+                supersedes: None,
+            };
+            assert!(draft.validate(0).is_ok(), "record type '{t}' must pass draft validation");
+        }
+        assert!(!is_known_record("unknown"));
+        assert!(!is_known_record("profile.v1"));
     }
 }

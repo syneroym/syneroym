@@ -491,6 +491,38 @@ impl NativeService for ControlPlaneService {
             }
         }
 
+        if invocation.interface.as_str() == "signing" {
+            let Some(signer) = self.record_signer.get().cloned() else {
+                return Err(RpcError::InternalError(
+                    "this node has no record signer configured".to_string(),
+                ));
+            };
+            match invocation.method.as_str() {
+                "identity" => {
+                    let target_service_id =
+                        serde_json::from_value::<(String,)>(invocation.params.clone())
+                            .map(|(s,)| s)
+                            .or_else(|_| {
+                                serde_json::from_value::<String>(invocation.params.clone())
+                            })
+                            .unwrap_or_else(|_| self.service_id.clone());
+                    let id = signer
+                        .identity(&target_service_id)
+                        .map_err(crate::synsvc_native::signing_error)?;
+                    return Ok(NativeResponse {
+                        payload: serde_json::json!({
+                            "signing_did": id.signing_did,
+                            "pubkey_hex": id.pubkey_hex,
+                            "owner_did": id.owner_did,
+                        }),
+                    });
+                }
+                other => {
+                    return Err(RpcError::MethodNotFound(format!("unknown method: {other}")));
+                }
+            }
+        }
+
         if invocation.interface.as_str() != ORCHESTRATOR_INTERFACE {
             return Err(RpcError::InternalError(format!(
                 "Interface {} not handled by orchestrator",

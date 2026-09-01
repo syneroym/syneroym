@@ -184,14 +184,20 @@ impl DelegationCertificate {
     /// production call site the caller reads that value from the certificate
     /// itself before calling `verify`, which makes the check a tautology
     /// there -- not a hole, since the connection's claim is "I am delegated
-    /// by M" and M is whatever the certificate says, with binding to a
-    /// *target* resolved downstream on `master_did`. Do not "fix" this by
-    /// tightening the comparison; there is nothing independent to compare
-    /// against on that path. `accepted_scopes` is the check that actually
-    /// bites: an unlisted scope is rejected before the signature is even
-    /// examined, so a certificate minted for one purpose can't be replayed
-    /// where a different one is required.
     pub fn verify_chain(&self, expected_master_did: &str, accepted_scopes: &[&str]) -> Result<()> {
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("System time is before UNIX epoch")?
+            .as_secs();
+        self.verify_chain_at(expected_master_did, accepted_scopes, now_secs)
+    }
+
+    pub fn verify_chain_at(
+        &self,
+        expected_master_did: &str,
+        accepted_scopes: &[&str],
+        now_secs: u64,
+    ) -> Result<()> {
         if self.master_did != expected_master_did {
             return Err(anyhow!(
                 "Confused deputy prevention: expected master DID {}, but certificate is for {}",
@@ -211,11 +217,6 @@ impl DelegationCertificate {
         if self.issued_at_secs >= self.expires_at_secs {
             return Err(anyhow!("Delegation certificate has non-positive validity window"));
         }
-
-        let now_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("System time is before UNIX epoch")?
-            .as_secs();
 
         // Reject certs issued more than 300 seconds in the future (clock skew
         // tolerance). Monotonic, not a lapse: real time only advances, so a
@@ -254,23 +255,27 @@ impl DelegationCertificate {
         Ok(())
     }
 
-    /// `verify_chain` plus wall-clock expiry: the certificate must not
-    /// already be past `expires_at_secs`. Use this at every trust boundary
-    /// that presents, publishes, or installs a certificate as a live
-    /// credential.
     pub fn verify(&self, expected_master_did: &str, accepted_scopes: &[&str]) -> Result<()> {
-        self.verify_chain(expected_master_did, accepted_scopes)?;
-
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .context("System time is before UNIX epoch")?
             .as_secs();
+        self.verify_at(expected_master_did, accepted_scopes, now_secs)
+    }
+
+    pub fn verify_at(
+        &self,
+        expected_master_did: &str,
+        accepted_scopes: &[&str],
+        now_secs: u64,
+    ) -> Result<()> {
+        self.verify_chain_at(expected_master_did, accepted_scopes, now_secs)?;
 
         if now_secs >= self.expires_at_secs {
             return Err(anyhow!(
-                "Delegation certificate has expired (expired at {}, now {})",
-                self.expires_at_secs,
-                now_secs
+                "Delegation certificate has expired (now_secs {}, expires_at_secs {})",
+                now_secs,
+                self.expires_at_secs
             ));
         }
 
