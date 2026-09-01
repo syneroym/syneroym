@@ -246,15 +246,11 @@ impl SubstrateTestContext {
     }
 
     pub async fn teardown(mut self) {
-        eprintln!("[teardown] shutting down substrate_client...");
         let _ = self.substrate_client.shutdown().await;
-        eprintln!("[teardown] sending shutdown signal...");
         let _ = self.shutdown_tx.send(()).await;
-        eprintln!("[teardown] awaiting substrate_handle...");
         let _ = time::timeout(Duration::from_secs(20), self.substrate_handle)
             .await
             .map_err(|_| eprintln!("[teardown] substrate_handle join TIMED OUT"));
         tokio::time::sleep(Duration::from_millis(500)).await;
-        eprintln!("[teardown] done");
     }
 }
