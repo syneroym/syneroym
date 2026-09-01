@@ -75,11 +75,7 @@ run = """
 [tasks."test:rust"]
 description = "Run all Rust unit and integration tests"
 depends = ["build:test-components", "build:roym", "check:roym-deps", "test:roym-ui"]
-# Default the substrate's tracing output to `warn`: at `info` the e2e suites
-# emit tens of thousands of lines that bury real failures (and cost a lot of
-# tokens when an agent runs the suite). Override with `RUST_LOG=info mise run
-# test:rust` when debugging a specific failure.
-run = "RUST_LOG=${RUST_LOG:-warn} cargo test --workspace"
+run = "cargo test --workspace"
 
 [tasks."test:e2e"]
 description = "Run Playwright WebRTC end-to-end browser tests"

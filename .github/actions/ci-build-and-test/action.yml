@@ -44,11 +44,5 @@ runs:
       shell: bash
 
     - name: Run Tests
-      # `warn` (not the workflow-level `info`) keeps the log to a readable size:
-      # the e2e suites emit tens of thousands of `info` lines that bury real
-      # failures. Server logs for a failing run are still uploaded by the E2E
-      # job; re-run with `RUST_LOG=info` locally to debug a specific test.
-      env:
-        RUST_LOG: warn
       run: cargo test --workspace --all-targets --all-features ${{ inputs.release_flag }}
       shell: bash
