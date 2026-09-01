@@ -320,10 +320,6 @@ registry_url = "http://127.0.0.1:7661"
 
   // --- Roym Hub: deploy the six-service SynApp and mint a delegated key ---
 
-  console.log('Creating the alice person identity...');
-  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity create --name alice`,
-           { cwd: WORKSPACE_DIR, stdio: 'inherit' });
-
   // Deploy all six services through the real manifest so depends_on,
   // bindings, and topology_visibility are exercised in the browser path.
   // --mint-masters writes one member master per service to
@@ -359,13 +355,25 @@ registry_url = "http://127.0.0.1:7661"
   if (!roymWebAlias) throw new Error('Could not calculate the Roym web alias');
   console.log('Roym Web Alias:', roymWebAlias);
 
-  // Mint a short-lived delegated key for alice and publish her master anchor,
+  // Mint a short-lived delegated key for owner and publish her master anchor,
   // so the Hub's delegated-key login has a session-key.json to import.
   const sessionKeyFile = path.join(TEST_DIR, 'alice-session-key.json');
-  console.log('Minting a delegated session key for alice...');
+  console.log('Minting a delegated session key for owner...');
   execSync(
-    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --as alice session delegate ` +
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --as owner session delegate ` +
     `--registry-url http://127.0.0.1:7661 --out "${sessionKeyFile}"`,
+    { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+
+  console.log('Logging in session for owner...');
+  execSync(
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --as owner session login ` +
+    `--gateway-url http://127.0.0.1:7660 --registry-url http://127.0.0.1:7661`,
+    { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+
+  console.log('Enrolling record signing certificate for owner...');
+  execSync(
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --as owner roym enrol-signing ` +
+    `--master owner --gateway-url http://127.0.0.1:7660 --host ${roymWebAlias} --registry-url http://127.0.0.1:7661`,
     { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   // Set environment variables for tests

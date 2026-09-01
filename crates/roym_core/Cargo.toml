@@ -12,6 +12,7 @@ syneroym-app-host.workspace = true
 syneroym-signed-record.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+thiserror.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 syneroym-rpc.workspace = true
@@ -19,4 +20,6 @@ async-trait.workspace = true
 
 [dev-dependencies]
 toml.workspace = true
+syneroym-identity.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

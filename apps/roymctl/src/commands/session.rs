@@ -494,3 +494,56 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
     }
     Ok(())
 }
+
+pub async fn rpc_call(
+    gateway_url: &str,
+    host: Option<&str>,
+    _run_as: Option<&str>,
+    _ucan_path: Option<&Path>,
+    dir: &Path,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    let session_path = session_file_path(dir, gateway_url);
+    let session =
+        if session_path.exists() { Some(load_session_file(&session_path)?) } else { None };
+
+    let client = Client::new();
+    let base_url = gateway_url.trim_end_matches('/');
+    let rpc_url = format!("{base_url}/rpc");
+
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params,
+    });
+
+    let mut req = client.post(&rpc_url).json(&body);
+
+    if let Some(h) = host {
+        req = req.header("Host", h);
+    }
+
+    if let Some(s) = session {
+        req = req
+            .header("Authorization", format!("Bearer {}", s.token))
+            .header("Cookie", format!("{}={}", SESSION_COOKIE_NAME, s.token));
+    }
+
+    let resp =
+        req.send().await.with_context(|| format!("failed to connect to gateway at {rpc_url}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let err_text = resp.text().await.unwrap_or_default();
+        bail!("RPC call to '{method}' failed ({status}): {err_text}");
+    }
+
+    let val: Value = resp.json().await?;
+    if let Some(err) = val.get("error") {
+        bail!("RPC error ({method}): {err}");
+    }
+
+    Ok(val.get("result").cloned().unwrap_or(Value::Null))
+}

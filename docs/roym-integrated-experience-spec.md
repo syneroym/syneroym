@@ -92,7 +92,7 @@ through shared database access.
 |---|---|---|---|
 | **Web entrypoint** | Every participant's substrate | The UI bundle; nothing else | serves static assets; forwards JSON-RPC to the four services below |
 | **Conversation** | Every participant's substrate | Conversations, messages, delivery state, outbox, group keys | `send`, `history`, `conversations`, `delivery-status` |
-| **Profile & Contacts** | Every participant's substrate | Own profile, contact list, favourites, block list | `profile.get/set`, `contacts.*`, `block.*` |
+| **Profile & Contacts** | Every participant's substrate | Own profile, contact list, favourites, block list, reports | `profile.get/set`, `contacts.*`, `block.*`, `report.*` |
 | **Catalog** | Provider's substrate | Listings, prices, service area, availability | `listing.*`, `availability.*` |
 | **Transaction** | Provider's substrate | Requests, quotes, agreements, bookings, orders, receipts | `request.*`, `quote.*`, `agreement.*`, `receipt.*` |
 | **Directory** | SynOrg's substrate | Member list, published listings, search index, membership credentials, revocations | `search`, `member.*`, `credential.*`, `revocation.*` |
@@ -461,6 +461,7 @@ one.
 
 | Record | Signed by | Proves | Does **not** prove |
 |---|---|---|---|
+| `profile` | The person | Who published this person's card, and the Conversation address they claim | That the person is who they say they are outside this network |
 | `listing` | Provider | Who published this offer, and when | That the offer is honest or the provider is competent |
 | `membership-credential` | SynOrg | This SynOrg approved this provider, within a scope, until an expiry date | That the SynOrg vetted them well, or that any other group agrees |
 | `revocation` | SynOrg | This SynOrg withdrew a credential at a stated time | That every cached copy is gone |
@@ -581,6 +582,12 @@ These are requirements, not polish, and they are in R1.
   separate actions. The product does not promise deletion it cannot enforce.
 - **Backup and recovery:** encrypted backup with a restore path that is tested
   on a clean node before release.
+- **One person per installation, and that person deploys it.** For the first
+  release a Roym installation belongs to exactly one person: the DID that
+  deployed it. The substrate derives each service's signing key under that
+  DID, so only its master key can authorise records to be signed as the
+  person. A hosted arrangement where a SynOrg runs a provider's substrate is
+  therefore out of scope for the first release.
 
 ---
 

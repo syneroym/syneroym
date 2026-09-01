@@ -4,6 +4,9 @@
 pub mod delegation;
 pub mod substrate;
 
+#[cfg(feature = "backup")]
+pub mod backup;
+
 mod document;
 mod keys;
 

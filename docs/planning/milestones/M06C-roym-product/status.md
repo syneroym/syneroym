@@ -6,7 +6,7 @@
 under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)),
 [slice-c2-implementation-plan.md](slice-c2-implementation-plan.md) (C2)
 
-**Overall:** Slices C1 (2026-08-25), C1.1 (2026-08-28), C2 (2026-08-29), and C3 (2026-08-31) complete. C1.1, added by ADR-0024, makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a node auth service; C2 builds the six-service Roym SynApp skeleton and the Hub shell on top of that model; C3 provides the host record-signing capability interface (`syneroym:signing`), canonical JSON record envelope format, verification, and tri-state revocation checking.
+**Overall:** Slices C1 (2026-08-25), C1.1 (2026-08-28), C2 (2026-08-29), C3 (2026-08-31), and C4 (2026-09-01) complete. C1.1, added by ADR-0024, makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a node auth service; C2 builds the six-service Roym SynApp skeleton and the Hub shell on top of that model; C3 provides the host record-signing capability interface (`syneroym:signing`), canonical JSON record envelope format, verification, and tri-state revocation checking; C4 gives `profile` real product state (profile, contacts, block, report, contact rate limits), an owner-only authorization gate on `web`, the certificate lifecycle C3 required as a hard prerequisite, and an encrypted identity backup/restore.
 
 ---
 
@@ -18,7 +18,7 @@ under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-servic
 | C1.1 | The node auth service and the dumb client gateway (ADR-0024) | **Complete (2026-08-28)** — [implementation plan](slice-c1.1-implementation-plan.md), evidence below | C1 |
 | C2 | The SynApp skeleton and the Hub shell | **Complete (2026-08-29)** — [implementation plan](slice-c2-implementation-plan.md), evidence below | C1.1 |
 | C3 | Signed records: host signing interface and envelope | **Complete (2026-08-31)** — [implementation plan](slice-c3-implementation-plan.md), evidence below | C1.1 |
-| C4 | Identity, profile, contacts, and safety (R1 rows 1 and 6) | Not started | C3 |
+| C4 | Identity, profile, contacts, and safety (R1 rows 1 and 6) | **Complete (2026-09-01)** — [implementation plan](slice-c4-implementation-plan.md), evidence below | C3 |
 | C5 | Catalog and conversation in the product (R1 rows 2 and 3) | Not started | C4 |
 | C6 | Directory: the search half (R1 row 5) | Not started | C5 |
 | C7 | A need becomes an offer, and the card contract (R1 row 4) | Not started | C5, C6 |
@@ -70,6 +70,9 @@ As specified in §14 of the implementation plan, the following structural differ
 4. **Row Authorizer (Stage-4 ABAC):** WASM host instantiates guest `syneroym:data-layer/authorizer` for stage-4 post-query filtering; native host uses `empty_row_authorizer()` and fails closed for policies with ABAC rules.
 5. **Subscription Replay:** WASM engine replays stored subscriptions from `StorageProvider` on startup; native app subscription replay is deferred to C2 (`D-C1-9`).
 6. **Isolated Resource Tables:** WASM execution manages Wasmtime store-bound resource handles; native host allocates fresh resource tables per invocation (with handle IDs starting at `rep 0`), ensuring isolation without cross-invocation handle reuse.
+7. **Guest wall-clocks are not synchronized (C4):** the two builds each read a real wall clock that has moved between runs. The parity suite compares the host-stamped signed envelope byte-for-byte and every other artifact through `strip_volatile()`.
+8. **`owner_did` must be set for the native build (C4):** a natively linked Roym has no deploy record, so `owner_of` is `None` unless `[roles.roym] owner_did` is configured; without it every `Owner`-classified method answers `-32012`. The parity harness sets it explicitly on both stacks.
+9. **The native-dispatch privileged-capability gate has no native counterpart (C4):** a natively linked service has no `SynSvcNativeService`, so there is no external native-dispatch path into its `signing` / `vault` for the gate to close. Both builds' guest path reaches `HostState` directly.
 
 ---
 
@@ -227,5 +230,71 @@ Slice C3 implements the host record signing interface (`syneroym:signing`), cano
 11. `cargo deny check licenses`: **Clean (`licenses ok`)**
 12. `mise run test:e2e`: **27 passed (clean — 23 single-node + 4 multi-hop)**
 
+---
 
+## C4 — What shipped
+
+Slice C4 turns the Roym `profile` service from a `ping`-only stub into the product's identity, profile, contacts, and safety surface; adds an owner-only authorization gate to `web`; delivers the record-signing certificate lifecycle C3 named as its hard prerequisite; and adds an encrypted, transportable identity backup.
+
+### 1. Content hashing and certificate primitives (`crates/signed_record`)
+- Exported `content_digest(prefix, value)` — z-base-32 SHA-256 over key-sorted canonical JSON — as the single content-hash definition. `Envelope::record_id` is refactored to call it; its existing stability tests pass unchanged.
+- Re-exported `DelegationCertificate` and `canonicalize_json_value` so a guest checks a certificate and hashes a document with the same code the host runs. The `wasm32-wasip2` build still links (nothing here can produce a signature).
+
+### 2. `roym_core` product primitives (`crates/roym_core`)
+- New modules: `clock` (the one wall-clock read, passed down as `now_secs: u64`), `person` (`ProfilePayload` v1 and `is_did_key`, closing Gap 5's person→conversation-address mapping on the product side), `safety` (`admit_first_contact` / `admit_publication` / `ContactLimits` / `PublicationLimits` as pure arithmetic, fully unit-tested), `backup` (`Bundle` / `BundleManifest` / `SectionDigest` with per-section content digests and `check_integrity`), and `signing` (the per-service certificate store, `CertificateStatus`, `person_principal`, `owner_did`, and the shared `handle_certificate_verb`).
+- `record.rs` corrected to the `(type, version)` shape mirroring `card::CARD_TYPES`, `profile` added as the tenth record type, and the planning-identifier doc comment removed.
+- `router.rs` gains a `MethodAuth` column (`Public` / `Owner`, no default arm) beside the routing table, plus `method_auth()` and `PUBLIC_METHODS` (`profile.policy`).
+
+### 3. `roym_profile` — the product surface (`crates/roym_profile`)
+- Eight collections created idempotently on first use; `SCHEMA_VERSION` 1 → 2.
+- Verb families: `profile.*` (`get`, `set` — the one flow that signs a `profile` record and supersedes the prior one — `policy`, `export`, `import`, `signing-status`, `install-signing-certificate`, `ping`), `contacts.*` (`list`, `get`, `upsert` with an optional verified `profile_envelope`, `remove`, `resolve-address`, `admit-first-contact`, `limits`, `set-limits`), `block.*` (`add`, `remove`, `list`, `check`), `report.*` (`create` with a content-derived `report_id`, `list`, `get`, `withdraw`).
+
+### 4. `roym_web` — the authorization gate (`crates/roym_web`)
+- One `admit()` helper on both the HTTP `rpc` path and the proxied `invoke` path: `Owner` methods require a verified delegated session whose subject equals `AppSigning::signing_identity().owner_did`. Codes `-32010` (not signed in), `-32011` (not the owner), `-32012` (no recorded owner). `session.whoami` and `GET /health` stay reachable with no session.
+
+### 5. Encrypted identity backup (`crates/identity`)
+- New non-default `backup` feature (enabled by `roymctl` only, keeps `aes-gcm` out of the `wasm32-wasip2` build). `backup.rs`: HKDF-SHA256 → AES-256-GCM under a randomly generated 32-byte recovery key, AAD binding the DID and header, and a DID-derivation check on import.
+
+### 6. `roymctl` (`apps/roymctl`)
+- `identity export` / `identity import` (recovery-key-based, refuses to overwrite an existing key file).
+- New `roym` command group: `roym enrol-signing` (asks the service for its own signing identity per `D-C4-5`, mints a `record-signing` delegation against it with the deployer's master key, and installs it) and `roym signing-status`.
+
+### 7. External-caller gate on native dispatch (`crates/control_plane`)
+- `admit_privileged_capability()` on `SynSvcNativeService`: `signing/sign-record` and `vault/reveal` are admitted only for the service's own `system:<service_id>` identity or its recorded owner. `signing/identity` stays open (public identifiers only). `record_signing_e2e.rs` step 8's assertion inverts from "succeeds" to "refused".
+
+### 8. The Hub (`crates/roym_web/ui`)
+- New `rpc.ts` (one `call()` mapping `-3201x` onto typed errors) and five screens (`setup`, `profile`, `contacts`, `safety`, `backup`). `main.ts` becomes a three-state shell: not signed in → login; signed in but not enrolled → setup; signed in and enrolled → tab bar, with the card gallery behind a "Components" tab.
+
+### 9. What C4 did **not** close
+- **R1 row 6 (a blocked sender never reaches the inbox):** C4 ships the block list, the decision function `contacts.admit-first-contact`, and the `D-06C-8` wording. The enforcement point is Roym's own inbox, which does not exist until C5. Row 6's acceptance gate closes in C5.
+- **R1 row 1 (restore reproduces identity *and history*):** C4 proves restore for the sections it owns (`profile`, `contacts`, `blocks`, `reports`). Conversation history is C5's; the bundle format is fixed here so C5 adds sections rather than reshaping it.
+- **The publication-limit half of `[PRD-SAF]`:** `safety::admit_publication` ships as a pure rule with no caller. C5 (catalog) and C6 (directory) call it.
+- **A browser-only path to signing enrolment:** a delegate cannot re-delegate, so enrolment needs the deployer's master key on a shell. New backlog row.
+- **Wire-side authorization on `catalog` / `conversation` / `directory`'s `api.invoke`:** the gate lives in `web` and covers only its ingress. New backlog row targeted at C5.
+
+### 10. Permitted differences added to §14 (WASM vs native)
+7. **Guest clocks are not synchronized** between the two builds — a property of wall clocks, not the shim. The parity suite compares the signed envelope (host-stamped, pinnable) byte-for-byte and every other artifact through `strip_volatile()`.
+8. **`owner_did` must be set for the native build.** A natively linked Roym has no deploy record; without `[roles.roym] owner_did` every `Owner` method answers `-32012`. The parity harness sets it explicitly on both stacks.
+9. **§7's native-dispatch gate has no native-build counterpart** and that is not a divergence: a natively linked service has no `SynSvcNativeService`, so there was never an external native-dispatch path into its `signing` / `vault` to close.
+
+---
+
+## C4 — Verification evidence
+
+1. `cargo test -p syneroym-roym-core`: **28 passed, 0 failed**
+2. `cargo test -p syneroym-signed-record`: **27 passed, 0 failed**
+3. `cargo test -p syneroym-identity --all-features`: **56 passed, 0 failed**
+4. `cargo test -p syneroym-roym-web --test dual_build_parity`: **36 passed, 0 failed** (35 scenarios: 10 from C1–C3, 25 new for C4 — certificate lifecycle, `profile.set` byte-identity, contacts, block, report, export/import, and the `web` authorization gate on both paths)
+5. `cargo test -p syneroym-app-host-native --test dual_build_parity`: **36 passed, 0 failed**
+6. `cargo test -p syneroym-substrate --test roym_identity_e2e`: **1 passed, 0 failed** — one 12-step scenario against a live substrate and gateway: the real enrolment ceremony; `profile.set` refused before enrolment then producing a verifying envelope after; owner-only refusal against two real sessions; `stranger` refused at `install-signing-certificate` and at `signing/sign-record`; export/import round-trip; `identity export` → `import` into a fresh directory → enrol from the restored key alone; and an operator-key mint attempt refused.
+7. `cargo test -p syneroym-substrate --test roym_app_e2e`: **passed, 0 failed** (harness change only — person and deployer are now the same DID)
+8. `cargo test -p syneroym-substrate --test record_signing_e2e`: **1 passed, 0 failed** (step 8 inverted)
+9. `cargo xtask check-roym-deps`: **Clean**
+10. Planning-identifier grep over `crates/roym_*`, `crates/roym_core/app/`, the new `roym_core` / `identity` / `roymctl` files, and every line C4 added elsewhere: **no `M0[0-9]`, `\bR[1-4]\b`, `\bC[0-9]`, `D-C[0-9]`, `D-0[0-9]`, or `Slice ` in any name or comment**. `F13`'s two existing slips (`record.rs`, `roym.toml`) are fixed. (Pre-existing planning references in `synsvc_native.rs` comments from earlier milestones are untouched and out of C4's scope.)
+11. `cargo +nightly fmt --all`: **Clean**
+12. `cargo clippy --workspace --all-targets --all-features`: **Clean**
+13. `cargo test --workspace`: **2231 passed, 0 failed on C4-related crates.** One pre-existing flake in `syneroym-substrate::scheduled_task_e2e::a_supervisor_restart_skips_the_ticks_it_missed` (iroh network-path abandonment, unrelated to C4) — **passes in isolation** (`finished in 141.64s`).
+14. `cargo audit`: **Clean (0 vulnerabilities)**
+15. `cargo deny check licenses`: **Clean (`licenses ok`)**
+16. `mise run test:e2e`: **27 passed (clean)** — includes all 8 `roym-hub.spec.ts` C4 browser cases (delegated login, card gallery + safety, profile save showing `rec_…`, contact add, block, app-data bundle export).
 

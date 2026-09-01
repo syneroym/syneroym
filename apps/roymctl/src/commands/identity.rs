@@ -122,6 +122,25 @@ pub enum IdentityCommands {
         #[arg(long, default_value_t = 24)]
         expires_hours: u64,
     },
+    /// Write an encrypted, transportable copy of a local identity. Prints
+    /// a recovery key once; without it the backup cannot be opened, and
+    /// nothing on this machine or any node can recover it.
+    Export {
+        #[arg(long)]
+        name: String,
+        #[arg(long, default_value = "identity-backup.json")]
+        out: std::path::PathBuf,
+    },
+    /// Restore an identity from `identity export`'s output.
+    Import {
+        #[arg(long)]
+        name: String,
+        #[arg(long, value_name = "PATH")]
+        r#in: std::path::PathBuf,
+        /// The recovery key printed by `identity export`.
+        #[arg(long)]
+        recovery_key: String,
+    },
 }
 
 /// Handle local identity subcommands
@@ -281,6 +300,41 @@ pub async fn handle(
                 deploy::certify_record_signing(&client, &master_identity, service, *expires_hours)
                     .await?;
             println!("{}", cert.to_json()?);
+        }
+        IdentityCommands::Export { name, out } => {
+            let key_path = dir.join("identities").join(format!("{name}.key"));
+            if !key_path.exists() {
+                anyhow::bail!("Identity '{}' not found at {}", name, key_path.display());
+            }
+            let identity = Identity::load_from_path(&key_path)?;
+            let recovery_key = syneroym_identity::backup::generate_recovery_key()?;
+            let backup = syneroym_identity::backup::export(&identity, &recovery_key)?;
+            let json_str = serde_json::to_string_pretty(&backup)?;
+            fs::write(out, json_str)?;
+
+            let encoded = syneroym_identity::backup::encode_recovery_key(&recovery_key);
+            println!("Identity '{}' exported to {}", name, out.display());
+            println!("Recovery key (save this now; it is shown once and cannot be recovered):");
+            println!("{encoded}");
+        }
+        IdentityCommands::Import { name, r#in: in_path, recovery_key } => {
+            let key_path = dir.join("identities").join(format!("{name}.key"));
+            if key_path.exists() {
+                anyhow::bail!("Identity '{}' already exists at {}", name, key_path.display());
+            }
+            let json_str = fs::read_to_string(in_path)?;
+            let backup: syneroym_identity::backup::IdentityBackup =
+                serde_json::from_str(&json_str)?;
+            let key_bytes = syneroym_identity::backup::decode_recovery_key(recovery_key)?;
+            let identity = syneroym_identity::backup::import(&backup, &key_bytes)?;
+
+            let identities_dir = dir.join("identities");
+            if !identities_dir.exists() {
+                fs::create_dir_all(&identities_dir)?;
+            }
+            identity.save_to_path(&key_path)?;
+            let did = substrate::derive_did_key(&identity.public_key());
+            println!("Restored identity '{name}' with DID: {did}");
         }
     }
     Ok(())

@@ -1,4 +1,10 @@
 import { renderCard } from "./cards/render";
+import { call } from "./rpc";
+import { renderBackup } from "./screens/backup";
+import { renderContacts } from "./screens/contacts";
+import { renderProfile } from "./screens/profile";
+import { renderSafety } from "./screens/safety";
+import { renderSetup } from "./screens/setup";
 import {
   authHeaders,
   fetchMethods,
@@ -62,13 +68,55 @@ async function main() {
     };
     sessionBar.appendChild(logoutBtn);
 
-    renderHome(contentArea, did);
+    const statusVal = await call<{ certificate: { state: string } }>("profile.signing-status").catch(() => null);
+    if (statusVal?.certificate?.state === "installed") {
+      renderTabs(contentArea, did);
+    } else {
+      await renderSetup(contentArea, () => renderTabs(contentArea, did));
+    }
   } else {
     const anonSpan = document.createElement("span");
     anonSpan.textContent = "Not logged in";
     sessionBar.appendChild(anonSpan);
     await renderLogin(contentArea);
   }
+}
+
+async function renderTabs(container: HTMLElement, did: string) {
+  container.replaceChildren();
+
+  const nav = document.createElement("div");
+  nav.className = "tab-nav";
+  nav.style.display = "flex";
+  nav.style.gap = "12px";
+  nav.style.marginBottom = "16px";
+
+  const tabContainer = document.createElement("div");
+  tabContainer.className = "tab-content";
+
+  const tabs = [
+    { name: "Profile", render: () => renderProfile(tabContainer) },
+    { name: "Contacts", render: () => renderContacts(tabContainer) },
+    { name: "Safety", render: () => renderSafety(tabContainer) },
+    { name: "Backup", render: () => renderBackup(tabContainer) },
+    { name: "Components", render: () => renderHome(tabContainer, did) },
+  ];
+
+  for (let i = 0; i < tabs.length; i++) {
+    const btn = document.createElement("button");
+    btn.className = "button tab-button";
+    btn.textContent = tabs[i].name;
+    btn.onclick = () => {
+      tabs[i].render();
+    };
+    nav.appendChild(btn);
+  }
+
+  container.appendChild(nav);
+  container.appendChild(tabContainer);
+
+  // Default to Profile tab
+  await tabs[0].render();
 }
 
 async function renderLogin(container: HTMLElement) {

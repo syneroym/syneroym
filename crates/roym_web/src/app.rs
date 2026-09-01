@@ -57,6 +57,38 @@ fn json_rpc_error(id: Option<Value>, code: i64, message: impl Into<String>) -> V
     )
 }
 
+enum Admitted {
+    Yes,
+    NoSession,
+    NotOwner,
+    NoOwnerRecorded,
+}
+
+async fn admit<H: AppHost>(
+    host: &H,
+    method: &str,
+    caller: Option<&syneroym_app_host::types::http::CallerIdentity>,
+) -> Admitted {
+    match router::method_auth(method) {
+        None | Some(router::MethodAuth::Public) => Admitted::Yes,
+        Some(router::MethodAuth::Owner) => {
+            let Some(c) = caller else { return Admitted::NoSession };
+            if c.auth != CallerAuth::Delegated {
+                return Admitted::NoSession;
+            }
+            match syneroym_app_host::AppSigning::signing_identity(host)
+                .await
+                .ok()
+                .and_then(|i| i.owner_did)
+            {
+                None => Admitted::NoOwnerRecorded,
+                Some(owner) if owner == c.did => Admitted::Yes,
+                Some(_) => Admitted::NotOwner,
+            }
+        }
+    }
+}
+
 pub async fn handle_http<H: AppHost>(
     host: &H,
     request: HttpRequest,
@@ -127,6 +159,34 @@ pub async fn rpc<H: AppHost>(host: &H, request: HttpRequest) -> Result<HttpRespo
             headers: vec![("content-type".into(), "application/json".into())],
             body: serde_json::to_vec(&resp_val).unwrap_or_default(),
         });
+    }
+
+    match admit(host, &method, request.caller.as_ref()).await {
+        Admitted::Yes => (),
+        Admitted::NoSession => {
+            let err_val = json_rpc_error(id, -32010, "not signed in");
+            return Ok(HttpResponse {
+                status: 200,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: serde_json::to_vec(&err_val).unwrap_or_default(),
+            });
+        }
+        Admitted::NotOwner => {
+            let err_val = json_rpc_error(id, -32011, "this installation belongs to another person");
+            return Ok(HttpResponse {
+                status: 200,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: serde_json::to_vec(&err_val).unwrap_or_default(),
+            });
+        }
+        Admitted::NoOwnerRecorded => {
+            let err_val = json_rpc_error(id, -32012, "this installation has no recorded owner");
+            return Ok(HttpResponse {
+                status: 200,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: serde_json::to_vec(&err_val).unwrap_or_default(),
+            });
+        }
     }
 
     let service = match router::route(&method) {
@@ -200,6 +260,17 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
             "auth": "anonymous",
             "app_instance": Value::Null,
         }));
+    }
+
+    match admit(host, &req.method, None).await {
+        Admitted::Yes => (),
+        Admitted::NoSession => return Response::err(-32010, "not signed in"),
+        Admitted::NotOwner => {
+            return Response::err(-32011, "this installation belongs to another person");
+        }
+        Admitted::NoOwnerRecorded => {
+            return Response::err(-32012, "this installation has no recorded owner");
+        }
     }
 
     let service = match router::route(&req.method) {

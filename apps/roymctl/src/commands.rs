@@ -23,6 +23,7 @@ pub mod app;
 pub mod identity;
 pub mod member_identity;
 pub mod registry;
+pub mod roym;
 pub mod security;
 pub mod session;
 pub mod substrate;
@@ -115,6 +116,11 @@ pub enum Commands {
     Session {
         #[command(subcommand)]
         command: session::SessionCommands,
+    },
+    /// Product commands for Roym
+    Roym {
+        #[command(subcommand)]
+        command: roym::RoymCommands,
     },
 }
 
@@ -303,6 +309,9 @@ pub async fn run(
         }
         Commands::Session { command } => {
             session::handle(&command, &dir, run_as.as_deref()).await?;
+        }
+        Commands::Roym { command } => {
+            roym::handle(&command, &dir, run_as.as_deref(), ucan_path.as_deref()).await?;
         }
     }
     Ok(())

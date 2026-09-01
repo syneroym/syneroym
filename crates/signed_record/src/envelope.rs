@@ -198,11 +198,7 @@ impl Envelope {
 
     pub fn record_id(&self) -> Result<String, EnvelopeError> {
         let value = serde_json::to_value(self).map_err(|e| EnvelopeError::Json(e.to_string()))?;
-        let canonical = substrate::canonicalize_json_value(&value);
-        let bytes =
-            serde_json::to_vec(&canonical).map_err(|e| EnvelopeError::Json(e.to_string()))?;
-        let digest = sha2::Sha256::digest(&bytes);
-        Ok(format!("{RECORD_ID_PREFIX}{}", z32::encode(&digest)))
+        content_digest(RECORD_ID_PREFIX, &value)
     }
 
     pub fn to_json(&self) -> Result<String, EnvelopeError> {
@@ -212,6 +208,24 @@ impl Envelope {
     pub fn from_json(s: &str) -> Result<Self, EnvelopeError> {
         serde_json::from_str(s).map_err(|e| EnvelopeError::Json(e.to_string()))
     }
+}
+
+/// z-base-32 SHA-256 over the canonical bytes of `value`. The one content
+/// hash this product has: `Envelope::record_id` is this function applied
+/// to an envelope, and every other content-addressed identifier is this
+/// function applied to something else. `prefix` is prepended verbatim so
+/// two families of id cannot collide.
+///
+/// The canonical bytes are key-sorted `serde_json`, not full RFC 8785 --
+/// which is only reproducible for integers, so a value containing a
+/// non-integer number hashes differently on a producer that round-trips
+/// floats differently. `RecordDraft::validate` refuses those in a payload
+/// for exactly this reason; a caller hashing something else must apply
+/// the same rule itself.
+pub fn content_digest(prefix: &str, value: &Value) -> Result<String, EnvelopeError> {
+    let bytes = serde_json::to_vec(&substrate::canonicalize_json_value(value))
+        .map_err(|e| EnvelopeError::Json(e.to_string()))?;
+    Ok(format!("{prefix}{}", z32::encode(&sha2::Sha256::digest(&bytes))))
 }
 
 #[cfg(test)]

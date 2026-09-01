@@ -1,19 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
-//! Substrate-level deployment integration test for the Roym SynApp.
-//!
-//! Deploys the six Roym services on a live substrate instance with a gateway
-//! and registry, and tests:
-//! 1. Static UI serving (`GET /`) from the asset bundle with CSP meta header.
-//! 2. `POST /rpc` `session.whoami` returns the person DID and `auth:
-//!    "delegated"` under a session cookie minted by the node auth service.
-//! 3. `POST /rpc` `profile.ping` proxy call reaches the sibling service.
-//! 4. Open topology on `directory` vs restricted/private on `profile`.
-//! 5. `Authorization: Bearer <token>` works without browser cookie.
-//! 6. Unauthenticated request reports `self-asserted:<node-did>`.
-//!
-//! Login here uses the auth service's `local` method (a same-machine
-//! convenience); the browser Hub uses `delegated-key` and is covered by the
-//! Playwright suite.
+//! Substrate-level end-to-end integration tests for Roym identity enrolment
+//! and authorization.
 
 use std::{
     collections::BTreeMap,
@@ -33,16 +20,16 @@ use syneroym_app_orchestration::{
 };
 use syneroym_core::{
     config::{AuthRole, IdentityMode},
-    dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, RegistryClient},
-    util::short_hash,
+    dht_registry::DEFAULT_ENDPOINT_NOT_AFTER_SECS,
 };
-use syneroym_identity::{Identity, substrate};
+use syneroym_identity::{DelegationCertificate, Identity, substrate};
 use syneroym_sdk::{
     SyneroymClient,
     deploy::{
         self, ApplyRequest, DeployTarget, apply_plan, certify_instance, member_registry_record,
     },
 };
+use syneroym_signed_record::SCOPE_RECORD_SIGNING;
 
 mod common;
 use common::{SubstrateTestContext, alloc_ports};
@@ -136,20 +123,16 @@ fn deploy_targets(
         .collect()
 }
 
-/// Everything both `roym_app_e2e.rs` tests need: a live substrate with the
-/// six Roym services deployed through a real (unmanaged) `apply_plan`,
-/// exactly the way `roymctl app deploy` would deploy them.
 struct RoymDeployment {
     ctx: SubstrateTestContext,
     gateway_url: String,
     registry_url: String,
     web_did: String,
-    dir_did: String,
     profile_did: String,
+    alice: Identity,
     alice_did: String,
-    // Held for the deployment's lifetime: the auth role's
-    // `person_identities_dir` points inside this directory, and dropping the
-    // guard deletes it out from under a running auth service.
+    stranger: Identity,
+    stranger_did: String,
     _person_identities_dir: tempfile::TempDir,
 }
 
@@ -160,6 +143,7 @@ async fn deploy_roym_app() -> RoymDeployment {
     let person_identities_dir = tempfile::tempdir().unwrap();
     let ids_dir = person_identities_dir.path().join("identities");
     fs::create_dir_all(&ids_dir).unwrap();
+
     let ids_dir_for_auth = ids_dir.clone();
     let ctx = SubstrateTestContext::setup_with(iroh_port, reg_port, gw_port, move |cfg| {
         cfg.roles.auth =
@@ -172,37 +156,19 @@ async fn deploy_roym_app() -> RoymDeployment {
 
     let alice = Identity::from_bytes(&ctx.owner.to_bytes());
     let alice_did = ctx.owner_did.clone();
-    let alice_key_path = ids_dir.join("alice.key");
-    alice.save_to_path(&alice_key_path).unwrap();
+    alice.save_to_path(ids_dir.join("alice.key")).unwrap();
+
+    let stranger = Identity::generate().unwrap();
+    let stranger_did = substrate::derive_did_key(&stranger.public_key());
+    stranger.save_to_path(ids_dir.join("stranger.key")).unwrap();
 
     let gateway_url = format!("http://127.0.0.1:{gw_port}");
     let registry_url = format!("http://127.0.0.1:{reg_port}");
 
-    // Prepare SynApp manifest
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let manifest_path = root.join("crates/roym_core/app/roym.toml");
     let manifest_toml = fs::read_to_string(&manifest_path).unwrap();
     let manifest: SynAppManifest = toml::from_str(&manifest_toml).unwrap();
-
-    // Verify pre-built WASM artifacts exist before compiling the deployment plan
-    for (svc_name, svc) in &manifest.services {
-        let wasm_path = root.join(&svc.config.source);
-        if !wasm_path.exists() {
-            panic!(
-                "roym_app_e2e: WASM artifact for service '{svc_name}' not found at {wasm_path:?} \
-                 -- run `mise run build:roym`"
-            );
-        }
-        if let Some(assets) = &svc.config.assets {
-            let bundle_path = root.join(&assets.archive);
-            if !bundle_path.exists() {
-                panic!(
-                    "roym_app_e2e: UI bundle for service '{svc_name}' not found at \
-                     {bundle_path:?} -- run `mise run build:roym-ui`"
-                );
-            }
-        }
-    }
 
     let catalog = LocalFilesystemCatalog::new(root.clone());
     let compiled = compile(AppInstanceId::new("roym"), &manifest, &catalog).await.unwrap();
@@ -251,17 +217,9 @@ async fn deploy_roym_app() -> RoymDeployment {
     .unwrap();
     assert!(report.is_complete(), "{:?}", report.failures);
 
-    // Find each service's minted DID
     let web_svc =
         new_plan.services.iter().find(|s| s.logical_ref.service_name.as_str() == "web").unwrap();
     let web_did = web_svc.service_id.as_str().to_string();
-
-    let dir_svc = new_plan
-        .services
-        .iter()
-        .find(|s| s.logical_ref.service_name.as_str() == "directory")
-        .unwrap();
-    let dir_did = dir_svc.service_id.as_str().to_string();
 
     let profile_svc = new_plan
         .services
@@ -275,184 +233,220 @@ async fn deploy_roym_app() -> RoymDeployment {
         gateway_url,
         registry_url,
         web_did,
-        dir_did,
         profile_did,
+        alice,
         alice_did,
+        stranger,
+        stranger_did,
         _person_identities_dir: person_identities_dir,
     }
 }
 
+async fn login_local(gateway_url: &str, identity: &str) -> String {
+    let http = Client::builder().pool_max_idle_per_host(0).build().unwrap();
+    let login_resp = http
+        .post(format!("{gateway_url}/_syneroym/session/login"))
+        .json(&json!({ "method": "local", "identity": identity }))
+        .send()
+        .await
+        .unwrap();
+    if !login_resp.status().is_success() {
+        let status = login_resp.status();
+        let body = login_resp.text().await.unwrap();
+        panic!("login_local failed with status {status}: {body}");
+    }
+    let login_body: Value = login_resp.json().await.unwrap();
+    login_body["token"].as_str().unwrap().to_string()
+}
+
 #[tokio::test]
-async fn test_roym_app_e2e_lifecycle() {
+async fn test_roym_identity_e2e() {
     let RoymDeployment {
         ctx,
         gateway_url,
-        registry_url,
+        registry_url: _,
         web_did,
-        dir_did,
-        profile_did,
+        profile_did: _,
+        alice,
         alice_did,
+        stranger,
+        stranger_did: _,
         _person_identities_dir,
     } = deploy_roym_app().await;
-    let web_did = web_did.as_str();
-    let dir_did = dir_did.as_str();
-    let profile_did = profile_did.as_str();
-    // `pool_max_idle_per_host(0)` forces a fresh connection per request: the
-    // gateway pins a whole socket to one upstream after the first request
-    // (ADR-0024 §P1), and the login POST goes to the auth service while every
-    // later request goes to `web`.
-    let client = Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .pool_max_idle_per_host(0)
-        .build()
-        .unwrap();
 
-    // Log in through the node auth service's `local` method (proxied by the
-    // gateway on the reserved path).
-    let login_res = client
-        .post(format!("{gateway_url}/_syneroym/session/login"))
-        .json(&json!({ "method": "local", "identity": "alice" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(login_res.status(), 200);
-
-    // Extract cookie
-    let cookie_header = login_res.headers().get("set-cookie").unwrap().to_str().unwrap();
-    let cookie_val = cookie_header
-        .split(';')
-        .find(|part| part.trim().starts_with(SESSION_COOKIE_NAME))
-        .unwrap()
-        .trim();
-    let token = cookie_val.strip_prefix(&format!("{SESSION_COOKIE_NAME}=")).unwrap();
-
-    let s_hash = short_hash(web_did);
+    let http = Client::builder().pool_max_idle_per_host(0).build().unwrap();
+    let s_hash = syneroym_core::util::short_hash(&web_did);
     let host_header = format!("s{s_hash}.localhost");
 
-    // 1. GET / on web service's DID returns index.html with CSP meta tag
-    let web_resp = client
-        .get(format!("{gateway_url}/"))
-        .header("Host", &host_header)
-        .header("Cookie", format!("{SESSION_COOKIE_NAME}={token}"))
-        .send()
-        .await
-        .unwrap();
-    let web_resp_status = web_resp.status();
-    let web_resp_body_debug = web_resp.text().await.unwrap();
-    assert_eq!(web_resp_status, 200, "body={web_resp_body_debug}");
-    let web_html = web_resp_body_debug;
-    assert!(
-        web_html.contains("Content-Security-Policy"),
-        "index.html must include CSP meta header"
-    );
-    assert!(web_html.contains("Roym Hub"), "index.html must contain title");
+    // 1. Owner/person DID check is established by harness: alice_did ==
+    //    ctx.owner_did.
+    assert_eq!(alice_did, ctx.owner_did);
 
-    // 2. POST /rpc with session.whoami under cookie returns alice DID and auth:
-    //    "delegated"
-    let whoami_resp = client
+    // 2. session login for alice
+    let alice_token = login_local(&gateway_url, "alice").await;
+
+    // 3. profile.signing-status
+    let rpc_status = http
         .post(format!("{gateway_url}/rpc"))
         .header("Host", &host_header)
-        .header("Cookie", format!("{SESSION_COOKIE_NAME}={token}"))
+        .header("Authorization", format!("Bearer {alice_token}"))
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={alice_token}"))
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "session.whoami",
+            "method": "profile.signing-status",
             "params": {}
         }))
         .send()
         .await
         .unwrap();
-    assert_eq!(whoami_resp.status(), 200);
-    let whoami_json: Value = whoami_resp.json().await.unwrap();
-    assert_eq!(whoami_json["result"]["did"], alice_did);
-    assert_eq!(whoami_json["result"]["auth"], "delegated");
+    let status_val: Value = rpc_status.json().await.unwrap();
+    let res = &status_val["result"];
+    assert_eq!(res["certificate"]["state"], "missing", "full status_val: {status_val}");
+    assert_eq!(res["owner_did"], alice_did);
+    let signing_did = res["signing_did"].as_str().unwrap().to_string();
+    assert!(signing_did.starts_with("did:key:"));
 
-    // 3. POST /rpc with profile.ping under the cookie reaches profile
-    let ping_resp = client
+    // 4. profile.set before enrolment -> signing-not-enrolled
+    let rpc_set_before = http
         .post(format!("{gateway_url}/rpc"))
         .header("Host", &host_header)
-        .header("Cookie", format!("{SESSION_COOKIE_NAME}={token}"))
+        .header("Authorization", format!("Bearer {alice_token}"))
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={alice_token}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "profile.set",
+            "params": { "display_name": "Alice" }
+        }))
+        .send()
+        .await
+        .unwrap();
+    let set_before_val: Value = rpc_set_before.json().await.unwrap();
+    assert_eq!(set_before_val["error"]["code"], -32602);
+    assert!(set_before_val["error"]["message"].as_str().unwrap().contains("signing-not-enrolled"));
+
+    // 5. Mint cert and install-signing-certificate (what `roym enrol-signing`
+    //    performs)
+    let signing_pubkey = substrate::resolve_did_key(&signing_did).unwrap();
+    let cert = DelegationCertificate::issue(
+        &alice,
+        signing_pubkey,
+        720 * 3600,
+        SCOPE_RECORD_SIGNING.to_string(),
+    )
+    .unwrap();
+
+    let rpc_install = http
+        .post(format!("{gateway_url}/rpc"))
+        .header("Host", &host_header)
+        .header("Authorization", format!("Bearer {alice_token}"))
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={alice_token}"))
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 3,
-            "method": "profile.ping",
-            "params": {}
+            "method": "profile.install-signing-certificate",
+            "params": { "certificate": cert.to_json().unwrap() }
         }))
         .send()
         .await
         .unwrap();
-    assert_eq!(ping_resp.status(), 200);
-    let ping_json: Value = ping_resp.json().await.unwrap();
-    assert_eq!(ping_json["result"]["service"], "profile");
+    let install_val: Value = rpc_install.json().await.unwrap();
+    let res = &install_val["result"];
+    assert_eq!(res["master_did"], alice_did, "full install_val: {install_val}");
+    assert!(res["expires_at_secs"].as_u64().is_some());
 
-    // 4. Open topology on directory vs private on profile
-    let reg_client = RegistryClient::new(false, Some(registry_url.clone()));
-    let dir_lookup = reg_client.lookup(dir_did, false).await;
-    assert!(dir_lookup.is_ok(), "directory is public and must resolve in registry");
-    let profile_lookup = reg_client.lookup(profile_did, false).await;
-    assert!(profile_lookup.is_err(), "profile is private and must not be published");
-
-    // 5. Plain HTTP client with Authorization: Bearer <token>
-    let bearer_resp = client
+    // 6. profile.set { display_name, conversation_address } after enrolment
+    let rpc_set_after = http
         .post(format!("{gateway_url}/rpc"))
         .header("Host", &host_header)
-        .header("Authorization", format!("Bearer {token}"))
+        .header("Authorization", format!("Bearer {alice_token}"))
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={alice_token}"))
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 4,
-            "method": "session.whoami",
-            "params": {}
+            "method": "profile.set",
+            "params": {
+                "display_name": "Alice",
+                "conversation_address": "syneroym://conv.addr/1"
+            }
         }))
         .send()
         .await
         .unwrap();
-    assert_eq!(bearer_resp.status(), 200);
-    let bearer_json: Value = bearer_resp.json().await.unwrap();
-    assert_eq!(bearer_json["result"]["did"], alice_did);
-    assert_eq!(bearer_json["result"]["auth"], "delegated");
+    let set_after_val: Value = rpc_set_after.json().await.unwrap();
+    let envelope_str = set_after_val["result"]["envelope"].as_str().unwrap();
+    let envelope: syneroym_signed_record::Envelope = serde_json::from_str(envelope_str).unwrap();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let verified =
+        syneroym_signed_record::verify(&envelope, &syneroym_signed_record::VerifyOptions::new(now))
+            .unwrap();
+    assert_eq!(verified.issuer, alice_did);
+    assert_eq!(envelope.payload["display_name"], "Alice");
+    assert_eq!(envelope.payload["conversation_address"], "syneroym://conv.addr/1");
 
-    // 6. Unauthenticated request reports self-asserted (simulating second local
-    //    process)
-    let anon_client = Client::new();
-    let anon_resp = anon_client
+    // 7. Stranger logs in and calls profile.get -> -32011 (NotOwner)
+    let stranger_token = login_local(&gateway_url, "stranger").await;
+    let rpc_stranger_get = http
         .post(format!("{gateway_url}/rpc"))
         .header("Host", &host_header)
+        .header("Authorization", format!("Bearer {stranger_token}"))
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={stranger_token}"))
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 5,
-            "method": "session.whoami",
+            "method": "profile.get",
             "params": {}
         }))
         .send()
         .await
         .unwrap();
-    assert_eq!(anon_resp.status(), 200);
-    let anon_json: Value = anon_resp.json().await.unwrap();
-    assert_eq!(anon_json["result"]["auth"], "self-asserted");
-    assert_ne!(anon_json["result"]["did"], alice_did);
+    let stranger_get_val: Value = rpc_stranger_get.json().await.unwrap();
+    assert_eq!(stranger_get_val["error"]["code"], -32011);
 
-    ctx.teardown().await;
-}
+    // 8. Stranger mints a certificate naming stranger as master over profile's
+    //    signing key and attempts install -> refused
+    let stranger_cert = DelegationCertificate::issue(
+        &stranger,
+        signing_pubkey,
+        720 * 3600,
+        SCOPE_RECORD_SIGNING.to_string(),
+    )
+    .unwrap();
+    let rpc_stranger_install = http
+        .post(format!("{gateway_url}/rpc"))
+        .header("Host", &host_header)
+        .header("Authorization", format!("Bearer {stranger_token}"))
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={stranger_token}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "profile.install-signing-certificate",
+            "params": { "certificate": stranger_cert.to_json().unwrap() }
+        }))
+        .send()
+        .await
+        .unwrap();
+    let stranger_install_val: Value = rpc_stranger_install.json().await.unwrap();
+    assert_eq!(stranger_install_val["error"]["code"], -32011);
 
-/// An unaffiliated caller -- no session, no capability token, not even a
-/// person identity -- can still resolve `directory`'s registry record
-/// (`visibility = "public"`, `roym.toml`), the same open-lookup path the
-/// client gateway and WebRTC coordinator both use with no grant. The same
-/// lookup for `profile` (declared `private`) is refused, since `private`
-/// publishes no registry record at all. This exercises `EndpointInfo`'s
-/// registry-record `visibility`, not `ServiceSpec.topology_visibility`
-/// (the `supervisor/resolve` path); that field is still uncovered here --
-/// see the deferred-backlog row for matrix row 18.
-#[tokio::test]
-async fn an_unaffiliated_caller_resolves_directorys_public_record_but_not_profiles() {
-    let RoymDeployment { ctx, registry_url, dir_did, profile_did, .. } = deploy_roym_app().await;
-
-    let unaffiliated_caller = RegistryClient::new(false, Some(registry_url));
-    let dir_lookup = unaffiliated_caller.lookup(&dir_did, false).await;
-    assert!(dir_lookup.is_ok(), "directory declares visibility = public and must resolve");
-
-    let profile_lookup = unaffiliated_caller.lookup(&profile_did, false).await;
-    assert!(profile_lookup.is_err(), "profile is private and must not be published");
+    // 9. Stranger calls signing method over HTTP RPC -> refused
+    let rpc_stranger_sign = http
+        .post(format!("{gateway_url}/rpc"))
+        .header("Host", &host_header)
+        .header("Authorization", format!("Bearer {stranger_token}"))
+        .header("Cookie", format!("{SESSION_COOKIE_NAME}={stranger_token}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "signing.sign-record",
+            "params": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    let stranger_sign_val: Value = rpc_stranger_sign.json().await.unwrap();
+    assert!(stranger_sign_val.get("error").is_some());
 
     ctx.teardown().await;
 }

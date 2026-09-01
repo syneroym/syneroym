@@ -568,6 +568,29 @@ impl SynSvcNativeService {
         }
     }
 
+    fn admit_privileged_capability(&self, caller: &syneroym_rpc::CallerContext) -> RpcResult<()> {
+        if caller.caller_did.starts_with("system:") {
+            return Ok(());
+        }
+        let owner = self
+            .record_signer
+            .get()
+            .and_then(|s| s.identity(&self.service_id).ok())
+            .and_then(|i| i.owner_did);
+        match owner {
+            Some(o) if o == caller.caller_did => Ok(()),
+            _ => Err(RpcError::Custom(
+                PERMISSION_DENIED_CODE,
+                format!(
+                    "'{}' may not reach this capability on service '{}': it is neither the \
+                     service itself nor its recorded owner",
+                    caller.caller_did, self.service_id
+                ),
+                None,
+            )),
+        }
+    }
+
     /// Wires the Conversation service in after construction.
     /// Called at most once per instance, from the node's own composition
     /// root.
@@ -1318,6 +1341,7 @@ impl SynSvcNativeService {
     async fn dispatch_vault(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
         match invocation.method.as_str() {
             "reveal" => {
+                self.admit_privileged_capability(&invocation.caller)?;
                 #[derive(serde::Deserialize)]
                 struct Req {
                     key: String,
@@ -1717,6 +1741,22 @@ impl NativeService for SynSvcNativeService {
     }
 }
 
+#[allow(dead_code)]
+pub(crate) fn empty_service_proxy() -> Weak<dyn ServiceProxy> {
+    #[derive(Debug)]
+    struct NeverConstructed;
+    #[async_trait::async_trait]
+    impl ServiceProxy for NeverConstructed {
+        async fn invoke(
+            &self,
+            _: syneroym_rpc::ProxyRequest,
+        ) -> Result<Value, syneroym_rpc::ProxyError> {
+            unimplemented!()
+        }
+    }
+    Arc::downgrade(&(Arc::new(NeverConstructed) as Arc<dyn ServiceProxy>))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1765,6 +1805,52 @@ mod tests {
         );
 
         assert!(parse_principal(&serde_json::json!("invalid")).is_err());
+    }
+
+    #[test]
+    fn admit_privileged_capability_admits_self_and_owner_refuses_stranger() {
+        let node_id = Arc::new(Identity::generate().unwrap());
+        let ks = Arc::new(KeyStore::new());
+        let tmp = tempfile::tempdir().unwrap();
+        let sp: Arc<dyn StorageProvider> =
+            Arc::new(syneroym_data_db::SqliteStorageProvider::new(tmp.path(), true).unwrap());
+        let bp: Arc<dyn BlobProvider> =
+            Arc::new(syneroym_data_blob::ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let mb =
+            Arc::new(MqttBroker::new(syneroym_mqtt_broker::MqttBrokerConfig::default()).unwrap());
+
+        let svc = SynSvcNativeService::new(
+            "did:key:zTestSvc".to_string(),
+            ks,
+            sp,
+            bp,
+            mb,
+            None,
+            node_id,
+            "did:key:zOwner",
+            empty_service_proxy(),
+            syneroym_rpc::empty_row_authorizer(),
+            None,
+        );
+
+        let system_caller = syneroym_rpc::CallerContext {
+            caller_did: "system:did:key:zTestSvc".to_string(),
+            app_instance: None,
+            session: Default::default(),
+            auth: syneroym_rpc::AuthLevel::Delegated,
+            proof: None,
+        };
+        assert!(svc.admit_privileged_capability(&system_caller).is_ok());
+
+        let stranger_caller = syneroym_rpc::CallerContext {
+            caller_did: "did:key:zStranger".to_string(),
+            app_instance: None,
+            session: Default::default(),
+            auth: syneroym_rpc::AuthLevel::Delegated,
+            proof: None,
+        };
+        let err = svc.admit_privileged_capability(&stranger_caller).unwrap_err();
+        assert!(matches!(err, RpcError::Custom(PERMISSION_DENIED_CODE, _, _)));
     }
 
     #[test]

@@ -16,7 +16,8 @@ clap.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
-syneroym-identity.workspace = true
+syneroym-identity = { workspace = true, features = ["backup"] }
+syneroym-signed-record.workspace = true
 syneroym-sdk.workspace = true
 syneroym-core.workspace = true
 syneroym-ucan.workspace = true

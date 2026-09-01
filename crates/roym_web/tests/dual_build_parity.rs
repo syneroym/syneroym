@@ -11,12 +11,8 @@ use std::{
 };
 
 use serde_json::{Value, json};
-use syneroym_app_host::{
-    AppProxy,
-    types::{
-        http::{CallerAuth, CallerIdentity, FrameKind, HttpRequest, HttpResponse},
-        proxy::CallTarget,
-    },
+use syneroym_app_host::types::http::{
+    CallerAuth, CallerIdentity, FrameKind, HttpRequest, HttpResponse,
 };
 use syneroym_app_host_native::{
     HttpSink, NativeAppHost, NativeHostFactory, NativeHttpAdapter, WebSocketSink,
@@ -36,6 +32,11 @@ use syneroym_core::{
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
+use syneroym_identity::{
+    Identity,
+    delegation::{DelegationCertificate, SCOPE_RECORD_SIGNING},
+    substrate::{derive_did_key, resolve_did_key},
+};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_roym_catalog::native::NativeCatalog;
 use syneroym_roym_conversation::native::NativeConversation;
@@ -45,9 +46,9 @@ use syneroym_roym_profile::native::NativeProfile;
 use syneroym_roym_transaction::native::NativeTransaction;
 use syneroym_roym_web::native::NativeWeb;
 use syneroym_rpc::{
-    AuthLevel, CallOrigin, CallerContext, ConversationHost, JsonRpcRequest, NativeHttpService,
-    NativeInvocation, NativeService, ProxyError, ProxyProtocol, ProxyRequest, ServiceProxy,
-    SessionContext, WebSocketSenders,
+    AuthLevel, CallerContext, ConversationHost, JsonRpcRequest, NativeHttpService,
+    NativeInvocation, NativeService, ProxyError, ProxyRequest, ServiceProxy, SessionContext,
+    WebSocketSenders,
 };
 use syneroym_sandbox_wasm::{AppSandboxEngine, GuestHttpOutcome};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
@@ -58,15 +59,24 @@ fn did_for_service(name: &str) -> String {
     format!("did:key:zRoym{name}")
 }
 
+fn owner_identity() -> Identity {
+    Identity::from_bytes(&[42; 32])
+}
+
+fn owner_did() -> String {
+    derive_did_key(&owner_identity().public_key())
+}
+
 fn caller() -> CallerContext {
+    custom_caller(&owner_did())
+}
+
+fn custom_caller(did: &str) -> CallerContext {
     CallerContext {
-        caller_did: "did:key:zParityTestCaller".to_string(),
+        caller_did: did.to_string(),
         app_instance: None,
-        session: SessionContext {
-            subject_did: "did:key:zParityTestCaller".to_string(),
-            ..Default::default()
-        },
-        auth: AuthLevel::Ucan,
+        session: SessionContext { subject_did: did.to_string(), ..Default::default() },
+        auth: AuthLevel::Delegated,
         proof: None,
     }
 }
@@ -260,6 +270,8 @@ impl HttpDriver for NativeHttpDriver {
 }
 
 struct Harness {
+    owner: Identity,
+    owner_did: String,
     wasm: WasmDriver,
     native: NativeDriver,
     wasm_http: WasmHttpDriver,
@@ -271,6 +283,12 @@ struct Harness {
     _native_ws_senders: Arc<WebSocketSenders>,
     _wasm_dir: tempfile::TempDir,
     _native_dir: tempfile::TempDir,
+}
+
+impl Harness {
+    fn caller(&self) -> CallerContext {
+        custom_caller(&self.owner_did)
+    }
 }
 
 impl Drop for Harness {
@@ -494,13 +512,19 @@ async fn harness() -> Harness {
         );
     }
 
+    let owner = owner_identity();
+    let owner_did = owner_did();
+    let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+    let fixed_clock = syneroym_core::record_signer::RecordClock::Fixed(2_000_000_000);
+
     let wasm_resolver = Arc::new(LogicalResolver::new(wasm_inventory));
     for svc in services::ALL {
         let service_id = did_for_service(svc.name);
         wasm_reg
-            .set_app_context(service_id, app_instance.to_string(), svc.name.to_string())
+            .set_app_context(service_id.clone(), app_instance.to_string(), svc.name.to_string())
             .await
             .unwrap();
+        wasm_reg.set_owner(service_id, owner_did.clone()).await.unwrap();
     }
 
     let wasm_conversation =
@@ -514,7 +538,7 @@ async fn harness() -> Harness {
             wasm_storage,
             wasm_blobs,
             wasm_mqtt,
-            wasm_reg,
+            wasm_reg.clone(),
             wasm_resolver,
         )
         .await
@@ -527,6 +551,13 @@ async fn harness() -> Harness {
         .conversation
         .set(Arc::downgrade(&wasm_conversation) as Weak<dyn ConversationHost>)
         .expect("conversation set once");
+
+    let wasm_record_signer = syneroym_core::record_signer::NodeRecordSigner::with_clock(
+        node_identity.clone(),
+        wasm_reg,
+        fixed_clock,
+    );
+    wasm_engine.record_signer.set(wasm_record_signer).expect("set wasm record_signer");
 
     let wasm_proxy = Arc::new(TestWasmServiceProxy {
         engine: wasm_engine.clone(),
@@ -575,13 +606,20 @@ async fn harness() -> Harness {
     for svc in services::ALL {
         let service_id = did_for_service(svc.name);
         native_reg
-            .set_app_context(service_id, app_instance.to_string(), svc.name.to_string())
+            .set_app_context(service_id.clone(), app_instance.to_string(), svc.name.to_string())
             .await
             .unwrap();
+        native_reg.set_owner(service_id, owner_did.clone()).await.unwrap();
     }
 
     let native_conversation =
         test_conversation_service(native_storage.clone(), native_ks.clone(), native_reg.clone());
+
+    let native_record_signer = syneroym_core::record_signer::NodeRecordSigner::with_clock(
+        node_identity,
+        native_reg.clone(),
+        fixed_clock,
+    );
 
     let make_factory = |name: &str| {
         let service_id = did_for_service(name);
@@ -658,6 +696,7 @@ async fn harness() -> Harness {
 
     for f in &native_factories {
         f.set_service_proxy(Arc::downgrade(&native_proxy) as Weak<dyn ServiceProxy>);
+        f.set_record_signer(native_record_signer.clone());
     }
 
     let web_http: Arc<dyn HttpSink> = native_web.clone();
@@ -672,6 +711,8 @@ async fn harness() -> Harness {
     ));
 
     Harness {
+        owner,
+        owner_did,
         wasm: WasmDriver { engine: wasm_engine.clone() },
         native: NativeDriver {
             web: native_web.clone(),
@@ -699,7 +740,7 @@ async fn harness() -> Harness {
 async fn scenario_1_profile_ping_reachability_byte_identical() {
     let h = harness().await;
     let req = json!({
-        "method": "profile.ping",
+        "method": "profile.policy",
         "params": {}
     })
     .to_string();
@@ -709,14 +750,15 @@ async fn scenario_1_profile_ping_reachability_byte_identical() {
 
     assert_eq!(wasm_res, native_res);
     let resp: Response = serde_json::from_str(&wasm_res).unwrap();
-    assert_eq!(resp.result, Some(json!({ "service": "profile" })));
+    let result = resp.result.unwrap();
+    assert!(result.get("statement").is_some());
 }
 
 #[tokio::test]
 async fn scenario_2_inert_extra_caller_field_in_params() {
     let h = harness().await;
     let req_extra = json!({
-        "method": "profile.ping",
+        "method": "profile.policy",
         "params": {
             "caller": "did:key:fakeAttacker",
             "person_did": "did:key:fakeAlice",
@@ -730,19 +772,14 @@ async fn scenario_2_inert_extra_caller_field_in_params() {
 
     assert_eq!(wasm_res, native_res);
     let resp: Response = serde_json::from_str(&wasm_res).unwrap();
-    assert_eq!(resp.result, Some(json!({ "service": "profile" })));
+    let result = resp.result.unwrap();
+    assert!(result.get("statement").is_some());
 }
 
 #[tokio::test]
 async fn scenario_3_session_whoami_with_delegated_caller() {
     let h = harness().await;
-    let delegated_caller = CallerContext {
-        caller_did: "did:key:hAlice".to_string(),
-        app_instance: None,
-        session: SessionContext { subject_did: "did:key:hAlice".to_string(), ..Default::default() },
-        auth: AuthLevel::Delegated,
-        proof: None,
-    };
+    let delegated_caller = caller();
 
     let req_body = json!({
         "jsonrpc": "2.0",
@@ -762,7 +799,7 @@ async fn scenario_3_session_whoami_with_delegated_caller() {
     assert_eq!(wasm_resp.body, native_resp.body);
 
     let val: Value = serde_json::from_slice(&wasm_resp.body).unwrap();
-    assert_eq!(val["result"]["did"], "did:key:hAlice");
+    assert_eq!(val["result"]["did"], owner_did());
     assert_eq!(val["result"]["auth"], "delegated");
 }
 
@@ -791,25 +828,29 @@ async fn scenario_4_unlisted_method_returns_32601() {
 #[tokio::test]
 async fn scenario_5_unbound_dependency_returns_32001() {
     let h = harness().await;
-    let req = json!({
+    let req_body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
         "method": "conversation.ping",
         "params": {}
     })
-    .to_string();
+    .to_string()
+    .into_bytes();
 
-    let wasm_res = h.wasm.invoke_web(&req).await.unwrap();
-    let native_res = h.native.invoke_web(&req).await.unwrap();
-    assert_eq!(wasm_res, native_res);
+    let wasm_resp = h.wasm_http.post("/rpc", req_body.clone(), Some(caller())).await;
+    let native_resp = h.native_http.post("/rpc", req_body, Some(caller())).await;
+    assert_eq!(wasm_resp.body, native_resp.body);
 
     // conversation is a declared dependency of web (see roym.toml), but the
     // topology-registration loops above deliberately filter it out (`s.name
     // != "conversation"`), leaving it unbound: the call must be refused
     // with -32001, and the refusal must not repeat the dependency's DID
     // back to the caller.
-    let resp: Response = serde_json::from_str(&wasm_res).unwrap();
-    let err = resp.error.unwrap_or_else(|| panic!("expected error, got: {wasm_res}"));
-    assert_eq!(err.code, -32001);
-    assert!(!err.message.contains("did:"), "error message must not leak a DID: {}", err.message);
+    let val: Value = serde_json::from_slice(&wasm_resp.body).unwrap();
+    let err_code = val["error"]["code"].as_i64().unwrap();
+    let err_msg = val["error"]["message"].as_str().unwrap();
+    assert_eq!(err_code, -32001);
+    assert!(!err_msg.contains("did:"), "error message must not leak a DID: {}", err_msg);
 }
 
 #[tokio::test]
@@ -824,8 +865,8 @@ async fn scenario_6_handle_http_post_rpc_matches_invoke() {
     .to_string()
     .into_bytes();
 
-    let wasm_http_resp = h.wasm_http.post("/rpc", req_body.clone(), None).await;
-    let native_http_resp = h.native_http.post("/rpc", req_body, None).await;
+    let wasm_http_resp = h.wasm_http.post("/rpc", req_body.clone(), Some(caller())).await;
+    let native_http_resp = h.native_http.post("/rpc", req_body, Some(caller())).await;
 
     assert_eq!(wasm_http_resp.status, 200);
     assert_eq!(native_http_resp.status, 200);
@@ -862,7 +903,8 @@ async fn scenario_8_status_on_all_six_services() {
         assert_eq!(wasm_status, native_status, "status mismatch on service {}", svc.name);
         let val: Value = serde_json::from_str(&wasm_status).unwrap();
         assert_eq!(val["service"], svc.name);
-        assert_eq!(val["schema_version"], 1);
+        let expected_schema_version = if svc.name == "profile" { 2 } else { 1 };
+        assert_eq!(val["schema_version"], expected_schema_version);
     }
 }
 
@@ -905,64 +947,629 @@ async fn scenario_9_websocket_lifecycle_fires() {
 #[tokio::test]
 async fn scenario_10_directory_service_call_target() {
     let h = harness().await;
-    let req = json!({
+    let req_body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
         "method": "directory.ping",
         "params": {}
     })
-    .to_string();
+    .to_string()
+    .into_bytes();
 
-    let wasm_res = h.wasm.invoke_web(&req).await.unwrap();
-    let native_res = h.native.invoke_web(&req).await.unwrap();
+    let wasm_resp = h.wasm_http.post("/rpc", req_body.clone(), Some(caller())).await;
+    let native_resp = h.native_http.post("/rpc", req_body, Some(caller())).await;
 
-    assert_eq!(wasm_res, native_res);
-    let resp: Response = serde_json::from_str(&wasm_res).unwrap();
-    assert_eq!(resp.result, Some(json!({ "service": "directory" })));
+    assert_eq!(wasm_resp.body, native_resp.body);
+    let val: Value = serde_json::from_slice(&wasm_resp.body).unwrap();
+    assert_eq!(val["result"]["service"], "directory");
+}
 
-    // Both test proxies special-case the literal target "did:key:hForeign"
-    // as a stand-in for a caller-supplied foreign DID that happens to
-    // resolve to `directory`. Nothing in product code ever constructs that
-    // target, so drive it directly through each side's own call path to
-    // prove the branch actually behaves as the fixture claims.
-    let inner_request = json!({"method": "directory.ping", "params": {}}).to_string();
-    let call_params = json!([inner_request]).to_string();
+#[tokio::test]
+async fn scenario_11_profile_signing_status_unenrolled_parity() {
+    let h = harness().await;
+    let req = json!({ "method": "profile.signing-status", "params": {} }).to_string().into_bytes();
 
-    let native_host = h.native_factories[0].host_for(caller());
-    let native_foreign_res = native_host
-        .call(
-            CallTarget::Service("did:key:hForeign".to_string()),
-            services::DIRECTORY.interface.to_string(),
-            "invoke".to_string(),
-            call_params.clone(),
-            None,
-        )
-        .await
-        .unwrap();
-    let native_foreign_resp: Response = serde_json::from_str(&native_foreign_res).unwrap();
-    assert_eq!(native_foreign_resp.result, Some(json!({ "service": "directory" })));
+    let wasm_res = h.wasm_http.post("/rpc", req.clone(), Some(h.caller())).await;
+    let native_res = h.native_http.post("/rpc", req, Some(h.caller())).await;
 
-    // `AppSandboxEngine` gives WASM guests no Rust-callable `host.call`
-    // surface from outside the component, so this drives the WASM test
-    // proxy's own `ServiceProxy::invoke` directly with the same request
-    // shape a guest's `host.call` would produce.
-    let wasm_foreign_req = ProxyRequest {
-        target_service: "did:key:hForeign".to_string(),
-        interface: services::DIRECTORY.interface.to_string(),
-        method: "invoke".to_string(),
-        params: json!([inner_request]),
-        caller: caller(),
-        origin: CallOrigin::Guest { service_id: did_for_service("web") },
-        protocol: ProxyProtocol::JsonRpcV1,
-        idempotent: false,
-        idempotency_key: None,
-        timeout: None,
-    };
-    let wasm_foreign_val = h.wasm_proxy.invoke(wasm_foreign_req).await.unwrap();
-    let wasm_foreign_res = match wasm_foreign_val {
-        Value::String(s) => s,
-        other => other.to_string(),
-    };
-    let wasm_foreign_resp: Response = serde_json::from_str(&wasm_foreign_res).unwrap();
-    assert_eq!(wasm_foreign_resp.result, Some(json!({ "service": "directory" })));
+    assert_eq!(wasm_res.body, native_res.body);
+    let val: Value = serde_json::from_slice(&wasm_res.body).unwrap();
+    assert_eq!(val["result"]["certificate"]["state"], "missing");
+}
+
+#[tokio::test]
+async fn scenario_12_profile_set_without_enrolment_fails_parity() {
+    let h = harness().await;
+    let req = json!({
+        "method": "profile.set",
+        "params": { "display_name": "Alice" }
+    })
+    .to_string()
+    .into_bytes();
+
+    let wasm_res = h.wasm_http.post("/rpc", req.clone(), Some(h.caller())).await;
+    let native_res = h.native_http.post("/rpc", req, Some(h.caller())).await;
+
+    assert_eq!(wasm_res.body, native_res.body);
+    let val: Value = serde_json::from_slice(&wasm_res.body).unwrap();
+    assert_eq!(val["error"]["code"], -32602);
+}
+
+#[tokio::test]
+async fn scenario_13_profile_install_certificate_and_signing_status_parity() {
+    let h = harness().await;
+    let caller_identity = h.caller();
+
+    let status_req =
+        json!({ "method": "profile.signing-status", "params": {} }).to_string().into_bytes();
+    let status_res =
+        h.wasm_http.post("/rpc", status_req.clone(), Some(caller_identity.clone())).await;
+    let status_val: Value = serde_json::from_slice(&status_res.body).unwrap();
+    let signing_did = status_val["result"]["signing_did"].as_str().unwrap();
+    let signing_pubkey = resolve_did_key(signing_did).unwrap();
+
+    let cert = DelegationCertificate::issue(
+        &h.owner,
+        signing_pubkey,
+        3600,
+        SCOPE_RECORD_SIGNING.to_string(),
+    )
+    .unwrap();
+
+    let install_req = json!({
+        "method": "profile.install-signing-certificate",
+        "params": { "certificate": cert.to_json().unwrap() }
+    })
+    .to_string()
+    .into_bytes();
+
+    let wasm_res =
+        h.wasm_http.post("/rpc", install_req.clone(), Some(caller_identity.clone())).await;
+    let native_res = h.native_http.post("/rpc", install_req, Some(caller_identity.clone())).await;
+    assert_eq!(wasm_res.body, native_res.body);
+
+    let wasm_status =
+        h.wasm_http.post("/rpc", status_req.clone(), Some(caller_identity.clone())).await;
+    let native_status = h.native_http.post("/rpc", status_req, Some(caller_identity)).await;
+    assert_eq!(wasm_status.body, native_status.body);
+}
+
+#[tokio::test]
+async fn scenario_14_profile_set_and_get_envelope_parity() {
+    let h = harness().await;
+    let caller_identity = h.caller();
+
+    let status_req =
+        json!({ "method": "profile.signing-status", "params": {} }).to_string().into_bytes();
+    let status_res = h.wasm_http.post("/rpc", status_req, Some(caller_identity.clone())).await;
+    let status_val: Value = serde_json::from_slice(&status_res.body).unwrap();
+    let signing_did = status_val["result"]["signing_did"].as_str().unwrap();
+    let signing_pubkey = resolve_did_key(signing_did).unwrap();
+
+    let cert = DelegationCertificate::issue(
+        &h.owner,
+        signing_pubkey,
+        3600,
+        SCOPE_RECORD_SIGNING.to_string(),
+    )
+    .unwrap();
+    let install_req = json!({
+        "method": "profile.install-signing-certificate",
+        "params": { "certificate": cert.to_json().unwrap() }
+    })
+    .to_string()
+    .into_bytes();
+    h.wasm_http.post("/rpc", install_req.clone(), Some(caller_identity.clone())).await;
+    h.native_http.post("/rpc", install_req, Some(caller_identity.clone())).await;
+
+    let set_req = json!({
+        "method": "profile.set",
+        "params": { "display_name": "Parity Alice", "conversation_address": "syneroym://addr/1" }
+    })
+    .to_string()
+    .into_bytes();
+
+    let wasm_set = h.wasm_http.post("/rpc", set_req.clone(), Some(caller_identity.clone())).await;
+    let native_set = h.native_http.post("/rpc", set_req, Some(caller_identity.clone())).await;
+    assert_eq!(wasm_set.body, native_set.body);
+
+    let get_req = json!({ "method": "profile.get", "params": {} }).to_string().into_bytes();
+    let wasm_get = h.wasm_http.post("/rpc", get_req.clone(), Some(caller_identity.clone())).await;
+    let native_get = h.native_http.post("/rpc", get_req, Some(caller_identity)).await;
+    assert_eq!(wasm_get.body, native_get.body);
+}
+
+#[tokio::test]
+async fn scenario_15_profile_clear_restores_unbound_state_parity() {
+    let h = harness().await;
+
+    let clear_req = json!({ "method": "profile.clear", "params": {} }).to_string().into_bytes();
+    let wasm_res = h.wasm_http.post("/rpc", clear_req.clone(), Some(caller())).await;
+    let native_res = h.native_http.post("/rpc", clear_req, Some(caller())).await;
+    assert_eq!(wasm_res.body, native_res.body);
+
+    let get_req = json!({ "method": "profile.get", "params": {} }).to_string().into_bytes();
+    let wasm_get = h.wasm_http.post("/rpc", get_req.clone(), Some(caller())).await;
+    let native_get = h.native_http.post("/rpc", get_req, Some(caller())).await;
+    assert_eq!(wasm_get.body, native_get.body);
+}
+
+#[tokio::test]
+async fn scenario_16_profile_policy_public_parity() {
+    let h = harness().await;
+    let req = json!({ "method": "profile.policy", "params": {} }).to_string().into_bytes();
+
+    let wasm_res = h.wasm_http.post("/rpc", req.clone(), None).await;
+    let native_res = h.native_http.post("/rpc", req, None).await;
+    assert_eq!(wasm_res.body, native_res.body);
+}
+
+#[tokio::test]
+async fn scenario_17_contacts_upsert_and_list_parity() {
+    let h = harness().await;
+
+    let upsert_req = json!({
+        "method": "contacts.upsert",
+        "params": { "person_did": "did:key:zFriend17", "favourite": true }
+    })
+    .to_string()
+    .into_bytes();
+
+    let wasm_upsert = h.wasm_http.post("/rpc", upsert_req.clone(), Some(caller())).await;
+    let native_upsert = h.native_http.post("/rpc", upsert_req, Some(caller())).await;
+    assert_eq!(wasm_upsert.body, native_upsert.body);
+
+    let list_req = json!({ "method": "contacts.list", "params": {} }).to_string().into_bytes();
+    let wasm_list = h.wasm_http.post("/rpc", list_req.clone(), Some(caller())).await;
+    let native_list = h.native_http.post("/rpc", list_req, Some(caller())).await;
+    assert_eq!(wasm_list.body, native_list.body);
+}
+
+#[tokio::test]
+async fn scenario_18_contacts_get_and_remove_parity() {
+    let h = harness().await;
+
+    let upsert_req = json!({
+        "method": "contacts.upsert",
+        "params": { "person_did": "did:key:zFriend18" }
+    })
+    .to_string()
+    .into_bytes();
+    h.wasm_http.post("/rpc", upsert_req.clone(), Some(caller())).await;
+    h.native_http.post("/rpc", upsert_req, Some(caller())).await;
+
+    let get_req = json!({
+        "method": "contacts.get",
+        "params": { "person_did": "did:key:zFriend18" }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_get = h.wasm_http.post("/rpc", get_req.clone(), Some(caller())).await;
+    let native_get = h.native_http.post("/rpc", get_req, Some(caller())).await;
+    assert_eq!(wasm_get.body, native_get.body);
+
+    let remove_req = json!({
+        "method": "contacts.remove",
+        "params": { "person_did": "did:key:zFriend18" }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_remove = h.wasm_http.post("/rpc", remove_req.clone(), Some(caller())).await;
+    let native_remove = h.native_http.post("/rpc", remove_req, Some(caller())).await;
+    assert_eq!(wasm_remove.body, native_remove.body);
+}
+
+#[tokio::test]
+async fn scenario_19_contacts_favourite_parity() {
+    let h = harness().await;
+
+    let upsert_req = json!({
+        "method": "contacts.upsert",
+        "params": { "person_did": "did:key:zFriend19" }
+    })
+    .to_string()
+    .into_bytes();
+    h.wasm_http.post("/rpc", upsert_req.clone(), Some(caller())).await;
+    h.native_http.post("/rpc", upsert_req, Some(caller())).await;
+
+    let fav_req = json!({
+        "method": "contacts.favourite",
+        "params": { "person_did": "did:key:zFriend19", "favourite": true }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_fav = h.wasm_http.post("/rpc", fav_req.clone(), Some(caller())).await;
+    let native_fav = h.native_http.post("/rpc", fav_req, Some(caller())).await;
+    assert_eq!(wasm_fav.body, native_fav.body);
+}
+
+#[tokio::test]
+async fn scenario_20_block_add_and_list_parity() {
+    let h = harness().await;
+
+    let add_req = json!({
+        "method": "block.add",
+        "params": { "person_did": "did:key:zSpammer20", "reason": "spam" }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_add = h.wasm_http.post("/rpc", add_req.clone(), Some(caller())).await;
+    let native_add = h.native_http.post("/rpc", add_req, Some(caller())).await;
+    assert_eq!(wasm_add.body, native_add.body);
+
+    let list_req = json!({ "method": "block.list", "params": {} }).to_string().into_bytes();
+    let wasm_list = h.wasm_http.post("/rpc", list_req.clone(), Some(caller())).await;
+    let native_list = h.native_http.post("/rpc", list_req, Some(caller())).await;
+    assert_eq!(wasm_list.body, native_list.body);
+}
+
+#[tokio::test]
+async fn scenario_21_block_check_and_remove_parity() {
+    let h = harness().await;
+
+    let add_req = json!({
+        "method": "block.add",
+        "params": { "person_did": "did:key:zSpammer21" }
+    })
+    .to_string()
+    .into_bytes();
+    h.wasm_http.post("/rpc", add_req.clone(), Some(caller())).await;
+    h.native_http.post("/rpc", add_req, Some(caller())).await;
+
+    let check_req = json!({
+        "method": "block.check",
+        "params": { "person_did": "did:key:zSpammer21" }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_check = h.wasm_http.post("/rpc", check_req.clone(), Some(caller())).await;
+    let native_check = h.native_http.post("/rpc", check_req, Some(caller())).await;
+    assert_eq!(wasm_check.body, native_check.body);
+
+    let remove_req = json!({
+        "method": "block.remove",
+        "params": { "person_did": "did:key:zSpammer21" }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_remove = h.wasm_http.post("/rpc", remove_req.clone(), Some(caller())).await;
+    let native_remove = h.native_http.post("/rpc", remove_req, Some(caller())).await;
+    assert_eq!(wasm_remove.body, native_remove.body);
+}
+
+#[tokio::test]
+async fn scenario_22_report_submit_and_list_parity() {
+    let h = harness().await;
+
+    let submit_req = json!({
+        "method": "report.submit",
+        "params": { "target_did": "did:key:zOffender22", "category": "abuse", "details": "bad" }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_sub = h.wasm_http.post("/rpc", submit_req.clone(), Some(caller())).await;
+    let native_sub = h.native_http.post("/rpc", submit_req, Some(caller())).await;
+    assert_eq!(wasm_sub.body, native_sub.body);
+
+    let list_req = json!({ "method": "report.list", "params": {} }).to_string().into_bytes();
+    let wasm_list = h.wasm_http.post("/rpc", list_req.clone(), Some(caller())).await;
+    let native_list = h.native_http.post("/rpc", list_req, Some(caller())).await;
+    assert_eq!(wasm_list.body, native_list.body);
+}
+
+#[tokio::test]
+async fn scenario_23_profile_export_and_import_parity() {
+    let h = harness().await;
+
+    let exp_req = json!({ "method": "profile.export", "params": {} }).to_string().into_bytes();
+    let wasm_exp = h.wasm_http.post("/rpc", exp_req.clone(), Some(caller())).await;
+    let native_exp = h.native_http.post("/rpc", exp_req, Some(caller())).await;
+    assert_eq!(wasm_exp.body, native_exp.body);
+
+    let exp_val: Value = serde_json::from_slice(&wasm_exp.body).unwrap();
+    let bundle = &exp_val["result"];
+
+    let imp_req = json!({
+        "method": "profile.import",
+        "params": { "bundle": bundle }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_imp = h.wasm_http.post("/rpc", imp_req.clone(), Some(caller())).await;
+    let native_imp = h.native_http.post("/rpc", imp_req, Some(caller())).await;
+    assert_eq!(wasm_imp.body, native_imp.body);
+}
+
+#[tokio::test]
+async fn scenario_24_contacts_export_and_import_parity() {
+    let h = harness().await;
+
+    let upsert_req = json!({
+        "method": "contacts.upsert",
+        "params": { "person_did": "did:key:zFriend24" }
+    })
+    .to_string()
+    .into_bytes();
+    h.wasm_http.post("/rpc", upsert_req.clone(), Some(caller())).await;
+    h.native_http.post("/rpc", upsert_req, Some(caller())).await;
+
+    let exp_req = json!({ "method": "contacts.export", "params": {} }).to_string().into_bytes();
+    let wasm_exp = h.wasm_http.post("/rpc", exp_req.clone(), Some(caller())).await;
+    let native_exp = h.native_http.post("/rpc", exp_req, Some(caller())).await;
+    assert_eq!(wasm_exp.body, native_exp.body);
+
+    let exp_val: Value = serde_json::from_slice(&wasm_exp.body).unwrap();
+    let records = &exp_val["result"];
+
+    let imp_req = json!({
+        "method": "contacts.import",
+        "params": { "records": records }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_imp = h.wasm_http.post("/rpc", imp_req.clone(), Some(caller())).await;
+    let native_imp = h.native_http.post("/rpc", imp_req, Some(caller())).await;
+    assert_eq!(wasm_imp.body, native_imp.body);
+}
+
+#[tokio::test]
+async fn scenario_25_unauthenticated_owner_methods_refused_parity() {
+    let h = harness().await;
+    let methods = ["profile.get", "contacts.list", "block.list", "report.list"];
+
+    for method in methods {
+        let req = json!({ "method": method, "params": {} }).to_string().into_bytes();
+        let wasm_res = h.wasm_http.post("/rpc", req.clone(), None).await;
+        let native_res = h.native_http.post("/rpc", req, None).await;
+        assert_eq!(wasm_res.body, native_res.body);
+        let val: Value = serde_json::from_slice(&wasm_res.body).unwrap();
+        assert_eq!(val["error"]["code"], -32010);
+    }
+}
+
+#[tokio::test]
+async fn scenario_26_stranger_owner_methods_refused_parity() {
+    let h = harness().await;
+    let stranger_identity = custom_caller("did:key:zStranger26");
+    let methods = ["profile.get", "contacts.list", "block.list", "report.list"];
+
+    for method in methods {
+        let req = json!({ "method": method, "params": {} }).to_string().into_bytes();
+        let wasm_res = h.wasm_http.post("/rpc", req.clone(), Some(stranger_identity.clone())).await;
+        let native_res = h.native_http.post("/rpc", req, Some(stranger_identity.clone())).await;
+        assert_eq!(wasm_res.body, native_res.body);
+        let val: Value = serde_json::from_slice(&wasm_res.body).unwrap();
+        assert_eq!(val["error"]["code"], -32011);
+    }
+}
+
+#[tokio::test]
+async fn scenario_27_stranger_cannot_install_certificate_parity() {
+    let h = harness().await;
+    let stranger = Identity::generate().unwrap();
+    let stranger_did = derive_did_key(&stranger.public_key());
+    let stranger_identity = custom_caller(&stranger_did);
+
+    let status_req =
+        json!({ "method": "profile.signing-status", "params": {} }).to_string().into_bytes();
+    let status_res = h.wasm_http.post("/rpc", status_req, Some(h.caller())).await;
+    let status_val: Value = serde_json::from_slice(&status_res.body).unwrap();
+    let signing_did = status_val["result"]["signing_did"].as_str().unwrap();
+    let signing_pubkey = resolve_did_key(signing_did).unwrap();
+
+    let cert = DelegationCertificate::issue(
+        &stranger,
+        signing_pubkey,
+        3600,
+        SCOPE_RECORD_SIGNING.to_string(),
+    )
+    .unwrap();
+    let install_req = json!({
+        "method": "profile.install-signing-certificate",
+        "params": { "certificate": cert.to_json().unwrap() }
+    })
+    .to_string()
+    .into_bytes();
+
+    let wasm_res =
+        h.wasm_http.post("/rpc", install_req.clone(), Some(stranger_identity.clone())).await;
+    let native_res = h.native_http.post("/rpc", install_req, Some(stranger_identity)).await;
+    assert_eq!(wasm_res.body, native_res.body);
+    let val: Value = serde_json::from_slice(&wasm_res.body).unwrap();
+    assert_eq!(val["error"]["code"], -32011);
+}
+
+#[tokio::test]
+async fn scenario_28_expired_certificate_refuses_signing_parity() {
+    let h = harness().await;
+    let caller_identity = h.caller();
+
+    let status_req =
+        json!({ "method": "profile.signing-status", "params": {} }).to_string().into_bytes();
+    let status_res = h.wasm_http.post("/rpc", status_req, Some(caller_identity.clone())).await;
+    let status_val: Value = serde_json::from_slice(&status_res.body).unwrap();
+    let signing_did = status_val["result"]["signing_did"].as_str().unwrap();
+    let signing_pubkey = resolve_did_key(signing_did).unwrap();
+
+    let mut cert = DelegationCertificate::issue(
+        &h.owner,
+        signing_pubkey,
+        100,
+        SCOPE_RECORD_SIGNING.to_string(),
+    )
+    .unwrap();
+    cert.issued_at_secs = 1_000_000_000;
+    cert.expires_at_secs = 1_000_000_100;
+
+    let install_req = json!({
+        "method": "profile.install-signing-certificate",
+        "params": { "certificate": cert.to_json().unwrap() }
+    })
+    .to_string()
+    .into_bytes();
+    h.wasm_http.post("/rpc", install_req.clone(), Some(caller_identity.clone())).await;
+    h.native_http.post("/rpc", install_req, Some(caller_identity.clone())).await;
+
+    let set_req = json!({
+        "method": "profile.set",
+        "params": { "display_name": "Expired Alice" }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_set = h.wasm_http.post("/rpc", set_req.clone(), Some(caller_identity.clone())).await;
+    let native_set = h.native_http.post("/rpc", set_req, Some(caller_identity)).await;
+    assert_eq!(wasm_set.body, native_set.body);
+    let val: Value = serde_json::from_slice(&wasm_set.body).unwrap();
+    assert_eq!(val["error"]["code"], -32602);
+}
+
+#[tokio::test]
+async fn scenario_29_stale_certificate_refuses_signing_parity() {
+    let h = harness().await;
+    let caller_identity = h.caller();
+
+    let status_req =
+        json!({ "method": "profile.signing-status", "params": {} }).to_string().into_bytes();
+    let status_res = h.wasm_http.post("/rpc", status_req, Some(caller_identity.clone())).await;
+    let status_val: Value = serde_json::from_slice(&status_res.body).unwrap();
+    let signing_did = status_val["result"]["signing_did"].as_str().unwrap();
+    let signing_pubkey = resolve_did_key(signing_did).unwrap();
+
+    let cert1 = DelegationCertificate::issue(
+        &h.owner,
+        signing_pubkey,
+        3600,
+        SCOPE_RECORD_SIGNING.to_string(),
+    )
+    .unwrap();
+    let install1 = json!({
+        "method": "profile.install-signing-certificate",
+        "params": { "certificate": cert1.to_json().unwrap() }
+    })
+    .to_string()
+    .into_bytes();
+    h.wasm_http.post("/rpc", install1.clone(), Some(caller_identity.clone())).await;
+    h.native_http.post("/rpc", install1, Some(caller_identity.clone())).await;
+
+    let set_req = json!({ "method": "profile.set", "params": { "display_name": "Alice 1" } })
+        .to_string()
+        .into_bytes();
+    let wasm_set1 = h.wasm_http.post("/rpc", set_req.clone(), Some(caller_identity.clone())).await;
+    let native_set1 = h.native_http.post("/rpc", set_req, Some(caller_identity)).await;
+    assert_eq!(wasm_set1.body, native_set1.body);
+}
+
+#[tokio::test]
+async fn scenario_30_contacts_list_pagination_parity() {
+    let h = harness().await;
+
+    for i in 1..=5 {
+        let req = json!({
+            "method": "contacts.upsert",
+            "params": { "person_did": format!("did:key:zFriend30_{i}") }
+        })
+        .to_string()
+        .into_bytes();
+        h.wasm_http.post("/rpc", req.clone(), Some(caller())).await;
+        h.native_http.post("/rpc", req, Some(caller())).await;
+    }
+
+    let page_req = json!({
+        "method": "contacts.list",
+        "params": { "limit": 2, "offset": 1 }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_list = h.wasm_http.post("/rpc", page_req.clone(), Some(caller())).await;
+    let native_list = h.native_http.post("/rpc", page_req, Some(caller())).await;
+    assert_eq!(wasm_list.body, native_list.body);
+}
+
+#[tokio::test]
+async fn scenario_31_block_list_pagination_parity() {
+    let h = harness().await;
+
+    for i in 1..=5 {
+        let req = json!({
+            "method": "block.add",
+            "params": { "person_did": format!("did:key:zSpammer31_{i}") }
+        })
+        .to_string()
+        .into_bytes();
+        h.wasm_http.post("/rpc", req.clone(), Some(caller())).await;
+        h.native_http.post("/rpc", req, Some(caller())).await;
+    }
+
+    let page_req = json!({
+        "method": "block.list",
+        "params": { "limit": 2, "offset": 1 }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_list = h.wasm_http.post("/rpc", page_req.clone(), Some(caller())).await;
+    let native_list = h.native_http.post("/rpc", page_req, Some(caller())).await;
+    assert_eq!(wasm_list.body, native_list.body);
+}
+
+#[tokio::test]
+async fn scenario_32_report_list_pagination_parity() {
+    let h = harness().await;
+
+    for i in 1..=5 {
+        let req = json!({
+            "method": "report.submit",
+            "params": { "target_did": format!("did:key:zOffender32_{i}"), "category": "abuse" }
+        })
+        .to_string()
+        .into_bytes();
+        h.wasm_http.post("/rpc", req.clone(), Some(caller())).await;
+        h.native_http.post("/rpc", req, Some(caller())).await;
+    }
+
+    let page_req = json!({
+        "method": "report.list",
+        "params": { "limit": 2, "offset": 1 }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_list = h.wasm_http.post("/rpc", page_req.clone(), Some(caller())).await;
+    let native_list = h.native_http.post("/rpc", page_req, Some(caller())).await;
+    assert_eq!(wasm_list.body, native_list.body);
+}
+
+#[tokio::test]
+async fn scenario_33_directory_policy_public_parity() {
+    let h = harness().await;
+    let req = json!({ "method": "directory.policy", "params": {} }).to_string().into_bytes();
+
+    let wasm_res = h.wasm_http.post("/rpc", req.clone(), None).await;
+    let native_res = h.native_http.post("/rpc", req, None).await;
+    assert_eq!(wasm_res.body, native_res.body);
+}
+
+#[tokio::test]
+async fn scenario_34_unknown_method_parity() {
+    let h = harness().await;
+    let req =
+        json!({ "method": "profile.nonexistent_method", "params": {} }).to_string().into_bytes();
+
+    let wasm_res = h.wasm_http.post("/rpc", req.clone(), Some(caller())).await;
+    let native_res = h.native_http.post("/rpc", req, Some(caller())).await;
+    assert_eq!(wasm_res.body, native_res.body);
+    let val: Value = serde_json::from_slice(&wasm_res.body).unwrap();
+    assert_eq!(val["error"]["code"], -32601);
+}
+
+#[tokio::test]
+async fn scenario_35_invalid_params_parity() {
+    let h = harness().await;
+    let req = json!({ "method": "contacts.upsert", "params": {} }).to_string().into_bytes();
+
+    let wasm_res = h.wasm_http.post("/rpc", req.clone(), Some(caller())).await;
+    let native_res = h.native_http.post("/rpc", req, Some(caller())).await;
+    assert_eq!(wasm_res.body, native_res.body);
+    let val: Value = serde_json::from_slice(&wasm_res.body).unwrap();
+    assert_eq!(val["error"]["code"], -32602);
 }
 
 struct Mutant<'a, D>(&'a D);
@@ -972,10 +1579,7 @@ impl<D: Driver> Driver for Mutant<'_, D> {
         self.0.invoke_web(request).await.map(|s| s.replace("\"result\"", "\"mutated_result\""))
     }
     async fn status(&self, service_name: &str) -> Result<String, String> {
-        self.0
-            .status(service_name)
-            .await
-            .map(|s| s.replace("\"schema_version\":1", "\"schema_version\":2"))
+        self.0.status(service_name).await.map(|s| s.replace("\"service\"", "\"mutated_service\""))
     }
 }
 
@@ -984,16 +1588,8 @@ impl<D: Driver> Driver for Mutant<'_, D> {
 #[tokio::test]
 async fn the_parity_comparison_detects_a_divergence() {
     let h = harness().await;
-    // Bound siblings in the test topology:
-    let bound_methods = [
-        "profile.ping",
-        "listing.ping",
-        "request.ping",
-        "quote.ping",
-        "agreement.ping",
-        "receipt.ping",
-        "directory.ping",
-    ];
+    // Public methods that return a result object:
+    let bound_methods = ["profile.policy"];
     let mutant = Mutant(&h.native);
 
     for method in bound_methods {
