@@ -2264,6 +2264,21 @@ async fn delegated_signing_scenarios_and_verify_failures_on_both_builds() {
     assert_eq!(wasm_scope_err, native_scope_err);
     assert!(serde_json::from_str::<Value>(&wasm_scope_err).unwrap()["err"].is_string());
 
+    // 4. Refuse cert when caller DID does not match certificate master DID
+    let wrong_did = syneroym_identity::substrate::derive_did_key(&wrong_identity.public_key());
+    let wrong_caller = caller_with_did(&wrong_did);
+    let valid_del_req = json!({
+        "op": "sign-as-delegated",
+        "draft": draft,
+        "delegation_json": cert.to_json().unwrap(),
+    });
+    let wasm_caller_err =
+        h.wasm.run_with_caller(&valid_del_req.to_string(), wrong_caller.clone()).await.unwrap();
+    let native_caller_err =
+        h.native.run_with_caller(&valid_del_req.to_string(), wrong_caller).await.unwrap();
+    assert_eq!(wasm_caller_err, native_caller_err);
+    assert!(serde_json::from_str::<Value>(&wasm_caller_err).unwrap()["err"].is_string());
+
     // 4. Verify failure: past record expiry
     let expired_verify_req = json!({
         "op": "verify-record",

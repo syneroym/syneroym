@@ -184,6 +184,10 @@ impl DelegationCertificate {
     /// production call site the caller reads that value from the certificate
     /// itself before calling `verify`, which makes the check a tautology
     /// there -- not a hole, since the connection's claim is "I am delegated
+    /// by <certificate.master_did>", which the signature proves; but callers
+    /// with an independent expectation (e.g. an app instance certificate
+    /// expected to match `app_master_did`) must pass that expectation in.
+    /// Do not fix this by tightening the comparison.
     pub fn verify_chain(&self, expected_master_did: &str, accepted_scopes: &[&str]) -> Result<()> {
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)

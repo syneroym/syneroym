@@ -201,7 +201,7 @@ Slice C3 implements the host record signing interface (`syneroym:signing`), cano
 - Integrated `signing::Host` in `crates/sandbox_wasm` and `AppSigning` on `NativeAppHost` in `crates/app_host_native`.
 
 ### 3. Control Plane Dispatch & Substrate Wiring (`crates/control_plane`, `crates/substrate`)
-- Threaded `NodeRecordSigner` into `crates/control_plane`'s JSON-RPC dispatch, supporting `signing/identity`, `signing/sign-draft`, `signing/sign`, `signing/verify`, and `signing/check-revocation`.
+- Threaded `NodeRecordSigner` into `crates/control_plane`'s JSON-RPC dispatch, supporting `signing/identity` and `signing/sign-record`.
 - Wired `NodeRecordSigner` into `syneroym-substrate` runtime startup and dual-build fixture initializers.
 
 ### 4. Roym Integration, SDK & CLI (`crates/roym_core`, `crates/sdk`, `apps/roymctl`)
@@ -215,8 +215,8 @@ Slice C3 implements the host record signing interface (`syneroym:signing`), cano
 ## C3 — Verification evidence
 
 1. `cargo test -p syneroym-signed-record`: **27 passed, 0 failed**
-2. `cargo test -p syneroym-identity`: **14 passed, 0 failed**
-3. `cargo test -p syneroym-app-host-native --test dual_build_parity`: **39 passed, 0 failed**
+2. `cargo test -p syneroym-identity`: **50 passed, 0 failed**
+3. `cargo test -p syneroym-app-host-native --test dual_build_parity`: **38 passed, 0 failed**
 4. `cargo test -p syneroym-substrate --test record_signing_e2e`: **1 passed, 0 failed**
 5. `cargo check -p roymctl`: **Clean**
 6. `cargo xtask check-roym-deps`: **Clean**

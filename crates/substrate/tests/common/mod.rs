@@ -119,6 +119,7 @@ pub struct SubstrateTestContext {
     #[allow(dead_code)]
     config: SubstrateConfig,
     pub substrate_client: SyneroymClient,
+    #[allow(dead_code)]
     pub registry_url: String,
     #[allow(dead_code)]
     pub substrate_mechanisms: Vec<EndpointMechanism>,

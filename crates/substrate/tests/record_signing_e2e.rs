@@ -74,4 +74,6 @@ async fn record_signing_e2e_service_and_delegated_flow() {
     let err =
         deploy::certify_record_signing(client, &other_master, &service_id, 24).await.unwrap_err();
     assert!(err.to_string().contains("does not match service owner"));
+
+    ctx.teardown().await;
 }
