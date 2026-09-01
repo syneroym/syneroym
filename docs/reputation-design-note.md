@@ -313,6 +313,12 @@ The fundamental mechanism is therefore:
 
 > **Commit → Randomly challenge → Selectively disclose → Verify.**
 
+Yes. I would add a short paragraph to Section 10, immediately after the random-audit explanation:
+
+### Statistical consistency of aggregate claims
+
+If a participant claims an aggregate such as **90,000 / 100,000 satisfied**, a requester can randomly sample committed records and compare the observed proportion with the claimed proportion. The sample will not normally match the claimed number exactly; however, under genuinely random sampling, the **Law of Large Numbers and Central Limit Theorem** imply that the sample proportion tends toward the population proportion as the sample size increases. The requester can therefore determine whether the observed result is statistically consistent with the claim, at a chosen confidence level. This provides probabilistic evidence without requiring the entire history to be disclosed.
+
 ### Maintaining the Reputation History
 
 Reputation history is naturally append-only: completed interactions and their evaluations are added over time and should not be modified or removed from an existing committed history.
