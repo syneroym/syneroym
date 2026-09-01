@@ -111,6 +111,17 @@ pub enum IdentityCommands {
         #[arg(long)]
         registry_url: Option<String>,
     },
+    /// Certify the node's record-signing key for a service owner.
+    CertifySigning {
+        #[arg(long)]
+        master: String,
+        #[arg(long)]
+        substrate: String,
+        #[arg(long)]
+        service: String,
+        #[arg(long, default_value_t = 24)]
+        expires_hours: u64,
+    },
 }
 
 /// Handle local identity subcommands
@@ -252,6 +263,23 @@ pub async fn handle(
                     .await?;
             member_identity::refresh_anchor_or_warn(registry_url.as_deref(), &master_identity)
                 .await?;
+            println!("{}", cert.to_json()?);
+        }
+        IdentityCommands::CertifySigning {
+            master,
+            substrate: substrate_did,
+            service,
+            expires_hours,
+        } => {
+            let master_identity = member_identity::resolve_member_master(dir, master)?;
+
+            let mut client =
+                super::client_for(substrate_did.clone(), api_url, dir, run_as, ucan_path)?;
+            client.wait_for_ready(Duration::from_secs(5)).await?;
+
+            let cert =
+                deploy::certify_record_signing(&client, &master_identity, service, *expires_hours)
+                    .await?;
             println!("{}", cert.to_json()?);
         }
     }

@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 syneroym-app-host.workspace = true
+syneroym-signed-record.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
@@ -28,6 +29,7 @@ syneroym-wit-interfaces = { path = "../../crates/wit_interfaces", default-featur
     "http",
     "messaging",
     "proxy",
+    "signing",
     "vault",
 ] }
 
@@ -45,3 +47,4 @@ async-trait.workspace = true
 "syneroym:app-config" = { path = "wit/deps/app-config" }
 "syneroym:vault" = { path = "wit/deps/vault" }
 "syneroym:http" = { path = "wit/deps/http" }
+"syneroym:signing" = { path = "wit/deps/signing" }

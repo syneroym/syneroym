@@ -120,7 +120,7 @@ pub struct SubstrateTestContext {
     config: SubstrateConfig,
     pub substrate_client: SyneroymClient,
     #[allow(dead_code)]
-    registry_url: String,
+    pub registry_url: String,
     #[allow(dead_code)]
     pub substrate_mechanisms: Vec<EndpointMechanism>,
     /// The DID that owns this substrate (an unowned
@@ -191,16 +191,11 @@ impl SubstrateTestContext {
             Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         config.roles.auth = Some(syneroym_core::config::AuthRole::default());
 
-        configure(&mut config);
-
-        // An unowned substrate now fails closed, so this
-        // harness must own its own node -- mint an owner identity and
-        // configure it directly (`admin_ucan_root`), rather than going
-        // through the `roymctl substrate claim` file-discovery path this
-        // harness has no reason to also exercise.
         let owner = Identity::generate().expect("owner identity");
         let owner_did = substrate::derive_did_key(&owner.public_key());
         config.iam.admin_ucan_root = Some(owner_did.clone());
+
+        configure(&mut config);
 
         let substrate_identity_state =
             identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
@@ -251,15 +246,11 @@ impl SubstrateTestContext {
     }
 
     pub async fn teardown(mut self) {
-        eprintln!("[teardown] shutting down substrate_client...");
         let _ = self.substrate_client.shutdown().await;
-        eprintln!("[teardown] sending shutdown signal...");
         let _ = self.shutdown_tx.send(()).await;
-        eprintln!("[teardown] awaiting substrate_handle...");
         let _ = time::timeout(Duration::from_secs(20), self.substrate_handle)
             .await
             .map_err(|_| eprintln!("[teardown] substrate_handle join TIMED OUT"));
         tokio::time::sleep(Duration::from_millis(500)).await;
-        eprintln!("[teardown] done");
     }
 }

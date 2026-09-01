@@ -1,0 +1,104 @@
+package syneroym:signing@0.1.0;
+
+/// Signing a product record under a principal whose key this substrate
+/// holds. No function here returns key material, and there is no
+/// "sign these bytes" verb: the host builds the envelope it signs, so it
+/// can refuse one it cannot parse, and a component can never state its own
+/// issuer or its own timestamps.
+interface signing {
+    /// Which principal a record is asserted under.
+    variant principal {
+        /// The service itself, signing with the key this substrate derives
+        /// for it. The issuer is that key's `did:key`.
+        service,
+        /// Any other master DID -- a natural person, or an organisation's
+        /// own dedicated identity -- proven by a JSON
+        /// `DelegationCertificate` that master key minted over *this
+        /// service's own* signing key, scoped `record-signing`. The host
+        /// re-checks the certificate on every call and refuses any that
+        /// does not certify the exact key it is about to sign with -- so a
+        /// component may hold a certificate (it carries no private key)
+        /// and still cannot invent an issuer. When the caller itself
+        /// arrived as a verified identity (a session, not an internal
+        /// substrate-injected context), the host also requires the
+        /// certificate's master to match that caller -- holding someone
+        /// else's certificate is not the same as being them. Get the key
+        /// to certify from `identity` below.
+        delegated(string),
+    }
+
+    variant signing-error {
+        /// `principal::delegated` was asked for and the certificate is
+        /// missing, malformed, scoped for something else, certifies a
+        /// different key, does not cover the record's own timestamp, or
+        /// names a master the calling session does not match.
+        no-delegation(string),
+        /// The draft is not a record this host will build an envelope
+        /// around. The string names the rule that refused it.
+        invalid-record(string),
+        /// This instance may not sign at all -- a read-only after-step
+        /// instance, today.
+        permission-denied,
+        internal(string),
+    }
+
+    /// Everything the component supplies. Issuer, issued-at, the
+    /// delegation and the signature are the host's, and are not
+    /// expressible here.
+    record record-draft {
+        /// The record body's own schema version. Never 0.
+        version: u32,
+        /// `listing`, `quote`, ... Lowercase ASCII letters, digits and
+        /// `-`, 1 to 64 bytes. The host checks the shape, not the
+        /// vocabulary: which types exist is the app's to decide.
+        record-type: string,
+        /// What the record is about -- a DID, another record's id, or the
+        /// empty string when the body is the whole subject.
+        subject: string,
+        /// The record body, as a JSON **object**. Refused if it is not an
+        /// object, if it is over 64 KiB canonicalized, if it nests deeper
+        /// than 32, or if it holds a number that is not an integer -- the
+        /// canonical encoding is only reproducible for integers, so a
+        /// price is minor units, not a decimal.
+        payload: string,
+        /// Unix seconds after which this record must not be treated as
+        /// valid. Absent means it does not expire on its own.
+        expires-at-secs: option<u64>,
+        /// The `record-id` of the record this one corrects. A correction is
+        /// always a new record; nothing is ever edited.
+        supersedes: option<string>,
+    }
+
+    /// Builds the canonical envelope around `draft`, signs it as
+    /// `as-principal`, and returns the whole signed envelope as JSON.
+    sign-record: func(
+        draft: record-draft,
+        as-principal: principal,
+    ) -> result<string, signing-error>;
+
+    /// Public identifiers only.
+    record signing-identity {
+        /// `did:key` of the key this substrate signs this service's
+        /// records with.
+        signing-did: string,
+        /// The same key, hex-encoded -- the form
+        /// `orchestrator/resolve-instance-identity` reports and a
+        /// certificate is minted over.
+        pubkey-hex: string,
+        /// The DID recorded as this service's deployer. Always present for a
+        /// service deployed through substrate; wrapped in `option<string>` for
+        /// interface compatibility.
+        owner-did: option<string>,
+    }
+
+    /// What this service can sign as, right now.
+    identity: func() -> result<signing-identity, signing-error>;
+}
+
+/// One world, used by both bindgen passes: this package has no exports, so
+/// the guest view and the host view are the same shape. `proxy-import` and
+/// `conversation-import` needed a second world only because their packages
+/// also declare guest exports.
+world signing-import {
+    import signing;
+}

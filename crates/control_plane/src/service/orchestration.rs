@@ -2166,6 +2166,7 @@ impl ControlPlaneService {
                 installed_instance_cert.clone(),
             ));
             native_service.set_conversation(self.current_conversation());
+            native_service.set_record_signer_from(self);
             native_dispatch.insert(service_id.clone(), native_service as Arc<dyn NativeService>);
         } else {
             tracing::error!(
@@ -3140,6 +3141,7 @@ impl ControlPlaneService {
                 Some(cert),
             ));
             native_service.set_conversation(self.current_conversation());
+            native_service.set_record_signer_from(self);
             native_dispatch.insert(service_id.clone(), native_service as Arc<dyn NativeService>);
             Ok(())
         } else {

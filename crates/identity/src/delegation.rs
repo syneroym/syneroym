@@ -17,6 +17,12 @@ pub const SCOPE_SESSION_AUTH: &str = "session-auth";
 /// A substrate-derived instance key certified by a member master, so the
 /// instance speaks as that member (ADR-0020 §1).
 pub const SCOPE_SERVICE_INSTANCE: &str = "service-instance";
+/// A person's master key delegating to a substrate-derived service signing
+/// key, for signing product records under that person's DID. Deliberately
+/// **not** in `TRANSPORT_SCOPES`: a certificate minted to sign records must
+/// never be replayable onto a connection preamble, and must never stand in
+/// for an ADR-0020 instance certificate.
+pub const SCOPE_RECORD_SIGNING: &str = "record-signing";
 /// Scopes admissible as *transport* identity on an inbound connection: a
 /// human operator's delegated device key and a service instance both route a
 /// connection under a master's identity, and the router cannot tell from the
@@ -178,14 +184,28 @@ impl DelegationCertificate {
     /// production call site the caller reads that value from the certificate
     /// itself before calling `verify`, which makes the check a tautology
     /// there -- not a hole, since the connection's claim is "I am delegated
-    /// by M" and M is whatever the certificate says, with binding to a
-    /// *target* resolved downstream on `master_did`. Do not "fix" this by
-    /// tightening the comparison; there is nothing independent to compare
-    /// against on that path. `accepted_scopes` is the check that actually
-    /// bites: an unlisted scope is rejected before the signature is even
-    /// examined, so a certificate minted for one purpose can't be replayed
-    /// where a different one is required.
+    /// by <certificate.master_did>", which the signature proves; but callers
+    /// with an independent expectation (e.g. an app instance certificate
+    /// expected to match `app_master_did`) must pass that expectation in.
+    /// Do not fix this by tightening the comparison.
     pub fn verify_chain(&self, expected_master_did: &str, accepted_scopes: &[&str]) -> Result<()> {
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("System time is before UNIX epoch")?
+            .as_secs();
+        self.verify_chain_at(expected_master_did, accepted_scopes, now_secs)
+    }
+
+    /// Verifies signature, validity window, scope, and master DID of a
+    /// delegation certificate against an explicit timestamp `now_secs`
+    /// without enforcing current wall-clock expiry (used for historical
+    /// verification).
+    pub fn verify_chain_at(
+        &self,
+        expected_master_did: &str,
+        accepted_scopes: &[&str],
+        now_secs: u64,
+    ) -> Result<()> {
         if self.master_did != expected_master_did {
             return Err(anyhow!(
                 "Confused deputy prevention: expected master DID {}, but certificate is for {}",
@@ -206,17 +226,8 @@ impl DelegationCertificate {
             return Err(anyhow!("Delegation certificate has non-positive validity window"));
         }
 
-        let now_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("System time is before UNIX epoch")?
-            .as_secs();
-
-        // Reject certs issued more than 300 seconds in the future (clock skew
-        // tolerance). Monotonic, not a lapse: real time only advances, so a
-        // certificate that clears this check once clears it forever after --
-        // unlike wall-clock expiry, deferring it to `verify` would buy
-        // nothing and would let a forged future `issued_at` slip past a
-        // reader.
+        // Reject certs issued more than 300 seconds in the future relative to
+        // `now_secs` (clock skew tolerance).
         if self.issued_at_secs > now_secs + 300 {
             return Err(anyhow!("Delegation certificate issued_at is in the future"));
         }
@@ -248,23 +259,33 @@ impl DelegationCertificate {
         Ok(())
     }
 
-    /// `verify_chain` plus wall-clock expiry: the certificate must not
-    /// already be past `expires_at_secs`. Use this at every trust boundary
-    /// that presents, publishes, or installs a certificate as a live
-    /// credential.
+    /// Verifies a delegation certificate against current system wall-clock
+    /// time. Use this at every trust boundary that presents, publishes, or
+    /// installs a certificate as a live credential.
     pub fn verify(&self, expected_master_did: &str, accepted_scopes: &[&str]) -> Result<()> {
-        self.verify_chain(expected_master_did, accepted_scopes)?;
-
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .context("System time is before UNIX epoch")?
             .as_secs();
+        self.verify_at(expected_master_did, accepted_scopes, now_secs)
+    }
+
+    /// Verifies a delegation certificate against an explicit timestamp
+    /// `now_secs`, checking signature, window, scope, and wall-clock
+    /// expiry.
+    pub fn verify_at(
+        &self,
+        expected_master_did: &str,
+        accepted_scopes: &[&str],
+        now_secs: u64,
+    ) -> Result<()> {
+        self.verify_chain_at(expected_master_did, accepted_scopes, now_secs)?;
 
         if now_secs >= self.expires_at_secs {
             return Err(anyhow!(
-                "Delegation certificate has expired (expired at {}, now {})",
-                self.expires_at_secs,
-                now_secs
+                "Delegation certificate has expired (now_secs {}, expires_at_secs {})",
+                now_secs,
+                self.expires_at_secs
             ));
         }
 
@@ -449,6 +470,11 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains(SCOPE_ROUTING), "message should name the presented scope");
         assert!(message.contains(SCOPE_SERVICE_INSTANCE), "message should name the accepted scope");
+    }
+
+    #[test]
+    fn record_signing_scope_is_not_in_transport_scopes() {
+        assert!(!TRANSPORT_SCOPES.contains(&SCOPE_RECORD_SIGNING));
     }
 
     #[test]

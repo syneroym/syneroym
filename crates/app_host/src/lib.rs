@@ -30,6 +30,7 @@ use types::{
     http::FrameKind,
     messaging::MessagingError,
     proxy::{CallOptions, CallTarget, ProxyError},
+    signing::{Principal, RecordDraft, SigningError, SigningIdentity},
     vault::VaultError,
 };
 
@@ -42,6 +43,7 @@ pub trait AppHost:
     + AppProxy
     + AppAppConfig
     + AppVault
+    + AppSigning
     + AppWebSocket
     + Send
     + Sync
@@ -55,6 +57,7 @@ impl<T> AppHost for T where
         + AppProxy
         + AppAppConfig
         + AppVault
+        + AppSigning
         + AppWebSocket
         + Send
         + Sync
@@ -97,6 +100,19 @@ pub trait AppAppConfig {
 /// `D-06C-4` forbids using `reveal` to hand a signing key to an app.
 pub trait AppVault {
     fn reveal(&self, key: String) -> impl Future<Output = Result<Vec<u8>, VaultError>> + Send;
+}
+
+/// Mirrors `syneroym:signing/signing@0.1.0`, function for function.
+pub trait AppSigning {
+    fn sign_record(
+        &self,
+        draft: RecordDraft,
+        as_principal: Principal,
+    ) -> impl Future<Output = Result<String, SigningError>> + Send;
+
+    fn signing_identity(
+        &self,
+    ) -> impl Future<Output = Result<SigningIdentity, SigningError>> + Send;
 }
 
 /// Mirrors `syneroym:http/websocket@0.1.0` -- the *outbound* half of the

@@ -30,6 +30,7 @@ world web {
     import syneroym:app-config/app-config@0.1.0;
     import syneroym:vault/vault@0.1.0;
     import syneroym:http/websocket@0.1.0;
+    import syneroym:signing/signing@0.1.0;
 
     export syneroym:http/incoming-handler@0.1.0;
     export syneroym:http/websocket-handler@0.1.0;

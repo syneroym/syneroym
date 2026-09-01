@@ -26,6 +26,7 @@ syneroym-wit-interfaces = { path = "../wit_interfaces", default-features = false
     "http",
     "messaging",
     "proxy",
+    "signing",
     "vault",
 ] }
 
@@ -43,3 +44,4 @@ async-trait.workspace = true
 "syneroym:app-config" = { path = "wit/deps/app-config" }
 "syneroym:vault" = { path = "wit/deps/vault" }
 "syneroym:http" = { path = "wit/deps/http" }
+"syneroym:signing" = { path = "wit/deps/signing" }

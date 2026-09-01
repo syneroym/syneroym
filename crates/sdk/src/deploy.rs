@@ -620,6 +620,43 @@ pub async fn certify_instance(
     certificate_over_instance_identity(master, service_id, &identity, expires_hours)
 }
 
+/// Issue a `record-signing`-scoped certificate from `master` over the node's
+/// derived signing key for `service_id`.
+pub async fn certify_record_signing(
+    client: &SyneroymClient,
+    master: &Identity,
+    service_id: &str,
+    expires_hours: u64,
+) -> Result<DelegationCertificate> {
+    let master_did = substrate::derive_did_key(&master.public_key());
+    let signing_identity = client
+        .signing_identity(service_id)
+        .await
+        .context("failed to query the substrate for its derived signing identity")?;
+
+    match signing_identity.owner_did.as_deref() {
+        Some(owner) if owner == master_did => {}
+        Some(owner) => anyhow::bail!(
+            "master identity resolves to {master_did}, which does not match service owner {owner} \
+             -- a certificate for this pair would be rejected at sign time"
+        ),
+        None => anyhow::bail!(
+            "service {service_id} has no recorded owner -- cannot certify signing identity"
+        ),
+    }
+
+    let temp_pubkey = substrate::resolve_did_key(&signing_identity.signing_did)
+        .context("failed to resolve signing DID key")?;
+
+    let cert = DelegationCertificate::issue(
+        master,
+        temp_pubkey,
+        expires_hours * 3600,
+        syneroym_identity::delegation::SCOPE_RECORD_SIGNING.to_string(),
+    )?;
+    Ok(cert)
+}
+
 /// The same round trip as [`certify_instance`], through the
 /// [`SubstrateActor`] boundary -- what an unattended renewal takes, since
 /// the supervisor's loop holds actors rather than raw clients and its

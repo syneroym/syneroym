@@ -21,6 +21,7 @@ use syneroym_core::{
     endpoint_publisher::EndpointPublisher,
     http_routes::{HttpRouteRegistry, SsePermitRegistry},
     local_registry::EndpointRegistry,
+    record_signer::NodeRecordSigner,
 };
 use syneroym_data_blob::BlobProvider;
 use syneroym_data_db::traits::StorageProvider;
@@ -126,6 +127,8 @@ pub struct ControlPlaneService {
     /// parameter on `SynSvcNativeService::new` itself: consistency with the
     /// other two fields this struct already threads the same way.
     pub conversation: OnceLock<Weak<dyn syneroym_rpc::ConversationHost>>,
+    /// The node's record signer (`syneroym:signing`).
+    pub record_signer: OnceLock<Arc<NodeRecordSigner>>,
     /// Set after construction by the substrate's composition root. A setter
     /// rather than an `init` parameter because `init` has many call sites,
     /// almost all of them tests with nothing to publish. Same two-phase
@@ -231,6 +234,7 @@ impl ControlPlaneService {
             proxy_queues: OnceLock::new(),
             row_authorizer: OnceLock::new(),
             conversation: OnceLock::new(),
+            record_signer: OnceLock::new(),
             endpoint_publisher: OnceLock::new(),
             republish_trigger: OnceLock::new(),
             native_dispatch: Arc::downgrade(&native_dispatch),
@@ -265,6 +269,10 @@ impl ControlPlaneService {
     /// two-phase, no-op-past-first-call wiring as `set_endpoint_publisher`.
     pub fn set_republish_trigger(&self, tx: mpsc::Sender<oneshot::Sender<Result<()>>>) {
         let _ = self.republish_trigger.set(tx);
+    }
+
+    pub fn set_record_signer(&self, signer: Arc<NodeRecordSigner>) {
+        let _ = self.record_signer.set(signer);
     }
 
     /// Forces the registry-heartbeat loop to publish this node's own
@@ -479,6 +487,49 @@ impl NativeService for ControlPlaneService {
                 }
                 _ => {
                     return Err(RpcError::MethodNotFound(invocation.method));
+                }
+            }
+        }
+
+        if invocation.interface.as_str() == "signing" {
+            let Some(signer) = self.record_signer.get().cloned() else {
+                return Err(RpcError::InternalError(
+                    "this node has no record signer configured".to_string(),
+                ));
+            };
+            match invocation.method.as_str() {
+                "identity" => {
+                    let target_service_id = if invocation.params.is_null()
+                        || invocation.params.as_array().is_some_and(|a| a.is_empty())
+                    {
+                        self.service_id.clone()
+                    } else if let Ok((s,)) =
+                        serde_json::from_value::<(String,)>(invocation.params.clone())
+                    {
+                        s
+                    } else if let Ok(s) =
+                        serde_json::from_value::<String>(invocation.params.clone())
+                    {
+                        s
+                    } else {
+                        return Err(RpcError::InvalidParams(
+                            "signing identity expects optional service_id string parameter"
+                                .to_string(),
+                        ));
+                    };
+                    let id = signer
+                        .identity(&target_service_id)
+                        .map_err(crate::synsvc_native::signing_error)?;
+                    return Ok(NativeResponse {
+                        payload: serde_json::json!({
+                            "signing_did": id.signing_did,
+                            "pubkey_hex": id.pubkey_hex,
+                            "owner_did": id.owner_did,
+                        }),
+                    });
+                }
+                other => {
+                    return Err(RpcError::MethodNotFound(format!("unknown method: {other}")));
                 }
             }
         }

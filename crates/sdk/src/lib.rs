@@ -58,6 +58,13 @@ pub struct DeployedService {
     pub visibility: Option<Visibility>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SigningIdentityInfo {
+    pub signing_did: String,
+    pub pubkey_hex: String,
+    pub owner_did: Option<String>,
+}
+
 /// Publication policy for a service deployment (ADR-0018 §4). One type rather
 /// than two loose fields, so the three legal pairings are the only ones a
 /// caller can express -- the substrate still validates independently.
@@ -939,6 +946,13 @@ impl SyneroymClient {
         let res = self.request("orchestrator", "resolve-instance-identity", params).await?;
         serde_json::from_value(res.result)
             .map_err(|e| anyhow::anyhow!("Failed to parse instance identity response: {e}"))
+    }
+
+    pub async fn signing_identity(&self, service_id: &str) -> Result<SigningIdentityInfo> {
+        let params = serde_json::to_value((service_id,))?;
+        let res = self.request("signing", "identity", params).await?;
+        serde_json::from_value(res.result)
+            .map_err(|e| anyhow::anyhow!("Failed to parse signing identity response: {e}"))
     }
 
     pub async fn deploy_plan(&self, plan: DeploymentPlan) -> Result<()> {

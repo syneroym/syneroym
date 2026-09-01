@@ -328,14 +328,12 @@ async fn three_members_converge_to_byte_identical_transcripts() {
     let did_b = deploy_fixture(&mut node_b, &master_b, wasm.clone()).await;
     let did_c = deploy_fixture(&mut node_c, &master_c, wasm.clone()).await;
 
-    eprintln!("[TEST] Deployed nodes, creating group on Node A...");
     // Node A creates a group
     let create_res = fixture_run(&node_a, &did_a, &json!({"op": "create-group"})).await;
     let group_id = create_res["ok"]["conversation"]
         .as_str()
         .expect("create-group must return conversation id")
         .to_string();
-    eprintln!("[TEST] Group created: {group_id}. Adding Bob (did_b)...");
 
     // Node A adds B and C
     let add_b_res = fixture_run(

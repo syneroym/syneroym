@@ -6,7 +6,7 @@
 under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)),
 [slice-c2-implementation-plan.md](slice-c2-implementation-plan.md) (C2)
 
-**Overall:** Slices C1 (2026-08-25), C1.1 (2026-08-28), and C2 (2026-08-29) complete. C1.1, added by ADR-0024, makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a node auth service; C2 builds the six-service Roym SynApp skeleton and the Hub shell on top of that model. The held `feat/m06c-slice-c2` branch (built before C1.1) was ported onto it rather than rebased commit-by-commit.
+**Overall:** Slices C1 (2026-08-25), C1.1 (2026-08-28), C2 (2026-08-29), and C3 (2026-08-31) complete. C1.1, added by ADR-0024, makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a node auth service; C2 builds the six-service Roym SynApp skeleton and the Hub shell on top of that model; C3 provides the host record-signing capability interface (`syneroym:signing`), canonical JSON record envelope format, verification, and tri-state revocation checking.
 
 ---
 
@@ -17,7 +17,7 @@ under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-servic
 | C1 | Complete the dual-build shim (Gap 2, D-06C-10) | **Complete (2026-08-25)** — [implementation plan](slice-c1-implementation-plan.md), evidence below | None — independently mergeable |
 | C1.1 | The node auth service and the dumb client gateway (ADR-0024) | **Complete (2026-08-28)** — [implementation plan](slice-c1.1-implementation-plan.md), evidence below | C1 |
 | C2 | The SynApp skeleton and the Hub shell | **Complete (2026-08-29)** — [implementation plan](slice-c2-implementation-plan.md), evidence below | C1.1 |
-| C3 | Signed records: host signing interface and envelope | Not started | C1.1 |
+| C3 | Signed records: host signing interface and envelope | **Complete (2026-08-31)** — [implementation plan](slice-c3-implementation-plan.md), evidence below | C1.1 |
 | C4 | Identity, profile, contacts, and safety (R1 rows 1 and 6) | Not started | C3 |
 | C5 | Catalog and conversation in the product (R1 rows 2 and 3) | Not started | C4 |
 | C6 | Directory: the search half (R1 row 5) | Not started | C5 |
@@ -183,5 +183,49 @@ A TypeScript/Vite single-page app. Login is `delegated-key` only (`GET /_syneroy
 10. `cargo clippy --workspace --all-targets --all-features`: **clean**
 11. `cargo audit`: **clean** · `cargo deny check licenses`: **`licenses ok`**
 12. `mise run test:e2e`: **23 passed (default config) + 4 passed (multi-hop)** — the four new `roym-hub.spec.ts` cases (delegated-key login, session persistence, card gallery, card safety) all pass
+
+---
+
+## C3 — What shipped
+
+Slice C3 implements the host record signing interface (`syneroym:signing`), canonical record envelope JSON encoding/verification, and tri-state revocation checking.
+
+### 1. Identity & Record Envelope Core (`crates/identity`, `crates/signed_record`)
+- Added `SCOPE_RECORD_SIGNING = "record-signing"` scope constant in `syneroym-identity`.
+- Created new `syneroym-signed-record` crate with canonical JSON draft/envelope serialization, z32 SHA256 record ID computation, Ed25519 signature verification, delegation certificate scope/expiry validation, and tri-state revocation checking (26 unit tests).
+
+### 2. Host Interface & Sandbox (`crates/wit_interfaces`, `crates/app_host`, `crates/sandbox_wasm`, `crates/app_host_native`)
+- Added WIT interface `syneroym:signing/signing@0.1.0` in `crates/wit_interfaces/wit/signing/signing.wit`.
+- Generated typed host/guest bindings in `crates/wit_interfaces/src/signing.rs` and `signing_host.rs` behind feature `"signing"`.
+- Defined `AppSigning` trait in `crates/app_host`.
+- Integrated `signing::Host` in `crates/sandbox_wasm` and `AppSigning` on `NativeAppHost` in `crates/app_host_native`.
+
+### 3. Control Plane Dispatch & Substrate Wiring (`crates/control_plane`, `crates/substrate`)
+- Threaded `NodeRecordSigner` into `crates/control_plane`'s JSON-RPC dispatch, supporting `signing/identity` and `signing/sign-record`.
+- Wired `NodeRecordSigner` into `syneroym-substrate` runtime startup and dual-build fixture initializers.
+
+### 4. Roym Integration, SDK & CLI (`crates/roym_core`, `crates/sdk`, `apps/roymctl`)
+- Added `RECORD_TYPES` table and `is_known_record` in `crates/roym_core/src/record.rs`.
+- Added `"syneroym-signed-record"` to `xtask` allowed target-independent dependencies allowlist.
+- Added `signing_identity` and `certify_record_signing` in `crates/sdk`.
+- Added `roymctl identity certify-signing` CLI command.
+
+---
+
+## C3 — Verification evidence
+
+1. `cargo test -p syneroym-signed-record`: **27 passed, 0 failed**
+2. `cargo test -p syneroym-identity`: **50 passed, 0 failed**
+3. `cargo test -p syneroym-app-host-native --test dual_build_parity`: **38 passed, 0 failed**
+4. `cargo test -p syneroym-substrate --test record_signing_e2e`: **1 passed, 0 failed**
+5. `cargo check -p roymctl`: **Clean**
+6. `cargo xtask check-roym-deps`: **Clean**
+7. `cargo +nightly fmt --all`: **Clean**
+8. `cargo clippy --workspace --all-targets --all-features`: **Clean**
+9. `cargo test --workspace`: **All tests passed cleanly**
+10. `cargo audit`: **Clean (0 vulnerabilities)**
+11. `cargo deny check licenses`: **Clean (`licenses ok`)**
+12. `mise run test:e2e`: **27 passed (clean — 23 single-node + 4 multi-hop)**
+
 
 

@@ -16,7 +16,10 @@ use std::{
 
 use serde_json::Value;
 use syneroym_app_orchestration::{AppInstanceId, LogicalResolver, LogicalServiceName, TopologyKey};
-use syneroym_core::local_registry::SubstrateEndpoint;
+use syneroym_core::{
+    local_registry::SubstrateEndpoint,
+    record_signer::{CallerBinding, NodeRecordSigner, SigningPrincipal},
+};
 use syneroym_data_blob::{
     BlobError as BlobStoreError, HostDownloadSession, HostUploadSession, traits::BlobProvider,
 };
@@ -54,6 +57,10 @@ use syneroym_wit_interfaces::{
             saga::{self, SagaState as WitSagaState, SagaStatus},
         },
         vault::vault::{self, VaultError},
+    },
+    signing_host::syneroym::signing::signing::{
+        self, Principal as WitPrincipal, RecordDraft as WitRecordDraft,
+        SigningError as WitSigningError, SigningIdentity as WitSigningIdentity,
     },
 };
 use tracing::error;
@@ -281,6 +288,11 @@ pub struct HostState {
     pub conversation: Weak<dyn syneroym_rpc::ConversationHost>,
     /// Live WebSocket connections table shared across components and the host.
     pub websocket_senders: Arc<syneroym_rpc::WebSocketSenders>,
+    /// The node's record signer (`syneroym:signing`). `Option`, not
+    /// `Weak`: it holds no path back to this engine, so there is no cycle,
+    /// and `None` is the honest state for a node that never wired one
+    /// (every existing `HostState::new` call site, all of them tests).
+    pub record_signer: Option<Arc<NodeRecordSigner>>,
 }
 
 impl Debug for HostState {
@@ -342,6 +354,7 @@ impl HostState {
             logical_resolver,
             conversation: empty_conversation_host(),
             websocket_senders: syneroym_rpc::WebSocketSenders::new(),
+            record_signer: None,
         }
     }
 
@@ -355,6 +368,12 @@ impl HostState {
         conversation: Weak<dyn syneroym_rpc::ConversationHost>,
     ) -> Self {
         self.conversation = conversation;
+        self
+    }
+
+    #[must_use]
+    pub fn with_record_signer(mut self, signer: Option<Arc<NodeRecordSigner>>) -> Self {
+        self.record_signer = signer;
         self
     }
 
@@ -523,6 +542,88 @@ impl vault::Host for HostState {
                 Err(VaultError::Internal(e.to_string()))
             }
         }
+    }
+}
+
+impl signing::Host for HostState {
+    async fn sign_record(
+        &mut self,
+        draft: WitRecordDraft,
+        as_principal: WitPrincipal,
+    ) -> Result<String, WitSigningError> {
+        if self.read_only {
+            return Err(WitSigningError::PermissionDenied);
+        }
+        let Some(signer) = self.record_signer.clone() else {
+            return Err(WitSigningError::Internal(
+                "this node has no record signer configured".to_string(),
+            ));
+        };
+        let draft = convert_draft_in(draft)?;
+        let principal = convert_principal_in(as_principal);
+        let caller = caller_binding(&self.caller);
+        signer
+            .sign_record(&self.component_id, draft, &principal, caller)
+            .map_err(convert_signing_error_out)
+    }
+
+    async fn identity(&mut self) -> Result<WitSigningIdentity, WitSigningError> {
+        let Some(signer) = self.record_signer.clone() else {
+            return Err(WitSigningError::Internal(
+                "this node has no record signer configured".to_string(),
+            ));
+        };
+        let id = signer.identity(&self.component_id).map_err(convert_signing_error_out)?;
+        Ok(convert_identity_out(id))
+    }
+}
+
+fn caller_binding(caller: &CallerContext) -> CallerBinding<'_> {
+    match caller.auth {
+        AuthLevel::Delegated | AuthLevel::Ucan => CallerBinding::Verified(&caller.caller_did),
+        _ => CallerBinding::Internal,
+    }
+}
+
+fn convert_draft_in(
+    draft: WitRecordDraft,
+) -> Result<syneroym_signed_record::RecordDraft, WitSigningError> {
+    let payload: Value = serde_json::from_str(&draft.payload)
+        .map_err(|e| WitSigningError::InvalidRecord(format!("payload is not valid JSON: {e}")))?;
+    Ok(syneroym_signed_record::RecordDraft {
+        version: draft.version,
+        record_type: draft.record_type,
+        subject: draft.subject,
+        payload,
+        expires_at_secs: draft.expires_at_secs,
+        supersedes: draft.supersedes,
+    })
+}
+
+fn convert_principal_in(principal: WitPrincipal) -> SigningPrincipal {
+    match principal {
+        WitPrincipal::Service => SigningPrincipal::Service,
+        WitPrincipal::Delegated(cert_json) => {
+            SigningPrincipal::Delegated { delegation_json: cert_json }
+        }
+    }
+}
+
+fn convert_signing_error_out(err: syneroym_core::record_signer::SigningError) -> WitSigningError {
+    use syneroym_core::record_signer::SigningError as SE;
+    match err {
+        SE::NoDelegation(msg) => WitSigningError::NoDelegation(msg),
+        SE::InvalidRecord(msg) => WitSigningError::InvalidRecord(msg),
+        SE::PermissionDenied => WitSigningError::PermissionDenied,
+        SE::Internal(msg) => WitSigningError::Internal(msg),
+    }
+}
+
+fn convert_identity_out(id: syneroym_core::record_signer::SigningIdentity) -> WitSigningIdentity {
+    WitSigningIdentity {
+        signing_did: id.signing_did,
+        pubkey_hex: id.pubkey_hex,
+        owner_did: id.owner_did,
     }
 }
 
@@ -3826,5 +3927,25 @@ pub(crate) mod tests {
             proxy.last_saga_begin.lock().unwrap().is_none(),
             "the fake proxy must not be reached"
         );
+    }
+
+    #[tokio::test]
+    async fn a_read_only_host_state_refuses_sign_record() {
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = saga_host(true, &proxy, temp_dir.path());
+
+        let draft = WitRecordDraft {
+            version: 1,
+            record_type: "listing".to_string(),
+            subject: "sub".to_string(),
+            payload: "{}".to_string(),
+            expires_at_secs: None,
+            supersedes: None,
+        };
+
+        let err =
+            signing::Host::sign_record(&mut host, draft, WitPrincipal::Service).await.unwrap_err();
+        assert!(matches!(err, WitSigningError::PermissionDenied));
     }
 }

@@ -42,6 +42,7 @@ syneroym-core = { path = "crates/core" }
 syneroym-wit-interfaces = { path = "crates/wit_interfaces" }
 syneroym-rpc = { path = "crates/rpc" }
 syneroym-identity = { path = "crates/identity" }
+syneroym-signed-record = { path = "crates/signed_record" }
 syneroym-data-keystore = { path = "crates/data_keystore" }
 syneroym-app-orchestration = { path = "crates/app_orchestration" }
 syneroym-app-host = { path = "crates/app_host" }

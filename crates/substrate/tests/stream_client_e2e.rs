@@ -38,9 +38,7 @@ async fn open_stream(
     initial_payload: &[u8],
 ) -> (iroh::endpoint::SendStream, iroh::endpoint::RecvStream) {
     let TransportConnection::Iroh { conn, .. } = conn;
-    eprintln!("[open_stream] calling open_bi...");
     let (mut send, recv) = conn.open_bi().await.expect("open_bi failed");
-    eprintln!("[open_stream] open_bi returned");
 
     let preamble = RoutePreamble {
         transport: RouteTransport::Raw,
@@ -53,11 +51,8 @@ async fn open_stream(
         ucan: None,
         dir: dir.parse().ok(),
     };
-    eprintln!("[open_stream] writing preamble: {}", preamble.to_preamble_line().trim());
     send.write_all(preamble.to_preamble_line().as_bytes()).await.expect("write preamble failed");
-    eprintln!("[open_stream] writing initial frame ({} bytes)", initial_payload.len());
     framing::write_frame(&mut send, initial_payload).await.expect("write initial frame failed");
-    eprintln!("[open_stream] initial frame written");
 
     (send, recv)
 }
@@ -103,7 +98,6 @@ async fn test_real_client_opens_direct_stream_both_directions() {
     // readiness pattern).
     time::sleep(Duration::from_millis(200)).await;
 
-    eprintln!("[test] connecting peer...");
     let mut peer = SyneroymClient::new_with_mechanisms(
         app_service_id.clone(),
         ctx.substrate_mechanisms.clone(),
@@ -111,22 +105,17 @@ async fn test_real_client_opens_direct_stream_both_directions() {
     .with_registry_dht(false);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
-    eprintln!("[test] peer connected");
 
     // --- Download direction ---
     let request_data = b"e2e-download-request";
-    eprintln!("[test] opening download stream...");
     let (mut send, mut recv) =
         open_stream(&conn, &app_service_id, PROTOCOL, "download", request_data).await;
-    eprintln!("[test] download stream opened, finishing send");
     send.finish().expect("finish send for download request");
 
-    eprintln!("[test] reading download response...");
     let downloaded = time::timeout(Duration::from_secs(10), recv.read_to_end(1024 * 1024))
         .await
         .expect("download timed out")
         .expect("download read failed");
-    eprintln!("[test] download complete: {} bytes", downloaded.len());
 
     let expected_download =
         format!("stream-test:unknown-peer:{}", String::from_utf8_lossy(request_data)).into_bytes();
@@ -135,21 +124,14 @@ async fn test_real_client_opens_direct_stream_both_directions() {
     // --- Upload direction ---
     let upload_metadata = b"e2e-upload-metadata";
     let upload_content = b"content pushed over a real QUIC stream end to end".to_vec();
-    eprintln!("[test] opening upload stream...");
     let (mut send, _recv) =
         open_stream(&conn, &app_service_id, PROTOCOL, "upload", upload_metadata).await;
-    eprintln!("[test] writing upload content...");
     send.write_all(&upload_content).await.expect("upload write failed");
-    eprintln!("[test] finishing upload send...");
     send.finish().expect("finish send for upload");
-    eprintln!("[test] upload send finished, polling for committed content...");
 
     let deadline = time::Instant::now() + Duration::from_secs(10);
     let mut stored = String::new();
-    let mut attempt = 0u32;
     while time::Instant::now() < deadline {
-        attempt += 1;
-        eprintln!("[test] get-uploaded-content attempt {attempt}...");
         let response = time::timeout(
             Duration::from_secs(5),
             peer.request(TEST_DRIVER_INTERFACE, "get-uploaded-content", serde_json::json!([])),
@@ -157,7 +139,6 @@ async fn test_real_client_opens_direct_stream_both_directions() {
         .await
         .expect("get-uploaded-content request timed out")
         .expect("get-uploaded-content request failed");
-        eprintln!("[test] get-uploaded-content attempt {attempt} returned: {:?}", response.result);
         stored = response.result.as_str().unwrap_or_default().to_string();
         if !stored.is_empty() {
             break;
@@ -165,12 +146,9 @@ async fn test_real_client_opens_direct_stream_both_directions() {
         time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(stored, String::from_utf8(upload_content).unwrap());
-    eprintln!("[test] assertion passed, shutting down peer...");
 
     let _ = peer.shutdown().await;
-    eprintln!("[test] peer shut down, tearing down context...");
     ctx.teardown().await;
-    eprintln!("[test] teardown complete");
 }
 
 /// task.md's failure/security test row: "Peer opens a stream against an

@@ -5,5 +5,6 @@
 pub mod card;
 pub mod dual_build;
 pub mod envelope;
+pub mod record;
 pub mod router;
 pub mod services;

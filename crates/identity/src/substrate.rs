@@ -196,10 +196,11 @@ pub fn canonicalize_json_value(value: &Value) -> Value {
 }
 
 /// Verify a z-base-32 Ed25519 signature (as produced by `Identity::sign_json`)
-/// over the RFC-8785 canonicalization of `value`, against the pubkey resolved
-/// from `signer_did`. Mirrors `DelegationCertificate::verify`'s crypto steps,
-/// exposed as a free function so `syneroym-ucan` can verify UCAN token
-/// signatures without depending on `ed25519-dalek`/`z32` directly.
+/// over the canonicalization of `value` (using Rust UTF-8 byte order for object
+/// key sorting), against the pubkey resolved from `signer_did`. Mirrors
+/// `DelegationCertificate::verify`'s crypto steps, exposed as a free function
+/// so `syneroym-ucan` can verify UCAN token signatures without depending on
+/// `ed25519-dalek`/`z32` directly.
 pub fn verify_json_signature(signer_did: &str, value: &Value, sig_z32: &str) -> Result<()> {
     let pubkey = resolve_did_key(signer_did).context("failed to resolve signer DID")?;
     let canonical = canonicalize_json_value(value);

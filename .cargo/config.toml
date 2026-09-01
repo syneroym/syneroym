@@ -1,2 +1,10 @@
 [alias]
 xtask = "run --package xtask --"
+
+[env]
+# Default the substrate's tracing output to `warn` for anything cargo spawns
+# (`cargo test`, `cargo run`, benches, IDE test runners). At `info` the e2e
+# suites emit tens of thousands of lines that bury real failures and cost a
+# lot of tokens when an agent runs the suite. `force = false` keeps an
+# explicit `RUST_LOG=...` from the caller winning, so debugging is unaffected.
+RUST_LOG = { value = "warn", force = false }

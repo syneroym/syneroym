@@ -4841,4 +4841,30 @@ mod tests {
             "the router's own Arc<ProxyState> must be what keeps this Weak alive"
         );
     }
+
+    #[test]
+    fn check_native_capability_gate_refuses_cross_service_signing_call() {
+        let registry =
+            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        let router = ProxyRouter::new(
+            registry,
+            empty_registry_client(),
+            Weak::new(),
+            Weak::new(),
+            Arc::new(MockHop::default()),
+            Arc::new(Identity::generate().unwrap()),
+            RetryPolicy::default(),
+        );
+
+        let mut self_req = base_request("svc1", "signing");
+        self_req.origin = CallOrigin::Guest { service_id: "svc1".to_string() };
+        self_req.method = "sign-record".to_string();
+        assert!(router.check_native_capability_gate(&self_req).is_ok());
+
+        let mut cross_req = base_request("svc2", "signing");
+        cross_req.origin = CallOrigin::Guest { service_id: "svc1".to_string() };
+        cross_req.method = "sign-record".to_string();
+        let err = router.check_native_capability_gate(&cross_req).unwrap_err();
+        assert!(matches!(err, ProxyError::PermissionDenied(msg) if msg.contains("signing")));
+    }
 }
