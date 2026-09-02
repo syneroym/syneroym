@@ -24,7 +24,7 @@ use syneroym_app_orchestration::{
 use syneroym_async_queue::QueueConfig;
 use syneroym_conversation::{ConversationConfig, ConversationService};
 use syneroym_core::{
-    config::{RetryPolicy, SubstrateConfig},
+    config::{AppSandboxRole, RetryPolicy, SubstrateConfig},
     local_registry::EndpointRegistry,
     storage::MockStorage,
     test_constants,
@@ -511,6 +511,18 @@ async fn harness() -> Harness {
         ..SubstrateConfig::default()
     };
     config.resolve_paths();
+
+    // The default epoch budget (5s dispatch) is a wall-clock deadline, not a
+    // CPU one: a guest that is ready to run but not scheduled still burns the
+    // budget. Under a saturated CI host running every scenario in parallel,
+    // legitimate profile-service work (cross-service calls plus delegation-
+    // certificate crypto) blows past 5s and traps as `wasm trap: interrupt`.
+    // Give the sandbox a generous budget so only a real hang fails the test.
+    config.roles.app_sandbox = Some(AppSandboxRole {
+        dispatch_epoch_timeout_secs: 120,
+        lifecycle_hook_epoch_timeout_secs: 120,
+        ..AppSandboxRole::default()
+    });
 
     // 1. WASM Stack setup
     let wasm_ks = Arc::new(KeyStore::new());
