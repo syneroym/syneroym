@@ -12,11 +12,14 @@ source = "target/wasm32-wasip2/release/syneroym_roym_web.wasm"
 interfaces = ["syneroym-roym:web/api@0.1.0"]
 depends_on = ["conversation", "profile", "catalog", "transaction", "directory"]
 visibility = "internal"
-# In Slice C2, routes on `web` are public: true so local gateway requests
-# (and unauthenticated endpoints like health) reach web without pre-gating.
-# Sibling services are internal/private. Person session authentication is
-# verified in application logic and fine-grained session auth gating is
-# target for C4 (tracked in deferred backlog).
+# `/rpc` is public at the stream boundary so an unauthenticated request
+# can reach `web` at all -- the login screen and the policy statement are
+# served before any session exists. `web` itself refuses every method
+# that touches a person's data unless the request carries a verified
+# session whose subject is this installation's recorded owner; the
+# routing table names which methods those are. Sibling services stay
+# internal/private and answer only what reaches them through `web` or,
+# for the public ones, over the wire.
 custom_config = '''{"http_routes":[
   {"method":"POST","path":"/rpc",   "target":"guest",    "operation":"handle-request","public":true},
   {"method":"GET", "path":"/health","target":"guest",    "operation":"handle-request","public":true},

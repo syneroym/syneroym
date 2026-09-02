@@ -2,34 +2,52 @@
 
 use crate::services::{CATALOG, CONVERSATION, DIRECTORY, PROFILE, Service, TRANSACTION};
 
-/// JSON-RPC method prefix -> the sibling that owns it. The spec's own API
-/// column, made executable. No default arm: an unlisted prefix is
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MethodAuth {
+    /// Reachable with no session. Nothing here reads or writes anything
+    /// belonging to a person.
+    Public,
+    /// Requires a verified person session whose subject is the DID this
+    /// installation is recorded as belonging to.
+    Owner,
+}
+
+/// JSON-RPC method prefix -> (sibling that owns it, auth level). The spec's own
+/// API column, made executable. No default arm: an unlisted prefix is
 /// `-32601`, because "which service owns this?" is a question with a
 /// written answer or no answer.
 ///
 /// `session.whoami` is handled directly by `web` and is not routed to a
 /// sibling.
-const ROUTES: &[(&str, Service)] = &[
-    ("conversation.", CONVERSATION),
-    ("profile.", PROFILE),
-    ("contacts.", PROFILE),
-    ("block.", PROFILE),
-    ("listing.", CATALOG),
-    ("availability.", CATALOG),
-    ("request.", TRANSACTION),
-    ("quote.", TRANSACTION),
-    ("agreement.", TRANSACTION),
-    ("receipt.", TRANSACTION),
-    ("directory.", DIRECTORY),
+const ROUTES: &[(&str, Service, MethodAuth)] = &[
+    ("conversation.", CONVERSATION, MethodAuth::Owner),
+    ("profile.", PROFILE, MethodAuth::Owner),
+    ("contacts.", PROFILE, MethodAuth::Owner),
+    ("block.", PROFILE, MethodAuth::Owner),
+    ("report.", PROFILE, MethodAuth::Owner),
+    ("listing.", CATALOG, MethodAuth::Owner),
+    ("availability.", CATALOG, MethodAuth::Owner),
+    ("request.", TRANSACTION, MethodAuth::Owner),
+    ("quote.", TRANSACTION, MethodAuth::Owner),
+    ("agreement.", TRANSACTION, MethodAuth::Owner),
+    ("receipt.", TRANSACTION, MethodAuth::Owner),
+    ("directory.", DIRECTORY, MethodAuth::Owner),
 ];
 
+/// Methods a person may reach before signing in. Full method names, never
+/// prefixes: an exception granted to a prefix is an exception granted to
+/// methods nobody has written yet.
+const PUBLIC_METHODS: &[&str] = &["profile.policy"];
+
 pub fn route(method: &str) -> Option<Service> {
-    for (prefix, service) in ROUTES {
-        if method.starts_with(prefix) {
-            return Some(*service);
-        }
+    ROUTES.iter().find(|(p, _, _)| method.starts_with(p)).map(|(_, s, _)| *s)
+}
+
+pub fn method_auth(method: &str) -> Option<MethodAuth> {
+    if PUBLIC_METHODS.contains(&method) {
+        return Some(MethodAuth::Public);
     }
-    None
+    ROUTES.iter().find(|(p, _, _)| method.starts_with(p)).map(|(_, _, a)| *a)
 }
 
 #[cfg(test)]
@@ -41,7 +59,7 @@ mod tests {
 
     #[test]
     fn every_prefix_maps_to_a_service_in_siblings() {
-        for &(prefix, service) in ROUTES {
+        for &(prefix, service, _) in ROUTES {
             assert!(
                 SIBLINGS.contains(&service),
                 "Prefix '{prefix}' mapped to service '{}' which is not in SIBLINGS",
@@ -52,8 +70,8 @@ mod tests {
 
     #[test]
     fn no_prefix_is_a_prefix_of_another() {
-        for (i, &(p1, _)) in ROUTES.iter().enumerate() {
-            for (j, &(p2, _)) in ROUTES.iter().enumerate() {
+        for (i, &(p1, _, _)) in ROUTES.iter().enumerate() {
+            for (j, &(p2, _, _)) in ROUTES.iter().enumerate() {
                 if i != j {
                     assert!(
                         !p1.starts_with(p2),
@@ -73,7 +91,7 @@ mod tests {
 
     #[test]
     fn reachable_services_set_equals_siblings() {
-        let reachable: HashSet<&'static str> = ROUTES.iter().map(|(_, s)| s.name).collect();
+        let reachable: HashSet<&'static str> = ROUTES.iter().map(|(_, s, _)| s.name).collect();
         let expected: HashSet<&'static str> = SIBLINGS.iter().map(|s| s.name).collect();
         assert_eq!(reachable, expected);
     }
@@ -116,5 +134,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn every_public_method_is_routable() {
+        for method in PUBLIC_METHODS {
+            assert!(route(method).is_some(), "Public method '{method}' is not routable");
+            assert_eq!(method_auth(method), Some(MethodAuth::Public));
+        }
+    }
+
+    #[test]
+    fn every_route_prefix_has_an_auth_classification() {
+        for &(prefix, _, auth) in ROUTES {
+            let sample_method = format!("{prefix}test");
+            assert_eq!(method_auth(&sample_method), Some(auth));
+        }
+    }
+
+    #[test]
+    fn method_auth_is_none_for_an_unroutable_method() {
+        assert_eq!(method_auth("unknown.method"), None);
+        assert_eq!(method_auth(""), None);
     }
 }

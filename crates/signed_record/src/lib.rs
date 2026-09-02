@@ -13,9 +13,16 @@ pub mod verify;
 
 pub use envelope::{
     DraftError, ENVELOPE_VERSION, Envelope, EnvelopeError, MAX_PAYLOAD_BYTES, MAX_PAYLOAD_DEPTH,
-    MAX_RECORD_TYPE_LEN, MAX_SUBJECT_LEN, RECORD_ID_PREFIX, RecordDraft,
+    MAX_RECORD_TYPE_LEN, MAX_SUBJECT_LEN, RECORD_ID_PREFIX, RecordDraft, content_digest,
 };
-pub use syneroym_identity::delegation::SCOPE_RECORD_SIGNING;
+/// The delegation certificate and the canonicalizer, re-exported so a
+/// component checks a certificate, and hashes a document, with the same
+/// code the host runs. Nothing here can produce a signature: `issue`
+/// takes an `Identity`, and this crate exposes no way to build one.
+pub use syneroym_identity::{
+    delegation::{DelegationCertificate, SCOPE_RECORD_SIGNING},
+    substrate::canonicalize_json_value,
+};
 pub use verify::{
     DEFAULT_ACCEPTED_SCOPES, EmptyRevocations, RevocationCheck, RevocationSet, RevocationSource,
     RevocationStatus, VerifiedRecord, VerifyError, VerifyOptions, verify, verify_json,

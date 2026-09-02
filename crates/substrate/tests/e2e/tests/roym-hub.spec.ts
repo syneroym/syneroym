@@ -85,6 +85,8 @@ test.describe('Roym Hub', () => {
     await loginWithDelegatedKey(page);
     await page.waitForLoadState('networkidle');
 
+    await page.getByRole('button', { name: 'Components' }).click();
+
     const knownTypes = [
       'request',
       'quote',
@@ -152,5 +154,61 @@ test.describe('Roym Hub', () => {
     const renderedText = await page.locator('#safety-test-container').innerText();
     expect(renderedText).toContain('<img src=x');
     expect(renderedText).toContain('<script>');
+  });
+
+  test('5. profile tab: saving display name updates profile and displays signed record ID', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await page.getByRole('button', { name: 'Profile', exact: true }).click();
+    // Fill display name (first text input) and conversation address (second text input)
+    const textInputs = page.locator('.profile-screen input[type="text"]');
+    await textInputs.nth(0).fill('Alice In E2E');
+    await textInputs.nth(1).fill('iroh://alice-e2e-test-address');
+    await page.locator('.profile-screen button[type="submit"]').click();
+
+    await expect(page.locator('.profile-screen p')).toContainText('Saved record rec_', { timeout: 15_000 });
+  });
+
+  test('6. contacts tab: adding a contact displays it in contacts list', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await page.getByRole('button', { name: 'Contacts' }).click();
+    const bobDid = 'did:key:h7wybobtestdid123456789012345678901234567890';
+    // The contacts screen has: DID input (first), conversation address input (second)
+    const contactInputs = page.locator('.contacts-screen input');
+    await contactInputs.nth(0).fill(bobDid);
+    await contactInputs.nth(1).fill('iroh://bob-e2e-test-address');
+    await page.getByRole('button', { name: 'Upsert Contact' }).click();
+
+    await expect(page.locator('.contacts-screen')).toContainText(bobDid, { timeout: 15_000 });
+  });
+
+  test('7. safety tab: blocking a DID displays it in block list', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await page.getByRole('button', { name: 'Safety' }).click();
+    const spammerDid = 'did:key:h7wyspammerdid123456789012345678901234567890';
+    await page.locator('.safety-screen input').fill(spammerDid);
+    await page.getByRole('button', { name: 'Block' }).click();
+
+    await expect(page.locator('.safety-screen')).toContainText(`Blocked: ${spammerDid}`);
+  });
+
+  test('8. backup tab: exporting app data bundle triggers download', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await page.getByRole('button', { name: 'Backup' }).click();
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Export App Data Bundle' }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe('roym-app-data-bundle.json');
   });
 });

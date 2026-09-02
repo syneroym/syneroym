@@ -1,25 +1,37 @@
-//! Roym signed record constants and re-exports.
+//! Roym's signed record vocabulary, and the envelope re-exports the
+//! product reads it through.
 
 pub use syneroym_signed_record::{
-    Envelope, RecordDraft, VerifiedRecord, VerifyError, VerifyOptions, verify,
+    DelegationCertificate, EmptyRevocations, Envelope, RecordDraft, RevocationCheck, RevocationSet,
+    RevocationSource, RevocationStatus, SCOPE_RECORD_SIGNING, VerifiedRecord, VerifyError,
+    VerifyOptions, content_digest, verify, verify_json,
 };
 
-/// Known Roym record types (spec D-C3-14).
-pub const RECORD_TYPES: &[&str] = &[
-    "listing",
-    "request",
-    "quote",
-    "agreement-receipt",
-    "payment-acknowledgement",
-    "fulfilment-receipt",
-    "membership-credential",
-    "revocation",
-    "moderation-decision",
+/// Every record type this product produces, and the version each is
+/// produced at today. Fixed, like the card table: a record of an unlisted
+/// type, or a listed type at an unlisted version, is not understood
+/// rather than guessed.
+///
+/// `profile` proves who published a person's card and the conversation
+/// address they claim. It is how a stranger reached by direct link gets
+/// an address they can attribute, with no directory involved.
+pub const RECORD_TYPES: &[(&str, u32)] = &[
+    ("profile", 1),
+    ("listing", 1),
+    ("membership-credential", 1),
+    ("revocation", 1),
+    ("request", 1),
+    ("quote", 1),
+    ("agreement-receipt", 1),
+    ("payment-acknowledgement", 1),
+    ("fulfilment-receipt", 1),
+    ("moderation-decision", 1),
 ];
 
-/// Returns true if `record_type` is one of the known Roym record types.
-pub fn is_known_record(record_type: &str) -> bool {
-    RECORD_TYPES.contains(&record_type)
+pub const RECORD_PROFILE: &str = "profile";
+
+pub fn is_known_record(record_type: &str, version: u32) -> bool {
+    RECORD_TYPES.iter().any(|&(t, v)| t == record_type && v == version)
 }
 
 #[cfg(test)]
@@ -28,10 +40,10 @@ mod tests {
 
     #[test]
     fn test_known_record_types() {
-        for t in RECORD_TYPES {
-            assert!(is_known_record(t));
+        for &(t, v) in RECORD_TYPES {
+            assert!(is_known_record(t, v));
             let draft = RecordDraft {
-                version: 1,
+                version: v,
                 record_type: t.to_string(),
                 subject: "sub".to_string(),
                 payload: serde_json::json!({"k": "v"}),
@@ -40,7 +52,7 @@ mod tests {
             };
             assert!(draft.validate(0).is_ok(), "record type '{t}' must pass draft validation");
         }
-        assert!(!is_known_record("unknown"));
-        assert!(!is_known_record("profile.v1"));
+        assert!(!is_known_record("unknown", 1));
+        assert!(!is_known_record("profile", 2));
     }
 }

@@ -22,6 +22,12 @@ chrono.workspace = true
 zeroize = { workspace = true, features = ["derive"] }
 libc.workspace = true
 tracing.workspace = true
+thiserror.workspace = true
+aes-gcm = { workspace = true, optional = true }
+
+[features]
+default = []
+backup = ["dep:aes-gcm"]
 
 [dev-dependencies]
 criterion.workspace = true

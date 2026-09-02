@@ -6019,6 +6019,7 @@ dependencies = [
  "syneroym-core",
  "syneroym-identity",
  "syneroym-sdk",
+ "syneroym-signed-record",
  "syneroym-ucan",
  "tempfile",
  "tokio",
@@ -7807,6 +7808,7 @@ dependencies = [
 name = "syneroym-identity"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "chrono",
  "criterion",
@@ -7819,6 +7821,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "thiserror 2.0.20",
  "tracing",
  "z32",
  "zeroize",
@@ -7976,8 +7979,11 @@ dependencies = [
  "serde",
  "serde_json",
  "syneroym-app-host",
+ "syneroym-identity",
  "syneroym-rpc",
  "syneroym-signed-record",
+ "thiserror 2.0.20",
+ "tokio",
  "toml 1.1.4+spec-1.1.0",
 ]
 
