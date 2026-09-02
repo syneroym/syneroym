@@ -1535,8 +1535,9 @@ async fn init_roym(
 ) -> anyhow::Result<Vec<Arc<syneroym_app_host_native::NativeHostFactory>>> {
     use std::{collections::BTreeSet, fs, sync::Weak, time::Duration};
 
-    use syneroym_app_host::ConversationSink;
-    use syneroym_app_host_native::{HttpSink, NativeHostFactory, NativeHttpAdapter, WebSocketSink};
+    use syneroym_app_host_native::{
+        ConversationSink, HttpSink, NativeHostFactory, NativeHttpAdapter, WebSocketSink,
+    };
     use syneroym_app_orchestration::{
         AppInstanceId, LogicalServiceName, TopologyEntry, TopologyEpoch, TopologyKey, TopologyMode,
         models::ServiceId,
