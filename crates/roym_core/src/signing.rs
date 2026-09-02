@@ -28,6 +28,7 @@ pub const CERTIFICATES: &str = "signing_certificates";
 /// for the first release, and a fixed id makes that visible rather than
 /// letting a second row appear unnoticed.
 pub const CERTIFICATE_ID: &str = "current";
+pub const MAX_CERTIFICATE_LIFETIME_SECS: u64 = 5 * 365 * 24 * 3600;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredCertificate {
@@ -102,13 +103,19 @@ pub async fn install<H: AppHost>(
             cert.master_did, owner
         )));
     }
-    cert.verify_chain(&cert.master_did, &[SCOPE_RECORD_SIGNING])
+    cert.verify_chain_at(&cert.master_did, &[SCOPE_RECORD_SIGNING], now_secs)
         .map_err(|e| CertificateError::Rejected(e.to_string()))?;
 
     if now_secs >= cert.expires_at_secs {
         return Err(CertificateError::Rejected(format!(
             "already expired at {}",
             cert.expires_at_secs
+        )));
+    }
+    if cert.expires_at_secs.saturating_sub(now_secs) > MAX_CERTIFICATE_LIFETIME_SECS {
+        return Err(CertificateError::Rejected(format!(
+            "lifetime exceeds maximum allowed ({} seconds)",
+            MAX_CERTIFICATE_LIFETIME_SECS
         )));
     }
 
@@ -135,23 +142,29 @@ pub async fn install<H: AppHost>(
     Ok(stored)
 }
 
+/// Reads and deserialises the single stored certificate row, if any.
+/// Ensures the collection exists as a side-effect, matching the behaviour
+/// callers relied on before this helper existed.
+async fn load_certificate<H: AppHost>(
+    host: &H,
+) -> Result<Option<StoredCertificate>, CertificateError> {
+    ensure_collection(host, CERTIFICATES).await.map_err(CertificateError::Storage)?;
+    let row = AppDataLayer::get(host, CERTIFICATES.to_string(), CERTIFICATE_ID.to_string())
+        .await
+        .map_err(|e| CertificateError::Storage(e.to_string()))?;
+    let Some(row) = row else { return Ok(None) };
+    let stored: StoredCertificate = serde_json::from_slice(&row.payload)
+        .map_err(|e| CertificateError::Storage(e.to_string()))?;
+    Ok(Some(stored))
+}
+
 pub async fn status<H: AppHost>(
     host: &H,
     now_secs: u64,
 ) -> Result<CertificateStatus, CertificateError> {
-    ensure_collection(host, CERTIFICATES).await.map_err(CertificateError::Storage)?;
-
-    let row = AppDataLayer::get(host, CERTIFICATES.to_string(), CERTIFICATE_ID.to_string())
-        .await
-        .map_err(|e| CertificateError::Storage(e.to_string()))?;
-
-    let Some(row) = row else {
+    let Some(stored) = load_certificate(host).await? else {
         return Ok(CertificateStatus::Missing);
     };
-
-    let stored: StoredCertificate = serde_json::from_slice(&row.payload)
-        .map_err(|e| CertificateError::Storage(e.to_string()))?;
-
     let id = AppSigning::signing_identity(host)
         .await
         .map_err(|e| CertificateError::Storage(e.to_string()))?;
@@ -176,24 +189,22 @@ pub async fn person_principal<H: AppHost>(
     host: &H,
     now_secs: u64,
 ) -> Result<(Principal, String), CertificateError> {
-    match status(host, now_secs).await? {
-        CertificateStatus::Missing => Err(CertificateError::NotEnrolled),
-        CertificateStatus::Stale { installed_for, current } => {
-            Err(CertificateError::Stale { installed_for, current })
-        }
-        CertificateStatus::Expired { expires_at_secs } => {
-            Err(CertificateError::Expired(expires_at_secs))
-        }
-        CertificateStatus::Installed { master_did, .. } => {
-            let row = AppDataLayer::get(host, CERTIFICATES.to_string(), CERTIFICATE_ID.to_string())
-                .await
-                .map_err(|e| CertificateError::Storage(e.to_string()))?
-                .ok_or(CertificateError::NotEnrolled)?;
-            let stored: StoredCertificate = serde_json::from_slice(&row.payload)
-                .map_err(|e| CertificateError::Storage(e.to_string()))?;
-            Ok((Principal::Delegated(stored.certificate), master_did))
-        }
+    let Some(stored) = load_certificate(host).await? else {
+        return Err(CertificateError::NotEnrolled);
+    };
+    let id = AppSigning::signing_identity(host)
+        .await
+        .map_err(|e| CertificateError::Storage(e.to_string()))?;
+    if stored.signing_did != id.signing_did {
+        return Err(CertificateError::Stale {
+            installed_for: stored.signing_did,
+            current: id.signing_did,
+        });
     }
+    if now_secs >= stored.expires_at_secs {
+        return Err(CertificateError::Expired(stored.expires_at_secs));
+    }
+    Ok((Principal::Delegated(stored.certificate), stored.master_did))
 }
 
 pub async fn owner_did<H: AppHost>(host: &H) -> Result<String, CertificateError> {
@@ -277,7 +288,7 @@ mod tests {
             vault::VaultError,
         },
     };
-    use syneroym_identity::Identity;
+    use syneroym_identity::{Identity, substrate};
     use syneroym_signed_record::{DelegationCertificate, SCOPE_RECORD_SIGNING};
 
     use super::*;
@@ -564,10 +575,10 @@ mod tests {
     #[tokio::test]
     async fn test_certificate_status_and_install_flow() {
         let master = Identity::generate().unwrap();
-        let master_did = syneroym_identity::substrate::derive_did_key(&master.public_key());
+        let master_did = substrate::derive_did_key(&master.public_key());
 
         let service_key = Identity::generate().unwrap();
-        let service_did = syneroym_identity::substrate::derive_did_key(&service_key.public_key());
+        let service_did = substrate::derive_did_key(&service_key.public_key());
 
         let host = TestHost::default();
         *host.signing_id.lock().unwrap() = Some(SigningIdentity {
@@ -575,9 +586,6 @@ mod tests {
             pubkey_hex: "00".to_string(),
             owner_did: Some(master_did.clone()),
         });
-
-        // 1. Initial status: Missing
-        assert_eq!(status(&host, 1000).await.unwrap(), CertificateStatus::Missing);
 
         // 2. Mint valid cert
         let cert = DelegationCertificate::issue(
@@ -588,13 +596,17 @@ mod tests {
         )
         .unwrap();
         let cert_json = cert.to_json().unwrap();
+        let now = cert.issued_at_secs;
+
+        // 1. Initial status: Missing
+        assert_eq!(status(&host, now).await.unwrap(), CertificateStatus::Missing);
 
         // 3. Install valid cert
-        let stored = install(&host, &cert_json, 1000).await.unwrap();
+        let stored = install(&host, &cert_json, now).await.unwrap();
         assert_eq!(stored.master_did, master_did);
 
         // 4. Status is now Installed
-        match status(&host, 1000).await.unwrap() {
+        match status(&host, now).await.unwrap() {
             CertificateStatus::Installed { master_did: m, near_expiry: false, .. } => {
                 assert_eq!(m, master_did);
             }

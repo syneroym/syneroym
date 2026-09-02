@@ -40,9 +40,9 @@ use syneroym_fdae::{MAX_FETCH_IDS, Mode, Policy};
 use syneroym_identity::{DelegationCertificate, Identity};
 use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{
-    AbacError, Ability, CandidateRow, ConversationHost, NativeInvocation, NativeResponse,
-    NativeService, PERMISSION_DENIED_CODE, RelationshipProof, ResourceUri, RowAuthorizer, RpcError,
-    RpcResult, ServiceProxy, apply_stage4, union_masked_fields,
+    AbacError, Ability, CallerContext, CandidateRow, ConversationHost, NativeInvocation,
+    NativeResponse, NativeService, PERMISSION_DENIED_CODE, RelationshipProof, ResourceUri,
+    RowAuthorizer, RpcError, RpcResult, ServiceProxy, apply_stage4, union_masked_fields,
 };
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::ConfigError,
@@ -568,8 +568,18 @@ impl SynSvcNativeService {
         }
     }
 
-    fn admit_privileged_capability(&self, caller: &syneroym_rpc::CallerContext) -> RpcResult<()> {
-        if caller.caller_did.starts_with("system:") {
+    fn admit_privileged_capability(&self, caller: &CallerContext) -> RpcResult<()> {
+        // Only the three synthetic system identities scoped to *this* service are
+        // accepted:
+        //   "system:<id>"                – the service itself
+        //   "system:local-elevated:<id>" – a local elevated call on behalf of the
+        // service   "system:abac:<id>"           – an ABAC-evaluated system
+        // call for the service Any other "system:…" prefix is NOT sufficient.
+        let id = &self.service_id;
+        let is_own_system = caller.caller_did == format!("system:{id}")
+            || caller.caller_did == format!("system:local-elevated:{id}")
+            || caller.caller_did == format!("system:abac:{id}");
+        if is_own_system {
             return Ok(());
         }
         let owner = self
@@ -1655,6 +1665,7 @@ impl SynSvcNativeService {
         };
         match invocation.method.as_str() {
             "sign-record" => {
+                self.admit_privileged_capability(&invocation.caller)?;
                 let params = invocation
                     .params
                     .as_array()
@@ -1741,7 +1752,7 @@ impl NativeService for SynSvcNativeService {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn empty_service_proxy() -> Weak<dyn ServiceProxy> {
     #[derive(Debug)]
     struct NeverConstructed;

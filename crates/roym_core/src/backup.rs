@@ -69,7 +69,10 @@ impl From<EnvelopeError> for BundleError {
 impl Bundle {
     /// One hash definition, shared with the envelope's own record id.
     pub fn digest(schema_version: u32, records: &[Value]) -> Result<SectionDigest, BundleError> {
-        let digest_str = content_digest(SECTION_DIGEST_PREFIX, &json!(records))?;
+        let digest_str = content_digest(
+            SECTION_DIGEST_PREFIX,
+            &json!({ "schema_version": schema_version, "records": records }),
+        )?;
         Ok(SectionDigest { schema_version, record_count: records.len() as u64, digest: digest_str })
     }
 
@@ -196,5 +199,13 @@ mod tests {
         let d1 = Bundle::digest(1, &records).unwrap();
         let d2 = Bundle::digest(1, &records).unwrap();
         assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn schema_version_affects_digest() {
+        let records = vec![json!({"id": "r1"})];
+        let d1 = Bundle::digest(1, &records).unwrap();
+        let d2 = Bundle::digest(2, &records).unwrap();
+        assert_ne!(d1.digest, d2.digest);
     }
 }

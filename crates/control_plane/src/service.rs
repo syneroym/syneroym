@@ -1462,7 +1462,7 @@ mod tests {
         store.write_secret("db-password", b"s3cr3t").await.unwrap();
         let reveal_resp = native
             .dispatch(NativeInvocation {
-                caller: CallerContext::service_system("test-caller"),
+                caller: CallerContext::service_system(&service_id),
                 interface: "vault".to_string(),
                 method: "reveal".to_string(),
                 params: serde_json::json!({"key": "db-password"}),

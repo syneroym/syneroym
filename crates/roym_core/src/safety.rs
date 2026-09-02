@@ -94,6 +94,29 @@ pub enum Admission {
     RateLimited { retry_after_secs: u64 },
 }
 
+fn admit_windowed(
+    prior_secs: &[u64],
+    window_secs: u64,
+    max_per_window: u32,
+    now_secs: u64,
+) -> Admission {
+    if max_per_window == 0 {
+        return Admission::RateLimited { retry_after_secs: window_secs };
+    }
+    let floor = now_secs.saturating_sub(window_secs);
+    let mut inside: Vec<u64> = prior_secs.iter().copied().filter(|t| *t > floor).collect();
+    if inside.len() < max_per_window as usize {
+        return Admission::Allow;
+    }
+    inside.sort_unstable();
+    // The oldest attempt still inside the window is the one that must age
+    // out before another is admitted.
+    let oldest = inside[inside.len() - max_per_window as usize];
+    Admission::RateLimited {
+        retry_after_secs: (oldest + window_secs).saturating_sub(now_secs).max(1),
+    }
+}
+
 /// `attempts_secs` is every prior first-contact attempt by this sender,
 /// in any order. Only those inside the window count.
 pub fn admit_first_contact(
@@ -105,21 +128,7 @@ pub fn admit_first_contact(
     if blocked {
         return Admission::Blocked;
     }
-    if limits.max_per_window == 0 {
-        return Admission::RateLimited { retry_after_secs: limits.window_secs };
-    }
-    let floor = now_secs.saturating_sub(limits.window_secs);
-    let mut inside: Vec<u64> = attempts_secs.iter().copied().filter(|t| *t > floor).collect();
-    if inside.len() < limits.max_per_window as usize {
-        return Admission::Allow;
-    }
-    inside.sort_unstable();
-    // The oldest attempt still inside the window is the one that must age
-    // out before another is admitted.
-    let oldest = inside[inside.len() - limits.max_per_window as usize];
-    Admission::RateLimited {
-        retry_after_secs: (oldest + limits.window_secs).saturating_sub(now_secs).max(1),
-    }
+    admit_windowed(attempts_secs, limits.window_secs, limits.max_per_window, now_secs)
 }
 
 pub fn admit_publication(
@@ -127,19 +136,7 @@ pub fn admit_publication(
     limits: &PublicationLimits,
     now_secs: u64,
 ) -> Admission {
-    if limits.max_per_window == 0 {
-        return Admission::RateLimited { retry_after_secs: limits.window_secs };
-    }
-    let floor = now_secs.saturating_sub(limits.window_secs);
-    let mut inside: Vec<u64> = prior_secs.iter().copied().filter(|t| *t > floor).collect();
-    if inside.len() < limits.max_per_window as usize {
-        return Admission::Allow;
-    }
-    inside.sort_unstable();
-    let oldest = inside[inside.len() - limits.max_per_window as usize];
-    Admission::RateLimited {
-        retry_after_secs: (oldest + limits.window_secs).saturating_sub(now_secs).max(1),
-    }
+    admit_windowed(prior_secs, limits.window_secs, limits.max_per_window, now_secs)
 }
 
 #[cfg(test)]
@@ -216,5 +213,30 @@ mod tests {
 
         let valid = ContactLimits::default();
         assert!(valid.validate().is_ok());
+    }
+
+    #[test]
+    fn publication_limits_and_admission_work() {
+        let limits = PublicationLimits::default();
+        assert!(limits.validate().is_ok());
+
+        let invalid = PublicationLimits { window_secs: 10, max_per_window: 1 };
+        assert!(matches!(invalid.validate(), Err(LimitsError::WindowOutOfBounds { .. })));
+
+        let empty: Vec<u64> = vec![];
+        assert_eq!(admit_publication(&empty, &limits, 1000), Admission::Allow);
+
+        let zero_limit = PublicationLimits { window_secs: 600, max_per_window: 0 };
+        assert_eq!(
+            admit_publication(&empty, &zero_limit, 1000),
+            Admission::RateLimited { retry_after_secs: 600 }
+        );
+
+        let capped_limit = PublicationLimits { window_secs: 100, max_per_window: 2 };
+        let history = vec![950, 980];
+        assert_eq!(
+            admit_publication(&history, &capped_limit, 1000),
+            Admission::RateLimited { retry_after_secs: 50 }
+        );
     }
 }

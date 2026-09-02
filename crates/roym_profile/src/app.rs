@@ -6,18 +6,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost, AppSigning,
-    types::data_layer::{
-        CollectionSchema, IndexDefinition, IndexType, Mutation, QueryOptions, RecordWriteValue,
+    types::{
+        data_layer::{
+            CollectionSchema, IndexDefinition, IndexType, Mutation, QueryOptions, RecordWriteValue,
+        },
+        signing::RecordDraft,
     },
 };
 use syneroym_roym_core::{
     backup::{
-        Bundle, BundleManifest, SECTION_BLOCKS, SECTION_CONTACTS, SECTION_PROFILE, SECTION_REPORTS,
+        BUNDLE_VERSION, Bundle, BundleManifest, SECTION_BLOCKS, SECTION_CONTACTS, SECTION_PROFILE,
+        SECTION_REPORTS,
     },
     clock,
     envelope::{Request, Response},
     person::{ProfilePayload, is_did_key},
-    record::{Envelope, RECORD_PROFILE, VerifyOptions, verify_json},
+    record::{Envelope, RECORD_PROFILE, VerifyOptions, content_digest, verify_json},
     safety::{self, Admission, ContactLimits},
     services,
     signing::{self, CertificateError},
@@ -274,7 +278,7 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                 Err(e) => return Response::internal_error(e.to_string()),
             };
 
-            let wit_draft = syneroym_app_host::types::signing::RecordDraft {
+            let wit_draft = RecordDraft {
                 version: 1,
                 record_type: RECORD_PROFILE.to_string(),
                 subject: owner.clone(),
@@ -315,19 +319,6 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                 return Response::internal_error(e);
             }
 
-            if let Err(e) = AppDataLayer::put(
-                host,
-                PROFILE_HISTORY.to_string(),
-                RecordWriteValue {
-                    id: record_id.clone(),
-                    payload: envelope_json.as_bytes().to_vec(),
-                },
-            )
-            .await
-            {
-                return Response::internal_error(e.to_string());
-            }
-
             let profile_row = json!({
                 "envelope": envelope_json,
                 "record_id": record_id,
@@ -339,10 +330,27 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                 Err(e) => return Response::internal_error(e.to_string()),
             };
 
+            // Write the pointer first. If the process crashes between these two writes,
+            // the pointer still points to the previous valid record — the supersedes chain
+            // stays intact. An orphaned history record (written second, never pointed to)
+            // is harmless.
             if let Err(e) = AppDataLayer::put(
                 host,
                 PROFILES.to_string(),
                 RecordWriteValue { id: owner, payload: profile_payload },
+            )
+            .await
+            {
+                return Response::internal_error(e.to_string());
+            }
+
+            if let Err(e) = AppDataLayer::put(
+                host,
+                PROFILE_HISTORY.to_string(),
+                RecordWriteValue {
+                    id: record_id.clone(),
+                    payload: envelope_json.as_bytes().to_vec(),
+                },
             )
             .await
             {
@@ -393,7 +401,7 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
             }
 
             let manifest = BundleManifest {
-                bundle_version: syneroym_roym_core::backup::BUNDLE_VERSION,
+                bundle_version: BUNDLE_VERSION,
                 produced_at_secs: now,
                 subject_did: owner,
                 sections: manifest_sections,
@@ -433,6 +441,16 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                 ));
             }
 
+            for (name, declared) in &bundle.manifest.sections {
+                if declared.schema_version != SCHEMA_VERSION {
+                    return Response::invalid_params(format!(
+                        "section '{name}' has schema version {}, this node requires \
+                         {SCHEMA_VERSION}",
+                        declared.schema_version
+                    ));
+                }
+            }
+
             for (name, records) in &bundle.sections {
                 let collection = match name.as_str() {
                     SECTION_PROFILE => PROFILES,
@@ -452,11 +470,42 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                             Some(i) => i.to_string(),
                             None => return Response::invalid_params("record missing id"),
                         };
-                        let payload_val = match rec.get("payload") {
-                            Some(p) => p,
+                        let mut payload_val = match rec.get("payload") {
+                            Some(p) => p.clone(),
                             None => return Response::invalid_params("record missing payload"),
                         };
-                        let payload_bytes = match serde_json::to_vec(payload_val) {
+                        if name == SECTION_PROFILE {
+                            let env_str = match payload_val.get("envelope").and_then(|v| v.as_str())
+                            {
+                                Some(s) => s,
+                                None => {
+                                    return Response::invalid_params(
+                                        "profile record missing envelope",
+                                    );
+                                }
+                            };
+                            let verified_rec = match verify_json(
+                                env_str,
+                                &VerifyOptions::new(clock::now_secs()).expecting(&id),
+                            ) {
+                                Ok(vr) => vr,
+                                Err(e) => {
+                                    return Response::invalid_params(format!(
+                                        "profile record '{id}' failed verification: {e}"
+                                    ));
+                                }
+                            };
+                            if verified_rec.record_type != RECORD_PROFILE {
+                                return Response::invalid_params("record is not a profile");
+                            }
+                            if let Some(obj) = payload_val.as_object_mut() {
+                                obj.insert(
+                                    "verified_at_secs".to_string(),
+                                    json!(clock::now_secs()),
+                                );
+                            }
+                        }
+                        let payload_bytes = match serde_json::to_vec(&payload_val) {
                             Ok(b) => b,
                             Err(e) => return Response::internal_error(e.to_string()),
                         };
@@ -508,7 +557,13 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                     list.push(row);
                 }
             }
-            Response::ok(json!(list))
+            let offset = req.params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let limit = req.params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+            let paged: Vec<_> = match limit {
+                Some(lim) => list.into_iter().skip(offset).take(lim).collect(),
+                None => list.into_iter().skip(offset).collect(),
+            };
+            Response::ok(json!(paged))
         }
         "contacts.get" => {
             let person_did = match req.params.get("person_did").and_then(|v| v.as_str()) {
@@ -556,6 +611,12 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                         return Response::invalid_params(
                             "not a profile record this build understands",
                         );
+                    }
+                    if v.subject != person_did {
+                        return Response::invalid_params(format!(
+                            "profile subject '{}' does not match contact DID '{person_did}'",
+                            v.subject
+                        ));
                     }
                     let p: ProfilePayload = match serde_json::from_value(v.payload.clone()) {
                         Ok(p) => p,
@@ -607,15 +668,20 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                 return Response::internal_error(e);
             }
 
-            let existing_added_at =
+            let existing =
                 match AppDataLayer::get(host, CONTACTS.to_string(), person_did.clone()).await {
-                    Ok(Some(row)) => serde_json::from_slice::<ContactRow>(&row.payload)
-                        .ok()
-                        .map(|r| r.added_at_secs),
+                    Ok(Some(row)) => serde_json::from_slice::<ContactRow>(&row.payload).ok(),
                     _ => None,
                 };
 
-            let favourite = req.params.get("favourite").and_then(|v| v.as_bool()).unwrap_or(false);
+            let existing_added_at = existing.as_ref().map(|r| r.added_at_secs);
+            // When the caller omits `favourite`, preserve the stored value.
+            // To un-star a contact the caller must send `"favourite": false` explicitly.
+            let favourite = req
+                .params
+                .get("favourite")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_else(|| existing.as_ref().map(|r| r.favourite).unwrap_or(false));
 
             let row = ContactRow {
                 person_did: person_did.clone(),
@@ -722,34 +788,35 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                 return Response::internal_error(e);
             }
 
-            let blocked_by_key = AppDataLayer::get(host, BLOCKS.to_string(), key.clone())
-                .await
-                .ok()
-                .flatten()
-                .is_some();
-            let blocked_by_addr = sender_person_did.is_some()
-                && AppDataLayer::get(host, BLOCKS.to_string(), format!("addr:{sender_address}"))
+            let blocked_by_key =
+                match AppDataLayer::get(host, BLOCKS.to_string(), key.clone()).await {
+                    Ok(row) => row.is_some(),
+                    Err(e) => return Response::internal_error(e.to_string()),
+                };
+            let blocked_by_addr = if sender_person_did.is_some() {
+                match AppDataLayer::get(host, BLOCKS.to_string(), format!("addr:{sender_address}"))
                     .await
-                    .ok()
-                    .flatten()
-                    .is_some();
+                {
+                    Ok(row) => row.is_some(),
+                    Err(e) => return Response::internal_error(e.to_string()),
+                }
+            } else {
+                false
+            };
             let blocked = blocked_by_key || blocked_by_addr;
 
             let floor = now.saturating_sub(limits.window_secs);
             let filter_json =
                 json!({ "sender_key": key, "at_secs": { "$gte": floor } }).to_string();
-            let query_res = AppDataLayer::query(
+            // No limit: we need all attempts in the window to reliably identify the
+            // oldest one for an accurate retry_after_secs hint.
+            let attempts: Vec<u64> = match AppDataLayer::query(
                 host,
                 CONTACT_ATTEMPTS.to_string(),
-                QueryOptions {
-                    filter: Some(filter_json),
-                    limit: Some(limits.max_per_window + 1),
-                    cursor: None,
-                },
+                QueryOptions { filter: Some(filter_json), limit: None, cursor: None },
             )
-            .await;
-
-            let attempts: Vec<u64> = match query_res {
+            .await
+            {
                 Ok(res) => res
                     .records
                     .iter()
@@ -759,22 +826,24 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                             .and_then(|v| v.get("at_secs").and_then(|t| t.as_u64()))
                     })
                     .collect(),
-                Err(_) => Vec::new(),
+                Err(e) => return Response::internal_error(e.to_string()),
             };
 
             match safety::admit_first_contact(blocked, &attempts, &limits, now) {
                 Admission::Allow => {
                     let attempt_val = json!({ "sender_key": key, "at_secs": now });
-                    if let Ok(payload) = serde_json::to_vec(&attempt_val) {
-                        let _ = AppDataLayer::put(
-                            host,
-                            CONTACT_ATTEMPTS.to_string(),
-                            RecordWriteValue {
-                                id: format!("{key}:{now}:{}", attempts.len()),
-                                payload,
-                            },
-                        )
-                        .await;
+                    let payload = match serde_json::to_vec(&attempt_val) {
+                        Ok(b) => b,
+                        Err(e) => return Response::internal_error(e.to_string()),
+                    };
+                    if let Err(e) = AppDataLayer::put(
+                        host,
+                        CONTACT_ATTEMPTS.to_string(),
+                        RecordWriteValue { id: format!("{key}:{now}:{}", attempts.len()), payload },
+                    )
+                    .await
+                    {
+                        return Response::internal_error(e.to_string());
                     }
                     Response::ok(json!({ "admission": "allow" }))
                 }
@@ -844,7 +913,13 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
             };
 
             let now = clock::now_secs();
-            let row = BlockRow { key: key.clone(), person_did, address, reason, at_secs: now };
+            let row = BlockRow {
+                key: key.clone(),
+                person_did: person_did.clone(),
+                address: address.clone(),
+                reason: reason.clone(),
+                at_secs: now,
+            };
 
             if let Err(e) = ensure_coll(
                 host,
@@ -869,6 +944,33 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
             .await
             {
                 return Response::internal_error(e.to_string());
+            }
+
+            // When both a DID and an address are provided, write a second row keyed by
+            // the address so that `admit-first-contact`'s `addr:<sender_address>` lookup
+            // also finds the block, regardless of whether the sender's DID is known.
+            if let (Some(_), Some(ref addr)) = (person_did.as_ref(), address.as_ref()) {
+                let addr_key = format!("addr:{addr}");
+                let addr_row = BlockRow {
+                    key: addr_key.clone(),
+                    person_did: person_did.clone(),
+                    address: address.clone(),
+                    reason: reason.clone(),
+                    at_secs: now,
+                };
+                let addr_payload = match serde_json::to_vec(&addr_row) {
+                    Ok(b) => b,
+                    Err(e) => return Response::internal_error(e.to_string()),
+                };
+                if let Err(e) = AppDataLayer::put(
+                    host,
+                    BLOCKS.to_string(),
+                    RecordWriteValue { id: addr_key, payload: addr_payload },
+                )
+                .await
+                {
+                    return Response::internal_error(e.to_string());
+                }
             }
 
             Response::ok(json!({ "key": key }))
@@ -922,7 +1024,13 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                     list.push(row);
                 }
             }
-            Response::ok(json!(list))
+            let offset = req.params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let limit = req.params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+            let paged: Vec<_> = match limit {
+                Some(lim) => list.into_iter().skip(offset).take(lim).collect(),
+                None => list.into_iter().skip(offset).collect(),
+            };
+            Response::ok(json!(paged))
         }
         "block.check" => {
             let person_did = req.params.get("person_did").and_then(|v| v.as_str());
@@ -942,13 +1050,19 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
             let key_addr = address.map(|a| format!("addr:{a}"));
 
             let row_did = if let Some(ref k) = key_did {
-                AppDataLayer::get(host, BLOCKS.to_string(), k.clone()).await.ok().flatten()
+                match AppDataLayer::get(host, BLOCKS.to_string(), k.clone()).await {
+                    Ok(r) => r,
+                    Err(e) => return Response::internal_error(e.to_string()),
+                }
             } else {
                 None
             };
 
             let row_addr = if let Some(ref k) = key_addr {
-                AppDataLayer::get(host, BLOCKS.to_string(), k.clone()).await.ok().flatten()
+                match AppDataLayer::get(host, BLOCKS.to_string(), k.clone()).await {
+                    Ok(r) => r,
+                    Err(e) => return Response::internal_error(e.to_string()),
+                }
             } else {
                 None
             };
@@ -1005,21 +1119,12 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                 "details": details,
             });
 
-            let report_id = match syneroym_roym_core::record::content_digest("rep_", &content_val) {
+            let report_id = match content_digest("rep_", &content_val) {
                 Ok(id) => id,
                 Err(e) => return Response::internal_error(e.to_string()),
             };
 
             let now = clock::now_secs();
-            let row = ReportRow {
-                report_id: report_id.clone(),
-                subject_kind,
-                subject_id,
-                category,
-                details,
-                status: "recorded".to_string(),
-                at_secs: now,
-            };
 
             if let Err(e) = ensure_coll(
                 host,
@@ -1036,6 +1141,36 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
             {
                 return Response::internal_error(e);
             }
+
+            // Check whether this content was already reported or withdrawn.
+            // `report_id` is content-derived, so the same content hits the same row.
+            // Re-filing a withdrawn report is not permitted: the original decision and
+            // timestamp must be preserved.
+            if let Ok(Some(existing_row)) =
+                AppDataLayer::get(host, REPORTS.to_string(), report_id.clone()).await
+                && let Ok(existing) = serde_json::from_slice::<ReportRow>(&existing_row.payload)
+            {
+                if existing.status == "withdrawn" {
+                    return Response::invalid_params(
+                        "this report was withdrawn; re-filing the same content is not permitted",
+                    );
+                }
+                // Already recorded — return idempotently, preserving the original timestamp.
+                return Response::ok(json!({
+                    "report_id": existing.report_id,
+                    "status": existing.status,
+                }));
+            }
+
+            let row = ReportRow {
+                report_id: report_id.clone(),
+                subject_kind,
+                subject_id,
+                category,
+                details,
+                status: "recorded".to_string(),
+                at_secs: now,
+            };
 
             let payload = match serde_json::to_vec(&row) {
                 Ok(b) => b,
@@ -1085,7 +1220,13 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                     list.push(row);
                 }
             }
-            Response::ok(json!(list))
+            let offset = req.params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let limit = req.params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+            let paged: Vec<_> = match limit {
+                Some(lim) => list.into_iter().skip(offset).take(lim).collect(),
+                None => list.into_iter().skip(offset).collect(),
+            };
+            Response::ok(json!(paged))
         }
         "report.get" => {
             let report_id = match req.params.get("report_id").and_then(|v| v.as_str()) {

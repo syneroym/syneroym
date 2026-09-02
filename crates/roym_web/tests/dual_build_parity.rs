@@ -67,6 +67,36 @@ fn owner_did() -> String {
     derive_did_key(&owner_identity().public_key())
 }
 
+fn strip_volatile(val: &mut Value) {
+    match val {
+        Value::Object(map) => {
+            map.remove("verified_at_secs");
+            map.remove("added_at_secs");
+            map.remove("at_secs");
+            map.remove("since_secs");
+            map.remove("produced_at_secs");
+            map.remove("issued_at_secs");
+            for v in map.values_mut() {
+                strip_volatile(v);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                strip_volatile(v);
+            }
+        }
+        Value::String(s) => {
+            if let Ok(mut parsed) = serde_json::from_str::<Value>(s)
+                && (parsed.is_object() || parsed.is_array())
+            {
+                strip_volatile(&mut parsed);
+                *s = parsed.to_string();
+            }
+        }
+        _ => {}
+    }
+}
+
 fn caller() -> CallerContext {
     custom_caller(&owner_did())
 }
@@ -1071,27 +1101,61 @@ async fn scenario_14_profile_set_and_get_envelope_parity() {
 
     let wasm_set = h.wasm_http.post("/rpc", set_req.clone(), Some(caller_identity.clone())).await;
     let native_set = h.native_http.post("/rpc", set_req, Some(caller_identity.clone())).await;
-    assert_eq!(wasm_set.body, native_set.body);
+    let mut wasm_set_val: Value = serde_json::from_slice(&wasm_set.body).unwrap();
+    let mut native_set_val: Value = serde_json::from_slice(&native_set.body).unwrap();
+    strip_volatile(&mut wasm_set_val);
+    strip_volatile(&mut native_set_val);
+    assert_eq!(wasm_set_val, native_set_val);
 
     let get_req = json!({ "method": "profile.get", "params": {} }).to_string().into_bytes();
     let wasm_get = h.wasm_http.post("/rpc", get_req.clone(), Some(caller_identity.clone())).await;
     let native_get = h.native_http.post("/rpc", get_req, Some(caller_identity)).await;
-    assert_eq!(wasm_get.body, native_get.body);
+    let mut wasm_get_val: Value = serde_json::from_slice(&wasm_get.body).unwrap();
+    let mut native_get_val: Value = serde_json::from_slice(&native_get.body).unwrap();
+    strip_volatile(&mut wasm_get_val);
+    strip_volatile(&mut native_get_val);
+    assert_eq!(wasm_get_val, native_get_val);
 }
 
 #[tokio::test]
-async fn scenario_15_profile_clear_restores_unbound_state_parity() {
+async fn scenario_15_contacts_resolve_address_and_remove_parity() {
     let h = harness().await;
 
-    let clear_req = json!({ "method": "profile.clear", "params": {} }).to_string().into_bytes();
-    let wasm_res = h.wasm_http.post("/rpc", clear_req.clone(), Some(caller())).await;
-    let native_res = h.native_http.post("/rpc", clear_req, Some(caller())).await;
-    assert_eq!(wasm_res.body, native_res.body);
+    let upsert_req = json!({
+        "method": "contacts.upsert",
+        "params": {
+            "person_did": "did:key:zFriend15",
+            "display_name": "Friend 15",
+            "conversation_address": "syneroym://friend15"
+        }
+    })
+    .to_string()
+    .into_bytes();
+    h.wasm_http.post("/rpc", upsert_req.clone(), Some(caller())).await;
+    h.native_http.post("/rpc", upsert_req, Some(caller())).await;
 
-    let get_req = json!({ "method": "profile.get", "params": {} }).to_string().into_bytes();
-    let wasm_get = h.wasm_http.post("/rpc", get_req.clone(), Some(caller())).await;
-    let native_get = h.native_http.post("/rpc", get_req, Some(caller())).await;
-    assert_eq!(wasm_get.body, native_get.body);
+    let resolve_req = json!({
+        "method": "contacts.resolve-address",
+        "params": { "person_did": "did:key:zFriend15" }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_resolve = h.wasm_http.post("/rpc", resolve_req.clone(), Some(caller())).await;
+    let native_resolve = h.native_http.post("/rpc", resolve_req, Some(caller())).await;
+    assert_eq!(wasm_resolve.body, native_resolve.body);
+    let val: Value = serde_json::from_slice(&wasm_resolve.body).unwrap();
+    assert_ne!(val.get("error").and_then(|e| e.get("code")), Some(&json!(-32601)));
+    assert_eq!(val["result"]["conversation_address"], "syneroym://friend15");
+
+    let remove_req = json!({
+        "method": "contacts.remove",
+        "params": { "person_did": "did:key:zFriend15" }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_rem = h.wasm_http.post("/rpc", remove_req.clone(), Some(caller())).await;
+    let native_rem = h.native_http.post("/rpc", remove_req, Some(caller())).await;
+    assert_eq!(wasm_rem.body, native_rem.body);
 }
 
 #[tokio::test]
@@ -1102,6 +1166,12 @@ async fn scenario_16_profile_policy_public_parity() {
     let wasm_res = h.wasm_http.post("/rpc", req.clone(), None).await;
     let native_res = h.native_http.post("/rpc", req, None).await;
     assert_eq!(wasm_res.body, native_res.body);
+    let val: Value = serde_json::from_slice(&wasm_res.body).unwrap();
+    assert_ne!(val.get("error").and_then(|e| e.get("code")), Some(&json!(-32601)));
+    let expected = "A blocked sender's messages are refused at this node's inbox. They are never \
+                    shown in any conversation, never fire a notification, and are never counted. \
+                    Block is enforced locally by this installation's own Conversation service.";
+    assert_eq!(val["result"]["statement"], expected);
 }
 
 #[tokio::test]
@@ -1122,7 +1192,11 @@ async fn scenario_17_contacts_upsert_and_list_parity() {
     let list_req = json!({ "method": "contacts.list", "params": {} }).to_string().into_bytes();
     let wasm_list = h.wasm_http.post("/rpc", list_req.clone(), Some(caller())).await;
     let native_list = h.native_http.post("/rpc", list_req, Some(caller())).await;
-    assert_eq!(wasm_list.body, native_list.body);
+    let mut wasm_list_val: Value = serde_json::from_slice(&wasm_list.body).unwrap();
+    let mut native_list_val: Value = serde_json::from_slice(&native_list.body).unwrap();
+    strip_volatile(&mut wasm_list_val);
+    strip_volatile(&mut native_list_val);
+    assert_eq!(wasm_list_val, native_list_val);
 }
 
 #[tokio::test]
@@ -1146,7 +1220,11 @@ async fn scenario_18_contacts_get_and_remove_parity() {
     .into_bytes();
     let wasm_get = h.wasm_http.post("/rpc", get_req.clone(), Some(caller())).await;
     let native_get = h.native_http.post("/rpc", get_req, Some(caller())).await;
-    assert_eq!(wasm_get.body, native_get.body);
+    let mut wasm_get_val: Value = serde_json::from_slice(&wasm_get.body).unwrap();
+    let mut native_get_val: Value = serde_json::from_slice(&native_get.body).unwrap();
+    strip_volatile(&mut wasm_get_val);
+    strip_volatile(&mut native_get_val);
+    assert_eq!(wasm_get_val, native_get_val);
 
     let remove_req = json!({
         "method": "contacts.remove",
@@ -1165,22 +1243,30 @@ async fn scenario_19_contacts_favourite_parity() {
 
     let upsert_req = json!({
         "method": "contacts.upsert",
+        "params": {
+            "person_did": "did:key:zFriend19",
+            "conversation_address": "syneroym://friend19",
+            "favourite": true
+        }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_up = h.wasm_http.post("/rpc", upsert_req.clone(), Some(caller())).await;
+    let native_up = h.native_http.post("/rpc", upsert_req, Some(caller())).await;
+    assert_eq!(wasm_up.body, native_up.body);
+
+    let get_req = json!({
+        "method": "contacts.get",
         "params": { "person_did": "did:key:zFriend19" }
     })
     .to_string()
     .into_bytes();
-    h.wasm_http.post("/rpc", upsert_req.clone(), Some(caller())).await;
-    h.native_http.post("/rpc", upsert_req, Some(caller())).await;
-
-    let fav_req = json!({
-        "method": "contacts.favourite",
-        "params": { "person_did": "did:key:zFriend19", "favourite": true }
-    })
-    .to_string()
-    .into_bytes();
-    let wasm_fav = h.wasm_http.post("/rpc", fav_req.clone(), Some(caller())).await;
-    let native_fav = h.native_http.post("/rpc", fav_req, Some(caller())).await;
-    assert_eq!(wasm_fav.body, native_fav.body);
+    let wasm_get = h.wasm_http.post("/rpc", get_req.clone(), Some(caller())).await;
+    let native_get = h.native_http.post("/rpc", get_req, Some(caller())).await;
+    assert_eq!(wasm_get.body, native_get.body);
+    let val: Value = serde_json::from_slice(&wasm_get.body).unwrap();
+    assert_ne!(val.get("error").and_then(|e| e.get("code")), Some(&json!(-32601)));
+    assert_eq!(val["result"]["favourite"], true);
 }
 
 #[tokio::test]
@@ -1200,7 +1286,11 @@ async fn scenario_20_block_add_and_list_parity() {
     let list_req = json!({ "method": "block.list", "params": {} }).to_string().into_bytes();
     let wasm_list = h.wasm_http.post("/rpc", list_req.clone(), Some(caller())).await;
     let native_list = h.native_http.post("/rpc", list_req, Some(caller())).await;
-    assert_eq!(wasm_list.body, native_list.body);
+    let mut wasm_list_val: Value = serde_json::from_slice(&wasm_list.body).unwrap();
+    let mut native_list_val: Value = serde_json::from_slice(&native_list.body).unwrap();
+    strip_volatile(&mut wasm_list_val);
+    strip_volatile(&mut native_list_val);
+    assert_eq!(wasm_list_val, native_list_val);
 }
 
 #[tokio::test]
@@ -1224,7 +1314,11 @@ async fn scenario_21_block_check_and_remove_parity() {
     .into_bytes();
     let wasm_check = h.wasm_http.post("/rpc", check_req.clone(), Some(caller())).await;
     let native_check = h.native_http.post("/rpc", check_req, Some(caller())).await;
-    assert_eq!(wasm_check.body, native_check.body);
+    let mut wasm_check_val: Value = serde_json::from_slice(&wasm_check.body).unwrap();
+    let mut native_check_val: Value = serde_json::from_slice(&native_check.body).unwrap();
+    strip_volatile(&mut wasm_check_val);
+    strip_volatile(&mut native_check_val);
+    assert_eq!(wasm_check_val, native_check_val);
 
     let remove_req = json!({
         "method": "block.remove",
@@ -1238,23 +1332,32 @@ async fn scenario_21_block_check_and_remove_parity() {
 }
 
 #[tokio::test]
-async fn scenario_22_report_submit_and_list_parity() {
+async fn scenario_22_report_create_and_get_parity() {
     let h = harness().await;
 
     let submit_req = json!({
-        "method": "report.submit",
-        "params": { "target_did": "did:key:zOffender22", "category": "abuse", "details": "bad" }
+        "method": "report.create",
+        "params": { "subject_kind": "person", "subject_id": "did:key:zOffender22", "category": "harassment", "details": "bad" }
     })
     .to_string()
     .into_bytes();
     let wasm_sub = h.wasm_http.post("/rpc", submit_req.clone(), Some(caller())).await;
     let native_sub = h.native_http.post("/rpc", submit_req, Some(caller())).await;
     assert_eq!(wasm_sub.body, native_sub.body);
+    let sub_val: Value = serde_json::from_slice(&wasm_sub.body).unwrap();
+    assert_ne!(sub_val.get("error").and_then(|e| e.get("code")), Some(&json!(-32601)));
+    let report_id = sub_val["result"]["report_id"].as_str().unwrap();
 
-    let list_req = json!({ "method": "report.list", "params": {} }).to_string().into_bytes();
-    let wasm_list = h.wasm_http.post("/rpc", list_req.clone(), Some(caller())).await;
-    let native_list = h.native_http.post("/rpc", list_req, Some(caller())).await;
-    assert_eq!(wasm_list.body, native_list.body);
+    let get_req = json!({ "method": "report.get", "params": { "report_id": report_id } })
+        .to_string()
+        .into_bytes();
+    let wasm_get = h.wasm_http.post("/rpc", get_req.clone(), Some(caller())).await;
+    let native_get = h.native_http.post("/rpc", get_req, Some(caller())).await;
+    let mut wasm_val: Value = serde_json::from_slice(&wasm_get.body).unwrap();
+    let mut native_val: Value = serde_json::from_slice(&native_get.body).unwrap();
+    strip_volatile(&mut wasm_val);
+    strip_volatile(&mut native_val);
+    assert_eq!(wasm_val, native_val);
 }
 
 #[tokio::test]
@@ -1264,7 +1367,11 @@ async fn scenario_23_profile_export_and_import_parity() {
     let exp_req = json!({ "method": "profile.export", "params": {} }).to_string().into_bytes();
     let wasm_exp = h.wasm_http.post("/rpc", exp_req.clone(), Some(caller())).await;
     let native_exp = h.native_http.post("/rpc", exp_req, Some(caller())).await;
-    assert_eq!(wasm_exp.body, native_exp.body);
+    let mut wasm_exp_val: Value = serde_json::from_slice(&wasm_exp.body).unwrap();
+    let mut native_exp_val: Value = serde_json::from_slice(&native_exp.body).unwrap();
+    strip_volatile(&mut wasm_exp_val);
+    strip_volatile(&mut native_exp_val);
+    assert_eq!(wasm_exp_val, native_exp_val);
 
     let exp_val: Value = serde_json::from_slice(&wasm_exp.body).unwrap();
     let bundle = &exp_val["result"];
@@ -1281,35 +1388,33 @@ async fn scenario_23_profile_export_and_import_parity() {
 }
 
 #[tokio::test]
-async fn scenario_24_contacts_export_and_import_parity() {
+async fn scenario_24_contacts_limits_and_set_limits_parity() {
     let h = harness().await;
 
-    let upsert_req = json!({
-        "method": "contacts.upsert",
-        "params": { "person_did": "did:key:zFriend24" }
+    let get_req = json!({ "method": "contacts.limits", "params": {} }).to_string().into_bytes();
+    let wasm_get = h.wasm_http.post("/rpc", get_req.clone(), Some(caller())).await;
+    let native_get = h.native_http.post("/rpc", get_req, Some(caller())).await;
+    assert_eq!(wasm_get.body, native_get.body);
+    let val: Value = serde_json::from_slice(&wasm_get.body).unwrap();
+    assert_ne!(val.get("error").and_then(|e| e.get("code")), Some(&json!(-32601)));
+
+    let set_req = json!({
+        "method": "contacts.set-limits",
+        "params": { "window_secs": 7200, "max_per_window": 5 }
     })
     .to_string()
     .into_bytes();
-    h.wasm_http.post("/rpc", upsert_req.clone(), Some(caller())).await;
-    h.native_http.post("/rpc", upsert_req, Some(caller())).await;
+    let wasm_set = h.wasm_http.post("/rpc", set_req.clone(), Some(caller())).await;
+    let native_set = h.native_http.post("/rpc", set_req, Some(caller())).await;
+    assert_eq!(wasm_set.body, native_set.body);
 
-    let exp_req = json!({ "method": "contacts.export", "params": {} }).to_string().into_bytes();
-    let wasm_exp = h.wasm_http.post("/rpc", exp_req.clone(), Some(caller())).await;
-    let native_exp = h.native_http.post("/rpc", exp_req, Some(caller())).await;
-    assert_eq!(wasm_exp.body, native_exp.body);
-
-    let exp_val: Value = serde_json::from_slice(&wasm_exp.body).unwrap();
-    let records = &exp_val["result"];
-
-    let imp_req = json!({
-        "method": "contacts.import",
-        "params": { "records": records }
-    })
-    .to_string()
-    .into_bytes();
-    let wasm_imp = h.wasm_http.post("/rpc", imp_req.clone(), Some(caller())).await;
-    let native_imp = h.native_http.post("/rpc", imp_req, Some(caller())).await;
-    assert_eq!(wasm_imp.body, native_imp.body);
+    let check_req = json!({ "method": "contacts.limits", "params": {} }).to_string().into_bytes();
+    let wasm_check = h.wasm_http.post("/rpc", check_req.clone(), Some(caller())).await;
+    let native_check = h.native_http.post("/rpc", check_req, Some(caller())).await;
+    assert_eq!(wasm_check.body, native_check.body);
+    let check_val: Value = serde_json::from_slice(&wasm_check.body).unwrap();
+    assert_eq!(check_val["result"]["window_secs"], 7200);
+    assert_eq!(check_val["result"]["max_per_window"], 5);
 }
 
 #[tokio::test]
@@ -1508,7 +1613,12 @@ async fn scenario_31_block_list_pagination_parity() {
     .into_bytes();
     let wasm_list = h.wasm_http.post("/rpc", page_req.clone(), Some(caller())).await;
     let native_list = h.native_http.post("/rpc", page_req, Some(caller())).await;
-    assert_eq!(wasm_list.body, native_list.body);
+    let mut wasm_val: Value = serde_json::from_slice(&wasm_list.body).unwrap();
+    let mut native_val: Value = serde_json::from_slice(&native_list.body).unwrap();
+    strip_volatile(&mut wasm_val);
+    strip_volatile(&mut native_val);
+    assert_eq!(wasm_val, native_val);
+    assert_eq!(wasm_val["result"].as_array().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -1517,8 +1627,13 @@ async fn scenario_32_report_list_pagination_parity() {
 
     for i in 1..=5 {
         let req = json!({
-            "method": "report.submit",
-            "params": { "target_did": format!("did:key:zOffender32_{i}"), "category": "abuse" }
+            "method": "report.create",
+            "params": {
+                "subject_kind": "person",
+                "subject_id": format!("did:key:zOffender32_{i}"),
+                "category": "harassment",
+                "details": format!("abuse {i}")
+            }
         })
         .to_string()
         .into_bytes();
@@ -1534,17 +1649,33 @@ async fn scenario_32_report_list_pagination_parity() {
     .into_bytes();
     let wasm_list = h.wasm_http.post("/rpc", page_req.clone(), Some(caller())).await;
     let native_list = h.native_http.post("/rpc", page_req, Some(caller())).await;
-    assert_eq!(wasm_list.body, native_list.body);
+    let mut wasm_val: Value = serde_json::from_slice(&wasm_list.body).unwrap();
+    let mut native_val: Value = serde_json::from_slice(&native_list.body).unwrap();
+    strip_volatile(&mut wasm_val);
+    strip_volatile(&mut native_val);
+    assert_eq!(wasm_val, native_val);
+    assert_eq!(wasm_val["result"].as_array().unwrap().len(), 2);
 }
 
 #[tokio::test]
-async fn scenario_33_directory_policy_public_parity() {
+async fn scenario_33_contacts_admit_first_contact_parity() {
     let h = harness().await;
-    let req = json!({ "method": "directory.policy", "params": {} }).to_string().into_bytes();
+    let req = json!({
+        "method": "contacts.admit-first-contact",
+        "params": {
+            "sender_address": "syneroym://stranger33",
+            "sender_person_did": "did:key:zStranger33"
+        }
+    })
+    .to_string()
+    .into_bytes();
 
-    let wasm_res = h.wasm_http.post("/rpc", req.clone(), None).await;
-    let native_res = h.native_http.post("/rpc", req, None).await;
+    let wasm_res = h.wasm_http.post("/rpc", req.clone(), Some(caller())).await;
+    let native_res = h.native_http.post("/rpc", req, Some(caller())).await;
     assert_eq!(wasm_res.body, native_res.body);
+    let val: Value = serde_json::from_slice(&wasm_res.body).unwrap();
+    assert_ne!(val.get("error").and_then(|e| e.get("code")), Some(&json!(-32601)));
+    assert_eq!(val["result"]["admission"], "allow");
 }
 
 #[tokio::test]
@@ -1616,4 +1747,29 @@ async fn the_parity_comparison_detects_a_divergence() {
         let mutant_status = mutant.status(svc_name).await.unwrap();
         assert_ne!(wasm_status, mutant_status, "status mutant divergence failed for {svc_name}");
     }
+}
+
+#[tokio::test]
+async fn scenario_36_profile_import_foreign_subject_refused_parity() {
+    let h = harness().await;
+
+    let exp_req = json!({ "method": "profile.export", "params": {} }).to_string().into_bytes();
+    let wasm_exp = h.wasm_http.post("/rpc", exp_req, Some(caller())).await;
+    let mut exp_val: Value = serde_json::from_slice(&wasm_exp.body).unwrap();
+    let bundle = exp_val.get_mut("result").unwrap();
+
+    bundle["manifest"]["subject_did"] = json!("did:key:zOtherStranger");
+
+    let imp_req = json!({
+        "method": "profile.import",
+        "params": { "bundle": bundle }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_imp = h.wasm_http.post("/rpc", imp_req.clone(), Some(caller())).await;
+    let native_imp = h.native_http.post("/rpc", imp_req, Some(caller())).await;
+    assert_eq!(wasm_imp.body, native_imp.body);
+    let val: Value = serde_json::from_slice(&wasm_imp.body).unwrap();
+    assert_eq!(val["error"]["code"], -32602);
+    assert!(val["error"]["message"].as_str().unwrap().contains("bundle belongs to"));
 }

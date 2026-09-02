@@ -310,7 +310,21 @@ pub async fn handle(
             let recovery_key = syneroym_identity::backup::generate_recovery_key()?;
             let backup = syneroym_identity::backup::export(&identity, &recovery_key)?;
             let json_str = serde_json::to_string_pretty(&backup)?;
-            fs::write(out, json_str)?;
+            #[cfg(unix)]
+            {
+                use std::{io::Write, os::unix::fs::OpenOptionsExt};
+                let mut file = fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(out)?;
+                file.write_all(json_str.as_bytes())?;
+            }
+            #[cfg(not(unix))]
+            {
+                fs::write(out, json_str)?;
+            }
 
             let encoded = syneroym_identity::backup::encode_recovery_key(&recovery_key);
             println!("Identity '{}' exported to {}", name, out.display());
@@ -338,4 +352,65 @@ pub async fn handle(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use syneroym_identity::backup;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_export_and_import_identity_flow() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "test-export-id";
+
+        // 1. Create identity
+        handle(
+            &IdentityCommands::Create { name: name.to_string() },
+            "http://localhost:7960",
+            dir.path(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let key_path = dir.path().join("identities").join(format!("{name}.key"));
+        let original_id = Identity::load_from_path(&key_path).unwrap();
+
+        // 2. Export identity using the backup logic
+        let out_file = dir.path().join("backup.json");
+        let recovery_key = backup::generate_recovery_key().unwrap();
+        let backup = backup::export(&original_id, &recovery_key).unwrap();
+        let json_str = serde_json::to_string_pretty(&backup).unwrap();
+        fs::write(&out_file, json_str).unwrap();
+        let encoded_key = backup::encode_recovery_key(&recovery_key);
+
+        // 3. Import in a clean directory
+        let clean_dir = tempfile::tempdir().unwrap();
+        handle(
+            &IdentityCommands::Import {
+                name: "restored-id".to_string(),
+                r#in: out_file,
+                recovery_key: encoded_key,
+            },
+            "http://localhost:7960",
+            clean_dir.path(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // 4. Verify restored identity exists and matches original key bytes and DID
+        let restored_path = clean_dir.path().join("identities").join("restored-id.key");
+        let restored_id = Identity::load_from_path(&restored_path).unwrap();
+        assert_eq!(original_id.public_key(), restored_id.public_key());
+        assert_eq!(original_id.to_bytes(), restored_id.to_bytes());
+        assert_eq!(
+            substrate::derive_did_key(&original_id.public_key()),
+            substrate::derive_did_key(&restored_id.public_key())
+        );
+    }
 }

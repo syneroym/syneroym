@@ -137,8 +137,15 @@ fn sanitize_gateway_url(url: &str) -> String {
     url.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect()
 }
 
-fn session_file_path(dir: &Path, gateway_url: &str) -> PathBuf {
-    dir.join("sessions").join(format!("{}.json", sanitize_gateway_url(gateway_url)))
+fn session_file_path(dir: &Path, run_as: Option<&str>, gateway_url: &str) -> PathBuf {
+    let gw_file = format!("{}.json", sanitize_gateway_url(gateway_url));
+    if let Some(id) = run_as {
+        let scoped = dir.join("sessions").join(id).join(&gw_file);
+        if scoped.exists() {
+            return scoped;
+        }
+    }
+    dir.join("sessions").join(gw_file)
 }
 
 fn save_session_file(path: &Path, session: &StoredSession) -> Result<()> {
@@ -161,6 +168,26 @@ fn save_session_file(path: &Path, session: &StoredSession) -> Result<()> {
     #[cfg(not(unix))]
     {
         fs::write(path, data)?;
+    }
+    Ok(())
+}
+
+fn persist_session(
+    dir: &Path,
+    run_as: Option<&str>,
+    gateway_url: &str,
+    session: &StoredSession,
+) -> Result<()> {
+    let primary_path =
+        dir.join("sessions").join(format!("{}.json", sanitize_gateway_url(gateway_url)));
+    save_session_file(&primary_path, session)?;
+
+    if let Some(id) = run_as {
+        let scoped_path = dir
+            .join("sessions")
+            .join(id)
+            .join(format!("{}.json", sanitize_gateway_url(gateway_url)));
+        save_session_file(&scoped_path, session)?;
     }
     Ok(())
 }
@@ -278,7 +305,6 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
                 }
 
                 let grant: LoginResponse = resp.json().await?;
-                let session_path = session_file_path(dir, gateway_url);
                 let stored = StoredSession {
                     gateway_url: gateway_url.clone(),
                     node_did: "local".to_string(),
@@ -286,7 +312,7 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
                     token: grant.token,
                     expires_at_secs: grant.expires_at_secs,
                 };
-                save_session_file(&session_path, &stored)?;
+                persist_session(dir, run_as, gateway_url, &stored)?;
 
                 println!(
                     "Logged in locally as {} (session expires at {})",
@@ -389,7 +415,6 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
             let grant: LoginResponse = resp.json().await?;
 
             // 4. Persist session
-            let session_path = session_file_path(dir, gateway_url);
             let stored = StoredSession {
                 gateway_url: gateway_url.clone(),
                 node_did: ch.node_did.clone(),
@@ -397,7 +422,7 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
                 token: grant.token,
                 expires_at_secs: grant.expires_at_secs,
             };
-            save_session_file(&session_path, &stored)?;
+            persist_session(dir, run_as, gateway_url, &stored)?;
 
             println!(
                 "Logged in as {} to node {} (session expires at {})",
@@ -405,7 +430,7 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
             );
         }
         SessionCommands::Status { gateway_url } => {
-            let session_path = session_file_path(dir, gateway_url);
+            let session_path = session_file_path(dir, run_as, gateway_url);
             if !session_path.exists() {
                 bail!("no active session for {gateway_url}");
             }
@@ -433,7 +458,7 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
             println!("Expires at: {}", whoami.expires_at_secs);
         }
         SessionCommands::Token { gateway_url } => {
-            let session_path = session_file_path(dir, gateway_url);
+            let session_path = session_file_path(dir, run_as, gateway_url);
             if !session_path.exists() {
                 bail!("no active session for {gateway_url}");
             }
@@ -441,11 +466,11 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
             println!("{}", session.token);
         }
         SessionCommands::Refresh { gateway_url } => {
-            let session_path = session_file_path(dir, gateway_url);
+            let session_path = session_file_path(dir, run_as, gateway_url);
             if !session_path.exists() {
                 bail!("no active session for {gateway_url}");
             }
-            let mut session = load_session_file(&session_path)?;
+            let session = load_session_file(&session_path)?;
 
             let client = Client::new();
             let base_url = gateway_url.trim_end_matches('/');
@@ -464,30 +489,49 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
                 bail!("session refresh failed ({status}): {err_text}");
             }
             let grant: LoginResponse = resp.json().await?;
-            session.token = grant.token;
-            session.expires_at_secs = grant.expires_at_secs;
-            save_session_file(&session_path, &session)?;
+            let stored = StoredSession {
+                gateway_url: gateway_url.clone(),
+                node_did: session.node_did,
+                person_did: grant.person_did.clone(),
+                token: grant.token,
+                expires_at_secs: grant.expires_at_secs,
+            };
+            persist_session(dir, run_as, gateway_url, &stored)?;
 
             println!(
                 "Refreshed session for {} (expires at {})",
-                session.person_did, session.expires_at_secs
+                stored.person_did, stored.expires_at_secs
             );
         }
         SessionCommands::Logout { gateway_url } => {
-            let session_path = session_file_path(dir, gateway_url);
+            let primary_path =
+                dir.join("sessions").join(format!("{}.json", sanitize_gateway_url(gateway_url)));
+            let session_path = session_file_path(dir, run_as, gateway_url);
+            let token_opt = if session_path.exists() {
+                load_session_file(&session_path).ok().map(|s| s.token)
+            } else if primary_path.exists() {
+                load_session_file(&primary_path).ok().map(|s| s.token)
+            } else {
+                None
+            };
+
+            if let Some(token) = token_opt {
+                let client = Client::new();
+                let base_url = gateway_url.trim_end_matches('/');
+                let logout_url = format!("{base_url}/_syneroym/session/logout");
+                let _ = client
+                    .post(&logout_url)
+                    .header("Authorization", format!("Bearer {token}"))
+                    .header("Cookie", format!("{}={token}", SESSION_COOKIE_NAME))
+                    .send()
+                    .await;
+            }
+
             if session_path.exists() {
-                if let Ok(session) = load_session_file(&session_path) {
-                    let client = Client::new();
-                    let base_url = gateway_url.trim_end_matches('/');
-                    let logout_url = format!("{base_url}/_syneroym/session/logout");
-                    let _ = client
-                        .post(&logout_url)
-                        .header("Authorization", format!("Bearer {}", session.token))
-                        .header("Cookie", format!("{}={}", SESSION_COOKIE_NAME, session.token))
-                        .send()
-                        .await;
-                }
                 let _ = fs::remove_file(&session_path);
+            }
+            if primary_path.exists() {
+                let _ = fs::remove_file(&primary_path);
             }
             println!("Logged out of {gateway_url}");
         }
@@ -498,13 +542,15 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
 pub async fn rpc_call(
     gateway_url: &str,
     host: Option<&str>,
-    _run_as: Option<&str>,
-    _ucan_path: Option<&Path>,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
     dir: &Path,
     method: &str,
     params: Value,
 ) -> Result<Value> {
-    let session_path = session_file_path(dir, gateway_url);
+    // ucan_path: reserved for future UCAN proof attachment; not yet wired.
+    let _ = ucan_path;
+    let session_path = session_file_path(dir, run_as, gateway_url);
     let session =
         if session_path.exists() { Some(load_session_file(&session_path)?) } else { None };
 

@@ -10,6 +10,7 @@ use common::{SubstrateTestContext, alloc_ports};
 use syneroym_core::dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType};
 use syneroym_identity::{Identity, delegation::SCOPE_RECORD_SIGNING, substrate};
 use syneroym_sdk::{SyneroymClient, deploy};
+use syneroym_signed_record::{VerifyOptions, verify};
 
 #[tokio::test]
 async fn record_signing_e2e_service_and_delegated_flow() {
@@ -95,10 +96,29 @@ async fn record_signing_e2e_service_and_delegated_flow() {
     assert_eq!(envelope.record_type, "listing");
     assert_eq!(envelope.subject, "e2e_item");
 
-    let verified =
-        syneroym_signed_record::verify(&envelope, &syneroym_signed_record::VerifyOptions::new(now))
-            .expect("verify signed record envelope signature and validity window");
+    let verified = verify(&envelope, &VerifyOptions::new(now))
+        .expect("verify signed record envelope signature and validity window");
     assert_eq!(verified.issuer, id_info.signing_did);
+
+    // 5. Stranger calls signing/sign-record over native dispatch -> refused by
+    //    owner gate
+    let stranger = Identity::generate().unwrap();
+    let mut stranger_client = SyneroymClient::new_with_identity(
+        service_id.to_string(),
+        ctx.registry_url.clone(),
+        stranger,
+    )
+    .with_registry_dht(false);
+    stranger_client.connect().await.expect("connect stranger client");
+    let stranger_err = stranger_client
+        .request("signing", "sign-record", serde_json::json!([draft, "service"]))
+        .await
+        .unwrap_err();
+    assert!(
+        stranger_err.to_string().contains("neither the service itself nor its recorded owner"),
+        "expected gate error, got: {stranger_err}"
+    );
+    let _ = stranger_client.shutdown().await;
 
     let _ = service_client.shutdown().await;
     ctx.teardown().await;

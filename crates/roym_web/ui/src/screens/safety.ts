@@ -10,12 +10,26 @@ export async function renderSafety(container: HTMLElement) {
   box.appendChild(h2);
 
   const blockDesc = document.createElement("p");
-  blockDesc.textContent =
-    "A blocked sender's messages are refused at this node's inbox. They are never shown in any " +
-    "conversation, never fire a notification, and are never counted. Block is enforced locally by " +
-    "this installation's own Conversation service. Blocking by address applies the same rule to a " +
-    "network transport endpoint.";
   box.appendChild(blockDesc);
+
+  try {
+    const policy = await call<{ statement?: string }>("profile.policy");
+    if (policy?.statement) {
+      blockDesc.textContent = policy.statement;
+    } else {
+      blockDesc.textContent =
+        "A blocked sender's messages are refused at this node's inbox. They are never shown in any " +
+        "conversation, never fire a notification, and are never counted. Block is enforced locally by " +
+        "this installation's own Conversation service. Blocking by address applies the same rule to a " +
+        "network transport endpoint.";
+    }
+  } catch {
+    blockDesc.textContent =
+      "A blocked sender's messages are refused at this node's inbox. They are never shown in any " +
+      "conversation, never fire a notification, and are never counted. Block is enforced locally by " +
+      "this installation's own Conversation service. Blocking by address applies the same rule to a " +
+      "network transport endpoint.";
+  }
 
   const blockInput = document.createElement("input");
   blockInput.placeholder = "Person DID or Address to block";
