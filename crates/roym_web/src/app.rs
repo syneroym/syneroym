@@ -10,6 +10,7 @@ use syneroym_app_host::{
     },
 };
 use syneroym_roym_core::{
+    admit,
     envelope::{self, Request, Response},
     router, services,
 };
@@ -254,6 +255,13 @@ pub async fn rpc<H: AppHost>(host: &H, request: HttpRequest) -> Result<HttpRespo
 }
 
 pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
+    // `web`'s real ingress is `incoming-handler` (POST /rpc), which keeps
+    // its own `MethodAuth` gate. Nothing legitimate reaches this export
+    // from the wire.
+    if let Some(resp) = admit::require_internal(host).await {
+        return resp;
+    }
+
     if req.method == "session.whoami" {
         return Response::ok(json!({
             "did": Value::Null,

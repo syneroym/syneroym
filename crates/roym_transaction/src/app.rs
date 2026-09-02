@@ -3,6 +3,7 @@
 use serde_json::json;
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
+    admit,
     envelope::{Request, Response},
     services,
 };
@@ -17,7 +18,11 @@ pub async fn status<H: AppHost>(_host: &H) -> Result<String, String> {
     .to_string())
 }
 
-pub async fn invoke<H: AppHost>(_host: &H, req: Request) -> Response {
+pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
+    if let Some(resp) = admit::require_internal(host).await {
+        return resp;
+    }
+
     match req.method.as_str() {
         "request.ping" | "quote.ping" | "agreement.ping" | "receipt.ping" => {
             Response::ok(json!({ "service": services::TRANSACTION.name }))
