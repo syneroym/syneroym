@@ -34,11 +34,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
+use roymctl::commands::session::{self, SessionCommands};
 use rustls::crypto::ring;
 use serde_json::{Value, json};
 use syneroym_core::{
-    config::AuthRole,
+    config::{AuthRole, IdentityMode},
     dht_registry::{EndpointInfo, EndpointType, RegistryClient},
     protocol_utils::{SESSION_COOKIE_NAME, gateway_session_assertion},
     test_constants, util,
@@ -49,6 +50,7 @@ use syneroym_identity::{
 use syneroym_sdk::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, SyneroymClient, WasmManifest,
 };
+use syneroym_ucan::{ChainVerifyOpts, SessionToken};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -170,7 +172,7 @@ async fn setup_gateway_test_node(
 }
 
 async fn setup_gateway_test_node_with_mode(
-    mode: Option<syneroym_core::config::IdentityMode>,
+    mode: Option<IdentityMode>,
     connection_auth_gate: bool,
     fixed_did: Option<String>,
 ) -> (SubstrateTestContext, u16, String, String, String) {
@@ -1119,7 +1121,7 @@ async fn test_29_roymctl_session_cli_lifecycle() {
     person.save_to_path(identities_dir.join("alice.key")).unwrap();
 
     // 1. Login
-    let login_cmd = roymctl::commands::session::SessionCommands::Login {
+    let login_cmd = SessionCommands::Login {
         gateway_url: gateway_url.clone(),
         method: "delegated-key".to_string(),
         session_key_file: None,
@@ -1127,7 +1129,7 @@ async fn test_29_roymctl_session_cli_lifecycle() {
         registry_url: Some(reg_url),
         expires_hours: 24,
     };
-    roymctl::commands::session::handle(&login_cmd, temp_dir.path(), Some("alice")).await.unwrap();
+    session::handle(&login_cmd, temp_dir.path(), Some("alice")).await.unwrap();
 
     // Verify session file exists and contents
     let sanitized_url: String =
@@ -1151,36 +1153,28 @@ async fn test_29_roymctl_session_cli_lifecycle() {
 
     // 2. Status with --as alice succeeds; unscoped status or different identity
     //    fails
-    let status_cmd =
-        roymctl::commands::session::SessionCommands::Status { gateway_url: gateway_url.clone() };
-    roymctl::commands::session::handle(&status_cmd, temp_dir.path(), Some("alice")).await.unwrap();
+    let status_cmd = SessionCommands::Status { gateway_url: gateway_url.clone() };
+    session::handle(&status_cmd, temp_dir.path(), Some("alice")).await.unwrap();
 
-    let err_unscoped =
-        roymctl::commands::session::handle(&status_cmd, temp_dir.path(), None).await.unwrap_err();
+    let err_unscoped = session::handle(&status_cmd, temp_dir.path(), None).await.unwrap_err();
     assert!(err_unscoped.to_string().contains("no active session"), "{err_unscoped}");
 
-    let err_bob = roymctl::commands::session::handle(&status_cmd, temp_dir.path(), Some("bob"))
-        .await
-        .unwrap_err();
+    let err_bob = session::handle(&status_cmd, temp_dir.path(), Some("bob")).await.unwrap_err();
     assert!(err_bob.to_string().contains("no active session"), "{err_bob}");
 
     // 3. Token
-    let token_cmd =
-        roymctl::commands::session::SessionCommands::Token { gateway_url: gateway_url.clone() };
-    roymctl::commands::session::handle(&token_cmd, temp_dir.path(), Some("alice")).await.unwrap();
+    let token_cmd = SessionCommands::Token { gateway_url: gateway_url.clone() };
+    session::handle(&token_cmd, temp_dir.path(), Some("alice")).await.unwrap();
 
     // 4. Logout
-    let logout_cmd =
-        roymctl::commands::session::SessionCommands::Logout { gateway_url: gateway_url.clone() };
-    roymctl::commands::session::handle(&logout_cmd, temp_dir.path(), Some("alice")).await.unwrap();
+    let logout_cmd = SessionCommands::Logout { gateway_url: gateway_url.clone() };
+    session::handle(&logout_cmd, temp_dir.path(), Some("alice")).await.unwrap();
 
     // Verify session file was deleted
     assert!(!session_file.exists(), "session file must be deleted after logout");
 
     // 5. Status after logout -> fails
-    let err = roymctl::commands::session::handle(&status_cmd, temp_dir.path(), Some("alice"))
-        .await
-        .unwrap_err();
+    let err = session::handle(&status_cmd, temp_dir.path(), Some("alice")).await.unwrap_err();
     assert!(err.to_string().contains("no active session"), "{err}");
 
     ctx.teardown().await;
@@ -1193,7 +1187,7 @@ async fn test_30_roymctl_session_cli_error_handling() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // 1. Missing --as flag
-    let login_cmd = roymctl::commands::session::SessionCommands::Login {
+    let login_cmd = SessionCommands::Login {
         gateway_url: "http://localhost:7960".to_string(),
         method: "delegated-key".to_string(),
         session_key_file: None,
@@ -1201,15 +1195,12 @@ async fn test_30_roymctl_session_cli_error_handling() {
         registry_url: None,
         expires_hours: 24,
     };
-    let err =
-        roymctl::commands::session::handle(&login_cmd, temp_dir.path(), None).await.unwrap_err();
+    let err = session::handle(&login_cmd, temp_dir.path(), None).await.unwrap_err();
     assert!(err.to_string().contains("--as"), "error must name missing --as flag: {err}");
 
     // 2. Identity file does not exist
     let err_no_key =
-        roymctl::commands::session::handle(&login_cmd, temp_dir.path(), Some("nonexistent"))
-            .await
-            .unwrap_err();
+        session::handle(&login_cmd, temp_dir.path(), Some("nonexistent")).await.unwrap_err();
     assert!(
         err_no_key.to_string().contains("not found"),
         "error must indicate identity not found: {err_no_key}"
@@ -1224,7 +1215,7 @@ async fn test_30_roymctl_session_cli_error_handling() {
     let person = Identity::generate().unwrap();
     person.save_to_path(identities_dir.join("bob.key")).unwrap();
 
-    let login_cmd_no_reg = roymctl::commands::session::SessionCommands::Login {
+    let login_cmd_no_reg = SessionCommands::Login {
         gateway_url,
         method: "delegated-key".to_string(),
         session_key_file: None,
@@ -1233,9 +1224,7 @@ async fn test_30_roymctl_session_cli_error_handling() {
         expires_hours: 24,
     };
     let err_409 =
-        roymctl::commands::session::handle(&login_cmd_no_reg, temp_dir.path(), Some("bob"))
-            .await
-            .unwrap_err();
+        session::handle(&login_cmd_no_reg, temp_dir.path(), Some("bob")).await.unwrap_err();
     assert!(
         err_409.to_string().contains("409") || err_409.to_string().contains("master anchor"),
         "error must surface 409 unresolvable master anchor: {err_409}"
@@ -1284,11 +1273,10 @@ async fn test_32_session_token_refused_as_capability_proof() {
     let person_did = substrate::derive_did_key(&person_id.public_key());
 
     let session_token =
-        syneroym_ucan::SessionToken::mint(&auth_id, &person_did, "delegated-key", None, 3600)
-            .unwrap();
+        SessionToken::mint(&auth_id, &person_did, "delegated-key", None, 3600).unwrap();
     let cap_token = session_token.into_inner();
 
-    let opts = syneroym_ucan::ChainVerifyOpts {
+    let opts = ChainVerifyOpts {
         expected_audience_did: &cap_token.audience_did,
         is_trusted_root: &|_iss, _cap| true,
         now_secs: cap_token.not_before_secs + 10,
@@ -1309,7 +1297,7 @@ async fn test_33_delegated_key_login_handoff_from_file() {
 
     let temp_dir = tempfile::tempdir().unwrap();
     let identities_dir = temp_dir.path().join("identities");
-    std::fs::create_dir_all(&identities_dir).unwrap();
+    fs::create_dir_all(&identities_dir).unwrap();
 
     let person = Identity::generate().unwrap();
     person.save_to_path(identities_dir.join("alice.key")).unwrap();
@@ -1317,19 +1305,17 @@ async fn test_33_delegated_key_login_handoff_from_file() {
     let key_file = temp_dir.path().join("session-key.json");
 
     // 1. Delegate to file
-    let delegate_cmd = roymctl::commands::session::SessionCommands::Delegate {
+    let delegate_cmd = SessionCommands::Delegate {
         expires_hours: 24,
         out: key_file.clone(),
         registry_url: Some(reg_url.clone()),
     };
-    roymctl::commands::session::handle(&delegate_cmd, temp_dir.path(), Some("alice"))
-        .await
-        .unwrap();
+    session::handle(&delegate_cmd, temp_dir.path(), Some("alice")).await.unwrap();
 
     assert!(key_file.exists());
 
     // 2. Login using the session key file
-    let login_cmd = roymctl::commands::session::SessionCommands::Login {
+    let login_cmd = SessionCommands::Login {
         gateway_url: gateway_url.clone(),
         method: "delegated-key".to_string(),
         session_key_file: Some(key_file),
@@ -1337,12 +1323,11 @@ async fn test_33_delegated_key_login_handoff_from_file() {
         registry_url: Some(reg_url),
         expires_hours: 24,
     };
-    roymctl::commands::session::handle(&login_cmd, temp_dir.path(), None).await.unwrap();
+    session::handle(&login_cmd, temp_dir.path(), None).await.unwrap();
 
     // 3. Verify status
-    let status_cmd =
-        roymctl::commands::session::SessionCommands::Status { gateway_url: gateway_url.clone() };
-    roymctl::commands::session::handle(&status_cmd, temp_dir.path(), None).await.unwrap();
+    let status_cmd = SessionCommands::Status { gateway_url: gateway_url.clone() };
+    session::handle(&status_cmd, temp_dir.path(), None).await.unwrap();
 
     ctx.teardown().await;
 }
@@ -1370,7 +1355,7 @@ async fn test_34_revoked_token_refused_at_guest_route() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::OK);
     let val: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(val["caller"]["did"], person_did);
     assert_eq!(val["caller"]["auth"], "delegated");
@@ -1384,7 +1369,7 @@ async fn test_34_revoked_token_refused_at_guest_route() {
         .send()
         .await
         .unwrap();
-    assert_eq!(logout_resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(logout_resp.status(), StatusCode::OK);
 
     // Call guest route again with revoked token -> falls back to self-asserted
     // caller
@@ -1396,7 +1381,7 @@ async fn test_34_revoked_token_refused_at_guest_route() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp_after.status(), reqwest::StatusCode::OK);
+    assert_eq!(resp_after.status(), StatusCode::OK);
     let val_after: serde_json::Value = resp_after.json().await.unwrap();
     assert_eq!(val_after["caller"]["auth"], "self-asserted");
     assert_ne!(val_after["caller"]["did"], person_did);
@@ -1413,12 +1398,7 @@ async fn test_35_gateway_identity_modes_open_login_fixed() {
 
     // 1. Test Open mode (unauthenticated requests admitted as self-asserted caller)
     let (ctx_open, gw_open_port, _reg_url, _svc_did, host_open) =
-        setup_gateway_test_node_with_mode(
-            Some(syneroym_core::config::IdentityMode::Open),
-            false,
-            None,
-        )
-        .await;
+        setup_gateway_test_node_with_mode(Some(IdentityMode::Open), false, None).await;
     let gw_open_url = format!("http://127.0.0.1:{gw_open_port}");
     let open_resp = client
         .get(format!("{gw_open_url}/echo"))
@@ -1427,18 +1407,14 @@ async fn test_35_gateway_identity_modes_open_login_fixed() {
         .send()
         .await
         .unwrap();
-    assert_eq!(open_resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(open_resp.status(), StatusCode::OK);
     let open_val: serde_json::Value = open_resp.json().await.unwrap();
     assert_eq!(open_val["caller"]["auth"], "self-asserted");
     ctx_open.teardown().await;
 
     // 2. Test Login mode with connection_auth_gate enabled
-    let (ctx_login, gw_login_port, reg_url, _svc_did, host) = setup_gateway_test_node_with_mode(
-        Some(syneroym_core::config::IdentityMode::Login),
-        true,
-        None,
-    )
-    .await;
+    let (ctx_login, gw_login_port, reg_url, _svc_did, host) =
+        setup_gateway_test_node_with_mode(Some(IdentityMode::Login), true, None).await;
     let gw_login_url = format!("http://127.0.0.1:{gw_login_port}");
 
     // Visiting non-auth host without session token -> 401 Unauthorized
@@ -1449,7 +1425,7 @@ async fn test_35_gateway_identity_modes_open_login_fixed() {
         .send()
         .await
         .unwrap();
-    assert_eq!(unauth_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_eq!(unauth_resp.status(), StatusCode::UNAUTHORIZED);
 
     // Visiting auth challenge endpoint is permitted without prior session
     let challenge_resp = client
@@ -1459,7 +1435,7 @@ async fn test_35_gateway_identity_modes_open_login_fixed() {
         .send()
         .await
         .unwrap();
-    assert_eq!(challenge_resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(challenge_resp.status(), StatusCode::OK);
 
     // Log in and verify access is admitted
     let person = Identity::generate().unwrap();
@@ -1473,7 +1449,7 @@ async fn test_35_gateway_identity_modes_open_login_fixed() {
         .send()
         .await
         .unwrap();
-    assert_eq!(auth_resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(auth_resp.status(), StatusCode::OK);
 
     ctx_login.teardown().await;
 
@@ -1481,7 +1457,7 @@ async fn test_35_gateway_identity_modes_open_login_fixed() {
     let fixed_person = Identity::generate().unwrap();
     let fixed_person_did = substrate::derive_did_key(&fixed_person.public_key());
     let (ctx_fixed, gw_fixed_port, _reg_url, _svc_did, _host) = setup_gateway_test_node_with_mode(
-        Some(syneroym_core::config::IdentityMode::Fixed),
+        Some(IdentityMode::Fixed),
         false,
         Some(fixed_person_did.clone()),
     )
@@ -1495,7 +1471,7 @@ async fn test_35_gateway_identity_modes_open_login_fixed() {
         .send()
         .await
         .unwrap();
-    assert_eq!(whoami_resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(whoami_resp.status(), StatusCode::OK);
     let whoami_json: serde_json::Value = whoami_resp.json().await.unwrap();
     assert_eq!(whoami_json["auth"], "fixed");
     assert_eq!(whoami_json["person_did"], fixed_person_did);
