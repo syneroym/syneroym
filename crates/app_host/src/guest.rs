@@ -21,6 +21,7 @@ use syneroym_wit_interfaces::{
     conversation::syneroym::conversation::conversation as conv,
     data_layer::syneroym::data_layer::store as dl,
     http_guest::syneroym::http::{websocket as ws, websocket_types as wst},
+    invocation::syneroym::invocation::invocation as inv,
     messaging::syneroym::messaging::host_api as msg,
     proxy::syneroym::proxy::proxy as px,
     signing::syneroym::signing::signing as sgn,
@@ -29,13 +30,14 @@ use syneroym_wit_interfaces::{
 
 use crate::{
     AppAppConfig, AppBlobReader, AppBlobStore, AppBlobWriter, AppConversation, AppDataLayer,
-    AppMessaging, AppProxy, AppSigning, AppVault, AppWebSocket,
+    AppInvocation, AppMessaging, AppProxy, AppSigning, AppVault, AppWebSocket,
     types::{
         app_config::ConfigError,
         blob_store::BlobError,
         conversation::ConversationError,
         data_layer::*,
         http::FrameKind,
+        invocation::CallerOrigin,
         messaging::MessagingError,
         proxy::{CallOptions, CallTarget, ProxyError},
         signing::{Principal, RecordDraft, SigningError, SigningIdentity},
@@ -332,6 +334,12 @@ impl AppAppConfig for GuestHost {
 impl AppVault for GuestHost {
     async fn reveal(&self, key: String) -> Result<Vec<u8>, VaultError> {
         vlt::reveal(&key)
+    }
+}
+
+impl AppInvocation for GuestHost {
+    async fn caller(&self) -> CallerOrigin {
+        inv::caller()
     }
 }
 

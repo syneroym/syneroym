@@ -28,6 +28,7 @@ use types::{
     },
     data_layer::*,
     http::FrameKind,
+    invocation::CallerOrigin,
     messaging::MessagingError,
     proxy::{CallOptions, CallTarget, ProxyError},
     signing::{Principal, RecordDraft, SigningError, SigningIdentity},
@@ -44,6 +45,7 @@ pub trait AppHost:
     + AppAppConfig
     + AppVault
     + AppSigning
+    + AppInvocation
     + AppWebSocket
     + Send
     + Sync
@@ -58,6 +60,7 @@ impl<T> AppHost for T where
         + AppAppConfig
         + AppVault
         + AppSigning
+        + AppInvocation
         + AppWebSocket
         + Send
         + Sync
@@ -113,6 +116,14 @@ pub trait AppSigning {
     fn signing_identity(
         &self,
     ) -> impl Future<Output = Result<SigningIdentity, SigningError>> + Send;
+}
+
+/// Mirrors `syneroym:invocation/invocation@0.1.0`. One function, and the
+/// only host surface outside inbound HTTP that says anything about who is
+/// calling: a sibling's proxy call and an unauthenticated inbound stream
+/// otherwise reach a component with the identical synthesized caller.
+pub trait AppInvocation {
+    fn caller(&self) -> impl Future<Output = CallerOrigin> + Send;
 }
 
 /// Mirrors `syneroym:http/websocket@0.1.0` -- the *outbound* half of the

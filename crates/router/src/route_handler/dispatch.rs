@@ -238,8 +238,17 @@ impl RouteHandler {
                     // reads/writes see who is actually asking instead of the
                     // synthesized `service_system` every prior phase left
                     // in place here.
+                    //
+                    // `_from_wire`: this is the one production path that is
+                    // off-node, so `syneroym:invocation/invocation.caller`
+                    // reports `verified(did)` or `anonymous` here rather
+                    // than `internal`. A component can now decide for
+                    // itself whether to admit the call; the substrate's own
+                    // Tier-1 gate (the TODO above) is still absent, so a
+                    // deployed component that declines to check still
+                    // admits an anonymous wire caller.
                     match app_sandbox_engine
-                        .execute_wasm_json(
+                        .execute_wasm_json_from_wire(
                             service_id,
                             &preamble.interface,
                             &request,

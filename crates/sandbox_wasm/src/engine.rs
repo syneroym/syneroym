@@ -50,6 +50,7 @@ use syneroym_wit_interfaces::{
         proxy::{proxy, saga},
         vault::vault,
     },
+    invocation_host::syneroym::invocation::invocation,
     signing_host::syneroym::signing::signing,
 };
 use tokio::{
@@ -69,7 +70,7 @@ use wasmtime_wasi::p2;
 
 use crate::{
     conversions::{json_to_wasm_params, wasm_results_to_json_string},
-    host_capabilities::{HostState, MessagingContext},
+    host_capabilities::{HostState, InvocationOrigin, MessagingContext},
     http,
     stream::{self, GuestStreamCursor, GuestStreamSink, StreamContext, StreamRegistry},
 };
@@ -335,6 +336,9 @@ struct InstanceOptions {
     /// Overrides the service's own quota-derived fuel. `None` keeps it.
     fuel_override: Option<u64>,
     read_only: bool,
+    /// Where this call entered the node. `Local` for every path except the
+    /// router's inbound wire dispatch.
+    invocation_origin: InvocationOrigin,
 }
 
 /// Pool slots reserved out of `max_concurrent_instances` for short-lived
@@ -763,6 +767,7 @@ impl AppSandboxEngine {
         >(&mut linker, |state| state)?;
         conversation::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         signing::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
+        invocation::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         Ok(linker)
     }
 
@@ -1021,8 +1026,9 @@ impl AppSandboxEngine {
         interface_name: &str,
         request: &JsonRpcRequest,
     ) -> Result<String> {
-        let wasm_results =
-            self.execute_wasm_vals(service_id, interface_name, request, None).await?;
+        let wasm_results = self
+            .execute_wasm_vals(service_id, interface_name, request, None, InvocationOrigin::Local)
+            .await?;
         wasm_results_to_json_string(&wasm_results)
     }
 
@@ -1046,8 +1052,28 @@ impl AppSandboxEngine {
         request: &JsonRpcRequest,
         caller: Option<CallerContext>,
     ) -> Result<Value> {
-        let wasm_results =
-            self.execute_wasm_vals(service_id, interface_name, request, caller).await?;
+        let wasm_results = self
+            .execute_wasm_vals(service_id, interface_name, request, caller, InvocationOrigin::Local)
+            .await?;
+        crate::conversions::wasm_results_to_json(&wasm_results)
+    }
+
+    /// A call that arrived over the network. The only caller is the
+    /// router's own JSON-RPC dispatch (`dispatch.rs`); every other path
+    /// into a component originates on this node and uses
+    /// [`Self::execute_wasm_json`]. The guest sees the difference through
+    /// `syneroym:invocation/invocation.caller`: this entry point makes it
+    /// `verified(did)` or `anonymous`, the local one makes it `internal`.
+    pub async fn execute_wasm_json_from_wire(
+        &self,
+        service_id: &str,
+        interface_name: &str,
+        request: &JsonRpcRequest,
+        caller: Option<CallerContext>,
+    ) -> Result<Value> {
+        let wasm_results = self
+            .execute_wasm_vals(service_id, interface_name, request, caller, InvocationOrigin::Wire)
+            .await?;
         crate::conversions::wasm_results_to_json(&wasm_results)
     }
 
@@ -1083,6 +1109,7 @@ impl AppSandboxEngine {
         interface_name: &str,
         request: &JsonRpcRequest,
         caller: Option<CallerContext>,
+        origin: InvocationOrigin,
     ) -> Result<Vec<Val>> {
         Self::validate_service_id(service_id)?;
         let _guard = ActiveInstanceGuard::new();
@@ -1091,7 +1118,7 @@ impl AppSandboxEngine {
         // TODO: Later optimize this by caching things like function parameter details
         // on first execution, so we don't have to do the same lookups every time.
         let (mut store, func, results_len, item) = self
-            .prepare_wasm_execution(service_id, interface_name, &request.method, caller)
+            .prepare_wasm_execution(service_id, interface_name, &request.method, caller, origin)
             .await?;
 
         // Parse parameters based on ComponentFunc signature
@@ -1307,7 +1334,8 @@ impl AppSandboxEngine {
         )
         .with_conversation(conversation)
         .with_websocket_senders(self.websocket_senders())
-        .with_record_signer(self.record_signer.get().cloned());
+        .with_record_signer(self.record_signer.get().cloned())
+        .with_invocation_origin(opts.invocation_origin);
 
         debug!("created wasi ctx and host state");
 
@@ -1347,6 +1375,7 @@ impl AppSandboxEngine {
         interface_name: &str,
         method_name: &str,
         caller: Option<CallerContext>,
+        origin: InvocationOrigin,
     ) -> Result<(Store<HostState>, Func, usize, ComponentItem)> {
         // This is the ordinary dispatch path -- reached from wire-originated
         // JSON-RPC (`dispatch.rs`) and guest-to-guest proxy calls, both of
@@ -1381,7 +1410,7 @@ impl AppSandboxEngine {
                 service_id,
                 caller,
                 self.dispatch_epoch_ticks,
-                InstanceOptions::default(),
+                InstanceOptions { invocation_origin: origin, ..InstanceOptions::default() },
             )
             .await?;
 
@@ -2300,6 +2329,7 @@ impl AppSandboxEngine {
                 InstanceOptions {
                     fuel_override: Some(self.abac_max_instructions),
                     read_only: true,
+                    ..InstanceOptions::default()
                 },
             )
             .await
@@ -3027,7 +3057,13 @@ mod tests {
 
         for method in ["init", "migrate"] {
             let (store, _func, _results_len, _item) = app_engine
-                .prepare_wasm_execution("svc-n1", "test-interface", method, None)
+                .prepare_wasm_execution(
+                    "svc-n1",
+                    "test-interface",
+                    method,
+                    None,
+                    InvocationOrigin::Local,
+                )
                 .await
                 .unwrap();
             assert_eq!(
@@ -3106,7 +3142,13 @@ mod tests {
         };
 
         let (mut store, _func, _results_len, _item) = app_engine
-            .prepare_wasm_execution("svc-admin-ddl", "test-interface", "init", Some(admin_caller))
+            .prepare_wasm_execution(
+                "svc-admin-ddl",
+                "test-interface",
+                "init",
+                Some(admin_caller),
+                InvocationOrigin::Local,
+            )
             .await
             .unwrap();
 

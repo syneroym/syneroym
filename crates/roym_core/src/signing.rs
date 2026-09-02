@@ -268,8 +268,8 @@ mod tests {
     use std::{collections::HashMap, sync::Mutex};
 
     use syneroym_app_host::{
-        AppAppConfig, AppBlobStore, AppConversation, AppDataLayer, AppMessaging, AppProxy,
-        AppSigning, AppVault, AppWebSocket,
+        AppAppConfig, AppBlobStore, AppConversation, AppDataLayer, AppInvocation, AppMessaging,
+        AppProxy, AppSigning, AppVault, AppWebSocket,
         types::{
             app_config::ConfigError,
             blob_store::BlobError,
@@ -282,6 +282,7 @@ mod tests {
                 RecordReadValue,
             },
             http::FrameKind,
+            invocation::CallerOrigin,
             messaging::MessagingError,
             proxy::{CallOptions, CallTarget, ProxyError},
             signing::{RecordDraft, SigningError, SigningIdentity},
@@ -297,6 +298,22 @@ mod tests {
     struct TestHost {
         storage: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
         signing_id: Mutex<Option<SigningIdentity>>,
+        /// What `AppInvocation::caller` reports. `None` reads as
+        /// `CallerOrigin::Internal`, the ordinary local-dispatch answer.
+        caller_origin: Mutex<Option<CallerOrigin>>,
+    }
+
+    impl TestHost {
+        #[allow(dead_code)] // used by `admit`'s tests once they share this stub
+        fn set_caller_origin(&self, origin: CallerOrigin) {
+            *self.caller_origin.lock().unwrap() = Some(origin);
+        }
+    }
+
+    impl AppInvocation for TestHost {
+        async fn caller(&self) -> CallerOrigin {
+            self.caller_origin.lock().unwrap().clone().unwrap_or(CallerOrigin::Internal)
+        }
     }
 
     impl AppDataLayer for TestHost {
