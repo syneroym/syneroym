@@ -27,6 +27,10 @@ const ROUTES: &[(&str, Service, MethodAuth)] = &[
     ("report.", PROFILE, MethodAuth::Owner),
     ("listing.", CATALOG, MethodAuth::Owner),
     ("availability.", CATALOG, MethodAuth::Owner),
+    // The certificate verbs (`catalog.signing-status` /
+    // `catalog.install-signing-certificate`) reach the catalog through
+    // its own name; without this row `roym enrol-signing` cannot see it.
+    ("catalog.", CATALOG, MethodAuth::Owner),
     ("request.", TRANSACTION, MethodAuth::Owner),
     ("quote.", TRANSACTION, MethodAuth::Owner),
     ("agreement.", TRANSACTION, MethodAuth::Owner),
@@ -156,5 +160,24 @@ mod tests {
     fn method_auth_is_none_for_an_unroutable_method() {
         assert_eq!(method_auth("unknown.method"), None);
         assert_eq!(method_auth(""), None);
+    }
+
+    #[test]
+    fn public_methods_is_exactly_profile_policy() {
+        // A slice that wants a second public method has to change this
+        // line, not slip it past review inside a table.
+        assert_eq!(PUBLIC_METHODS, &["profile.policy"]);
+    }
+
+    #[test]
+    fn every_certificate_mounted_service_routes_under_its_own_name() {
+        // `handle_certificate_verb` is mounted on these three; each must
+        // have a routable `<name>.signing-status`, or `roym enrol-signing`
+        // cannot reach it.
+        for name in ["profile", "catalog", "conversation"] {
+            let method = format!("{name}.signing-status");
+            let service = route(&method).unwrap_or_else(|| panic!("{method} is not routable"));
+            assert_eq!(service.name, name, "{method} must route to the '{name}' service");
+        }
     }
 }

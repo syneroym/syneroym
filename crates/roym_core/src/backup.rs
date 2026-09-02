@@ -9,6 +9,10 @@ pub const SECTION_PROFILE: &str = "profile";
 pub const SECTION_CONTACTS: &str = "contacts";
 pub const SECTION_BLOCKS: &str = "blocks";
 pub const SECTION_REPORTS: &str = "reports";
+pub const SECTION_CONVERSATIONS: &str = "conversations";
+pub const SECTION_MESSAGES: &str = "messages";
+pub const SECTION_LISTINGS: &str = "listings";
+pub const SECTION_AVAILABILITY: &str = "availability";
 /// The digest prefix, so a section digest can never be mistaken for a
 /// record id or a report id.
 pub const SECTION_DIGEST_PREFIX: &str = "sec_";
@@ -207,5 +211,44 @@ mod tests {
         let d1 = Bundle::digest(1, &records).unwrap();
         let d2 = Bundle::digest(2, &records).unwrap();
         assert_ne!(d1.digest, d2.digest);
+    }
+
+    fn single_section_bundle(section: &str) -> Bundle {
+        let records = vec![json!({ "id": "r1", "section": section })];
+        let mut digests = BTreeMap::new();
+        digests.insert(section.to_string(), Bundle::digest(2, &records).unwrap());
+        let mut data = BTreeMap::new();
+        data.insert(section.to_string(), records);
+        Bundle {
+            manifest: BundleManifest {
+                bundle_version: BUNDLE_VERSION,
+                produced_at_secs: 1000,
+                subject_did: "did:key:z6M123".to_string(),
+                sections: digests,
+            },
+            sections: data,
+        }
+    }
+
+    #[test]
+    fn each_new_section_passes_check_integrity_on_its_own() {
+        for section in
+            [SECTION_CONVERSATIONS, SECTION_MESSAGES, SECTION_LISTINGS, SECTION_AVAILABILITY]
+        {
+            assert!(
+                single_section_bundle(section).check_integrity().is_ok(),
+                "section '{section}' should round-trip through check_integrity"
+            );
+        }
+    }
+
+    #[test]
+    fn a_declared_messages_section_with_no_content_is_missing_section() {
+        let mut b = single_section_bundle(SECTION_MESSAGES);
+        b.sections.clear();
+        assert_eq!(
+            b.check_integrity(),
+            Err(BundleError::MissingSection(SECTION_MESSAGES.to_string()))
+        );
     }
 }
