@@ -75,6 +75,33 @@ pub enum BodyEncoding {
     Base64,
 }
 
+const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn is_text_content_type(ct: &str) -> bool {
+    ct.starts_with("text/") || ct == "application/json" || ct.ends_with("+json")
+}
+
+/// Encodes a raw message body for storage in [`MessageRow::body`]. A text
+/// content type is stored verbatim (lossily, if it is not valid UTF-8);
+/// anything else is standard base64. Attachments are out of scope for the
+/// first release, so in practice every stored body takes the `Utf8` path.
+#[must_use]
+pub fn encode_body(content_type: &str, body: &[u8]) -> (BodyEncoding, String) {
+    if is_text_content_type(content_type) {
+        return (BodyEncoding::Utf8, String::from_utf8_lossy(body).into_owned());
+    }
+    let mut out = String::with_capacity(body.len().div_ceil(3) * 4);
+    for chunk in body.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(B64_ALPHABET[(n >> 18 & 63) as usize] as char);
+        out.push(B64_ALPHABET[(n >> 12 & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { B64_ALPHABET[(n >> 6 & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { B64_ALPHABET[(n & 63) as usize] as char } else { '=' });
+    }
+    (BodyEncoding::Base64, out)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageRow {
     /// The host's own message id.
@@ -215,6 +242,32 @@ mod tests {
         for d in [DeliveryState::Pending, DeliveryState::Delivered, DeliveryState::Failed] {
             assert_eq!(DeliveryState::from(StoredState::from(d)), d);
         }
+    }
+
+    #[test]
+    fn encode_body_picks_utf8_for_text_and_base64_otherwise() {
+        assert_eq!(encode_body("text/plain", b"hello"), (BodyEncoding::Utf8, "hello".to_string()));
+        assert_eq!(
+            encode_body("application/vnd.roym.card+json", b"{}"),
+            (BodyEncoding::Utf8, "{}".to_string())
+        );
+        // Standard base64 with padding.
+        assert_eq!(
+            encode_body("application/octet-stream", b"foobar"),
+            (BodyEncoding::Base64, "Zm9vYmFy".to_string())
+        );
+        assert_eq!(
+            encode_body("application/octet-stream", b"foo"),
+            (BodyEncoding::Base64, "Zm9v".to_string())
+        );
+        assert_eq!(
+            encode_body("application/octet-stream", b"fo"),
+            (BodyEncoding::Base64, "Zm8=".to_string())
+        );
+        assert_eq!(
+            encode_body("application/octet-stream", b"f"),
+            (BodyEncoding::Base64, "Zg==".to_string())
+        );
     }
 
     #[test]

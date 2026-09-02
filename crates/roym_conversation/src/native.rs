@@ -4,7 +4,10 @@
 use std::fmt;
 
 use serde_json::Value;
-use syneroym_app_host::AppHost;
+use syneroym_app_host::{
+    AppHost, ConversationSink,
+    types::conversation::{DeliveryState, Message},
+};
 use syneroym_roym_core::dual_build::{extract_request_param, handle_invoke};
 use syneroym_rpc::{
     CallerContext, NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult,
@@ -52,5 +55,20 @@ impl<H: AppHost + 'static> NativeService for NativeConversation<H> {
             },
             other => Err(RpcError::MethodNotFound(other.to_string())),
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl<H: AppHost + 'static> ConversationSink for NativeConversation<H> {
+    async fn on_message(&self, msg: Message) -> Result<(), String> {
+        // The same identity the WASM delivery path uses, so an elevated
+        // caller cannot arrive with a delivered message.
+        let host = (self.host_for)(CallerContext::service_system(&self.service_id));
+        crate::app::on_message(&host, msg).await
+    }
+
+    async fn on_delivery_state(&self, message: String, state: DeliveryState) -> Result<(), String> {
+        let host = (self.host_for)(CallerContext::service_system(&self.service_id));
+        crate::app::on_delivery_state(&host, message, state).await
     }
 }
