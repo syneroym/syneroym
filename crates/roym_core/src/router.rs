@@ -115,6 +115,32 @@ mod tests {
     }
 
     #[test]
+    fn every_declared_dependency_names_a_sibling_and_the_two_edges_are_present() {
+        let manifest_str = include_str!("../app/roym.toml");
+        let manifest: toml::Value = toml::from_str(manifest_str).expect("parse roym.toml");
+        let services = manifest["services"].as_table().expect("services table");
+        let names: HashSet<&str> = SIBLINGS.iter().map(|s| s.name).chain(["web"]).collect();
+
+        for (svc, val) in services {
+            if let Some(deps) = val.get("depends_on") {
+                for dep in deps.as_array().expect("depends_on is array") {
+                    let dep = dep.as_str().expect("dep is string");
+                    assert!(names.contains(dep), "'{svc}' depends on unknown service '{dep}'");
+                }
+            }
+        }
+        for svc in ["conversation", "catalog"] {
+            let deps: Vec<&str> = services[svc]["depends_on"]
+                .as_array()
+                .unwrap_or_else(|| panic!("'{svc}' must declare depends_on"))
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert!(deps.contains(&"profile"), "'{svc}' must declare a dependency on 'profile'");
+        }
+    }
+
+    #[test]
     fn only_web_declares_http_routes_and_assets_in_manifest() {
         let manifest_str = include_str!("../app/roym.toml");
         let manifest: toml::Value = toml::from_str(manifest_str).expect("parse roym.toml");
