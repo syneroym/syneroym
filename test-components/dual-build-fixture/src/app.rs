@@ -6,11 +6,12 @@ use core::fmt;
 use serde_json::json;
 use syneroym_app_host::{
     AppAppConfig, AppBlobReader, AppBlobWriter, AppConversation, AppDataLayer, AppHost,
-    AppWebSocket,
+    AppInvocation, AppWebSocket,
     types::{
         conversation::{ConversationKind, DeliveryState, Message},
         data_layer::{CollectionSchema, Mutation, QueryOptions, RecordWriteValue},
         http::{CallerAuth, FrameKind, HttpRequest, HttpResponse},
+        invocation::CallerOrigin,
         proxy::{CallOptions, CallTarget},
         signing::{Principal, RecordDraft},
     },
@@ -217,6 +218,12 @@ pub enum Request {
         #[serde(alias = "now_secs")]
         now_secs: Option<u64>,
     },
+
+    /// `syneroym:invocation`: reports the arm the host tells this call it
+    /// arrived on. The whole point of the interface, and the shim's own
+    /// rule is that a trait with only one of its two implementations
+    /// exercised is how the native build becomes second-class.
+    CallerOrigin,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -716,6 +723,14 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
                 "supersedes": rec.supersedes,
                 "valid": true,
             }))
+        }
+        Request::CallerOrigin => {
+            let arm = match AppInvocation::caller(host).await {
+                CallerOrigin::Internal => json!({ "arm": "internal" }),
+                CallerOrigin::Verified(did) => json!({ "arm": "verified", "did": did }),
+                CallerOrigin::Anonymous => json!({ "arm": "anonymous" }),
+            };
+            Ok(arm)
         }
     }
 }
