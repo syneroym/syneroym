@@ -309,7 +309,7 @@ sections list, plus what M06B ruled out and what this document adds:
 | **C2** | **The SynApp skeleton and the Hub shell.** One `SynAppManifest` with six services (`web`, `conversation`, `profile`, `catalog`, `transaction`, `directory`), sibling wiring by `depends_on` + `call-target::dependency`, and `topology_visibility` / `visibility` declared so a foreign caller can resolve what it should. The Web entrypoint as an ordinary WASM component (`D-06B-1`) serving the UI bundle and forwarding JSON-RPC from one origin — no business logic in it. The Hub shell: a person logs in through the node auth service ([ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md), built in **C1.1**) and the guest sees *them* — the Hub's login screen is driven by `GET /_syneroym/session/methods` and its session is a verified token, not a gateway-minted delegation — plus the card renderer's fixed templates and its unknown-type fallback (D-06C-3) | — | C1, C1.1 |
 | **C3** | **Signed records: the host signing interface and the record envelope.** A host interface that signs under the person's delegated key or the service's instance key, and refuses to hand any key material out (D-06C-4, Gap 1). One canonical envelope — stable byte encoding, explicit `version` field (D-06C-1), issuer, subject, timestamps, signature — plus guest-side verification of signature, issuer, scope, expiry, and revocation. Every record type in R1–R4 rides this and none is defined before it. **The identity model this interface is specified against is settled by C1.1 / [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md), not by M06B B1**: "signs under the person's delegated key" is re-grounded — the signing key is the instance/service key or a per-person delegation the substrate holds, and the *caller* is identified by the session token. C3 must be designed against that, which is why it now waits on C1.1 | **Complete (2026-08-31)** | C1, C1.1 |
 | **C4** | **Identity, profile, contacts, and safety (R1 rows 1 and 6).** Device-bound consumer identity with encrypted backup and import, and a restore that reproduces identity on a clean node. Profile & Contacts, including the person→conversation-address mapping Gap 5 forces. Block, report, per-sender contact rate limits, publication limits, and policy disclosure — the `[PRD-SAF]` backlog row. Block is Roym-side and honestly described (D-06C-8). **Complete (2026-09-01)** — [slice-c4-implementation-plan.md](slice-c4-implementation-plan.md), `status.md` evidence. R1 row 6's inbox-enforcement half and R1 row 1's conversation-history half retarget to C5; the publication-limit half of `[PRD-SAF]` retargets to C5/C6 (the rule ships with no caller) | **R1** | C3 |
-| **C5** | **Catalog and conversation in the product (R1 rows 2 and 3).** The versioned listing schema across all seven dimensions the spec names (booking, payment, product, service, location, relationship, service-record), signed and editable. 1:1 conversation over B4: `pending`/`delivered`/`failed` visible and never optimistic, surviving a restart on both sides. Roym's own copy of conversation content (D-06C-5), which is what export, search, and delete act on | **R1** | C4 |
+| **C5** | **Catalog and conversation in the product (R1 rows 2 and 3).** The versioned listing schema across all seven dimensions the spec names (booking, payment, product, service, location, relationship, service-record), signed and editable. 1:1 conversation over B4: `pending`/`delivered`/`failed` visible and never optimistic, surviving a restart on both sides. Roym's own copy of conversation content (D-06C-5), which is what export, search, and delete act on. **In progress (2026-09-02)** — Rust core landed on `feat/m06c-slice-c5` ([plan](slice-c5-implementation-plan.md) steps 1–9: the `syneroym:invocation` host interface, `admit::require_internal`, `roym_core` listing/area/conversation vocabulary, `roym_catalog`, `roym_conversation` and its inbox, the two `depends_on` edges, `roymctl` enrolment across three services); cross-build parity (37 scenarios), the two-substrate e2e, the Hub UI, and doc/backlog updates (steps 10–14) are a second work order. `status.md` has the evidence | **R1** | C4 |
 | **C6** | **Directory: the search half (R1 row 5).** The SynOrg service, its member list, provider-initiated listing publication (S7 — publishing is the *provider's* action), and `search` by category, area, and filters, built on FTS5 and R\*Tree through `execute-ddl`/`query-raw` (Gap 7). Results carry source and freshness. The consumer's node queries each directory it was given, in parallel, and merges. Missing evidence renders as unknown, never as a positive default. Optional by construction, proven by a test (D-06C-6a) | **R1** | C5 |
 | **C7** | **A need becomes an offer, and the card contract (R1 row 4).** Signed `request` → `quote` → `agreement-receipt`, each versioned, with a material change producing a new version rather than an edit. The seven card types and the unknown-type rule land here on the producing side and in C1's renderer on the consuming side (D-06C-3). **R1's acceptance gate closes at the end of this slice** | **R1** | C5, C6 |
 | **C8** | **The transaction vertical (R2, all five rows).** The state machine with one named writer on the provider's substrate, permitted transitions, expiry, idempotency keys, and a named conflict for a losing concurrent booking. `payment-acknowledgement`, separate from settlement, with the payee bound into the signed agreement and a UI that never says "verified". Mutually signed `fulfilment-receipt`. Versioned, integrity-checked export and import of conversations, agreements, and receipts. Encrypted backup with a restore path tested on a clean node | **R2** | C7 |
@@ -368,6 +368,14 @@ discovery bug. Keeping the gates keeps each failure attributable.
   requires one. `data-layer` (structured, DEK-encrypted, queryable, the
   obvious home) versus `blob-store` for large bodies. The slice plan owes an
   honest statement of the on-disk duplication and a bound on it.
+  **Answered by C5 (2026-09-02):** the copy lives in the `conversation`
+  service's own `data-layer`, holds the message body, and is bounded by
+  the host's own retention caps
+  (`conversation_max_messages_per_conversation` 100 000,
+  `conversation_max_body_bytes` 262 144) — so the on-disk cost is 2× the
+  host store, ~100 MB per conversation at the cap with realistic ~1 KiB
+  text. No `blob-store` tier; attachments are out of the first release.
+  Stated in `profile.policy`'s retention text.
 - **How the Directory's FTS5 and R\*Tree tables coexist with `data-layer`'s
   own collection tables.** `execute-ddl` runs an arbitrary batch against the
   service's own database ([sqlite.rs:139](../../../../crates/data_db/src/sqlite.rs#L139)),
@@ -380,6 +388,13 @@ discovery bug. Keeping the gates keeps each failure attributable.
   bounding box, named region, or radius are all defensible and produce
   different listing schemas. C5 defines it, because the listing carries it;
   C6 only queries it.
+  **Answered by C5 (2026-09-02):** `syneroym_roym_core::area::Area` is a
+  tagged union of `bbox` / `circle` / `named`, all in **integer
+  micro-degrees** (1e-6°, ~11 cm) with an integer `radius_m` — because a
+  signed payload may hold no non-integer number (`RecordDraft::validate`
+  refuses a decimal before the host signs). `bounding_box(&Area)` is the
+  one projection C6's index will build on; the circle→box projection
+  deliberately over-covers so the index never misses a match.
 - **Which service owns the person→conversation-address mapping, and how a
   listing carries it.** Gap 5 puts it in Profile & Contacts, but a listing
   found through a directory must carry enough to start a conversation
@@ -391,6 +406,12 @@ discovery bug. Keeping the gates keeps each failure attributable.
   with no directory involved. `contacts.resolve-address` is the read side.
   How a *listing* embeds it — under the provider's own signature — stays
   C5's to define; C4 fixes the payload shape it embeds.
+  **Answered by C5 (2026-09-02):** `ListingPayload.conversation_address`
+  is a required field of the signed listing record; `listing.set` fills
+  it from the person's own `profile` record (through the declared
+  `catalog → profile` dependency) when the caller omits it, so a listing
+  found by direct link carries an attributable address with no directory
+  in the path.
 - **How the native build receives an inbound HTTP request.** The WASM build
   exports `incoming-handler`. The native side has no equivalent anywhere in
   the tree, so C1 is inventing one, and C2's entrypoint is shaped by whatever
@@ -426,6 +447,11 @@ discovery bug. Keeping the gates keeps each failure attributable.
   implementor must satisfy the new traits. Today there are exactly two
   (`GuestHost`, `NativeAppHost`), both in-tree, so the cost
   is bounded and known — but C1's plan must name it rather than discover it.
+  **Update (C5, 2026-09-02):** the list grew again, from nine to ten, when
+  C5 added `AppInvocation` (`syneroym:invocation`) — after C3 §18 G and C4
+  §18 G had both recorded it as settled at nine. The two in-tree
+  implementors are unchanged; a third, `roym_core::signing::tests::
+  TestHost`, is a `#[cfg(test)]` stub.
 - **No wire-format change** to endpoint records, topology documents, gateway
   hostnames, the conversation envelope, or the group DAG. M06C consumes all
   of these and changes none.

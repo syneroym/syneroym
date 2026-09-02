@@ -19,7 +19,7 @@ under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-servic
 | C2 | The SynApp skeleton and the Hub shell | **Complete (2026-08-29)** — [implementation plan](slice-c2-implementation-plan.md), evidence below | C1.1 |
 | C3 | Signed records: host signing interface and envelope | **Complete (2026-08-31)** — [implementation plan](slice-c3-implementation-plan.md), evidence below | C1.1 |
 | C4 | Identity, profile, contacts, and safety (R1 rows 1 and 6) | **Complete (2026-09-01)** — [implementation plan](slice-c4-implementation-plan.md), evidence below | C3 |
-| C5 | Catalog and conversation in the product (R1 rows 2 and 3) | Not started | C4 |
+| C5 | Catalog and conversation in the product (R1 rows 2 and 3) | **In progress** — Rust core landed on `feat/m06c-slice-c5` (plan steps 1–9); cross-build parity, two-substrate e2e, Hub UI, and doc/backlog updates (steps 10–14) outstanding | C4 |
 | C6 | Directory: the search half (R1 row 5) | Not started | C5 |
 | C7 | A need becomes an offer, and the card contract (R1 row 4) | Not started | C5, C6 |
 | C8 | The transaction vertical (R2, all five rows) | Not started | C7 |
@@ -297,4 +297,120 @@ Slice C4 turns the Roym `profile` service from a `ping`-only stub into the produ
 14. `cargo audit`: **Clean (0 vulnerabilities)**
 15. `cargo deny check licenses`: **Clean (`licenses ok`)**
 16. `mise run test:e2e`: **27 passed (clean)** — includes all 8 `roym-hub.spec.ts` C4 browser cases (delegated login, card gallery + safety, profile save showing `rec_…`, contact add, block, app-data bundle export).
+
+---
+
+## C5 — In progress (Rust core, plan steps 1–9)
+
+Slice C5's Rust side is implemented on `feat/m06c-slice-c5`. The 37
+cross-build parity scenarios, the two-substrate e2e, the Hub UI, and the
+document/backlog updates ([plan](slice-c5-implementation-plan.md) steps
+10–14) are a second work order.
+
+### What landed
+
+1. **`syneroym:invocation` — a new host interface** (plan §3). One
+   function tells a component whether the call it is handling arrived
+   from inside this node (`internal`), from a verified party over the
+   wire (`verified(did)`), or from the wire with no identity
+   (`anonymous`). A local dispatch is `internal` whatever identity the
+   caller carries; the auth level is read only on the wire path. Threaded
+   through `HostState` by a second engine entry point
+   (`execute_wasm_json_from_wire`) so the wire path is greppable and no
+   existing call site changes; `dispatch.rs`'s one wire site switches.
+   The native shim carries the origin by which factory constructor built
+   the host (`host_for` vs `host_for_wire`). `AppHost`'s supertrait list
+   grows from nine to ten.
+2. **`admit::require_internal`** (plan §4.1, §7, `D-C5-3`) — the single
+   admission rule, called as the first statement of every service's
+   `invoke`. A method reached over the wire (not through a local
+   dispatch) answers `-32013`. `api.status` is the one export
+   deliberately left open. `web`'s own `MethodAuth` owner-session gate on
+   `POST /rpc` is unchanged and is still what protects the product from
+   the browser side. `D-C5-4`: no manifest `visibility` value changes —
+   with `require_internal` in force, visibility is a discoverability
+   choice, not an authorization control.
+3. **`roym_core` vocabulary** (plan §4): `listing` (one record type, a
+   required core plus seven optional named blocks, `ListingPayload::
+   validate` with a per-rule error set, `derive_listing_id`
+   content-derived from issuer+slug, `slug_from_title`); `area`
+   (micro-degree Bbox/Circle/Named, an over-covering circle→box
+   projection, all integers — `D-C5-6`); `conversation`
+   (`MessageRow`/`ConversationRow`/`StoredState` for Roym's own copy, the
+   `(sender-timestamp, author, id)` sort key, the reserved
+   `application/vnd.roym.deletion-request+json` content type with a
+   strict parser, a std-only `encode_body`); four new `backup` section
+   names; `RECORD_LISTING`; a `catalog.` routing prefix.
+4. **`roym_catalog`** (SCHEMA_VERSION 1 → 2, plan §5): `listing.set`
+   signs a `listing` record with a stable content-derived id, supersedes
+   the prior version, and is counted by `safety::admit_publication`; the
+   conversation address is filled from the person's own `profile` record
+   when omitted, through the declared `catalog → profile` edge.
+   `listing.withdraw` runs the same flow with `status = withdrawn` and
+   consumes no publication budget (`D-C5-19`). `listing.verify` checks a
+   stranger's envelope locally and answers inside a success envelope.
+   `availability.*` stores clock-free slots. `catalog.export` /
+   `catalog.import` round-trip listings and availability with the schema
+   version preserved and every listing envelope re-verified.
+   `handle_certificate_verb` is mounted (`D-C5-18`).
+5. **`roym_conversation`** (SCHEMA_VERSION 1 → 2, plan §6): the world
+   exports `guest-api`; the guest and native sinks route `on-message` /
+   `on-delivery-state` into one target-independent inbox. `on_message`
+   enforces the block list on every message and the first-contact rate
+   limit only for a peer this node holds no conversation with, records a
+   refused message in a separate bodiless `refused_messages` collection
+   (`D-C5-11`), drops a non-direct conversation as `unsupported-kind`,
+   and honours an inbound deletion request only for a message its sender
+   authored here (`D-C5-20`). Verbs: `conversation.open/list/send/
+   history/delivery-status/outbox/retry/delete-message/search/export/
+   import` plus the certificate verbs. `send` stores `pending` from the
+   host's own return value, never optimistically (`D-C5-10`); `history`
+   re-reads delivery status for every non-`delivered` row;
+   `delete-message` tombstones the local row, keeps it as the deletion
+   record, and asks the peer for an outgoing message; `search` is an
+   escaped `$regex` over `utf8` bodies (`F9`).
+6. **Manifest** (plan §8, `D-C5-9`): `conversation` and `catalog` each
+   declare `depends_on = ["profile"]`. `init_roym` persists the two
+   bindings and registers the native conversation inbox sink.
+7. **`roymctl`** (plan §9): `roym enrol-signing` and `roym
+   signing-status` now cover `profile`, `catalog` and `conversation` —
+   one certificate per service — and exit non-zero if any service fails.
+   `roym address` is deferred to the second work order.
+
+### Deviations from the plan
+
+- **§6.2** says roym `src/bindings.rs` is checked in. In the tree it is
+  gitignored for every roym crate and regenerated by `cargo component` /
+  `mise run build:roym`; followed the tree.
+- **§4.4 / §6** non-text message bodies: added a std-only `encode_body`
+  (base64) to `roym_core::conversation` rather than a `base64` crate
+  dependency, which `cargo xtask check-roym-deps` forbids on a roym
+  service crate. Attachments are out of scope for the first release, so
+  every stored body takes the `Utf8` path today.
+
+### C5 — Verification evidence (steps 1–9)
+
+1. `cargo test -p syneroym-roym-core`: **63 passed, 0 failed** — `admit`,
+   `area`, `listing`, `conversation`, `backup` and `router` unit tests.
+2. `cargo test -p syneroym-app-host-native --test dual_build_parity`:
+   **39 passed, 0 failed** — includes the new
+   `caller_origin_is_identical_on_both_builds` (local `internal` / wire
+   `verified` / wire `anonymous`) and a `caller-origin` scenario in the
+   byte-comparison table.
+3. `cargo test -p syneroym-sandbox-wasm --lib
+   invocation_caller_origin_mapping`: **1 passed** — the origin mapping
+   across all five `AuthLevel` arms, local and wire.
+4. `cargo test -p syneroym-roym-web --test dual_build_parity`: **37
+   passed, 0 failed** (existing scenarios only; the 37 C5 scenarios are
+   the second work order — scenario 8's `schema_version` map is bumped).
+5. `cargo test -p roymctl`: **74 + 17 passed, 0 failed**.
+6. `cargo xtask check-roym-deps`: **Clean**.
+7. `cargo +nightly fmt --all`: **Clean**.
+8. `cargo clippy --workspace --all-targets --all-features`: **Clean**.
+9. `cargo test --workspace`: **exit 0, 0 failures** across ~150 test
+   binaries (2026-09-02, sandbox off).
+10. `cargo audit`: **Clean (0 vulnerabilities)**.
+11. `cargo deny check licenses`: **Clean (`licenses ok`)**.
+12. `mise run test:e2e`: **not yet run** — the browser cases are part of
+    the second work order.
 
