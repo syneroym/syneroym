@@ -139,13 +139,10 @@ fn sanitize_gateway_url(url: &str) -> String {
 
 fn session_file_path(dir: &Path, run_as: Option<&str>, gateway_url: &str) -> PathBuf {
     let gw_file = format!("{}.json", sanitize_gateway_url(gateway_url));
-    if let Some(id) = run_as {
-        let scoped = dir.join("sessions").join(id).join(&gw_file);
-        if scoped.exists() {
-            return scoped;
-        }
+    match run_as {
+        Some(id) => dir.join("sessions").join(id).join(gw_file),
+        None => dir.join("sessions").join(gw_file),
     }
-    dir.join("sessions").join(gw_file)
 }
 
 fn save_session_file(path: &Path, session: &StoredSession) -> Result<()> {
@@ -178,18 +175,8 @@ fn persist_session(
     gateway_url: &str,
     session: &StoredSession,
 ) -> Result<()> {
-    let primary_path =
-        dir.join("sessions").join(format!("{}.json", sanitize_gateway_url(gateway_url)));
-    save_session_file(&primary_path, session)?;
-
-    if let Some(id) = run_as {
-        let scoped_path = dir
-            .join("sessions")
-            .join(id)
-            .join(format!("{}.json", sanitize_gateway_url(gateway_url)));
-        save_session_file(&scoped_path, session)?;
-    }
-    Ok(())
+    let path = session_file_path(dir, run_as, gateway_url);
+    save_session_file(&path, session)
 }
 
 fn load_session_file(path: &Path) -> Result<StoredSession> {
@@ -504,34 +491,20 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
             );
         }
         SessionCommands::Logout { gateway_url } => {
-            let primary_path =
-                dir.join("sessions").join(format!("{}.json", sanitize_gateway_url(gateway_url)));
             let session_path = session_file_path(dir, run_as, gateway_url);
-            let token_opt = if session_path.exists() {
-                load_session_file(&session_path).ok().map(|s| s.token)
-            } else if primary_path.exists() {
-                load_session_file(&primary_path).ok().map(|s| s.token)
-            } else {
-                None
-            };
-
-            if let Some(token) = token_opt {
-                let client = Client::new();
-                let base_url = gateway_url.trim_end_matches('/');
-                let logout_url = format!("{base_url}/_syneroym/session/logout");
-                let _ = client
-                    .post(&logout_url)
-                    .header("Authorization", format!("Bearer {token}"))
-                    .header("Cookie", format!("{}={token}", SESSION_COOKIE_NAME))
-                    .send()
-                    .await;
-            }
-
             if session_path.exists() {
+                if let Ok(session) = load_session_file(&session_path) {
+                    let client = Client::new();
+                    let base_url = gateway_url.trim_end_matches('/');
+                    let logout_url = format!("{base_url}/_syneroym/session/logout");
+                    let _ = client
+                        .post(&logout_url)
+                        .header("Authorization", format!("Bearer {}", session.token))
+                        .header("Cookie", format!("{}={}", SESSION_COOKIE_NAME, session.token))
+                        .send()
+                        .await;
+                }
                 let _ = fs::remove_file(&session_path);
-            }
-            if primary_path.exists() {
-                let _ = fs::remove_file(&primary_path);
             }
             println!("Logged out of {gateway_url}");
         }

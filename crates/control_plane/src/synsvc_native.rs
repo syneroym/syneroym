@@ -568,13 +568,13 @@ impl SynSvcNativeService {
         }
     }
 
+    /// Admits privileged capabilities (`signing/sign-record` and
+    /// `vault/reveal`).
+    ///
+    /// Accepts only synthetic system identities scoped to this service
+    /// (`system:<id>`, `system:local-elevated:<id>`, `system:abac:<id>`) or
+    /// the recorded owner.
     fn admit_privileged_capability(&self, caller: &CallerContext) -> RpcResult<()> {
-        // Only the three synthetic system identities scoped to *this* service are
-        // accepted:
-        //   "system:<id>"                – the service itself
-        //   "system:local-elevated:<id>" – a local elevated call on behalf of the
-        // service   "system:abac:<id>"           – an ABAC-evaluated system
-        // call for the service Any other "system:…" prefix is NOT sufficient.
         let id = &self.service_id;
         let is_own_system = caller.caller_did == format!("system:{id}")
             || caller.caller_did == format!("system:local-elevated:{id}")

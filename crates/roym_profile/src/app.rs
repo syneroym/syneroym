@@ -82,6 +82,17 @@ async fn ensure_coll<H: AppHost>(
     .map_err(|e| e.to_string())
 }
 
+fn block_keys(person_did: Option<&str>, address: Option<&str>) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let Some(d) = person_did {
+        keys.push(format!("did:{d}"));
+    }
+    if let Some(a) = address {
+        keys.push(format!("addr:{a}"));
+    }
+    keys
+}
+
 async fn current_owner_profile_address<H: AppHost>(
     host: &H,
     owner: &str,
@@ -451,6 +462,9 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                 }
             }
 
+            let now = clock::now_secs();
+            let mut prepared_writes: Vec<(&'static str, Vec<Mutation>)> = Vec::new();
+
             for (name, records) in &bundle.sections {
                 let collection = match name.as_str() {
                     SECTION_PROFILE => PROFILES,
@@ -459,35 +473,26 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                     SECTION_REPORTS => REPORTS,
                     other => return Response::invalid_params(format!("unknown section '{other}'")),
                 };
-                if let Err(e) = ensure_coll(host, collection, &[]).await {
-                    return Response::internal_error(e);
-                }
 
-                for chunk in records.chunks(100) {
-                    let mut muts = Vec::new();
-                    for rec in chunk {
-                        let id = match rec.get("id").and_then(|v| v.as_str()) {
-                            Some(i) => i.to_string(),
-                            None => return Response::invalid_params("record missing id"),
+                let mut section_muts = Vec::new();
+                for rec in records {
+                    let id = match rec.get("id").and_then(|v| v.as_str()) {
+                        Some(i) => i.to_string(),
+                        None => return Response::invalid_params("record missing id"),
+                    };
+                    let mut payload_val = match rec.get("payload") {
+                        Some(p) => p.clone(),
+                        None => return Response::invalid_params("record missing payload"),
+                    };
+                    if name == SECTION_PROFILE {
+                        let env_str = match payload_val.get("envelope").and_then(|v| v.as_str()) {
+                            Some(s) => s,
+                            None => {
+                                return Response::invalid_params("profile record missing envelope");
+                            }
                         };
-                        let mut payload_val = match rec.get("payload") {
-                            Some(p) => p.clone(),
-                            None => return Response::invalid_params("record missing payload"),
-                        };
-                        if name == SECTION_PROFILE {
-                            let env_str = match payload_val.get("envelope").and_then(|v| v.as_str())
-                            {
-                                Some(s) => s,
-                                None => {
-                                    return Response::invalid_params(
-                                        "profile record missing envelope",
-                                    );
-                                }
-                            };
-                            let verified_rec = match verify_json(
-                                env_str,
-                                &VerifyOptions::new(clock::now_secs()).expecting(&id),
-                            ) {
+                        let verified_rec =
+                            match verify_json(env_str, &VerifyOptions::new(now).expecting(&id)) {
                                 Ok(vr) => vr,
                                 Err(e) => {
                                     return Response::invalid_params(format!(
@@ -495,24 +500,41 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                                     ));
                                 }
                             };
-                            if verified_rec.record_type != RECORD_PROFILE {
-                                return Response::invalid_params("record is not a profile");
-                            }
-                            if let Some(obj) = payload_val.as_object_mut() {
-                                obj.insert(
-                                    "verified_at_secs".to_string(),
-                                    json!(clock::now_secs()),
-                                );
-                            }
+                        if verified_rec.record_type != RECORD_PROFILE {
+                            return Response::invalid_params("record is not a profile");
                         }
-                        let payload_bytes = match serde_json::to_vec(&payload_val) {
-                            Ok(b) => b,
-                            Err(e) => return Response::internal_error(e.to_string()),
-                        };
-                        muts.push(Mutation::Put(RecordWriteValue { id, payload: payload_bytes }));
+                        if verified_rec.version != 1 {
+                            return Response::invalid_params("unsupported profile record version");
+                        }
+                        if verified_rec.subject != id {
+                            return Response::invalid_params(format!(
+                                "profile record subject '{}' does not match id '{id}'",
+                                verified_rec.subject
+                            ));
+                        }
+                        if let Some(obj) = payload_val.as_object_mut() {
+                            obj.insert("verified_at_secs".to_string(), json!(now));
+                        }
                     }
+                    let payload_bytes = match serde_json::to_vec(&payload_val) {
+                        Ok(b) => b,
+                        Err(e) => return Response::internal_error(e.to_string()),
+                    };
+                    section_muts
+                        .push(Mutation::Put(RecordWriteValue { id, payload: payload_bytes }));
+                }
+                prepared_writes.push((collection, section_muts));
+            }
+
+            // Phase 2: All records and sections verified clean -- apply mutations
+            for (collection, muts) in prepared_writes {
+                if let Err(e) = ensure_coll(host, collection, &[]).await {
+                    return Response::internal_error(e);
+                }
+                for chunk in muts.chunks(100) {
                     if let Err(e) =
-                        AppDataLayer::batch_mutate(host, collection.to_string(), muts).await
+                        AppDataLayer::batch_mutate(host, collection.to_string(), chunk.to_vec())
+                            .await
                     {
                         return Response::internal_error(e.to_string());
                     }
@@ -900,26 +922,15 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
             let address = req.params.get("address").and_then(|v| v.as_str()).map(String::from);
             let reason = req.params.get("reason").and_then(|v| v.as_str()).map(String::from);
 
-            if person_did.is_none() && address.is_none() {
+            let keys = block_keys(person_did.as_deref(), address.as_deref());
+            if keys.is_empty() {
                 return Response::invalid_params(
                     "at least one of person_did or address is required",
                 );
             }
 
-            let key = match (person_did.as_ref(), address.as_ref()) {
-                (Some(d), _) => format!("did:{d}"),
-                (None, Some(a)) => format!("addr:{a}"),
-                (None, None) => unreachable!(),
-            };
-
+            let primary_key = keys[0].clone();
             let now = clock::now_secs();
-            let row = BlockRow {
-                key: key.clone(),
-                person_did: person_did.clone(),
-                address: address.clone(),
-                reason: reason.clone(),
-                at_secs: now,
-            };
 
             if let Err(e) = ensure_coll(
                 host,
@@ -931,41 +942,22 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                 return Response::internal_error(e);
             }
 
-            let payload = match serde_json::to_vec(&row) {
-                Ok(b) => b,
-                Err(e) => return Response::internal_error(e.to_string()),
-            };
-
-            if let Err(e) = AppDataLayer::put(
-                host,
-                BLOCKS.to_string(),
-                RecordWriteValue { id: key.clone(), payload },
-            )
-            .await
-            {
-                return Response::internal_error(e.to_string());
-            }
-
-            // When both a DID and an address are provided, write a second row keyed by
-            // the address so that `admit-first-contact`'s `addr:<sender_address>` lookup
-            // also finds the block, regardless of whether the sender's DID is known.
-            if let (Some(_), Some(ref addr)) = (person_did.as_ref(), address.as_ref()) {
-                let addr_key = format!("addr:{addr}");
-                let addr_row = BlockRow {
-                    key: addr_key.clone(),
+            for key in keys {
+                let row = BlockRow {
+                    key: key.clone(),
                     person_did: person_did.clone(),
                     address: address.clone(),
                     reason: reason.clone(),
                     at_secs: now,
                 };
-                let addr_payload = match serde_json::to_vec(&addr_row) {
+                let payload = match serde_json::to_vec(&row) {
                     Ok(b) => b,
                     Err(e) => return Response::internal_error(e.to_string()),
                 };
                 if let Err(e) = AppDataLayer::put(
                     host,
                     BLOCKS.to_string(),
-                    RecordWriteValue { id: addr_key, payload: addr_payload },
+                    RecordWriteValue { id: key, payload },
                 )
                 .await
                 {
@@ -973,33 +965,47 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                 }
             }
 
-            Response::ok(json!({ "key": key }))
+            Response::ok(json!({ "key": primary_key }))
         }
         "block.remove" => {
             let person_did = req.params.get("person_did").and_then(|v| v.as_str());
             let address = req.params.get("address").and_then(|v| v.as_str());
 
-            if person_did.is_none() && address.is_none() {
+            let mut keys_to_delete = block_keys(person_did, address);
+            if keys_to_delete.is_empty() {
                 return Response::invalid_params(
                     "at least one of person_did or address is required",
                 );
             }
 
-            let key = match (person_did, address) {
-                (Some(d), _) => format!("did:{d}"),
-                (None, Some(a)) => format!("addr:{a}"),
-                (None, None) => unreachable!(),
-            };
-
             if let Err(e) = ensure_coll(host, BLOCKS, &[]).await {
                 return Response::internal_error(e);
             }
 
-            if let Err(e) = AppDataLayer::delete(host, BLOCKS.to_string(), key.clone()).await {
-                return Response::internal_error(e.to_string());
+            let primary_key = keys_to_delete[0].clone();
+
+            // Look up existing rows so complementary keys (e.g. addr: when given did:) are
+            // also removed
+            for key in &keys_to_delete.clone() {
+                if let Ok(Some(row_val)) =
+                    AppDataLayer::get(host, BLOCKS.to_string(), key.clone()).await
+                    && let Ok(row) = serde_json::from_slice::<BlockRow>(&row_val.payload)
+                {
+                    for extra_key in block_keys(row.person_did.as_deref(), row.address.as_deref()) {
+                        if !keys_to_delete.contains(&extra_key) {
+                            keys_to_delete.push(extra_key);
+                        }
+                    }
+                }
             }
 
-            Response::ok(json!({ "removed": key }))
+            for key in keys_to_delete {
+                if let Err(e) = AppDataLayer::delete(host, BLOCKS.to_string(), key).await {
+                    return Response::internal_error(e.to_string());
+                }
+            }
+
+            Response::ok(json!({ "removed": primary_key }))
         }
         "block.list" => {
             if let Err(e) = ensure_coll(
@@ -1021,6 +1027,10 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                 if let Some(p) = item.get("payload")
                     && let Ok(row) = serde_json::from_value::<BlockRow>(p.clone())
                 {
+                    // Skip secondary addr: alias rows for blocks that have a primary did: row
+                    if row.key.starts_with("addr:") && row.person_did.is_some() {
+                        continue;
+                    }
                     list.push(row);
                 }
             }
@@ -1036,7 +1046,8 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
             let person_did = req.params.get("person_did").and_then(|v| v.as_str());
             let address = req.params.get("address").and_then(|v| v.as_str());
 
-            if person_did.is_none() && address.is_none() {
+            let keys = block_keys(person_did, address);
+            if keys.is_empty() {
                 return Response::invalid_params(
                     "at least one of person_did or address is required",
                 );
@@ -1046,37 +1057,22 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
                 return Response::internal_error(e);
             }
 
-            let key_did = person_did.map(|d| format!("did:{d}"));
-            let key_addr = address.map(|a| format!("addr:{a}"));
-
-            let row_did = if let Some(ref k) = key_did {
-                match AppDataLayer::get(host, BLOCKS.to_string(), k.clone()).await {
-                    Ok(r) => r,
+            for key in keys {
+                match AppDataLayer::get(host, BLOCKS.to_string(), key).await {
+                    Ok(Some(row)) => {
+                        let parsed = serde_json::from_slice::<BlockRow>(&row.payload).ok();
+                        return Response::ok(json!({
+                            "blocked": true,
+                            "reason": parsed.as_ref().and_then(|b| b.reason.clone()),
+                            "since_secs": parsed.as_ref().map(|b| b.at_secs),
+                        }));
+                    }
+                    Ok(None) => {}
                     Err(e) => return Response::internal_error(e.to_string()),
                 }
-            } else {
-                None
-            };
-
-            let row_addr = if let Some(ref k) = key_addr {
-                match AppDataLayer::get(host, BLOCKS.to_string(), k.clone()).await {
-                    Ok(r) => r,
-                    Err(e) => return Response::internal_error(e.to_string()),
-                }
-            } else {
-                None
-            };
-
-            let found = row_did.or(row_addr);
-            if let Some(r) = found {
-                let parsed = serde_json::from_slice::<BlockRow>(&r.payload).ok();
-                Response::ok(json!({
-                    "blocked": true,
-                    "since_secs": parsed.map(|b| b.at_secs)
-                }))
-            } else {
-                Response::ok(json!({ "blocked": false }))
             }
+
+            Response::ok(json!({ "blocked": false }))
         }
         "report.create" => {
             let subject_kind = match req.params.get("subject_kind").and_then(|v| v.as_str()) {

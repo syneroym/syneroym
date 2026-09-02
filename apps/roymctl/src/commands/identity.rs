@@ -130,6 +130,11 @@ pub enum IdentityCommands {
         name: String,
         #[arg(long, default_value = "identity-backup.json")]
         out: std::path::PathBuf,
+        /// Optional path to write the recovery key to. Store this file in a
+        /// different location than the encrypted backup — keeping both in the
+        /// same directory defeats the encryption if that directory is copied.
+        #[arg(long, value_name = "PATH")]
+        recovery_key_out: Option<std::path::PathBuf>,
     },
     /// Restore an identity from `identity export`'s output.
     Import {
@@ -301,7 +306,7 @@ pub async fn handle(
                     .await?;
             println!("{}", cert.to_json()?);
         }
-        IdentityCommands::Export { name, out } => {
+        IdentityCommands::Export { name, out, recovery_key_out } => {
             let key_path = dir.join("identities").join(format!("{name}.key"));
             if !key_path.exists() {
                 anyhow::bail!("Identity '{}' not found at {}", name, key_path.display());
@@ -327,6 +332,23 @@ pub async fn handle(
             }
 
             let encoded = syneroym_identity::backup::encode_recovery_key(&recovery_key);
+            if let Some(rk_out) = recovery_key_out {
+                #[cfg(unix)]
+                {
+                    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+                    let mut file = fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .mode(0o600)
+                        .open(rk_out)?;
+                    file.write_all(encoded.as_bytes())?;
+                }
+                #[cfg(not(unix))]
+                {
+                    fs::write(rk_out, &encoded)?;
+                }
+            }
             println!("Identity '{}' exported to {}", name, out.display());
             println!("Recovery key (save this now; it is shown once and cannot be recovered):");
             println!("{encoded}");
@@ -356,8 +378,6 @@ pub async fn handle(
 
 #[cfg(test)]
 mod tests {
-    use syneroym_identity::backup;
-
     use super::*;
 
     #[tokio::test]
@@ -379,13 +399,31 @@ mod tests {
         let key_path = dir.path().join("identities").join(format!("{name}.key"));
         let original_id = Identity::load_from_path(&key_path).unwrap();
 
-        // 2. Export identity using the backup logic
+        // 2. Export identity using the CLI command directly
         let out_file = dir.path().join("backup.json");
-        let recovery_key = backup::generate_recovery_key().unwrap();
-        let backup = backup::export(&original_id, &recovery_key).unwrap();
-        let json_str = serde_json::to_string_pretty(&backup).unwrap();
-        fs::write(&out_file, json_str).unwrap();
-        let encoded_key = backup::encode_recovery_key(&recovery_key);
+        let rec_file = dir.path().join("recovery.key");
+        handle(
+            &IdentityCommands::Export {
+                name: name.to_string(),
+                out: out_file.clone(),
+                recovery_key_out: Some(rec_file.clone()),
+            },
+            "http://localhost:7960",
+            dir.path(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(out_file.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = fs::metadata(&out_file).unwrap().permissions();
+            assert_eq!(perms.mode() & 0o777, 0o600, "exported backup must be mode 0600 on unix");
+        }
+        let encoded_key = fs::read_to_string(&rec_file).unwrap();
 
         // 3. Import in a clean directory
         let clean_dir = tempfile::tempdir().unwrap();

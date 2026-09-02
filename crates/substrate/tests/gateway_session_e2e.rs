@@ -1132,7 +1132,8 @@ async fn test_29_roymctl_session_cli_lifecycle() {
     // Verify session file exists and contents
     let sanitized_url: String =
         gateway_url.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-    let session_file = temp_dir.path().join("sessions").join(format!("{sanitized_url}.json"));
+    let session_file =
+        temp_dir.path().join("sessions").join("alice").join(format!("{sanitized_url}.json"));
     assert!(session_file.exists(), "session file must exist at {}", session_file.display());
 
     #[cfg(unix)]
@@ -1148,27 +1149,38 @@ async fn test_29_roymctl_session_cli_lifecycle() {
     assert_eq!(file_json["gateway_url"], gateway_url);
     assert!(file_json["token"].as_str().unwrap().len() >= 32);
 
-    // 2. Status
+    // 2. Status with --as alice succeeds; unscoped status or different identity
+    //    fails
     let status_cmd =
         roymctl::commands::session::SessionCommands::Status { gateway_url: gateway_url.clone() };
-    roymctl::commands::session::handle(&status_cmd, temp_dir.path(), None).await.unwrap();
+    roymctl::commands::session::handle(&status_cmd, temp_dir.path(), Some("alice")).await.unwrap();
+
+    let err_unscoped =
+        roymctl::commands::session::handle(&status_cmd, temp_dir.path(), None).await.unwrap_err();
+    assert!(err_unscoped.to_string().contains("no active session"), "{err_unscoped}");
+
+    let err_bob = roymctl::commands::session::handle(&status_cmd, temp_dir.path(), Some("bob"))
+        .await
+        .unwrap_err();
+    assert!(err_bob.to_string().contains("no active session"), "{err_bob}");
 
     // 3. Token
     let token_cmd =
         roymctl::commands::session::SessionCommands::Token { gateway_url: gateway_url.clone() };
-    roymctl::commands::session::handle(&token_cmd, temp_dir.path(), None).await.unwrap();
+    roymctl::commands::session::handle(&token_cmd, temp_dir.path(), Some("alice")).await.unwrap();
 
     // 4. Logout
     let logout_cmd =
         roymctl::commands::session::SessionCommands::Logout { gateway_url: gateway_url.clone() };
-    roymctl::commands::session::handle(&logout_cmd, temp_dir.path(), None).await.unwrap();
+    roymctl::commands::session::handle(&logout_cmd, temp_dir.path(), Some("alice")).await.unwrap();
 
     // Verify session file was deleted
     assert!(!session_file.exists(), "session file must be deleted after logout");
 
     // 5. Status after logout -> fails
-    let err =
-        roymctl::commands::session::handle(&status_cmd, temp_dir.path(), None).await.unwrap_err();
+    let err = roymctl::commands::session::handle(&status_cmd, temp_dir.path(), Some("alice"))
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("no active session"), "{err}");
 
     ctx.teardown().await;

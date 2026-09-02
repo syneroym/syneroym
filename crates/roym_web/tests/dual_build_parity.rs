@@ -75,9 +75,10 @@ fn strip_volatile(val: &mut Value) {
             map.remove("at_secs");
             map.remove("since_secs");
             map.remove("produced_at_secs");
-            map.remove("issued_at_secs");
-            for v in map.values_mut() {
-                strip_volatile(v);
+            for (k, v) in map.iter_mut() {
+                if k != "envelope" && k != "delegation" {
+                    strip_volatile(v);
+                }
             }
         }
         Value::Array(arr) => {
@@ -1332,7 +1333,7 @@ async fn scenario_21_block_check_and_remove_parity() {
 }
 
 #[tokio::test]
-async fn scenario_22_report_create_and_get_parity() {
+async fn scenario_22_report_create_get_withdraw_and_refile_refusal_parity() {
     let h = harness().await;
 
     let submit_req = json!({
@@ -1342,7 +1343,7 @@ async fn scenario_22_report_create_and_get_parity() {
     .to_string()
     .into_bytes();
     let wasm_sub = h.wasm_http.post("/rpc", submit_req.clone(), Some(caller())).await;
-    let native_sub = h.native_http.post("/rpc", submit_req, Some(caller())).await;
+    let native_sub = h.native_http.post("/rpc", submit_req.clone(), Some(caller())).await;
     assert_eq!(wasm_sub.body, native_sub.body);
     let sub_val: Value = serde_json::from_slice(&wasm_sub.body).unwrap();
     assert_ne!(sub_val.get("error").and_then(|e| e.get("code")), Some(&json!(-32601)));
@@ -1352,12 +1353,37 @@ async fn scenario_22_report_create_and_get_parity() {
         .to_string()
         .into_bytes();
     let wasm_get = h.wasm_http.post("/rpc", get_req.clone(), Some(caller())).await;
-    let native_get = h.native_http.post("/rpc", get_req, Some(caller())).await;
+    let native_get = h.native_http.post("/rpc", get_req.clone(), Some(caller())).await;
     let mut wasm_val: Value = serde_json::from_slice(&wasm_get.body).unwrap();
     let mut native_val: Value = serde_json::from_slice(&native_get.body).unwrap();
     strip_volatile(&mut wasm_val);
     strip_volatile(&mut native_val);
     assert_eq!(wasm_val, native_val);
+
+    // Withdraw the report
+    let withdraw_req = json!({ "method": "report.withdraw", "params": { "report_id": report_id } })
+        .to_string()
+        .into_bytes();
+    let wasm_with = h.wasm_http.post("/rpc", withdraw_req.clone(), Some(caller())).await;
+    let native_with = h.native_http.post("/rpc", withdraw_req, Some(caller())).await;
+    assert_eq!(wasm_with.body, native_with.body);
+    let with_val: Value = serde_json::from_slice(&wasm_with.body).unwrap();
+    assert_eq!(with_val["result"]["status"], "withdrawn");
+
+    // Verify report.get reflects status "withdrawn"
+    let wasm_get2 = h.wasm_http.post("/rpc", get_req.clone(), Some(caller())).await;
+    let native_get2 = h.native_http.post("/rpc", get_req, Some(caller())).await;
+    assert_eq!(wasm_get2.body, native_get2.body);
+    let get2_val: Value = serde_json::from_slice(&wasm_get2.body).unwrap();
+    assert_eq!(get2_val["result"]["status"], "withdrawn");
+
+    // Attempting to re-file a withdrawn report refuses on both builds
+    let wasm_refile = h.wasm_http.post("/rpc", submit_req.clone(), Some(caller())).await;
+    let native_refile = h.native_http.post("/rpc", submit_req, Some(caller())).await;
+    assert_eq!(wasm_refile.body, native_refile.body);
+    let refile_val: Value = serde_json::from_slice(&wasm_refile.body).unwrap();
+    assert!(refile_val.get("error").is_some());
+    assert!(refile_val["error"]["message"].as_str().unwrap().contains("withdrawn"));
 }
 
 #[tokio::test]
@@ -1660,6 +1686,8 @@ async fn scenario_32_report_list_pagination_parity() {
 #[tokio::test]
 async fn scenario_33_contacts_admit_first_contact_parity() {
     let h = harness().await;
+
+    // 1. Unblocked stranger within limits -> allow
     let req = json!({
         "method": "contacts.admit-first-contact",
         "params": {
@@ -1676,6 +1704,73 @@ async fn scenario_33_contacts_admit_first_contact_parity() {
     let val: Value = serde_json::from_slice(&wasm_res.body).unwrap();
     assert_ne!(val.get("error").and_then(|e| e.get("code")), Some(&json!(-32601)));
     assert_eq!(val["result"]["admission"], "allow");
+
+    // 2. Blocked sender -> blocked
+    let block_req = json!({
+        "method": "block.add",
+        "params": {
+            "person_did": "did:key:zBlocked33",
+            "address": "syneroym://blocked33"
+        }
+    })
+    .to_string()
+    .into_bytes();
+    h.wasm_http.post("/rpc", block_req.clone(), Some(caller())).await;
+    h.native_http.post("/rpc", block_req, Some(caller())).await;
+
+    let admit_blocked_req = json!({
+        "method": "contacts.admit-first-contact",
+        "params": {
+            "sender_address": "syneroym://blocked33",
+            "sender_person_did": "did:key:zBlocked33"
+        }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_blk = h.wasm_http.post("/rpc", admit_blocked_req.clone(), Some(caller())).await;
+    let native_blk = h.native_http.post("/rpc", admit_blocked_req, Some(caller())).await;
+    assert_eq!(wasm_blk.body, native_blk.body);
+    let blk_val: Value = serde_json::from_slice(&wasm_blk.body).unwrap();
+    assert_eq!(blk_val["result"]["admission"], "blocked");
+
+    // 3. Sender hitting rate limit -> rate-limited
+    let set_limits_req = json!({
+        "method": "contacts.set-limits",
+        "params": {
+            "max_per_window": 1,
+            "window_secs": 3600
+        }
+    })
+    .to_string()
+    .into_bytes();
+    h.wasm_http.post("/rpc", set_limits_req.clone(), Some(caller())).await;
+    h.native_http.post("/rpc", set_limits_req, Some(caller())).await;
+
+    // First attempt for ratelimited sender -> allow
+    let rate_req = json!({
+        "method": "contacts.admit-first-contact",
+        "params": {
+            "sender_address": "syneroym://ratelimited33",
+            "sender_person_did": "did:key:zRateLimited33"
+        }
+    })
+    .to_string()
+    .into_bytes();
+    let wasm_r1 = h.wasm_http.post("/rpc", rate_req.clone(), Some(caller())).await;
+    let native_r1 = h.native_http.post("/rpc", rate_req.clone(), Some(caller())).await;
+    assert_eq!(wasm_r1.body, native_r1.body);
+    let r1_val: Value = serde_json::from_slice(&wasm_r1.body).unwrap();
+    assert_eq!(r1_val["result"]["admission"], "allow");
+
+    // Second attempt within window -> rate-limited
+    let wasm_r2 = h.wasm_http.post("/rpc", rate_req.clone(), Some(caller())).await;
+    let native_r2 = h.native_http.post("/rpc", rate_req, Some(caller())).await;
+    let mut wasm_r2_val: Value = serde_json::from_slice(&wasm_r2.body).unwrap();
+    let mut native_r2_val: Value = serde_json::from_slice(&native_r2.body).unwrap();
+    strip_volatile(&mut wasm_r2_val);
+    strip_volatile(&mut native_r2_val);
+    assert_eq!(wasm_r2_val, native_r2_val);
+    assert_eq!(wasm_r2_val["result"]["admission"], "rate-limited");
 }
 
 #[tokio::test]
