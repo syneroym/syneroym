@@ -269,9 +269,9 @@ async fn resolve_principal_and_owner<H: AppHost>(
 }
 
 /// The shared body of `listing.set` and `listing.withdraw`. `withdraw`
-/// forces `status = withdrawn` and skips the publication limiter entirely
-/// (`D-C5-19`): a provider is never rate-limited out of taking an offer
-/// down.
+/// forces `status = withdrawn` and skips the publication limiter
+/// entirely: the limiter counts versions that put an offer *out*, and a
+/// provider is never rate-limited out of taking an offer down.
 async fn write_version<H: AppHost>(
     host: &H,
     payload: ListingPayload,
