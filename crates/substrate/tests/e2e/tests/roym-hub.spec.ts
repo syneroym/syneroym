@@ -244,9 +244,18 @@ test.describe('Roym Hub', () => {
 
     expect(setBodies.length).toBeGreaterThan(0);
     for (const body of setBodies) {
-      // The amount became integer minor units; no "<digit>.<digit>" anywhere.
-      expect(body).toMatch(/"amount_minor":\s*3550/);
-      expect(body).not.toMatch(/\d\.\d/);
+      // The amount became integer minor units, and no number anywhere in
+      // the params is fractional (the host refuses a non-integer before it
+      // signs). The JSON-RPC envelope's own "2.0" is not part of params.
+      const params = JSON.parse(body).params as unknown;
+      const everyNumberIsInteger = (v: unknown): boolean => {
+        if (typeof v === 'number') return Number.isInteger(v);
+        if (Array.isArray(v)) return v.every(everyNumberIsInteger);
+        if (v && typeof v === 'object') return Object.values(v).every(everyNumberIsInteger);
+        return true;
+      };
+      expect(everyNumberIsInteger(params)).toBe(true);
+      expect((params as { payment: { amount_minor: number } }).payment.amount_minor).toBe(3550);
     }
 
     // Reload: the listing is still there with its title and status.
@@ -258,7 +267,7 @@ test.describe('Roym Hub', () => {
     await expect(row.locator('.listing-status')).toHaveText('active');
   });
 
-  test('10. messages tab: a sent message shows pending and never "delivered" early', async ({ page }) => {
+  test('10. messages tab: a sent message shows pending, never "delivered" early, and its delete dialog claims nothing about the peer copy', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
@@ -270,6 +279,8 @@ test.describe('Roym Hub', () => {
     await expect(page.locator('.conversation-thread h3')).toBeVisible({ timeout: 15_000 });
     await page.locator('.compose-input').fill('hello nobody');
     await page.getByRole('button', { name: 'Send', exact: true }).click();
+    // The compose box clears only when the send succeeds.
+    await expect(page.locator('.compose-input')).toHaveValue('', { timeout: 15_000 });
 
     const state = page.locator('.thread-messages .message .message-state').first();
     await expect(state).toHaveText('pending', { timeout: 15_000 });
@@ -277,21 +288,9 @@ test.describe('Roym Hub', () => {
     // The word "delivered" must not appear in the thread while it is pending.
     const threadText = await page.locator('.thread-messages').innerText();
     expect(threadText.toLowerCase()).not.toContain('delivered');
-  });
 
-  test('11. messages tab: the delete dialog shows the note and claims nothing about the peer copy', async ({ page }) => {
-    await page.goto(HUB_URL);
-    await page.waitForLoadState('networkidle');
-    await loginWithDelegatedKey(page);
-
-    await page.getByRole('button', { name: 'Messages' }).click();
-    await page.locator('.open-conversation input').fill('did:key:z6MkhubE2eDeleteDialogPeer0000000000000000000000');
-    await page.getByRole('button', { name: 'Open conversation' }).click();
-    await expect(page.locator('.conversation-thread h3')).toBeVisible({ timeout: 15_000 });
-    await page.locator('.compose-input').fill('please forget this');
-    await page.getByRole('button', { name: 'Send', exact: true }).click();
-    await expect(page.locator('.thread-messages .message').first()).toBeVisible({ timeout: 15_000 });
-
+    // The delete dialog shows the service's note verbatim and claims
+    // nothing about the peer's copy.
     await page.locator('.thread-messages .message .delete-message').first().click();
     const note = await page.locator('.delete-dialog .delete-note').innerText();
     expect(note).toBe(
@@ -307,7 +306,7 @@ test.describe('Roym Hub', () => {
     await expect(page.locator('.delete-dialog .ask-peer')).toBeVisible();
   });
 
-  test('12. listings tab: a malicious listing title renders as literal text, no element, no request', async ({ page }) => {
+  test('11. listings tab: a malicious listing title renders as literal text, no element, no request', async ({ page }) => {
     const externalRequests: string[] = [];
     const hubOrigin = new URL(HUB_URL).origin;
     const authOrigin = 'http://auth.localhost:7660';
@@ -339,7 +338,7 @@ test.describe('Roym Hub', () => {
     expect(externalRequests).toEqual([]);
   });
 
-  test('13. safety tab: files a report and edits the first-contact limit', async ({ page }) => {
+  test('12. safety tab: files a report and edits the first-contact limit', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
