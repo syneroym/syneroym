@@ -50,3 +50,90 @@ body {
   min-height: 1em;
   color: #b91c1c;
 }
+
+/* --- Messages --- */
+.messages-layout {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+.conversation-list {
+  min-width: 280px;
+}
+.conversation-thread {
+  flex: 1;
+}
+.conversation-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+.message {
+  background: white;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+}
+.message-outgoing {
+  border-left: 3px solid #0284c7;
+}
+.message-state {
+  margin-left: 8px;
+  font-size: 0.8em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+.state-failed {
+  color: #b91c1c;
+}
+.delete-dialog {
+  margin-top: 6px;
+  padding: 8px;
+  background: #fef9c3;
+  border-radius: 6px;
+}
+.delete-note {
+  margin: 0 0 8px;
+}
+
+/* --- Listings --- */
+.listing-block {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 4px 0;
+  background: white;
+}
+.listing-block .block-body {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.9em;
+}
+.listing-row {
+  background: white;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+}
+.listing-status,
+.listing-version {
+  margin-left: 8px;
+  font-size: 0.85em;
+  color: #64748b;
+}
+.verify-ok {
+  color: #15803d;
+}
+.verify-bad {
+  color: #b91c1c;
+}

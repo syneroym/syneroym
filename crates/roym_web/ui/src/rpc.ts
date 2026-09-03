@@ -1,6 +1,11 @@
 import { authHeaders } from "./session/login";
 
-export type RpcErrorType = "NotSignedIn" | "NotOwner" | "NoOwner" | "Other";
+export type RpcErrorType = "NotSignedIn" | "NotOwner" | "NoOwner" | "NotLocal" | "Other";
+
+/// The message the Hub shows for a `-32013` refusal: the request reached a
+/// service that only answers calls made from inside this installation.
+export const NOT_LOCAL_MESSAGE =
+  "this installation refused a request that did not come from you";
 
 export class RpcError extends Error {
   constructor(public code: number, message: string, public type: RpcErrorType) {
@@ -33,7 +38,8 @@ export async function call<T = unknown>(method: string, params: Record<string, u
     if (code === -32010) type = "NotSignedIn";
     else if (code === -32011) type = "NotOwner";
     else if (code === -32012) type = "NoOwner";
-    throw new RpcError(code, msg, type);
+    else if (code === -32013) type = "NotLocal";
+    throw new RpcError(code, type === "NotLocal" ? NOT_LOCAL_MESSAGE : msg, type);
   }
 
   return json.result as T;
