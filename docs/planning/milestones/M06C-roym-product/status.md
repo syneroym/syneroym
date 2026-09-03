@@ -6,7 +6,7 @@
 under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)),
 [slice-c2-implementation-plan.md](slice-c2-implementation-plan.md) (C2)
 
-**Overall:** Slices C1 (2026-08-25), C1.1 (2026-08-28), C2 (2026-08-29), C3 (2026-08-31), and C4 (2026-09-01) complete. C1.1, added by ADR-0024, makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a node auth service; C2 builds the six-service Roym SynApp skeleton and the Hub shell on top of that model; C3 provides the host record-signing capability interface (`syneroym:signing`), canonical JSON record envelope format, verification, and tri-state revocation checking; C4 gives `profile` real product state (profile, contacts, block, report, contact rate limits), an owner-only authorization gate on `web`, the certificate lifecycle C3 required as a hard prerequisite, and an encrypted identity backup/restore.
+**Overall:** Slices C1 (2026-08-25), C1.1 (2026-08-28), C2 (2026-08-29), C3 (2026-08-31), C4 (2026-09-01), and C5 (2026-09-03) complete. C1.1, added by ADR-0024, makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a node auth service; C2 builds the six-service Roym SynApp skeleton and the Hub shell on top of that model; C3 provides the host record-signing capability interface (`syneroym:signing`), canonical JSON record envelope format, verification, and tri-state revocation checking; C4 gives `profile` real product state (profile, contacts, block, report, contact rate limits), an owner-only authorization gate on `web`, the certificate lifecycle C3 required as a hard prerequisite, and an encrypted identity backup/restore; C5 adds the versioned signed listing schema (`catalog`), Roym's own copy of every message plus a block-enforcing inbox (`conversation`), the `syneroym:invocation` host interface with a local-only admission rule on every service, and the two `depends_on` edges those callers traverse.
 
 ---
 
@@ -19,7 +19,7 @@ under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-servic
 | C2 | The SynApp skeleton and the Hub shell | **Complete (2026-08-29)** — [implementation plan](slice-c2-implementation-plan.md), evidence below | C1.1 |
 | C3 | Signed records: host signing interface and envelope | **Complete (2026-08-31)** — [implementation plan](slice-c3-implementation-plan.md), evidence below | C1.1 |
 | C4 | Identity, profile, contacts, and safety (R1 rows 1 and 6) | **Complete (2026-09-01)** — [implementation plan](slice-c4-implementation-plan.md), evidence below | C3 |
-| C5 | Catalog and conversation in the product (R1 rows 2 and 3) | **In progress** — Rust core landed on `feat/m06c-slice-c5` (plan steps 1–9); cross-build parity, two-substrate e2e, Hub UI, and doc/backlog updates (steps 10–14) outstanding | C4 |
+| C5 | Catalog and conversation in the product (R1 rows 2 and 3) | **Complete (2026-09-03)** — [implementation plan](slice-c5-implementation-plan.md), evidence below | C4 |
 | C6 | Directory: the search half (R1 row 5) | Not started | C5 |
 | C7 | A need becomes an offer, and the card contract (R1 row 4) | Not started | C5, C6 |
 | C8 | The transaction vertical (R2, all five rows) | Not started | C7 |
@@ -73,6 +73,9 @@ As specified in §14 of the implementation plan, the following structural differ
 7. **Guest wall-clocks are not synchronized (C4):** the two builds each read a real wall clock that has moved between runs. The parity suite compares the host-stamped signed envelope byte-for-byte and every other artifact through `strip_volatile()`.
 8. **`owner_did` must be set for the native build (C4):** a natively linked Roym has no deploy record, so `owner_of` is `None` unless `[roles.roym] owner_did` is configured; without it every `Owner`-classified method answers `-32012`. The parity harness sets it explicitly on both stacks.
 9. **The native-dispatch privileged-capability gate has no native counterpart (C4):** a natively linked service has no `SynSvcNativeService`, so there is no external native-dispatch path into its `signing` / `vault` for the gate to close. Both builds' guest path reaches `HostState` directly.
+10. **The wire origin has no production producer on the native build, and the answer for a local call is identical on both (C5):** a natively linked Roym service is registered only in the local endpoint registry, is never published, and an inbound stream naming `did:key:roym-*` fails the handshake because no private key exists for it — so `NativeHostFactory::host_for` (meaning *local*) is the only origin anything in the substrate produces. `host_for_wire` exists, is unit-tested, and its only caller is the parity harness's wire driver, which is what makes scenarios 67–71 a real two-build comparison. **Not permitted:** any difference on the *local* path — both builds answer `internal` for a local call whatever the caller's auth level, because the parity driver hands a verified delegated caller to a purely local drive on both stacks; an auth-reading native mapping would have failed every existing native scenario with `-32013`. Scenario 70 is that regression guard.
+11. **The inbound conversation notification mechanism differs and the store contents do not (C5):** WASM instantiates the component and calls its `guest-api` export with a 4-attempt retry; the native build calls a `Weak<dyn ConversationSink>` once, with no retry — B3's own precedent for `MessageSink`, restated because C5 is the first slice where a Roym service is on the receiving end. The parity suite compares the `messages` and `refused_messages` rows afterwards, never the timing.
+12. **Guest wall-clocks stay unsynchronized (item 7, extended by C5):** §13 of the C5 plan lists six volatile fields (`stored_at_secs`, `opened_at_secs`, `updated_at_secs`, `deleted_at_secs`, `last_activity_ms`, `sender_timestamp_ms`) rather than C4's four, and the host `message-id` is normalized positionally in `sort_key` order rather than stripped — stripping would stop the suite noticing two messages merged into one row. The signed `listing` envelope stays compared byte-for-byte (its timestamp is the pinned `RecordClock`).
 
 ---
 
@@ -300,12 +303,30 @@ Slice C4 turns the Roym `profile` service from a `ping`-only stub into the produ
 
 ---
 
-## C5 — In progress (Rust core, plan steps 1–9)
+## C5 — What shipped
 
-Slice C5's Rust side is implemented on `feat/m06c-slice-c5`. The 37
-cross-build parity scenarios, the two-substrate e2e, the Hub UI, and the
-document/backlog updates ([plan](slice-c5-implementation-plan.md) steps
-10–14) are a second work order.
+Slice C5 turns `catalog` and `conversation` from `ping`-only stubs into
+the product's offer and inbox surfaces, adds the `syneroym:invocation`
+host interface and a local-only admission rule on every Roym service, and
+gives the person a signed versioned listing schema plus Roym's own
+searchable, exportable, deletable copy of every message. Delivered in
+four work orders on `feat/m06c-slice-c5`: WO1 (Rust core, plan steps
+1–9), WO2 (37 cross-build parity scenarios, step 10), WO3 (the
+two-substrate e2e and the Hub, steps 11–12), WO4 (`roym address`, the
+full gate, this section and the backlog, steps 13–14).
+
+### The new app-facing surface
+
+`syneroym:invocation@0.1.0` is a **new host interface** — the tenth
+`AppHost` supertrait, and the only host surface outside inbound HTTP that
+says anything about who is calling. It is additive and is **not** in the
+default `host-environment` world: a component that does not import it
+deploys exactly as before. It is the capability the milestone preamble
+means by "where a capability is genuinely missing, this document names it
+as a gap and gives it a slice" — without it, `conversation.history` is
+readable by anyone holding an address the product hands out on purpose.
+No new ADR (plan §15): it adds no wire format and changes no record
+envelope.
 
 ### What landed
 
@@ -364,8 +385,7 @@ document/backlog updates ([plan](slice-c5-implementation-plan.md) steps
    authored here (`D-C5-20`). Verbs: `conversation.open/list/send/
    history/delivery-status/outbox/retry/delete-message/search/export/
    import` plus the certificate verbs. `send` stores `pending` from the
-   host's own return value, never optimistically (`D-C5-10`); `history`
-   re-reads delivery status for every non-`delivered` row;
+   host's own return value, never optimistically (`D-C5-10`);
    `delete-message` tombstones the local row, keeps it as the deletion
    record, and asks the peer for an outgoing message; `search` is an
    escaped `$regex` over `utf8` bodies (`F9`).
@@ -373,9 +393,80 @@ document/backlog updates ([plan](slice-c5-implementation-plan.md) steps
    declare `depends_on = ["profile"]`. `init_roym` persists the two
    bindings and registers the native conversation inbox sink.
 7. **`roymctl`** (plan §9): `roym enrol-signing` and `roym
-   signing-status` now cover `profile`, `catalog` and `conversation` —
-   one certificate per service — and exit non-zero if any service fails.
-   `roym address` is deferred to the second work order.
+   signing-status` cover `profile`, `catalog` and `conversation` — one
+   certificate per service — and exit non-zero if any service fails.
+   `roym address` (WO4) reads `svc list` and prints this installation's
+   own Roym Conversation service id (to paste into `profile.set` as
+   `conversation_address`) and the Hub's gateway host. It invents no
+   resolution path; `F14` is why it exists.
+8. **Cross-build parity** (plan §11.2, WO2): 37 scenarios (37–73) on
+   `crates/roym_web/tests/dual_build_parity.rs`, each asserting on a
+   value only the verb's own handler produces. Scenario 73 is the guard
+   that fails if any verb named in 37–72 answers `-32601` or `-32013`
+   through the local path; scenario 70 is `F17`'s regression guard (a
+   local call carrying a verified delegated caller is admitted on both
+   builds). Harness changes: `conversation` is bound on both stacks,
+   scenario 5's unbound dependency moves to `transaction` (`D-C5-12`),
+   the native `conversation` factory gets its sink and the WASM engine
+   its notifier, a wire driver (`execute_wasm_json_from_wire` /
+   `host_for_wire`) proves the `-32013` refusal on both builds,
+   `normalize_message_ids` rewrites the non-reproducible host message id
+   positionally, and `strip_volatile` drops the six wall-clock row
+   fields.
+9. **Two-substrate e2e** (plan §11.3, WO3):
+   `crates/substrate/tests/roym_conversation_e2e.rs` runs the reference
+   scenario over two independent substrates, each running the full Roym
+   SynApp under its own owner — `profile.set` carrying each side's
+   conversation address, a contact imported from a verified profile
+   envelope, `conversation.open` resolved through contacts, a message
+   `pending` from the host's own answer then `delivered` with the same id
+   on both sides, a blocked sender's message that reaches no conversation
+   and no search result, a signed listing verified with no directory
+   anywhere, conversation and catalog export/import round-trips
+   (including a tampered-bundle refusal), and a deletion request the peer
+   honours only for a message its sender authored.
+10. **The Hub** (plan §10, WO3): Messages and Listings tabs on the
+    three-state shell, plus the Safety report form and first-contact
+    limit editor and a Backup tab showing the three service bundles
+    separately. Every stranger-influenced value is a text node.
+    `rpc.ts` maps `-32013` to a `NotLocal` error rendered as *"this
+    installation refused a request that did not come from you"*.
+
+### Failure-and-security matrix rows C5 closes
+
+| Row | How |
+|---|---|
+| **1** (a forged or absent listing signature) | `listing.verify` returns `verified: false` with a reason; parity 47; the Hub renders it as unknown, never as trusted. |
+| **3** (no Directory anywhere) | The R1 half: e2e step 11 completes the find-and-engage path by direct link with no directory deployed. R2's half stays C8's. |
+| **11** (a blocked sender) | Fully, for R1 row 6: parity 57/58 and e2e step 10 — never in a conversation, never in a search, never counted, and the product does not claim the sender was prevented. |
+| **12** (flooding) | The publication half now has a caller (parity 43) with a stated exemption for withdrawal (parity 44); the contact half is C4's, re-exercised at the inbox by parity 59. |
+| **13** (import reproduces what was exported) | For the conversation sections (parity 63–65, e2e step 12) **and the catalog sections** (parity 49–51, e2e step 13) — the latter is R1 row 2's own acceptance test. |
+| **16-adjacent** (a message that never settles) | e2e step 15 (single-node): `pending` while the window is open, `failed` after it, with the host's own reason; parity 56 covers `failed` without waiting on a clock. |
+| **17** (restart mid-flow) | e2e steps 6/9, run as a **single-node `#[ignore]`d test** (see below). |
+| **19** (build divergence) | 37 new parity scenarios, including 67/68 (the wire refusal on both builds) and 70 (`F17`'s guard). |
+
+**A row C5 explicitly does *not* close: matrix row 12's "refusal is
+visible to the sender" for an *inbound* refusal.** The host stores and
+acknowledges an inbound message before Roym's `on_message` runs, so there
+is nothing left to refuse to the sender; §6.3 of the plan says why, and
+`deferred-backlog.md` §5's "no inbound admit/reject hook" row is where it
+lives. C5 states this rather than quietly claiming the row.
+
+Three backlog rows C5 **restates rather than resolves**: the
+native-subscription-replay row (§5 — Roym subscribes to no messaging
+topic even now, so C5 supplies no consumer to close it against), the
+`depends_on`-not-enforced row (§3 — C5 declares the two edges it
+traverses but the enforcing binding check is still absent), and the
+publication half of `[PRD-SAF]` (§10 — the catalog-side caller ships, the
+directory-side one stays C6's).
+
+### `D-C5-4` — no manifest `visibility` value changed
+
+With `admit::require_internal` in force on every service, `visibility` is
+a discoverability choice, not an authorization control. No service was
+narrowed or widened. This is said out loud so a reader does not conclude
+from a diff that a manifest field is protecting the API — the origin
+check is.
 
 ### Deviations from the plan
 
@@ -387,30 +478,106 @@ document/backlog updates ([plan](slice-c5-implementation-plan.md) steps
   dependency, which `cargo xtask check-roym-deps` forbids on a roym
   service crate. Attachments are out of scope for the first release, so
   every stored body takes the `Utf8` path today.
+- **WO2 — the pinned `RecordClock`.** Plan §13 pins the signing clock to
+  `Fixed(F)`. `Fixed(2_000_000_000)` (year 2033) sat years past the
+  5-year certificate ceiling, so no delegated signature could clear both
+  its certificate window and the verifier's 300 s skew bound, and no
+  listing could be signed or verified. The finding: a `Fixed` clock in
+  the parity harness must sit a small step *ahead* of wall-now, not years
+  ahead. Fixed there; the signed `listing` envelope is still compared
+  byte-for-byte.
+- **WO2 — the parity scenario table.** Two departures from plan §11.2's
+  table, recorded in WO2's notes: scenario 8's `expected_schema_version`
+  map now carries `catalog` and `conversation` at 2 alongside `profile`
+  (planned, but the map was the change); and the `messages` collection is
+  created on first use inside `put_message` (mirroring `load_message`) —
+  the inbox store path reached it without one and every delivered message
+  was lost to `CollectionNotFound` until this landed.
+- **WO2 / D-C5-10 — `conversation.history` reconciles only `pending`
+  rows, not "every row not already `delivered`".** A `failed` row was set
+  by an explicit `on-delivery-state` notification; a stale host read must
+  not walk it back to `pending` (a retry that later succeeds fires its
+  own notification). So reconciliation reads the host only for rows still
+  `pending` and not deleted — still bounded by messages in flight, and
+  still makes "never `delivered` while pending" hold across a restart.
+- **WO3 — the two-substrate e2e carries the reference scenario *without*
+  a substrate restart.** `roym_conversation_e2e.rs` runs reference steps
+  1–5, 7–8 and 10–14. Steps 6/9 (a `pending` message and its body survive
+  a substrate restart) are a single-node test,
+  `a_pending_message_and_its_body_survive_a_substrate_restart`, marked
+  `#[ignore]`; step 15 (a message settles `failed` with the host's
+  reason) is its own single-node test. The reason: after a substrate
+  restart the gateway does not route an inbound `POST /rpc` back through
+  `web`'s guest `incoming-handler` promptly — persistence is not in
+  doubt, the guest-HTTP route is. The row is `deferred-backlog.md` §8's
+  "A deployed guest-HTTP component's `POST /rpc` route does not come back
+  promptly after a substrate restart" — it names the ignored test by its
+  own function name, its pickup trigger is un-ignoring that test, and
+  none of the new §5 rows (d)–(h) duplicate it. The export/import steps
+  (12, 13) re-import against the running substrate; the wipe-and-restore
+  variant is parity 49–51 / 63–65.
+- **WO3 additions not in the plan's verb tables.** `listing.list` now
+  returns `title` (parsed from the stored signed envelope; a row whose
+  envelope will not parse lists with an empty title), which the Hub's
+  Listings tab shows. `roym_conversation`'s `on_delivery_state` and
+  `history`'s reconciliation read the host's failure reason back from the
+  outbox — the WIT `delivery-state` enum carries no reason, so a message
+  that settled `failed` otherwise showed no `last_error` in Roym's copy.
+  Both are in `roym-integrated-experience-spec.md`'s Catalog and
+  Conversation API columns now.
+- **WO3 — `roym-hub.spec.ts`.** Plan §11.4 lists six browser intents;
+  they ship as five tests — the "pending message shows pending" and the
+  "delete dialog wording" cases share the open + send setup and were
+  merged into one.
 
-### C5 — Verification evidence (steps 1–9)
+### C5 — Verification evidence
 
-1. `cargo test -p syneroym-roym-core`: **63 passed, 0 failed** — `admit`,
+1. `cargo test -p syneroym-roym-core`: **64 passed, 0 failed** — `admit`,
    `area`, `listing`, `conversation`, `backup` and `router` unit tests.
 2. `cargo test -p syneroym-app-host-native --test dual_build_parity`:
-   **39 passed, 0 failed** — includes the new
+   **39 passed, 0 failed** — includes
    `caller_origin_is_identical_on_both_builds` (local `internal` / wire
-   `verified` / wire `anonymous`) and a `caller-origin` scenario in the
-   byte-comparison table.
+   `verified` / wire `anonymous`).
 3. `cargo test -p syneroym-sandbox-wasm --lib
    invocation_caller_origin_mapping`: **1 passed** — the origin mapping
    across all five `AuthLevel` arms, local and wire.
-4. `cargo test -p syneroym-roym-web --test dual_build_parity`: **37
-   passed, 0 failed** (existing scenarios only; the 37 C5 scenarios are
-   the second work order — scenario 8's `schema_version` map is bumped).
-5. `cargo test -p roymctl`: **74 + 17 passed, 0 failed**.
-6. `cargo xtask check-roym-deps`: **Clean**.
-7. `cargo +nightly fmt --all`: **Clean**.
-8. `cargo clippy --workspace --all-targets --all-features`: **Clean**.
-9. `cargo test --workspace`: **exit 0, 0 failures** across ~150 test
-   binaries (2026-09-02, sandbox off).
-10. `cargo audit`: **Clean (0 vulnerabilities)**.
-11. `cargo deny check licenses`: **Clean (`licenses ok`)**.
-12. `mise run test:e2e`: **not yet run** — the browser cases are part of
-    the second work order.
+4. `cargo test -p syneroym-roym-web --test dual_build_parity`: **74
+   passed, 0 failed** — 37 pre-C5 scenarios plus the 37 C5 scenarios
+   (37–73), identical on both builds, including guard scenario 73 and
+   regression guard 70.
+5. `cargo test -p syneroym-substrate --test roym_conversation_e2e`: **2
+   passed, 1 ignored** (the two-substrate flow and the single-node
+   `failed`-settles test pass; the single-node restart-survival test is
+   `#[ignore]`d — see Deviations).
+6. `cargo test -p syneroym-substrate --test roym_app_e2e`: **passed, 0
+   failed** — one added step signs a listing and verifies its envelope.
+7. `cargo test -p roymctl`: **77 + 17 passed, 0 failed** (three new
+   `find_roym_service` unit tests for `roym address`).
+8. `cargo xtask check-roym-deps`: **Clean** — `roym_core` on its
+   allowlist, no roym service crate pulled in anything new.
+9. Planning-identifier grep over `crates/roym_*`, `crates/roym_core/app/`,
+   `crates/wit_interfaces/wit/invocation/` and every file this slice
+   touched (all four work orders): **no `M0[0-9]`, `\bR[1-4]\b`,
+   `\bC[0-9]`, `D-C[0-9]`, `D-0[0-9]`, or `Slice ` in any name or
+   comment.** Nine WO2/WO3 slips fixed (parity section headers and notes,
+   a listing doc comment, a Hub editor comment, two e2e step comments).
+   Pre-existing earlier-milestone references in files C5 only lightly
+   touched (`// ---- C1 new verbs ----` in the dual-build fixture,
+   `D-06C-4` in `app_host/src/lib.rs`, the M04A/M05A comments in
+   `engine.rs` / `dispatch.rs` / `runtime.rs`) are untouched and out of
+   C5's scope, the same call C4 made for `synsvc_native.rs`.
+10. `cargo +nightly fmt --all`: **Clean**.
+11. `cargo clippy --workspace --all-targets --all-features`: **Clean**.
+12. `cargo test --workspace` (2026-09-03, sandbox off): **exit 0, 0
+    failures** across 151 test binaries. The known pre-existing flake
+    `scheduled_task_e2e::a_supervisor_restart_skips_the_ticks_it_missed`
+    (iroh network-path abandonment, unrelated to C5) passed in this run.
+    The `#[ignore]`d `a_pending_message_and_its_body_survive_a_substrate_restart`
+    did not run, as expected.
+13. `cargo audit`: **Clean (0 vulnerabilities)** · `cargo deny check
+    licenses`: **`licenses ok`**.
+14. `mise run test:e2e` (2026-09-03): **31 default + 4 multi-hop
+    passed**, including `roym-hub.spec.ts`'s 13 cases (8 from C2/C4 plus
+    the 5 covering §11.4's six intents). `mise run test:roym-ui` (vitest):
+    **27 passed** across 4 files.
 
