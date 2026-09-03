@@ -82,6 +82,7 @@ async fn ensure_refused<H: AppHost>(host: &H) -> Result<(), String> {
 }
 
 async fn put_message<H: AppHost>(host: &H, row: &MessageRow) -> Result<(), String> {
+    ensure_messages(host).await?;
     let bytes = serde_json::to_vec(row).map_err(|e| e.to_string())?;
     AppDataLayer::put(
         host,
@@ -598,12 +599,15 @@ async fn history<H: AppHost>(host: &H, req: &Request) -> Response {
         Err(e) => return Response::internal_error(e),
     };
 
-    // Reconcile: re-read the host's delivery-status for every row not
-    // already Delivered and not deleted, and persist what it read. A
-    // Delivered row is terminal, so the cost is bounded by the number of
-    // messages still in flight, not by history length.
+    // Reconcile: re-read the host's delivery-status for every row still
+    // `Pending` and not deleted, and persist what it read. A `Delivered`
+    // row is terminal; a `Failed` row was told so explicitly by an
+    // `on-delivery-state` notification and must not be quietly walked
+    // back to `pending` by a stale host read -- a retry that later
+    // succeeds fires its own notification. So the cost is bounded by the
+    // number of messages still in flight, not by history length.
     for row in rows.iter_mut() {
-        if row.state != StoredState::Delivered
+        if row.state == StoredState::Pending
             && row.deleted_at_secs.is_none()
             && let Ok(live) = AppConversation::delivery_status(host, row.id.clone()).await
         {
