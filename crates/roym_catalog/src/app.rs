@@ -615,9 +615,16 @@ async fn list_listings<H: AppHost>(host: &H, req: &Request) -> Response {
         .skip(offset)
         .take(limit)
         .map(|r| {
+            // The title lives inside the signed envelope; a listing row that
+            // could not be parsed still lists, with an empty title.
+            let title = serde_json::from_str::<Envelope>(&r.envelope)
+                .ok()
+                .and_then(|e| e.payload.get("title").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_default();
             json!({
                 "listing_id": r.listing_id,
                 "slug": r.slug,
+                "title": title,
                 "status": r.status,
                 "record_id": r.record_id,
                 "updated_at_secs": r.updated_at_secs,
