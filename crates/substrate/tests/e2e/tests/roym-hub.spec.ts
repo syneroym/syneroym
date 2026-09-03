@@ -200,15 +200,161 @@ test.describe('Roym Hub', () => {
     await expect(page.locator('.safety-screen')).toContainText(`Blocked: ${spammerDid}`);
   });
 
-  test('8. backup tab: exporting app data bundle triggers download', async ({ page }) => {
+  test('8. backup tab: shows the three service bundles separately and says so', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
 
     await page.getByRole('button', { name: 'Backup' }).click();
+    await expect(page.locator('.backup-screen .bundle-row')).toHaveCount(3);
+    await expect(page.locator('.backup-separate-note')).toContainText('exported separately today');
+
+    // Each bundle exports on its own.
     const downloadPromise = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'Export App Data Bundle' }).click();
+    await page.locator('.bundle-row[data-export="conversation.export"] .bundle-export').click();
     const download = await downloadPromise;
-    expect(download.suggestedFilename()).toBe('roym-app-data-bundle.json');
+    expect(download.suggestedFilename()).toBe('roym-conversation-bundle.json');
+  });
+
+  test('9. listings tab: a listing with three blocks round-trips and the editor sends no decimal', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    // Capture the listing.set request body so we can assert it carries no
+    // decimal number -- the host refuses one before it signs.
+    const setBodies: string[] = [];
+    page.on('request', (req) => {
+      if (req.method() === 'POST' && req.url().endsWith('/rpc')) {
+        const body = req.postData() || '';
+        if (body.includes('"listing.set"')) setBodies.push(body);
+      }
+    });
+
+    await page.getByRole('button', { name: 'Listings' }).click();
+    await page.locator('.listing-title-input').fill('Hedge trimming');
+    await page.locator('.block-payment .block-enabled').check();
+    await page.locator('.payment-amount-input').fill('35.50');
+    // booking + service blocks on (their defaults are already valid)
+    await page.locator('.block-booking .block-enabled').check();
+    await page.locator('.block-service .block-enabled').check();
+
+    await page.locator('.save-listing').click();
+    await expect(page.locator('.listing-save-result')).toContainText('Saved lst_', { timeout: 15_000 });
+
+    expect(setBodies.length).toBeGreaterThan(0);
+    for (const body of setBodies) {
+      // The amount became integer minor units; no "<digit>.<digit>" anywhere.
+      expect(body).toMatch(/"amount_minor":\s*3550/);
+      expect(body).not.toMatch(/\d\.\d/);
+    }
+
+    // Reload: the listing is still there with its title and status.
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+    await page.getByRole('button', { name: 'Listings' }).click();
+    const row = page.locator('.listing-row', { hasText: 'Hedge trimming' });
+    await expect(row).toHaveCount(1);
+    await expect(row.locator('.listing-status')).toHaveText('active');
+  });
+
+  test('10. messages tab: a sent message shows pending and never "delivered" early', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await page.getByRole('button', { name: 'Messages' }).click();
+    await page.locator('.open-conversation input').fill('did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000000');
+    await page.getByRole('button', { name: 'Open conversation' }).click();
+
+    await expect(page.locator('.conversation-thread h3')).toBeVisible({ timeout: 15_000 });
+    await page.locator('.compose-input').fill('hello nobody');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+
+    const state = page.locator('.thread-messages .message .message-state').first();
+    await expect(state).toHaveText('pending', { timeout: 15_000 });
+
+    // The word "delivered" must not appear in the thread while it is pending.
+    const threadText = await page.locator('.thread-messages').innerText();
+    expect(threadText.toLowerCase()).not.toContain('delivered');
+  });
+
+  test('11. messages tab: the delete dialog shows the note and claims nothing about the peer copy', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await page.getByRole('button', { name: 'Messages' }).click();
+    await page.locator('.open-conversation input').fill('did:key:z6MkhubE2eDeleteDialogPeer0000000000000000000000');
+    await page.getByRole('button', { name: 'Open conversation' }).click();
+    await expect(page.locator('.conversation-thread h3')).toBeVisible({ timeout: 15_000 });
+    await page.locator('.compose-input').fill('please forget this');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(page.locator('.thread-messages .message').first()).toBeVisible({ timeout: 15_000 });
+
+    await page.locator('.thread-messages .message .delete-message').first().click();
+    const note = await page.locator('.delete-dialog .delete-note').innerText();
+    expect(note).toBe(
+      'The local copy is removed and a deletion record kept. A request to ' +
+        'delete it was sent to the other side; whether their client honours it ' +
+        "is theirs to decide, and this cannot check. This installation's own " +
+        'message store still holds what it received.',
+    );
+    // The dialog must not claim the other party's copy is removed.
+    expect(note.toLowerCase()).not.toContain('their copy is removed');
+    expect(note.toLowerCase()).not.toContain('deleted for everyone');
+    // The "also ask them" choice is present because this is a message we sent.
+    await expect(page.locator('.delete-dialog .ask-peer')).toBeVisible();
+  });
+
+  test('12. listings tab: a malicious listing title renders as literal text, no element, no request', async ({ page }) => {
+    const externalRequests: string[] = [];
+    const hubOrigin = new URL(HUB_URL).origin;
+    const authOrigin = 'http://auth.localhost:7660';
+    page.on('request', (req) => {
+      const url = req.url();
+      if (!url.startsWith(hubOrigin) && !url.startsWith(authOrigin)) externalRequests.push(url);
+    });
+
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await page.getByRole('button', { name: 'Listings' }).click();
+    const evil = '<img src=x onerror=window.listingEvil=true>';
+    await page.locator('.listing-title-input').fill(`${evil} cleaning`);
+    await page.locator('.block-payment .block-enabled').check();
+    await page.locator('.payment-amount-input').fill('10');
+    await page.locator('.save-listing').click();
+    await expect(page.locator('.listing-save-result')).toContainText('Saved lst_', { timeout: 15_000 });
+
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+    await page.getByRole('button', { name: 'Listings' }).click();
+
+    const evilRow = page.locator('.listing-row', { hasText: '<img src=x' });
+    await expect(evilRow).toHaveCount(1);
+    expect(await evilRow.locator('.listing-title img').count()).toBe(0);
+    expect(await page.evaluate(() => (window as any).listingEvil)).toBeUndefined();
+    expect(externalRequests).toEqual([]);
+  });
+
+  test('13. safety tab: files a report and edits the first-contact limit', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await page.getByRole('button', { name: 'Safety' }).click();
+
+    await page.locator('.report-form input').fill('did:key:z6MkhubE2eReportedPerson000000000000000000000000');
+    await page.locator('.report-form select').nth(1).selectOption('harassment');
+    await page.getByRole('button', { name: 'File report' }).click();
+    await expect(page.locator('.report-status')).toContainText('Recorded rep_', { timeout: 15_000 });
+    await expect(page.locator('.report-list')).toContainText('harassment');
+
+    await page.locator('.contact-limit-editor input').nth(0).fill('7200');
+    await page.locator('.contact-limit-editor input').nth(1).fill('4');
+    await page.getByRole('button', { name: 'Save limit' }).click();
+    await expect(page.locator('.contact-limit-status')).toHaveText('Saved.', { timeout: 15_000 });
   });
 });
