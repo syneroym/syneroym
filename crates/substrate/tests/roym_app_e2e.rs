@@ -481,7 +481,8 @@ async fn test_roym_app_e2e_lifecycle() {
     .await;
     assert_eq!(install["result"]["master_did"], alice_did, "install: {install}");
 
-    let conv_address = format!("{catalog_did}"); // any resolvable string; verify only checks the payload
+    // Any resolvable string; `listing.verify` only checks the payload.
+    let conv_address = catalog_did.to_string();
     let set = rpc(
         "listing.set",
         json!({
