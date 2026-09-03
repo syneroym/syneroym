@@ -69,21 +69,26 @@ export async function renderMessages(container: HTMLElement) {
   const openRow = document.createElement("div");
   openRow.className = "open-conversation";
   const openInput = document.createElement("input");
-  openInput.placeholder = "Person DID or conversation address";
+  openInput.placeholder = "A conversation address (from a listing or a contact)";
+  openInput.className = "open-conversation-input";
   const openBtn = text("button", "Open conversation", "button") as HTMLButtonElement;
   const openErr = text("p", "", "open-error");
   openBtn.onclick = async () => {
     openErr.textContent = "";
     const v = openInput.value.trim();
     if (!v) return;
+    openBtn.disabled = true;
     try {
-      const params = v.startsWith("did:key:") ? { person_did: v } : { address: v };
-      const res = await call<{ conversation_id: string }>("conversation.open", params);
+      // The box takes a conversation-service address (the no-directory
+      // engage path). Resolving a person to their address is Contacts'
+      // job; either way the service accepts `address` verbatim.
+      const res = await call<{ conversation_id: string }>("conversation.open", { address: v });
       openInput.value = "";
       await reloadList(res.conversation_id);
     } catch (err) {
       openErr.textContent = `Could not open: ${errText(err)}`;
     }
+    openBtn.disabled = false;
   };
   openRow.append(openInput, openBtn, openErr);
   listPane.appendChild(openRow);

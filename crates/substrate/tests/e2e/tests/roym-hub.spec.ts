@@ -194,7 +194,7 @@ test.describe('Roym Hub', () => {
 
     await page.getByRole('button', { name: 'Safety' }).click();
     const spammerDid = 'did:key:h7wyspammerdid123456789012345678901234567890';
-    await page.locator('.safety-screen input').fill(spammerDid);
+    await page.locator('.safety-screen .block-input').fill(spammerDid);
     await page.getByRole('button', { name: 'Block' }).click();
 
     await expect(page.locator('.safety-screen')).toContainText(`Blocked: ${spammerDid}`);

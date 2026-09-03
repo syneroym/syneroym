@@ -24,6 +24,7 @@ export async function renderSafety(container: HTMLElement) {
   }
 
   const blockInput = document.createElement("input");
+  blockInput.className = "block-input";
   blockInput.placeholder = "Person DID or Address to block";
   box.appendChild(blockInput);
 

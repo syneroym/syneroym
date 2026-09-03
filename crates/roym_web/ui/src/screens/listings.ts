@@ -75,6 +75,10 @@ function block(name: string): { details: HTMLDetailsElement; enabled: HTMLInputE
   enabled.type = "checkbox";
   enabled.className = "block-enabled";
   enabled.onclick = (e) => e.stopPropagation();
+  // Ticking "include this block" reveals its fields; unticking collapses them.
+  enabled.onchange = () => {
+    details.open = enabled.checked;
+  };
   summary.append(enabled, text("span", name));
   details.appendChild(summary);
   const body = document.createElement("div");
