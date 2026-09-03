@@ -325,7 +325,10 @@ async fn upsert_conversation<H: AppHost>(
 }
 
 /// Called on a delivery-state transition. Updates the row's state and
-/// error, or does nothing if Roym holds no such row.
+/// error, or does nothing if Roym holds no such row. The WIT
+/// `delivery-state` carries no reason, so on a `failed` transition the
+/// host's own reason is read back from its outbox, where the failed
+/// message keeps its `last-error`.
 pub async fn on_delivery_state<H: AppHost>(
     host: &H,
     message_id: String,
@@ -333,10 +336,23 @@ pub async fn on_delivery_state<H: AppHost>(
 ) -> Result<(), String> {
     let Some(mut row) = load_message(host, &message_id).await? else { return Ok(()) };
     row.state = StoredState::from(state);
-    if row.state != StoredState::Failed {
-        row.last_error = None;
+    match row.state {
+        StoredState::Failed => {
+            row.last_error = host_last_error(host, &message_id).await;
+        }
+        _ => row.last_error = None,
     }
     put_message(host, &row).await
+}
+
+/// The host's own reason for a message's current state, from its outbox.
+async fn host_last_error<H: AppHost>(host: &H, message_id: &str) -> Option<String> {
+    AppConversation::outbox(host)
+        .await
+        .ok()?
+        .into_iter()
+        .find(|m| m.id == message_id)
+        .and_then(|m| m.last_error)
 }
 
 pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
@@ -614,6 +630,9 @@ async fn history<H: AppHost>(host: &H, req: &Request) -> Response {
             let live = StoredState::from(live);
             if live != row.state {
                 row.state = live;
+                if live == StoredState::Failed {
+                    row.last_error = host_last_error(host, &row.id).await;
+                }
                 let _ = put_message(host, row).await;
             }
         }
