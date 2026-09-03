@@ -443,10 +443,10 @@ async fn test_roym_app_e2e_lifecycle() {
     assert_eq!(anon_json["result"]["auth"], "self-asserted");
     assert_ne!(anon_json["result"]["did"], alice_did);
 
-    // 7. A signed listing round-trips through `listing.verify`. Enrol the
-    //    catalog's record-signing certificate the way `roym enrol-signing`
-    //    does, sign one listing, read its envelope back, and verify it
-    //    locally -- the "verify, never the directory" rule as a verb.
+    // 7. A signed listing round-trips through `listing.verify`. Enrol the catalog's
+    //    record-signing certificate the way `roym enrol-signing` does, sign one
+    //    listing, read its envelope back, and verify it locally -- the "verify,
+    //    never the directory" rule as a verb.
     let rpc = async |method: &str, params: Value| -> Value {
         client
             .post(format!("{gateway_url}/rpc"))
@@ -467,9 +467,13 @@ async fn test_roym_app_e2e_lifecycle() {
     assert!(signing_did.starts_with("did:key:"), "catalog signing-status: {catalog_status}");
     let signing_pubkey = substrate::resolve_did_key(&signing_did).unwrap();
     let alice_identity = Identity::from_bytes(&ctx.owner.to_bytes());
-    let cert =
-        DelegationCertificate::issue(&alice_identity, signing_pubkey, 24 * 3600, SCOPE_RECORD_SIGNING.to_string())
-            .unwrap();
+    let cert = DelegationCertificate::issue(
+        &alice_identity,
+        signing_pubkey,
+        24 * 3600,
+        SCOPE_RECORD_SIGNING.to_string(),
+    )
+    .unwrap();
     let install = rpc(
         "catalog.install-signing-certificate",
         json!({ "certificate": cert.to_json().unwrap() }),
