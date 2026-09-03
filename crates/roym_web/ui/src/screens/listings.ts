@@ -9,6 +9,7 @@ import { call, RpcError } from "../rpc";
 interface ListingListRow {
   listing_id: string;
   slug: string;
+  title: string;
   status: string;
   record_id: string;
   updated_at_secs: number;
@@ -125,6 +126,7 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
   wrap.className = "listing-row";
   wrap.dataset.status = row.status;
 
+  wrap.appendChild(text("span", row.title || row.slug, "listing-title"));
   wrap.appendChild(text("span", row.slug, "listing-slug"));
   wrap.appendChild(text("span", row.status, `listing-status status-${row.status}`));
   wrap.appendChild(text("span", `v${row.version_count}`, "listing-version"));
@@ -213,6 +215,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   // --- payment ---
   const payment = block("payment");
   const payCurrency = input("currency (ISO-4217, e.g. EUR)", "EUR");
+  payCurrency.className = "payment-currency-input";
   const payModel = select(["per-hour", "fixed", "per-unit", "quote-only"], "per-hour");
   const payAmount = input("amount, e.g. 35.50");
   payAmount.className = "payment-amount-input";
