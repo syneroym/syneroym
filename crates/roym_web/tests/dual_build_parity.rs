@@ -76,7 +76,7 @@ fn strip_volatile(val: &mut Value) {
             map.remove("at_secs");
             map.remove("since_secs");
             map.remove("produced_at_secs");
-            // C5: rows Roym writes carry the host's own wall clock at write
+            // Rows Roym writes carry the host's own wall clock at write
             // time (stored/opened/updated/deleted seconds) and the host's
             // millisecond clock at send time (activity / sender timestamp),
             // neither of which is the pinned signing clock. The signed
@@ -809,9 +809,9 @@ async fn harness() -> Harness {
     let app_instance = AppInstanceId::new("roym");
     let wasm_inventory = Arc::new(StaticInventory::new());
     // `transaction` is left out of web's topology deliberately: scenario 5
-    // needs a genuinely unbound dependency, and C5 now binds `conversation`
-    // (the inbox sink and its own verbs). `transaction` has no verbs until a
-    // later slice, so nothing else needs it bound.
+    // needs a genuinely unbound dependency, and `conversation` is now bound
+    // (the inbox sink and its own verbs). `transaction` has no verbs yet, so
+    // nothing else needs it bound.
     for svc in services::SIBLINGS.into_iter().filter(|s| s.name != "transaction") {
         let svc_did = did_for_service(svc.name);
         wasm_inventory.register(
@@ -1299,7 +1299,7 @@ async fn scenario_8_status_on_all_six_services() {
         assert_eq!(wasm_status, native_status, "status mismatch on service {}", svc.name);
         let val: Value = serde_json::from_str(&wasm_status).unwrap();
         assert_eq!(val["service"], svc.name);
-        // profile (C4), catalog and conversation (C5) carry real state.
+        // profile, catalog and conversation carry real state now.
         let expected_schema_version =
             if matches!(svc.name, "profile" | "catalog" | "conversation") { 2 } else { 1 };
         assert_eq!(val["schema_version"], expected_schema_version);
@@ -2211,7 +2211,7 @@ async fn the_parity_comparison_detects_a_divergence() {
     }
 }
 
-// ---------------- C5: catalog and conversation ----------------
+// ---------------- catalog and conversation ----------------
 
 /// POSTs one JSON-RPC method to both stacks' `/rpc` with the owner session
 /// and returns each build's parsed response.
@@ -3131,7 +3131,8 @@ async fn scenario_73_guard_no_c5_verb_answers_method_not_found_or_wire_refused()
             .await;
     let message_id = sent["result"]["message_id"].as_str().unwrap().to_string();
 
-    // Every verb C5 added, driven once through the local path with params
+    // The guard test: every listing, availability and conversation verb,
+    // driven once through the local path with params
     // that reach the handler. A -32601 means the verb was never wired; a
     // -32013 means the local admission rule is wrong.
     let calls: Vec<(&str, Value)> = vec![

@@ -55,7 +55,7 @@ export interface ServiceFields {
 export interface LocationFields {
   where: ServiceLocationKind;
   address_disclosure: AddressDisclosure;
-  /// A single human-readable service area label. Geometry is C6's.
+  // A single human-readable service area label; geometric areas come later.
   area_label: string;
 }
 

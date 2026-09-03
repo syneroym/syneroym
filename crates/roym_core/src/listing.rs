@@ -115,8 +115,8 @@ pub enum ServiceLocation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AddressDisclosure {
-    /// The spec's C12 rule as data: the exact address is disclosed only
-    /// when it is needed.
+    /// Carries the disclosure rule as data rather than as UI convention:
+    /// the exact address is revealed only once an agreement needs it.
     OnAgreement,
     Public,
 }

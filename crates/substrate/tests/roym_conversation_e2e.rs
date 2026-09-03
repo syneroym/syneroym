@@ -912,9 +912,9 @@ async fn roym_conversation_survives_restarts_blocks_and_round_trips() {
     );
 
     // --- Step 13: B: catalog.export, then catalog.import of the same
-    //     bundle against the running substrate -> R1 row 2's acceptance
-    //     test (listing_id preserved, signature still verifying, schema
-    //     version preserved). The wipe variant is parity 49-51. ----------
+    //     bundle against the running substrate -> the listing round-trip
+    //     acceptance test (listing_id preserved, signature still verifying,
+    //     schema version preserved). The wipe variant is parity 49-51. ----
     let b_catalog_export = node_b.rpc_ok("catalog.export", json!({})).await;
     let listings_declared = b_catalog_export["manifest"]["sections"]["listings"]["schema_version"]
         .as_u64()
@@ -1071,7 +1071,7 @@ async fn a_pending_message_and_its_body_survive_a_substrate_restart() {
 /// answers goes `pending`, then `failed` once
 /// `conversation_max_pending_age_secs` passes, and `conversation.history`
 /// reports it `failed` with the host's own reason -- the `failed` third of
-/// `task.md`'s C5 scope line, watched without a real wall-clock wait.
+/// the pending / delivered / failed scope, watched with no real clock wait.
 ///
 /// Split out of the main flow because the main flow already restarts each
 /// substrate twice and a guest-HTTP component's warm-up after a restart is
