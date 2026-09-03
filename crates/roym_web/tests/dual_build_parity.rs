@@ -11,8 +11,9 @@ use std::{
 };
 
 use serde_json::{Value, json};
-use syneroym_app_host::types::http::{
-    CallerAuth, CallerIdentity, FrameKind, HttpRequest, HttpResponse,
+use syneroym_app_host::{
+    ConversationSink,
+    types::http::{CallerAuth, CallerIdentity, FrameKind, HttpRequest, HttpResponse},
 };
 use syneroym_app_host_native::{
     HttpSink, NativeAppHost, NativeHostFactory, NativeHttpAdapter, WebSocketSink,
@@ -30,7 +31,7 @@ use syneroym_core::{
     test_constants,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
-use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
+use syneroym_data_db::{SqliteStorageProvider, StorageProvider, host_store::QueryOptions};
 use syneroym_data_keystore::KeyStore;
 use syneroym_identity::{
     Identity,
@@ -46,9 +47,9 @@ use syneroym_roym_profile::native::NativeProfile;
 use syneroym_roym_transaction::native::NativeTransaction;
 use syneroym_roym_web::native::NativeWeb;
 use syneroym_rpc::{
-    AuthLevel, CallerContext, ConversationHost, JsonRpcRequest, NativeHttpService,
-    NativeInvocation, NativeService, ProxyError, ProxyRequest, ServiceProxy, SessionContext,
-    WebSocketSenders,
+    AuthLevel, CallerContext, ConversationDeliveryState, ConversationHost, ConversationMessage,
+    ConversationNotifier, JsonRpcRequest, NativeHttpService, NativeInvocation, NativeService,
+    ProxyError, ProxyRequest, ServiceProxy, SessionContext, WebSocketSenders,
 };
 use syneroym_sandbox_wasm::{AppSandboxEngine, GuestHttpOutcome};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
@@ -75,6 +76,22 @@ fn strip_volatile(val: &mut Value) {
             map.remove("at_secs");
             map.remove("since_secs");
             map.remove("produced_at_secs");
+            // C5: rows Roym writes carry the host's own wall clock at write
+            // time (stored/opened/updated/deleted seconds) and the host's
+            // millisecond clock at send time (activity / sender timestamp),
+            // neither of which is the pinned signing clock. The signed
+            // listing envelope stays compared byte for byte -- its
+            // timestamp is the pinned `RecordClock`.
+            map.remove("stored_at_secs");
+            map.remove("opened_at_secs");
+            map.remove("updated_at_secs");
+            map.remove("deleted_at_secs");
+            map.remove("last_activity_ms");
+            // A section digest folds in every row's bytes, including the
+            // wall-clock fields removed above, so it is volatile too. The
+            // raw bundle's own `check_integrity` runs before any strip.
+            map.remove("digest");
+            map.remove("sender_timestamp_ms");
             for (k, v) in map.iter_mut() {
                 if k != "envelope" && k != "delegation" {
                     strip_volatile(v);
@@ -310,6 +327,24 @@ struct Harness {
     native_factories: Vec<Arc<NativeHostFactory>>,
     wasm_proxy: Arc<TestWasmServiceProxy>,
     native_proxy: Arc<TestNativeServiceProxy>,
+    /// The one factory whose conversation sink is wired, so a test can
+    /// push an inbound message straight at Roym's own inbox on the native
+    /// stack the same way `AppSandboxEngine` does on the wasm one.
+    conv_factory: Arc<NativeHostFactory>,
+    /// The shared host `ConversationService` per stack -- a test creates a
+    /// group here (a kind the inbox refuses) or reads delivery state.
+    wasm_conversation: Arc<ConversationService>,
+    native_conversation: Arc<ConversationService>,
+    /// `host_for_wire`-built native instances: the parity harness is the
+    /// only caller of that constructor, and it is what makes the wire
+    /// refusal a real two-build comparison rather than a wasm-only one.
+    wire_native: Vec<(&'static str, Arc<dyn NativeService>)>,
+    /// Storage + keystore per stack, so a test can read a collection no
+    /// verb exposes (`refused_messages`).
+    wasm_storage: Arc<dyn StorageProvider>,
+    native_storage: Arc<dyn StorageProvider>,
+    wasm_ks: Arc<KeyStore>,
+    native_ks: Arc<KeyStore>,
     _wasm_ws_senders: Arc<WebSocketSenders>,
     _native_ws_senders: Arc<WebSocketSenders>,
     _wasm_dir: tempfile::TempDir,
@@ -319,6 +354,242 @@ struct Harness {
 impl Harness {
     fn caller(&self) -> CallerContext {
         custom_caller(&self.owner_did)
+    }
+
+    /// Drives one service's `invoke` as a call that arrived over the
+    /// network, on both builds: wasm through `execute_wasm_json_from_wire`,
+    /// native through the `host_for_wire` instance. Returns each build's
+    /// parsed roym `Response`.
+    async fn wire_invoke(&self, svc: services::Service, envelope: &Value) -> (Value, Value) {
+        let env_str = envelope.to_string();
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "invoke".to_string(),
+            params: json!([env_str]),
+            id: None,
+            idempotency_key: None,
+        };
+        let wasm = self
+            .wasm
+            .engine
+            .execute_wasm_json_from_wire(
+                &did_for_service(svc.name),
+                svc.interface,
+                &req,
+                Some(caller()),
+            )
+            .await
+            .expect("wasm wire invoke");
+        let native = self
+            .wire_native
+            .iter()
+            .find(|(n, _)| *n == svc.name)
+            .expect("wire instance")
+            .1
+            .dispatch(NativeInvocation {
+                interface: svc.interface.to_string(),
+                method: "invoke".to_string(),
+                params: json!([env_str]),
+                caller: caller(),
+            })
+            .await
+            .expect("native wire invoke");
+        (unwrap_payload(wasm), unwrap_payload(native.payload))
+    }
+
+    /// The same as `wire_invoke` but for the ungated `api.status` export.
+    async fn wire_status(&self, svc: services::Service) -> (Value, Value) {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "status".to_string(),
+            params: json!([]),
+            id: None,
+            idempotency_key: None,
+        };
+        let wasm = self
+            .wasm
+            .engine
+            .execute_wasm_json_from_wire(
+                &did_for_service(svc.name),
+                svc.interface,
+                &req,
+                Some(caller()),
+            )
+            .await
+            .expect("wasm wire status");
+        let native = self
+            .wire_native
+            .iter()
+            .find(|(n, _)| *n == svc.name)
+            .expect("wire instance")
+            .1
+            .dispatch(NativeInvocation {
+                interface: "api".to_string(),
+                method: "status".to_string(),
+                params: json!([]),
+                caller: caller(),
+            })
+            .await
+            .expect("native wire status");
+        (unwrap_payload(wasm), unwrap_payload(native.payload))
+    }
+
+    /// Drives one service's `invoke` directly (not through `web`) as a
+    /// local call carrying the verified delegated owner caller -- exactly
+    /// what `WasmDriver`/`NativeDriver` already present, isolated here so a
+    /// scenario can prove a local origin is admitted on both builds.
+    async fn local_invoke(&self, svc: services::Service, envelope: &Value) -> (Value, Value) {
+        let env_str = envelope.to_string();
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "invoke".to_string(),
+            params: json!([env_str]),
+            id: None,
+            idempotency_key: None,
+        };
+        let wasm = self
+            .wasm
+            .engine
+            .execute_wasm_json(&did_for_service(svc.name), svc.interface, &req, Some(caller()))
+            .await
+            .expect("wasm local invoke");
+        let native_svc: Arc<dyn NativeService> = match svc.name {
+            "web" => self.native.web.clone(),
+            "profile" => self.native.profile.clone(),
+            "conversation" => self.native.conversation.clone(),
+            "catalog" => self.native.catalog.clone(),
+            "transaction" => self.native.transaction.clone(),
+            "directory" => self.native.directory.clone(),
+            other => panic!("unknown service {other}"),
+        };
+        let native = native_svc
+            .dispatch(NativeInvocation {
+                interface: svc.interface.to_string(),
+                method: "invoke".to_string(),
+                params: json!([env_str]),
+                caller: caller(),
+            })
+            .await
+            .expect("native local invoke");
+        (unwrap_payload(wasm), unwrap_payload(native.payload))
+    }
+
+    /// Pushes one inbound message at Roym's own inbox on the chosen stack,
+    /// the same entry point `ConversationService`'s delivery worker uses.
+    async fn deliver(&self, wasm: bool, msg: ConversationMessage) {
+        let conv_id = did_for_service("conversation");
+        if wasm {
+            ConversationNotifier::notify_message(&*self.wasm.engine, &conv_id, msg).await;
+        } else {
+            ConversationNotifier::notify_message(&*self.conv_factory, &conv_id, msg).await;
+        }
+    }
+
+    async fn notify_state(&self, wasm: bool, message_id: &str, state: ConversationDeliveryState) {
+        let conv_id = did_for_service("conversation");
+        if wasm {
+            ConversationNotifier::notify_delivery_state(
+                &*self.wasm.engine,
+                &conv_id,
+                message_id.to_string(),
+                state,
+            )
+            .await;
+        } else {
+            ConversationNotifier::notify_delivery_state(
+                &*self.conv_factory,
+                &conv_id,
+                message_id.to_string(),
+                state,
+            )
+            .await;
+        }
+    }
+
+    /// Reads every row of a `conversation`-service collection no verb
+    /// exposes (`refused_messages`), on the chosen stack.
+    async fn conv_rows(&self, wasm: bool, collection: &str) -> Vec<Value> {
+        let (storage, ks) = if wasm {
+            (&self.wasm_storage, &self.wasm_ks)
+        } else {
+            (&self.native_storage, &self.native_ks)
+        };
+        let db = storage
+            .open_service_db(&did_for_service("conversation"), ks)
+            .await
+            .expect("open conversation db");
+        let opts = QueryOptions { filter: None, limit: Some(500), cursor: None };
+        let page = match db.query(collection, &opts, None).await {
+            Ok(p) => p,
+            // A collection the inbox never created yet is "no rows", not a
+            // failure.
+            Err(_) => return Vec::new(),
+        };
+        page.value
+            .records
+            .into_iter()
+            .filter_map(|r| serde_json::from_slice::<Value>(&r.payload).ok())
+            .collect()
+    }
+}
+
+/// The roym services return their JSON-RPC response as a JSON string;
+/// unwrap that one level so a scenario compares structured values.
+fn unwrap_payload(v: Value) -> Value {
+    match v {
+        Value::String(s) => serde_json::from_str(&s).unwrap_or(Value::String(s)),
+        other => other,
+    }
+}
+
+/// Replaces every host message id with `<msg:N>` -- N being the row's
+/// position once `messages` / `matches` rows are in their own sort order,
+/// which the service already returns them in. Host message ids fold in a
+/// random nonce, so they differ between the two stacks; a positional
+/// rewrite keeps "two messages merged into one row" detectable where a
+/// blanket strip would hide it. Returns the count of distinct ids mapped.
+fn normalize_message_ids(val: &mut Value) -> usize {
+    let mut order: Vec<String> = Vec::new();
+    collect_ordered_ids(val, &mut order);
+    let map: std::collections::HashMap<String, String> =
+        order.iter().enumerate().map(|(i, id)| (id.clone(), format!("<msg:{i}>"))).collect();
+    rewrite_ids(val, &map);
+    map.len()
+}
+
+fn collect_ordered_ids(val: &Value, out: &mut Vec<String>) {
+    match val {
+        Value::Object(map) => {
+            for (k, v) in map {
+                if (k == "messages" || k == "matches")
+                    && let Value::Array(rows) = v
+                {
+                    for row in rows {
+                        if let Some(id) = row.get("id").and_then(Value::as_str)
+                            && !out.iter().any(|e| e == id)
+                        {
+                            out.push(id.to_string());
+                        }
+                    }
+                }
+                collect_ordered_ids(v, out);
+            }
+        }
+        Value::Array(arr) => arr.iter().for_each(|v| collect_ordered_ids(v, out)),
+        _ => {}
+    }
+}
+
+fn rewrite_ids(val: &mut Value, map: &std::collections::HashMap<String, String>) {
+    match val {
+        Value::Object(m) => m.values_mut().for_each(|v| rewrite_ids(v, map)),
+        Value::Array(a) => a.iter_mut().for_each(|v| rewrite_ids(v, map)),
+        Value::String(s) => {
+            if let Some(replacement) = map.get(s) {
+                *s = replacement.clone();
+            }
+        }
+        _ => {}
     }
 }
 
@@ -537,10 +808,11 @@ async fn harness() -> Harness {
 
     let app_instance = AppInstanceId::new("roym");
     let wasm_inventory = Arc::new(StaticInventory::new());
-    // `conversation` is left out of web's topology deliberately: scenario 5
-    // needs a real unbound dependency, and every other scenario only
-    // exercises services this loop does bind.
-    for svc in services::SIBLINGS.into_iter().filter(|s| s.name != "conversation") {
+    // `transaction` is left out of web's topology deliberately: scenario 5
+    // needs a genuinely unbound dependency, and C5 now binds `conversation`
+    // (the inbox sink and its own verbs). `transaction` has no verbs until a
+    // later slice, so nothing else needs it bound.
+    for svc in services::SIBLINGS.into_iter().filter(|s| s.name != "transaction") {
         let svc_did = did_for_service(svc.name);
         wasm_inventory.register(
             TopologyKey::local(app_instance.clone(), LogicalServiceName::new(svc.name)),
@@ -558,7 +830,17 @@ async fn harness() -> Harness {
     let owner = owner_identity();
     let owner_did = owner_did();
     let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
-    let fixed_clock = syneroym_core::record_signer::RecordClock::Fixed(2_000_000_000);
+    // Pinned so the two stacks stamp every envelope with the same second
+    // and compare byte for byte. The value has to clear two windows at
+    // once: a delegated record must be dated at or after its certificate's
+    // own `issued_at` (the certificate is minted a few seconds into each
+    // scenario, after this harness is built), and on import a listing is
+    // re-verified against the verifier's wall clock, which rejects a record
+    // more than `max_clock_skew_secs` (300s) in the future. A small step
+    // ahead of "now" satisfies both.
+    let wall_now =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let fixed_clock = syneroym_core::record_signer::RecordClock::Fixed(wall_now + 240);
 
     let wasm_resolver = Arc::new(LogicalResolver::new(wasm_inventory));
     for svc in services::ALL {
@@ -577,8 +859,8 @@ async fn harness() -> Harness {
         AppSandboxEngine::init(
             &config,
             vec![],
-            wasm_ks,
-            wasm_storage,
+            wasm_ks.clone(),
+            wasm_storage.clone(),
             wasm_blobs,
             wasm_mqtt,
             wasm_reg.clone(),
@@ -594,6 +876,10 @@ async fn harness() -> Harness {
         .conversation
         .set(Arc::downgrade(&wasm_conversation) as Weak<dyn ConversationHost>)
         .expect("conversation set once");
+    // The wasm delivery path: `ConversationService` wakes the engine, which
+    // invokes the deployed conversation component's `guest-api` export. The
+    // native side registers its own notifier in `NativeHostFactory::new`.
+    wasm_conversation.set_notifier(Arc::downgrade(&wasm_engine) as Weak<dyn ConversationNotifier>);
 
     let wasm_record_signer = syneroym_core::record_signer::NodeRecordSigner::with_clock(
         node_identity.clone(),
@@ -631,7 +917,7 @@ async fn harness() -> Harness {
     let native_ws_senders = WebSocketSenders::new();
 
     let native_inventory = Arc::new(StaticInventory::new());
-    for svc in services::SIBLINGS.into_iter().filter(|s| s.name != "conversation") {
+    for svc in services::SIBLINGS.into_iter().filter(|s| s.name != "transaction") {
         let svc_did = did_for_service(svc.name);
         native_inventory.register(
             TopologyKey::local(app_instance.clone(), LogicalServiceName::new(svc.name)),
@@ -718,6 +1004,65 @@ async fn harness() -> Harness {
             f_dir_cl.host_for(caller)
         }));
 
+    // The native inbox sink: `NativeHostFactory::new` already registered the
+    // factory as this service's `ConversationNotifier`, so this is the one
+    // line that points that notifier at the deployed conversation service.
+    f_conversation.set_conversation_sink(
+        Arc::downgrade(&native_conversation_svc) as Weak<dyn ConversationSink>
+    );
+
+    // `host_for_wire` instances -- one per service, sharing the fully wired
+    // factories. Nothing in a real substrate reaches a natively linked roym
+    // service over the wire; the parity harness is the only caller, and it
+    // is what makes the wire-origin refusal a two-build comparison.
+    let wire_native: Vec<(&'static str, Arc<dyn NativeService>)> = {
+        let (fw, fp, fc, fca, ft, fd) = (
+            f_web.clone(),
+            f_profile.clone(),
+            f_conversation.clone(),
+            f_catalog.clone(),
+            f_transaction.clone(),
+            f_directory.clone(),
+        );
+        vec![
+            (
+                "web",
+                Arc::new(NativeWeb::new(did_for_service("web"), move |c| fw.host_for_wire(c)))
+                    as Arc<dyn NativeService>,
+            ),
+            (
+                "profile",
+                Arc::new(NativeProfile::new(did_for_service("profile"), move |c| {
+                    fp.host_for_wire(c)
+                })),
+            ),
+            (
+                "conversation",
+                Arc::new(NativeConversation::new(did_for_service("conversation"), move |c| {
+                    fc.host_for_wire(c)
+                })),
+            ),
+            (
+                "catalog",
+                Arc::new(NativeCatalog::new(did_for_service("catalog"), move |c| {
+                    fca.host_for_wire(c)
+                })),
+            ),
+            (
+                "transaction",
+                Arc::new(NativeTransaction::new(did_for_service("transaction"), move |c| {
+                    ft.host_for_wire(c)
+                })),
+            ),
+            (
+                "directory",
+                Arc::new(NativeDirectory::new(did_for_service("directory"), move |c| {
+                    fd.host_for_wire(c)
+                })),
+            ),
+        ]
+    };
+
     let native_proxy = Arc::new(TestNativeServiceProxy {
         web: native_web.clone(),
         profile: native_profile.clone(),
@@ -770,6 +1115,14 @@ async fn harness() -> Harness {
         native_factories,
         wasm_proxy,
         native_proxy,
+        conv_factory: f_conversation.clone(),
+        wasm_conversation: wasm_conversation.clone(),
+        native_conversation: native_conversation.clone(),
+        wire_native,
+        wasm_storage: wasm_storage.clone(),
+        native_storage: native_storage.clone(),
+        wasm_ks: wasm_ks.clone(),
+        native_ks: native_ks.clone(),
         _wasm_ws_senders: wasm_ws_senders,
         _native_ws_senders: native_ws_senders,
         _wasm_dir: wasm_dir,
@@ -874,7 +1227,7 @@ async fn scenario_5_unbound_dependency_returns_32001() {
     let req_body = json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "conversation.ping",
+        "method": "receipt.ping",
         "params": {}
     })
     .to_string()
@@ -884,11 +1237,11 @@ async fn scenario_5_unbound_dependency_returns_32001() {
     let native_resp = h.native_http.post("/rpc", req_body, Some(caller())).await;
     assert_eq!(wasm_resp.body, native_resp.body);
 
-    // conversation is a declared dependency of web (see roym.toml), but the
+    // transaction is a declared dependency of web (see roym.toml), but the
     // topology-registration loops above deliberately filter it out (`s.name
-    // != "conversation"`), leaving it unbound: the call must be refused
-    // with -32001, and the refusal must not repeat the dependency's DID
-    // back to the caller.
+    // != "transaction"`), leaving it unbound: the call must be refused with
+    // -32001, and the refusal must not repeat the dependency's DID back to
+    // the caller.
     let val: Value = serde_json::from_slice(&wasm_resp.body).unwrap();
     let err_code = val["error"]["code"].as_i64().unwrap();
     let err_msg = val["error"]["message"].as_str().unwrap();
@@ -1855,6 +2208,971 @@ async fn the_parity_comparison_detects_a_divergence() {
         let wasm_status = h.wasm.status(svc_name).await.unwrap();
         let mutant_status = mutant.status(svc_name).await.unwrap();
         assert_ne!(wasm_status, mutant_status, "status mutant divergence failed for {svc_name}");
+    }
+}
+
+// ---------------- C5: catalog and conversation ----------------
+
+/// POSTs one JSON-RPC method to both stacks' `/rpc` with the owner session
+/// and returns each build's parsed response.
+async fn both_rpc(h: &Harness, method: &str, params: Value) -> (Value, Value) {
+    let req = json!({ "method": method, "params": params }).to_string().into_bytes();
+    let w = h.wasm_http.post("/rpc", req.clone(), Some(h.caller())).await;
+    let n = h.native_http.post("/rpc", req, Some(h.caller())).await;
+    (serde_json::from_slice(&w.body).unwrap(), serde_json::from_slice(&n.body).unwrap())
+}
+
+/// One JSON-RPC method to a single stack -- for the cases where the two
+/// builds are driven with different arguments (a per-stack message id).
+async fn one_rpc(h: &Harness, wasm: bool, method: &str, params: Value) -> Value {
+    let req = json!({ "method": method, "params": params }).to_string().into_bytes();
+    let r = if wasm {
+        h.wasm_http.post("/rpc", req, Some(h.caller())).await
+    } else {
+        h.native_http.post("/rpc", req, Some(h.caller())).await
+    };
+    serde_json::from_slice(&r.body).unwrap()
+}
+
+/// Mints one delegation certificate against `service`'s own signing key and
+/// installs it on both stacks, so `<service>` can sign records.
+async fn enrol_signing(h: &Harness, service: &str) {
+    let status_m = format!("{service}.signing-status");
+    let install_m = format!("{service}.install-signing-certificate");
+    let (w, _) = both_rpc(h, &status_m, json!({})).await;
+    let signing_did = w["result"]["signing_did"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no signing_did from {status_m}: {w}"));
+    let signing_pubkey = resolve_did_key(signing_did).unwrap();
+    // The signing host verifies the certificate against the pinned
+    // `RecordClock` (ahead of wall-clock time), so the certificate must
+    // still be valid then -- yet under the 5-year lifetime ceiling the
+    // install path enforces. A default short-lived one signs nothing here.
+    let cert = DelegationCertificate::issue(
+        &h.owner,
+        signing_pubkey,
+        86_400 * 365 * 4,
+        SCOPE_RECORD_SIGNING.to_string(),
+    )
+    .unwrap();
+    both_rpc(h, &install_m, json!({ "certificate": cert.to_json().unwrap() })).await;
+}
+
+/// A `listing.set` params object with every one of the seven optional
+/// blocks filled and no non-integer number anywhere.
+fn full_listing_params(slug: &str, title: &str) -> Value {
+    json!({
+        "slug": slug,
+        "title": title,
+        "summary": "Neat hedges, fortnightly.",
+        "categories": ["gardening", "outdoor"],
+        "conversation_address": "did:key:zProviderConv",
+        "booking": {
+            "mode": "slots",
+            "lead_time_secs": 3600,
+            "cancellation_window_secs": 86400,
+            "max_per_booking": 2
+        },
+        "payment": {
+            "currency": "EUR",
+            "model": "per-hour",
+            "amount_minor": 3500,
+            "tax_included": true,
+            "methods": ["cash"],
+            "payee": "A. Gardener"
+        },
+        "product": { "unit": "hour", "pack_size": 1, "condition": "new", "sku": "HT-1" },
+        "service": { "duration_secs": 3600, "includes": ["clippings removed"] },
+        "location": {
+            "where": "at-customer",
+            "service_area": [
+                { "kind": "circle", "lat_e6": 52000000, "lon_e6": 13000000, "radius_m": 5000 }
+            ],
+            "address_disclosure": "on-agreement"
+        },
+        "relationship": { "open_to": "anyone" },
+        "service_record": {
+            "issues_fulfilment_receipt": true,
+            "warranty_secs": 0,
+            "retention_secs": 31536000
+        }
+    })
+}
+
+fn is_err(v: &Value, code: i64) -> bool {
+    v["error"]["code"].as_i64() == Some(code)
+}
+
+/// `listing.set` on both stacks (asserting it succeeded), then `listing.get`
+/// -- returns the listing id and each build's get response, which is where
+/// the signed envelope lives (`listing.set` returns only ids and a count).
+async fn set_and_get(h: &Harness, params: Value) -> (String, Value, Value) {
+    let (sw, sn) = both_rpc(h, "listing.set", params).await;
+    assert!(sw["result"]["listing_id"].is_string(), "listing.set wasm: {sw}");
+    assert!(sn["result"]["listing_id"].is_string(), "listing.set native: {sn}");
+    let id = sw["result"]["listing_id"].as_str().unwrap().to_string();
+    let (gw, gn) = both_rpc(h, "listing.get", json!({ "listing_id": id })).await;
+    (id, gw, gn)
+}
+
+#[tokio::test]
+async fn scenario_37_listing_set_without_certificate_refused_parity() {
+    let h = harness().await;
+    let (w, n) = both_rpc(&h, "listing.set", full_listing_params("hedge", "Hedge trimming")).await;
+    assert_eq!(w, n);
+    assert!(is_err(&w, -32602));
+    assert!(w["error"]["message"].as_str().unwrap().contains("signing-not-enrolled"));
+}
+
+#[tokio::test]
+async fn scenario_38_listing_set_all_blocks_byte_identical_envelope_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+
+    let (listing_id, mut w, mut n) =
+        set_and_get(&h, full_listing_params("hedge-trimming", "Hedge trimming")).await;
+
+    assert_eq!(
+        w["result"]["envelope"], n["result"]["envelope"],
+        "the signed listing envelope must be byte-identical"
+    );
+    assert!(w["result"]["envelope"].is_string(), "no envelope in listing.get: {w}");
+
+    // The stored pointer row round-trips identically once the wall-clock
+    // `updated_at_secs` is stripped.
+    strip_volatile(&mut w);
+    strip_volatile(&mut n);
+    assert_eq!(w, n);
+
+    let expected =
+        syneroym_roym_core::listing::derive_listing_id(&owner_did(), "hedge-trimming").unwrap();
+    assert_eq!(listing_id, expected);
+}
+
+#[tokio::test]
+async fn scenario_39_listing_edit_is_a_new_version_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+
+    let (v1w, v1n) =
+        both_rpc(&h, "listing.set", full_listing_params("hedge-trimming", "Hedge trimming")).await;
+    assert!(!is_err(&v1w, -32602), "v1 wasm: {v1w}");
+    assert!(v1w["result"]["record_id"].is_string(), "v1 wasm not ok: {v1w} / native: {v1n}");
+    let (v2w, v2n) = both_rpc(
+        &h,
+        "listing.set",
+        full_listing_params("hedge-trimming", "Hedge trimming (weekly)"),
+    )
+    .await;
+    assert_eq!(v2w["result"]["version_count"], 2, "v2 wasm: {v2w} / native: {v2n}");
+    assert_eq!(v2w["result"]["record_id"], v2n["result"]["record_id"]);
+    assert_ne!(v1w["result"]["record_id"], v2w["result"]["record_id"]);
+
+    let listing_id = v2w["result"]["listing_id"].as_str().unwrap().to_string();
+
+    // One pointer row, two history rows, on both builds.
+    let (getw, getn) = both_rpc(&h, "listing.get", json!({ "listing_id": listing_id })).await;
+    assert_eq!(getw["result"]["record_id"], v2w["result"]["record_id"]);
+    assert_eq!(getw["result"]["record_id"], getn["result"]["record_id"]);
+
+    let (histw, histn) = both_rpc(&h, "listing.history", json!({ "listing_id": listing_id })).await;
+    assert_eq!(histw["result"]["history"].as_array().unwrap().len(), 2);
+    assert_eq!(histw["result"]["history"], histn["result"]["history"]);
+}
+
+#[tokio::test]
+async fn scenario_40_listing_set_float_amount_refused_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+
+    let mut params = full_listing_params("hedge-trimming", "Hedge trimming");
+    params["payment"]["amount_minor"] = json!(3500.5);
+    let (w, n) = both_rpc(&h, "listing.set", params).await;
+    assert_eq!(w, n);
+    assert!(is_err(&w, -32602));
+    assert!(
+        w["error"]["message"].as_str().unwrap().contains("listing params"),
+        "message should report the rejected params: {w}"
+    );
+}
+
+#[tokio::test]
+async fn scenario_41_listing_address_from_profile_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "profile").await;
+    enrol_signing(&h, "catalog").await;
+
+    both_rpc(
+        &h,
+        "profile.set",
+        json!({ "display_name": "Alice", "conversation_address": "did:key:zAliceConvFromProfile" }),
+    )
+    .await;
+
+    let mut params = full_listing_params("hedge-trimming", "Hedge trimming");
+    params.as_object_mut().unwrap().remove("conversation_address");
+    let (_id, gw, gn) = set_and_get(&h, params).await;
+    assert_eq!(gw["result"]["envelope"], gn["result"]["envelope"]);
+
+    let (vw, vn) =
+        both_rpc(&h, "listing.verify", json!({ "envelope": gw["result"]["envelope"].clone() }))
+            .await;
+    assert_eq!(vw, vn);
+    assert_eq!(vw["result"]["conversation_address"], "did:key:zAliceConvFromProfile");
+}
+
+#[tokio::test]
+async fn scenario_42_listing_address_missing_no_profile_refused_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+
+    let mut params = full_listing_params("hedge-trimming", "Hedge trimming");
+    params.as_object_mut().unwrap().remove("conversation_address");
+    let (w, n) = both_rpc(&h, "listing.set", params).await;
+    assert_eq!(w, n);
+    assert!(is_err(&w, -32602));
+}
+
+#[tokio::test]
+async fn scenario_43_publication_rate_limit_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+
+    both_rpc(&h, "listing.set-limits", json!({ "window_secs": 3600, "max_per_window": 2 })).await;
+
+    let params = full_listing_params("hedge-trimming", "Hedge trimming");
+    let mut outcomes_w = Vec::new();
+    let mut outcomes_n = Vec::new();
+    for _ in 0..4 {
+        let (w, n) = both_rpc(&h, "listing.set", params.clone()).await;
+        outcomes_w.push(if is_err(&w, -32602) { "rate-limited" } else { "allow" });
+        outcomes_n.push(if is_err(&n, -32602) { "rate-limited" } else { "allow" });
+        if is_err(&w, -32602) {
+            let retry = w["error"]["data"]["retry_after_secs"].as_u64().unwrap();
+            // Close to a full window: the oldest counted publication is only
+            // seconds old. A wide lower bound keeps a slow CI host honest.
+            assert!((3300..=3600).contains(&retry), "retry_after_secs out of range: {retry}");
+            assert_eq!(w["error"]["data"]["admission"], "rate-limited");
+        }
+    }
+    assert_eq!(outcomes_w, ["allow", "allow", "rate-limited", "rate-limited"]);
+    assert_eq!(outcomes_n, outcomes_w);
+}
+
+#[tokio::test]
+async fn scenario_44_withdraw_ignores_publication_budget_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    both_rpc(&h, "listing.set-limits", json!({ "window_secs": 3600, "max_per_window": 2 })).await;
+
+    let params = full_listing_params("hedge-trimming", "Hedge trimming");
+    let (first, _) = both_rpc(&h, "listing.set", params.clone()).await;
+    let listing_id = first["result"]["listing_id"].as_str().unwrap().to_string();
+    // Exhaust the budget.
+    both_rpc(&h, "listing.set", params.clone()).await;
+    let (blocked, _) = both_rpc(&h, "listing.set", params).await;
+    assert!(is_err(&blocked, -32602));
+
+    // Withdrawal is still admitted on both builds.
+    let (w, n) = both_rpc(&h, "listing.withdraw", json!({ "listing_id": listing_id })).await;
+    assert!(!is_err(&w, -32602), "withdraw refused: {w}");
+    assert!(w["result"]["record_id"].is_string(), "withdraw not ok: {w}");
+    assert!(n["result"]["record_id"].is_string(), "withdraw not ok: {n}");
+
+    let (gw, gn) = both_rpc(&h, "listing.get", json!({ "listing_id": listing_id })).await;
+    assert_eq!(gw["result"]["status"], "withdrawn");
+    assert_eq!(gn["result"]["status"], "withdrawn");
+}
+
+#[tokio::test]
+async fn scenario_45_withdraw_then_get_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+
+    let (first, _) =
+        both_rpc(&h, "listing.set", full_listing_params("hedge-trimming", "Hedge trimming")).await;
+    let listing_id = first["result"]["listing_id"].as_str().unwrap().to_string();
+
+    both_rpc(&h, "listing.withdraw", json!({ "listing_id": listing_id })).await;
+    let (mut w, mut n) = both_rpc(&h, "listing.get", json!({ "listing_id": listing_id })).await;
+    assert_eq!(w["result"]["status"], "withdrawn");
+    strip_volatile(&mut w);
+    strip_volatile(&mut n);
+    assert_eq!(w, n);
+
+    let (histw, _) = both_rpc(&h, "listing.history", json!({ "listing_id": listing_id })).await;
+    assert_eq!(histw["result"]["history"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn scenario_46_listing_verify_good_envelope_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming", "Hedge trimming")).await;
+    let env = gw["result"]["envelope"].clone();
+
+    let (w, n) = both_rpc(&h, "listing.verify", json!({ "envelope": env })).await;
+    assert_eq!(w, n);
+    assert_eq!(w["result"]["verified"], true);
+    assert_eq!(w["result"]["conversation_address"], "did:key:zProviderConv");
+}
+
+#[tokio::test]
+async fn scenario_47_listing_verify_tampered_envelope_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming", "Hedge trimming")).await;
+    let env_str = gw["result"]["envelope"].as_str().unwrap();
+    let mut env: Value = serde_json::from_str(env_str).unwrap();
+    // Edit the payload's listing_id -- the signature no longer covers it.
+    env["payload"]["listing_id"] = json!("lst_forged");
+
+    let (w, n) = both_rpc(&h, "listing.verify", json!({ "envelope": env.to_string() })).await;
+    assert_eq!(w, n);
+    assert_eq!(w["result"]["verified"], false);
+    assert!(w["result"]["reason"].is_string());
+}
+
+#[tokio::test]
+async fn scenario_48_availability_set_and_list_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let (set, _) =
+        both_rpc(&h, "listing.set", full_listing_params("hedge-trimming", "Hedge trimming")).await;
+    let listing_id = set["result"]["listing_id"].as_str().unwrap().to_string();
+
+    let slots = json!([
+        { "start_secs": 1_000_000, "end_secs": 1_003_600, "capacity": 1 },
+        { "start_secs": 1_010_000, "end_secs": 1_013_600, "capacity": 2 },
+        // A duplicate of the first slot: content-derived id, so one row.
+        { "start_secs": 1_000_000, "end_secs": 1_003_600, "capacity": 5 }
+    ]);
+    let (w, n) =
+        both_rpc(&h, "availability.set", json!({ "listing_id": listing_id, "slots": slots })).await;
+    assert_eq!(w["result"]["slot_ids"], n["result"]["slot_ids"]);
+
+    let (lw, ln) = both_rpc(&h, "availability.list", json!({ "listing_id": listing_id })).await;
+    assert_eq!(lw, ln);
+    let listed = lw["result"]["slots"].as_array().unwrap();
+    assert_eq!(listed.len(), 2, "the duplicate slot must converge on one row");
+    assert!(
+        listed[0]["start_secs"].as_u64().unwrap() <= listed[1]["start_secs"].as_u64().unwrap(),
+        "slots must be ordered by start_secs"
+    );
+}
+
+#[tokio::test]
+async fn scenario_49_catalog_export_integrity_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let (set, _) =
+        both_rpc(&h, "listing.set", full_listing_params("hedge-trimming", "Hedge trimming")).await;
+    let listing_id = set["result"]["listing_id"].as_str().unwrap().to_string();
+    both_rpc(
+        &h,
+        "availability.set",
+        json!({ "listing_id": listing_id, "slots": [
+            { "start_secs": 1_000_000, "end_secs": 1_003_600, "capacity": 1 }
+        ] }),
+    )
+    .await;
+
+    let (mut w, mut n) = both_rpc(&h, "catalog.export", json!({})).await;
+
+    for side in [&w, &n] {
+        let bundle: syneroym_roym_core::backup::Bundle =
+            serde_json::from_value(side["result"].clone()).unwrap();
+        bundle.check_integrity().expect("exported bundle integrity");
+        let sections = &bundle.manifest.sections;
+        assert_eq!(sections["listings"].schema_version, 2);
+        assert!(sections.contains_key("availability"));
+    }
+
+    strip_volatile(&mut w);
+    strip_volatile(&mut n);
+    assert_eq!(w, n);
+}
+
+#[tokio::test]
+async fn scenario_50_catalog_import_roundtrip_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let (set, _) =
+        both_rpc(&h, "listing.set", full_listing_params("hedge-trimming", "Hedge trimming")).await;
+    let listing_id = set["result"]["listing_id"].as_str().unwrap().to_string();
+    both_rpc(
+        &h,
+        "availability.set",
+        json!({ "listing_id": listing_id, "slots": [
+            { "start_secs": 1_000_000, "end_secs": 1_003_600, "capacity": 1 }
+        ] }),
+    )
+    .await;
+
+    let (exp, _) = both_rpc(&h, "catalog.export", json!({})).await;
+    let bundle = exp["result"].clone();
+    let (impw, impn) = both_rpc(&h, "catalog.import", json!({ "bundle": bundle })).await;
+    assert!(!is_err(&impw, -32602), "import failed: {impw}");
+    assert_eq!(impw["result"]["imported"], impn["result"]["imported"]);
+
+    // The listing re-verifies and its id is preserved on both builds.
+    let (getw, getn) = both_rpc(&h, "listing.get", json!({ "listing_id": listing_id })).await;
+    assert_eq!(getw["result"]["listing_id"], listing_id);
+    let (vw, vn) =
+        both_rpc(&h, "listing.verify", json!({ "envelope": getw["result"]["envelope"].clone() }))
+            .await;
+    assert_eq!(vw["result"]["verified"], true);
+    assert_eq!(vn["result"]["verified"], true);
+    let (aw, an) = both_rpc(&h, "availability.list", json!({ "listing_id": listing_id })).await;
+    assert_eq!(aw["result"]["slots"], an["result"]["slots"]);
+    let _ = getn;
+}
+
+#[tokio::test]
+async fn scenario_51_catalog_import_tampered_listing_refused_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    both_rpc(&h, "listing.set", full_listing_params("hedge-trimming", "Hedge trimming")).await;
+
+    let (exp, _) = both_rpc(&h, "catalog.export", json!({})).await;
+    let mut bundle = exp["result"].clone();
+    // Edit one stored envelope byte without touching the manifest digest.
+    let rows = bundle["sections"]["listings"].as_array_mut().unwrap();
+    let env_str = rows[0]["payload"]["envelope"].as_str().unwrap();
+    let mut env: Value = serde_json::from_str(env_str).unwrap();
+    env["payload"]["title"] = json!("Tampered title");
+    rows[0]["payload"]["envelope"] = json!(env.to_string());
+
+    let (w, n) = both_rpc(&h, "catalog.import", json!({ "bundle": bundle })).await;
+    assert_eq!(w, n);
+    assert!(is_err(&w, -32602));
+}
+
+// ---- conversation ----
+
+/// Opens a direct conversation to `peer` on both stacks and returns the
+/// (identical) host conversation id.
+async fn open_conv(h: &Harness, peer: &str) -> String {
+    let (w, n) = both_rpc(h, "conversation.open", json!({ "address": peer })).await;
+    let cw = w["result"]["conversation_id"].as_str().unwrap().to_string();
+    assert_eq!(cw, n["result"]["conversation_id"].as_str().unwrap());
+    cw
+}
+
+fn inbound(id: &str, conversation: &str, author: &str, ts: i64, body: &str) -> ConversationMessage {
+    ConversationMessage {
+        id: id.to_string(),
+        conversation: conversation.to_string(),
+        author: author.to_string(),
+        sender_timestamp: ts,
+        received_at: ts,
+        content_type: "text/plain".to_string(),
+        body: body.as_bytes().to_vec(),
+        state: ConversationDeliveryState::Delivered,
+        verified: true,
+        last_error: None,
+    }
+}
+
+#[tokio::test]
+async fn scenario_52_conversation_open_by_address_parity() {
+    let h = harness().await;
+    let conv_id = open_conv(&h, "did:key:zPeer52").await;
+    assert!(!conv_id.is_empty());
+
+    let (w, n) = both_rpc(&h, "conversation.list", json!({})).await;
+    let mut w2 = w.clone();
+    let mut n2 = n.clone();
+    strip_volatile(&mut w2);
+    strip_volatile(&mut n2);
+    assert_eq!(w2, n2);
+    assert_eq!(w["result"]["conversations"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn scenario_53_conversation_send_is_never_optimistic_parity() {
+    let h = harness().await;
+    let conv_id = open_conv(&h, "did:key:zPeer53").await;
+
+    let (sw, sn) = both_rpc(
+        &h,
+        "conversation.send",
+        json!({ "conversation": conv_id, "body": "hello there" }),
+    )
+    .await;
+    assert_eq!(sw["result"]["state"], "pending");
+    assert_eq!(sn["result"]["state"], "pending");
+
+    let (mut hw, mut hn) =
+        both_rpc(&h, "conversation.history", json!({ "conversation": conv_id })).await;
+    strip_volatile(&mut hw);
+    strip_volatile(&mut hn);
+    let cw = normalize_message_ids(&mut hw);
+    let cn = normalize_message_ids(&mut hn);
+    assert_eq!(cw, 1);
+    assert_eq!(cn, 1);
+    assert_eq!(hw, hn);
+    assert_eq!(hw["result"]["messages"][0]["state"], "pending");
+}
+
+#[tokio::test]
+async fn scenario_54_inbound_message_reaches_history_parity() {
+    let h = harness().await;
+    let conv = "conv-54";
+    h.deliver(true, inbound("m-54", conv, "did:key:zPeer54", 1_000, "incoming hi")).await;
+    h.deliver(false, inbound("m-54", conv, "did:key:zPeer54", 1_000, "incoming hi")).await;
+
+    let (mut hw, mut hn) =
+        both_rpc(&h, "conversation.history", json!({ "conversation": conv })).await;
+    strip_volatile(&mut hw);
+    strip_volatile(&mut hn);
+    assert_eq!(normalize_message_ids(&mut hw), 1);
+    assert_eq!(normalize_message_ids(&mut hn), 1);
+    assert_eq!(hw, hn);
+    assert_eq!(hw["result"]["messages"][0]["body"], "incoming hi");
+    assert_eq!(hw["result"]["messages"][0]["direction"], "incoming");
+}
+
+#[tokio::test]
+async fn scenario_55_inbound_order_is_the_rule_not_arrival_parity() {
+    let h = harness().await;
+    let conv = "conv-55";
+    // wasm learns A then B; native learns B then A.
+    h.deliver(true, inbound("m-a", conv, "did:key:zPeer55", 1_000, "first")).await;
+    h.deliver(true, inbound("m-b", conv, "did:key:zPeer55", 2_000, "second")).await;
+    h.deliver(false, inbound("m-b", conv, "did:key:zPeer55", 2_000, "second")).await;
+    h.deliver(false, inbound("m-a", conv, "did:key:zPeer55", 1_000, "first")).await;
+
+    let (mut hw, mut hn) =
+        both_rpc(&h, "conversation.history", json!({ "conversation": conv })).await;
+    strip_volatile(&mut hw);
+    strip_volatile(&mut hn);
+    assert_eq!(normalize_message_ids(&mut hw), 2);
+    assert_eq!(normalize_message_ids(&mut hn), 2);
+    assert_eq!(hw, hn);
+    let msgs = hw["result"]["messages"].as_array().unwrap();
+    assert_eq!(msgs[0]["body"], "first");
+    assert_eq!(msgs[1]["body"], "second");
+}
+
+#[tokio::test]
+async fn scenario_56_delivery_state_failed_parity() {
+    let h = harness().await;
+    let conv_id = open_conv(&h, "did:key:zPeer56").await;
+    let (sw, sn) =
+        both_rpc(&h, "conversation.send", json!({ "conversation": conv_id, "body": "will fail" }))
+            .await;
+    let mw = sw["result"]["message_id"].as_str().unwrap().to_string();
+    let mn = sn["result"]["message_id"].as_str().unwrap().to_string();
+
+    h.notify_state(true, &mw, ConversationDeliveryState::Failed).await;
+    h.notify_state(false, &mn, ConversationDeliveryState::Failed).await;
+
+    let (mut hw, mut hn) =
+        both_rpc(&h, "conversation.history", json!({ "conversation": conv_id })).await;
+    strip_volatile(&mut hw);
+    strip_volatile(&mut hn);
+    assert_eq!(normalize_message_ids(&mut hw), 1);
+    assert_eq!(normalize_message_ids(&mut hn), 1);
+    assert_eq!(hw, hn);
+    assert_eq!(hw["result"]["messages"][0]["state"], "failed");
+
+    // Retry is reached (not method-not-found, not wire-refused) on both.
+    let rw = one_rpc(&h, true, "conversation.retry", json!({ "message_id": mw })).await;
+    let rn = one_rpc(&h, false, "conversation.retry", json!({ "message_id": mn })).await;
+    for r in [&rw, &rn] {
+        assert_ne!(r["error"]["code"].as_i64(), Some(-32601));
+        assert_ne!(r["error"]["code"].as_i64(), Some(-32013));
+    }
+}
+
+#[tokio::test]
+async fn scenario_57_blocked_sender_never_reaches_inbox_parity() {
+    let h = harness().await;
+    both_rpc(
+        &h,
+        "block.add",
+        json!({ "person_did": "did:key:zBlocked57", "address": "did:key:zBlocked57" }),
+    )
+    .await;
+    let conv = "conv-57";
+    h.deliver(true, inbound("m-57", conv, "did:key:zBlocked57", 1_000, "let me in")).await;
+    h.deliver(false, inbound("m-57", conv, "did:key:zBlocked57", 1_000, "let me in")).await;
+
+    let (hw, hn) = both_rpc(&h, "conversation.history", json!({ "conversation": conv })).await;
+    assert_eq!(hw["result"]["messages"].as_array().unwrap().len(), 0);
+    assert_eq!(hn["result"]["messages"].as_array().unwrap().len(), 0);
+
+    let (lw, ln) = both_rpc(&h, "conversation.list", json!({})).await;
+    assert_eq!(lw["result"]["conversations"].as_array().unwrap().len(), 0);
+    assert_eq!(ln["result"]["conversations"].as_array().unwrap().len(), 0);
+
+    // Recorded in the bodiless refused collection on both builds.
+    for wasm in [true, false] {
+        let refused = h.conv_rows(wasm, "refused_messages").await;
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0]["reason"], "blocked");
+        assert!(refused[0].get("body").is_none());
+    }
+}
+
+#[tokio::test]
+async fn scenario_58_refused_message_is_counted_nowhere_parity() {
+    let h = harness().await;
+    both_rpc(
+        &h,
+        "block.add",
+        json!({ "person_did": "did:key:zBlocked58", "address": "did:key:zBlocked58" }),
+    )
+    .await;
+    let conv = "conv-58";
+    h.deliver(true, inbound("m-58", conv, "did:key:zBlocked58", 1_000, "secret word")).await;
+    h.deliver(false, inbound("m-58", conv, "did:key:zBlocked58", 1_000, "secret word")).await;
+
+    let (sw, sn) = both_rpc(&h, "conversation.search", json!({ "query": "secret" })).await;
+    assert_eq!(sw["result"]["matches"].as_array().unwrap().len(), 0);
+    assert_eq!(sn["result"]["matches"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn scenario_59_first_contact_rate_limit_at_inbox_parity() {
+    let h = harness().await;
+    both_rpc(&h, "contacts.set-limits", json!({ "window_secs": 3600, "max_per_window": 2 })).await;
+
+    let mut admitted_w = 0;
+    let mut admitted_n = 0;
+    for i in 0..4 {
+        let conv = format!("conv-59-{i}");
+        h.deliver(true, inbound(&format!("m-59-{i}"), &conv, "did:key:zStranger59", 1_000, "hi"))
+            .await;
+        h.deliver(false, inbound(&format!("m-59-{i}"), &conv, "did:key:zStranger59", 1_000, "hi"))
+            .await;
+        let (hw, hn) = both_rpc(&h, "conversation.history", json!({ "conversation": conv })).await;
+        admitted_w += hw["result"]["messages"].as_array().unwrap().len();
+        admitted_n += hn["result"]["messages"].as_array().unwrap().len();
+    }
+    assert_eq!(admitted_w, 2);
+    assert_eq!(admitted_n, 2);
+}
+
+#[tokio::test]
+async fn scenario_60_group_kind_is_refused_as_unsupported_parity() {
+    let h = harness().await;
+    let conv_svc = did_for_service("conversation");
+    let gw = h.wasm_conversation.create_group(&conv_svc).await.unwrap();
+    let gn = h.native_conversation.create_group(&conv_svc).await.unwrap();
+
+    h.deliver(true, inbound("m-60", &gw, "did:key:zPeer60", 1_000, "group hi")).await;
+    h.deliver(false, inbound("m-60", &gn, "did:key:zPeer60", 1_000, "group hi")).await;
+
+    let (hw, hn) = both_rpc(&h, "conversation.history", json!({ "conversation": gw })).await;
+    assert_eq!(hw["result"]["messages"].as_array().unwrap().len(), 0);
+    let _ = hn;
+    let (lw, _) = both_rpc(&h, "conversation.list", json!({})).await;
+    assert_eq!(lw["result"]["conversations"].as_array().unwrap().len(), 0);
+
+    for wasm in [true, false] {
+        let refused = h.conv_rows(wasm, "refused_messages").await;
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0]["reason"], "unsupported-kind");
+    }
+}
+
+#[tokio::test]
+async fn scenario_61_delete_outgoing_message_asks_peer_parity() {
+    let h = harness().await;
+    let conv_id = open_conv(&h, "did:key:zPeer61").await;
+    let (sw, sn) =
+        both_rpc(&h, "conversation.send", json!({ "conversation": conv_id, "body": "oops" })).await;
+    let mw = sw["result"]["message_id"].as_str().unwrap().to_string();
+    let mn = sn["result"]["message_id"].as_str().unwrap().to_string();
+
+    // Each stack deletes its own message id; compare the response shape.
+    let dwv = one_rpc(&h, true, "conversation.delete-message", json!({ "message_id": mw })).await;
+    let dnv = one_rpc(&h, false, "conversation.delete-message", json!({ "message_id": mn })).await;
+    assert_eq!(dwv["result"]["asked_peer"], true);
+    assert_eq!(dnv["result"]["asked_peer"], true);
+    assert_eq!(dwv["result"]["note"], dnv["result"]["note"]);
+    assert!(dwv["result"]["note"].as_str().unwrap().contains("other side"));
+
+    // The tombstoned row keeps its place and loses its body.
+    let (mut hw, mut hn) =
+        both_rpc(&h, "conversation.history", json!({ "conversation": conv_id })).await;
+    strip_volatile(&mut hw);
+    strip_volatile(&mut hn);
+    assert_eq!(normalize_message_ids(&mut hw), 1);
+    assert_eq!(normalize_message_ids(&mut hn), 1);
+    assert!(hw["result"]["messages"][0].get("body").is_none());
+    assert_eq!(hw, hn);
+
+    // One reserved-content-type message queued in the host outbox on both.
+    for wasm in [true, false] {
+        let (ow, on) = both_rpc(&h, "conversation.outbox", json!({})).await;
+        let ob = if wasm { &ow } else { &on };
+        let entries = ob["result"]["outbox"].as_array().unwrap();
+        assert!(!entries.is_empty(), "a deletion request must be queued");
+    }
+}
+
+#[tokio::test]
+async fn scenario_62_inbound_deletion_request_honoured_only_for_own_message_parity() {
+    let h = harness().await;
+    let conv = "conv-62";
+    // Peer's own message, delivered inbound.
+    h.deliver(true, inbound("m-62", conv, "did:key:zPeer62", 1_000, "keep me")).await;
+    h.deliver(false, inbound("m-62", conv, "did:key:zPeer62", 1_000, "keep me")).await;
+
+    // A deletion request from the same peer, naming their own message.
+    let del_own = |target: &str| ConversationMessage {
+        id: format!("del-{target}"),
+        conversation: conv.to_string(),
+        author: "did:key:zPeer62".to_string(),
+        sender_timestamp: 2_000,
+        received_at: 2_000,
+        content_type: "application/vnd.roym.deletion-request+json".to_string(),
+        body: json!({ "message_id": target }).to_string().into_bytes(),
+        state: ConversationDeliveryState::Delivered,
+        verified: true,
+        last_error: None,
+    };
+    h.deliver(true, del_own("m-62")).await;
+    h.deliver(false, del_own("m-62")).await;
+
+    let (hw, hn) = both_rpc(&h, "conversation.history", json!({ "conversation": conv })).await;
+    assert!(hw["result"]["messages"][0].get("body").is_none(), "own message must be tombstoned");
+    assert!(hn["result"]["messages"][0].get("body").is_none());
+
+    // A deletion request naming a message the requester did NOT author
+    // changes nothing.
+    h.deliver(true, {
+        let mut m = del_own("m-62");
+        m.author = "did:key:zSomeoneElse".to_string();
+        m.id = "del-other-w".to_string();
+        m
+    })
+    .await;
+    let (hw2, _) = both_rpc(&h, "conversation.history", json!({ "conversation": conv })).await;
+    assert_eq!(hw2["result"]["messages"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn scenario_63_conversation_export_integrity_parity() {
+    let h = harness().await;
+    let conv = "conv-63";
+    h.deliver(true, inbound("m-63", conv, "did:key:zPeer63", 1_000, "archive me")).await;
+    h.deliver(false, inbound("m-63", conv, "did:key:zPeer63", 1_000, "archive me")).await;
+
+    let (mut w, mut n) = both_rpc(&h, "conversation.export", json!({})).await;
+    for side in [&w, &n] {
+        let bundle: syneroym_roym_core::backup::Bundle =
+            serde_json::from_value(side["result"].clone()).unwrap();
+        bundle.check_integrity().expect("conversation bundle integrity");
+    }
+    strip_volatile(&mut w);
+    strip_volatile(&mut n);
+    assert_eq!(normalize_message_ids(&mut w), 1);
+    assert_eq!(normalize_message_ids(&mut n), 1);
+    assert_eq!(w, n);
+}
+
+#[tokio::test]
+async fn scenario_64_conversation_import_roundtrip_parity() {
+    let h = harness().await;
+    let conv = "conv-64";
+    h.deliver(true, inbound("m-64", conv, "did:key:zPeer64", 1_000, "restore me")).await;
+    h.deliver(false, inbound("m-64", conv, "did:key:zPeer64", 1_000, "restore me")).await;
+
+    let (exp, _) = both_rpc(&h, "conversation.export", json!({})).await;
+    let (impw, impn) =
+        both_rpc(&h, "conversation.import", json!({ "bundle": exp["result"].clone() })).await;
+    assert!(!is_err(&impw, -32602), "import failed: {impw}");
+    assert_eq!(impw["result"]["imported"], impn["result"]["imported"]);
+
+    let (mut hw, mut hn) =
+        both_rpc(&h, "conversation.history", json!({ "conversation": conv })).await;
+    strip_volatile(&mut hw);
+    strip_volatile(&mut hn);
+    assert_eq!(normalize_message_ids(&mut hw), 1);
+    assert_eq!(normalize_message_ids(&mut hn), 1);
+    assert_eq!(hw, hn);
+}
+
+#[tokio::test]
+async fn scenario_65_conversation_import_tampered_message_refused_parity() {
+    let h = harness().await;
+    let conv = "conv-65";
+    h.deliver(true, inbound("m-65", conv, "did:key:zPeer65", 1_000, "original")).await;
+    h.deliver(false, inbound("m-65", conv, "did:key:zPeer65", 1_000, "original")).await;
+
+    let (exp, _) = both_rpc(&h, "conversation.export", json!({})).await;
+    let mut bundle = exp["result"].clone();
+    let rows = bundle["sections"]["messages"].as_array_mut().unwrap();
+    rows[0]["payload"]["body"] = json!("tampered");
+
+    let (w, n) = both_rpc(&h, "conversation.import", json!({ "bundle": bundle })).await;
+    assert_eq!(w, n);
+    assert!(is_err(&w, -32602));
+}
+
+#[tokio::test]
+async fn scenario_66_certificate_verbs_on_catalog_and_conversation_parity() {
+    let h = harness().await;
+    for service in ["catalog", "conversation"] {
+        let (w, n) = both_rpc(&h, &format!("{service}.signing-status"), json!({})).await;
+        assert_eq!(w["result"]["certificate"]["state"], "missing");
+        assert_eq!(n["result"]["certificate"]["state"], "missing");
+        enrol_signing(&h, service).await;
+        let (w2, n2) = both_rpc(&h, &format!("{service}.signing-status"), json!({})).await;
+        assert_eq!(w2["result"]["certificate"]["state"], "installed");
+        assert_eq!(n2["result"]["certificate"]["state"], "installed");
+    }
+}
+
+// ---- the wire origin ----
+
+fn env(method: &str, params: Value) -> Value {
+    json!({ "method": method, "params": params })
+}
+
+#[tokio::test]
+async fn scenario_67_listing_get_over_the_wire_is_refused_parity() {
+    let h = harness().await;
+    let (w, n) = h
+        .wire_invoke(services::CATALOG, &env("listing.get", json!({ "listing_id": "lst_x" })))
+        .await;
+    assert_eq!(w, n);
+    assert_eq!(w["error"]["code"], -32013);
+}
+
+#[tokio::test]
+async fn scenario_68_conversation_history_over_the_wire_is_refused_parity() {
+    let h = harness().await;
+    let (w, n) = h
+        .wire_invoke(
+            services::CONVERSATION,
+            &env("conversation.history", json!({ "conversation": "c" })),
+        )
+        .await;
+    assert_eq!(w, n);
+    assert_eq!(w["error"]["code"], -32013);
+}
+
+#[tokio::test]
+async fn scenario_69_same_verbs_locally_are_admitted_parity() {
+    let h = harness().await;
+    let (gw, gn) = h
+        .local_invoke(services::CATALOG, &env("listing.get", json!({ "listing_id": "lst_x" })))
+        .await;
+    assert_ne!(gw["error"]["code"].as_i64(), Some(-32013));
+    assert_ne!(gn["error"]["code"].as_i64(), Some(-32013));
+
+    let (cw, cn) = h
+        .local_invoke(
+            services::CONVERSATION,
+            &env("conversation.history", json!({ "conversation": "c" })),
+        )
+        .await;
+    assert_ne!(cw["error"]["code"].as_i64(), Some(-32013));
+    assert_ne!(cn["error"]["code"].as_i64(), Some(-32013));
+}
+
+#[tokio::test]
+async fn scenario_70_local_call_with_delegated_caller_admitted_on_both_builds() {
+    // F17's regression guard: the parity driver already presents a verified
+    // delegated caller on a purely local drive. A native mapping that read
+    // the caller's auth level on a local path would answer -32013 here while
+    // the wasm build passed.
+    let h = harness().await;
+    for (svc, method, params) in [
+        (services::CATALOG, "listing.get", json!({ "listing_id": "lst_x" })),
+        (services::CONVERSATION, "conversation.history", json!({ "conversation": "c" })),
+    ] {
+        let (w, n) = h.local_invoke(svc, &env(method, params)).await;
+        assert_ne!(w["error"]["code"].as_i64(), Some(-32013), "{method} wasm: {w}");
+        assert_ne!(n["error"]["code"].as_i64(), Some(-32013), "{method} native: {n}");
+    }
+}
+
+#[tokio::test]
+async fn scenario_71_api_status_over_the_wire_is_never_refused_parity() {
+    let h = harness().await;
+    for svc in services::ALL {
+        let (w, n) = h.wire_status(svc).await;
+        assert_eq!(w, n, "status mismatch on {}", svc.name);
+        assert_ne!(w["error"]["code"].as_i64(), Some(-32013));
+        assert_eq!(w["service"], svc.name);
+    }
+}
+
+#[tokio::test]
+async fn scenario_72_web_http_path_unaffected_parity() {
+    let h = harness().await;
+    let (w, n) = both_rpc(&h, "listing.list", json!({})).await;
+    assert_eq!(w, n);
+    assert!(w["result"]["listings"].is_array(), "listing.list via /rpc must succeed: {w}");
+}
+
+#[tokio::test]
+async fn scenario_73_guard_no_c5_verb_answers_method_not_found_or_wire_refused() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    enrol_signing(&h, "conversation").await;
+
+    let (listing_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("guard-listing", "Guard listing")).await;
+    let env_val = gw["result"]["envelope"].clone();
+    let conv_id = open_conv(&h, "did:key:zPeer73").await;
+    let (sent, _) =
+        both_rpc(&h, "conversation.send", json!({ "conversation": conv_id, "body": "guard" }))
+            .await;
+    let message_id = sent["result"]["message_id"].as_str().unwrap().to_string();
+
+    // Every verb C5 added, driven once through the local path with params
+    // that reach the handler. A -32601 means the verb was never wired; a
+    // -32013 means the local admission rule is wrong.
+    let calls: Vec<(&str, Value)> = vec![
+        ("listing.set", full_listing_params("guard-listing", "Guard listing")),
+        ("listing.get", json!({ "listing_id": listing_id })),
+        ("listing.list", json!({})),
+        ("listing.history", json!({ "listing_id": listing_id })),
+        ("listing.withdraw", json!({ "listing_id": listing_id })),
+        ("listing.verify", json!({ "envelope": env_val })),
+        ("listing.limits", json!({})),
+        ("listing.set-limits", json!({ "window_secs": 3600, "max_per_window": 20 })),
+        (
+            "availability.set",
+            json!({ "listing_id": listing_id, "slots": [
+            { "start_secs": 1_000_000, "end_secs": 1_003_600, "capacity": 1 }
+        ] }),
+        ),
+        ("availability.list", json!({ "listing_id": listing_id })),
+        ("availability.remove", json!({ "slot_id": "slot_missing" })),
+        ("catalog.export", json!({})),
+        ("catalog.signing-status", json!({})),
+        ("conversation.open", json!({ "address": "did:key:zPeer73b" })),
+        ("conversation.list", json!({})),
+        ("conversation.send", json!({ "conversation": conv_id, "body": "again" })),
+        ("conversation.history", json!({ "conversation": conv_id })),
+        ("conversation.delivery-status", json!({ "message_id": message_id })),
+        ("conversation.outbox", json!({})),
+        ("conversation.retry", json!({ "message_id": message_id })),
+        ("conversation.delete-message", json!({ "message_id": message_id })),
+        ("conversation.search", json!({ "query": "guard" })),
+        ("conversation.export", json!({})),
+        ("conversation.signing-status", json!({})),
+    ];
+
+    for (method, params) in calls {
+        let (w, n) = both_rpc(&h, method, params).await;
+        for (label, v) in [("wasm", &w), ("native", &n)] {
+            let code = v["error"]["code"].as_i64();
+            assert_ne!(code, Some(-32601), "{label} {method} answered method-not-found: {v}");
+            assert_ne!(code, Some(-32013), "{label} {method} answered wire-refused: {v}");
+        }
     }
 }
 
