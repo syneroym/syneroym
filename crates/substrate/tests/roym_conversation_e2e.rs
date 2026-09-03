@@ -713,12 +713,16 @@ async fn roym_conversation_survives_restarts_blocks_and_round_trips() {
     .await;
     node_b.full_bring_up().await;
 
+    // This test reads each conversation service id straight from the
+    // substituted deployment plan; a person running the product gets the
+    // same string from `roymctl roym address`, which looks it up in
+    // `svc list` and prints it to paste into `profile.set` below.
     let b_conv_did = node_b.dids["conversation"].clone();
     let a_conv_did = node_a.dids["conversation"].clone();
     let owner_b_did = substrate::derive_did_key(&owner_b.public_key());
 
     // --- Step 2: profile.set on both, each carrying its own conversation
-    //     service address. --------------------------------------------------
+    //     service address (`roymctl roym address` supplies it). ------------
     node_a
         .rpc_ok("profile.set", json!({ "display_name": "Ann", "conversation_address": a_conv_did }))
         .await;
