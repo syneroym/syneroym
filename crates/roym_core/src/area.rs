@@ -13,6 +13,10 @@ pub const LON_E6_MAX: i64 = 180_000_000;
 /// Half the earth's circumference: a larger radius covers the whole globe,
 /// so anything beyond this is a mistake, not a wider area.
 pub const MAX_RADIUS_M: u64 = 40_075_000;
+/// N-2: a stranger's bytes sit on a SynOrg owner's disk once a directory
+/// replicates a listing, and an unbounded label is an unbounded field like
+/// any other.
+pub const MAX_NAMED_LABEL_LEN: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -49,6 +53,8 @@ pub enum AreaError {
     RadiusTooLarge(u64),
     #[error("a named area needs a non-empty label")]
     EmptyLabel,
+    #[error("a named area label is longer than {MAX_NAMED_LABEL_LEN} bytes")]
+    LabelTooLong,
 }
 
 fn check_lat(v: i64) -> Result<(), AreaError> {
@@ -86,6 +92,9 @@ impl Area {
             Area::Named { label, .. } => {
                 if label.trim().is_empty() {
                     return Err(AreaError::EmptyLabel);
+                }
+                if label.len() > MAX_NAMED_LABEL_LEN {
+                    return Err(AreaError::LabelTooLong);
                 }
                 Ok(())
             }
@@ -132,6 +141,104 @@ pub fn bounding_box(area: &Area) -> Option<BoundingBox> {
             })
         }
         Area::Named { .. } => None,
+    }
+}
+
+/// Exact box-in-box intersection over the sieve's own over-covered
+/// candidates.
+#[must_use]
+pub fn boxes_intersect(a: &BoundingBox, b: &BoundingBox) -> bool {
+    a.min_lat_e6 <= b.max_lat_e6
+        && b.min_lat_e6 <= a.max_lat_e6
+        && a.min_lon_e6 <= b.max_lon_e6
+        && b.min_lon_e6 <= a.max_lon_e6
+}
+
+fn lat_deg(e6: i64) -> f64 {
+    e6 as f64 / 1e6
+}
+fn lon_deg(e6: i64) -> f64 {
+    e6 as f64 / 1e6
+}
+
+/// Metres between two lat/lon points, using the same flat-earth
+/// approximation `bounding_box` uses -- exactness here only has to match
+/// the same model the sieve was built on, not survey-grade geodesy.
+fn approx_distance_m(lat1_e6: i64, lon1_e6: i64, lat2_e6: i64, lon2_e6: i64) -> f64 {
+    let d_lat_m = (lat_deg(lat1_e6) - lat_deg(lat2_e6)) * M_PER_LAT_DEG;
+    let mean_lat_rad = ((lat_deg(lat1_e6) + lat_deg(lat2_e6)) / 2.0).to_radians();
+    let d_lon_m = (lon_deg(lon1_e6) - lon_deg(lon2_e6)) * M_PER_LAT_DEG * mean_lat_rad.cos();
+    (d_lat_m * d_lat_m + d_lon_m * d_lon_m).sqrt()
+}
+
+/// Exact, on the sieve's own over-covered candidates. `None` when either
+/// side is `Named` -- named areas never match geometrically, in either
+/// direction, and the caller must render that as its own reason rather
+/// than as "no match".
+#[must_use]
+pub fn areas_intersect(a: &Area, b: &Area) -> Option<bool> {
+    match (a, b) {
+        (Area::Named { .. }, _) | (_, Area::Named { .. }) => None,
+        (
+            Area::Circle { lat_e6: la, lon_e6: lo, radius_m: ra },
+            Area::Circle { lat_e6: lb, lon_e6: lob, radius_m: rb },
+        ) => {
+            let d = approx_distance_m(*la, *lo, *lb, *lob);
+            Some(d <= (*ra + *rb) as f64)
+        }
+        (
+            Area::Circle { lat_e6, lon_e6, radius_m },
+            Area::Bbox { min_lat_e6, min_lon_e6, max_lat_e6, max_lon_e6 },
+        )
+        | (
+            Area::Bbox { min_lat_e6, min_lon_e6, max_lat_e6, max_lon_e6 },
+            Area::Circle { lat_e6, lon_e6, radius_m },
+        ) => {
+            let closest_lat = (*lat_e6).clamp(*min_lat_e6, *max_lat_e6);
+            let closest_lon = (*lon_e6).clamp(*min_lon_e6, *max_lon_e6);
+            let d = approx_distance_m(*lat_e6, *lon_e6, closest_lat, closest_lon);
+            Some(d <= *radius_m as f64)
+        }
+        (
+            Area::Bbox {
+                min_lat_e6: a_min_lat,
+                min_lon_e6: a_min_lon,
+                max_lat_e6: a_max_lat,
+                max_lon_e6: a_max_lon,
+            },
+            Area::Bbox {
+                min_lat_e6: b_min_lat,
+                min_lon_e6: b_min_lon,
+                max_lat_e6: b_max_lat,
+                max_lon_e6: b_max_lon,
+            },
+        ) => {
+            let ba = BoundingBox {
+                min_lat_e6: *a_min_lat,
+                min_lon_e6: *a_min_lon,
+                max_lat_e6: *a_max_lat,
+                max_lon_e6: *a_max_lon,
+            };
+            let bb = BoundingBox {
+                min_lat_e6: *b_min_lat,
+                min_lon_e6: *b_min_lon,
+                max_lat_e6: *b_max_lat,
+                max_lon_e6: *b_max_lon,
+            };
+            Some(boxes_intersect(&ba, &bb))
+        }
+    }
+}
+
+/// Case-folded, trimmed label equality. `false` for any pairing that is not
+/// two `Named` areas.
+#[must_use]
+pub fn labels_match(a: &Area, b: &Area) -> bool {
+    match (a, b) {
+        (Area::Named { label: la, .. }, Area::Named { label: lb, .. }) => {
+            la.trim().to_lowercase() == lb.trim().to_lowercase()
+        }
+        _ => false,
     }
 }
 
@@ -182,6 +289,10 @@ mod tests {
             Area::Named { label: "  ".to_string(), code: None }.validate(),
             Err(AreaError::EmptyLabel)
         );
+        assert_eq!(
+            Area::Named { label: "x".repeat(MAX_NAMED_LABEL_LEN + 1), code: None }.validate(),
+            Err(AreaError::LabelTooLong)
+        );
     }
 
     #[test]
@@ -220,5 +331,90 @@ mod tests {
             bounding_box(&a),
             Some(BoundingBox { min_lat_e6: -5, min_lon_e6: -6, max_lat_e6: 7, max_lon_e6: 8 })
         );
+    }
+
+    #[test]
+    fn boxes_intersect_touches_and_overlaps() {
+        let a = BoundingBox { min_lat_e6: 0, min_lon_e6: 0, max_lat_e6: 10, max_lon_e6: 10 };
+        let overlapping =
+            BoundingBox { min_lat_e6: 5, min_lon_e6: 5, max_lat_e6: 15, max_lon_e6: 15 };
+        assert!(boxes_intersect(&a, &overlapping));
+        let touching =
+            BoundingBox { min_lat_e6: 10, min_lon_e6: 10, max_lat_e6: 20, max_lon_e6: 20 };
+        assert!(boxes_intersect(&a, &touching));
+        let disjoint =
+            BoundingBox { min_lat_e6: 20, min_lon_e6: 20, max_lat_e6: 30, max_lon_e6: 30 };
+        assert!(!boxes_intersect(&a, &disjoint));
+    }
+
+    #[test]
+    fn areas_intersect_named_is_never_geometric() {
+        let named = Area::Named { label: "x".to_string(), code: None };
+        let circle = Area::Circle { lat_e6: 0, lon_e6: 0, radius_m: 1000 };
+        assert_eq!(areas_intersect(&named, &circle), None);
+        assert_eq!(areas_intersect(&circle, &named), None);
+        assert_eq!(areas_intersect(&named, &named), None);
+    }
+
+    #[test]
+    fn areas_intersect_two_circles() {
+        // Two 5 km-radius circles 6 km apart: sum of radii (10 km) > 6 km,
+        // so they intersect.
+        let a = Area::Circle { lat_e6: 13_000_000, lon_e6: 77_500_000, radius_m: 5_000 };
+        // ~6 km north: 6000 / 110_574 deg ~ 0.0543 deg ~ 54_260 e6.
+        let b = Area::Circle { lat_e6: 13_054_260, lon_e6: 77_500_000, radius_m: 5_000 };
+        assert_eq!(areas_intersect(&a, &b), Some(true));
+        let far = Area::Circle { lat_e6: 20_000_000, lon_e6: 77_500_000, radius_m: 5_000 };
+        assert_eq!(areas_intersect(&a, &far), Some(false));
+    }
+
+    #[test]
+    fn areas_intersect_circle_and_bbox() {
+        let circle = Area::Circle { lat_e6: 0, lon_e6: 0, radius_m: 5_000 };
+        let overlapping_box =
+            Area::Bbox { min_lat_e6: -1000, min_lon_e6: -1000, max_lat_e6: 1000, max_lon_e6: 1000 };
+        assert_eq!(areas_intersect(&circle, &overlapping_box), Some(true));
+        assert_eq!(areas_intersect(&overlapping_box, &circle), Some(true));
+        let far_box = Area::Bbox {
+            min_lat_e6: 10_000_000,
+            min_lon_e6: 10_000_000,
+            max_lat_e6: 10_100_000,
+            max_lon_e6: 10_100_000,
+        };
+        assert_eq!(areas_intersect(&circle, &far_box), Some(false));
+    }
+
+    #[test]
+    fn a_box_inside_the_over_covered_circle_projection_but_outside_the_true_circle_is_excluded() {
+        // A 10 km circle's bounding box over-covers by design; pick a point
+        // inside the box's corner but far outside the true circle radius.
+        let circle = Area::Circle { lat_e6: 13_000_000, lon_e6: 77_500_000, radius_m: 10_000 };
+        let bbox = bounding_box(&circle).unwrap();
+        assert!(boxes_intersect(
+            &bbox,
+            &BoundingBox {
+                min_lat_e6: bbox.max_lat_e6 - 10,
+                min_lon_e6: bbox.max_lon_e6 - 10,
+                max_lat_e6: bbox.max_lat_e6,
+                max_lon_e6: bbox.max_lon_e6,
+            }
+        ));
+        let corner_point = Area::Bbox {
+            min_lat_e6: bbox.max_lat_e6,
+            min_lon_e6: bbox.max_lon_e6,
+            max_lat_e6: bbox.max_lat_e6,
+            max_lon_e6: bbox.max_lon_e6,
+        };
+        assert_eq!(areas_intersect(&circle, &corner_point), Some(false));
+    }
+
+    #[test]
+    fn labels_match_is_case_folded_and_trimmed() {
+        let a = Area::Named { label: "  Bengaluru  ".to_string(), code: None };
+        let b = Area::Named { label: "bengaluru".to_string(), code: None };
+        assert!(labels_match(&a, &b));
+        let c = Area::Named { label: "Mumbai".to_string(), code: None };
+        assert!(!labels_match(&a, &c));
+        assert!(!labels_match(&a, &Area::Circle { lat_e6: 0, lon_e6: 0, radius_m: 1 }));
     }
 }

@@ -21,6 +21,17 @@ pub const MAX_SLUG_LEN: usize = 64;
 pub const MAX_CATEGORY_LEN: usize = 64;
 pub use crate::area::MAX_AREAS;
 
+/// N-2: fields that were unbounded while their neighbours were capped.
+/// From this slice a stranger's bytes sit on a SynOrg owner's disk, so
+/// every field a payload carries gets a bound.
+pub const MAX_PAYEE_LEN: usize = 256;
+pub const MAX_PAYMENT_METHODS: usize = 16;
+pub const MAX_PAYMENT_METHOD_LEN: usize = 32;
+pub const MAX_UNIT_LEN: usize = 32;
+pub const MAX_SKU_LEN: usize = 64;
+pub const MAX_SERVICE_LIST_ITEMS: usize = 32;
+pub const MAX_SERVICE_LIST_ITEM_LEN: usize = 128;
+
 /// The id prefix, so a listing id can never be mistaken for a record id or
 /// a report id.
 const LISTING_ID_PREFIX: &str = "lst_";
@@ -227,6 +238,20 @@ pub enum ListingError {
     MemberOfRequired,
     #[error("member_of '{0}' is not a did:key")]
     MemberOfNotDid(String),
+    #[error("payee is longer than {MAX_PAYEE_LEN} bytes")]
+    PayeeTooLong,
+    #[error("more than {MAX_PAYMENT_METHODS} payment methods")]
+    TooManyPaymentMethods,
+    #[error("a payment method name is longer than {MAX_PAYMENT_METHOD_LEN} bytes")]
+    PaymentMethodTooLong,
+    #[error("unit is longer than {MAX_UNIT_LEN} bytes")]
+    UnitTooLong,
+    #[error("sku is longer than {MAX_SKU_LEN} bytes")]
+    SkuTooLong,
+    #[error("{0} has more than {MAX_SERVICE_LIST_ITEMS} entries")]
+    ServiceListTooLong(&'static str),
+    #[error("an entry in {0} is longer than {MAX_SERVICE_LIST_ITEM_LEN} bytes")]
+    ServiceListItemTooLong(&'static str),
 }
 
 fn is_slug_char(c: char) -> bool {
@@ -284,6 +309,43 @@ impl ListingPayload {
                         return Err(ListingError::AmountMinorRequired);
                     }
                     _ => {}
+                }
+                if p.payee.len() > MAX_PAYEE_LEN {
+                    return Err(ListingError::PayeeTooLong);
+                }
+                if p.methods.len() > MAX_PAYMENT_METHODS {
+                    return Err(ListingError::TooManyPaymentMethods);
+                }
+                for m in &p.methods {
+                    if m.len() > MAX_PAYMENT_METHOD_LEN {
+                        return Err(ListingError::PaymentMethodTooLong);
+                    }
+                }
+            }
+        }
+
+        if let Some(prod) = &self.product {
+            if prod.unit.len() > MAX_UNIT_LEN {
+                return Err(ListingError::UnitTooLong);
+            }
+            if prod.sku.as_ref().is_some_and(|s| s.len() > MAX_SKU_LEN) {
+                return Err(ListingError::SkuTooLong);
+            }
+        }
+
+        if let Some(svc) = &self.service {
+            for (name, list) in [
+                ("includes", &svc.includes),
+                ("excludes", &svc.excludes),
+                ("prerequisites", &svc.prerequisites),
+            ] {
+                if list.len() > MAX_SERVICE_LIST_ITEMS {
+                    return Err(ListingError::ServiceListTooLong(name));
+                }
+                for item in list.iter() {
+                    if item.len() > MAX_SERVICE_LIST_ITEM_LEN {
+                        return Err(ListingError::ServiceListItemTooLong(name));
+                    }
                 }
             }
         }
@@ -352,9 +414,186 @@ pub fn slug_from_title(title: &str) -> Option<String> {
 /// `area` for it.
 pub use area::bounding_box;
 
+/// One verification body, shared by `catalog.listing.verify` and the
+/// directory client -- so a stranger's listing is never verified twice by
+/// two copies of the same logic that could quietly disagree. Pure: no
+/// host, no storage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListingVerdict {
+    pub verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// `"good"` or `"unknown"` -- `crate::record::RevocationStatus` carries
+    /// no serde impl of its own, and the wire shape is the word, not the
+    /// enum. `Some` only when `verified`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revocation_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listing_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<ListingStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issued_at_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<ListingPayload>,
+}
+
+impl ListingVerdict {
+    fn refused(reason: impl Into<String>) -> Self {
+        Self {
+            verified: false,
+            reason: Some(reason.into()),
+            revocation_status: None,
+            listing_id: None,
+            record_id: None,
+            issuer: None,
+            conversation_address: None,
+            status: None,
+            issued_at_secs: None,
+            payload: None,
+        }
+    }
+}
+
+/// The word a stranger's evidence renders as. `crate::record::
+/// RevocationStatus` carries no `Display`; this is the one place that
+/// spells it out, so every caller renders the same word.
+#[must_use]
+pub fn revocation_status_word(status: crate::record::RevocationStatus) -> String {
+    match status {
+        crate::record::RevocationStatus::Good => "good",
+        crate::record::RevocationStatus::Unknown => "unknown",
+    }
+    .to_string()
+}
+
+/// Checks a signed `listing` envelope on the caller's own node: signature,
+/// record shape, `listing_id` derivability, and payload validity. Never
+/// consults a directory's own claim about any of this (`D-06C-6c`).
+#[must_use]
+pub fn verify_envelope(envelope: &str, now_secs: u64) -> ListingVerdict {
+    let verified =
+        match crate::record::verify_json(envelope, &crate::record::VerifyOptions::new(now_secs)) {
+            Ok(v) => v,
+            Err(e) => return ListingVerdict::refused(e.to_string()),
+        };
+    if verified.record_type != crate::record::RECORD_LISTING || verified.version != LISTING_VERSION
+    {
+        return ListingVerdict::refused("not a listing record this build understands");
+    }
+    let payload: ListingPayload = match serde_json::from_value(verified.payload.clone()) {
+        Ok(p) => p,
+        Err(e) => return ListingVerdict::refused(format!("payload: {e}")),
+    };
+    if let Err(e) = payload.validate() {
+        return ListingVerdict::refused(e.to_string());
+    }
+    let expected_id = match derive_listing_id(&verified.issuer, &payload.slug) {
+        Ok(id) => id,
+        Err(e) => return ListingVerdict::refused(e.to_string()),
+    };
+    if payload.listing_id != expected_id {
+        return ListingVerdict::refused(
+            "listing_id is not derivable from the signature's own issuer",
+        );
+    }
+    ListingVerdict {
+        verified: true,
+        reason: None,
+        revocation_status: Some(revocation_status_word(verified.revocation_status)),
+        listing_id: Some(payload.listing_id.clone()),
+        record_id: Some(verified.record_id.clone()),
+        issuer: Some(verified.issuer.clone()),
+        conversation_address: Some(payload.conversation_address.clone()),
+        status: Some(payload.status),
+        issued_at_secs: Some(verified.issued_at_secs),
+        payload: Some(payload),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use syneroym_identity::{Identity, substrate};
+
     use super::*;
+
+    /// Signs with the issuer this payload's `listing_id` was actually
+    /// derived from -- the only shape `verify_envelope` accepts as
+    /// `verified: true`.
+    fn sign_listing_with_own_issuer(payload: &ListingPayload, now: u64) -> String {
+        let issuer_key = Identity::generate().unwrap();
+        let issuer = substrate::derive_did_key(&issuer_key.public_key());
+        let mut p = payload.clone();
+        p.listing_id = derive_listing_id(&issuer, &p.slug).unwrap();
+        let draft = syneroym_signed_record::RecordDraft {
+            version: LISTING_VERSION,
+            record_type: crate::record::RECORD_LISTING.to_string(),
+            subject: p.listing_id.clone(),
+            payload: serde_json::to_value(&p).unwrap(),
+            expires_at_secs: None,
+            supersedes: None,
+        };
+        let (mut env, bytes) =
+            syneroym_signed_record::Envelope::unsigned(draft, issuer.clone(), None, now).unwrap();
+        let sig = z32::encode(&issuer_key.sign(&bytes).to_bytes());
+        env.attach_signature(sig).unwrap();
+        env.to_json().unwrap()
+    }
+
+    #[test]
+    fn verify_envelope_accepts_a_correctly_signed_listing() {
+        let p = core();
+        let env = sign_listing_with_own_issuer(&p, 1000);
+        let verdict = verify_envelope(&env, 1000);
+        assert!(verdict.verified, "{:?}", verdict.reason);
+        assert_eq!(verdict.status, Some(ListingStatus::Active));
+        assert!(verdict.conversation_address.is_some());
+        assert_eq!(verdict.revocation_status.as_deref(), Some("unknown"));
+    }
+
+    #[test]
+    fn verify_envelope_refuses_a_tampered_envelope() {
+        let p = core();
+        let mut env: serde_json::Value =
+            serde_json::from_str(&sign_listing_with_own_issuer(&p, 1000)).unwrap();
+        env["payload"]["title"] = serde_json::json!("Tampered");
+        let verdict = verify_envelope(&env.to_string(), 1000);
+        assert!(!verdict.verified);
+        assert!(verdict.reason.is_some());
+    }
+
+    #[test]
+    fn verify_envelope_refuses_a_listing_id_not_derivable_from_the_issuer() {
+        let key = Identity::generate().unwrap();
+        let issuer = substrate::derive_did_key(&key.public_key());
+        // `core()`'s listing_id is derived from a different issuer entirely.
+        let p = core();
+        let draft = syneroym_signed_record::RecordDraft {
+            version: LISTING_VERSION,
+            record_type: crate::record::RECORD_LISTING.to_string(),
+            subject: p.listing_id.clone(),
+            payload: serde_json::to_value(&p).unwrap(),
+            expires_at_secs: None,
+            supersedes: None,
+        };
+        let (mut sealed, bytes) =
+            syneroym_signed_record::Envelope::unsigned(draft, issuer, None, 1000).unwrap();
+        let sig = z32::encode(&key.sign(&bytes).to_bytes());
+        sealed.attach_signature(sig).unwrap();
+        let env = sealed.to_json().unwrap();
+        let verdict = verify_envelope(&env, 1000);
+        assert!(!verdict.verified);
+        assert_eq!(
+            verdict.reason.as_deref(),
+            Some("listing_id is not derivable from the signature's own issuer")
+        );
+    }
 
     fn core() -> ListingPayload {
         ListingPayload {

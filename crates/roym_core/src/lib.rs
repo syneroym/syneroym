@@ -8,6 +8,7 @@ pub mod backup;
 pub mod card;
 pub mod clock;
 pub mod conversation;
+pub mod directory;
 pub mod dual_build;
 pub mod envelope;
 pub mod listing;

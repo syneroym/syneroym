@@ -36,6 +36,7 @@ const ROUTES: &[(&str, Service, MethodAuth)] = &[
     ("agreement.", TRANSACTION, MethodAuth::Owner),
     ("receipt.", TRANSACTION, MethodAuth::Owner),
     ("directory.", DIRECTORY, MethodAuth::Owner),
+    ("member.", DIRECTORY, MethodAuth::Owner),
 ];
 
 /// Methods a person may reach before signing in. Full method names, never
