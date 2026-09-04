@@ -5,10 +5,10 @@
 //! `supersedes` the last, plus unsigned availability state and the
 //! catalog-side publication limiter.
 
-use std::collections::BTreeMap;
+use std::{cmp::Reverse, collections::BTreeMap};
 
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost, AppSigning,
     types::{
@@ -16,7 +16,7 @@ use syneroym_app_host::{
             CollectionSchema, IndexDefinition, IndexType, Mutation, QueryOptions, RecordWriteValue,
         },
         proxy::CallTarget,
-        signing::RecordDraft,
+        signing::{Principal, RecordDraft},
     },
 };
 use syneroym_roym_core::{
@@ -242,7 +242,7 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
 async fn resolve_principal_and_owner<H: AppHost>(
     host: &H,
     now: u64,
-) -> Result<(syneroym_app_host::types::signing::Principal, String), Response> {
+) -> Result<(Principal, String), Response> {
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
         Err(CertificateError::NoOwner) => {
@@ -619,7 +619,7 @@ async fn list_listings<H: AppHost>(host: &H, req: &Request) -> Response {
                 == Some(s.to_string())
         });
     }
-    rows.sort_by_key(|r| std::cmp::Reverse(r.updated_at_secs));
+    rows.sort_by_key(|r| Reverse(r.updated_at_secs));
     let out: Vec<Value> = rows
         .into_iter()
         .skip(offset)
@@ -1011,7 +1011,7 @@ async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
         prepared.push((collection, muts));
     }
 
-    let mut counts = serde_json::Map::new();
+    let mut counts = Map::new();
     for (collection, muts) in prepared {
         // Re-ensure the collection; indexes are added lazily on first
         // regular write, so an import needs none of its own.

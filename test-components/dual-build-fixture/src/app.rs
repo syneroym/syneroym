@@ -16,6 +16,7 @@ use syneroym_app_host::{
         signing::{Principal, RecordDraft},
     },
 };
+use syneroym_signed_record::{self as signed_record, Envelope, VerifyOptions};
 
 const MESSAGES: &str = "messages";
 const INBOX: &str = "inbox";
@@ -706,14 +707,10 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
             }))
         }
         Request::VerifyRecord { signed_json, now_secs } => {
-            let env: syneroym_signed_record::Envelope =
-                serde_json::from_str(&signed_json).map_err(fmt_err)?;
+            let env: Envelope = serde_json::from_str(&signed_json).map_err(fmt_err)?;
             let check_now = now_secs.unwrap_or(env.issued_at_secs);
-            let rec = syneroym_signed_record::verify(
-                &env,
-                &syneroym_signed_record::VerifyOptions::new(check_now),
-            )
-            .map_err(fmt_err)?;
+            let rec =
+                signed_record::verify(&env, &VerifyOptions::new(check_now)).map_err(fmt_err)?;
             Ok(json!({
                 "record_id": rec.record_id,
                 "signer_did": rec.signer_did,

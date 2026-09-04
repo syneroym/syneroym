@@ -5,7 +5,9 @@
 //! inbox -- the enforcement point for the block list and the first-contact
 //! rate limit.
 
-use serde_json::{Value, json};
+use std::{cmp::Reverse, collections::BTreeMap};
+
+use serde_json::{Map, Value, json};
 use syneroym_app_host::{
     AppConversation, AppDataLayer, AppHost,
     types::{
@@ -509,7 +511,7 @@ async fn list<H: AppHost>(host: &H, req: &Request) -> Response {
         }
         cursor = page.next_cursor;
     }
-    rows.sort_by_key(|r| std::cmp::Reverse(r.last_activity_ms));
+    rows.sort_by_key(|r| Reverse(r.last_activity_ms));
     let out: Vec<Value> = rows
         .into_iter()
         .skip(offset)
@@ -809,7 +811,7 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
         return Response::internal_error(e);
     }
 
-    let mut filter = serde_json::Map::new();
+    let mut filter = Map::new();
     filter.insert("body".to_string(), json!({ "$regex": escape_regex(&query) }));
     filter.insert("body_encoding".to_string(), json!("utf8"));
     if let Some(c) = conversation {
@@ -898,11 +900,11 @@ async fn export<H: AppHost>(host: &H) -> Response {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
-    let sections = std::collections::BTreeMap::from([
+    let sections = BTreeMap::from([
         (SECTION_CONVERSATIONS.to_string(), conversations),
         (SECTION_MESSAGES.to_string(), messages),
     ]);
-    let mut manifest_sections = std::collections::BTreeMap::new();
+    let mut manifest_sections = BTreeMap::new();
     for (k, v) in &sections {
         match Bundle::digest(SCHEMA_VERSION, v) {
             Ok(d) => {
@@ -957,7 +959,7 @@ async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
         }
     }
 
-    let mut counts = serde_json::Map::new();
+    let mut counts = Map::new();
     for (name, records) in &bundle.sections {
         let collection = match name.as_str() {
             SECTION_CONVERSATIONS => CONVERSATIONS,

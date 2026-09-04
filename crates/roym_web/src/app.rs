@@ -1,11 +1,11 @@
 //! Web entrypoint service application logic, target-independent.
 
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use syneroym_app_host::{
-    AppHost,
+    AppHost, AppSigning,
     types::{
-        http::{CallerAuth, FrameKind, HttpRequest, HttpResponse},
+        http::{CallerAuth, CallerIdentity, FrameKind, HttpRequest, HttpResponse},
         proxy::{CallTarget, ProxyError},
     },
 };
@@ -36,7 +36,7 @@ struct JsonRpcRequest {
 }
 
 fn json_rpc_response(id: Option<Value>, result: Option<Value>, error: Option<Value>) -> Value {
-    let mut obj = serde_json::Map::new();
+    let mut obj = Map::new();
     obj.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
     obj.insert("id".to_string(), id.unwrap_or(Value::Null));
     if let Some(err) = error {
@@ -65,11 +65,7 @@ enum Admitted {
     NoOwnerRecorded,
 }
 
-async fn admit<H: AppHost>(
-    host: &H,
-    method: &str,
-    caller: Option<&syneroym_app_host::types::http::CallerIdentity>,
-) -> Admitted {
+async fn admit<H: AppHost>(host: &H, method: &str, caller: Option<&CallerIdentity>) -> Admitted {
     match router::method_auth(method) {
         None | Some(router::MethodAuth::Public) => Admitted::Yes,
         Some(router::MethodAuth::Owner) => {
@@ -77,11 +73,7 @@ async fn admit<H: AppHost>(
             if c.auth != CallerAuth::Delegated {
                 return Admitted::NoSession;
             }
-            match syneroym_app_host::AppSigning::signing_identity(host)
-                .await
-                .ok()
-                .and_then(|i| i.owner_did)
-            {
+            match AppSigning::signing_identity(host).await.ok().and_then(|i| i.owner_did) {
                 None => Admitted::NoOwnerRecorded,
                 Some(owner) if owner == c.did => Admitted::Yes,
                 Some(_) => Admitted::NotOwner,

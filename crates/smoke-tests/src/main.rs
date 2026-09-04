@@ -319,7 +319,8 @@ async fn main() -> Result<()> {
     });
 
     app_engine
-        .compile_and_cache_wasm("smoke_service", wat.as_bytes(), quota)
+        .compile_and_cache_wasm("smoke_service", wat.as_bytes().to_vec(), quota)
+        .await
         .context("Failed to cache WASM component")?;
 
     let request_loop = JsonRpcRequest {

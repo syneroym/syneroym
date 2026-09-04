@@ -5,9 +5,13 @@
 //! are identical across all scenarios.
 
 use std::{
+    collections::HashMap,
     fs,
-    sync::{Arc, Weak},
-    time::Duration,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::{Value, json};
@@ -27,6 +31,7 @@ use syneroym_conversation::{ConversationConfig, ConversationService};
 use syneroym_core::{
     config::{AppSandboxRole, RetryPolicy, SubstrateConfig},
     local_registry::EndpointRegistry,
+    record_signer::{NodeRecordSigner, RecordClock},
     storage::MockStorage,
     test_constants,
 };
@@ -41,7 +46,7 @@ use syneroym_identity::{
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_roym_catalog::native::NativeCatalog;
 use syneroym_roym_conversation::native::NativeConversation;
-use syneroym_roym_core::{envelope::Response, services};
+use syneroym_roym_core::{backup::Bundle, envelope::Response, listing, services};
 use syneroym_roym_directory::native::NativeDirectory;
 use syneroym_roym_profile::native::NativeProfile;
 use syneroym_roym_transaction::native::NativeTransaction;
@@ -551,7 +556,7 @@ fn unwrap_payload(v: Value) -> Value {
 fn normalize_message_ids(val: &mut Value) -> usize {
     let mut order: Vec<String> = Vec::new();
     collect_ordered_ids(val, &mut order);
-    let map: std::collections::HashMap<String, String> =
+    let map: HashMap<String, String> =
         order.iter().enumerate().map(|(i, id)| (id.clone(), format!("<msg:{i}>"))).collect();
     rewrite_ids(val, &map);
     map.len()
@@ -580,7 +585,7 @@ fn collect_ordered_ids(val: &Value, out: &mut Vec<String>) {
     }
 }
 
-fn rewrite_ids(val: &mut Value, map: &std::collections::HashMap<String, String>) {
+fn rewrite_ids(val: &mut Value, map: &HashMap<String, String>) {
     match val {
         Value::Object(m) => m.values_mut().for_each(|v| rewrite_ids(v, map)),
         Value::Array(a) => a.iter_mut().for_each(|v| rewrite_ids(v, map)),
@@ -604,13 +609,13 @@ impl Drop for Harness {
 #[derive(Debug)]
 struct TestWasmServiceProxy {
     engine: Arc<AppSandboxEngine>,
-    invocations: std::sync::atomic::AtomicUsize,
+    invocations: AtomicUsize,
 }
 
 #[async_trait::async_trait]
 impl ServiceProxy for TestWasmServiceProxy {
     async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError> {
-        self.invocations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.invocations.fetch_add(1, Ordering::SeqCst);
         let target = request.target_service.as_str();
         let service_id = if target == "did:key:hForeign" {
             did_for_service("directory")
@@ -659,13 +664,13 @@ struct TestNativeServiceProxy {
     catalog: Arc<NativeCatalog<NativeAppHost>>,
     transaction: Arc<NativeTransaction<NativeAppHost>>,
     directory: Arc<NativeDirectory<NativeAppHost>>,
-    invocations: std::sync::atomic::AtomicUsize,
+    invocations: AtomicUsize,
 }
 
 #[async_trait::async_trait]
 impl ServiceProxy for TestNativeServiceProxy {
     async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError> {
-        self.invocations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.invocations.fetch_add(1, Ordering::SeqCst);
         let target = request.target_service.as_str();
         let svc: Arc<dyn NativeService> = if target == "did:key:hForeign" {
             self.directory.clone()
@@ -829,19 +834,7 @@ async fn harness() -> Harness {
 
     let owner = owner_identity();
     let owner_did = owner_did();
-    let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
-    // Pinned so the two stacks stamp every envelope with the same second
-    // and compare byte for byte. The value has to clear two windows at
-    // once: a delegated record must be dated at or after its certificate's
-    // own `issued_at` (the certificate is minted a few seconds into each
-    // scenario, after this harness is built), and on import a listing is
-    // re-verified against the verifier's wall clock, which rejects a record
-    // more than `max_clock_skew_secs` (300s) in the future. A small step
-    // ahead of "now" satisfies both.
-    let wall_now =
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    let fixed_clock = syneroym_core::record_signer::RecordClock::Fixed(wall_now + 240);
-
+    let node_identity = Arc::new(Identity::generate().unwrap());
     let wasm_resolver = Arc::new(LogicalResolver::new(wasm_inventory));
     for svc in services::ALL {
         let service_id = did_for_service(svc.name);
@@ -881,16 +874,9 @@ async fn harness() -> Harness {
     // native side registers its own notifier in `NativeHostFactory::new`.
     wasm_conversation.set_notifier(Arc::downgrade(&wasm_engine) as Weak<dyn ConversationNotifier>);
 
-    let wasm_record_signer = syneroym_core::record_signer::NodeRecordSigner::with_clock(
-        node_identity.clone(),
-        wasm_reg,
-        fixed_clock,
-    );
-    wasm_engine.record_signer.set(wasm_record_signer).expect("set wasm record_signer");
-
     let wasm_proxy = Arc::new(TestWasmServiceProxy {
         engine: wasm_engine.clone(),
-        invocations: std::sync::atomic::AtomicUsize::new(0),
+        invocations: AtomicUsize::new(0),
     });
     wasm_engine
         .service_proxy
@@ -903,6 +889,31 @@ async fn harness() -> Harness {
         let manifest = wasm_deploy_manifest(bytes, iface);
         wasm_engine.deploy_wasm(&service_id, &manifest).await.expect("deploy wasm service");
     }
+
+    // Pinned so the two stacks stamp every envelope with the same second
+    // and compare byte for byte. The value has to clear two windows at
+    // once: a delegated record must be dated at or after its certificate's
+    // own `issued_at` (the certificate is minted a few seconds into each
+    // scenario, after this harness is built), and on import a listing is
+    // re-verified against the verifier's wall clock, which rejects a record
+    // more than `max_clock_skew_secs` (300s) in the future. A step ahead of
+    // "now" satisfies both.
+    //
+    // Read here rather than at the top of the harness: everything above
+    // this line -- above all the wasm compile per deployed component --
+    // would otherwise spend the same budget, and under a loaded run (every
+    // scenario in this file builds its own harness, several at a time) that
+    // setup alone can outlast it. Then the certificate minted later, at
+    // real wall-clock time, is dated *after* the pinned signing clock and
+    // every signature in the scenario fails with "Delegation certificate
+    // issued_at is in the future". Below this line only the cheap native
+    // half of the harness is left, so the budget covers the scenario body.
+    let wall_now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let fixed_clock = RecordClock::Fixed(wall_now + 240);
+
+    let wasm_record_signer =
+        NodeRecordSigner::with_clock(node_identity.clone(), wasm_reg, fixed_clock);
+    wasm_engine.record_signer.set(wasm_record_signer).expect("set wasm record_signer");
 
     // 2. Native Stack setup
     let native_ks = Arc::new(KeyStore::new());
@@ -944,11 +955,8 @@ async fn harness() -> Harness {
     let native_conversation =
         test_conversation_service(native_storage.clone(), native_ks.clone(), native_reg.clone());
 
-    let native_record_signer = syneroym_core::record_signer::NodeRecordSigner::with_clock(
-        node_identity,
-        native_reg.clone(),
-        fixed_clock,
-    );
+    let native_record_signer =
+        NodeRecordSigner::with_clock(node_identity, native_reg.clone(), fixed_clock);
 
     let make_factory = |name: &str| {
         let service_id = did_for_service(name);
@@ -1070,7 +1078,7 @@ async fn harness() -> Harness {
         catalog: native_catalog.clone(),
         transaction: native_transaction.clone(),
         directory: native_directory.clone(),
-        invocations: std::sync::atomic::AtomicUsize::new(0),
+        invocations: AtomicUsize::new(0),
     });
 
     let native_factories = vec![
@@ -1217,8 +1225,8 @@ async fn scenario_4_unlisted_method_returns_32601() {
 
     // An unlisted method is rejected by web's own dispatch before it ever
     // reaches the proxy, so no sibling call should have been attempted.
-    assert_eq!(h.wasm_proxy.invocations.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert_eq!(h.native_proxy.invocations.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(h.wasm_proxy.invocations.load(Ordering::SeqCst), 0);
+    assert_eq!(h.native_proxy.invocations.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -2255,7 +2263,13 @@ async fn enrol_signing(h: &Harness, service: &str) {
         SCOPE_RECORD_SIGNING.to_string(),
     )
     .unwrap();
-    both_rpc(h, &install_m, json!({ "certificate": cert.to_json().unwrap() })).await;
+    let (iw, inat) =
+        both_rpc(h, &install_m, json!({ "certificate": cert.to_json().unwrap() })).await;
+    // Asserted, not ignored: a refused install leaves the service signing
+    // nothing, and every later assertion in the scenario then fails on a
+    // missing envelope instead of naming the real reason.
+    assert!(iw["result"].is_object(), "{install_m} wasm: {iw}");
+    assert!(inat["result"].is_object(), "{install_m} native: {inat}");
 }
 
 /// A `listing.set` params object with every one of the seven optional
@@ -2344,8 +2358,7 @@ async fn scenario_38_listing_set_all_blocks_byte_identical_envelope_parity() {
     strip_volatile(&mut n);
     assert_eq!(w, n);
 
-    let expected =
-        syneroym_roym_core::listing::derive_listing_id(&owner_did(), "hedge-trimming").unwrap();
+    let expected = listing::derive_listing_id(&owner_did(), "hedge-trimming").unwrap();
     assert_eq!(listing_id, expected);
 }
 
@@ -2515,7 +2528,7 @@ async fn scenario_46_listing_verify_good_envelope_parity() {
 
     let (w, n) = both_rpc(&h, "listing.verify", json!({ "envelope": env })).await;
     assert_eq!(w, n);
-    assert_eq!(w["result"]["verified"], true);
+    assert_eq!(w["result"]["verified"], true, "verify refused the envelope: {w}");
     assert_eq!(w["result"]["conversation_address"], "did:key:zProviderConv");
 }
 
@@ -2584,8 +2597,7 @@ async fn scenario_49_catalog_export_integrity_parity() {
     let (mut w, mut n) = both_rpc(&h, "catalog.export", json!({})).await;
 
     for side in [&w, &n] {
-        let bundle: syneroym_roym_core::backup::Bundle =
-            serde_json::from_value(side["result"].clone()).unwrap();
+        let bundle: Bundle = serde_json::from_value(side["result"].clone()).unwrap();
         bundle.check_integrity().expect("exported bundle integrity");
         let sections = &bundle.manifest.sections;
         assert_eq!(sections["listings"].schema_version, 2);
@@ -2968,8 +2980,7 @@ async fn scenario_63_conversation_export_integrity_parity() {
 
     let (mut w, mut n) = both_rpc(&h, "conversation.export", json!({})).await;
     for side in [&w, &n] {
-        let bundle: syneroym_roym_core::backup::Bundle =
-            serde_json::from_value(side["result"].clone()).unwrap();
+        let bundle: Bundle = serde_json::from_value(side["result"].clone()).unwrap();
         bundle.check_integrity().expect("conversation bundle integrity");
     }
     strip_volatile(&mut w);

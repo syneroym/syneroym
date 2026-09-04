@@ -35,6 +35,8 @@
 use std::{
     collections::BTreeMap,
     fs,
+    future::Future,
+    mem,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -560,7 +562,7 @@ impl Node {
     async fn stop(&mut self, wipe_service_state: Option<&str>) {
         let _ = self.substrate_client.shutdown().await;
         let _ = self.shutdown_tx.send(()).await;
-        let handle = std::mem::replace(&mut self.substrate_handle, tokio::spawn(async {}));
+        let handle = mem::replace(&mut self.substrate_handle, tokio::spawn(async {}));
         let _ = handle.await;
         // Let the OS actually release the iroh UDP sockets before the next boot.
         time::sleep(Duration::from_secs(3)).await;
@@ -584,7 +586,7 @@ impl Node {
         if let Some(role) = new_role {
             self.role = role;
         }
-        let masters = std::mem::take(&mut self.masters);
+        let masters = mem::take(&mut self.masters);
         let owner = Identity::from_bytes(&self.owner.to_bytes());
         let fresh = Self::spawn_substrate(
             self.label,
@@ -659,7 +661,7 @@ impl Node {
 async fn wait_until<F, Fut>(budget: Duration, mut check: F) -> bool
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
+    Fut: Future<Output = bool>,
 {
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
