@@ -1535,7 +1535,9 @@ async fn init_roym(
 ) -> anyhow::Result<Vec<Arc<syneroym_app_host_native::NativeHostFactory>>> {
     use std::{collections::BTreeSet, fs, sync::Weak, time::Duration};
 
-    use syneroym_app_host_native::{HttpSink, NativeHostFactory, NativeHttpAdapter, WebSocketSink};
+    use syneroym_app_host_native::{
+        ConversationSink, HttpSink, NativeHostFactory, NativeHttpAdapter, WebSocketSink,
+    };
     use syneroym_app_orchestration::{
         AppInstanceId, LogicalServiceName, TopologyEntry, TopologyEpoch, TopologyKey, TopologyMode,
         models::ServiceId,
@@ -1625,6 +1627,10 @@ async fn init_roym(
         roym_dispatch_id(services::CONVERSATION.name),
         move |caller| f_conv.host_for(caller),
     ));
+    // The delivery worker wakes the natively linked inbox the same way
+    // `AppSandboxEngine` wakes a wasm-hosted one -- without this an
+    // inbound message reaches the host store and stops there.
+    factory_conv.set_conversation_sink(Arc::downgrade(&conv) as Weak<dyn ConversationSink>);
     shared.native_dispatch.insert(
         roym_dispatch_id(services::CONVERSATION.name),
         conv.clone() as Arc<dyn NativeService>,
@@ -1786,6 +1792,30 @@ async fn init_roym(
         );
         endpoint_registry
             .save_binding(&web_id, ROYM_APP_INSTANCE, dep.name, &serde_json::to_string(&entry)?)
+            .await?;
+    }
+
+    // `conversation` and `catalog` each declare a `profile` dependency in
+    // the manifest; resolution already works without the binding (`web`
+    // declares it), but the native build's persisted bindings should
+    // match the manifest all the same.
+    let profile_entry = TopologyEntry {
+        mode: TopologyMode::Singleton,
+        members: vec![ServiceId::new(roym_dispatch_id(services::PROFILE.name))],
+        sharding_strategy: None,
+        epoch: TopologyEpoch(1),
+        cache_ttl: Duration::from_secs(60),
+        not_after: None,
+    };
+    let profile_entry_json = serde_json::to_string(&profile_entry)?;
+    for consumer in [services::CONVERSATION.name, services::CATALOG.name] {
+        endpoint_registry
+            .save_binding(
+                &roym_dispatch_id(consumer),
+                ROYM_APP_INSTANCE,
+                services::PROFILE.name,
+                &profile_entry_json,
+            )
             .await?;
     }
 

@@ -166,6 +166,19 @@ pub struct ControlPlaneService {
     /// `http_routes` above -- `RouteHandlerInner` holds the identical `Arc`
     /// for lookup from `crates/router/src/route_handler/http.rs`.
     assets: AssetRegistry,
+    /// Service ids this *process* has run a full `deploy_with_context`
+    /// for. The three route tables (`native_dispatch`, `http_routes`,
+    /// `assets`) are process-local and start empty on every boot; nothing
+    /// rehydrates them from the persisted catalog, and the sandbox warm-up
+    /// restores only the WASM instance. So a redeploy right after a
+    /// substrate restart -- matching persisted `manifest_hash`, warmed
+    /// `Running` instance -- must not dedup into a no-op, or guest
+    /// `POST /rpc` and every native-capability call stay unrouted. An
+    /// entry here is the witness that the routing for this service was
+    /// registered *by this process*; a fresh boot has none, so its
+    /// redeploy falls through and re-registers. Populated at the end of a
+    /// successful deploy, cleared by `undeploy`.
+    full_deploy_completed: DashMap<String, ()>,
     /// Bounded concurrent SSE subscriptions per service.
     sse_permits: SsePermitRegistry,
     /// Last probe result per service, `(checked_at_secs, ProbeStatus)` (M05A
@@ -240,6 +253,7 @@ impl ControlPlaneService {
             native_dispatch: Arc::downgrade(&native_dispatch),
             http_routes,
             assets,
+            full_deploy_completed: DashMap::new(),
             sse_permits: Arc::new(DashMap::new()),
             probe_cache: DashMap::new(),
             http_probe_client: Client::builder()

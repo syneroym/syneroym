@@ -1,7 +1,14 @@
 #![cfg(target_arch = "wasm32")]
-//! WASM wiring: exports `api` interface.
+//! WASM wiring: exports the `api` interface and the conversation
+//! `guest-api` inbox.
 
-use bindings::exports::syneroym_roym::conversation::api::Guest as ApiGuest;
+use bindings::exports::{
+    syneroym::conversation::guest_api::{
+        DeliveryState as WitDeliveryState, Guest as ConversationGuestApiGuest,
+        Message as WitMessage,
+    },
+    syneroym_roym::conversation::api::Guest as ApiGuest,
+};
 use syneroym_app_host::guest::{GuestHost, block_on};
 use syneroym_roym_core::dual_build;
 
@@ -27,6 +34,8 @@ mod bindings {
                 syneroym_wit_interfaces::vault::syneroym::vault::vault,
             "syneroym:signing/signing@0.1.0":
                 syneroym_wit_interfaces::signing::syneroym::signing::signing,
+            "syneroym:invocation/invocation@0.1.0":
+                syneroym_wit_interfaces::invocation::syneroym::invocation::invocation,
             "syneroym:http/websocket@0.1.0":
                 syneroym_wit_interfaces::http_guest::syneroym::http::websocket,
             "syneroym:http/websocket-types@0.1.0": generate,
@@ -45,5 +54,15 @@ impl ApiGuest for Conversation {
 
     fn status() -> Result<String, String> {
         block_on(crate::app::status(&GuestHost))
+    }
+}
+
+impl ConversationGuestApiGuest for Conversation {
+    fn on_message(msg: WitMessage) -> Result<(), String> {
+        block_on(crate::app::on_message(&GuestHost, msg))
+    }
+
+    fn on_delivery_state(msg: String, state: WitDeliveryState) -> Result<(), String> {
+        block_on(crate::app::on_delivery_state(&GuestHost, msg, state))
     }
 }

@@ -15,10 +15,13 @@ use std::{
 };
 
 use serde_json::Value;
+use syneroym_app_host::types::http::FrameKind as AppFrameKind;
 use syneroym_app_orchestration::{AppInstanceId, LogicalResolver, LogicalServiceName, TopologyKey};
 use syneroym_core::{
     local_registry::SubstrateEndpoint,
-    record_signer::{CallerBinding, NodeRecordSigner, SigningPrincipal},
+    record_signer::{
+        CallerBinding, NodeRecordSigner, SigningError, SigningIdentity, SigningPrincipal,
+    },
 };
 use syneroym_data_blob::{
     BlobError as BlobStoreError, HostDownloadSession, HostUploadSession, traits::BlobProvider,
@@ -35,9 +38,10 @@ use syneroym_mqtt_broker::{
 };
 use syneroym_rpc::{
     AbacError, Ability, AuthLevel, CallOrigin, CallerContext, CandidateRow,
-    ProxyError as RpcProxyError, ProxyProtocol, ProxyRequest, QueuedCall, QueuedTarget,
-    ResourceUri, RowAuthorizer, SagaBegin, SagaState as RpcSagaState, SagaStepRequest,
-    ServiceProxy, apply_stage4, union_masked_fields,
+    ConversationError as RpcConversationError, ProxyError as RpcProxyError, ProxyProtocol,
+    ProxyRequest, QueuedCall, QueuedTarget, ResourceUri, RowAuthorizer, SagaBegin,
+    SagaState as RpcSagaState, SagaStepRequest, ServiceProxy, WebSocketSenders, apply_stage4,
+    union_masked_fields,
 };
 use syneroym_wit_interfaces::{
     conversation_host::syneroym::conversation::conversation as wit_conversation,
@@ -57,6 +61,10 @@ use syneroym_wit_interfaces::{
             saga::{self, SagaState as WitSagaState, SagaStatus},
         },
         vault::vault::{self, VaultError},
+    },
+    http_host::syneroym::http::{websocket, websocket_types::FrameKind as WitFrameKind},
+    invocation_host::syneroym::invocation::invocation::{
+        self as invocation, CallerOrigin as WitCallerOrigin,
     },
     signing_host::syneroym::signing::signing::{
         self, Principal as WitPrincipal, RecordDraft as WitRecordDraft,
@@ -237,6 +245,23 @@ pub(crate) fn empty_conversation_host() -> Weak<dyn syneroym_rpc::ConversationHo
 }
 
 /// Host state instantiated per-request for WASM components
+/// Where this invocation entered the node, which the caller alone cannot
+/// say: a sibling's proxy call and an unauthenticated inbound stream both
+/// arrive with the synthesized `service_system` caller, so the two are
+/// indistinguishable from `caller` by construction. `Local` is every
+/// host-driven path -- lifecycle hooks, `notify_guest_message`, the
+/// stage-4 after-step, a guest-to-guest proxy call, and a test harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InvocationOrigin {
+    /// A local dispatch path. There is no attributable identity, and none
+    /// is claimed.
+    #[default]
+    Local,
+    /// The router's inbound JSON-RPC dispatch off the wire. The only
+    /// producer is `AppSandboxEngine::execute_wasm_json_from_wire`.
+    Wire,
+}
+
 pub struct HostState {
     pub wasi: WasiCtx,
     pub table: ResourceTable,
@@ -248,6 +273,11 @@ pub struct HostState {
     pub storage_provider: Arc<dyn StorageProvider>,
     pub blob_provider: Arc<dyn BlobProvider>,
     pub caller: CallerContext,
+    /// Where this invocation entered the node. Defaults to
+    /// [`InvocationOrigin::Local`]; set to `Wire` only by
+    /// [`AppSandboxEngine::execute_wasm_json_from_wire`]. The `caller`
+    /// alone cannot carry this -- see the enum's own doc comment.
+    pub invocation_origin: InvocationOrigin,
     /// Compiled FDAE policy for this service, or `None` if policy-absent
     /// (today's unfiltered behavior). Loading a real policy at instantiation
     /// is Phase 4; Phase 3 only threads the field through.
@@ -343,6 +373,7 @@ impl HostState {
             storage_provider,
             blob_provider,
             caller,
+            invocation_origin: InvocationOrigin::Local,
             fdae_policy,
             config_generation,
             messaging,
@@ -353,7 +384,7 @@ impl HostState {
             app_instance_id,
             logical_resolver,
             conversation: empty_conversation_host(),
-            websocket_senders: syneroym_rpc::WebSocketSenders::new(),
+            websocket_senders: WebSocketSenders::new(),
             record_signer: None,
         }
     }
@@ -374,6 +405,15 @@ impl HostState {
     #[must_use]
     pub fn with_record_signer(mut self, signer: Option<Arc<NodeRecordSigner>>) -> Self {
         self.record_signer = signer;
+        self
+    }
+
+    /// Sets [`Self::invocation_origin`] after construction. Only
+    /// [`AppSandboxEngine::execute_wasm_json_from_wire`] passes `Wire`;
+    /// every other path keeps the `Local` default.
+    #[must_use]
+    pub fn with_invocation_origin(mut self, origin: InvocationOrigin) -> Self {
+        self.invocation_origin = origin;
         self
     }
 
@@ -578,6 +618,25 @@ impl signing::Host for HostState {
     }
 }
 
+impl invocation::Host for HostState {
+    async fn caller(&mut self) -> WitCallerOrigin {
+        match self.invocation_origin {
+            // A local dispatch is trusted for where it came from, whatever
+            // identity the dispatching code chose to put in `caller` --
+            // the parity driver hands a verified delegated caller to a
+            // purely local drive, and a sibling proxy call and an
+            // anonymous wire call arrive with the identical `CallerContext`.
+            InvocationOrigin::Local => WitCallerOrigin::Internal,
+            InvocationOrigin::Wire => match self.caller.auth {
+                AuthLevel::Delegated | AuthLevel::Ucan => {
+                    WitCallerOrigin::Verified(self.caller.caller_did.clone())
+                }
+                _ => WitCallerOrigin::Anonymous,
+            },
+        }
+    }
+}
+
 fn caller_binding(caller: &CallerContext) -> CallerBinding<'_> {
     match caller.auth {
         AuthLevel::Delegated | AuthLevel::Ucan => CallerBinding::Verified(&caller.caller_did),
@@ -609,7 +668,7 @@ fn convert_principal_in(principal: WitPrincipal) -> SigningPrincipal {
     }
 }
 
-fn convert_signing_error_out(err: syneroym_core::record_signer::SigningError) -> WitSigningError {
+fn convert_signing_error_out(err: SigningError) -> WitSigningError {
     use syneroym_core::record_signer::SigningError as SE;
     match err {
         SE::NoDelegation(msg) => WitSigningError::NoDelegation(msg),
@@ -619,7 +678,7 @@ fn convert_signing_error_out(err: syneroym_core::record_signer::SigningError) ->
     }
 }
 
-fn convert_identity_out(id: syneroym_core::record_signer::SigningIdentity) -> WitSigningIdentity {
+fn convert_identity_out(id: SigningIdentity) -> WitSigningIdentity {
     WitSigningIdentity {
         signing_did: id.signing_did,
         pubkey_hex: id.pubkey_hex,
@@ -1972,20 +2031,16 @@ impl wasmtime::ResourceLimiter for HostState {
     }
 }
 
-impl syneroym_wit_interfaces::http_host::syneroym::http::websocket::Host for HostState {
+impl websocket::Host for HostState {
     async fn send(
         &mut self,
         conn: String,
         frame: Vec<u8>,
-        kind: syneroym_wit_interfaces::http_host::syneroym::http::websocket_types::FrameKind,
+        kind: WitFrameKind,
     ) -> Result<(), String> {
         let k = match kind {
-            syneroym_wit_interfaces::http_host::syneroym::http::websocket_types::FrameKind::Text => {
-                syneroym_app_host::types::http::FrameKind::Text
-            }
-            syneroym_wit_interfaces::http_host::syneroym::http::websocket_types::FrameKind::Binary => {
-                syneroym_app_host::types::http::FrameKind::Binary
-            }
+            WitFrameKind::Text => AppFrameKind::Text,
+            WitFrameKind::Binary => AppFrameKind::Binary,
         };
         self.websocket_senders.send(&self.component_id, &conn, frame, k).await
     }
@@ -2081,9 +2136,7 @@ impl wit_conversation::Host for HostState {
         peer_address: String,
     ) -> Result<String, wit_conversation::ConversationError> {
         if self.read_only {
-            return Err(conversation_wire::map_error(
-                syneroym_rpc::ConversationError::PermissionDenied,
-            ));
+            return Err(conversation_wire::map_error(RpcConversationError::PermissionDenied));
         }
         let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
         conv.open_direct(&self.component_id, &peer_address)
@@ -2109,9 +2162,7 @@ impl wit_conversation::Host for HostState {
         body: Vec<u8>,
     ) -> Result<String, wit_conversation::ConversationError> {
         if self.read_only {
-            return Err(conversation_wire::map_error(
-                syneroym_rpc::ConversationError::PermissionDenied,
-            ));
+            return Err(conversation_wire::map_error(RpcConversationError::PermissionDenied));
         }
         let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
         conv.send(&self.component_id, &conversation, &content_type, body)
@@ -2155,9 +2206,7 @@ impl wit_conversation::Host for HostState {
 
     async fn retry(&mut self, message: String) -> Result<(), wit_conversation::ConversationError> {
         if self.read_only {
-            return Err(conversation_wire::map_error(
-                syneroym_rpc::ConversationError::PermissionDenied,
-            ));
+            return Err(conversation_wire::map_error(RpcConversationError::PermissionDenied));
         }
         let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
         conv.retry(&self.component_id, &message).await.map_err(conversation_wire::map_error)
@@ -2165,9 +2214,7 @@ impl wit_conversation::Host for HostState {
 
     async fn create_group(&mut self) -> Result<String, wit_conversation::ConversationError> {
         if self.read_only {
-            return Err(conversation_wire::map_error(
-                syneroym_rpc::ConversationError::PermissionDenied,
-            ));
+            return Err(conversation_wire::map_error(RpcConversationError::PermissionDenied));
         }
         let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
         conv.create_group(&self.component_id).await.map_err(conversation_wire::map_error)
@@ -2179,9 +2226,7 @@ impl wit_conversation::Host for HostState {
         member_address: String,
     ) -> Result<(), wit_conversation::ConversationError> {
         if self.read_only {
-            return Err(conversation_wire::map_error(
-                syneroym_rpc::ConversationError::PermissionDenied,
-            ));
+            return Err(conversation_wire::map_error(RpcConversationError::PermissionDenied));
         }
         let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
         conv.add_member(&self.component_id, &conversation, &member_address)
@@ -2195,9 +2240,7 @@ impl wit_conversation::Host for HostState {
         member_address: String,
     ) -> Result<(), wit_conversation::ConversationError> {
         if self.read_only {
-            return Err(conversation_wire::map_error(
-                syneroym_rpc::ConversationError::PermissionDenied,
-            ));
+            return Err(conversation_wire::map_error(RpcConversationError::PermissionDenied));
         }
         let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
         conv.remove_member(&self.component_id, &conversation, &member_address)
@@ -2229,9 +2272,7 @@ impl wit_conversation::Host for HostState {
         conversation: String,
     ) -> Result<(), wit_conversation::ConversationError> {
         if self.read_only {
-            return Err(conversation_wire::map_error(
-                syneroym_rpc::ConversationError::PermissionDenied,
-            ));
+            return Err(conversation_wire::map_error(RpcConversationError::PermissionDenied));
         }
         let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
         conv.sync_now(&self.component_id, &conversation).await.map_err(conversation_wire::map_error)
@@ -2240,19 +2281,23 @@ impl wit_conversation::Host for HostState {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::sync::{
-        Mutex,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        path::Path,
+        sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
 
     use serde_json::json;
+    use syneroym_app_orchestration::{ServiceId, StaticInventory, TopologyEpoch, TopologyMode};
     use syneroym_core::{local_registry::EndpointRegistry, storage::MockStorage};
     use syneroym_data_blob::ObjectStoreBlobProvider;
     use syneroym_data_db::SqliteStorageProvider;
     use syneroym_fdae::parse_and_validate;
-    use syneroym_identity::substrate;
+    use syneroym_identity::{Identity, substrate};
     use syneroym_mqtt_broker::MqttBrokerConfig;
-    use syneroym_rpc::{Capability, SessionContext};
+    use syneroym_rpc::{Capability, RelationshipProof, SessionContext};
 
     use super::*;
 
@@ -2286,6 +2331,82 @@ pub(crate) mod tests {
     /// that don't exercise `syneroym:proxy/proxy::call`.
     pub(crate) fn test_service_proxy() -> Weak<dyn ServiceProxy> {
         super::empty_service_proxy()
+    }
+
+    fn origin_host_state(
+        storage: Arc<dyn StorageProvider>,
+        origin: InvocationOrigin,
+        auth: AuthLevel,
+    ) -> HostState {
+        let caller = CallerContext {
+            caller_did: "did:key:zWireCaller".to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: "did:key:zWireCaller".to_string(),
+                ..Default::default()
+            },
+            auth,
+            proof: None,
+        };
+        HostState::new(
+            "origin-test".to_string(),
+            None,
+            Arc::new(KeyStore::new()),
+            storage,
+            test_blob_provider(),
+            caller,
+            0,
+            test_messaging_context(),
+            test_streaming_context(),
+            test_service_proxy(),
+            None,
+            false,
+            syneroym_rpc::empty_row_authorizer(),
+            None,
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .with_invocation_origin(origin)
+    }
+
+    /// The origin rule: a local dispatch is `internal` whatever identity it
+    /// carries; a wire dispatch reads the caller's auth, and a
+    /// substrate-injected level is never `verified`.
+    #[tokio::test]
+    async fn invocation_caller_origin_mapping() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+
+        for auth in [
+            AuthLevel::Delegated,
+            AuthLevel::Ucan,
+            AuthLevel::System,
+            AuthLevel::LocalElevated,
+            AuthLevel::LocalReadOnly,
+        ] {
+            let mut local = origin_host_state(storage.clone(), InvocationOrigin::Local, auth);
+            assert_eq!(
+                invocation::Host::caller(&mut local).await,
+                WitCallerOrigin::Internal,
+                "local call must be internal for {auth:?}"
+            );
+        }
+
+        for auth in [AuthLevel::Delegated, AuthLevel::Ucan] {
+            let mut wire = origin_host_state(storage.clone(), InvocationOrigin::Wire, auth);
+            assert_eq!(
+                invocation::Host::caller(&mut wire).await,
+                WitCallerOrigin::Verified("did:key:zWireCaller".to_string()),
+            );
+        }
+        for auth in [AuthLevel::System, AuthLevel::LocalElevated, AuthLevel::LocalReadOnly] {
+            let mut wire = origin_host_state(storage.clone(), InvocationOrigin::Wire, auth);
+            assert_eq!(
+                invocation::Host::caller(&mut wire).await,
+                WitCallerOrigin::Anonymous,
+                "a substrate-injected level must not read as verified on the wire ({auth:?})"
+            );
+        }
     }
 
     /// Records the last `ProxyRequest` it was invoked with, so a test can
@@ -2384,9 +2505,7 @@ pub(crate) mod tests {
     /// confront the argument.
     #[tokio::test]
     async fn an_enqueue_without_an_idempotency_key_is_refused() {
-        let resolver = Arc::new(LogicalResolver::new(Arc::new(
-            syneroym_app_orchestration::StaticInventory::new(),
-        )));
+        let resolver = Arc::new(LogicalResolver::new(Arc::new(StaticInventory::new())));
         let proxy = Arc::new(RecordingProxy::default());
         let temp_dir = tempfile::tempdir().unwrap();
         let mut host = dependency_host("frontend", None, resolver, &proxy, temp_dir.path());
@@ -2422,9 +2541,7 @@ pub(crate) mod tests {
     /// while nothing was queued.
     #[tokio::test]
     async fn an_enqueue_with_a_blank_idempotency_key_is_refused() {
-        let resolver = Arc::new(LogicalResolver::new(Arc::new(
-            syneroym_app_orchestration::StaticInventory::new(),
-        )));
+        let resolver = Arc::new(LogicalResolver::new(Arc::new(StaticInventory::new())));
         let proxy = Arc::new(RecordingProxy::default());
         let temp_dir = tempfile::tempdir().unwrap();
         let mut host = dependency_host("frontend", None, resolver, &proxy, temp_dir.path());
@@ -2453,9 +2570,7 @@ pub(crate) mod tests {
     /// guest-controlled string that leaves the sandbox.
     #[tokio::test]
     async fn an_over_long_idempotency_key_is_refused() {
-        let resolver = Arc::new(LogicalResolver::new(Arc::new(
-            syneroym_app_orchestration::StaticInventory::new(),
-        )));
+        let resolver = Arc::new(LogicalResolver::new(Arc::new(StaticInventory::new())));
         let proxy = Arc::new(RecordingProxy::default());
         let temp_dir = tempfile::tempdir().unwrap();
         let mut host = dependency_host("frontend", None, resolver, &proxy, temp_dir.path());
@@ -2481,7 +2596,7 @@ pub(crate) mod tests {
     async fn an_enqueued_dependency_is_stored_by_name_not_resolved_at_the_host() {
         use syneroym_app_orchestration::AppRegistry;
 
-        let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
+        let registry = Arc::new(StaticInventory::new());
         registry.register(
             TopologyKey::local(AppInstanceId::new("app-1"), LogicalServiceName::new("backend")),
             dependency_topology_entry(vec!["did:key:zBackendMember"]),
@@ -2592,14 +2707,10 @@ pub(crate) mod tests {
 
     fn dependency_topology_entry(members: Vec<&str>) -> syneroym_app_orchestration::TopologyEntry {
         syneroym_app_orchestration::TopologyEntry {
-            mode: if members.len() > 1 {
-                syneroym_app_orchestration::TopologyMode::Redundant
-            } else {
-                syneroym_app_orchestration::TopologyMode::Singleton
-            },
-            members: members.into_iter().map(syneroym_app_orchestration::ServiceId::new).collect(),
+            mode: if members.len() > 1 { TopologyMode::Redundant } else { TopologyMode::Singleton },
+            members: members.into_iter().map(ServiceId::new).collect(),
             sharding_strategy: None,
-            epoch: syneroym_app_orchestration::TopologyEpoch::default(),
+            epoch: TopologyEpoch::default(),
             cache_ttl: Duration::from_secs(60),
             not_after: None,
         }
@@ -2613,7 +2724,7 @@ pub(crate) mod tests {
         app_instance_id: Option<String>,
         resolver: Arc<LogicalResolver>,
         proxy: &Arc<RecordingProxy>,
-        db_dir: &std::path::Path,
+        db_dir: &Path,
     ) -> HostState {
         HostState::new(
             component_id.to_string(),
@@ -2638,7 +2749,7 @@ pub(crate) mod tests {
     async fn a_dependency_name_resolves_to_its_bound_member_before_the_request_is_built() {
         use syneroym_app_orchestration::AppRegistry;
 
-        let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
+        let registry = Arc::new(StaticInventory::new());
         registry.register(
             TopologyKey::local(AppInstanceId::new("app-1"), LogicalServiceName::new("backend")),
             dependency_topology_entry(vec!["did:key:zBackendMember"]),
@@ -2763,7 +2874,7 @@ pub(crate) mod tests {
     async fn a_routing_key_selects_deterministically_across_a_two_member_binding() {
         use syneroym_app_orchestration::AppRegistry;
 
-        let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
+        let registry = Arc::new(StaticInventory::new());
         registry.register(
             TopologyKey::local(AppInstanceId::new("app-1"), LogicalServiceName::new("backend")),
             dependency_topology_entry(vec!["did:key:zMemberA", "did:key:zMemberB"]),
@@ -2818,7 +2929,7 @@ pub(crate) mod tests {
     /// dedup on (ADR-0023 §4).
     #[tokio::test]
     async fn the_host_function_passes_the_guests_key_into_the_proxy_request() {
-        let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
+        let registry = Arc::new(StaticInventory::new());
         let resolver = Arc::new(LogicalResolver::new(registry));
         let proxy = Arc::new(RecordingProxy::default());
         let temp_dir = tempfile::tempdir().unwrap();
@@ -2848,7 +2959,7 @@ pub(crate) mod tests {
     /// The ordinary call is unchanged: no options, no key.
     #[tokio::test]
     async fn a_call_with_no_options_carries_no_idempotency_key() {
-        let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
+        let registry = Arc::new(StaticInventory::new());
         let resolver = Arc::new(LogicalResolver::new(registry));
         let proxy = Arc::new(RecordingProxy::default());
         let temp_dir = tempfile::tempdir().unwrap();
@@ -2873,7 +2984,7 @@ pub(crate) mod tests {
     async fn a_dependency_resolving_to_the_components_own_service_still_forwards_the_real_caller() {
         use syneroym_app_orchestration::AppRegistry;
 
-        let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
+        let registry = Arc::new(StaticInventory::new());
         registry.register(
             TopologyKey::local(AppInstanceId::new("app-1"), LogicalServiceName::new("self-dep")),
             dependency_topology_entry(vec!["did:key:zSelf"]),
@@ -3716,9 +3827,9 @@ pub(crate) mod tests {
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
         seed_one_remote_owned_document(storage_provider.clone()).await;
 
-        let identity = syneroym_identity::Identity::generate().unwrap();
+        let identity = Identity::generate().unwrap();
         let asserter_did = substrate::derive_did_key(&identity.public_key());
-        let proof = syneroym_rpc::RelationshipProof::sign(
+        let proof = RelationshipProof::sign(
             &identity,
             None,
             "employee",
@@ -3801,11 +3912,7 @@ pub(crate) mod tests {
 
     // -- sagas -----------------------------------------------------------
 
-    fn saga_host(
-        read_only: bool,
-        proxy: &Arc<RecordingProxy>,
-        db_dir: &std::path::Path,
-    ) -> HostState {
+    fn saga_host(read_only: bool, proxy: &Arc<RecordingProxy>, db_dir: &Path) -> HostState {
         HostState::new(
             "driver".to_string(),
             None,

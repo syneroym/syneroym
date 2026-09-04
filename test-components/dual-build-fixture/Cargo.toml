@@ -27,6 +27,7 @@ syneroym-wit-interfaces = { path = "../../crates/wit_interfaces", default-featur
     "conversation",
     "data-layer",
     "http",
+    "invocation",
     "messaging",
     "proxy",
     "signing",
@@ -48,3 +49,4 @@ async-trait.workspace = true
 "syneroym:vault" = { path = "wit/deps/vault" }
 "syneroym:http" = { path = "wit/deps/http" }
 "syneroym:signing" = { path = "wit/deps/signing" }
+"syneroym:invocation" = { path = "wit/deps/invocation" }

@@ -6,15 +6,17 @@ use core::fmt;
 use serde_json::json;
 use syneroym_app_host::{
     AppAppConfig, AppBlobReader, AppBlobWriter, AppConversation, AppDataLayer, AppHost,
-    AppWebSocket,
+    AppInvocation, AppWebSocket,
     types::{
         conversation::{ConversationKind, DeliveryState, Message},
         data_layer::{CollectionSchema, Mutation, QueryOptions, RecordWriteValue},
         http::{CallerAuth, FrameKind, HttpRequest, HttpResponse},
+        invocation::CallerOrigin,
         proxy::{CallOptions, CallTarget},
         signing::{Principal, RecordDraft},
     },
 };
+use syneroym_signed_record::{self as signed_record, Envelope, VerifyOptions};
 
 const MESSAGES: &str = "messages";
 const INBOX: &str = "inbox";
@@ -217,6 +219,12 @@ pub enum Request {
         #[serde(alias = "now_secs")]
         now_secs: Option<u64>,
     },
+
+    /// `syneroym:invocation`: reports the arm the host tells this call it
+    /// arrived on. The whole point of the interface, and the shim's own
+    /// rule is that a trait with only one of its two implementations
+    /// exercised is how the native build becomes second-class.
+    CallerOrigin,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -699,14 +707,10 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
             }))
         }
         Request::VerifyRecord { signed_json, now_secs } => {
-            let env: syneroym_signed_record::Envelope =
-                serde_json::from_str(&signed_json).map_err(fmt_err)?;
+            let env: Envelope = serde_json::from_str(&signed_json).map_err(fmt_err)?;
             let check_now = now_secs.unwrap_or(env.issued_at_secs);
-            let rec = syneroym_signed_record::verify(
-                &env,
-                &syneroym_signed_record::VerifyOptions::new(check_now),
-            )
-            .map_err(fmt_err)?;
+            let rec =
+                signed_record::verify(&env, &VerifyOptions::new(check_now)).map_err(fmt_err)?;
             Ok(json!({
                 "record_id": rec.record_id,
                 "signer_did": rec.signer_did,
@@ -716,6 +720,14 @@ async fn dispatch<H: AppHost>(host: &H, req: Request) -> Result<serde_json::Valu
                 "supersedes": rec.supersedes,
                 "valid": true,
             }))
+        }
+        Request::CallerOrigin => {
+            let arm = match AppInvocation::caller(host).await {
+                CallerOrigin::Internal => json!({ "arm": "internal" }),
+                CallerOrigin::Verified(did) => json!({ "arm": "verified", "did": did }),
+                CallerOrigin::Anonymous => json!({ "arm": "anonymous" }),
+            };
+            Ok(arm)
         }
     }
 }
@@ -853,6 +865,15 @@ pub async fn handle_http<H: AppHost>(host: &H, req: HttpRequest) -> Result<HttpR
     } else if path == "/whoami" {
         let caller_did = req.caller.as_ref().map(|c| c.did.as_str()).unwrap_or("anonymous");
         Ok(HttpResponse { status: 200, headers: vec![], body: caller_did.as_bytes().to_vec() })
+    } else if path == "/origin" {
+        // Reports `invocation.caller()`'s arm: a guest HTTP request is
+        // router ingress, so this must never answer `internal`.
+        let arm = match AppInvocation::caller(host).await {
+            CallerOrigin::Internal => "internal",
+            CallerOrigin::Verified(_) => "verified",
+            CallerOrigin::Anonymous => "anonymous",
+        };
+        Ok(HttpResponse { status: 200, headers: vec![], body: arm.as_bytes().to_vec() })
     } else {
         Ok(HttpResponse { status: 200, headers: vec![], body: b"ok".to_vec() })
     }

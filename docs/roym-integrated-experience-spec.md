@@ -91,9 +91,9 @@ through shared database access.
 | Service | Runs on | Owns | Main API |
 |---|---|---|---|
 | **Web entrypoint** | Every participant's substrate | The UI bundle; nothing else | serves static assets; forwards JSON-RPC to the four services below |
-| **Conversation** | Every participant's substrate | Conversations, messages, delivery state, outbox, group keys | `send`, `history`, `conversations`, `delivery-status` |
+| **Conversation** | Every participant's substrate | Conversations, messages, delivery state, outbox, group keys, and its own copy of every message body | `open`, `send`, `history`, `conversations`, `delivery-status`, `outbox`, `retry`, `search`, `delete-message`, `export`/`import` |
 | **Profile & Contacts** | Every participant's substrate | Own profile, contact list, favourites, block list, reports | `profile.get/set`, `contacts.*`, `block.*`, `report.*` |
-| **Catalog** | Provider's substrate | Listings, prices, service area, availability | `listing.*`, `availability.*` |
+| **Catalog** | Provider's substrate | Listings, prices, service area, availability | `listing.*` (incl. `verify`, `limits`/`set-limits`), `availability.*`, `export`/`import` |
 | **Transaction** | Provider's substrate | Requests, quotes, agreements, bookings, orders, receipts | `request.*`, `quote.*`, `agreement.*`, `receipt.*` |
 | **Directory** | SynOrg's substrate | Member list, published listings, search index, membership credentials, revocations | `search`, `member.*`, `credential.*`, `revocation.*` |
 
@@ -462,7 +462,7 @@ one.
 | Record | Signed by | Proves | Does **not** prove |
 |---|---|---|---|
 | `profile` | The person | Who published this person's card, and the Conversation address they claim | That the person is who they say they are outside this network |
-| `listing` | Provider | Who published this offer, and when | That the offer is honest or the provider is competent |
+| `listing` | Provider | Who published this offer, and when | That the offer is honest or the provider is competent; a listing's stated payee is not agreed terms until an `agreement-receipt` binds it |
 | `membership-credential` | SynOrg | This SynOrg approved this provider, within a scope, until an expiry date | That the SynOrg vetted them well, or that any other group agrees |
 | `revocation` | SynOrg | This SynOrg withdrew a credential at a stated time | That every cached copy is gone |
 | `request` | Consumer | What the consumer asked for | — |
@@ -472,6 +472,27 @@ one.
 | `fulfilment-receipt` | Both | Both parties agreed the work was done | Quality, or that no dispute follows |
 | `moderation-decision` | SynOrg | This group applied this rule to this member at this time | Global truth; another group is free to disagree |
 
+**What "Signed by: Both" means** — recorded 2026-09-04 (M06C `D-06C-12`).
+Every envelope carries one issuer and one signature. A record signed by both
+parties is therefore a **pair of independent attestations** of the same record
+type, one from each party, each referencing the same subject record. Neither
+half is nested inside the other, and neither carries a condition of its own.
+The pair is complete when both halves exist, from the two named parties,
+inside their validity windows.
+
+For `payment-acknowledgement` and `fulfilment-receipt` the first release also
+treats the half made **against its own issuer's interest** — the payee
+confirming receipt, the consumer confirming completion — as enough to finish
+that step on its own, because the matching self-serving half adds nothing a
+reader should weigh. The missing half is never invented: this list always
+says only what was actually signed.
+
+Two types in the [card table](#cards) carry a *Signed by* column but are not
+in the list above. `payment-request` belongs in it, as a provider attestation.
+`booking-progress` deliberately does not — it is state written by the
+provider's Transaction service, not a statement by a party, and it is never
+evidence of anything.
+
 Two rules that follow:
 
 - **Payment evidence is not a public listing field.** A `payment-acknowledgement`
@@ -480,8 +501,16 @@ Two rules that follow:
   signals must not be pushed into one global public store, and search results
   must not carry a party's payment history by default.
 - **Deleting a message does not delete the other party's record.** A person can
-  remove their own local copy and ask the other side to do the same. Agreements
-  and receipts survive that, because both parties signed them.
+  remove their own local copy and ask the other side to do the same. The
+  request travels as a message of the reserved content type
+  `application/vnd.roym.deletion-request+json`; a client honours it only for a
+  message the requester themselves authored, and whether it honours it at all
+  is the other client's choice. The product says so in the UI: *"The local
+  copy is removed and a deletion record kept. A request to delete it was sent
+  to the other side; whether their client honours it is theirs to decide, and
+  this cannot check. This installation's own message store still holds what it
+  received."* Agreements and receipts survive that, because both parties signed
+  them.
 
 ---
 
@@ -580,6 +609,10 @@ These are requirements, not polish, and they are in R1.
 - **Retention and deletion:** every durable record has a stated owner, retention
   policy, and deletion or tombstone behaviour. Export and account deletion are
   separate actions. The product does not promise deletion it cannot enforce.
+  Roym keeps its own copy of every message it sends and receives, separate from
+  the copy the substrate keeps for delivery — that copy is what export, search,
+  and delete act on, and it means each message is stored twice on this machine.
+  `profile.policy` states this in plain words.
 - **Backup and recovery:** encrypted backup with a restore path that is tested
   on a clean node before release.
 - **One person per installation, and that person deploys it.** For the first
@@ -659,11 +692,18 @@ Syneroym.
   `syneroym:messaging` publish/subscribe channel. They are best-effort and are
   never part of durable delivery.
 
-**Message deletion.** Deleting writes a durable deletion record and removes the
-local copy. It does **not** revoke a key: in a group, every member already holds
-the epoch key and may already hold the ciphertext. A key cannot be taken back.
-Deletion is a request that well-behaved clients honour, plus local removal.
-The product must say this, not imply cryptographic erasure.
+**Message deletion.** Deleting writes a durable deletion record (the row stays,
+its body is dropped) and removes the local copy. It does **not** revoke a key:
+in a group, every member already holds the epoch key and may already hold the
+ciphertext. A key cannot be taken back. The request to the other side travels
+as a message of the reserved content type
+`application/vnd.roym.deletion-request+json`, and a client honours it only for
+a message the requester themselves authored in that conversation. Whether it
+honours it at all is that client's choice. The Hub says exactly this before it
+acts: *"The local copy is removed and a deletion record kept. A request to
+delete it was sent to the other side; whether their client honours it is theirs
+to decide, and this cannot check. This installation's own message store still
+holds what it received."* The product must not imply cryptographic erasure.
 
 ### Cards
 

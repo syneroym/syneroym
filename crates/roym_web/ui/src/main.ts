@@ -2,6 +2,8 @@ import { renderCard } from "./cards/render";
 import { call } from "./rpc";
 import { renderBackup } from "./screens/backup";
 import { renderContacts } from "./screens/contacts";
+import { renderListings } from "./screens/listings";
+import { renderMessages } from "./screens/messages";
 import { renderProfile } from "./screens/profile";
 import { renderSafety } from "./screens/safety";
 import { renderSetup } from "./screens/setup";
@@ -97,6 +99,8 @@ async function renderTabs(container: HTMLElement, did: string) {
   const tabs = [
     { name: "Profile", render: () => renderProfile(tabContainer) },
     { name: "Contacts", render: () => renderContacts(tabContainer) },
+    { name: "Messages", render: () => renderMessages(tabContainer) },
+    { name: "Listings", render: () => renderListings(tabContainer) },
     { name: "Safety", render: () => renderSafety(tabContainer) },
     { name: "Backup", render: () => renderBackup(tabContainer) },
     { name: "Components", render: () => renderHome(tabContainer, did) },

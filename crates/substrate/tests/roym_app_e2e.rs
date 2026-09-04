@@ -36,13 +36,14 @@ use syneroym_core::{
     dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, RegistryClient},
     util::short_hash,
 };
-use syneroym_identity::{Identity, substrate};
+use syneroym_identity::{DelegationCertificate, Identity, substrate};
 use syneroym_sdk::{
     SyneroymClient,
     deploy::{
         self, ApplyRequest, DeployTarget, apply_plan, certify_instance, member_registry_record,
     },
 };
+use syneroym_signed_record::SCOPE_RECORD_SIGNING;
 
 mod common;
 use common::{SubstrateTestContext, alloc_ports};
@@ -146,6 +147,7 @@ struct RoymDeployment {
     web_did: String,
     dir_did: String,
     profile_did: String,
+    catalog_did: String,
     alice_did: String,
     // Held for the deployment's lifetime: the auth role's
     // `person_identities_dir` points inside this directory, and dropping the
@@ -270,6 +272,13 @@ async fn deploy_roym_app() -> RoymDeployment {
         .unwrap();
     let profile_did = profile_svc.service_id.as_str().to_string();
 
+    let catalog_svc = new_plan
+        .services
+        .iter()
+        .find(|s| s.logical_ref.service_name.as_str() == "catalog")
+        .unwrap();
+    let catalog_did = catalog_svc.service_id.as_str().to_string();
+
     RoymDeployment {
         ctx,
         gateway_url,
@@ -277,6 +286,7 @@ async fn deploy_roym_app() -> RoymDeployment {
         web_did,
         dir_did,
         profile_did,
+        catalog_did,
         alice_did,
         _person_identities_dir: person_identities_dir,
     }
@@ -291,12 +301,14 @@ async fn test_roym_app_e2e_lifecycle() {
         web_did,
         dir_did,
         profile_did,
+        catalog_did,
         alice_did,
         _person_identities_dir,
     } = deploy_roym_app().await;
     let web_did = web_did.as_str();
     let dir_did = dir_did.as_str();
     let profile_did = profile_did.as_str();
+    let catalog_did = catalog_did.as_str();
     // `pool_max_idle_per_host(0)` forces a fresh connection per request: the
     // gateway pins a whole socket to one upstream after the first request
     // (ADR-0024 §P1), and the login POST goes to the auth service while every
@@ -430,6 +442,75 @@ async fn test_roym_app_e2e_lifecycle() {
     let anon_json: Value = anon_resp.json().await.unwrap();
     assert_eq!(anon_json["result"]["auth"], "self-asserted");
     assert_ne!(anon_json["result"]["did"], alice_did);
+
+    // 7. A signed listing round-trips through `listing.verify`. Enrol the catalog's
+    //    record-signing certificate the way `roym enrol-signing` does, sign one
+    //    listing, read its envelope back, and verify it locally -- the "verify,
+    //    never the directory" rule as a verb.
+    let rpc = async |method: &str, params: Value| -> Value {
+        client
+            .post(format!("{gateway_url}/rpc"))
+            .header("Host", &host_header)
+            .header("Cookie", format!("{SESSION_COOKIE_NAME}={token}"))
+            .json(&json!({ "jsonrpc": "2.0", "id": 9, "method": method, "params": params }))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+
+    let catalog_status = rpc("catalog.signing-status", json!({})).await;
+    let signing_did =
+        catalog_status["result"]["signing_did"].as_str().unwrap_or_default().to_string();
+    assert!(signing_did.starts_with("did:key:"), "catalog signing-status: {catalog_status}");
+    let signing_pubkey = substrate::resolve_did_key(&signing_did).unwrap();
+    let alice_identity = Identity::from_bytes(&ctx.owner.to_bytes());
+    let cert = DelegationCertificate::issue(
+        &alice_identity,
+        signing_pubkey,
+        24 * 3600,
+        SCOPE_RECORD_SIGNING.to_string(),
+    )
+    .unwrap();
+    let install = rpc(
+        "catalog.install-signing-certificate",
+        json!({ "certificate": cert.to_json().unwrap() }),
+    )
+    .await;
+    assert_eq!(install["result"]["master_did"], alice_did, "install: {install}");
+
+    // Any resolvable string; `listing.verify` only checks the payload.
+    let conv_address = catalog_did.to_string();
+    let set = rpc(
+        "listing.set",
+        json!({
+            "title": "Hedge trimming",
+            "summary": "Neat hedges, fortnightly.",
+            "categories": ["gardening"],
+            "conversation_address": conv_address,
+            "payment": {
+                "currency": "EUR",
+                "model": "per-hour",
+                "amount_minor": 3500,
+                "tax_included": true,
+                "payee": "A. Gardener"
+            }
+        }),
+    )
+    .await;
+    let listing_id = set["result"]["listing_id"].as_str().unwrap_or_default().to_string();
+    assert!(listing_id.starts_with("lst_"), "listing.set: {set}");
+
+    let got = rpc("listing.get", json!({ "listing_id": listing_id })).await;
+    let envelope = got["result"]["envelope"].as_str().unwrap().to_string();
+
+    let verified = rpc("listing.verify", json!({ "envelope": envelope })).await;
+    assert_eq!(verified["result"]["verified"], true, "listing.verify: {verified}");
+    assert_eq!(verified["result"]["listing_id"], listing_id);
+    assert_eq!(verified["result"]["issuer"], alice_did);
+    assert_eq!(verified["result"]["conversation_address"], conv_address);
 
     ctx.teardown().await;
 }

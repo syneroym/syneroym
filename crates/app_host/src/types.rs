@@ -40,6 +40,10 @@ pub mod app_config {
     pub use syneroym_wit_interfaces::app_config::syneroym::app_config::app_config::ConfigError;
 }
 
+pub mod invocation {
+    pub use syneroym_wit_interfaces::invocation::syneroym::invocation::invocation::CallerOrigin;
+}
+
 pub mod vault {
     pub use syneroym_wit_interfaces::vault::syneroym::vault::vault::VaultError;
 }

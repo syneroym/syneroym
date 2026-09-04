@@ -6,7 +6,10 @@
 //! is reported from the cross-node e2e test instead (`coordinator_iroh`'s
 //! `test_cross_node_proxy_call`), not benched here.
 
-use std::{fs, sync::Arc};
+use std::{
+    fs,
+    sync::{Arc, Weak},
+};
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use dashmap::DashMap;
@@ -76,7 +79,7 @@ fn bench_proxy_local_native(c: &mut Criterion) {
         registry,
         Arc::new(RegistryClient::new(false, None)),
         Arc::downgrade(&native_dispatch),
-        std::sync::Weak::new(),
+        Weak::new(),
         Arc::new(IrohHop::new(None, RetryPolicy::default())),
         Arc::new(Identity::generate().unwrap()),
         RetryPolicy::default(),
@@ -124,7 +127,9 @@ fn bench_proxy_local_wasm(c: &mut Criterion) {
             .unwrap(),
     );
     app_sandbox_engine.self_weak.set(Arc::downgrade(&app_sandbox_engine)).unwrap();
-    app_sandbox_engine.compile_and_cache_wasm("greeter-svc", &wasm_bytes, None).unwrap();
+    runtime
+        .block_on(app_sandbox_engine.compile_and_cache_wasm("greeter-svc", wasm_bytes, None))
+        .unwrap();
 
     runtime
         .block_on(registry.register(

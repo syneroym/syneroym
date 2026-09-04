@@ -264,12 +264,12 @@ pub async fn handle_certificate_verb<H: AppHost>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{collections::HashMap, sync::Mutex};
 
     use syneroym_app_host::{
-        AppAppConfig, AppBlobStore, AppConversation, AppDataLayer, AppMessaging, AppProxy,
-        AppSigning, AppVault, AppWebSocket,
+        AppAppConfig, AppBlobStore, AppConversation, AppDataLayer, AppInvocation, AppMessaging,
+        AppProxy, AppSigning, AppVault, AppWebSocket,
         types::{
             app_config::ConfigError,
             blob_store::BlobError,
@@ -282,6 +282,7 @@ mod tests {
                 RecordReadValue,
             },
             http::FrameKind,
+            invocation::CallerOrigin,
             messaging::MessagingError,
             proxy::{CallOptions, CallTarget, ProxyError},
             signing::{RecordDraft, SigningError, SigningIdentity},
@@ -293,10 +294,28 @@ mod tests {
 
     use super::*;
 
+    /// A `#[cfg(test)]` `AppHost` stub shared across `roym_core`'s own unit
+    /// tests -- `admit` extends it with a settable `CallerOrigin` rather
+    /// than standing up a second stub.
     #[derive(Default)]
-    struct TestHost {
+    pub(crate) struct TestHost {
         storage: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
         signing_id: Mutex<Option<SigningIdentity>>,
+        /// What `AppInvocation::caller` reports. `None` reads as
+        /// `CallerOrigin::Internal`, the ordinary local-dispatch answer.
+        caller_origin: Mutex<Option<CallerOrigin>>,
+    }
+
+    impl TestHost {
+        pub(crate) fn set_caller_origin(&self, origin: CallerOrigin) {
+            *self.caller_origin.lock().unwrap() = Some(origin);
+        }
+    }
+
+    impl AppInvocation for TestHost {
+        async fn caller(&self) -> CallerOrigin {
+            self.caller_origin.lock().unwrap().clone().unwrap_or(CallerOrigin::Internal)
+        }
     }
 
     impl AppDataLayer for TestHost {
@@ -393,7 +412,7 @@ mod tests {
         }
     }
 
-    struct DummyWriter;
+    pub(crate) struct DummyWriter;
     impl syneroym_app_host::AppBlobWriter for DummyWriter {
         async fn write(&mut self, _chunk: Vec<u8>) -> Result<(), BlobError> {
             unimplemented!()
@@ -404,7 +423,7 @@ mod tests {
         async fn abort(self) {}
     }
 
-    struct DummyReader;
+    pub(crate) struct DummyReader;
     impl syneroym_app_host::AppBlobReader for DummyReader {
         async fn read(&mut self, _max_bytes: u32) -> Result<Vec<u8>, BlobError> {
             unimplemented!()

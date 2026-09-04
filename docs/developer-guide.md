@@ -1438,6 +1438,34 @@ rather than deploying them as separate WASM components. Never enable it
 alongside a WASM deploy of the same app on the same node — the router warns
 if it sees both.
 
+##### Enrolling record signing and finding your address
+
+Before a person can sign a `profile` or a `listing` record, each Roym
+service that signs must hold a `record-signing` delegation certificate.
+One command enrols all three that sign — `profile`, `catalog`, and
+`conversation` — minting one certificate per service against that
+service's own signing key, under the deployer's master key on the host:
+
+```bash
+roymctl --dir <DIR> --as owner roym enrol-signing --gateway-url http://localhost:7960
+roymctl --dir <DIR> --as owner roym signing-status   # one line per service
+```
+
+`roym enrol-signing` exits non-zero if any service fails, and reports the
+rest. A browser-only person cannot run it today — it needs the master key
+on a shell (deferred-backlog §3).
+
+So others can message this installation, a person pastes their own Roym
+Conversation service id into `profile.set` as `conversation_address`.
+`roym address` prints it, plus the Hub's gateway host, by reading
+`svc list` — no deploy log needed:
+
+```bash
+roymctl --dir <DIR> roym address
+# conversation service id: did:key:z...   (paste into profile.set)
+# Hub gateway host:        s<web-did-hash>.localhost
+```
+
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy
 
 > [!TIP]

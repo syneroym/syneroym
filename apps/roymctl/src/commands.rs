@@ -311,7 +311,19 @@ pub async fn run(
             session::handle(&command, &dir, run_as.as_deref()).await?;
         }
         Commands::Roym { command } => {
-            roym::handle(&command, &dir, run_as.as_deref(), ucan_path.as_deref()).await?;
+            // `substrate_opt` is resolved on demand inside the handler: only
+            // `roym address` needs a substrate to talk to, and
+            // `get_substrate_did` hard-fails when neither `--substrate` nor
+            // `substrate.key` is present.
+            roym::handle(
+                &command,
+                &api_url,
+                substrate_opt,
+                &dir,
+                run_as.as_deref(),
+                ucan_path.as_deref(),
+            )
+            .await?;
         }
     }
     Ok(())

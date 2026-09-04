@@ -14,6 +14,7 @@ use syneroym_app_host::{
     },
 };
 use syneroym_roym_core::{
+    admit,
     backup::{
         BUNDLE_VERSION, Bundle, BundleManifest, SECTION_BLOCKS, SECTION_CONTACTS, SECTION_PROFILE,
         SECTION_REPORTS,
@@ -191,6 +192,10 @@ pub async fn status<H: AppHost>(_host: &H) -> Result<String, String> {
 }
 
 pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
+    if let Some(resp) = admit::require_internal(host).await {
+        return resp;
+    }
+
     if let Some(resp) = signing::handle_certificate_verb(host, "profile.", &req).await {
         return resp;
     }
@@ -200,7 +205,7 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
         "profile.policy" => Response::ok(json!({
             "statement": "A blocked sender's messages are refused at this node's inbox. They are never shown in any conversation, never fire a notification, and are never counted. Block is enforced locally by this installation's own Conversation service.",
             "one_person_per_installation": true,
-            "retention": "app-data stored until explicitly deleted or restored",
+            "retention": "app-data stored until explicitly deleted or restored. This installation keeps its own copy of every message it sends and receives, separate from the copy the substrate keeps for delivery. That is what an export, a search, and a delete act on, and it means each message is stored twice on this machine.",
         })),
         "profile.get" => {
             let owner_res = signing::owner_did(host).await;

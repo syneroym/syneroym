@@ -24,6 +24,7 @@ use syneroym_chunk_transfer::{self as chunk_transfer, ChunkSink};
 use syneroym_core::{
     config::SubstrateConfig,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
+    record_signer::NodeRecordSigner,
     streaming::StreamDirection,
 };
 use syneroym_data_blob::traits::BlobProvider;
@@ -32,8 +33,8 @@ use syneroym_data_keystore::KeyStore;
 use syneroym_fdae::Policy;
 use syneroym_mqtt_broker::{MqttBroker, SubscriptionHandle};
 use syneroym_rpc::{
-    AbacAuthContext, AbacError, AuthLevel, CallerContext, CandidateRow, JsonRpcRequest,
-    RowAuthorizer, RowDecision, ServiceProxy,
+    AbacAuthContext, AbacError, AuthLevel, CallerContext, CandidateRow, ConversationDeliveryState,
+    JsonRpcRequest, RowAuthorizer, RowDecision, ServiceProxy, WebSocketSenders,
 };
 pub use syneroym_rpc::{WebSocketReceiver, WebSocketSender};
 use syneroym_wit_interfaces::{
@@ -50,13 +51,15 @@ use syneroym_wit_interfaces::{
         proxy::{proxy, saga},
         vault::vault,
     },
+    http_host::syneroym::http::websocket,
+    invocation_host::syneroym::invocation::invocation,
     signing_host::syneroym::signing::signing,
 };
 use tokio::{
     fs as tokio_fs,
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     sync::{OwnedSemaphorePermit, Semaphore, oneshot},
-    time,
+    task, time,
 };
 use tracing::{debug, error, info, warn};
 use wasmtime::{
@@ -68,8 +71,8 @@ use wasmtime::{
 use wasmtime_wasi::p2;
 
 use crate::{
-    conversions::{json_to_wasm_params, wasm_results_to_json_string},
-    host_capabilities::{HostState, MessagingContext},
+    conversions,
+    host_capabilities::{self, HostState, InvocationOrigin, MessagingContext},
     http,
     stream::{self, GuestStreamCursor, GuestStreamSink, StreamContext, StreamRegistry},
 };
@@ -203,7 +206,7 @@ pub struct AppSandboxEngine {
     /// at the composition root and wired to each other afterward.
     pub conversation: OnceLock<Weak<dyn syneroym_rpc::ConversationHost>>,
     /// The node's record signer (`syneroym:signing`).
-    pub record_signer: OnceLock<Arc<syneroym_core::record_signer::NodeRecordSigner>>,
+    pub record_signer: OnceLock<Arc<NodeRecordSigner>>,
     /// Live guest-delivery subscriptions, keyed `(service_id,
     /// namespaced_topic)`. Dropping an entry unsubscribes from the broker
     /// (see `SubscriptionHandle::drop`).
@@ -335,6 +338,18 @@ struct InstanceOptions {
     /// Overrides the service's own quota-derived fuel. `None` keeps it.
     fuel_override: Option<u64>,
     read_only: bool,
+    /// Where this call entered the node. `Local` for every path except the
+    /// router's inbound wire dispatch.
+    invocation_origin: InvocationOrigin,
+}
+
+impl InstanceOptions {
+    /// Router ingress -- guest HTTP, a raw stream, a websocket frame. The
+    /// call came off the wire, so `invocation.caller()` must report
+    /// `verified`/`anonymous`, never `internal`.
+    fn from_wire() -> Self {
+        Self { invocation_origin: InvocationOrigin::Wire, ..Self::default() }
+    }
 }
 
 /// Pool slots reserved out of `max_concurrent_instances` for short-lived
@@ -757,12 +772,10 @@ impl AppSandboxEngine {
         host_api::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         proxy::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         saga::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
-        syneroym_wit_interfaces::http_host::syneroym::http::websocket::add_to_linker::<
-            _,
-            HasSelf<HostState>,
-        >(&mut linker, |state| state)?;
+        websocket::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         conversation::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         signing::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
+        invocation::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         Ok(linker)
     }
 
@@ -979,10 +992,9 @@ impl AppSandboxEngine {
             }
         }
 
-        // 4. Compile and cache the component; drop the raw bytes immediately to free
-        //    memory
-        self.compile_and_cache_wasm(service_id, &bytes, quota)?;
-        drop(bytes);
+        // 4. Compile and cache the component; the raw bytes are moved in and dropped by
+        //    the compile itself, freeing the memory
+        self.compile_and_cache_wasm(service_id, bytes, quota).await?;
 
         // 5. Invoke the guest's schema lifecycle hook: `init()` on a fresh service (no
         //    existing database), `migrate()` on a re-deploy of a service with existing
@@ -1021,9 +1033,10 @@ impl AppSandboxEngine {
         interface_name: &str,
         request: &JsonRpcRequest,
     ) -> Result<String> {
-        let wasm_results =
-            self.execute_wasm_vals(service_id, interface_name, request, None).await?;
-        wasm_results_to_json_string(&wasm_results)
+        let wasm_results = self
+            .execute_wasm_vals(service_id, interface_name, request, None, InvocationOrigin::Local)
+            .await?;
+        conversions::wasm_results_to_json_string(&wasm_results)
     }
 
     /// Typed entry point (M04A Slice A1): the guest's results as a real JSON
@@ -1046,9 +1059,29 @@ impl AppSandboxEngine {
         request: &JsonRpcRequest,
         caller: Option<CallerContext>,
     ) -> Result<Value> {
-        let wasm_results =
-            self.execute_wasm_vals(service_id, interface_name, request, caller).await?;
-        crate::conversions::wasm_results_to_json(&wasm_results)
+        let wasm_results = self
+            .execute_wasm_vals(service_id, interface_name, request, caller, InvocationOrigin::Local)
+            .await?;
+        conversions::wasm_results_to_json(&wasm_results)
+    }
+
+    /// A call that arrived over the network. The only caller is the
+    /// router's own JSON-RPC dispatch (`dispatch.rs`); every other path
+    /// into a component originates on this node and uses
+    /// [`Self::execute_wasm_json`]. The guest sees the difference through
+    /// `syneroym:invocation/invocation.caller`: this entry point makes it
+    /// `verified(did)` or `anonymous`, the local one makes it `internal`.
+    pub async fn execute_wasm_json_from_wire(
+        &self,
+        service_id: &str,
+        interface_name: &str,
+        request: &JsonRpcRequest,
+        caller: Option<CallerContext>,
+    ) -> Result<Value> {
+        let wasm_results = self
+            .execute_wasm_vals(service_id, interface_name, request, caller, InvocationOrigin::Wire)
+            .await?;
+        conversions::wasm_results_to_json(&wasm_results)
     }
 
     /// The `rpc` health-probe entry point (M05A A5c §19.13/D-A5c-12):
@@ -1083,6 +1116,7 @@ impl AppSandboxEngine {
         interface_name: &str,
         request: &JsonRpcRequest,
         caller: Option<CallerContext>,
+        origin: InvocationOrigin,
     ) -> Result<Vec<Val>> {
         Self::validate_service_id(service_id)?;
         let _guard = ActiveInstanceGuard::new();
@@ -1091,7 +1125,7 @@ impl AppSandboxEngine {
         // TODO: Later optimize this by caching things like function parameter details
         // on first execution, so we don't have to do the same lookups every time.
         let (mut store, func, results_len, item) = self
-            .prepare_wasm_execution(service_id, interface_name, &request.method, caller)
+            .prepare_wasm_execution(service_id, interface_name, &request.method, caller, origin)
             .await?;
 
         // Parse parameters based on ComponentFunc signature
@@ -1103,7 +1137,7 @@ impl AppSandboxEngine {
         debug!("extracted the function and parameter iter");
 
         // Bind JSON-RPC params to the typed signature (named or positional).
-        let wasm_params = json_to_wasm_params(params_iter, &request.params)?;
+        let wasm_params = conversions::json_to_wasm_params(params_iter, &request.params)?;
 
         debug!("created input types");
 
@@ -1266,7 +1300,7 @@ impl AppSandboxEngine {
             .service_proxy
             .get()
             .cloned()
-            .unwrap_or_else(crate::host_capabilities::empty_service_proxy);
+            .unwrap_or_else(host_capabilities::empty_service_proxy);
         // `self_weak` is set once by the composition root immediately after
         // this engine is wrapped in an `Arc`, and `AppSandboxEngine` is the
         // sole `RowAuthorizer` implementation -- unsized coercion turns the
@@ -1287,7 +1321,7 @@ impl AppSandboxEngine {
             .conversation
             .get()
             .cloned()
-            .unwrap_or_else(crate::host_capabilities::empty_conversation_host);
+            .unwrap_or_else(host_capabilities::empty_conversation_host);
         let host_state = HostState::new(
             service_id.to_string(),
             max_memory_bytes,
@@ -1307,7 +1341,8 @@ impl AppSandboxEngine {
         )
         .with_conversation(conversation)
         .with_websocket_senders(self.websocket_senders())
-        .with_record_signer(self.record_signer.get().cloned());
+        .with_record_signer(self.record_signer.get().cloned())
+        .with_invocation_origin(opts.invocation_origin);
 
         debug!("created wasi ctx and host state");
 
@@ -1347,6 +1382,7 @@ impl AppSandboxEngine {
         interface_name: &str,
         method_name: &str,
         caller: Option<CallerContext>,
+        origin: InvocationOrigin,
     ) -> Result<(Store<HostState>, Func, usize, ComponentItem)> {
         // This is the ordinary dispatch path -- reached from wire-originated
         // JSON-RPC (`dispatch.rs`) and guest-to-guest proxy calls, both of
@@ -1381,7 +1417,7 @@ impl AppSandboxEngine {
                 service_id,
                 caller,
                 self.dispatch_epoch_ticks,
-                InstanceOptions::default(),
+                InstanceOptions { invocation_origin: origin, ..InstanceOptions::default() },
             )
             .await?;
 
@@ -1517,7 +1553,7 @@ impl AppSandboxEngine {
     /// Returns the shared `WebSocketSenders` table, initializing with a default
     /// instance if none was set by the composition root.
     pub fn websocket_senders(&self) -> Arc<syneroym_rpc::WebSocketSenders> {
-        self.websocket_senders.get_or_init(syneroym_rpc::WebSocketSenders::new).clone()
+        self.websocket_senders.get_or_init(WebSocketSenders::new).clone()
     }
 
     /// Registers a unicast sender channel for an active WebSocket connection,
@@ -1676,9 +1712,9 @@ impl AppSandboxEngine {
 
     fn conversation_state_str(s: syneroym_rpc::ConversationDeliveryState) -> &'static str {
         match s {
-            syneroym_rpc::ConversationDeliveryState::Pending => "pending",
-            syneroym_rpc::ConversationDeliveryState::Delivered => "delivered",
-            syneroym_rpc::ConversationDeliveryState::Failed => "failed",
+            ConversationDeliveryState::Pending => "pending",
+            ConversationDeliveryState::Delivered => "delivered",
+            ConversationDeliveryState::Failed => "failed",
         }
     }
 
@@ -1738,9 +1774,9 @@ impl AppSandboxEngine {
                 ComponentItem::ComponentFunc(f) => f.params(),
                 _ => return,
             };
-            let wasm_params = match crate::conversions::json_to_wasm_params(
+            let wasm_params = match conversions::json_to_wasm_params(
                 params_iter,
-                &serde_json::Value::Array(vec![payload.clone()]),
+                &Value::Array(vec![payload.clone()]),
             ) {
                 Ok(p) => p,
                 Err(e) => {
@@ -1780,9 +1816,9 @@ impl AppSandboxEngine {
         const GUEST_API_INTERFACE: &str = "syneroym:conversation/guest-api@0.1.0";
         const MAX_ATTEMPTS: u32 = 4;
         const RETRY_BACKOFF: Duration = Duration::from_millis(50);
-        let params_json = serde_json::Value::Array(vec![
-            serde_json::Value::String(message_id.clone()),
-            serde_json::Value::String(Self::conversation_state_str(state).to_string()),
+        let params_json = Value::Array(vec![
+            Value::String(message_id.clone()),
+            Value::String(Self::conversation_state_str(state).to_string()),
         ]);
 
         for attempt in 1..=MAX_ATTEMPTS {
@@ -1828,10 +1864,7 @@ impl AppSandboxEngine {
                 ComponentItem::ComponentFunc(f) => f.params(),
                 _ => return,
             };
-            let wasm_params = match crate::conversions::json_to_wasm_params(
-                params_iter,
-                &params_json,
-            ) {
+            let wasm_params = match conversions::json_to_wasm_params(params_iter, &params_json) {
                 Ok(p) => p,
                 Err(e) => {
                     warn!(service_id, error = %e, "conversation: could not encode on-delivery-state params");
@@ -1962,27 +1995,41 @@ impl AppSandboxEngine {
             } else {
                 None
             };
-            self.compile_and_cache_wasm(service_id, &bytes, quota)?;
+            self.compile_and_cache_wasm(service_id, bytes, quota).await?;
         } else {
             warn!("WASM file not found on disk for service: {:?}", file_path);
         }
         Ok(())
     }
 
-    /// Helper to compile a WASM binary and store it in the cache
-    pub fn compile_and_cache_wasm(
+    /// Helper to compile a WASM binary and store it in the cache.
+    ///
+    /// The compile runs on a blocking thread, not the calling task's own.
+    /// Cranelift is synchronous and CPU-bound: a component of a few
+    /// hundred kilobytes takes over a second here, and several seconds
+    /// when wasmtime itself is built unoptimized (any test profile). Left
+    /// on an async worker it stalls every other task on that thread,
+    /// including this node's iroh endpoint -- and iroh caps a QUIC path's
+    /// idle timeout at 6.5s with no way to raise it, so a compile that
+    /// outlasts that makes the peer abandon the path and the very deploy
+    /// RPC that asked for the compile dies with "connection lost".
+    pub async fn compile_and_cache_wasm(
         &self,
         service_id: &str,
-        bytes: &[u8],
+        bytes: Vec<u8>,
         quota: Option<WasmResourceQuota>,
     ) -> Result<()> {
-        let component = Component::new(&self.engine, bytes)
-            .map_err(|e| anyhow::anyhow!("Failed to compile WASM component: {e}"))?;
-
-        let instance_pre = self
-            .linker
-            .instantiate_pre(&component)
-            .map_err(|e| anyhow::anyhow!("Failed to pre-link WASM component: {e}"))?;
+        let engine = self.engine.clone();
+        let linker = self.linker.clone();
+        let instance_pre = task::spawn_blocking(move || {
+            let component = Component::new(&engine, &bytes)
+                .map_err(|e| anyhow!("Failed to compile WASM component: {e}"))?;
+            linker
+                .instantiate_pre(&component)
+                .map_err(|e| anyhow!("Failed to pre-link WASM component: {e}"))
+        })
+        .await
+        .context("WASM compile task failed to complete")??;
 
         self.components.insert(service_id.to_string(), (instance_pre, quota));
         // A re-deploy compiles and re-caches the component here; evict any
@@ -2013,11 +2060,12 @@ impl AppSandboxEngine {
     ) -> Result<(Store<HostState>, Instance, Option<u64>)> {
         // `service_system`, never `local_elevated` -- same reasoning as
         // `deliver_message`: the component acts as itself, not as an admin.
+        // `from_wire`: a raw stream is always peer-initiated router ingress.
         self.build_store_and_instantiate(
             service_id,
             CallerContext::service_system(service_id),
             self.dispatch_epoch_ticks,
-            InstanceOptions::default(),
+            InstanceOptions::from_wire(),
         )
         .await
     }
@@ -2300,6 +2348,7 @@ impl AppSandboxEngine {
                 InstanceOptions {
                     fuel_override: Some(self.abac_max_instructions),
                     read_only: true,
+                    ..InstanceOptions::default()
                 },
             )
             .await
@@ -2500,12 +2549,16 @@ impl AppSandboxEngine {
         let caller = caller.unwrap_or_else(|| CallerContext::service_system(service_id));
 
         let _active = ActiveInstanceGuard::new();
+        // `from_wire`: a guest HTTP request is always router ingress, never
+        // a local dispatch path -- `invocation.caller()` must not report
+        // `internal`. `syneroym:http`'s `caller-identity` stays the
+        // authority for who the HTTP client is.
         let (mut store, instance, _quota) = match self
             .build_store_and_instantiate(
                 service_id,
                 caller,
                 self.dispatch_epoch_ticks,
-                InstanceOptions::default(),
+                InstanceOptions::from_wire(),
             )
             .await
         {
@@ -2560,7 +2613,7 @@ impl AppSandboxEngine {
                 service_id,
                 caller,
                 self.dispatch_epoch_ticks,
-                InstanceOptions::default(),
+                InstanceOptions::from_wire(),
             )
             .await
         {
@@ -2604,7 +2657,7 @@ impl AppSandboxEngine {
                 service_id,
                 caller,
                 self.dispatch_epoch_ticks,
-                InstanceOptions::default(),
+                InstanceOptions::from_wire(),
             )
             .await
         {
@@ -2628,7 +2681,7 @@ impl AppSandboxEngine {
             }
         };
         let conn_val = Val::String(conn_id.to_string());
-        let frame_val = crate::stream::bytes_to_val_list(frame);
+        let frame_val = stream::bytes_to_val_list(frame);
         let kind_val = match kind {
             FrameKind::Text => Val::Enum("text".to_string()),
             FrameKind::Binary => Val::Enum("binary".to_string()),
@@ -2652,7 +2705,7 @@ impl AppSandboxEngine {
                 service_id,
                 caller,
                 self.dispatch_epoch_ticks,
-                InstanceOptions::default(),
+                InstanceOptions::from_wire(),
             )
             .await
         {
@@ -2684,13 +2737,14 @@ impl AppSandboxEngine {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs};
+    use std::{env, fs, sync::atomic::AtomicBool};
 
+    use serde_json::Number;
     use syneroym_core::{storage::MockStorage, test_constants};
     use syneroym_data_db::{ServiceStore, SqliteStorageProvider};
     use syneroym_mqtt_broker::MqttBrokerConfig;
     use syneroym_rpc::{Ability, AuthLevel, Capability, ResourceUri, SessionContext};
-    use tokio::{sync::Notify, task};
+    use tokio::sync::Notify;
     use wasmtime::component::Component;
 
     use super::*;
@@ -2858,7 +2912,7 @@ mod tests {
     /// error, like a busy connection under load, that clears up on retry.
     struct FlakyStorageProvider {
         inner: Arc<dyn StorageProvider>,
-        fail_next: std::sync::atomic::AtomicBool,
+        fail_next: AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -2945,7 +2999,7 @@ mod tests {
             self.inner.save_fdae_policy(service_id, policy_json).await
         }
         async fn load_fdae_policy(&self, service_id: &str) -> anyhow::Result<Option<String>> {
-            if self.fail_next.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            if self.fail_next.swap(false, Ordering::SeqCst) {
                 anyhow::bail!("simulated transient storage failure");
             }
             self.inner.load_fdae_policy(service_id).await
@@ -2971,7 +3025,7 @@ mod tests {
             .unwrap();
         let flaky_provider: Arc<dyn StorageProvider> = Arc::new(FlakyStorageProvider {
             inner: real_provider,
-            fail_next: std::sync::atomic::AtomicBool::new(true),
+            fail_next: AtomicBool::new(true),
         });
         let app_engine = test_app_engine(flaky_provider);
 
@@ -3023,11 +3077,17 @@ mod tests {
             SqliteStorageProvider::new(tempfile::tempdir().unwrap().path(), false).unwrap(),
         );
         let app_engine = test_app_engine(storage_provider);
-        app_engine.compile_and_cache_wasm("svc-n1", wat.as_bytes(), None).unwrap();
+        app_engine.compile_and_cache_wasm("svc-n1", wat.as_bytes().to_vec(), None).await.unwrap();
 
         for method in ["init", "migrate"] {
             let (store, _func, _results_len, _item) = app_engine
-                .prepare_wasm_execution("svc-n1", "test-interface", method, None)
+                .prepare_wasm_execution(
+                    "svc-n1",
+                    "test-interface",
+                    method,
+                    None,
+                    InvocationOrigin::Local,
+                )
                 .await
                 .unwrap();
             assert_eq!(
@@ -3086,7 +3146,10 @@ mod tests {
             SqliteStorageProvider::new(tempfile::tempdir().unwrap().path(), false).unwrap(),
         );
         let app_engine = test_app_engine(storage_provider);
-        app_engine.compile_and_cache_wasm("svc-admin-ddl", wat.as_bytes(), None).unwrap();
+        app_engine
+            .compile_and_cache_wasm("svc-admin-ddl", wat.as_bytes().to_vec(), None)
+            .await
+            .unwrap();
 
         let admin_did = "did:key:z6MkAdminRootWire";
         let admin_caller = CallerContext {
@@ -3106,7 +3169,13 @@ mod tests {
         };
 
         let (mut store, _func, _results_len, _item) = app_engine
-            .prepare_wasm_execution("svc-admin-ddl", "test-interface", "init", Some(admin_caller))
+            .prepare_wasm_execution(
+                "svc-admin-ddl",
+                "test-interface",
+                "init",
+                Some(admin_caller),
+                InvocationOrigin::Local,
+            )
             .await
             .unwrap();
 
@@ -3248,7 +3317,7 @@ mod tests {
             max_sse_subscribers_per_service: 100,
             websocket_senders: {
                 let ws = OnceLock::new();
-                let _ = ws.set(syneroym_rpc::WebSocketSenders::new());
+                let _ = ws.set(WebSocketSenders::new());
                 ws
             },
             _shutdown_tx: None,
@@ -3278,7 +3347,10 @@ mod tests {
         };
 
         // Cache the test component
-        app_engine.compile_and_cache_wasm("test_service", wat.as_bytes(), None).unwrap();
+        app_engine
+            .compile_and_cache_wasm("test_service", wat.as_bytes().to_vec(), None)
+            .await
+            .unwrap();
 
         // 1. Test infinite loop (fuel limit)
         let request_loop = JsonRpcRequest {
@@ -3300,7 +3372,7 @@ mod tests {
         let request_mem = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: "allocate-too-much".to_string(),
-            params: Value::Array(vec![Value::Number(serde_json::Number::from(100))]),
+            params: Value::Array(vec![Value::Number(Number::from(100))]),
             id: None,
             idempotency_key: None,
         };
@@ -3397,7 +3469,7 @@ mod tests {
             max_sse_subscribers_per_service: 100,
             websocket_senders: {
                 let ws = OnceLock::new();
-                let _ = ws.set(syneroym_rpc::WebSocketSenders::new());
+                let _ = ws.set(WebSocketSenders::new());
                 ws
             },
             _shutdown_tx: None,
@@ -3498,7 +3570,10 @@ mod tests {
         assert!(app_engine.fdae_policies.get("svc-evict").is_some());
 
         let minimal_component = b"(component)";
-        app_engine.compile_and_cache_wasm("svc-evict", minimal_component, None).unwrap();
+        app_engine
+            .compile_and_cache_wasm("svc-evict", minimal_component.to_vec(), None)
+            .await
+            .unwrap();
         assert!(
             app_engine.fdae_policies.get("svc-evict").is_none(),
             "a re-deploy's recompile must evict the cached policy"

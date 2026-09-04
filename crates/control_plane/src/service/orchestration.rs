@@ -1659,8 +1659,20 @@ impl ControlPlaneService {
         // unconditionally for it (M04A B7a: "authorized or not") -- a
         // dedup that skipped straight to `Ok(())` here would silently
         // leave the service owned by whoever deployed it first.
-        if self.registry.deploy_facts(&service_id).and_then(|(_, _, hash, _)| hash).as_deref()
-            == Some(incoming_hash.as_str())
+        // `full_deploy_completed` is the witness that *this* process (not
+        // just a past one) already registered this service's routing. The
+        // route tables it stands for are process-local and empty on every
+        // boot, and the sandbox warm-up restores only the WASM instance --
+        // so without this clause a redeploy right after a substrate
+        // restart (matching persisted `manifest_hash`, warmed `Running`
+        // instance) would dedup into a no-op and leave guest `POST /rpc`
+        // and every native-capability call unrouted until some later
+        // *content* change forced a real deploy. A fresh boot has no
+        // entry, so its redeploy falls through and re-registers every
+        // table below. See the field's doc comment.
+        if self.full_deploy_completed.contains_key(&service_id)
+            && self.registry.deploy_facts(&service_id).and_then(|(_, _, hash, _)| hash).as_deref()
+                == Some(incoming_hash.as_str())
             && self.registry.owner_of(&service_id).as_deref().is_none_or(|o| o == caller.caller_did)
             && !matches!(
                 self.instance_phase(&service_id, Some(service_type_str(service_type))).await,
@@ -2347,6 +2359,11 @@ impl ControlPlaneService {
             tracing::warn!("Failed to publish endpoint record for {}: {}", service_id, e);
         }
 
+        // Every route table above is now written for this service in this
+        // process -- record it so a later identical redeploy can dedup,
+        // while a redeploy in a fresh process (post-restart) cannot.
+        self.full_deploy_completed.insert(service_id.clone(), ());
+
         Ok(())
     }
 
@@ -2712,6 +2729,7 @@ impl ControlPlaneService {
             );
         }
         self.http_routes.remove(&service_id);
+        self.full_deploy_completed.remove(&service_id);
 
         // M06A A1: nothing survives an undeploy, so there is nothing to
         // keep -- unlike the deploy-time forward cleanup, which diffs
@@ -5657,6 +5675,90 @@ mod tests {
         assert_ne!(
             gen_after_first, gen_after_second,
             "a redeploy of a stopped service must reinstall, not no-op"
+        );
+    }
+
+    /// The three route tables (`native_dispatch`/`http_routes`/`assets`)
+    /// are process-local and empty on every boot, and the sandbox warm-up
+    /// restores only the WASM instance -- so a redeploy after a substrate
+    /// restart must run the full deploy to re-register them, even though
+    /// the persisted `manifest_hash` and owner match and the instance is
+    /// warm. A fresh `ControlPlaneService` over the same storage stands in
+    /// for the restarted process. Once it has run one full deploy, an
+    /// immediate identical redeploy *is* a no-op again.
+    #[tokio::test]
+    async fn a_redeploy_in_a_fresh_process_reinstalls_even_when_the_manifest_is_unchanged() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let caller = node_wide_caller("did:key:zAlice");
+        let manifest = inline_manifest(None, None, None);
+        let ctx = app_context(
+            "app-1",
+            "frontend",
+            vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+        );
+
+        // First process: one full deploy, then drop the service (and its
+        // in-memory route tables and witness) as a process exit would.
+        {
+            let service = service_for_inline_tests(temp_dir.path()).await;
+            service
+                .deploy_with_context(
+                    "frontend-svc".to_string(),
+                    manifest.clone(),
+                    Some(AppContext { generation: 1, ..ctx.clone() }),
+                    &caller,
+                )
+                .await
+                .unwrap();
+            assert!(
+                service
+                    .storage_provider
+                    .get_latest_config_generation("frontend-svc")
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+
+        // Second process over the same storage: identical manifest, same
+        // owner, persisted `manifest_hash` matches -- but the route tables
+        // are empty, so the dedup must not fire.
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let gen_before =
+            service.storage_provider.get_latest_config_generation("frontend-svc").await.unwrap();
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                manifest.clone(),
+                Some(AppContext { generation: 2, ..ctx.clone() }),
+                &caller,
+            )
+            .await
+            .unwrap();
+        let gen_after =
+            service.storage_provider.get_latest_config_generation("frontend-svc").await.unwrap();
+        assert_ne!(
+            gen_before, gen_after,
+            "a redeploy in a fresh process must run the full deploy to re-register the route \
+             tables"
+        );
+
+        // Now the witness is set: an identical redeploy in *this* process
+        // is a no-op again.
+        let gen_settled = gen_after;
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                manifest,
+                Some(AppContext { generation: 3, ..ctx }),
+                &caller,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            gen_settled,
+            service.storage_provider.get_latest_config_generation("frontend-svc").await.unwrap(),
+            "once this process has done a full deploy, an identical redeploy is deduped"
         );
     }
 

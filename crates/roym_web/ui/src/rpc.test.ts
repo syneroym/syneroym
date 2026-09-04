@@ -49,4 +49,27 @@ describe("rpc call", () => {
       expect((e as { type?: string }).type).toBe("NoOwner");
     }
   });
+
+  it("maps -32013 to NotLocal with the fixed installation-refused message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          jsonrpc: "2.0",
+          error: { code: -32013, message: "this method is reachable only from inside this installation" },
+        }),
+      })
+    );
+
+    let caught: { type?: string; message?: string; code?: number } | undefined;
+    try {
+      await call("test");
+    } catch (e: unknown) {
+      caught = e as { type?: string; message?: string; code?: number };
+    }
+    expect(caught?.type).toBe("NotLocal");
+    expect(caught?.code).toBe(-32013);
+    expect(caught?.message).toBe("this installation refused a request that did not come from you");
+  });
 });

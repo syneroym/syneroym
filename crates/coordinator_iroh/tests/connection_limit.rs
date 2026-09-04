@@ -74,10 +74,23 @@ async fn accepts_up_to_cap_and_rejects_the_rest() -> Result<()> {
 
             let mut client = dial.new_client();
             let verdict = probe_connection(&mut client).await;
+
+            // Register as a waiter on `release` *before* reporting the
+            // verdict. The main task calls `release.notify_waiters()` the
+            // instant it has tallied every verdict, and `notify_waiters()`
+            // stores no permit -- an accepted task that only reached
+            // `release.notified().await` afterwards would block forever and
+            // wedge the drain (observed on a loaded CI runner as "timed out
+            // draining connection tasks"). `enable()` arms the waiter now
+            // without awaiting it.
+            let released = release.notified();
+            tokio::pin!(released);
+            released.as_mut().enable();
+
             let _ = verdict_tx.send(verdict).await;
 
             if matches!(verdict, Verdict::Accepted) {
-                release.notified().await;
+                released.await;
             }
             let _ = client.shutdown().await;
         });

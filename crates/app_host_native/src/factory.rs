@@ -22,7 +22,9 @@ use syneroym_rpc::{
     CallerContext, ConversationDeliveryState, ConversationHost, ConversationMessage,
     ConversationNotifier, ServiceProxy, WebSocketSenders,
 };
-use syneroym_sandbox_wasm::{HostState, MessagingContext, StreamContext, empty_service_proxy};
+use syneroym_sandbox_wasm::{
+    HostState, InvocationOrigin, MessagingContext, StreamContext, empty_service_proxy,
+};
 use tokio::sync::{OnceCell, RwLock};
 
 use crate::{
@@ -183,9 +185,26 @@ impl NativeHostFactory {
 
     /// One host handle for one invocation: a fresh `HostState`, exactly as
     /// the sandbox builds a fresh `Store` per guest call.
+    ///
+    /// Everything in the substrate that reaches a natively linked service
+    /// today is on this node, so this means a local dispatch; the guest
+    /// sees `syneroym:invocation/invocation.caller` as `internal`
+    /// whatever identity `caller` carries. [`Self::host_for_wire`] is the
+    /// off-node counterpart, and has no production caller yet.
     #[must_use]
     pub fn host_for(self: &Arc<Self>, caller: CallerContext) -> NativeAppHost {
-        self.host_with(caller, false)
+        self.host_with(caller, false, InvocationOrigin::Local)
+    }
+
+    /// A host handle for a call that arrived over the network. No native
+    /// path in the substrate produces one -- a natively linked Roym
+    /// service is never published and an inbound stream naming it fails
+    /// the handshake -- so its only caller is the parity harness's wire
+    /// driver, which is what lets a wire-refusal rule be proven on both
+    /// builds rather than on one.
+    #[must_use]
+    pub fn host_for_wire(self: &Arc<Self>, caller: CallerContext) -> NativeAppHost {
+        self.host_with(caller, false, InvocationOrigin::Wire)
     }
 
     pub(crate) async fn config_generation(&self) -> u64 {
@@ -287,11 +306,13 @@ impl NativeHostFactory {
         self: &Arc<Self>,
         caller: CallerContext,
         read_only: bool,
+        invocation_origin: InvocationOrigin,
     ) -> NativeAppHost {
         NativeAppHost::new(Arc::new(HostInner {
             factory: self.clone(),
             caller,
             read_only,
+            invocation_origin,
             state: OnceCell::new(),
         }))
     }
@@ -400,10 +421,11 @@ mod tests {
     use std::sync::Arc;
 
     use syneroym_app_host::{
-        AppBlobStore, AppDataLayer, AppMessaging,
+        AppBlobStore, AppDataLayer, AppInvocation, AppMessaging,
         types::{
             blob_store::BlobError,
             data_layer::{DataLayerError, RecordWriteValue},
+            invocation::CallerOrigin,
             messaging::MessagingError,
         },
     };
@@ -414,10 +436,15 @@ mod tests {
     use syneroym_data_keystore::KeyStore;
     use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
     use syneroym_rpc::{AuthLevel, CallerContext, SessionContext};
+    use syneroym_sandbox_wasm::InvocationOrigin;
 
     use super::NativeHostFactory;
 
     fn caller() -> CallerContext {
+        caller_with(AuthLevel::Ucan)
+    }
+
+    fn caller_with(auth: AuthLevel) -> CallerContext {
         CallerContext {
             caller_did: "did:key:zReadOnlyTestCaller".to_string(),
             app_instance: None,
@@ -425,8 +452,82 @@ mod tests {
                 subject_did: "did:key:zReadOnlyTestCaller".to_string(),
                 ..Default::default()
             },
-            auth: AuthLevel::Ucan,
+            auth,
             proof: None,
+        }
+    }
+
+    fn test_factory(dir: &std::path::Path, service_id: &str) -> Arc<NativeHostFactory> {
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(dir.join("data"), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let endpoint_registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+        let conversation = ConversationService::new(
+            storage_provider.clone(),
+            key_store.clone(),
+            endpoint_registry.clone(),
+            syneroym_async_queue::QueueConfig {
+                retry: syneroym_core::config::RetryPolicy::default(),
+                visibility_timeout_ms: 120_000,
+                dlq_max_rows: 100,
+                max_pending_rows: syneroym_async_queue::DEFAULT_MAX_PENDING_ROWS,
+            },
+            syneroym_conversation::ConversationConfig::default(),
+        )
+        .unwrap();
+        NativeHostFactory::new(
+            service_id.to_string(),
+            key_store,
+            storage_provider,
+            blob_provider,
+            broker,
+            endpoint_registry,
+            syneroym_app_orchestration::empty_resolver(),
+            conversation,
+            syneroym_rpc::WebSocketSenders::new(),
+        )
+    }
+
+    /// A local call is `internal` whatever identity it carries, and a wire
+    /// call reads its auth: the two halves of the origin rule the native
+    /// shim must answer identically to the WASM host.
+    #[tokio::test]
+    async fn caller_origin_is_by_dispatch_path_not_by_auth() {
+        let dir = tempfile::tempdir().unwrap();
+        let factory = test_factory(dir.path(), "origin-unit-test");
+
+        for auth in [
+            AuthLevel::Delegated,
+            AuthLevel::Ucan,
+            AuthLevel::System,
+            AuthLevel::LocalElevated,
+            AuthLevel::LocalReadOnly,
+        ] {
+            let local = factory.host_for(caller_with(auth));
+            assert_eq!(
+                local.caller().await,
+                CallerOrigin::Internal,
+                "a local call must be internal for auth {auth:?}"
+            );
+        }
+
+        assert_eq!(
+            factory.host_for_wire(caller_with(AuthLevel::Delegated)).caller().await,
+            CallerOrigin::Verified("did:key:zReadOnlyTestCaller".to_string()),
+        );
+        assert_eq!(
+            factory.host_for_wire(caller_with(AuthLevel::Ucan)).caller().await,
+            CallerOrigin::Verified("did:key:zReadOnlyTestCaller".to_string()),
+        );
+        for auth in [AuthLevel::System, AuthLevel::LocalElevated, AuthLevel::LocalReadOnly] {
+            assert_eq!(
+                factory.host_for_wire(caller_with(auth)).caller().await,
+                CallerOrigin::Anonymous,
+                "a substrate-injected level must never read as verified on the wire ({auth:?})"
+            );
         }
     }
 
@@ -469,7 +570,7 @@ mod tests {
             conversation,
             syneroym_rpc::WebSocketSenders::new(),
         );
-        let host = factory.host_with(caller(), true);
+        let host = factory.host_with(caller(), true, InvocationOrigin::Local);
 
         assert!(matches!(
             host.put(

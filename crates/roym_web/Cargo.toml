@@ -24,6 +24,7 @@ syneroym-wit-interfaces = { path = "../wit_interfaces", default-features = false
     "conversation",
     "data-layer",
     "http",
+    "invocation",
     "messaging",
     "proxy",
     "signing",
@@ -66,3 +67,4 @@ tempfile.workspace = true
 "syneroym:vault" = { path = "wit/deps/vault" }
 "syneroym:http" = { path = "wit/deps/http" }
 "syneroym:signing" = { path = "wit/deps/signing" }
+"syneroym:invocation" = { path = "wit/deps/invocation" }

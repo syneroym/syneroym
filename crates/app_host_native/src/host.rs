@@ -6,7 +6,7 @@ use std::{fmt, sync::Arc};
 
 use syneroym_app_host::{
     AppAppConfig, AppBlobReader, AppBlobStore, AppBlobWriter, AppConversation, AppDataLayer,
-    AppMessaging, AppProxy, AppSigning, AppVault, AppWebSocket,
+    AppInvocation, AppMessaging, AppProxy, AppSigning, AppVault, AppWebSocket,
     types::{
         app_config::ConfigError,
         blob_store::BlobError,
@@ -19,14 +19,15 @@ use syneroym_app_host::{
             RecordReadValue, RecordWriteValue, SqlValue,
         },
         http::FrameKind,
+        invocation::CallerOrigin,
         messaging::MessagingError,
         proxy::{CallOptions, CallTarget, ProxyError},
         signing::{Principal, RecordDraft, SigningError, SigningIdentity},
         vault::VaultError,
     },
 };
-use syneroym_rpc::CallerContext;
-use syneroym_sandbox_wasm::HostState;
+use syneroym_rpc::{AuthLevel, CallerContext};
+use syneroym_sandbox_wasm::{HostState, InvocationOrigin};
 // Aliased: `data_layer::store`, `blob_store::blob_store`, `messaging::host_api`,
 // `proxy::proxy`, `app_config::app_config`, `vault::vault` each define their own `Host` trait.
 use syneroym_wit_interfaces::conversation_host::syneroym::conversation::conversation::Host as HostConversation;
@@ -67,6 +68,11 @@ pub(crate) struct HostInner {
     pub(crate) factory: Arc<NativeHostFactory>,
     pub(crate) caller: CallerContext,
     pub(crate) read_only: bool,
+    /// Where this call entered the node. The factory sets it: `host_for`
+    /// means local, `host_for_wire` means wire. The native shim has no
+    /// per-invocation origin to read (`NativeInvocation` carries none), so
+    /// it is carried by which constructor the factory called instead.
+    pub(crate) invocation_origin: InvocationOrigin,
     /// Lazy: instantiated on the first host call that needs a `HostState`.
     /// Methods that do not need one (`subscribe`/`unsubscribe`, outbound
     /// `send_websocket_frame`) never initialize this.
@@ -564,5 +570,24 @@ impl AppSigning for NativeAppHost {
 impl AppWebSocket for NativeAppHost {
     async fn send(&self, conn: String, frame: Vec<u8>, kind: FrameKind) -> Result<(), String> {
         self.0.factory.websocket_senders.send(self.0.factory.service_id(), &conn, frame, kind).await
+    }
+}
+
+impl AppInvocation for NativeAppHost {
+    async fn caller(&self) -> CallerOrigin {
+        // Mirrors `HostState`'s `invocation::Host::caller`: a local call is
+        // `internal` whatever identity it carries, so the two builds
+        // answer identically for a local drive. The auth level is read
+        // only on the wire path -- which has no production producer on the
+        // native build (see `NativeHostFactory::host_for_wire`).
+        match self.0.invocation_origin {
+            InvocationOrigin::Local => CallerOrigin::Internal,
+            InvocationOrigin::Wire => match self.0.caller.auth {
+                AuthLevel::Delegated | AuthLevel::Ucan => {
+                    CallerOrigin::Verified(self.0.caller.caller_did.clone())
+                }
+                _ => CallerOrigin::Anonymous,
+            },
+        }
     }
 }

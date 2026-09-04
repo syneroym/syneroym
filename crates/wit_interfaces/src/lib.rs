@@ -14,6 +14,8 @@ pub mod conversation;
 pub mod data_layer;
 #[cfg(feature = "http")]
 pub mod http_guest;
+#[cfg(feature = "invocation")]
+pub mod invocation;
 #[cfg(feature = "messaging")]
 pub mod messaging;
 #[cfg(feature = "proxy")]
@@ -36,3 +38,6 @@ pub mod conversation_host;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod signing_host;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod invocation_host;

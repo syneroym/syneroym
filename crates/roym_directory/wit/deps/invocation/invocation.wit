@@ -1,0 +1,40 @@
+package syneroym:invocation@0.1.0;
+
+/// Who is on the other end of the call a component is currently handling.
+/// `syneroym:http`'s `caller-identity` answers this for an inbound HTTP
+/// request only. Every other way into a component -- a sibling's proxy
+/// call, an inbound JSON-RPC stream naming an exported interface -- had no
+/// answer at all, so a component could not tell a call made from inside
+/// its own node from one that arrived over the network.
+interface invocation {
+    /// What the host can honestly say. Every arm is decided by the
+    /// dispatch path the call took and by the router's own verification.
+    /// Nothing in a request body can influence it, and no arm is a claim
+    /// the caller made about itself.
+    variant caller-origin {
+        /// The call arrived through a local dispatch path: another
+        /// service of this node, or this node's own machinery. There is
+        /// no attributable identity here and none is claimed -- an
+        /// internal dispatch is trusted because of where it came from,
+        /// never because of who it says it is.
+        internal,
+        /// The call arrived over the network under an identity the router
+        /// verified -- a delegation certificate, a session token, or a
+        /// UCAN chain that verified, was unrevoked, and carried a
+        /// capability. The string is that party's `did:key`.
+        verified(string),
+        /// The call arrived over the network with nothing usable on the
+        /// connection. Pseudonymous at best; treat as a stranger.
+        anonymous,
+    }
+
+    /// Never fails: a call being handled always arrived somehow.
+    caller: func() -> caller-origin;
+}
+
+/// This package declares no guest export, so one world serves the guest
+/// and host views alike -- the same shape `signing-import` has, and for
+/// the same reason.
+world invocation-import {
+    import invocation;
+}

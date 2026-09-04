@@ -42,6 +42,16 @@ impl Response {
         Self { result: None, error: Some(RpcError { code, message: message.into(), data: None }) }
     }
 
+    /// Attaches a structured `data` payload to an error response. A no-op
+    /// on a success response.
+    #[must_use]
+    pub fn with_data(mut self, data: Value) -> Self {
+        if let Some(err) = self.error.as_mut() {
+            err.data = Some(data);
+        }
+        self
+    }
+
     pub fn method_not_found(method: &str) -> Self {
         let safe_method = truncate_method(method);
         Self::err(-32601, format!("Method '{safe_method}' not found"))

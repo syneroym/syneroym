@@ -15,6 +15,10 @@ world conversation {
     import syneroym:vault/vault@0.1.0;
     import syneroym:http/websocket@0.1.0;
     import syneroym:signing/signing@0.1.0;
+    import syneroym:invocation/invocation@0.1.0;
 
+    // Roym's own inbox: the block list and the first-contact rate limit
+    // take effect here, and Roym keeps its own copy of every message.
+    export syneroym:conversation/guest-api@0.1.0;
     export api;
 }

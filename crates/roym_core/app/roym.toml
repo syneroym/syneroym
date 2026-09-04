@@ -49,6 +49,9 @@ service_type = "wasm"
 source = "target/wasm32-wasip2/release/syneroym_roym_conversation.wasm"
 interfaces = ["syneroym-roym:conversation/api@0.1.0"]
 visibility = "public"
+# The inbox asks `profile` whether a sender is blocked and resolves a
+# person DID to a conversation address.
+depends_on = ["profile"]
 
 [services.conversation.health_check.rpc]
 interface = "syneroym-roym:conversation/api@0.1.0"
@@ -59,6 +62,9 @@ service_type = "wasm"
 source = "target/wasm32-wasip2/release/syneroym_roym_catalog.wasm"
 interfaces = ["syneroym-roym:catalog/api@0.1.0"]
 visibility = "public"
+# A listing carries the person's own conversation address, read from
+# their `profile` record when `listing.set` omits it.
+depends_on = ["profile"]
 
 [services.catalog.health_check.rpc]
 interface = "syneroym-roym:catalog/api@0.1.0"
