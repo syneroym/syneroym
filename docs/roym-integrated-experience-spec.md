@@ -472,6 +472,27 @@ one.
 | `fulfilment-receipt` | Both | Both parties agreed the work was done | Quality, or that no dispute follows |
 | `moderation-decision` | SynOrg | This group applied this rule to this member at this time | Global truth; another group is free to disagree |
 
+**What "Signed by: Both" means** — recorded 2026-09-04 (M06C `D-06C-12`).
+Every envelope carries one issuer and one signature. A record signed by both
+parties is therefore a **pair of independent attestations** of the same record
+type, one from each party, each referencing the same subject record. Neither
+half is nested inside the other, and neither carries a condition of its own.
+The pair is complete when both halves exist, from the two named parties,
+inside their validity windows.
+
+For `payment-acknowledgement` and `fulfilment-receipt` the first release also
+treats the half made **against its own issuer's interest** — the payee
+confirming receipt, the consumer confirming completion — as enough to finish
+that step on its own, because the matching self-serving half adds nothing a
+reader should weigh. The missing half is never invented: this list always
+says only what was actually signed.
+
+Two types in the [card table](#cards) carry a *Signed by* column but are not
+in the list above. `payment-request` belongs in it, as a provider attestation.
+`booking-progress` deliberately does not — it is state written by the
+provider's Transaction service, not a statement by a party, and it is never
+evidence of anything.
+
 Two rules that follow:
 
 - **Payment evidence is not a public listing field.** A `payment-acknowledgement`
