@@ -868,6 +868,15 @@ pub async fn handle_http<H: AppHost>(host: &H, req: HttpRequest) -> Result<HttpR
     } else if path == "/whoami" {
         let caller_did = req.caller.as_ref().map(|c| c.did.as_str()).unwrap_or("anonymous");
         Ok(HttpResponse { status: 200, headers: vec![], body: caller_did.as_bytes().to_vec() })
+    } else if path == "/origin" {
+        // Reports `invocation.caller()`'s arm: a guest HTTP request is
+        // router ingress, so this must never answer `internal`.
+        let arm = match AppInvocation::caller(host).await {
+            CallerOrigin::Internal => "internal",
+            CallerOrigin::Verified(_) => "verified",
+            CallerOrigin::Anonymous => "anonymous",
+        };
+        Ok(HttpResponse { status: 200, headers: vec![], body: arm.as_bytes().to_vec() })
     } else {
         Ok(HttpResponse { status: 200, headers: vec![], body: b"ok".to_vec() })
     }

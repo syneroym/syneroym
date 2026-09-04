@@ -25,6 +25,8 @@ use syneroym_roym_core::{
         deletion_request_body, encode_body, parse_deletion_request, sort_key,
     },
     envelope::{Request, Response},
+    person::ProfilePayload,
+    record::Envelope,
     services, signing,
 };
 
@@ -136,6 +138,20 @@ async fn profile_call<H: AppHost>(
         .await
         .map_err(|e| format!("{method}: {e:?}"))?;
     serde_json::from_str(&raw).map_err(|e| e.to_string())
+}
+
+/// This installation's own conversation address, read from its `profile`
+/// record through the declared `conversation -> profile` dependency. Used
+/// as the `author` of an outgoing row when the host's own copy of the
+/// just-sent message cannot be read back -- `catalog` reads it the same
+/// way for `listing.set`.
+async fn own_conversation_address<H: AppHost>(host: &H) -> Option<String> {
+    let resp = profile_call(host, "profile.get", json!({})).await.ok()?;
+    let result = resp.result?;
+    let env_str = result.get("envelope").and_then(Value::as_str)?;
+    let env = Envelope::from_json(env_str).ok()?;
+    let payload: ProfilePayload = serde_json::from_value(env.payload).ok()?;
+    Some(payload.conversation_address)
 }
 
 /// This peer's person DID as far as this product can say, from its own
@@ -262,7 +278,17 @@ async fn on_message_inner<H: AppHost>(host: &H, msg: &Message) -> Result<(), Str
         return Ok(()); // never stored as a message either way
     }
 
-    // Store it.
+    // Idempotent store: the WASM host retries `on-message` after a
+    // transient fault (C5-2). A message already in Roym's copy must not be
+    // stored or counted again -- this catches the common case, a retry
+    // after a `profile` sibling was briefly unavailable, before any store
+    // write ran. A fault strictly between `upsert_conversation` and
+    // `put_message` can still double-count `message_count` on retry; that
+    // narrower window is the C5-9(a) backlog row (unfenced count).
+    if load_message(host, &msg.id).await?.is_some() {
+        return Ok(());
+    }
+
     upsert_conversation(
         host,
         &msg.conversation,
@@ -528,14 +554,18 @@ async fn send<H: AppHost>(host: &H, req: &Request) -> Response {
     // Take `author` and `sender_timestamp` from the host's own record of
     // the message it just enqueued, not from a local recomputation: the
     // peer stores the same two values, so both transcripts then compute
-    // the same ADR-0013 sort key `(sender-timestamp, author, id)`. The row
-    // is `pending`, so it is in the outbox. The fallbacks only bite if the
-    // host record vanished between `send` and this read.
+    // the same ADR-0013 sort key `(sender-timestamp, author, id)`. A
+    // freshly sent message is `pending` and so in the outbox; it is only
+    // absent if it reached `delivered` between `send` and this read (a
+    // synthetic instantly-reachable peer) or the outbox read faulted.
+    // Then `author` falls back to this installation's real conversation
+    // address from `profile` -- still the value the peer stores, never the
+    // old synthetic `self:` string -- and the timestamp to the local clock.
     let host_msg = host_message(host, &message_id).await;
-    let author = host_msg
-        .as_ref()
-        .map(|m| m.author.clone())
-        .unwrap_or_else(|| format!("self:{conversation}"));
+    let author = match host_msg.as_ref() {
+        Some(m) => m.author.clone(),
+        None => own_conversation_address(host).await.unwrap_or_else(|| "self".to_string()),
+    };
     let sender_timestamp_ms = host_msg.as_ref().map_or(now as i64 * 1000, |m| m.sender_timestamp);
     let row = MessageRow {
         id: message_id.clone(),

@@ -1423,6 +1423,33 @@ async fn both_builds_answer_an_http_request_identically() {
     assert_eq!(wasm_resp.headers, native_resp.headers);
 }
 
+/// C5-1 regression guard: a guest HTTP request is router ingress, so the
+/// WASM build must report the request's real origin through
+/// `invocation.caller()`, never `internal`. With no caller the arm is
+/// `anonymous`; reverting `handle_guest_http_request`'s
+/// `InstanceOptions::from_wire()` to `default()` makes this `internal`.
+///
+/// WASM-only: the native shim's `HttpSink` is still built from
+/// `host_for` (`runtime.rs`), so native guest HTTP reports `internal` --
+/// the mirror of this bug on the native side, tracked as its own backlog
+/// row (§14 permitted-difference, targeted C6). Not a parity assertion
+/// yet for that reason.
+#[tokio::test]
+async fn a_guest_http_request_reports_a_wire_origin_on_the_wasm_build() {
+    let h = harness().await;
+    let resp = h.wasm_http.get("/origin", None).await;
+    assert_eq!(resp.status, 200);
+    assert_eq!(
+        String::from_utf8_lossy(&resp.body),
+        "anonymous",
+        "a guest HTTP call with no caller must observe `anonymous`, never `internal`"
+    );
+
+    // A verified caller surfaces as `verified`, still not `internal`.
+    let verified = h.wasm_http.get("/origin", Some(caller())).await;
+    assert_eq!(String::from_utf8_lossy(&verified.body), "verified");
+}
+
 #[tokio::test]
 async fn both_builds_persist_host_state_from_an_http_request_identically() {
     let h = harness().await;

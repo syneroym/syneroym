@@ -999,7 +999,9 @@ async fn roym_conversation_survives_restarts_blocks_and_round_trips() {
 /// This was `#[ignore]`d while the redeploy after a restart deduped into a
 /// no-op (a matching persisted `manifest_hash` plus a warmed instance),
 /// leaving `POST /rpc` unrouted -- see `deploy_with_context`'s
-/// `routes_registered_this_process` guard.
+/// `full_deploy_completed` guard. NOTE: a bare restart with no redeploy is
+/// still not self-healing; this test's `resume()` does redeploy, which is
+/// what the guard makes real work again.
 #[tokio::test]
 async fn a_pending_message_and_its_body_survive_a_substrate_restart() {
     let _guard = SUBSTRATE_TEST_LOCK.lock().await;

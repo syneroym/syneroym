@@ -279,6 +279,7 @@ Slice C4 turns the Roym `profile` service from a `ping`-only stub into the produ
 7. **Guest clocks are not synchronized** between the two builds — a property of wall clocks, not the shim. The parity suite compares the signed envelope (host-stamped, pinnable) byte-for-byte and every other artifact through `strip_volatile()`.
 8. **`owner_did` must be set for the native build.** A natively linked Roym has no deploy record; without `[roles.roym] owner_did` every `Owner` method answers `-32012`. The parity harness sets it explicitly on both stacks.
 9. **§7's native-dispatch gate has no native-build counterpart** and that is not a divergence: a natively linked service has no `SynSvcNativeService`, so there was never an external native-dispatch path into its `signing` / `vault` to close.
+10. **Guest-HTTP / websocket invocation origin** (added in the C5 review follow-up). The WASM build now reports `verified`/`anonymous` for a guest-HTTP or websocket request off the wire (`InstanceOptions::from_wire()`); the native shim's `HttpSink`/`WebSocketSink` are still built from `host_for` and report `internal`. Unobservable today — `web`'s `incoming-handler` gates on its session cookie, not the invocation origin. Tracked as a backlog row (§3), targeted C6, and asserted WASM-side by `a_guest_http_request_reports_a_wire_origin_on_the_wasm_build`.
 
 ---
 
@@ -509,11 +510,13 @@ check is.
   its body survive a substrate restart) were a single-node test,
   `a_pending_message_and_its_body_survive_a_substrate_restart`, marked
   `#[ignore]` while the redeploy after a restart deduped into a no-op and
-  left `POST /rpc` unrouted. **Resolved in the review follow-up** (see
-  below): the dedup now has a `routes_registered_this_process` guard, the
-  test is un-`#[ignore]`d, and the backlog row moved to Recently
-  resolved. The export/import steps (12, 13) re-import against the running
-  substrate; the wipe-and-restore variant is parity 49–51 / 63–65.
+  left `POST /rpc` unrouted. **Partly resolved in the review follow-up**
+  (see below): the dedup now has a `full_deploy_completed` guard so the
+  redeploy on `resume()` does real work again and the test is
+  un-`#[ignore]`d — but a bare substrate restart with *no* redeploy still
+  leaves the route tables empty (backlog §8, boot-time rehydration). The
+  export/import steps (12, 13) re-import against the running substrate; the
+  wipe-and-restore variant is parity 49–51 / 63–65.
 - **WO3 additions not in the plan's verb tables.** `listing.list` now
   returns `title` (parsed from the stored signed envelope; a row whose
   envelope will not parse lists with an empty title), which the Hub's
@@ -532,19 +535,25 @@ check is.
 
 A code review of the slice raised 19 findings. Incorporated:
 
-- **Blocker — `POST /rpc` unrouted after a substrate restart.** Root cause
-  was *not* `maybe_rewrite_http_native_interface` (route resolution reads
-  `http_routes` directly). The three route tables (`native_dispatch`,
-  `http_routes`, `assets`) are process-local and start empty on every
-  boot; the sandbox warm-up restores only the WASM instance. A redeploy
-  after a restart then deduped — matching persisted `manifest_hash`,
-  warmed `Running` instance — and never reached the table
-  re-registration. Fixed with a `routes_registered_this_process` guard on
-  the dedup in `deploy_with_context`: a `native_dispatch` entry is the
-  witness that *this* process ran the full deploy. `a_pending_message_and_
-  its_body_survive_a_substrate_restart` un-`#[ignore]`d; backlog row moved
-  to Recently resolved. Same root cause also fixed the "Native service not
-  found" symptom for native-capability calls after a restart.
+- **Blocker (partial) — `POST /rpc` unrouted after a substrate restart.**
+  Root cause was *not* `maybe_rewrite_http_native_interface` (route
+  resolution reads `http_routes` directly). The three route tables
+  (`native_dispatch`, `http_routes`, `assets`) are process-local and start
+  empty on every boot; the sandbox warm-up restores only the WASM
+  instance. A redeploy after a restart then deduped — matching persisted
+  `manifest_hash`, warmed `Running` instance — and never reached the table
+  re-registration. Fixed with a `full_deploy_completed` guard on the dedup
+  in `deploy_with_context`: a dedicated per-service map, written after
+  every route-table write and cleared by `undeploy`, is the witness that
+  *this* process ran the full deploy, so a fresh boot's redeploy always
+  falls through. `a_pending_message_and_its_body_survive_a_substrate_
+  restart` un-`#[ignore]`d (its `resume()` redeploys). Same fix clears the
+  "Native service not found" symptom for native-capability calls after a
+  restart. **Not covered:** a bare restart with no redeploy — nothing in
+  `runtime.rs` re-applies a deployment plan on boot, so the route tables
+  stay empty until some deploy runs. New backlog row (§8) for boot-time
+  rehydration from persisted deploy facts; targeted at the M6 substrate
+  work, where substrate-lifecycle design gaps belong.
 - **C5-1 — wire ingress reported `internal`.** `handle_guest_http_request`,
   the raw-stream instance, and the three websocket handlers built their
   instance with `InvocationOrigin::Local`, so `invocation.caller()` would
@@ -583,6 +592,38 @@ history gap-reconciliation, C5-7 (read verbs scan the whole collection),
 C5-8 (`catalog.export` omits `listing_history` / `publications` /
 `settings`), C5-9(a)(b) (unfenced read-modify-write on counts), C5-11
 (`publications` never pruned), N-2/3/4/6/7/8.
+
+**Verification pass (V-1…V-4), same day:**
+
+- **V-1** — the Hub UI bundle was stale when the first local verification
+  ran (`cargo component build` was run directly, not `mise run
+  build:roym`, so `build:roym-ui` never repacked `bundle.tar.gz`). Bundle
+  rebuilt. `bundle.tar.gz` is gitignored and CI's `global-setup.ts` runs
+  `npm run build && npm run pack` fresh, so nothing committed was wrong —
+  but any local e2e result before the rebuild was against the old
+  `toMinorUnits`.
+- **V-2** — the blocker fix covers the *redeploy-after-restart* path only.
+  A bare restart with no redeploy still leaves the route tables empty
+  (nothing in `runtime.rs` re-applies a plan on boot). The "Recently
+  resolved" backlog row was reworded to say so, and a new open §8 row
+  covers boot-time rehydration, targeted at the M6 substrate spec. The
+  WO3 deviation bullet above is corrected to "partly resolved".
+- **V-3** — `send`'s fallback (host record absent) no longer restores the
+  synthetic `self:` author; it reads this installation's real conversation
+  address from `profile.get` (`own_conversation_address`). The comment is
+  corrected. The timestamp fallback stays a local clock — the only way
+  `host_message` is `None` for a just-sent row is an instantly-delivered
+  synthetic peer, and there is no host timestamp to read in that case.
+- **V-4** — the guard is `full_deploy_completed` in code; the four doc /
+  comment sites that named `routes_registered_this_process` (a draft name)
+  are fixed. Added `a_redeploy_in_a_fresh_process_reinstalls_even_when_the_
+  manifest_is_unchanged` (a second `ControlPlaneService` over one storage
+  dir) and `a_guest_http_request_reports_a_wire_origin_on_the_wasm_build`
+  (drives `/origin` on the dual-build fixture).
+- Smaller: `on_message` gained a `load_message` idempotency guard so
+  C5-2's retry cannot re-increment `message_count` on every attempt;
+  parity scenario 69 was folded into 68; the C5-6 Rust-side home and the
+  native guest-HTTP origin mismatch each got a backlog row.
 
 ### C5 — Verification evidence
 

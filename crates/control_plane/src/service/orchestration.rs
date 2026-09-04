@@ -5678,6 +5678,90 @@ mod tests {
         );
     }
 
+    /// The three route tables (`native_dispatch`/`http_routes`/`assets`)
+    /// are process-local and empty on every boot, and the sandbox warm-up
+    /// restores only the WASM instance -- so a redeploy after a substrate
+    /// restart must run the full deploy to re-register them, even though
+    /// the persisted `manifest_hash` and owner match and the instance is
+    /// warm. A fresh `ControlPlaneService` over the same storage stands in
+    /// for the restarted process. Once it has run one full deploy, an
+    /// immediate identical redeploy *is* a no-op again.
+    #[tokio::test]
+    async fn a_redeploy_in_a_fresh_process_reinstalls_even_when_the_manifest_is_unchanged() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let caller = node_wide_caller("did:key:zAlice");
+        let manifest = inline_manifest(None, None, None);
+        let ctx = app_context(
+            "app-1",
+            "frontend",
+            vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+        );
+
+        // First process: one full deploy, then drop the service (and its
+        // in-memory route tables and witness) as a process exit would.
+        {
+            let service = service_for_inline_tests(temp_dir.path()).await;
+            service
+                .deploy_with_context(
+                    "frontend-svc".to_string(),
+                    manifest.clone(),
+                    Some(AppContext { generation: 1, ..ctx.clone() }),
+                    &caller,
+                )
+                .await
+                .unwrap();
+            assert!(
+                service
+                    .storage_provider
+                    .get_latest_config_generation("frontend-svc")
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+
+        // Second process over the same storage: identical manifest, same
+        // owner, persisted `manifest_hash` matches -- but the route tables
+        // are empty, so the dedup must not fire.
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let gen_before =
+            service.storage_provider.get_latest_config_generation("frontend-svc").await.unwrap();
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                manifest.clone(),
+                Some(AppContext { generation: 2, ..ctx.clone() }),
+                &caller,
+            )
+            .await
+            .unwrap();
+        let gen_after =
+            service.storage_provider.get_latest_config_generation("frontend-svc").await.unwrap();
+        assert_ne!(
+            gen_before, gen_after,
+            "a redeploy in a fresh process must run the full deploy to re-register the route \
+             tables"
+        );
+
+        // Now the witness is set: an identical redeploy in *this* process
+        // is a no-op again.
+        let gen_settled = gen_after;
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                manifest,
+                Some(AppContext { generation: 3, ..ctx }),
+                &caller,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            gen_settled,
+            service.storage_provider.get_latest_config_generation("frontend-svc").await.unwrap(),
+            "once this process has done a full deploy, an identical redeploy is deduped"
+        );
+    }
+
     /// The dedup key hashes what a deploy *sends*, not what a later
     /// `write-bindings` push installs, so a repair redeploy of
     /// byte-identical content after a push must not match the stale hash

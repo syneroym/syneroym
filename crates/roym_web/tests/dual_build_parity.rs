@@ -3073,24 +3073,9 @@ async fn scenario_68_every_service_invoke_locally_is_not_wire_refused_parity() {
     }
 }
 
-#[tokio::test]
-async fn scenario_69_same_verbs_locally_are_admitted_parity() {
-    let h = harness().await;
-    let (gw, gn) = h
-        .local_invoke(services::CATALOG, &env("listing.get", json!({ "listing_id": "lst_x" })))
-        .await;
-    assert_ne!(gw["error"]["code"].as_i64(), Some(-32013));
-    assert_ne!(gn["error"]["code"].as_i64(), Some(-32013));
-
-    let (cw, cn) = h
-        .local_invoke(
-            services::CONVERSATION,
-            &env("conversation.history", json!({ "conversation": "c" })),
-        )
-        .await;
-    assert_ne!(cw["error"]["code"].as_i64(), Some(-32013));
-    assert_ne!(cn["error"]["code"].as_i64(), Some(-32013));
-}
+// Scenario 69 (`same_verbs_locally_are_admitted`) was folded into
+// scenario 68, which now drives `local_invoke` for a verb of every one of
+// the six services and asserts not-`-32013`.
 
 #[tokio::test]
 async fn scenario_70_local_call_with_delegated_caller_admitted_on_both_builds() {
