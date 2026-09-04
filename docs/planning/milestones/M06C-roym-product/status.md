@@ -969,16 +969,28 @@ pickup trigger.
    references in `crates/substrate/src/runtime.rs` (M05A/M05B) are
    untouched and out of this slice's scope, the same call C4 and C5 made
    for their own lightly-touched files.
-6. `cargo +nightly fmt --all`: pending final pass (below).
-7. `cargo test --workspace`, `cargo audit`, `cargo deny check licenses`,
-   `mise run test:e2e`: pending final pass (below) — not yet re-run after
-   the fixes documented above landed.
+6. `cargo +nightly fmt --all`: **clean** (`-- --check` reports no diff).
+7. `cargo clippy --workspace --all-targets --all-features`: **clean, 0
+   warnings.**
+8. `cargo test --workspace` (sandbox off, per the repository's own
+   sandbox note): **2465 passed, 0 failed** across 151 test binaries,
+   including `dual_build_parity`'s 99 (again), `roym_conversation_e2e.rs`,
+   and `roym_app_e2e.rs` (both unmodified by this slice and both still
+   green).
+9. `cargo audit`: **clean (0 vulnerabilities)**.
+10. `cargo deny check licenses`: **clean (`licenses ok`)**.
+11. `mise run test:e2e`: **31 passed (default config, 3.0m) + 4 passed
+    (multi-hop, 19.4s)** — identical counts to C5's own baseline; this
+    slice added no new Playwright cases (the Hub UI gap above), so this
+    run proves no regression rather than new browser coverage.
 
 **What this evidence does, and does not, prove.** It proves the Rust
 core — the admission rule, the server half, the client half, the manifest
 wiring, and `roymctl` — is correct and behaves identically on both
-builds, to the depth the 25 new parity scenarios reach. It does **not**
-prove R1 row 5's acceptance test end to end: that needs the Hub UI (item
-1 above) and, for the cross-installation half, the three-substrate e2e
-(item 2 above). Both are named, not hidden, in "What C6 did not build."
+builds, to the depth the 25 new parity scenarios reach, and that nothing
+else in the workspace (2465 tests, the two-substrate e2e suites, the
+Playwright suite) regressed. It does **not** prove R1 row 5's acceptance
+test end to end: that needs the Hub UI (item 1 above) and, for the
+cross-installation half, the three-substrate e2e (item 2 above). Both are
+named, not hidden, in "What C6 did not build."
 

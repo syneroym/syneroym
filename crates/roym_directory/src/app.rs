@@ -868,10 +868,9 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
                 None => continue,
             },
         };
-        if matches!(area_match, AreaMatch::NotQueried) && row.area.is_none() {
-            // A listing with no location block at all, under a query with
-            // no area: report it honestly rather than as `NotQueried`.
-        }
+        // A listing with no location block at all, under a query with no
+        // area, is reported honestly as `NoAreaStated` rather than as
+        // `NotQueried`.
         let effective = if query.area.is_none() && row.area.is_none() {
             AreaMatch::NoAreaStated
         } else {
