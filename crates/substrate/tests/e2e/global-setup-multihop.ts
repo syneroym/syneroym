@@ -4,6 +4,10 @@ import * as path from 'path';
 
 const TEST_DIR = path.join(process.cwd(), '.e2e-data-multihop');
 
+// Offline-first install so a warm cache costs ~100 ms, not a registry
+// round trip that can eat the suite's `globalTimeout` (see global-setup.ts).
+const NPM_INSTALL = 'npm install --prefer-offline --no-audit --no-fund';
+
 export default async function globalSetup() {
   console.log('\n--- E2E Global Setup (Multi-Hop) ---');
   
@@ -22,7 +26,7 @@ export default async function globalSetup() {
   
   console.log('Building miniapp SolidJS client...');
   const clientDir = path.join(WORKSPACE_DIR, 'test-components/miniapp-demo1-web/client');
-  execSync('npm install && npm run build', { cwd: clientDir, stdio: 'inherit' });
+  execSync(`${NPM_INSTALL} && npm run build`, { cwd: clientDir, stdio: 'inherit' });
 
   console.log('Building Cargo binaries...');
   execSync(`cargo build ${buildFlag} --bin roymctl`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });

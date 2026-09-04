@@ -620,6 +620,13 @@ C5-8 (`catalog.export` omits `listing_history` / `publications` /
   manifest_is_unchanged` (a second `ControlPlaneService` over one storage
   dir) and `a_guest_http_request_reports_a_wire_origin_on_the_wasm_build`
   (drives `/origin` on the dual-build fixture).
+- **V-5** — the Playwright `global-setup.ts` ran a plain `npm install`
+  twice inside the suite's one `globalTimeout` (300 s); on a
+  network-restricted host each took ~3 min doing registry round trips
+  while reporting "up to date", exhausting the budget before the
+  substrate started. Both call sites (and the multihop setup's one) now
+  pass `--prefer-offline --no-audit --no-fund`, so a warm cache costs
+  ~100 ms.
 - Smaller: `on_message` gained a `load_message` idempotency guard so
   C5-2's retry cannot re-increment `message_count` on every attempt;
   parity scenario 69 was folded into 68; the C5-6 Rust-side home and the

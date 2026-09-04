@@ -5,6 +5,15 @@ import * as path from 'path';
 
 const TEST_DIR = path.join(process.cwd(), '.e2e-data');
 
+// The whole suite runs under one `globalTimeout` (300 s). A plain
+// `npm install` still makes registry round trips even when everything is
+// already on disk -- observed at ~3 min each on a network-restricted host,
+// which alone exhausted the budget before the substrate started. These
+// flags keep it offline-first (~100 ms with a warm cache) and drop the
+// audit/funds calls that have no place in a test build.
+const NPM_INSTALL = 'npm install --prefer-offline --no-audit --no-fund';
+const NPM_CI = 'npm ci --prefer-offline --no-audit --no-fund';
+
 // Ports the harness binds. If a previous run was killed before global-teardown
 // ran (so its substrate / miniapp were never reaped), one of these is still
 // held -- the miniapp then panics on its second `bind`, the tests run against
@@ -73,12 +82,12 @@ export default async function globalSetup() {
   
   console.log('Building miniapp SolidJS client...');
   const clientDir = path.join(WORKSPACE_DIR, 'test-components/miniapp-demo1-web/client');
-  execSync('npm install && npm run build', { cwd: clientDir, stdio: 'inherit' });
+  execSync(`${NPM_INSTALL} && npm run build`, { cwd: clientDir, stdio: 'inherit' });
 
   console.log('Building miniapp-demo1-wasm client + component...');
   // Order matters: src/lib.rs include_str!s static/dist/index.html, which the
   // client build regenerates with a fresh hashed bundle name.
-  execSync('npm ci || npm install', { cwd: path.join(WASM_FIXTURE_DIR, 'client'), stdio: 'inherit' });
+  execSync(`${NPM_CI} || ${NPM_INSTALL}`, { cwd: path.join(WASM_FIXTURE_DIR, 'client'), stdio: 'inherit' });
   execSync('npm run build', { cwd: path.join(WASM_FIXTURE_DIR, 'client'), stdio: 'inherit' });
   // Always --release: that is the path crates/core/src/test_constants.rs names,
   // and the fixture is excluded from the workspace build graph.
