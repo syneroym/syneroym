@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildSetListingParams,
+  currencyMinorExponent,
   ListingInputError,
   slotFromLocalDatetimes,
   toMicroDegrees,
@@ -89,6 +90,27 @@ describe("toMinorUnits", () => {
     expect(() => toMinorUnits("35.555")).toThrow(ListingInputError);
     expect(() => toMinorUnits("abc")).toThrow(ListingInputError);
     expect(() => toMinorUnits("-1")).toThrow(ListingInputError);
+  });
+
+  it("scales by the currency's own minor-unit exponent", () => {
+    expect(toMinorUnits("1200", 0)).toBe(1200);
+    expect(toMinorUnits("35.5", 3)).toBe(35500);
+    expect(toMinorUnits("2.5", 3)).toBe(2500);
+    // A JPY price with a fractional part, or a 3-place currency with four,
+    // is rejected rather than truncated.
+    expect(() => toMinorUnits("1200.5", 0)).toThrow(ListingInputError);
+    expect(() => toMinorUnits("2.5555", 3)).toThrow(ListingInputError);
+  });
+});
+
+describe("currencyMinorExponent", () => {
+  it("knows the exponent-0 and exponent-3 currencies and defaults the rest to two", () => {
+    expect(currencyMinorExponent("EUR")).toBe(2);
+    expect(currencyMinorExponent("usd")).toBe(2);
+    expect(currencyMinorExponent("JPY")).toBe(0);
+    expect(currencyMinorExponent(" krw ")).toBe(0);
+    expect(currencyMinorExponent("KWD")).toBe(3);
+    expect(currencyMinorExponent("BHD")).toBe(3);
   });
 });
 

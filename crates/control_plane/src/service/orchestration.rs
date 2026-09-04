@@ -1659,8 +1659,20 @@ impl ControlPlaneService {
         // unconditionally for it (M04A B7a: "authorized or not") -- a
         // dedup that skipped straight to `Ok(())` here would silently
         // leave the service owned by whoever deployed it first.
-        if self.registry.deploy_facts(&service_id).and_then(|(_, _, hash, _)| hash).as_deref()
-            == Some(incoming_hash.as_str())
+        // `full_deploy_completed` is the witness that *this* process (not
+        // just a past one) already registered this service's routing. The
+        // route tables it stands for are process-local and empty on every
+        // boot, and the sandbox warm-up restores only the WASM instance --
+        // so without this clause a redeploy right after a substrate
+        // restart (matching persisted `manifest_hash`, warmed `Running`
+        // instance) would dedup into a no-op and leave guest `POST /rpc`
+        // and every native-capability call unrouted until some later
+        // *content* change forced a real deploy. A fresh boot has no
+        // entry, so its redeploy falls through and re-registers every
+        // table below. See the field's doc comment.
+        if self.full_deploy_completed.contains_key(&service_id)
+            && self.registry.deploy_facts(&service_id).and_then(|(_, _, hash, _)| hash).as_deref()
+                == Some(incoming_hash.as_str())
             && self.registry.owner_of(&service_id).as_deref().is_none_or(|o| o == caller.caller_did)
             && !matches!(
                 self.instance_phase(&service_id, Some(service_type_str(service_type))).await,
@@ -2347,6 +2359,11 @@ impl ControlPlaneService {
             tracing::warn!("Failed to publish endpoint record for {}: {}", service_id, e);
         }
 
+        // Every route table above is now written for this service in this
+        // process -- record it so a later identical redeploy can dedup,
+        // while a redeploy in a fresh process (post-restart) cannot.
+        self.full_deploy_completed.insert(service_id.clone(), ());
+
         Ok(())
     }
 
@@ -2712,6 +2729,7 @@ impl ControlPlaneService {
             );
         }
         self.http_routes.remove(&service_id);
+        self.full_deploy_completed.remove(&service_id);
 
         // M06A A1: nothing survives an undeploy, so there is nothing to
         // keep -- unlike the deploy-time forward cleanup, which diffs

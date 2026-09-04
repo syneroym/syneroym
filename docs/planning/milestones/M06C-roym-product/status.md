@@ -493,29 +493,27 @@ check is.
   created on first use inside `put_message` (mirroring `load_message`) —
   the inbox store path reached it without one and every delivered message
   was lost to `CollectionNotFound` until this landed.
-- **WO2 / D-C5-10 — `conversation.history` reconciles only `pending`
-  rows, not "every row not already `delivered`".** A `failed` row was set
-  by an explicit `on-delivery-state` notification; a stale host read must
-  not walk it back to `pending` (a retry that later succeeds fires its
-  own notification). So reconciliation reads the host only for rows still
-  `pending` and not deleted — still bounded by messages in flight, and
-  still makes "never `delivered` while pending" hold across a restart.
+- **WO2 / D-C5-10 — `conversation.history` reconciliation.** As shipped it
+  read the host only for `pending` rows. The review (C5-3) noted this
+  leaves `failed → delivered` unreachable when the notification is missed
+  (a retry that succeeds while the substrate is down), so a delivered
+  message can read `failed` forever. Now every row that is not yet
+  `delivered` and not deleted is re-read, but a `failed` row moves *only*
+  to `delivered` — never back to `pending` — keeping the anti-regression
+  property the original narrowing protected. Still bounded by messages not
+  yet delivered.
 - **WO3 — the two-substrate e2e carries the reference scenario *without*
   a substrate restart.** `roym_conversation_e2e.rs` runs reference steps
-  1–5, 7–8 and 10–14. Steps 6/9 (a `pending` message and its body survive
-  a substrate restart) are a single-node test,
+  1–5, 7–8 and 10–14. Step 15 (a message settles `failed` with the host's
+  reason) is its own single-node test. Steps 6/9 (a `pending` message and
+  its body survive a substrate restart) were a single-node test,
   `a_pending_message_and_its_body_survive_a_substrate_restart`, marked
-  `#[ignore]`; step 15 (a message settles `failed` with the host's
-  reason) is its own single-node test. The reason: after a substrate
-  restart the gateway does not route an inbound `POST /rpc` back through
-  `web`'s guest `incoming-handler` promptly — persistence is not in
-  doubt, the guest-HTTP route is. The row is `deferred-backlog.md` §8's
-  "A deployed guest-HTTP component's `POST /rpc` route does not come back
-  promptly after a substrate restart" — it names the ignored test by its
-  own function name, its pickup trigger is un-ignoring that test, and
-  none of the new §5 rows (d)–(h) duplicate it. The export/import steps
-  (12, 13) re-import against the running substrate; the wipe-and-restore
-  variant is parity 49–51 / 63–65.
+  `#[ignore]` while the redeploy after a restart deduped into a no-op and
+  left `POST /rpc` unrouted. **Resolved in the review follow-up** (see
+  below): the dedup now has a `routes_registered_this_process` guard, the
+  test is un-`#[ignore]`d, and the backlog row moved to Recently
+  resolved. The export/import steps (12, 13) re-import against the running
+  substrate; the wipe-and-restore variant is parity 49–51 / 63–65.
 - **WO3 additions not in the plan's verb tables.** `listing.list` now
   returns `title` (parsed from the stored signed envelope; a row whose
   envelope will not parse lists with an empty title), which the Hub's
@@ -529,6 +527,62 @@ check is.
   they ship as five tests — the "pending message shows pending" and the
   "delete dialog wording" cases share the open + send setup and were
   merged into one.
+
+### C5 — Review follow-up (2026-09-04)
+
+A code review of the slice raised 19 findings. Incorporated:
+
+- **Blocker — `POST /rpc` unrouted after a substrate restart.** Root cause
+  was *not* `maybe_rewrite_http_native_interface` (route resolution reads
+  `http_routes` directly). The three route tables (`native_dispatch`,
+  `http_routes`, `assets`) are process-local and start empty on every
+  boot; the sandbox warm-up restores only the WASM instance. A redeploy
+  after a restart then deduped — matching persisted `manifest_hash`,
+  warmed `Running` instance — and never reached the table
+  re-registration. Fixed with a `routes_registered_this_process` guard on
+  the dedup in `deploy_with_context`: a `native_dispatch` entry is the
+  witness that *this* process ran the full deploy. `a_pending_message_and_
+  its_body_survive_a_substrate_restart` un-`#[ignore]`d; backlog row moved
+  to Recently resolved. Same root cause also fixed the "Native service not
+  found" symptom for native-capability calls after a restart.
+- **C5-1 — wire ingress reported `internal`.** `handle_guest_http_request`,
+  the raw-stream instance, and the three websocket handlers built their
+  instance with `InvocationOrigin::Local`, so `invocation.caller()` would
+  answer `internal` for a request off the wire — a trap for the first
+  C6/C7 service that puts `require_internal` in an `incoming-handler`. All
+  five now use `InstanceOptions::from_wire()`. Not exploitable in C5.
+- **C5-2 — a transient inbox fault dropped the message.** `on_message` now
+  returns `Err` on a storage/proxy fault (WASM retries, native warns) and
+  `Ok` only for a deliberate refusal. The gap-reconciliation half (read
+  `AppConversation::history` and backfill) is a new backlog row.
+- **C5-3 — a delivered message could read `failed` forever** (above).
+- **C5-4 / C5-5 — the shared sort key was not shared.** An outgoing row's
+  `author` was a synthetic `self:<conv-id>` and its `sender_timestamp_ms`
+  a locally recomputed whole-second value. Both are now taken from the
+  host's own record of the message (`host_message`), which is what the
+  peer stores, so both transcripts compute the same
+  `(sender-timestamp, author, id)` order.
+- **C5-6 — the listing editor assumed two decimal places for every
+  currency.** `toMinorUnits` now scales by `currencyMinorExponent(code)`
+  (the full exponent-0 and exponent-3 ISO-4217 sets; two otherwise), so a
+  JPY price is no longer signed at 100× and a KWD price no longer 10×
+  low.
+- **C5-9(c) — publication row id from a counter.** Two concurrent
+  `listing.set` calls read the same `version_count` and wrote the same
+  `{listing_id}:{count}` publication id, so two versions cost one unit of
+  the flood budget. The id is now `{listing_id}:{record_id}` (unique per
+  signed version).
+- **C5-10 — wire-refusal coverage was 2 of 6 services.** Parity scenarios
+  67/68 now loop `WIRE_REFUSED_VERBS` over all six.
+- **N-1** listing-history comment corrected; **N-5** `listing.set` with no
+  `status` now carries the prior version's status forward instead of
+  silently re-activating a withdrawn listing.
+
+Deferred with a backlog row (§ links in `deferred-backlog.md`): C5-2's
+history gap-reconciliation, C5-7 (read verbs scan the whole collection),
+C5-8 (`catalog.export` omits `listing_history` / `publications` /
+`settings`), C5-9(a)(b) (unfenced read-modify-write on counts), C5-11
+(`publications` never pruned), N-2/3/4/6/7/8.
 
 ### C5 — Verification evidence
 

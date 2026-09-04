@@ -179,14 +179,19 @@ async fn record_refused<H: AppHost>(
 }
 
 /// Roym's inbox. Called from the guest `on-message` export on WASM and
-/// from `ConversationSink::on_message` natively. Always returns `Ok`: the
-/// host stored and acknowledged the message before this ran, so an `Err`
-/// would make it log a delivery failure and, on WASM, retry -- turning a
-/// deliberate product decision into a repeated apparent fault.
+/// from `ConversationSink::on_message` natively.
+///
+/// A deliberate product decision -- block, first-contact rate limit,
+/// unsupported kind -- writes a `refused_messages` row and returns `Ok`:
+/// there is nothing to retry. A storage fault or an unavailable `profile`
+/// sibling returns `Err`, so the WASM host's retry and the native
+/// notifier's warning both fire; without that the message is dropped with
+/// only a `stderr` line and nothing ever repairs it (`conversation.history`
+/// reads only Roym's own copy).
 pub async fn on_message<H: AppHost>(host: &H, msg: Message) -> Result<(), String> {
     if let Err(e) = on_message_inner(host, &msg).await {
-        // A storage fault is worth a trace, not an Err back to the host.
         log_inbox_error(&msg, &e);
+        return Err(e);
     }
     Ok(())
 }
@@ -345,14 +350,16 @@ pub async fn on_delivery_state<H: AppHost>(
     put_message(host, &row).await
 }
 
+/// The host's own record for a message still in flight, from its outbox.
+/// A `delivered` message has left the outbox, so this returns `None` for
+/// one -- callers only need it for `pending`/`failed` rows.
+async fn host_message<H: AppHost>(host: &H, message_id: &str) -> Option<Message> {
+    AppConversation::outbox(host).await.ok()?.into_iter().find(|m| m.id == message_id)
+}
+
 /// The host's own reason for a message's current state, from its outbox.
 async fn host_last_error<H: AppHost>(host: &H, message_id: &str) -> Option<String> {
-    AppConversation::outbox(host)
-        .await
-        .ok()?
-        .into_iter()
-        .find(|m| m.id == message_id)
-        .and_then(|m| m.last_error)
+    host_message(host, message_id).await.and_then(|m| m.last_error)
 }
 
 pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
@@ -518,20 +525,24 @@ async fn send<H: AppHost>(host: &H, req: &Request) -> Response {
 
     let now = clock::now_secs();
     let (body_encoding, stored_body) = encode_body(&content_type, body.as_bytes());
-    // The author of an outgoing message is this installation's own address;
-    // the conversation row already carries the peer.
-    let author = load_conversation(host, &conversation)
-        .await
-        .ok()
-        .flatten()
-        .map(|c| format!("self:{}", c.id))
-        .unwrap_or_else(|| "self".to_string());
+    // Take `author` and `sender_timestamp` from the host's own record of
+    // the message it just enqueued, not from a local recomputation: the
+    // peer stores the same two values, so both transcripts then compute
+    // the same ADR-0013 sort key `(sender-timestamp, author, id)`. The row
+    // is `pending`, so it is in the outbox. The fallbacks only bite if the
+    // host record vanished between `send` and this read.
+    let host_msg = host_message(host, &message_id).await;
+    let author = host_msg
+        .as_ref()
+        .map(|m| m.author.clone())
+        .unwrap_or_else(|| format!("self:{conversation}"));
+    let sender_timestamp_ms = host_msg.as_ref().map_or(now as i64 * 1000, |m| m.sender_timestamp);
     let row = MessageRow {
         id: message_id.clone(),
         conversation: conversation.clone(),
         author,
         direction: Direction::Outgoing,
-        sender_timestamp_ms: now as i64 * 1000,
+        sender_timestamp_ms,
         content_type,
         body_encoding,
         body: Some(stored_body),
@@ -615,27 +626,32 @@ async fn history<H: AppHost>(host: &H, req: &Request) -> Response {
         Err(e) => return Response::internal_error(e),
     };
 
-    // Reconcile: re-read the host's delivery-status for every row still
-    // `Pending` and not deleted, and persist what it read. A `Delivered`
-    // row is terminal; a `Failed` row was told so explicitly by an
-    // `on-delivery-state` notification and must not be quietly walked
-    // back to `pending` by a stale host read -- a retry that later
-    // succeeds fires its own notification. So the cost is bounded by the
-    // number of messages still in flight, not by history length.
+    // Reconcile: re-read the host's delivery-status for every row that is
+    // not yet `Delivered` and not deleted, and persist what it read. A
+    // `Delivered` row is terminal. A `Failed` row was told so explicitly
+    // by an `on-delivery-state` notification, so a stale host read must
+    // not walk it back to `pending` -- but a retry that succeeded while no
+    // notification was listened for is real, so a `Failed` row does move
+    // forward to `Delivered`. The cost is bounded by the number of
+    // messages not yet delivered, not by history length.
     for row in rows.iter_mut() {
-        if row.state == StoredState::Pending
-            && row.deleted_at_secs.is_none()
-            && let Ok(live) = AppConversation::delivery_status(host, row.id.clone()).await
-        {
-            let live = StoredState::from(live);
-            if live != row.state {
-                row.state = live;
-                if live == StoredState::Failed {
-                    row.last_error = host_last_error(host, &row.id).await;
-                }
-                let _ = put_message(host, row).await;
-            }
+        if row.state == StoredState::Delivered || row.deleted_at_secs.is_some() {
+            continue;
         }
+        let Ok(live) = AppConversation::delivery_status(host, row.id.clone()).await else {
+            continue;
+        };
+        let live = StoredState::from(live);
+        if live == row.state {
+            continue;
+        }
+        if row.state == StoredState::Failed && live != StoredState::Delivered {
+            continue;
+        }
+        row.state = live;
+        row.last_error =
+            if live == StoredState::Failed { host_last_error(host, &row.id).await } else { None };
+        let _ = put_message(host, row).await;
     }
 
     rows.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));

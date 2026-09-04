@@ -88,18 +88,40 @@ export interface ListingForm {
 
 export class ListingInputError extends Error {}
 
-/// "35.50" -> 3550, "35" -> 3500, "35.5" -> 3550, "" -> undefined.
-/// Rejects anything that is not a plain non-negative amount with at most
-/// two decimal places, so the result is always an integer number of minor
-/// units.
-export function toMinorUnits(input: string): number | undefined {
+/// ISO-4217 minor-unit exponent. Two decimal places is the common case
+/// and the default; only the currencies that are *not* two matter here,
+/// because those are the ones a hard-coded "×100" mis-scales (a JPY price
+/// by 100, a KWD price by one tenth). The two lists are the full set of
+/// active exponent-0 and exponent-3 currencies, so any other code is two.
+const EXPONENT_0 = new Set([
+  "BIF", "CLP", "DJF", "GNF", "ISK", "JPY", "KMF", "KRW", "PYG",
+  "RWF", "UGX", "UYI", "VND", "VUV", "XAF", "XOF", "XPF",
+]);
+const EXPONENT_3 = new Set(["BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"]);
+
+export function currencyMinorExponent(code: string): number {
+  const c = code.trim().toUpperCase();
+  if (EXPONENT_0.has(c)) return 0;
+  if (EXPONENT_3.has(c)) return 3;
+  return 2;
+}
+
+/// "35.50", exponent 2 -> 3550; "35", 2 -> 3500; "1200", 0 -> 1200;
+/// "2.5", 3 -> 2500; "" -> undefined. Rejects an amount with more decimal
+/// places than the currency has, so the result is always an integer
+/// number of minor units.
+export function toMinorUnits(input: string, exponent = 2): number | undefined {
   const t = input.trim();
   if (t === "") return undefined;
-  const m = /^(\d+)(?:\.(\d{1,2}))?$/.exec(t);
+  const frac = exponent > 0 ? `(?:\\.(\\d{1,${exponent}}))?` : "";
+  const m = new RegExp(`^(\\d+)${frac}$`).exec(t);
   if (!m) {
-    throw new ListingInputError(`"${input}" is not an amount like 12 or 12.50`);
+    const example = exponent > 0 ? `12 or 12.${"5".padEnd(exponent, "0")}` : "12";
+    throw new ListingInputError(
+      `"${input}" is not an amount like ${example} for this currency`,
+    );
   }
-  const minor = m[1] + (m[2] ?? "").padEnd(2, "0");
+  const minor = m[1] + (m[2] ?? "").padEnd(exponent, "0");
   return Number.parseInt(minor, 10);
 }
 
@@ -154,14 +176,16 @@ function bookingBlock(f: BookingFields): Block {
 }
 
 function paymentBlock(f: PaymentFields): Block {
+  const currency = f.currency.trim().toUpperCase();
   const block: Block = {
-    currency: f.currency.trim().toUpperCase(),
+    currency,
     model: f.model,
     tax_included: f.tax_included,
     methods: tokens(f.methods),
     payee: f.payee.trim(),
   };
-  const amount = toMinorUnits(f.amount);
+  const exponent = currencyMinorExponent(currency);
+  const amount = toMinorUnits(f.amount, exponent);
   if (f.model !== "quote-only") {
     if (amount === undefined) {
       throw new ListingInputError("an amount is required unless the model is quote-only");
@@ -170,7 +194,7 @@ function paymentBlock(f: PaymentFields): Block {
   } else if (amount !== undefined) {
     throw new ListingInputError("a quote-only listing must not carry an amount");
   }
-  const fees = toMinorUnits(f.fees);
+  const fees = toMinorUnits(f.fees, exponent);
   if (fees !== undefined) block.fees_minor = fees;
   return block;
 }

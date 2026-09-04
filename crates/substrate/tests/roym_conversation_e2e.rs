@@ -353,11 +353,11 @@ impl Node {
 
     /// Compile, mint (or reuse) masters, certify, publish, apply. On a
     /// redeploy after a restart (`redeploy = true`) the generation
-    /// out-ranks the one the substrate still holds and every component is
-    /// then force-restarted, because a redeploy of an unchanged plan does
-    /// not on its own re-register `web`'s guest HTTP routes. Also publishes
-    /// each service's master anchor so the *other* node can verify an
-    /// inbound delivery's delegation chain.
+    /// out-ranks the one the substrate still holds; the substrate then runs
+    /// the full deploy (its post-restart dedup guard sees no process-local
+    /// route entry) and every component is force-restarted for good
+    /// measure. Also publishes each service's master anchor so the *other*
+    /// node can verify an inbound delivery's delegation chain.
     async fn deploy(&mut self, redeploy: bool) {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let manifest_toml =
@@ -992,20 +992,15 @@ async fn roym_conversation_survives_restarts_blocks_and_round_trips() {
 
 /// Steps 6 and 9, as one single-node test: a `pending` message keeps its
 /// state and its body across a real substrate restart -- Roym's own copy
-/// in `state.db` and the host's outbox in `conversation.db` both survive.
+/// in `state.db` and the host's outbox in `conversation.db` both survive,
+/// and the redeploy on `resume` re-registers `web`'s guest-HTTP route so
+/// the post-restart `conversation.history` RPC lands.
 ///
-/// `#[ignore]`d: after a substrate restart the sandbox re-instantiates the
-/// component but the gateway does not route `POST /rpc` back through
-/// `web`'s guest HTTP handler for a long time (minutes, and it does not
-/// always clear), so the post-restart RPC to read `conversation.history`
-/// cannot land. The persistence itself is not in doubt -- the store files
-/// are on disk and every other e2e that restarts a substrate reads its
-/// data back -- it is the guest-HTTP route that does not come back
-/// promptly. Tracked in the deferred backlog; run this by name once that
-/// is fixed (`cargo test ... a_pending_message -- --ignored`).
+/// This was `#[ignore]`d while the redeploy after a restart deduped into a
+/// no-op (a matching persisted `manifest_hash` plus a warmed instance),
+/// leaving `POST /rpc` unrouted -- see `deploy_with_context`'s
+/// `routes_registered_this_process` guard.
 #[tokio::test]
-#[ignore = "guest-HTTP route does not re-register promptly after a substrate restart; see \
-            deferred-backlog"]
 async fn a_pending_message_and_its_body_survive_a_substrate_restart() {
     let _guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();

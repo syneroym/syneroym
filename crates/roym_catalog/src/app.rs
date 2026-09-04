@@ -405,7 +405,12 @@ async fn write_version<H: AppHost>(
         {
             return Response::internal_error(e);
         }
-        let pub_id = format!("{}:{}", payload.listing_id, next_count);
+        // Keyed by `record_id` (unique per signed version), not by a
+        // counter: two concurrent `listing.set` calls both read the same
+        // `version_count`, so a `{listing_id}:{next_count}` key would let
+        // the second write overwrite the first's publication row and one
+        // unit of the flood budget would cover two published versions.
+        let pub_id = format!("{}:{}", payload.listing_id, record_id);
         let pub_row = json!({ "listing_id": payload.listing_id, "at_secs": now });
         if let Err(e) = AppDataLayer::put(
             host,
@@ -494,6 +499,11 @@ async fn build_payload<H: AppHost>(
             Err(e) => return Err(Response::internal_error(e)),
         },
     };
+    // A `set` that names no status keeps the prior version's status rather
+    // than defaulting to `Active` -- editing the title of a withdrawn
+    // listing must not silently republish it. `Active` is the default only
+    // for a brand-new listing.
+    let prior_status = load_listing_row(host, &listing_id).await.ok().flatten().map(|r| r.status);
     Ok(ListingPayload {
         listing_id,
         slug,
@@ -501,7 +511,7 @@ async fn build_payload<H: AppHost>(
         summary: p.summary,
         categories: p.categories,
         conversation_address: address,
-        status: forced_status.or(p.status).unwrap_or(ListingStatus::Active),
+        status: forced_status.or(p.status).or(prior_status).unwrap_or(ListingStatus::Active),
         booking: p.booking,
         payment: p.payment,
         product: p.product,
@@ -643,9 +653,11 @@ async fn listing_history<H: AppHost>(host: &H, req: &Request) -> Response {
     if let Err(e) = ensure_coll(host, LISTING_HISTORY, &[]).await {
         return Response::internal_error(e);
     }
-    // Walk the supersedes chain forward from the oldest: the history rows
-    // are keyed by record_id, so gather every envelope whose payload names
-    // this listing_id, then order by issued_at.
+    // The history rows are keyed by record_id, so gather every envelope
+    // whose payload names this listing_id and order them oldest-first by
+    // `issued_at_secs`. Two versions minted in the same second keep store
+    // order; the `supersedes` chain in each payload is the exact order if
+    // a consumer needs it.
     let mut envelopes: Vec<(u64, String)> = Vec::new();
     let mut cursor = None;
     loop {

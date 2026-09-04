@@ -341,6 +341,15 @@ struct InstanceOptions {
     invocation_origin: InvocationOrigin,
 }
 
+impl InstanceOptions {
+    /// Router ingress -- guest HTTP, a raw stream, a websocket frame. The
+    /// call came off the wire, so `invocation.caller()` must report
+    /// `verified`/`anonymous`, never `internal`.
+    fn from_wire() -> Self {
+        Self { invocation_origin: InvocationOrigin::Wire, ..Self::default() }
+    }
+}
+
 /// Pool slots reserved out of `max_concurrent_instances` for short-lived
 /// RPC/message-delivery calls; the remainder is the budget
 /// `stream_instance_permits` hands out to long-lived stream instances. See
@@ -2042,11 +2051,12 @@ impl AppSandboxEngine {
     ) -> Result<(Store<HostState>, Instance, Option<u64>)> {
         // `service_system`, never `local_elevated` -- same reasoning as
         // `deliver_message`: the component acts as itself, not as an admin.
+        // `from_wire`: a raw stream is always peer-initiated router ingress.
         self.build_store_and_instantiate(
             service_id,
             CallerContext::service_system(service_id),
             self.dispatch_epoch_ticks,
-            InstanceOptions::default(),
+            InstanceOptions::from_wire(),
         )
         .await
     }
@@ -2530,12 +2540,16 @@ impl AppSandboxEngine {
         let caller = caller.unwrap_or_else(|| CallerContext::service_system(service_id));
 
         let _active = ActiveInstanceGuard::new();
+        // `from_wire`: a guest HTTP request is always router ingress, never
+        // a local dispatch path -- `invocation.caller()` must not report
+        // `internal`. `syneroym:http`'s `caller-identity` stays the
+        // authority for who the HTTP client is.
         let (mut store, instance, _quota) = match self
             .build_store_and_instantiate(
                 service_id,
                 caller,
                 self.dispatch_epoch_ticks,
-                InstanceOptions::default(),
+                InstanceOptions::from_wire(),
             )
             .await
         {
@@ -2590,7 +2604,7 @@ impl AppSandboxEngine {
                 service_id,
                 caller,
                 self.dispatch_epoch_ticks,
-                InstanceOptions::default(),
+                InstanceOptions::from_wire(),
             )
             .await
         {
@@ -2634,7 +2648,7 @@ impl AppSandboxEngine {
                 service_id,
                 caller,
                 self.dispatch_epoch_ticks,
-                InstanceOptions::default(),
+                InstanceOptions::from_wire(),
             )
             .await
         {
@@ -2682,7 +2696,7 @@ impl AppSandboxEngine {
                 service_id,
                 caller,
                 self.dispatch_epoch_ticks,
-                InstanceOptions::default(),
+                InstanceOptions::from_wire(),
             )
             .await
         {

@@ -3038,27 +3038,39 @@ fn env(method: &str, params: Value) -> Value {
     json!({ "method": method, "params": params })
 }
 
+/// One representative verb each of the six services owns. `require_internal`
+/// is the first statement of every `invoke`, so the verb only has to be a
+/// string the service would otherwise route -- the refusal happens before
+/// dispatch. Deleting `require_internal` from any one service's `invoke`
+/// fails here rather than staying green (scenario 71 only proves
+/// `api.status` is *not* refused).
+const WIRE_REFUSED_VERBS: [(services::Service, &str); 6] = [
+    (services::WEB, "session.whoami"),
+    (services::CONVERSATION, "conversation.history"),
+    (services::PROFILE, "profile.get"),
+    (services::CATALOG, "listing.get"),
+    (services::TRANSACTION, "request.ping"),
+    (services::DIRECTORY, "directory.ping"),
+];
+
 #[tokio::test]
-async fn scenario_67_listing_get_over_the_wire_is_refused_parity() {
+async fn scenario_67_every_service_invoke_over_the_wire_is_refused_parity() {
     let h = harness().await;
-    let (w, n) = h
-        .wire_invoke(services::CATALOG, &env("listing.get", json!({ "listing_id": "lst_x" })))
-        .await;
-    assert_eq!(w, n);
-    assert_eq!(w["error"]["code"], -32013);
+    for (svc, method) in WIRE_REFUSED_VERBS {
+        let (w, n) = h.wire_invoke(svc, &env(method, json!({}))).await;
+        assert_eq!(w, n, "{} wire parity", svc.name);
+        assert_eq!(w["error"]["code"], -32013, "{}.{method} must be wire-refused: {w}", svc.name);
+    }
 }
 
 #[tokio::test]
-async fn scenario_68_conversation_history_over_the_wire_is_refused_parity() {
+async fn scenario_68_every_service_invoke_locally_is_not_wire_refused_parity() {
     let h = harness().await;
-    let (w, n) = h
-        .wire_invoke(
-            services::CONVERSATION,
-            &env("conversation.history", json!({ "conversation": "c" })),
-        )
-        .await;
-    assert_eq!(w, n);
-    assert_eq!(w["error"]["code"], -32013);
+    for (svc, method) in WIRE_REFUSED_VERBS {
+        let (w, n) = h.local_invoke(svc, &env(method, json!({}))).await;
+        assert_ne!(w["error"]["code"].as_i64(), Some(-32013), "{}.{method} wasm: {w}", svc.name);
+        assert_ne!(n["error"]["code"].as_i64(), Some(-32013), "{}.{method} native: {n}", svc.name);
+    }
 }
 
 #[tokio::test]
