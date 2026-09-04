@@ -321,6 +321,19 @@ async fn write_version<H: AppHost>(
                 return Response::internal_error("admit_publication returned Blocked");
             }
         }
+        // Pruned in the same pass that already reads this collection --
+        // the ledger otherwise grows without bound (deferred-backlog's
+        // "publications never pruned" row).
+        let floor = now.saturating_sub(limits.window_secs);
+        if let Err(e) = AppDataLayer::delete_many(
+            host,
+            PUBLICATIONS.to_string(),
+            json!({ "at_secs": { "$lte": floor } }).to_string(),
+        )
+        .await
+        {
+            return Response::internal_error(e.to_string());
+        }
     }
 
     let payload_json = match serde_json::to_string(&payload) {
@@ -440,20 +453,27 @@ async fn publication_secs_in_window<H: AppHost>(
 ) -> Result<Vec<u64>, String> {
     ensure_coll(host, PUBLICATIONS, &[idx("at_secs", IndexType::Numeric)]).await?;
     let floor = now.saturating_sub(limits.window_secs);
+    // Filtered at the host rather than scanned and dropped in the guest. `F4` still
+    // applies -- a filter is not an indexed scan -- but it is fewer rows
+    // crossing the host boundary.
+    let filter = json!({ "at_secs": { "$gt": floor } });
     let mut out = Vec::new();
     let mut cursor = None;
     loop {
         let page = AppDataLayer::query(
             host,
             PUBLICATIONS.to_string(),
-            QueryOptions { filter: None, limit: Some(500), cursor: cursor.clone() },
+            QueryOptions {
+                filter: Some(filter.to_string()),
+                limit: Some(500),
+                cursor: cursor.clone(),
+            },
         )
         .await
         .map_err(|e| e.to_string())?;
         for r in page.records {
             if let Ok(v) = serde_json::from_slice::<Value>(&r.payload)
                 && let Some(at) = v.get("at_secs").and_then(Value::as_u64)
-                && at > floor
             {
                 out.push(at);
             }
@@ -589,6 +609,9 @@ async fn list_listings<H: AppHost>(host: &H, req: &Request) -> Response {
     let status = req.params.get("status").and_then(Value::as_str);
     let offset = req.params.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
     let limit = req.params.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
+    // The host sieves by status when the caller asked for one,
+    // rather than every row crossing the boundary to be dropped here.
+    let filter = status.map(|s| json!({ "status": s }).to_string());
 
     let mut rows: Vec<ListingRow> = Vec::new();
     let mut cursor = None;
@@ -596,7 +619,7 @@ async fn list_listings<H: AppHost>(host: &H, req: &Request) -> Response {
         let page = match AppDataLayer::query(
             host,
             LISTINGS.to_string(),
-            QueryOptions { filter: None, limit: Some(500), cursor: cursor.clone() },
+            QueryOptions { filter: filter.clone(), limit: Some(500), cursor: cursor.clone() },
         )
         .await
         {
@@ -612,12 +635,6 @@ async fn list_listings<H: AppHost>(host: &H, req: &Request) -> Response {
             break;
         }
         cursor = page.next_cursor;
-    }
-    if let Some(s) = status {
-        rows.retain(|r| {
-            serde_json::to_value(r.status).ok().and_then(|v| v.as_str().map(str::to_string))
-                == Some(s.to_string())
-        });
     }
     rows.sort_by_key(|r| Reverse(r.updated_at_secs));
     let out: Vec<Value> = rows
@@ -658,13 +675,23 @@ async fn listing_history<H: AppHost>(host: &H, req: &Request) -> Response {
     // `issued_at_secs`. Two versions minted in the same second keep store
     // order; the `supersedes` chain in each payload is the exact order if
     // a consumer needs it.
+    //
+    // Filtered at the host on the payload's own `listing_id`
+    // field, rather than parsing every envelope in the collection to find
+    // the ones that match (`F4`: still a scan, but far fewer rows cross
+    // the host boundary).
+    let history_filter = json!({ "payload.listing_id": listing_id }).to_string();
     let mut envelopes: Vec<(u64, String)> = Vec::new();
     let mut cursor = None;
     loop {
         let page = match AppDataLayer::query(
             host,
             LISTING_HISTORY.to_string(),
-            QueryOptions { filter: None, limit: Some(500), cursor: cursor.clone() },
+            QueryOptions {
+                filter: Some(history_filter.clone()),
+                limit: Some(500),
+                cursor: cursor.clone(),
+            },
         )
         .await
         {
@@ -695,6 +722,10 @@ async fn listing_history<H: AppHost>(host: &H, req: &Request) -> Response {
     Response::ok(json!({ "history": out }))
 }
 
+/// A thin wrapper over `roym_core::listing::verify_envelope` -- the one
+/// verification body this handler and the directory client both call, so a
+/// stranger's listing is never verified twice by two copies of the same
+/// logic that could quietly disagree.
 async fn verify_listing<H: AppHost>(host: &H, req: &Request) -> Response {
     let _ = host;
     let now = clock::now_secs();
@@ -706,45 +737,8 @@ async fn verify_listing<H: AppHost>(host: &H, req: &Request) -> Response {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     };
-
-    let verified = match verify_json(&env_str, &VerifyOptions::new(now)) {
-        Ok(v) => v,
-        Err(e) => {
-            return Response::ok(json!({ "verified": false, "reason": e.to_string() }));
-        }
-    };
-    if verified.record_type != RECORD_LISTING || verified.version != listing::LISTING_VERSION {
-        return Response::ok(json!({
-            "verified": false,
-            "reason": "not a listing record this build understands",
-        }));
-    }
-    let payload: ListingPayload = match serde_json::from_value(verified.payload.clone()) {
-        Ok(p) => p,
-        Err(e) => {
-            return Response::ok(json!({ "verified": false, "reason": format!("payload: {e}") }));
-        }
-    };
-    if let Err(e) = payload.validate() {
-        return Response::ok(json!({ "verified": false, "reason": e.to_string() }));
-    }
-    let expected_id = match listing::derive_listing_id(&verified.issuer, &payload.slug) {
-        Ok(id) => id,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-    if payload.listing_id != expected_id {
-        return Response::ok(json!({
-            "verified": false,
-            "reason": "listing_id is not derivable from the signature's own issuer",
-        }));
-    }
-    Response::ok(json!({
-        "verified": true,
-        "listing_id": payload.listing_id,
-        "issuer": verified.issuer,
-        "conversation_address": payload.conversation_address,
-        "status": payload.status,
-    }))
+    let verdict = listing::verify_envelope(&env_str, now);
+    Response::ok(json!(verdict))
 }
 
 async fn set_limits<H: AppHost>(host: &H, req: &Request) -> Response {

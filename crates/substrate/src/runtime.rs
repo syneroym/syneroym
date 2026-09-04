@@ -1819,6 +1819,26 @@ async fn init_roym(
             .await?;
     }
 
+    // `directory` declares a `catalog` dependency: a provider's own
+    // `directory.publish-to-source` reads the signed envelope from
+    // `catalog` through this edge before sending it to a chosen source.
+    let catalog_entry = TopologyEntry {
+        mode: TopologyMode::Singleton,
+        members: vec![ServiceId::new(roym_dispatch_id(services::CATALOG.name))],
+        sharding_strategy: None,
+        epoch: TopologyEpoch(1),
+        cache_ttl: Duration::from_secs(60),
+        not_after: None,
+    };
+    endpoint_registry
+        .save_binding(
+            &roym_dispatch_id(services::DIRECTORY.name),
+            ROYM_APP_INSTANCE,
+            services::CATALOG.name,
+            &serde_json::to_string(&catalog_entry)?,
+        )
+        .await?;
+
     // 4. The UI bundle.
     if let Some(path) = config.roles.roym.as_ref().and_then(|r| r.ui_bundle_path.as_ref()) {
         match fs::read(path) {

@@ -224,6 +224,15 @@ pub fn normalize_text(input: &str) -> String {
     out.trim_end().to_string()
 }
 
+/// Lowercased, `[a-z0-9-]` only, everything else dropped -- the same
+/// alphabet `ListingPayload`'s own categories are constrained to, applied
+/// to a query-supplied category so a wildcard character cannot reach the
+/// `LIKE` pattern `category_tokens` builds from it.
+#[must_use]
+pub fn normalize_category(input: &str) -> String {
+    input.to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect()
+}
+
 /// The delimited token string `$regex: "|token|"` matches exactly.
 /// Categories are already constrained to `[a-z0-9-]` by `ListingPayload`,
 /// so nothing here needs escaping.
@@ -309,6 +318,12 @@ mod tests {
     }
 
     #[test]
+    fn normalize_category_strips_wildcards() {
+        assert_eq!(normalize_category("Plumbing"), "plumbing");
+        assert_eq!(normalize_category("50%_off"), "50off");
+    }
+
+    #[test]
     fn category_tokens_shape() {
         assert_eq!(category_tokens(&[]), "");
         assert_eq!(
@@ -319,8 +334,11 @@ mod tests {
 
     #[test]
     fn source_timeout_fits_inside_the_dispatch_epoch() {
-        // D-C6-19 / F6b: the assertion this row exists to make, checked at
-        // build time rather than discovered as an intermittent trap.
+        // A guest dispatch traps after this many milliseconds of wall
+        // clock, whether the guest is running or suspended in a host
+        // call -- so the source timeout plus verification headroom must
+        // fit inside it, checked here at build time rather than
+        // discovered as an intermittent trap in production.
         let epoch_ms = 5_000u32;
         assert!(
             DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS < epoch_ms,
@@ -330,7 +348,8 @@ mod tests {
 
     #[test]
     fn client_concurrency_stays_below_guest_http_admission() {
-        // D-C6-26 / F6d.
+        // Leaving at least one admission permit spare keeps the rest of
+        // the Hub responsive while a search's fan-out is in flight.
         let max_concurrent_guest_http_per_service = 4usize;
         assert!(MAX_CLIENT_CONCURRENCY < max_concurrent_guest_http_per_service);
     }

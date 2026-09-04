@@ -95,7 +95,7 @@ through shared database access.
 | **Profile & Contacts** | Every participant's substrate | Own profile, contact list, favourites, block list, reports | `profile.get/set`, `contacts.*`, `block.*`, `report.*` |
 | **Catalog** | Provider's substrate | Listings, prices, service area, availability | `listing.*` (incl. `verify`, `limits`/`set-limits`), `availability.*`, `export`/`import` |
 | **Transaction** | Provider's substrate | Requests, quotes, agreements, bookings, orders, receipts | `request.*`, `quote.*`, `agreement.*`, `receipt.*` |
-| **Directory** | SynOrg's substrate | Member list, published listings, search index, membership credentials, revocations | `search`, `member.*`, `credential.*`, `revocation.*` |
+| **Directory** | SynOrg's substrate, on every installation (deployed everywhere the SynApp is; the column names where the server half *matters*, not where the component lives) — and, on a consumer's own node, that person's list of directories | Member list, published listings, search index, membership credentials, revocations | Server half: `directory.search`, `directory.info`, `directory.publish`, `directory.unpublish`, `member.*`, `credential.*`, `revocation.*`. Client half (local-only, one node's own list of directories and search runs): `directory.add-source`/`remove-source`/`sources`, `directory.start-run`/`query-source`/`merge`/`run-envelope` |
 
 Four rules follow from this split:
 

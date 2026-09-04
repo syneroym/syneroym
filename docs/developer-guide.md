@@ -1466,6 +1466,57 @@ roymctl --dir <DIR> roym address
 # Hub gateway host:        s<web-did-hash>.localhost
 ```
 
+##### The Directory: running a SynOrg and finding providers
+
+`directory` signs nothing (its settings and roster are unsigned app
+state), so it needs no certificate. `roym enrol-signing` does not touch
+it.
+
+Create a SynOrg — journey step S2 — and manage its roster:
+
+```bash
+roymctl --dir <DIR> --as owner roym directory serve \
+  --name "Bengaluru Trades Guild" --rules-file ./rules.txt \
+  --category plumbing --category gardening \
+  --support support@example.org --dispute "Contact the owner." \
+  --retention-days 30
+roymctl --dir <DIR> --as owner roym directory member add did:key:z...
+roymctl --dir <DIR> --as owner roym directory member list
+```
+
+A person adds a directory by its Roym Directory service DID (found out of
+band — word of mouth, a shared link, a referral), then searches every
+directory they hold at once:
+
+```bash
+roymctl --dir <DIR> --as owner roym directory add did:key:z... --label "Neighbour Guild"
+roymctl --dir <DIR> --as owner roym directory sources
+roymctl --dir <DIR> --as owner roym directory find --category plumbing --near 12.97,77.59,10000
+```
+
+`find`'s output columns: the listing id and title, the issuer, the age
+computed on this node's own clock (never a directory's claim), and the
+two honestly-unknown verdicts — `revocation: unknown`, `membership: not
+checked` — since C6 checks no revocation or credential source. Refused
+evidence (a forged or unparseable listing a directory served) and any
+per-source errors print as their own blocks below the results, never
+mixed into them. A provider publishes their own listing to a directory
+they chose:
+
+```bash
+roymctl --dir <DIR> --as owner roym directory publish <listing-id> --to did:key:z...
+roymctl --dir <DIR> --as owner roym directory info did:key:z...
+```
+
+No Directory needs to be deployed anywhere for the rest of Roym's flow to
+work — a consumer reaching a provider by direct link completes the whole
+find-and-engage path with `roym directory sources` returning nothing.
+
+**Not yet built (see `status.md`'s C6 section and `deferred-backlog.md`
+§11):** the Hub has no Directory or SynOrg tab, so this command group is
+today the *only* way to run a SynOrg or search one from this
+installation.
+
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy
 
 > [!TIP]

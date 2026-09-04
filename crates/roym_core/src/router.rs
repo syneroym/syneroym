@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn every_declared_dependency_names_a_sibling_and_the_two_edges_are_present() {
+    fn every_declared_dependency_names_a_sibling_and_the_three_edges_are_present() {
         let manifest_str = include_str!("../app/roym.toml");
         let manifest: toml::Value = toml::from_str(manifest_str).expect("parse roym.toml");
         let services = manifest["services"].as_table().expect("services table");
@@ -139,6 +139,16 @@ mod tests {
                 .collect();
             assert!(deps.contains(&"profile"), "'{svc}' must declare a dependency on 'profile'");
         }
+        let directory_deps: Vec<&str> = services["directory"]["depends_on"]
+            .as_array()
+            .unwrap_or_else(|| panic!("'directory' must declare depends_on"))
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(
+            directory_deps.contains(&"catalog"),
+            "'directory' must declare a dependency on 'catalog'"
+        );
     }
 
     #[test]

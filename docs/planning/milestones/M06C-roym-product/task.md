@@ -175,18 +175,41 @@ restore path. `roymctl` has no backup verb either — its command set is
 `substrate`, `supervisor`, `svc`. R1's identity row and R2's rows 4 and 5
 all sit on top of this, and all of it is unbuilt.
 
-**Gap 7 — search has no index surface, but SQLite already supplies one.**
+**Gap 7 — corrected by C6 (2026-09-05): search has no index surface, and
+the raw-SQL escape hatch is unreachable from a service verb.** An earlier
+version of this gap concluded that `execute-ddl`/`query-raw` gave the
+Directory a path to its own FTS5/R\*Tree tables with no new host
+interface. That conclusion verified the SQLite build flags correctly and
+did not check the capability gate: both verbs require
+`data-layer/admin`, whose only producer is the deploy-time lifecycle hook
+([engine.rs:1445](../../../../crates/sandbox_wasm/src/engine.rs#L1445));
+no Roym component exports `init`/`migrate`; the native build has no
+lifecycle path at all
+([runtime.rs:1723](../../../../crates/substrate/src/runtime.rs#L1723));
+and no owner-rooted UCAN chain can carry the ability, because the
+router's chain verifier treats a per-service owner as a trusted root only
+for capabilities that do not entail `data-layer/admin`
+([io.rs:219-224](../../../../crates/router/src/route_handler/io.rs#L219)).
 `data-layer`'s `query-options` is `filter` / `limit` / `cursor`, and
 `index-definition` allows only `string` / `numeric` / `boolean`
-([data-layer.wit:3-40](../../../../crates/wit_interfaces/wit/data-layer/data-layer.wit#L3)).
-Neither text search nor an area query is expressible. **But the same
-interface already exposes `execute-ddl` and `query-raw`**, and the bundled
-SQLite is compiled with `-DSQLITE_ENABLE_FTS5` and `-DSQLITE_ENABLE_RTREE`
-(verified in `libsqlite3-sys` 0.36.0's own `build.rs`, the version
-`Cargo.lock` pins — read from the vendored source, not from documentation).
-So the Directory can create and query its own FTS5 and R\*Tree tables through
-DDL, inside the same DEK-encrypted database, with **no new host interface**.
-No `sqlite-vec` is present, and none is needed: free-text intent parsing is
+([data-layer.wit:3-40](../../../../crates/wit_interfaces/wit/data-layer/data-layer.wit#L3)),
+so neither text search nor an area query is directly expressible either
+— but the MongoDB-style filter DSL's `$regex` (a `LIKE '%…%'` with no
+`ESCAPE` clause) and `$and` over four numeric bounding-box columns cover
+every filter R1 row 5 names, with no new host surface. **C6 builds the
+Directory's search on that DSL over a purpose-built projection
+collection it owns, derived from its own `publications` and rebuildable
+by `directory.reindex` at any time.** No FTS5 table, no R\*Tree table,
+and no `execute-ddl`/`query-raw` call exists anywhere in
+`crates/roym_directory` — confirmed by grep, not by omission. The bundled
+SQLite is still compiled with `-DSQLITE_ENABLE_FTS5` and
+`-DSQLITE_ENABLE_RTREE` (verified in `libsqlite3-sys` 0.36.0's own
+`build.rs`, the version `Cargo.lock` pins), and that capacity remains
+genuinely unreachable from a service verb on either build — a real gap,
+carried in [deferred-backlog.md](../../deferred-backlog.md) §11 with the
+pickup trigger *"a directory or a conversation store grows past a scan"*,
+not solved by this slice. No `sqlite-vec` is present, and none is needed:
+free-text intent parsing is
 explicitly out of the first release.
 
 **Gap 8 — no product code exists.** Nothing in `crates/`, `apps/`, or
@@ -312,7 +335,7 @@ sections list, plus what M06B ruled out and what this document adds:
 | **C3** | **Signed records: the host signing interface and the record envelope.** A host interface that signs under the person's delegated key or the service's instance key, and refuses to hand any key material out (D-06C-4, Gap 1). One canonical envelope — stable byte encoding, explicit `version` field (D-06C-1), issuer, subject, timestamps, signature — plus guest-side verification of signature, issuer, scope, expiry, and revocation. Every record type in R1–R4 rides this and none is defined before it. **The identity model this interface is specified against is settled by C1.1 / [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md), not by M06B B1**: "signs under the person's delegated key" is re-grounded — the signing key is the instance/service key or a per-person delegation the substrate holds, and the *caller* is identified by the session token. C3 must be designed against that, which is why it now waits on C1.1 | **Complete (2026-08-31)** | C1, C1.1 |
 | **C4** | **Identity, profile, contacts, and safety (R1 rows 1 and 6).** Device-bound consumer identity with encrypted backup and import, and a restore that reproduces identity on a clean node. Profile & Contacts, including the person→conversation-address mapping Gap 5 forces. Block, report, per-sender contact rate limits, publication limits, and policy disclosure — the `[PRD-SAF]` backlog row. Block is Roym-side and honestly described (D-06C-8). **Complete (2026-09-01)** — [slice-c4-implementation-plan.md](slice-c4-implementation-plan.md), `status.md` evidence. R1 row 6's inbox-enforcement half and R1 row 1's conversation-history half retarget to C5; the publication-limit half of `[PRD-SAF]` retargets to C5/C6 (the rule ships with no caller) | **R1** | C3 |
 | **C5** | **Catalog and conversation in the product (R1 rows 2 and 3).** The versioned listing schema across all seven dimensions the spec names (booking, payment, product, service, location, relationship, service-record), signed and editable. 1:1 conversation over B4: `pending`/`delivered`/`failed` visible and never optimistic, surviving a restart on both sides. Roym's own copy of conversation content (D-06C-5), which is what export, search, and delete act on. **Complete (2026-09-03)** — [slice-c5-implementation-plan.md](slice-c5-implementation-plan.md), `status.md` evidence. The `syneroym:invocation` host interface and `admit::require_internal` (every `api.invoke` is local-only, `api.status` stays open), the `roym_core` listing/area/conversation vocabulary, `roym_catalog`, `roym_conversation` and its inbox, the two `depends_on` edges, `roymctl` enrolment across three services plus `roym address`, 37 cross-build parity scenarios, a two-substrate e2e, and the Hub's Messages/Listings tabs | **R1** | C4 |
-| **C6** | **Directory: the search half (R1 row 5).** The SynOrg service, its member list, provider-initiated listing publication (S7 — publishing is the *provider's* action), and `search` by category, area, and filters, built on FTS5 and R\*Tree through `execute-ddl`/`query-raw` (Gap 7). Results carry source and freshness. The consumer's node queries each directory it was given, in parallel, and merges. Missing evidence renders as unknown, never as a positive default. Optional by construction, proven by a test (D-06C-6a) | **R1** | C5 |
+| **C6** | **Directory: the search half (R1 row 5).** The SynOrg service, its member list, provider-initiated listing publication (S7 — publishing is the *provider's* action), and `search` by category, area, and filters, built on the existing filter DSL over a derived projection, because the raw-SQL path is unreachable from a verb (Gap 7, corrected). Results carry source and freshness. The consumer's node queries each directory it was given and merges the answers. Missing evidence renders as unknown, never as a positive default. Optional by construction. **Partial (2026-09-05)** — the Rust core (server half, client half, admission rule, `roymctl`) is built and verified by 25 new parity scenarios; the Hub UI and the three-substrate e2e (`D-06C-6a`'s own proof at that level) were not built — see [status.md](status.md)'s C6 section | **R1** | C5 |
 | **C7** | **A need becomes an offer, and the card contract (R1 row 4).** Signed `request` → `quote` → `agreement-receipt`, each versioned, with a material change producing a new version rather than an edit. The seven card types and the unknown-type rule land here on the producing side and in C1's renderer on the consuming side (D-06C-3). The signing shape every one of these records uses — a single-issuer attestation, with `agreement-receipt` as a pair of them — is fixed by **D-06C-12**. **R1's acceptance gate closes at the end of this slice** | **R1** | C5, C6 |
 | **C8** | **The transaction vertical (R2, all five rows).** The state machine with one named writer on the provider's substrate, permitted transitions, expiry, idempotency keys, and a named conflict for a losing concurrent booking. **D-06C-12** fixes the record shape and **D-06C-13** the two independent payment/fulfilment tracks, the against-interest rule, and the named terminals; the deposit question in the open design points must be closed first. `payment-acknowledgement`, separate from settlement, with the payee bound into the signed agreement and a UI that never says "verified". Mutually signed `fulfilment-receipt`. Versioned, integrity-checked export and import of conversations, agreements, and receipts. Encrypted backup with a restore path tested on a clean node | **R2** | C7 |
 | **C9** | **Cross-installation trust (R3, all three rows) and the inherited cross-node cases.** The full R1+R2 flow with consumer, provider, and SynOrg owner on three separate installations, resolving each other through the discovery overlay. Signed `membership-credential` (issuer, scope, expiry) and signed `revocation`; the consumer's **own** node verifies, never the directory. Signed, scoped `moderation-decision`; a suspended member vanishes from that directory's results and cached copies show the revocation on next check — with the product saying plainly that instant removal is not promised. Adopts M06B's 13 uncovered cross-node cases except alias canonicalization (D-06C-7) | **R3** | C8 |
@@ -379,12 +402,19 @@ discovery bug. Keeping the gates keeps each failure attributable.
   text. No `blob-store` tier; attachments are out of the first release.
   Stated in `profile.policy`'s retention text.
 - **How the Directory's FTS5 and R\*Tree tables coexist with `data-layer`'s
-  own collection tables.** `execute-ddl` runs an arbitrary batch against the
-  service's own database ([sqlite.rs:139](../../../../crates/data_db/src/sqlite.rs#L139)),
-  and `create-collection` also creates tables. C6 must settle naming and
-  ownership so a `drop-collection` cannot orphan an index, and must decide
-  whether the index is rebuildable from the collection or is itself the
-  source of record.
+  own collection tables.** **Answered by C6 (2026-09-05): they do not
+  exist.** `execute-ddl`/`query-raw` are unreachable from a service verb
+  on either build (Gap 7's correction above), so the question does not
+  arise. The projection C6 builds instead (`search_index`) is an ordinary
+  `data-layer` collection, owned by `directory`, explicitly derived from
+  `publications` and rebuildable at any time by `directory.reindex` — so
+  `drop-collection` cannot orphan it (there is nothing DDL-level to
+  orphan) and the collection is never the source of record. If a scoped
+  raw-SQL surface is ever built (deferred-backlog §11), the rule to carry
+  forward from this answer is the same one: created only from a lifecycle
+  hook, named with a reserved prefix derived from the collection it
+  indexes, external-content so losing the collection leaves an empty
+  index rather than a corrupt one, and never the source of record.
 - **What "area" means on the wire.** R\*Tree gives bounding boxes; the spec
   says "area" and "service area" without defining them. Geohash prefix,
   bounding box, named region, or radius are all defensible and produce
@@ -397,6 +427,14 @@ discovery bug. Keeping the gates keeps each failure attributable.
   refuses a decimal before the host signs). `bounding_box(&Area)` is the
   one projection C6's index will build on; the circle→box projection
   deliberately over-covers so the index never misses a match.
+  **C6's own half (2026-09-05):** the over-covering box is a sieve, never
+  the answer. `directory.search` pages `search_index` candidates by
+  bounding-box intersection, then refines every candidate exactly against
+  the listing's original `Area` (`roym_core::area::areas_intersect`)
+  before returning it, so a box inside the sieve's over-covered corner but
+  outside the true circle is excluded (parity 88/89). A `Named` area never
+  matches geometrically in either direction, and a query for one matches
+  only a case-folded label equal to it (parity 90).
 - **Which service owns the person→conversation-address mapping, and how a
   listing carries it.** Gap 5 puts it in Profile & Contacts, but a listing
   found through a directory must carry enough to start a conversation
@@ -663,6 +701,8 @@ document; the per-slice ones are owed as each slice completes.
 | C2 completes | Gap 2 recorded as closed. If the entrypoint needed any exemption from D2/D3 to work, that is a `D-06B-1` regression and is written down as one, not absorbed |
 | C3 completes | Gap 1's resolution recorded; the new signing WIT package named in the architecture section of [CLAUDE.md](../../../../CLAUDE.md)/[AGENTS.md](../../../../AGENTS.md) if the interface list there is still enumerated |
 | C4 completes | **Done 2026-09-01.** §10's `[PRD-SAF]` row **split**, not simply resolved: block, report, contact rate limits, and policy disclosure ship; the inbox enforcement point retargets to C5 and the publication limiter to C5/C6. C3's three C4-targeted backlog rows: the certificate-lifecycle row and the external-caller-gate row (`signing/sign-record` + `vault/reveal`, with `signing/identity` deliberately still open) move to "Recently resolved"; the internal-caller-binding row is restated (the reachability is gone, the check is not) and stays targeted at M6. §7's `/rpc` gating row moves to "Recently resolved" with two residuals named. New rows: browser-only person cannot enrol signing; app-data bundle carries no signature until C8; passphrase-wrapped identity backup not built; `contact_attempts` never pruned; `identity certify-signing` / `sdk::certify_record_signing` is now a second divergent ceremony; wire-side authorization on `catalog`/`conversation`/`directory` `api.invoke` (targeted at C5); a service can resolve an undeclared `depends_on`; the managed-guild deployment cannot work while the person must be the deployer |
+| C5 completes | **Done 2026-09-03.** §10's `[PRD-SAF]` row narrows further: the inbox enforcement point and the catalog-side publication caller both ship; the directory-side publication half retargets to C6. The C5-7 review row (whole-collection scans) is restated, not closed, with a "before C6 puts a search on top" trigger. New rows: `conversation`/`catalog` read verbs scan whole collections; `publications` never pruned; three unfenced read-modify-writes; `catalog.export` drops three collections; the wire-side-authorization backlog row (targeted at C5 by C4) moves to "Recently resolved" |
+| C6 completes | **Partial, 2026-09-05 — see [status.md](status.md)'s C6 section for the full account.** Gap 7 rewritten (this document, above): the FTS5/R\*Tree mechanism named by the original gap and by this row's own C6 scope text is unreachable from a service verb on either build; search ships on the existing filter DSL over a derived projection instead. `[PRD-SAF]`'s publication half closes (directory-side caller shipped, keyed on the record's issuer) and the whole row moves to "Recently resolved" in the backlog. The C5-7 row is restated again, not closed: the filter fix landed for the named call sites in both `catalog` and `directory`, but `F4` shows a filter does not make a query use an index, so the index-usability half retargets to the M6 substrate spec. New backlog rows (§11): `execute-ddl`/`query-raw` unreachable; declared collection indexes never used; a guest dispatch cannot loop over a network call (why the fan-out loop lives in the client); the Hub/`roymctl` loop-parity row; page-past-cap and current-version-only limits; no offline search; narrower-than-it-sounds filters; `versions_differ` unresolved; `search_runs` pruned by age not completion; the two-directory parity harness gap; the missing three-substrate e2e; the missing Hub UI (the single largest gap this slice leaves); WO5 not attempted. **R1 row 5 is not marked passed** — the visual half of its acceptance test (rendered unknowns, rendered refused evidence) is unverified without the Hub UI, and the cross-installation half is unverified without the three-substrate e2e |
 | C7 completes | R1 marked passed in the spec's scope table |
 | C8 completes | R2 marked passed. Export/backup rows in the backlog resolved |
 | C9 completes | R3 marked passed. The cross-node-coverage row moved to "Recently resolved", minus alias canonicalization |

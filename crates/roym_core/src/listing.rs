@@ -475,7 +475,8 @@ pub fn revocation_status_word(status: crate::record::RevocationStatus) -> String
 
 /// Checks a signed `listing` envelope on the caller's own node: signature,
 /// record shape, `listing_id` derivability, and payload validity. Never
-/// consults a directory's own claim about any of this (`D-06C-6c`).
+/// consults a directory's own claim about any of this -- the consumer's
+/// own node is the only party whose verdict counts.
 #[must_use]
 pub fn verify_envelope(envelope: &str, now_secs: u64) -> ListingVerdict {
     let verified =

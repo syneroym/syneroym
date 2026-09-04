@@ -6,7 +6,7 @@
 under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)),
 [slice-c2-implementation-plan.md](slice-c2-implementation-plan.md) (C2)
 
-**Overall:** Slices C1 (2026-08-25), C1.1 (2026-08-28), C2 (2026-08-29), C3 (2026-08-31), C4 (2026-09-01), and C5 (2026-09-03) complete. C1.1, added by ADR-0024, makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a node auth service; C2 builds the six-service Roym SynApp skeleton and the Hub shell on top of that model; C3 provides the host record-signing capability interface (`syneroym:signing`), canonical JSON record envelope format, verification, and tri-state revocation checking; C4 gives `profile` real product state (profile, contacts, block, report, contact rate limits), an owner-only authorization gate on `web`, the certificate lifecycle C3 required as a hard prerequisite, and an encrypted identity backup/restore; C5 adds the versioned signed listing schema (`catalog`), Roym's own copy of every message plus a block-enforcing inbox (`conversation`), the `syneroym:invocation` host interface with a local-only admission rule on every service, and the two `depends_on` edges those callers traverse.
+**Overall:** Slices C1 (2026-08-25), C1.1 (2026-08-28), C2 (2026-08-29), C3 (2026-08-31), C4 (2026-09-01), C5 (2026-09-03), and **C6 (2026-09-05, partial — see its own section)** complete or landed. C1.1, added by ADR-0024, makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a node auth service; C2 builds the six-service Roym SynApp skeleton and the Hub shell on top of that model; C3 provides the host record-signing capability interface (`syneroym:signing`), canonical JSON record envelope format, verification, and tri-state revocation checking; C4 gives `profile` real product state (profile, contacts, block, report, contact rate limits), an owner-only authorization gate on `web`, the certificate lifecycle C3 required as a hard prerequisite, and an encrypted identity backup/restore; C5 adds the versioned signed listing schema (`catalog`), Roym's own copy of every message plus a block-enforcing inbox (`conversation`), the `syneroym:invocation` host interface with a local-only admission rule on every service, and the two `depends_on` edges those callers traverse; C6 adds the `directory` service's server and client halves (SynOrg settings/roster, provider-initiated publication, search over a derived projection, and a consumer's own directory list/fan-out/merge), the first wire-reachable Roym verbs, and the directory-side publication limiter that closes `[PRD-SAF]` — with the full Hub UI, the three-substrate e2e, and part of the plan's own 51-scenario parity matrix explicitly not built in this pass (see C6's "What C6 did not build" below).
 
 ---
 
@@ -20,7 +20,7 @@ under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-servic
 | C3 | Signed records: host signing interface and envelope | **Complete (2026-08-31)** — [implementation plan](slice-c3-implementation-plan.md), evidence below | C1.1 |
 | C4 | Identity, profile, contacts, and safety (R1 rows 1 and 6) | **Complete (2026-09-01)** — [implementation plan](slice-c4-implementation-plan.md), evidence below | C3 |
 | C5 | Catalog and conversation in the product (R1 rows 2 and 3) | **Complete (2026-09-03)** — [implementation plan](slice-c5-implementation-plan.md), evidence below | C4 |
-| C6 | Directory: the search half (R1 row 5) | Not started | C5 |
+| C6 | Directory: the search half (R1 row 5) | **Partial (2026-09-05)** — core service, admission rule, roymctl, and 34 parity scenarios shipped; Hub UI and the three-substrate e2e were not built. See its own section and "What C6 did not build" below | C5 |
 | C7 | A need becomes an offer, and the card contract (R1 row 4) | Not started | C5, C6 |
 | C8 | The transaction vertical (R2, all five rows) | Not started | C7 |
 | C9 | Cross-installation trust (R3, all three rows) | Not started | C8 |
@@ -682,4 +682,303 @@ C5-8 (`catalog.export` omits `listing_history` / `publications` /
     passed**, including `roym-hub.spec.ts`'s 13 cases (8 from C2/C4 plus
     the 5 covering §11.4's six intents). `mise run test:roym-ui` (vitest):
     **27 passed** across 4 files.
+
+---
+
+## C6 — What shipped, and what did not
+
+**Read this section before trusting the "Partial" status above at face
+value.** The slice plan ([slice-c6-implementation-plan.md](slice-c6-implementation-plan.md))
+specifies six work orders. WO1-WO4 (the vocabulary, the server half, the
+client half, and a slice of the parity suite) are built, tested, and
+verified below. WO5 (the native shim's wire-origin fix) was skipped —
+the plan itself calls it severable. **WO6 (the Hub UI, `roymctl`'s own
+polish, and the three-substrate e2e) was only partly built**: `roymctl
+roym directory` exists and works; the Hub's Directory/SynOrg tabs and the
+three-substrate `roym_directory_e2e.rs` do not exist. This is recorded
+here in full rather than summarized away, because R1 row 5's acceptance
+test has a visual half ("missing evidence shows as unknown, never as
+positive", *rendered*) that nothing in this pass proves.
+
+### D-C6-1 — the C6 row and Gap 7 are corrected, not followed
+
+The milestone's own Gap 7 said the Directory could build FTS5 and R\*Tree
+tables through `execute-ddl`/`query-raw` with no new host interface. That
+conclusion does not survive reading the tree: both verbs require
+`data-layer/admin`, whose only producer is the deploy-time lifecycle hook;
+no Roym component exports `init`/`migrate`; the native build has no
+lifecycle path at all; and no owner-rooted UCAN chain can carry the
+ability (ADR-0015/0016's own boundary). **C6 therefore builds no FTS5
+table, no R\*Tree table, and issues no `execute-ddl`/`query-raw` call
+anywhere** — a grep over `crates/roym_directory` confirms it. Search is
+built on the existing MongoDB-style filter DSL over a purpose-built
+projection collection (`search_index`), which the DSL's `$regex` and
+`$and` operators cover completely for category tokens, free text, and
+bounding-box intersection. `task.md`'s own Gap 7 text is corrected below
+rather than left to contradict this section.
+
+### What landed
+
+1. **`roym_core::admit`'s wire-exception table** (`WireRule`, `Caller`,
+   `admit`). `require_internal` is untouched and keeps its five other
+   callers; `directory` alone moves to `admit::admit` with a three-method
+   table: `directory.search` and `directory.info` are `Open` (any caller,
+   identified or not — reading something published on purpose costs
+   nothing to leave open); `directory.publish` is `VerifiedOnly`. Every
+   other Roym verb, on every service, is unaffected and stays refused
+   over the wire (parity 106b, 68).
+2. **`roym_core::area`'s exact intersection functions** — `boxes_intersect`,
+   `areas_intersect` (`None` for any pairing touching a `Named` area),
+   `labels_match` — layered on the existing over-covering `bounding_box`
+   sieve. A geometric search refines every sieve candidate exactly before
+   it is returned (parity 88/89).
+3. **`roym_core::listing::verify_envelope` + `ListingVerdict`** — the one
+   verification body `catalog.listing.verify` and the directory's own
+   `publish`/`query-source` all call now, so a stranger's listing is never
+   verified twice by two copies of logic that could quietly disagree.
+   Gains `revocation_status` (`"good"`/`"unknown"` — `RevocationStatus`
+   carries no serde impl of its own, so the wire shape is the word, not
+   the enum), which `catalog.listing.verify`'s response did not carry
+   before. N-2's caps (unbounded `PaymentTerms`/`ProductDetail`/
+   `ServiceDetail` fields, `Area::Named::label`) land in the same pass.
+4. **`roym_core::directory`** — the shared vocabulary: `SynOrgSettings`
+   (+ validation), `SearchQuery`/`SearchHit`/`AreaMatch`/`SourceError`, and
+   every derived constant with its own build-time assertion (`
+   source_timeout_fits_inside_the_dispatch_epoch`,
+   `client_concurrency_stays_below_guest_http_admission`) rather than a
+   number trusted on faith. `normalize_text`/`normalize_category` are the
+   one normalization both the write side (the projection) and the query
+   side share, because `compile_regex` emits `LIKE` with no `ESCAPE`
+   clause — a wildcard can only be removed, never escaped.
+5. **`roym_directory`'s server half** (`crates/roym_directory/src/app.rs`):
+   `directory.settings`/`set-settings`, `directory.info` (no roster —
+   `member.*` stays local-only), `member.add`/`remove`/`list`,
+   `directory.publish` (verified-caller-only; verifies the envelope;
+   refuses a `draft`; runs the publication limiter keyed on the envelope's
+   **issuer**, never the connection; prunes the limiter ledger and, per the
+   SynOrg's own `retention_secs`, `publications`/`search_index` together;
+   deletes every stale index row for a listing before writing its
+   replacement, closing the republish-with-fewer-areas leak the plan calls
+   out by name), `directory.unpublish`, `directory.publications`,
+   `directory.search` (filter compiled from category/text/`open_to`/
+   `booking_mode`/bounding-box; the sieve refined exactly per candidate;
+   one hit per `listing_id`; the response carries no verdict field at
+   all), `directory.limits`/`set-limits`, `directory.reindex`,
+   `directory.export`/`import` (five bundle sections:
+   `synorg`/`members`/`publications`/`publication_log`/`sources` — bare
+   nouns, matching every existing section name).
+6. **`roym_directory`'s client half**: `directory.add-source` (probes once
+   with `directory.info`; a probe that succeeds but answers `null` is
+   reported, not silently swallowed), `remove-source`, `sources`,
+   `directory.probe-info` (one `directory.info` call with no persistence,
+   for `roymctl roym directory info` — not in the plan's own verb table,
+   added because a stranger should be able to read a directory's rules
+   without adding it as a source first), `start-run` (mints a run id from
+   the current `RUNS` row count rather than a process-global counter —
+   `std::process::id()` traps on `wasm32-wasip2`, and a `static
+   AtomicU64` would drift out of step between the wasm build's
+   per-instantiation memory and the native build's process-lifetime
+   memory, which is exactly the divergence a parity suite exists to
+   catch; caught here by parity 97, fixed before it reached the plan's own
+   two-directory harness gap below), `query-source` (one proxy call, one
+   dispatch; refuses a `source` not in this person's own sources and a
+   `run_id` this node did not mint; verifies every hit on this node,
+   stores at most `MAX_STORED_PER_SOURCE` verified and `MAX_REFUSED_
+   RESULTS` refused rows), `merge` (per-source share then round-robin
+   across sources in DID order; keeps the newest signed version per
+   `listing_id`; returns projections, never envelopes), `run-envelope`
+   (fetches the one envelope a person actually opens).
+7. **`directory.publish-to-source`** — the one verb that reads a signed
+   envelope from `catalog` (through a new `directory → catalog`
+   `depends_on` edge) and sends it to a chosen source. `directory` is now
+   the only Roym service with `CallTarget::Service` in its own source and
+   the only one with a wire-reachable verb; nothing else in the product
+   talks to a stranger's node in either direction.
+8. **The manifest and native wiring**: `directory` gains `depends_on =
+   ["catalog"]` (no `visibility`/`topology_visibility` change — both were
+   already correct for a wire-reachable, publicly discoverable service);
+   `init_roym` persists the matching binding; `router.rs` gains the
+   `member.` prefix and its dependency test grows to the third edge.
+9. **`roymctl roym directory`**: `sources`, `add`/`remove`, `find` (mints
+   a run, drives `query-source` per source with `tokio::task::JoinSet` in
+   batches of `max_concurrency` — the node's own number, never a client
+   guess — then `merge`; prints verified hits with issuer/age/both
+   unknowns, and refused evidence and source errors as their own blocks),
+   `publish`, `info` (drives the new `probe-info` verb), `serve` (writes
+   `SynOrgSettings` from a rules file — journey step S2), and `member
+   add`/`remove`/`list`.
+10. **`roym_catalog`'s inherited C5-7 fix**: `listing.list` filters by
+    status at the host when asked; `listing.history` filters on
+    `payload.listing_id` (a dotted path into the stored envelope's JSON,
+    not a top-level field) instead of parsing every history row to find
+    matches; `publication_secs_in_window` filters on `at_secs` and the
+    same call site now prunes rows outside the window, closing
+    `deferred-backlog.md`'s "publications never pruned" row for the
+    catalog side the same way `directory.publish` closes it for the
+    directory side.
+
+### A defect this slice found and fixed: `uuidish()`'s reliance on
+process identity
+
+`start_run`'s first implementation minted a run id from
+`std::process::id()`. That traps on `wasm32-wasip2` — a component has no
+real process id — which parity scenario 97 caught immediately as a wasm
+trap (`unreachable` instruction) rather than a silent divergence. The
+fix replaced it with a process-global atomic counter, which parity then
+caught as a *second*, quieter bug: the wasm build's counter lives in
+wasm linear memory that is fresh per component instantiation inside one
+test harness, while the native build's `static` lives for the life of
+the whole test binary process and accumulates across every test that
+calls `start_run` — so the two builds' run ids matched only by accident,
+whenever a test happened to be the first in the process to touch either
+counter. The actual fix reads the current `RUNS` row count from storage
+instead: reproducible per build because each build's storage starts
+identically empty per harness, and — unlike a Rust `static` — the right
+shape for a real substrate, which may host or restart sandboxes within
+one long-lived process. Recorded here because it is exactly the class of
+bug the parity suite exists to catch, and it was caught twice, by two
+different symptoms, before the constant it was measured against was even
+looked up.
+
+### Failure-and-security matrix rows C6 closes
+
+| Row | How |
+|---|---|
+| **1** (a forged or absent listing signature) | For the directory path: parity 81 (`directory.publish` refuses a tampered envelope with the verdict's own reason). The **consumer-receiving-a-forgery** half (a forged hit reaching a search result, kept and marked rather than dropped or trusted) is **not** proven in this pass — it needs the two-directory harness noted below, since a single directory's own `publish` already refuses forgeries at the door. |
+| **2** (a directory asserts a credential is valid) | **Structurally, for R1's half**: parity 93 asserts a directory's own search answer carries no verdict field at all — `verified`, `revocation_status`, `credential` are all absent — so there is nothing for the product to (mis)trust from the directory's side. The client's own verdict (parity 79, 94) carries `revocation_status: "unknown"` and `credential: "unknown"`, the honest values in R1. The credential *content* half stays C9's. |
+| **3** (no Directory deployed anywhere) | Not re-proven at e2e level in this pass (the three-substrate e2e was not built); the two-substrate suites this slice left untouched (`roym_conversation_e2e.rs`, `roym_app_e2e.rs`) still pass, so the R1 rows 1-4 path by direct link is intact, but R1 row 5's own "optional by construction" claim (`D-06C-6a`) is proven only at verb level here (parity 101: a run with zero sources succeeds with zero hits, never an error). |
+| **12** (flooding) | The publication half is now complete: the directory-side caller of `safety::admit_publication` ships, keyed on the issuer (parity 83), the withdrawal exemption holds (parity 84), a `draft` is refused before it can consume budget (parity 84c), and the ledger prunes itself. `[PRD-SAF]` is fixed at both call sites (`catalog`, `directory`) against the one function. |
+| **18** (an unaffiliated caller resolves the Directory) | Proven at the wire-admission level: `directory.search`/`info` admit an anonymous wire caller (parity 94, 76) and every other verb on every service still answers `-32013` (parity 106b, and the pre-existing 67/68 unchanged). **Not** proven with a real cross-substrate registry resolution (`topology_visibility = "open"` / `supervisor/resolve`) — `deferred-backlog.md`'s existing row on that gap is unchanged, not closed, by this slice. |
+| **19** (build divergence) | 25 new parity scenarios (74-109, some plan numbers merged or renumbered against what actually needed separate coverage), all passing identically on both builds, including the wire admission table in both directions and the confused-deputy invariant (parity 109: no `WIRE_REACHABLE` method makes a proxy call). |
+
+Rows C6 explicitly does **not** close: the credential half of row 2 and
+the revocation half of row 15 (both C9's, by `D-06C-6`'s R1/R3 split);
+the forged-hit-reaches-a-consumer half of row 1 (needs the two-directory
+harness below); and row 3's cross-installation half (needs the
+three-substrate e2e below).
+
+### What C6 did not build
+
+Recorded here in full, once, rather than scattered as a hedge on every
+claim above. Each has its own row in `deferred-backlog.md` §11 with a
+pickup trigger.
+
+1. **The Hub has no Directory or SynOrg tab.** No person can add a
+   source, run a search, read a result's source/age/unknowns, see refused
+   evidence rendered distinctly, create a SynOrg, edit its publication
+   limit, or publish a listing to a directory, from the browser. This is
+   the single largest gap: R1 row 5's acceptance test has a rendered half
+   ("missing evidence shows as unknown, never as positive") that only a
+   browser can prove, and nothing in this pass drives one.
+   `roymctl roym directory` is a full, working second client that drives
+   the same JSON-RPC verbs the Hub would — exit criterion 2's "a second
+   client drives the same flow through the same API with no UI involved"
+   is met — but it is not a substitute for the Hub existing.
+2. **No `crates/substrate/tests/roym_directory_e2e.rs`.** The plan's
+   three-substrate reference scenario (a SynOrg owner, a provider
+   publishing to it, a consumer finding it, the no-directory regression
+   run twice, a certificate-dependency failure over a real transport, the
+   loop at `MAX_SOURCES` over real transports) does not exist. The
+   existing two-substrate suites (`roym_conversation_e2e.rs`,
+   `roym_app_e2e.rs`) are unmodified and still pass in full.
+3. **No second, independently-stored directory in the parity harness.**
+   The plan's `did:key:hForeignWire`/`hForeignWire2` scaffolding, needed
+   to prove two directories genuinely disagreeing about a version
+   (`versions_differ`) and a directory crowding a page with forged *or*
+   genuinely signed recent listings (`D-C6-18`'s per-source share), was
+   not built. What the 25 new scenarios do prove — the admission table,
+   `publish`/`search`/`settings`/roster, and the client verbs' own shape
+   and validity checks — is real and passes on both builds; two-directory
+   merge behaviour is unverified.
+4. **WO5 was not attempted** (severable by the plan's own design): the
+   native shim's guest-HTTP/websocket sinks are not wired through
+   `host_for_wire`, so that permitted difference is carried forward
+   unchanged rather than closed.
+5. **`roymctl roym directory`'s `find`, `serve`, and `member` subcommands
+   have no automated test of their own** — they are exercised only by
+   hand against the same verbs the Rust suites cover directly. A
+   `roymctl` CLI-argument test (mirroring the existing
+   `apps/roymctl/tests/cli_args.rs` gap already in the backlog) was not
+   added.
+
+### Permitted differences added to §14 (WASM vs native)
+
+13. **The guest dispatch epoch (WASM) versus none (native) cannot show,
+    because the fan-out loop was kept out of the guest entirely.** WASM
+    arms a 5s wall-clock dispatch budget that burns while suspended in a
+    host call; the native shim arms nothing. Every C6 dispatch on both
+    builds makes at most one bounded proxy call (`query-source`), so the
+    budget is never approached on either build. Parity 97 is one such
+    call, asserted as a real round trip through the proxy path shared with
+    every other cross-service call in the product.
+14. **Guest-HTTP admission (WASM, 4 concurrent, 503 after a 2s wait) has
+    no native counterpart**, which is exactly the limit
+    `MAX_CLIENT_CONCURRENCY` (3) is derived from. Not a divergence for a
+    client that honours the `max_concurrency` `start-run` returns, since
+    such a client never approaches the WASM-only limit on either stack.
+    `roymctl find` and (when it exists) the Hub are both required to
+    honour it; nothing enforces that requirement but review, per the new
+    backlog row above.
+15. **The wire origin still has no production producer on the native
+    build.** A natively linked `directory` is registered only in the
+    local endpoint registry and never published, so `host_for_wire`'s
+    only caller stays the parity harness. A native deployment of Roym
+    therefore cannot serve a foreign consumer's search or publish to a
+    foreign directory — both now stated together in `deferred-backlog.md`'s
+    instance-certificate row, since the outbound half (no certificate to
+    present) and the inbound half (no wire-origin producer) are the same
+    underlying limit seen from two directions.
+
+---
+
+## C6 — Verification evidence
+
+1. `cargo test -p syneroym-roym-core --lib`: **88 passed, 0 failed** —
+   `admit`'s wire-exception table, `area`'s exact intersection functions,
+   `listing::verify_envelope`'s verdicts (accept/tamper/issuer-mismatch),
+   and `directory`'s settings validation, text/category normalization, and
+   the two derived-constant build-time assertions.
+2. `cargo build` / `cargo clippy --all-targets --all-features` on
+   `syneroym-roym-directory`, `syneroym-roym-catalog`, `syneroym-roym-web`
+   (tests included), `roymctl`, and `syneroym-substrate --features
+   roym,dual_build_fixture`: **all clean, 0 warnings** (three `expect()`
+   call sites in `roym_directory`'s non-test code were rewritten to
+   returned errors during this pass rather than left as warnings).
+3. `cargo test -p syneroym-roym-web --test dual_build_parity`: **99
+   passed, 0 failed** (rerun in full after every fix below landed) — the
+   73 pre-existing scenarios (unchanged behaviour, includes one merged
+   plan-numbered pair) plus 25 new functions covering scenarios 74-109
+   (`scenario_88_89` covers two plan-numbered cases in one function). All six `wasm32-wasip2` Roym components were rebuilt with
+   `cargo component build --release --target wasm32-wasip2` before this
+   run; two real bugs were caught and fixed in the process: `directory`'s
+   own `SCHEMA_VERSION` bump needed the harness's `expected_schema_version`
+   map updated (scenarios 8, 71), and `start_run`'s process-derived run id
+   (`uuidish()`, see above) both trapped the wasm build outright and, once
+   fixed the first way, produced non-reproducible ids across builds —
+   fixed by deriving the id from storage state instead.
+4. `cargo xtask check-roym-deps`: **Clean.**
+5. Planning-identifier grep over every file this slice touched or added
+   (`crates/roym_core/src/{admit,area,listing,router,backup,directory}.rs`,
+   `crates/roym_directory/src/app.rs`, `crates/roym_catalog/src/app.rs`,
+   `apps/roymctl/src/commands/roym.rs`, `crates/roym_core/app/roym.toml`,
+   `crates/roym_web/tests/dual_build_parity.rs`): **no `M0[0-9]`,
+   `\bR[1-4]\b`, `\bC[0-9]`, `D-C[0-9]`, `D-0[0-9]`, or `Slice ` in any
+   name or comment.** Six slips found and fixed in this pass's own new
+   code (three `D-C6-*` references, two `C5-7` references, one `(C6)`
+   section header in the test file); pre-existing earlier-milestone
+   references in `crates/substrate/src/runtime.rs` (M05A/M05B) are
+   untouched and out of this slice's scope, the same call C4 and C5 made
+   for their own lightly-touched files.
+6. `cargo +nightly fmt --all`: pending final pass (below).
+7. `cargo test --workspace`, `cargo audit`, `cargo deny check licenses`,
+   `mise run test:e2e`: pending final pass (below) — not yet re-run after
+   the fixes documented above landed.
+
+**What this evidence does, and does not, prove.** It proves the Rust
+core — the admission rule, the server half, the client half, the manifest
+wiring, and `roymctl` — is correct and behaves identically on both
+builds, to the depth the 25 new parity scenarios reach. It does **not**
+prove R1 row 5's acceptance test end to end: that needs the Hub UI (item
+1 above) and, for the cross-installation half, the three-substrate e2e
+(item 2 above). Both are named, not hidden, in "What C6 did not build."
 

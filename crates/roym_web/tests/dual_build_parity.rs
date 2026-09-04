@@ -1307,9 +1307,13 @@ async fn scenario_8_status_on_all_six_services() {
         assert_eq!(wasm_status, native_status, "status mismatch on service {}", svc.name);
         let val: Value = serde_json::from_str(&wasm_status).unwrap();
         assert_eq!(val["service"], svc.name);
-        // profile, catalog and conversation carry real state now.
+        // profile, catalog, conversation and directory carry real state now.
         let expected_schema_version =
-            if matches!(svc.name, "profile" | "catalog" | "conversation") { 2 } else { 1 };
+            if matches!(svc.name, "profile" | "catalog" | "conversation" | "directory") {
+                2
+            } else {
+                1
+            };
         assert_eq!(val["schema_version"], expected_schema_version);
     }
 }
@@ -3208,4 +3212,685 @@ async fn scenario_36_profile_import_foreign_subject_refused_parity() {
     let val: Value = serde_json::from_slice(&wasm_imp.body).unwrap();
     assert_eq!(val["error"]["code"], -32602);
     assert!(val["error"]["message"].as_str().unwrap().contains("bundle belongs to"));
+}
+
+// ---------------- directory ----------------
+//
+// A note on coverage. The plan this suite was written against (§11.2)
+// calls for a second, independently-stored "foreign" directory reached
+// through a dedicated wire-flavoured proxy target
+// (`did:key:hForeignWire`/`hForeignWire2`), so a merge scenario can prove
+// two directories disagreeing about a version. That harness extension was
+// not built in this pass -- it is a real gap, recorded in `status.md`
+// rather than silently narrowed. What *is* built here instead: every
+// scenario below drives this node's own directory service, either through
+// `wire_invoke` (a genuine `execute_wasm_json_from_wire` / `host_for_wire`
+// round trip, proving the new admission table on both builds) or through
+// `both_rpc` (the local `web` path, proving the client half locally). The
+// client-half scenarios use `did:key:hForeign` as a source, which
+// `TestWasmServiceProxy`/`TestNativeServiceProxy` already route back to
+// this same directory instance over the *local* dispatch path (`F10`) --
+// a degenerate but real exercise of `query-source`'s verification and
+// `merge`'s collation against data this same test published.
+
+/// `wire_invoke` with a caller other than the module's verified owner --
+/// for proving `directory.publish`'s `VerifiedOnly` rule refuses an
+/// anonymous wire caller. `AuthLevel::System` maps to `CallerOrigin::
+/// Anonymous` (only `Delegated`/`Ucan` map to `Verified`).
+async fn wire_invoke_as(
+    h: &Harness,
+    svc: services::Service,
+    envelope: &Value,
+    auth: AuthLevel,
+) -> (Value, Value) {
+    let env_str = envelope.to_string();
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "invoke".to_string(),
+        params: json!([env_str]),
+        id: None,
+        idempotency_key: None,
+    };
+    let anon_caller = CallerContext {
+        caller_did: String::new(),
+        app_instance: None,
+        session: SessionContext::default(),
+        auth,
+        proof: None,
+    };
+    let wasm = h
+        .wasm
+        .engine
+        .execute_wasm_json_from_wire(
+            &did_for_service(svc.name),
+            svc.interface,
+            &req,
+            Some(anon_caller.clone()),
+        )
+        .await
+        .expect("wasm wire invoke");
+    let native = h
+        .wire_native
+        .iter()
+        .find(|(n, _)| *n == svc.name)
+        .expect("wire instance")
+        .1
+        .dispatch(NativeInvocation {
+            interface: svc.interface.to_string(),
+            method: "invoke".to_string(),
+            params: json!([env_str]),
+            caller: anon_caller,
+        })
+        .await
+        .expect("native wire invoke");
+    (unwrap_payload(wasm), unwrap_payload(native.payload))
+}
+
+async fn publish_signed_listing(h: &Harness, envelope: &str) -> (Value, Value) {
+    wire_invoke(h, services::DIRECTORY, &env("directory.publish", json!({ "envelope": envelope })))
+        .await
+}
+
+/// `wire_invoke` is a `Harness` method; this free function exists only so
+/// the helper above can call it with the same signature as `h.wire_invoke`
+/// without borrowing conflicts inside this module's scenario functions.
+async fn wire_invoke(h: &Harness, svc: services::Service, envelope: &Value) -> (Value, Value) {
+    h.wire_invoke(svc, envelope).await
+}
+
+#[tokio::test]
+async fn scenario_74_synorg_settings_round_trip_parity() {
+    let h = harness().await;
+    let settings = json!({
+        "name": "Bengaluru Trades Guild",
+        "rules": "Be kind. Do good work.",
+        "area": [],
+        "categories": ["plumbing", "gardening"],
+        "support_contact": "support@example.org",
+        "dispute_path": "Contact the owner.",
+        "retention_secs": 2_592_000,
+        "publication_limits": { "window_secs": 86400, "max_per_window": 20 }
+    });
+    let (sw, sn) = both_rpc(&h, "directory.set-settings", settings.clone()).await;
+    assert_eq!(sw, sn);
+    assert!(sw["result"]["name"].is_string(), "{sw}");
+    let (gw, gn) = both_rpc(&h, "directory.settings", json!({})).await;
+    assert_eq!(gw, gn);
+    assert_eq!(gw["result"]["retention_secs"], 2_592_000);
+    assert_eq!(gw["result"]["categories"], json!(["plumbing", "gardening"]));
+}
+
+#[tokio::test]
+async fn scenario_75_synorg_settings_validation_refuses_bad_input_parity() {
+    let h = harness().await;
+    let bad = json!({
+        "name": "",
+        "rules": "x",
+        "area": [],
+        "categories": [],
+        "support_contact": "x",
+        "dispute_path": "x",
+        "retention_secs": 2_592_000,
+        "publication_limits": { "window_secs": 86400, "max_per_window": 20 }
+    });
+    let (w, n) = both_rpc(&h, "directory.set-settings", bad).await;
+    assert_eq!(w, n);
+    assert!(is_err(&w, -32602), "{w}");
+}
+
+#[tokio::test]
+async fn scenario_76_directory_info_over_the_wire_has_no_roster_parity() {
+    let h = harness().await;
+    both_rpc(
+        &h,
+        "directory.set-settings",
+        json!({
+            "name": "Guild", "rules": "Rules text", "area": [], "categories": [],
+            "support_contact": "s@example.org", "dispute_path": "d",
+            "retention_secs": 2_592_000,
+            "publication_limits": { "window_secs": 86400, "max_per_window": 20 }
+        }),
+    )
+    .await;
+    both_rpc(&h, "member.add", json!({ "did": "did:key:zMember1", "note": "" })).await;
+
+    for auth in [AuthLevel::Delegated, AuthLevel::System] {
+        let (w, n) =
+            wire_invoke_as(&h, services::DIRECTORY, &env("directory.info", json!({})), auth).await;
+        assert_eq!(w, n);
+        assert_eq!(w["result"]["name"], "Guild");
+        assert_eq!(w["result"]["member_count"], 1);
+        assert!(w["result"].get("members").is_none(), "info leaked a roster: {w}");
+    }
+}
+
+#[tokio::test]
+async fn scenario_77_member_add_list_remove_round_trip_parity() {
+    let h = harness().await;
+    let (aw, an) =
+        both_rpc(&h, "member.add", json!({ "did": "did:key:zM", "note": "trusted" })).await;
+    assert_eq!(aw, an);
+    let (lw, ln) = both_rpc(&h, "member.list", json!({})).await;
+    assert_eq!(lw, ln);
+    assert_eq!(lw["result"]["members"][0]["note"], "trusted");
+    let (rw, rn) = both_rpc(&h, "member.remove", json!({ "did": "did:key:zM" })).await;
+    assert_eq!(rw, rn);
+    assert_eq!(rw["result"]["removed"], true);
+}
+
+#[tokio::test]
+async fn scenario_78_member_list_over_the_wire_is_refused_parity() {
+    let h = harness().await;
+    let (w, n) = h.wire_invoke(services::DIRECTORY, &env("member.list", json!({}))).await;
+    assert_eq!(w, n);
+    assert_eq!(w["error"]["code"], -32013);
+}
+
+#[tokio::test]
+async fn scenario_79_publish_from_verified_wire_caller_stores_the_envelope_byte_for_byte_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming-79", "Hedge trimming")).await;
+    let envelope = gw["result"]["envelope"].as_str().unwrap().to_string();
+
+    let (pw, pn) = publish_signed_listing(&h, &envelope).await;
+    assert_eq!(pw, pn);
+    assert!(pw["result"]["listing_id"].is_string(), "{pw}");
+
+    let (sw, sn) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
+    assert_eq!(sw, sn);
+    let hits = sw["result"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0]["envelope"], json!(envelope), "the directory must store the exact bytes");
+}
+
+#[tokio::test]
+async fn scenario_80_publish_from_anonymous_wire_caller_is_refused_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming-80", "Hedge trimming")).await;
+    let envelope = gw["result"]["envelope"].as_str().unwrap().to_string();
+
+    let (w, n) = wire_invoke_as(
+        &h,
+        services::DIRECTORY,
+        &env("directory.publish", json!({ "envelope": envelope })),
+        AuthLevel::System,
+    )
+    .await;
+    assert_eq!(w, n);
+    assert_eq!(w["error"]["code"], -32013);
+}
+
+#[tokio::test]
+async fn scenario_81_publish_of_a_tampered_envelope_is_refused_with_a_reason_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming-81", "Hedge trimming")).await;
+    let mut envelope: Value =
+        serde_json::from_str(gw["result"]["envelope"].as_str().unwrap()).unwrap();
+    envelope["payload"]["title"] = json!("Tampered");
+
+    let (w, n) = publish_signed_listing(&h, &envelope.to_string()).await;
+    assert_eq!(w, n);
+    assert_eq!(w["error"]["code"], -32602);
+    assert!(w["error"]["message"].as_str().unwrap().contains("signature"), "{w}");
+}
+
+#[tokio::test]
+async fn scenario_83_publication_limiter_refuses_past_the_budget_with_a_usable_retry_after_secs_parity()
+ {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    both_rpc(
+        &h,
+        "directory.set-settings",
+        json!({
+            "name": "Guild", "rules": "r", "area": [], "categories": [],
+            "support_contact": "s", "dispute_path": "d",
+            "retention_secs": 2_592_000,
+            "publication_limits": { "window_secs": 86400, "max_per_window": 1 }
+        }),
+    )
+    .await;
+
+    let (_id, gw, _gn) = set_and_get(&h, full_listing_params("hedge-trimming-83a", "First")).await;
+    let e1 = gw["result"]["envelope"].as_str().unwrap().to_string();
+    let (pw1, pn1) = publish_signed_listing(&h, &e1).await;
+    assert_eq!(pw1, pn1);
+    assert!(pw1["result"].is_object(), "{pw1}");
+
+    let (_id2, gw2, _gn2) =
+        set_and_get(&h, full_listing_params("hedge-trimming-83b", "Second")).await;
+    let e2 = gw2["result"]["envelope"].as_str().unwrap().to_string();
+    let (pw2, pn2) = publish_signed_listing(&h, &e2).await;
+    assert_eq!(pw2, pn2);
+    assert_eq!(pw2["error"]["code"], -32602);
+    assert!(pw2["error"]["data"]["retry_after_secs"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn scenario_84_a_withdrawn_publication_consumes_no_budget_and_clears_the_index_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let (id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming-84", "Withdraw me")).await;
+    let e1 = gw["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &e1).await;
+
+    both_rpc(&h, "listing.withdraw", json!({ "listing_id": id })).await;
+    let (gw2, gn2) = both_rpc(&h, "listing.get", json!({ "listing_id": id })).await;
+    assert_eq!(gw2, gn2);
+    let e2 = gw2["result"]["envelope"].as_str().unwrap().to_string();
+    let (pw, pn) = publish_signed_listing(&h, &e2).await;
+    assert_eq!(pw, pn);
+    assert_eq!(pw["result"]["withdrawn"], true);
+
+    let (sw, sn) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
+    assert_eq!(sw, sn);
+    assert_eq!(sw["result"]["hits"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn scenario_84b_republishing_with_fewer_service_areas_leaves_no_stale_index_rows_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let five_areas: Vec<Value> = (0..5)
+        .map(|i| json!({ "kind": "circle", "lat_e6": 52_000_000 + i, "lon_e6": 13_000_000, "radius_m": 1000 }))
+        .collect();
+    let mut params = full_listing_params("hedge-trimming-84b", "Many areas");
+    params["location"]["service_area"] = json!(five_areas);
+    let (_id, gw, _gn) = set_and_get(&h, params).await;
+    let e1 = gw["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &e1).await;
+
+    let mut params2 = full_listing_params("hedge-trimming-84b", "Many areas");
+    params2["location"]["service_area"] = json!([five_areas[0].clone(), five_areas[1].clone()]);
+    let (_id2, gw2, _gn2) = set_and_get(&h, params2).await;
+    let e2 = gw2["result"]["envelope"].as_str().unwrap().to_string();
+    let (pw, pn) = publish_signed_listing(&h, &e2).await;
+    assert_eq!(pw, pn);
+    assert!(pw["result"]["listing_id"].is_string(), "{pw}");
+
+    let (sw, sn) = wire_invoke(
+        &h,
+        services::DIRECTORY,
+        &env("directory.search", json!({ "area": { "kind": "bbox", "min_lat_e6": 0, "min_lon_e6": 0, "max_lat_e6": 90_000_000, "max_lon_e6": 90_000_000 } })),
+    )
+    .await;
+    assert_eq!(sw, sn);
+    // One listing, whatever the surviving area count -- if a stale row
+    // referencing the old record_id survived, this would either double the
+    // hit or leave a dangling reference `directory.search` cannot resolve.
+    assert_eq!(sw["result"]["hits"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn scenario_84c_a_draft_listing_is_refused_at_publish_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let mut params = full_listing_params("hedge-trimming-84c", "Draft");
+    params["status"] = json!("draft");
+    let (_id, gw, _gn) = set_and_get(&h, params).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    let (w, n) = publish_signed_listing(&h, &e).await;
+    assert_eq!(w, n);
+    assert_eq!(w["error"]["code"], -32602);
+    assert!(w["error"]["message"].as_str().unwrap().contains("draft"), "{w}");
+}
+
+#[tokio::test]
+async fn scenario_86_search_by_category_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming-86", "Hedge trimming")).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &e).await;
+
+    let (hit_w, hit_n) = wire_invoke(
+        &h,
+        services::DIRECTORY,
+        &env("directory.search", json!({ "categories": ["gardening"] })),
+    )
+    .await;
+    assert_eq!(hit_w, hit_n);
+    assert_eq!(hit_w["result"]["hits"].as_array().unwrap().len(), 1);
+
+    let (miss_w, miss_n) = wire_invoke(
+        &h,
+        services::DIRECTORY,
+        &env("directory.search", json!({ "categories": ["plumbing"] })),
+    )
+    .await;
+    assert_eq!(miss_w, miss_n);
+    assert_eq!(miss_w["result"]["hits"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn scenario_87_search_by_free_text_case_insensitive_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming-87", "Hedge Trimming")).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &e).await;
+
+    let (w, n) =
+        wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({ "text": "HEDGE" })))
+            .await;
+    assert_eq!(w, n);
+    assert_eq!(w["result"]["hits"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn scenario_88_89_geometric_search_refines_exactly_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    // The listing's own circle is centred at (52.0, 13.0) with radius 5 km.
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming-89", "Hedge trimming")).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &e).await;
+
+    // A box that intersects the listing's own bounding box.
+    let (hit_w, hit_n) = wire_invoke(
+        &h,
+        services::DIRECTORY,
+        &env(
+            "directory.search",
+            json!({ "area": { "kind": "bbox", "min_lat_e6": 51_990_000, "min_lon_e6": 12_990_000, "max_lat_e6": 52_010_000, "max_lon_e6": 13_010_000 } }),
+        ),
+    )
+    .await;
+    assert_eq!(hit_w, hit_n);
+    assert_eq!(hit_w["result"]["hits"].as_array().unwrap().len(), 1);
+    assert_eq!(hit_w["result"]["hits"][0]["area_match"]["kind"], "geometric");
+
+    // A box inside the circle's over-covering bounding box corner, but far
+    // outside the true 5 km circle -- the exact refinement, not the sieve.
+    let (miss_w, miss_n) = wire_invoke(
+        &h,
+        services::DIRECTORY,
+        &env(
+            "directory.search",
+            json!({ "area": { "kind": "bbox", "min_lat_e6": 52_040_000, "min_lon_e6": 13_060_000, "max_lat_e6": 52_041_000, "max_lon_e6": 13_061_000 } }),
+        ),
+    )
+    .await;
+    assert_eq!(miss_w, miss_n);
+    assert_eq!(
+        miss_w["result"]["hits"].as_array().unwrap().len(),
+        0,
+        "the sieve's over-coverage must be refined away: {miss_w}"
+    );
+}
+
+#[tokio::test]
+async fn scenario_90_a_named_area_listing_matches_only_by_label_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let mut params = full_listing_params("hedge-trimming-90", "Hedge trimming");
+    params["location"]["service_area"] = json!([{ "kind": "named", "label": "Bengaluru" }]);
+    let (_id, gw, _gn) = set_and_get(&h, params).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &e).await;
+
+    let (geo_w, geo_n) = wire_invoke(
+        &h,
+        services::DIRECTORY,
+        &env("directory.search", json!({ "area": { "kind": "bbox", "min_lat_e6": 0, "min_lon_e6": 0, "max_lat_e6": 90_000_000, "max_lon_e6": 90_000_000 } })),
+    )
+    .await;
+    assert_eq!(geo_w, geo_n);
+    assert_eq!(
+        geo_w["result"]["hits"].as_array().unwrap().len(),
+        0,
+        "a named-only area must not match a geometric query"
+    );
+
+    let (label_w, label_n) = wire_invoke(
+        &h,
+        services::DIRECTORY,
+        &env("directory.search", json!({ "area": { "kind": "named", "label": "bengaluru" } })),
+    )
+    .await;
+    assert_eq!(label_w, label_n);
+    assert_eq!(label_w["result"]["hits"].as_array().unwrap().len(), 1);
+    assert_eq!(label_w["result"]["hits"][0]["area_match"]["kind"], "named");
+}
+
+#[tokio::test]
+async fn scenario_91_no_location_block_shows_only_under_a_no_area_query_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let mut params = full_listing_params("hedge-trimming-91", "Hedge trimming");
+    params.as_object_mut().unwrap().remove("location");
+    let (_id, gw, _gn) = set_and_get(&h, params).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &e).await;
+
+    let (none_w, none_n) =
+        wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
+    assert_eq!(none_w, none_n);
+    assert_eq!(none_w["result"]["hits"].as_array().unwrap().len(), 1);
+    assert_eq!(none_w["result"]["hits"][0]["area_match"]["kind"], "no-area-stated");
+
+    let (geo_w, geo_n) = wire_invoke(
+        &h,
+        services::DIRECTORY,
+        &env("directory.search", json!({ "area": { "kind": "bbox", "min_lat_e6": 0, "min_lon_e6": 0, "max_lat_e6": 90_000_000, "max_lon_e6": 90_000_000 } })),
+    )
+    .await;
+    assert_eq!(geo_w, geo_n);
+    assert_eq!(geo_w["result"]["hits"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn scenario_93_a_search_response_carries_no_verification_verdict_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming-93", "Hedge trimming")).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &e).await;
+
+    let (w, n) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
+    assert_eq!(w, n);
+    let hit = &w["result"]["hits"][0];
+    for key in ["verified", "revocation_status", "credential"] {
+        assert!(hit.get(key).is_none(), "a directory's own answer must carry no '{key}': {w}");
+    }
+}
+
+#[tokio::test]
+async fn scenario_94_search_over_the_wire_anonymous_succeeds_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming-94", "Hedge trimming")).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &e).await;
+
+    let (w, n) = wire_invoke_as(
+        &h,
+        services::DIRECTORY,
+        &env("directory.search", json!({})),
+        AuthLevel::System,
+    )
+    .await;
+    assert_eq!(w, n);
+    assert_eq!(w["result"]["hits"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn scenario_96_client_sources_add_list_remove_round_trip_parity() {
+    let h = harness().await;
+    let (aw, an) = both_rpc(
+        &h,
+        "directory.add-source",
+        json!({ "did": "did:key:hForeign", "label": "Neighbour Guild" }),
+    )
+    .await;
+    assert_eq!(aw, an);
+    let (lw, ln) = both_rpc(&h, "directory.sources", json!({})).await;
+    assert_eq!(lw, ln);
+    assert_eq!(lw["result"]["sources"].as_array().unwrap().len(), 1);
+    let (rw, rn) =
+        both_rpc(&h, "directory.remove-source", json!({ "did": "did:key:hForeign" })).await;
+    assert_eq!(rw, rn);
+    assert_eq!(rw["result"]["removed"], true);
+}
+
+#[tokio::test]
+async fn scenario_97_client_fan_out_over_one_source_yields_a_merged_hit_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming-97", "Hedge trimming")).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    // Published as this node's own SynOrg, through the wire path, so it is
+    // reachable by `directory.search` on `did:key:hForeign` -- which
+    // `TestWasmServiceProxy`/`TestNativeServiceProxy` route back to this
+    // very directory over the *local* path (`F10`).
+    publish_signed_listing(&h, &e).await;
+
+    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
+    let (start_w, start_n) = both_rpc(&h, "directory.start-run", json!({})).await;
+    assert_eq!(start_w, start_n);
+    let run_id = start_w["result"]["run_id"].as_str().unwrap().to_string();
+    assert_eq!(start_w["result"]["sources"], json!(["did:key:hForeign"]));
+
+    let (qw, qn) = both_rpc(
+        &h,
+        "directory.query-source",
+        json!({ "run_id": run_id, "source": "did:key:hForeign", "query": {} }),
+    )
+    .await;
+    assert_eq!(qw, qn);
+    assert_eq!(qw["result"]["verified"], 1);
+
+    let (mw, mn) = both_rpc(&h, "directory.merge", json!({ "run_id": run_id })).await;
+    assert_eq!(mw, mn);
+    let hits = mw["result"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0]["sources"][0]["directory"], "did:key:hForeign");
+    assert!(
+        hits[0].get("envelope").is_none(),
+        "merge must return projections, not envelopes: {mw}"
+    );
+
+    let record_id = hits[0]["record_id"].as_str().unwrap();
+    let (ew, en) =
+        both_rpc(&h, "directory.run-envelope", json!({ "run_id": run_id, "record_id": record_id }))
+            .await;
+    assert_eq!(ew, en);
+    assert_eq!(ew["result"]["envelope"], json!(e));
+}
+
+#[tokio::test]
+async fn scenario_101_a_run_with_zero_sources_succeeds_with_zero_hits_parity() {
+    let h = harness().await;
+    let (start_w, start_n) = both_rpc(&h, "directory.start-run", json!({})).await;
+    assert_eq!(start_w, start_n);
+    let run_id = start_w["result"]["run_id"].as_str().unwrap().to_string();
+    assert_eq!(start_w["result"]["sources"], json!([]));
+
+    let (mw, mn) = both_rpc(&h, "directory.merge", json!({ "run_id": run_id })).await;
+    assert_eq!(mw, mn);
+    assert_eq!(mw["result"]["hits"], json!([]));
+    assert!(mw["result"].get("error").is_none());
+}
+
+#[tokio::test]
+async fn scenario_102_query_source_refuses_an_unregistered_source_and_a_foreign_run_id_parity() {
+    let h = harness().await;
+    let (start_w, _) = both_rpc(&h, "directory.start-run", json!({})).await;
+    let run_id = start_w["result"]["run_id"].as_str().unwrap().to_string();
+
+    let (uw, un) = both_rpc(
+        &h,
+        "directory.query-source",
+        json!({ "run_id": run_id, "source": "did:key:hForeign", "query": {} }),
+    )
+    .await;
+    assert_eq!(uw, un);
+    assert!(is_err(&uw, -32602), "an unregistered source must be refused: {uw}");
+
+    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
+    let (rw, rn) = both_rpc(
+        &h,
+        "directory.query-source",
+        json!({ "run_id": "run_this_node_never_minted", "source": "did:key:hForeign", "query": {} }),
+    )
+    .await;
+    assert_eq!(rw, rn);
+    assert!(is_err(&rw, -32602), "a run_id this node did not mint must be refused: {rw}");
+}
+
+#[tokio::test]
+async fn scenario_106_listing_history_returns_only_the_named_listings_versions_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let (id_a, _, _) = set_and_get(&h, full_listing_params("hedge-trimming-106a", "A")).await;
+    let (id_b, _, _) = set_and_get(&h, full_listing_params("hedge-trimming-106b", "B")).await;
+    set_and_get(&h, {
+        let mut p = full_listing_params("hedge-trimming-106a", "A v2");
+        p["slug"] = json!("hedge-trimming-106a");
+        p
+    })
+    .await;
+
+    let (w, n) = both_rpc(&h, "listing.history", json!({ "listing_id": id_a })).await;
+    assert_eq!(w, n);
+    assert_eq!(w["result"]["history"].as_array().unwrap().len(), 2);
+    let (w2, n2) = both_rpc(&h, "listing.history", json!({ "listing_id": id_b })).await;
+    assert_eq!(w2, n2);
+    assert_eq!(w2["result"]["history"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn scenario_106b_every_client_half_verb_is_refused_over_the_wire_parity() {
+    let h = harness().await;
+    for method in [
+        "directory.start-run",
+        "directory.query-source",
+        "directory.merge",
+        "directory.run-envelope",
+    ] {
+        let (w, n) = h.wire_invoke(services::DIRECTORY, &env(method, json!({}))).await;
+        assert_eq!(w, n, "{method}");
+        assert_eq!(w["error"]["code"], -32013, "{method}: {w}");
+    }
+    let (sw, sn) = h.wire_invoke(services::DIRECTORY, &env("directory.search", json!({}))).await;
+    assert_eq!(sw, sn);
+    assert_ne!(sw["error"]["code"].as_i64(), Some(-32013));
+}
+
+#[tokio::test]
+async fn scenario_109_no_wire_reachable_method_calls_a_sibling_parity() {
+    let h = harness().await;
+    for method in ["directory.search", "directory.info", "directory.publish"] {
+        let params = if method == "directory.publish" {
+            json!({ "envelope": "not-a-real-envelope" })
+        } else {
+            json!({})
+        };
+        let before_w = h.wasm_proxy.invocations.load(Ordering::SeqCst);
+        let before_n = h.native_proxy.invocations.load(Ordering::SeqCst);
+        h.wire_invoke(services::DIRECTORY, &env(method, params)).await;
+        assert_eq!(
+            h.wasm_proxy.invocations.load(Ordering::SeqCst),
+            before_w,
+            "{method} made a wasm proxy call"
+        );
+        assert_eq!(
+            h.native_proxy.invocations.load(Ordering::SeqCst),
+            before_n,
+            "{method} made a native proxy call"
+        );
+    }
 }
