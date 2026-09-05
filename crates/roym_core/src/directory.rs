@@ -8,7 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{area::Area, safety::PublicationLimits};
 
-pub const DIRECTORY_SCHEMA_VERSION: u32 = 2;
+/// Bumped to 3 by the code-review fix that added `PublicationRow::
+/// issued_at_secs` (a required field, no serde default): a bundle
+/// exported before that change no longer deserializes, and `import`'s own
+/// version gate must say so rather than accept it and fail row by row.
+pub const DIRECTORY_SCHEMA_VERSION: u32 = 3;
 pub const MAX_SYNORG_NAME_LEN: usize = 128;
 pub const MAX_RULES_LEN: usize = 8192;
 pub const MAX_CONTACT_LEN: usize = 256;

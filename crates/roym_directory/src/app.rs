@@ -8,7 +8,7 @@
 //! make one bounded call per directory and reads back what the node
 //! verified.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -975,10 +975,10 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
         };
         let entry = by_listing.entry(row.listing_id.clone());
         match entry {
-            std::collections::btree_map::Entry::Vacant(v) => {
+            Entry::Vacant(v) => {
                 v.insert((row, effective));
             }
-            std::collections::btree_map::Entry::Occupied(mut o) => {
+            Entry::Occupied(mut o) => {
                 if area_match_precedence(&effective) < area_match_precedence(&o.get().1) {
                     o.insert((row, effective));
                 }
@@ -999,11 +999,13 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
         // already carries -- a direct get, not the full-collection scan
         // `load_publication_for_listing` does for the (rare, owner-only)
         // withdrawal/republish path.
+        // A row this node cannot itself parse (e.g. an older schema left
+        // over from before a field was added) drops that one hit rather
+        // than failing the whole anonymous-reachable search.
         let envelope = match get_json::<H, PublicationRow>(host, PUBLICATIONS, &row.record_id).await
         {
             Ok(Some(p)) => p.envelope,
-            Ok(None) => continue,
-            Err(e) => return Response::internal_error(e),
+            Ok(None) | Err(_) => continue,
         };
         out.push(SearchHit {
             listing_id: row.listing_id,
@@ -1693,12 +1695,28 @@ async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
         }
     }
 
-    // Per source, first: sort by (issued_at desc, listing_id asc), take at
-    // most MAX_HITS_PER_SOURCE.
-    let mut by_source: BTreeMap<String, Vec<SearchRunRow>> = BTreeMap::new();
+    // Per source, first: dedupe by `listing_id` (a single `query-source`
+    // call cannot write two rows for one listing, since a directory's own
+    // `search()` already collapses to one hit per listing -- but nothing
+    // stops a client calling `query-source` more than once for the same
+    // `(run_id, source)`, e.g. a retry, and two calls can each store a
+    // different, genuinely signed version), keeping the newer row; then
+    // sort by (issued_at desc, listing_id asc) and take at most
+    // `MAX_HITS_PER_SOURCE`.
+    let mut by_source: BTreeMap<String, BTreeMap<String, SearchRunRow>> = BTreeMap::new();
     for row in verified_rows {
-        by_source.entry(row.source.clone()).or_default().push(row);
+        let per_listing = by_source.entry(row.source.clone()).or_default();
+        match per_listing.get(&row.listing_id) {
+            Some(existing) if existing.issued_at_secs >= row.issued_at_secs => {}
+            _ => {
+                per_listing.insert(row.listing_id.clone(), row);
+            }
+        }
     }
+    let mut by_source: BTreeMap<String, Vec<SearchRunRow>> = by_source
+        .into_iter()
+        .map(|(source, per_listing)| (source, per_listing.into_values().collect()))
+        .collect();
     for rows in by_source.values_mut() {
         rows.sort_by(|a, b| {
             b.issued_at_secs.cmp(&a.issued_at_secs).then(a.listing_id.cmp(&b.listing_id))
@@ -1718,7 +1736,7 @@ async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
     // different source mid-loop.)
     let mut positions: BTreeMap<String, usize> =
         by_source.keys().map(|k| (k.clone(), 0usize)).collect();
-    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut merge_truncated = false;
     'outer: loop {
         let mut advanced = false;
@@ -1773,7 +1791,7 @@ async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
                     json!({ "directory": r.source, "record_id": r.record_id, "received_at_secs": r.received_at_secs })
                 })
                 .collect();
-            let distinct_record_ids: std::collections::BTreeSet<&str> =
+            let distinct_record_ids: BTreeSet<&str> =
                 candidates.iter().map(|r| r.record_id.as_str()).collect();
             Some(json!({
                 "listing_id": winner.listing_id,
@@ -1811,7 +1829,7 @@ async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
     }
     let mut refused_positions: BTreeMap<String, usize> =
         refused_by_source.keys().map(|k| (k.clone(), 0usize)).collect();
-    let mut refused_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut refused_seen: BTreeSet<String> = BTreeSet::new();
     let mut refused_truncated = false;
     'refused_outer: loop {
         let mut advanced = false;
@@ -1880,10 +1898,14 @@ async fn run_envelope<H: AppHost>(host: &H, req: &Request) -> Response {
     }
     // The key carries `source` too (so two directories serving the same
     // record don't collide), which this lookup does not know -- any
-    // surviving row for `record_id` carries the identical signed bytes,
-    // since `record_id` is itself content-derived from the envelope. A
-    // scan of this one run's rows, bounded by `MAX_SOURCES`, not the
-    // whole collection.
+    // surviving *verified* row for `record_id` carries the identical
+    // signed bytes, since `record_id` is content-derived from the
+    // envelope. That derivation only holds once verified: a refused row's
+    // `record_id` is whatever the source claimed, unverified, so a
+    // hostile source could set one to collide with a genuine record and
+    // must be excluded here rather than relied on to sort last. A scan of
+    // this one run's rows, bounded by `MAX_SOURCES`, not the whole
+    // collection.
     let rows = match collect_raw(host, SEARCH_RUNS).await {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
@@ -1894,6 +1916,7 @@ async fn run_envelope<H: AppHost>(host: &H, req: &Request) -> Response {
             continue;
         }
         if let Ok(row) = serde_json::from_value::<SearchRunRow>(v)
+            && !row.refused
             && row.record_id == record_id
         {
             return Response::ok(json!({ "envelope": row.envelope }));

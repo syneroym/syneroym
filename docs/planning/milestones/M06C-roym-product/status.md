@@ -1067,7 +1067,101 @@ keeping a withdrawn row as its own anchor — adjacent to but outside the
 15 reported findings); recorded as its own backlog row rather than
 folded silently into finding 4's fix.
 
----
+**Correction to finding 3's own writeup, raised on a second review pass.**
+Keying the publication limiter on `published_by` closes the half that
+mattered — a stranger can no longer exhaust a *different* provider's
+budget by replaying their signed envelope — but it does not, by itself,
+give `published_by` any cost to mint. `crates/router/src/route_handler/
+http.rs:486-488` assigns `AuthLevel::Delegated` to every verified
+preamble, including an unchallenged node-DID pubkey with no certificate
+behind it, so a wire caller's `published_by` proves key possession and
+nothing else — exactly as cheap to generate as the envelope issuer key
+it replaces. The fix binds the rate limit to the correct party; it does
+not make that party expensive to become many of. Real resistance to that
+needs a membership credential, which is C9's, by `D-06C-6`'s own R1/R3
+split. Failure-matrix row 12 (flooding) is closed for the specific
+attack the row and the findings both named — exhausting *someone else's*
+budget, or resetting your own by rotating a signing key — not for an
+attacker willing to mint a fresh identity per attempt.
+
+### C6 — Second code review pass (2026-09-05)
+
+A second, independent pass over the same fixes found four more issues —
+three real gaps the first round's fixes opened or left standing, one a
+precision correction to the first round's own writeup (above). All four
+fixed, no pushback:
+
+16. **`DIRECTORY_SCHEMA_VERSION` stayed at 2** after finding 4's fix added
+    `PublicationRow::issued_at_secs` as a required field with no serde
+    default. `import()`'s version gate compares against this constant, so
+    a bundle exported before that change would be *accepted* and then
+    fail to deserialize row by row — `rebuild_search_index` silently
+    skipping each one. The no-migrations-pre-release policy makes
+    changing the row shape in place correct; it does not make a stale
+    version gate correct. Bumped to 3, with the parity harness's
+    `expected_schema_version` map (`crates/roym_web/tests/
+    dual_build_parity.rs`) updated to match and given its own arm rather
+    than sharing one with `profile`/`catalog`/`conversation`.
+17. **`search()`'s finding-6 fix (a direct `get_json` instead of a
+    collection scan) turned one unparseable row into a hard failure of
+    the whole request.** The replaced code skipped a row it could not
+    parse; the replacement's `Err` arm returned `Response::internal_error`
+    for the *entire* anonymous-reachable search. Now both `Ok(None)` and
+    `Err(_)` drop just that one hit, matching the old behaviour's
+    robustness.
+18. **`merge()`'s per-source list was still not deduplicated by
+    `listing_id`.** The reported cause (a `kept` row mutated mid-loop)
+    was fixed, but nothing stopped two rows for the *same* listing
+    landing in one source's own list in the first place — not from one
+    `query-source` call (a directory's own `search()` already collapses
+    to one hit per listing), but from two calls for the same `(run_id,
+    source)`, e.g. a client retry, each storing a different, genuinely
+    signed version under a different `record_id` (and therefore a
+    different `search_runs` key, per finding 11's own fix). A comment
+    claimed this "cannot happen... by construction"; the construction did
+    not exist. Added: dedupe by `listing_id` within each source, keeping
+    the newer row, before the existing sort-and-truncate. Parity scenario
+    116 reproduces the exact two-call sequence.
+19. **`run_envelope`'s scan matched on `record_id` alone, with no guard
+    against a refused row.** Its own comment justified the match by
+    `record_id` being content-derived from the envelope — true only for a
+    *verified* row; a refused row's `record_id` is whatever the source
+    claimed, unverified, so a hostile source could set one to collide
+    with a genuine record. The genuine row won only because `did:` sorts
+    before `refused#` under the collection's own `id` order — a lexical
+    accident, not a guarantee. Added `&& !row.refused` to the match.
+
+Parity scenario 117 was added alongside these — not itself one of the
+four findings, but written while fixing finding 16 because no
+`directory.export`/`import` scenario existed at all until now; it also
+exercises finding 13's fix (import reindexing) and the resulting search
+in one pass. `dual_build_parity` now carries 107 scenarios (74-117),
+all passing on both builds; the full gate was re-run in full afterward.
+
+**A genuinely flaky test, found by the full-workspace re-run itself, not
+by either review.** `cargo test --workspace` failed twice
+(`scenario_83`, `scenario_86`) with `assert_eq!(w, n)` mismatches on
+`received_at_secs` differing by exactly one second between the wasm and
+native builds. Both fields are each build's own wall clock
+(`directory.search`'s `answered_at_secs`/per-hit `received_at_secs`, and
+`retry_after_secs`, computed from two such reads) -- documented
+elsewhere in this file as unsynchronized between builds, and already
+handled for other services by `strip_volatile` before comparison. Most
+of the 33 new scenarios compared raw responses carrying one of these
+fields directly, which happens to pass on almost every run (the two
+builds' clocks agree to the second far more often than not) and fails
+exactly as rarely as that assumption is wrong -- which is what makes a
+flaky test worse than a deterministic failure: it passed cleanly through
+every verification run in this document until this one. Fixed at every
+call site that compares a raw `directory.*` response pair (18 scenarios,
+26 call sites): `strip_volatile` gained `received_at_secs`,
+`answered_at_secs`, `retry_after_secs`, `age_secs`, and `last_ok_secs`
+(a `directory.sources` probe timestamp missed on the first pass), and a
+`stripped(&v) -> Value` borrowing wrapper lets a call site write
+`assert_eq!(stripped(&w), stripped(&n))` without giving up `w`/`n` for
+the assertions that follow. Verified with 25 back-to-back runs each of
+`scenario_83` and `scenario_86` (50 runs, 0 failures) in addition to the
+full suite re-run.
 
 ## C6 — Verification evidence
 
@@ -1082,22 +1176,20 @@ folded silently into finding 4's fix.
    roym,dual_build_fixture`: **all clean, 0 warnings** (three `expect()`
    call sites in `roym_directory`'s non-test code were rewritten to
    returned errors during this pass rather than left as warnings).
-3. `cargo test -p syneroym-roym-web --test dual_build_parity`: **105
+3. `cargo test -p syneroym-roym-web --test dual_build_parity`: **107
    passed, 0 failed** (rerun in full after every implementation fix and
-   every code-review fix landed) — the 73 pre-existing scenarios
-   (unchanged behaviour, includes one merged plan-numbered pair) plus 31
-   new functions covering scenarios 74-115 (`scenario_88_89` covers two
-   plan-numbered cases in one function; 110-115 are the code-review
-   follow-up's own regression scenarios). All six `wasm32-wasip2` Roym
-   components were rebuilt with `cargo component build --release --target
-   wasm32-wasip2` before each run; three real bugs were caught and fixed
-   in the process: `directory`'s own `SCHEMA_VERSION` bump needed the
-   harness's `expected_schema_version` map updated (scenarios 8, 71),
-   `start_run`'s process-derived run id (`uuidish()`, see above) both
-   trapped the wasm build outright and, once fixed the first way,
-   produced non-reproducible ids across builds — fixed by deriving the id
-   from storage state instead — and the code review's own 15 findings,
-   detailed in "Code review follow-up" above.
+   both code-review passes landed) — the 73 pre-existing scenarios
+   (unchanged behaviour, includes one merged plan-numbered pair) plus 33
+   new functions covering scenarios 74-117 (`scenario_88_89` covers two
+   plan-numbered cases in one function; 110-117 are the code-review
+   follow-ups' own regression scenarios, across both passes). All six
+   `wasm32-wasip2` Roym components were rebuilt with `cargo component
+   build --release --target wasm32-wasip2` before each run; two real bugs
+   were caught and fixed in the implementation pass (`directory`'s own
+   `SCHEMA_VERSION` bump needed the harness's `expected_schema_version`
+   map updated, and `start_run`'s process-derived run id both trapped the
+   wasm build and produced non-reproducible ids across builds), plus the
+   19 findings from both code-review passes, detailed above.
 4. `cargo xtask check-roym-deps`: **Clean.**
 5. Planning-identifier grep over every file this slice touched or added
    (`crates/roym_core/src/{admit,area,listing,router,backup,directory}.rs`,
@@ -1115,8 +1207,8 @@ folded silently into finding 4's fix.
 7. `cargo clippy --workspace --all-targets --all-features`: **clean, 0
    warnings.**
 8. `cargo test --workspace` (sandbox off, per the repository's own
-   sandbox note), re-run after the code-review fixes: **2473 passed, 0
-   failed** across 151 test binaries — including `dual_build_parity`'s 105
+   sandbox note), re-run after both code-review passes: **2475 passed, 0
+   failed** across 151 test binaries — including `dual_build_parity`'s 107
    (again), `roym_conversation_e2e.rs`, and `roym_app_e2e.rs` (both
    unmodified by this slice and both still green).
 9. `cargo audit` (re-run): **clean (0 vulnerabilities)**.
@@ -1129,7 +1221,7 @@ folded silently into finding 4's fix.
 **What this evidence does, and does not, prove.** It proves the Rust
 core — the admission rule, the server half, the client half, the manifest
 wiring, and `roymctl` — is correct and behaves identically on both
-builds, to the depth the 31 new parity scenarios reach, and that nothing
+builds, to the depth the 33 new parity scenarios reach, and that nothing
 else in the workspace (the two-substrate e2e suites, the Playwright
 suite) regressed. It does **not** prove R1 row 5's acceptance
 test end to end: that needs the Hub UI (item 1 above) and, for the

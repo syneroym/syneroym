@@ -97,6 +97,17 @@ fn strip_volatile(val: &mut Value) {
             // raw bundle's own `check_integrity` runs before any strip.
             map.remove("digest");
             map.remove("sender_timestamp_ms");
+            // The directory's own clock (`received_at_secs`,
+            // `answered_at_secs`) and anything computed from a difference
+            // of two wall-clock reads across the two builds
+            // (`retry_after_secs`, `age_secs`) -- neither build's clock is
+            // pinned, only the signed listing envelope's `issued_at_secs`
+            // is, so these can legitimately differ by the odd second.
+            map.remove("received_at_secs");
+            map.remove("answered_at_secs");
+            map.remove("retry_after_secs");
+            map.remove("age_secs");
+            map.remove("last_ok_secs");
             for (k, v) in map.iter_mut() {
                 if k != "envelope" && k != "delegation" {
                     strip_volatile(v);
@@ -118,6 +129,19 @@ fn strip_volatile(val: &mut Value) {
         }
         _ => {}
     }
+}
+
+/// `strip_volatile` as a value-returning helper over a borrow, for a
+/// comparison written as `assert_eq!(stripped(&w), stripped(&n))` without
+/// giving up the original value for later use in the same test --
+/// directory responses carry each build's own unsynchronized wall clock
+/// (`received_at_secs`, `answered_at_secs`, `age_secs`) or a value derived
+/// from two such reads (`retry_after_secs`), any of which can legitimately
+/// differ by the odd second between the two builds' calls.
+fn stripped(v: &Value) -> Value {
+    let mut c = v.clone();
+    strip_volatile(&mut c);
+    c
 }
 
 fn caller() -> CallerContext {
@@ -1308,12 +1332,11 @@ async fn scenario_8_status_on_all_six_services() {
         let val: Value = serde_json::from_str(&wasm_status).unwrap();
         assert_eq!(val["service"], svc.name);
         // profile, catalog, conversation and directory carry real state now.
-        let expected_schema_version =
-            if matches!(svc.name, "profile" | "catalog" | "conversation" | "directory") {
-                2
-            } else {
-                1
-            };
+        let expected_schema_version = match svc.name {
+            "directory" => 3,
+            "profile" | "catalog" | "conversation" => 2,
+            _ => 1,
+        };
         assert_eq!(val["schema_version"], expected_schema_version);
     }
 }
@@ -3386,9 +3409,9 @@ async fn scenario_77_member_add_list_remove_round_trip_parity() {
     let h = harness().await;
     let (aw, an) =
         both_rpc(&h, "member.add", json!({ "did": "did:key:zM", "note": "trusted" })).await;
-    assert_eq!(aw, an);
+    assert_eq!(stripped(&aw), stripped(&an));
     let (lw, ln) = both_rpc(&h, "member.list", json!({})).await;
-    assert_eq!(lw, ln);
+    assert_eq!(stripped(&lw), stripped(&ln));
     assert_eq!(lw["result"]["members"][0]["note"], "trusted");
     let (rw, rn) = both_rpc(&h, "member.remove", json!({ "did": "did:key:zM" })).await;
     assert_eq!(rw, rn);
@@ -3417,7 +3440,7 @@ async fn scenario_79_publish_from_verified_wire_caller_stores_the_envelope_byte_
     assert!(pw["result"]["listing_id"].is_string(), "{pw}");
 
     let (sw, sn) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
-    assert_eq!(sw, sn);
+    assert_eq!(stripped(&sw), stripped(&sn));
     let hits = sw["result"]["hits"].as_array().unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0]["envelope"], json!(envelope), "the directory must store the exact bytes");
@@ -3485,7 +3508,7 @@ async fn scenario_83_publication_limiter_refuses_past_the_budget_with_a_usable_r
         set_and_get(&h, full_listing_params("hedge-trimming-83b", "Second")).await;
     let e2 = gw2["result"]["envelope"].as_str().unwrap().to_string();
     let (pw2, pn2) = publish_signed_listing(&h, &e2).await;
-    assert_eq!(pw2, pn2);
+    assert_eq!(stripped(&pw2), stripped(&pn2));
     assert_eq!(pw2["error"]["code"], -32602);
     assert!(pw2["error"]["data"]["retry_after_secs"].as_u64().unwrap() > 0);
 }
@@ -3509,7 +3532,7 @@ async fn scenario_84_a_withdrawn_publication_consumes_no_budget_and_clears_the_i
     assert_eq!(pw["result"]["withdrawn"], true);
 
     let (sw, sn) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
-    assert_eq!(sw, sn);
+    assert_eq!(stripped(&sw), stripped(&sn));
     assert_eq!(sw["result"]["hits"].as_array().unwrap().len(), 0);
 }
 
@@ -3541,7 +3564,7 @@ async fn scenario_84b_republishing_with_fewer_service_areas_leaves_no_stale_inde
         &env("directory.search", json!({ "area": { "kind": "bbox", "min_lat_e6": 0, "min_lon_e6": 0, "max_lat_e6": 90_000_000, "max_lon_e6": 90_000_000 } })),
     )
     .await;
-    assert_eq!(sw, sn);
+    assert_eq!(stripped(&sw), stripped(&sn));
     // One listing, whatever the surviving area count -- if a stale row
     // referencing the old record_id survived, this would either double the
     // hit or leave a dangling reference `directory.search` cannot resolve.
@@ -3578,7 +3601,7 @@ async fn scenario_86_search_by_category_parity() {
         &env("directory.search", json!({ "categories": ["gardening"] })),
     )
     .await;
-    assert_eq!(hit_w, hit_n);
+    assert_eq!(stripped(&hit_w), stripped(&hit_n));
     assert_eq!(hit_w["result"]["hits"].as_array().unwrap().len(), 1);
 
     let (miss_w, miss_n) = wire_invoke(
@@ -3587,7 +3610,7 @@ async fn scenario_86_search_by_category_parity() {
         &env("directory.search", json!({ "categories": ["plumbing"] })),
     )
     .await;
-    assert_eq!(miss_w, miss_n);
+    assert_eq!(stripped(&miss_w), stripped(&miss_n));
     assert_eq!(miss_w["result"]["hits"].as_array().unwrap().len(), 0);
 }
 
@@ -3604,7 +3627,7 @@ async fn scenario_87_search_by_free_text_case_insensitive_parity() {
     let (w, n) =
         wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({ "text": "HEDGE" })))
             .await;
-    assert_eq!(w, n);
+    assert_eq!(stripped(&w), stripped(&n));
     assert_eq!(w["result"]["hits"].as_array().unwrap().len(), 1);
 }
 
@@ -3629,7 +3652,7 @@ async fn scenario_88_89_geometric_search_refines_exactly_parity() {
         ),
     )
     .await;
-    assert_eq!(hit_w, hit_n);
+    assert_eq!(stripped(&hit_w), stripped(&hit_n));
     assert_eq!(hit_w["result"]["hits"].as_array().unwrap().len(), 1);
     assert_eq!(hit_w["result"]["hits"][0]["area_match"]["kind"], "geometric");
 
@@ -3644,7 +3667,7 @@ async fn scenario_88_89_geometric_search_refines_exactly_parity() {
         ),
     )
     .await;
-    assert_eq!(miss_w, miss_n);
+    assert_eq!(stripped(&miss_w), stripped(&miss_n));
     assert_eq!(
         miss_w["result"]["hits"].as_array().unwrap().len(),
         0,
@@ -3669,7 +3692,7 @@ async fn scenario_90_a_named_area_listing_matches_only_by_label_parity() {
         &env("directory.search", json!({ "area": { "kind": "bbox", "min_lat_e6": 0, "min_lon_e6": 0, "max_lat_e6": 90_000_000, "max_lon_e6": 90_000_000 } })),
     )
     .await;
-    assert_eq!(geo_w, geo_n);
+    assert_eq!(stripped(&geo_w), stripped(&geo_n));
     assert_eq!(
         geo_w["result"]["hits"].as_array().unwrap().len(),
         0,
@@ -3682,7 +3705,7 @@ async fn scenario_90_a_named_area_listing_matches_only_by_label_parity() {
         &env("directory.search", json!({ "area": { "kind": "named", "label": "bengaluru" } })),
     )
     .await;
-    assert_eq!(label_w, label_n);
+    assert_eq!(stripped(&label_w), stripped(&label_n));
     assert_eq!(label_w["result"]["hits"].as_array().unwrap().len(), 1);
     assert_eq!(label_w["result"]["hits"][0]["area_match"]["kind"], "named");
 }
@@ -3700,7 +3723,7 @@ async fn scenario_91_no_location_block_shows_only_under_a_no_area_query_parity()
 
     let (none_w, none_n) =
         wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
-    assert_eq!(none_w, none_n);
+    assert_eq!(stripped(&none_w), stripped(&none_n));
     assert_eq!(none_w["result"]["hits"].as_array().unwrap().len(), 1);
     assert_eq!(none_w["result"]["hits"][0]["area_match"]["kind"], "no-area-stated");
 
@@ -3710,7 +3733,7 @@ async fn scenario_91_no_location_block_shows_only_under_a_no_area_query_parity()
         &env("directory.search", json!({ "area": { "kind": "bbox", "min_lat_e6": 0, "min_lon_e6": 0, "max_lat_e6": 90_000_000, "max_lon_e6": 90_000_000 } })),
     )
     .await;
-    assert_eq!(geo_w, geo_n);
+    assert_eq!(stripped(&geo_w), stripped(&geo_n));
     assert_eq!(geo_w["result"]["hits"].as_array().unwrap().len(), 0);
 }
 
@@ -3725,7 +3748,7 @@ async fn scenario_93_a_search_response_carries_no_verification_verdict_parity() 
     publish_signed_listing(&h, &e).await;
 
     let (w, n) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
-    assert_eq!(w, n);
+    assert_eq!(stripped(&w), stripped(&n));
     let hit = &w["result"]["hits"][0];
     for key in ["verified", "revocation_status", "credential"] {
         assert!(hit.get(key).is_none(), "a directory's own answer must carry no '{key}': {w}");
@@ -3749,7 +3772,7 @@ async fn scenario_94_search_over_the_wire_anonymous_succeeds_parity() {
         AuthLevel::System,
     )
     .await;
-    assert_eq!(w, n);
+    assert_eq!(stripped(&w), stripped(&n));
     assert_eq!(w["result"]["hits"].as_array().unwrap().len(), 1);
 }
 
@@ -3762,9 +3785,9 @@ async fn scenario_96_client_sources_add_list_remove_round_trip_parity() {
         json!({ "did": "did:key:hForeign", "label": "Neighbour Guild" }),
     )
     .await;
-    assert_eq!(aw, an);
+    assert_eq!(stripped(&aw), stripped(&an));
     let (lw, ln) = both_rpc(&h, "directory.sources", json!({})).await;
-    assert_eq!(lw, ln);
+    assert_eq!(stripped(&lw), stripped(&ln));
     assert_eq!(lw["result"]["sources"].as_array().unwrap().len(), 1);
     let (rw, rn) =
         both_rpc(&h, "directory.remove-source", json!({ "did": "did:key:hForeign" })).await;
@@ -3802,7 +3825,7 @@ async fn scenario_97_client_fan_out_over_one_source_yields_a_merged_hit_parity()
     assert_eq!(qw["result"]["verified"], 1);
 
     let (mw, mn) = both_rpc(&h, "directory.merge", json!({ "run_id": run_id })).await;
-    assert_eq!(mw, mn);
+    assert_eq!(stripped(&mw), stripped(&mn));
     let hits = mw["result"]["hits"].as_array().unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0]["sources"][0]["directory"], "did:key:hForeign");
@@ -3894,7 +3917,7 @@ async fn scenario_106b_every_client_half_verb_is_refused_over_the_wire_parity() 
         assert_eq!(w["error"]["code"], -32013, "{method}: {w}");
     }
     let (sw, sn) = h.wire_invoke(services::DIRECTORY, &env("directory.search", json!({}))).await;
-    assert_eq!(sw, sn);
+    assert_eq!(stripped(&sw), stripped(&sn));
     assert_ne!(sw["error"]["code"].as_i64(), Some(-32013));
 }
 
@@ -3991,7 +4014,7 @@ async fn scenario_113_a_local_publish_uses_this_installations_own_owner_as_publi
     assert!(pw["result"]["listing_id"].is_string(), "{pw}");
 
     let (lw, ln) = both_rpc(&h, "directory.publications", json!({})).await;
-    assert_eq!(lw, ln);
+    assert_eq!(stripped(&lw), stripped(&ln));
     let pubs = lw["result"]["publications"].as_array().unwrap();
     assert_eq!(pubs.len(), 1);
     assert_eq!(pubs[0]["published_by"], h.owner_did);
@@ -4016,7 +4039,7 @@ async fn scenario_114_search_filters_by_the_serde_spelling_of_a_multi_word_enum_
         &env("directory.search", json!({ "open_to": "existing-customers" })),
     )
     .await;
-    assert_eq!(w, n);
+    assert_eq!(stripped(&w), stripped(&n));
     assert_eq!(w["result"]["hits"].as_array().unwrap().len(), 1, "{w}");
 }
 
@@ -4050,4 +4073,85 @@ async fn scenario_115_a_replayed_older_envelope_is_refused_while_a_same_second_e
     let (rw, rn) = publish_signed_listing(&h, &e1).await;
     assert_eq!(rw, rn);
     assert_eq!(rw["error"]["code"], -32602, "a replayed older envelope must be refused: {rw}");
+}
+
+#[tokio::test]
+async fn scenario_116_two_query_source_calls_for_one_source_in_one_run_do_not_duplicate_a_listing_parity()
+ {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+    enrol_signing(&h, "catalog").await;
+    let (_id, gw1, _gn1) =
+        set_and_get(&h, full_listing_params("hedge-trimming-116", "Version one")).await;
+    let e1 = gw1["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &e1).await;
+
+    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
+    let (start_w, _start_n) = both_rpc(&h, "directory.start-run", json!({})).await;
+    let run_id = start_w["result"]["run_id"].as_str().unwrap().to_string();
+
+    // First call: stores a row for e1's record_id.
+    both_rpc(
+        &h,
+        "directory.query-source",
+        json!({ "run_id": run_id, "source": "did:key:hForeign", "query": {} }),
+    )
+    .await;
+
+    // A newer, same-second (pinned-clock) edit, superseding e1 -- a real
+    // signed version, not a forged duplicate.
+    let (_id2, gw2, _gn2) =
+        set_and_get(&h, full_listing_params("hedge-trimming-116", "Version two")).await;
+    let e2 = gw2["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &e2).await;
+
+    // Second call: same run, same source -- e.g. a client retry -- now
+    // stores a *different* row (different record_id) for the same
+    // listing_id. Before the fix, `merge`'s per-source list carried both,
+    // so this one source would appear twice in one hit's `sources[]`.
+    both_rpc(
+        &h,
+        "directory.query-source",
+        json!({ "run_id": run_id, "source": "did:key:hForeign", "query": {} }),
+    )
+    .await;
+
+    let (mw, mn) = both_rpc(&h, "directory.merge", json!({ "run_id": run_id })).await;
+    assert_eq!(stripped(&mw), stripped(&mn));
+    let hits = mw["result"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1, "{mw}");
+    let sources = hits[0]["sources"].as_array().unwrap();
+    assert_eq!(sources.len(), 1, "one source must appear once, not twice: {mw}");
+    assert_eq!(mw["result"]["hits"][0]["versions_differ"], false, "{mw}");
+}
+
+#[tokio::test]
+async fn scenario_117_directory_export_import_round_trip_reindexes_and_carries_the_bumped_schema_version_parity()
+ {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+    enrol_signing(&h, "catalog").await;
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming-117", "Hedge trimming")).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &e).await;
+
+    let (xw, xn) = both_rpc(&h, "directory.export", json!({})).await;
+    assert_eq!(stripped(&xw), stripped(&xn));
+    for section in ["synorg", "publications", "members", "publication_log", "sources"] {
+        assert_eq!(
+            xw["result"]["manifest"]["sections"][section]["schema_version"], 3,
+            "section '{section}' must carry the bumped schema version: {xw}"
+        );
+    }
+
+    let (iw, in_) = both_rpc(&h, "directory.import", json!({ "bundle": xw["result"] })).await;
+    assert_eq!(iw, in_);
+    assert!(iw["result"]["reindexed"].as_u64().unwrap() >= 1, "import must reindex: {iw}");
+
+    // The imported state must still answer a search -- proving the
+    // projection, not just the publication row, survived the round trip.
+    let (sw, sn) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
+    assert_eq!(stripped(&sw), stripped(&sn));
+    assert_eq!(sw["result"]["hits"].as_array().unwrap().len(), 1, "{sw}");
 }
