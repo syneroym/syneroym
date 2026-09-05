@@ -1695,13 +1695,16 @@ async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
         }
     }
 
-    // Per source, first: dedupe by `listing_id` (a single `query-source`
-    // call cannot write two rows for one listing, since a directory's own
-    // `search()` already collapses to one hit per listing -- but nothing
-    // stops a client calling `query-source` more than once for the same
-    // `(run_id, source)`, e.g. a retry, and two calls can each store a
-    // different, genuinely signed version), keeping the newer row; then
-    // sort by (issued_at desc, listing_id asc) and take at most
+    // Per source, first: dedupe by `listing_id`, keeping the newer row.
+    // A source is untrusted by construction and its response is
+    // arbitrary JSON, so nothing stops it returning two genuinely-signed
+    // versions of one listing in a single answer; an honest directory's
+    // own `search()` collapsing to one hit per listing narrows this but
+    // does not close it. It also covers the case that reliably occurs
+    // even against a well-behaved source: a client calling
+    // `query-source` more than once for the same `(run_id, source)`,
+    // e.g. a retry, storing a different version each time. Then sort by
+    // (issued_at desc, listing_id asc) and take at most
     // `MAX_HITS_PER_SOURCE`.
     let mut by_source: BTreeMap<String, BTreeMap<String, SearchRunRow>> = BTreeMap::new();
     for row in verified_rows {
