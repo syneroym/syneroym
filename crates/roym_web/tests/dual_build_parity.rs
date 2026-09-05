@@ -46,7 +46,12 @@ use syneroym_identity::{
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_roym_catalog::native::NativeCatalog;
 use syneroym_roym_conversation::native::NativeConversation;
-use syneroym_roym_core::{backup::Bundle, envelope::Response, listing, services};
+use syneroym_roym_core::{
+    backup::Bundle,
+    directory::{MAX_HITS_PER_SOURCE, MAX_REFUSED_RESULTS},
+    envelope::Response,
+    listing, services,
+};
 use syneroym_roym_directory::native::NativeDirectory;
 use syneroym_roym_profile::native::NativeProfile;
 use syneroym_roym_transaction::native::NativeTransaction;
@@ -156,6 +161,74 @@ fn custom_caller(did: &str) -> CallerContext {
         auth: AuthLevel::Delegated,
         proof: None,
     }
+}
+
+/// The identity a fan-out `query-source` / `publish-to-source` call
+/// presents to a *foreign* directory over the wire -- deliberately not
+/// this node's own owner, so a directory's publication limiter (keyed on
+/// the verified connection identity) sees a distinct party.
+fn foreign_consumer_caller() -> CallerContext {
+    custom_caller("did:key:zForeignConsumer")
+}
+
+/// A wire caller with no verified identity -- `AuthLevel::System` maps to
+/// `CallerOrigin::Anonymous` (only `Delegated` / `Ucan` map to `Verified`).
+fn anon_wire_caller() -> CallerContext {
+    CallerContext {
+        caller_did: String::new(),
+        app_instance: None,
+        session: SessionContext::default(),
+        auth: AuthLevel::System,
+        proof: None,
+    }
+}
+
+/// Maps a fan-out source DID onto the directory instance it stands for and
+/// whether the call arrives anonymously. `hForeignWire` / `hForeignAnon`
+/// reach this node's own directory over a genuine wire round trip;
+/// `hForeignWire2` reaches the second, independently-stored directory.
+/// `hForeign` is intentionally absent: it keeps its existing local routing
+/// so no pre-existing scenario changes (`F10`).
+fn foreign_wire_route(target: &str) -> Option<(String, bool)> {
+    match target {
+        "did:key:hForeignWire" => Some((did_for_service("directory"), false)),
+        "did:key:hForeignAnon" => Some((did_for_service("directory"), true)),
+        "did:key:hForeignWire2" => Some((did_for_service("directory2"), false)),
+        _ => None,
+    }
+}
+
+/// How many forged hits a hostile fake source returns per `query-source`.
+const HOSTILE_SOURCE_FORGERIES: usize = 15;
+
+/// Canned response for the hostile fake sources `did:key:hForge1` /
+/// `did:key:hForge2`. A real second directory cannot serve forgeries --
+/// its own `directory.publish` verifies every envelope at the door -- so a
+/// canned page of malformed envelopes is the only way to drive "a source
+/// that returns nothing but forgeries". The consumer's own verification in
+/// `query-source`, not the source, is what must reject them. Returned as
+/// the `Value::String` shape both real directory calls produce, so the two
+/// builds see byte-identical input.
+fn hostile_source_response(target: &str) -> Option<Value> {
+    let tag = match target {
+        "did:key:hForge1" => "a",
+        "did:key:hForge2" => "b",
+        _ => return None,
+    };
+    let hits: Vec<Value> = (0..HOSTILE_SOURCE_FORGERIES)
+        .map(|i| {
+            json!({
+                "listing_id": format!("forged-{tag}-{i}"),
+                "record_id": format!("forged-rec-{tag}-{i}"),
+                // Structurally JSON, but carries no valid signature.
+                "envelope": "{\"not\":\"a signed listing envelope\"}",
+                "issued_at_secs": 4_000_000_000u64,
+                "received_at_secs": 4_000_000_000u64,
+                "area_match": { "kind": "not-queried" }
+            })
+        })
+        .collect();
+    Some(Value::String(json!({ "result": { "hits": hits } }).to_string()))
 }
 
 trait Driver {
@@ -353,6 +426,11 @@ struct Harness {
     native: NativeDriver,
     wasm_http: WasmHttpDriver,
     native_http: NativeHttpDriver,
+    /// The second directory's local (`host_for`) native instance -- used
+    /// only by test setup helpers that must reach a local-only verb
+    /// (`directory.set-settings`) or seed its store directly. The fan-out
+    /// path reaches it over the wire through the proxies.
+    native_directory2: Arc<NativeDirectory<NativeAppHost>>,
     native_factories: Vec<Arc<NativeHostFactory>>,
     wasm_proxy: Arc<TestWasmServiceProxy>,
     native_proxy: Arc<TestNativeServiceProxy>,
@@ -503,6 +581,45 @@ impl Harness {
         (unwrap_payload(wasm), unwrap_payload(native.payload))
     }
 
+    /// Drives one verb against the **second** directory over a local
+    /// (`host_for` / `execute_wasm_json`) dispatch, on both builds. Used by
+    /// test setup to reach that directory's local-only verbs
+    /// (`directory.set-settings`) and to seed its store, since the wire
+    /// path -- the only one the fan-out uses -- refuses everything outside
+    /// `WIRE_REACHABLE`.
+    async fn dir2_local(&self, method: &str, params: Value) -> (Value, Value) {
+        let env_str = env(method, params).to_string();
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "invoke".to_string(),
+            params: json!([env_str]),
+            id: None,
+            idempotency_key: None,
+        };
+        let wasm = self
+            .wasm
+            .engine
+            .execute_wasm_json(
+                &did_for_service("directory2"),
+                services::DIRECTORY.interface,
+                &req,
+                Some(caller()),
+            )
+            .await
+            .expect("wasm dir2 local invoke");
+        let native = self
+            .native_directory2
+            .dispatch(NativeInvocation {
+                interface: services::DIRECTORY.interface.to_string(),
+                method: "invoke".to_string(),
+                params: json!([env_str]),
+                caller: caller(),
+            })
+            .await
+            .expect("native dir2 local invoke");
+        (unwrap_payload(wasm), unwrap_payload(native.payload))
+    }
+
     /// Pushes one inbound message at Roym's own inbox on the chosen stack,
     /// the same entry point `ConversationService`'s delivery worker uses.
     async fn deliver(&self, wasm: bool, msg: ConversationMessage) {
@@ -641,6 +758,32 @@ impl ServiceProxy for TestWasmServiceProxy {
     async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         let target = request.target_service.as_str();
+
+        if let Some(canned) = hostile_source_response(target) {
+            return Ok(canned);
+        }
+
+        if let Some((service_id, anon)) = foreign_wire_route(target) {
+            let caller = if anon { anon_wire_caller() } else { foreign_consumer_caller() };
+            let rpc_req = JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                method: request.method,
+                params: request.params,
+                id: None,
+                idempotency_key: request.idempotency_key,
+            };
+            return self
+                .engine
+                .execute_wasm_json_from_wire(
+                    &service_id,
+                    &request.interface,
+                    &rpc_req,
+                    Some(caller),
+                )
+                .await
+                .map_err(|e| ProxyError::Internal(e.to_string()));
+        }
+
         let service_id = if target == "did:key:hForeign" {
             did_for_service("directory")
         } else {
@@ -688,6 +831,10 @@ struct TestNativeServiceProxy {
     catalog: Arc<NativeCatalog<NativeAppHost>>,
     transaction: Arc<NativeTransaction<NativeAppHost>>,
     directory: Arc<NativeDirectory<NativeAppHost>>,
+    /// `host_for_wire`-built instances the foreign-wire targets route to,
+    /// so a fan-out call is a real wire round trip on the native stack too.
+    directory_wire: Arc<dyn NativeService>,
+    directory2_wire: Arc<dyn NativeService>,
     invocations: AtomicUsize,
 }
 
@@ -696,6 +843,31 @@ impl ServiceProxy for TestNativeServiceProxy {
     async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         let target = request.target_service.as_str();
+
+        if let Some(canned) = hostile_source_response(target) {
+            return Ok(canned);
+        }
+
+        if let Some((_service_id, anon)) = foreign_wire_route(target) {
+            let svc = if target == "did:key:hForeignWire2" {
+                &self.directory2_wire
+            } else {
+                &self.directory_wire
+            };
+            let caller = if anon { anon_wire_caller() } else { foreign_consumer_caller() };
+            let inv = NativeInvocation {
+                interface: request.interface,
+                method: request.method,
+                params: request.params,
+                caller,
+            };
+            return svc
+                .dispatch(inv)
+                .await
+                .map(|r| r.payload)
+                .map_err(|e| ProxyError::Internal(e.to_string()));
+        }
+
         let svc: Arc<dyn NativeService> = if target == "did:key:hForeign" {
             self.directory.clone()
         } else if target == did_for_service("profile") {
@@ -868,6 +1040,15 @@ async fn harness() -> Harness {
             .unwrap();
         wasm_reg.set_owner(service_id, owner_did.clone()).await.unwrap();
     }
+    wasm_reg
+        .set_app_context(
+            did_for_service("directory2"),
+            app_instance.to_string(),
+            "directory".to_string(),
+        )
+        .await
+        .unwrap();
+    wasm_reg.set_owner(did_for_service("directory2"), owner_did.clone()).await.unwrap();
 
     let wasm_conversation =
         test_conversation_service(wasm_storage.clone(), wasm_ks.clone(), wasm_reg.clone());
@@ -907,12 +1088,30 @@ async fn harness() -> Harness {
         .set(Arc::downgrade(&wasm_proxy) as Weak<dyn ServiceProxy>)
         .expect("set service proxy");
 
+    // The directory component is deployed a second time under its own
+    // service id, so the parity suite has a genuinely independent second
+    // directory -- its own store, its own settings, its own publications --
+    // to drive `versions_differ`, the per-source share, and refused-evidence
+    // round-robining, none of which one directory can produce.
+    let directory_wasm_bytes = wasm_binaries
+        .iter()
+        .find(|(n, _)| *n == "directory")
+        .map(|(_, b)| b.clone())
+        .expect("directory wasm bytes");
+
     for (name, bytes) in wasm_binaries {
         let iface = services::ALL.iter().find(|s| s.name == name).map(|s| s.interface).unwrap();
         let service_id = did_for_service(name);
         let manifest = wasm_deploy_manifest(bytes, iface);
         wasm_engine.deploy_wasm(&service_id, &manifest).await.expect("deploy wasm service");
     }
+    wasm_engine
+        .deploy_wasm(
+            &did_for_service("directory2"),
+            &wasm_deploy_manifest(directory_wasm_bytes, services::DIRECTORY.interface),
+        )
+        .await
+        .expect("deploy second directory wasm service");
 
     // Pinned so the two stacks stamp every envelope with the same second
     // and compare byte for byte. The value has to clear two windows at
@@ -975,6 +1174,15 @@ async fn harness() -> Harness {
             .unwrap();
         native_reg.set_owner(service_id, owner_did.clone()).await.unwrap();
     }
+    native_reg
+        .set_app_context(
+            did_for_service("directory2"),
+            app_instance.to_string(),
+            "directory".to_string(),
+        )
+        .await
+        .unwrap();
+    native_reg.set_owner(did_for_service("directory2"), owner_did.clone()).await.unwrap();
 
     let native_conversation =
         test_conversation_service(native_storage.clone(), native_ks.clone(), native_reg.clone());
@@ -1003,6 +1211,7 @@ async fn harness() -> Harness {
     let f_catalog = make_factory("catalog");
     let f_transaction = make_factory("transaction");
     let f_directory = make_factory("directory");
+    let f_directory2 = make_factory("directory2");
 
     let f_web_cl = f_web.clone();
     let native_web =
@@ -1034,6 +1243,27 @@ async fn harness() -> Harness {
     let native_directory =
         Arc::new(NativeDirectory::new(did_for_service("directory"), move |caller| {
             f_dir_cl.host_for(caller)
+        }));
+
+    // The second directory instance. A local `host_for` build is used for
+    // test setup (writing its `settings`, publishing directly into its
+    // store) because `directory.set-settings` is local-only and cannot be
+    // reached over the wire; the fan-out path reaches it through a
+    // `host_for_wire` build held by the proxies.
+    let f_dir2_cl = f_directory2.clone();
+    let native_directory2 =
+        Arc::new(NativeDirectory::new(did_for_service("directory2"), move |caller| {
+            f_dir2_cl.host_for(caller)
+        }));
+    let f_dir2_wire = f_directory2.clone();
+    let native_directory2_wire: Arc<dyn NativeService> =
+        Arc::new(NativeDirectory::new(did_for_service("directory2"), move |caller| {
+            f_dir2_wire.host_for_wire(caller)
+        }));
+    let f_dir_wire = f_directory.clone();
+    let native_directory_wire: Arc<dyn NativeService> =
+        Arc::new(NativeDirectory::new(did_for_service("directory"), move |caller| {
+            f_dir_wire.host_for_wire(caller)
         }));
 
     // The native inbox sink: `NativeHostFactory::new` already registered the
@@ -1102,6 +1332,8 @@ async fn harness() -> Harness {
         catalog: native_catalog.clone(),
         transaction: native_transaction.clone(),
         directory: native_directory.clone(),
+        directory_wire: native_directory_wire.clone(),
+        directory2_wire: native_directory2_wire.clone(),
         invocations: AtomicUsize::new(0),
     });
 
@@ -1112,6 +1344,7 @@ async fn harness() -> Harness {
         f_catalog.clone(),
         f_transaction.clone(),
         f_directory.clone(),
+        f_directory2.clone(),
     ];
 
     for f in &native_factories {
@@ -1144,6 +1377,7 @@ async fn harness() -> Harness {
         },
         wasm_http: WasmHttpDriver { engine: wasm_engine.clone() },
         native_http: NativeHttpDriver { adapter: native_http_adapter },
+        native_directory2: native_directory2.clone(),
         native_factories,
         wasm_proxy,
         native_proxy,
@@ -3810,21 +4044,10 @@ async fn scenario_97_client_fan_out_over_one_source_yields_a_merged_hit_parity()
     publish_signed_listing(&h, &e).await;
 
     both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
-    let (start_w, start_n) = both_rpc(&h, "directory.start-run", json!({})).await;
-    assert_eq!(start_w, start_n);
-    let run_id = start_w["result"]["run_id"].as_str().unwrap().to_string();
-    assert_eq!(start_w["result"]["sources"], json!(["did:key:hForeign"]));
-
-    let (qw, qn) = both_rpc(
-        &h,
-        "directory.query-source",
-        json!({ "run_id": run_id, "source": "did:key:hForeign", "query": {} }),
-    )
-    .await;
-    assert_eq!(qw, qn);
-    assert_eq!(qw["result"]["verified"], 1);
-
-    let (mw, mn) = both_rpc(&h, "directory.merge", json!({ "run_id": run_id })).await;
+    // Each build mints and uses its own run id: `start-run` folds the
+    // guest's own (unsynchronized) wall clock into the id.
+    let (run_w, mw) = fan_out_one(&h, true, &["did:key:hForeign"]).await;
+    let (run_n, mn) = fan_out_one(&h, false, &["did:key:hForeign"]).await;
     assert_eq!(stripped(&mw), stripped(&mn));
     let hits = mw["result"]["hits"].as_array().unwrap();
     assert_eq!(hits.len(), 1);
@@ -3835,9 +4058,20 @@ async fn scenario_97_client_fan_out_over_one_source_yields_a_merged_hit_parity()
     );
 
     let record_id = hits[0]["record_id"].as_str().unwrap();
-    let (ew, en) =
-        both_rpc(&h, "directory.run-envelope", json!({ "run_id": run_id, "record_id": record_id }))
-            .await;
+    let ew = one_rpc(
+        &h,
+        true,
+        "directory.run-envelope",
+        json!({ "run_id": run_w, "record_id": record_id }),
+    )
+    .await;
+    let en = one_rpc(
+        &h,
+        false,
+        "directory.run-envelope",
+        json!({ "run_id": run_n, "record_id": record_id }),
+    )
+    .await;
     assert_eq!(ew, en);
     assert_eq!(ew["result"]["envelope"], json!(e));
 }
@@ -3859,27 +4093,37 @@ async fn scenario_101_a_run_with_zero_sources_succeeds_with_zero_hits_parity() {
 #[tokio::test]
 async fn scenario_102_query_source_refuses_an_unregistered_source_and_a_foreign_run_id_parity() {
     let h = harness().await;
-    let (start_w, _) = both_rpc(&h, "directory.start-run", json!({})).await;
-    let run_id = start_w["result"]["run_id"].as_str().unwrap().to_string();
 
-    let (uw, un) = both_rpc(
-        &h,
-        "directory.query-source",
-        json!({ "run_id": run_id, "source": "did:key:hForeign", "query": {} }),
-    )
-    .await;
-    assert_eq!(uw, un);
-    assert!(is_err(&uw, -32602), "an unregistered source must be refused: {uw}");
+    // `start-run` folds the guest's own wall clock into the run id, and the
+    // two builds' clocks are unsynchronized -- so each build is driven with
+    // the run id it minted itself, never the other build's.
+    for wasm in [true, false] {
+        let start = one_rpc(&h, wasm, "directory.start-run", json!({})).await;
+        let run_id = start["result"]["run_id"].as_str().unwrap().to_string();
 
-    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
-    let (rw, rn) = both_rpc(
-        &h,
-        "directory.query-source",
-        json!({ "run_id": "run_this_node_never_minted", "source": "did:key:hForeign", "query": {} }),
-    )
-    .await;
-    assert_eq!(rw, rn);
-    assert!(is_err(&rw, -32602), "a run_id this node did not mint must be refused: {rw}");
+        let u = one_rpc(
+            &h,
+            wasm,
+            "directory.query-source",
+            json!({ "run_id": run_id, "source": "did:key:hForeign", "query": {} }),
+        )
+        .await;
+        assert!(is_err(&u, -32602), "an unregistered source must be refused: {u}");
+
+        one_rpc(&h, wasm, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
+        let r = one_rpc(
+            &h,
+            wasm,
+            "directory.query-source",
+            json!({
+                "run_id": "run_this_node_never_minted",
+                "source": "did:key:hForeign",
+                "query": {}
+            }),
+        )
+        .await;
+        assert!(is_err(&r, -32602), "a run_id this node did not mint must be refused: {r}");
+    }
 }
 
 #[tokio::test]
@@ -4087,16 +4331,15 @@ async fn scenario_116_two_query_source_calls_for_one_source_in_one_run_do_not_du
     publish_signed_listing(&h, &e1).await;
 
     both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
-    let (start_w, _start_n) = both_rpc(&h, "directory.start-run", json!({})).await;
-    let run_id = start_w["result"]["run_id"].as_str().unwrap().to_string();
-
-    // First call: stores a row for e1's record_id.
-    both_rpc(
-        &h,
-        "directory.query-source",
-        json!({ "run_id": run_id, "source": "did:key:hForeign", "query": {} }),
-    )
-    .await;
+    // Per build, minting each build's own run id (the id folds in the
+    // guest's own wall clock). First `query-source`: stores a row for e1's
+    // record_id.
+    let mint_run = |v: Value| v["result"]["run_id"].as_str().unwrap().to_string();
+    let run_w = mint_run(one_rpc(&h, true, "directory.start-run", json!({})).await);
+    let run_n = mint_run(one_rpc(&h, false, "directory.start-run", json!({})).await);
+    let qs = |run: &str| json!({ "run_id": run, "source": "did:key:hForeign", "query": {} });
+    one_rpc(&h, true, "directory.query-source", qs(&run_w)).await;
+    one_rpc(&h, false, "directory.query-source", qs(&run_n)).await;
 
     // A newer, same-second (pinned-clock) edit, superseding e1 -- a real
     // signed version, not a forged duplicate.
@@ -4109,14 +4352,11 @@ async fn scenario_116_two_query_source_calls_for_one_source_in_one_run_do_not_du
     // stores a *different* row (different record_id) for the same
     // listing_id. Before the fix, `merge`'s per-source list carried both,
     // so this one source would appear twice in one hit's `sources[]`.
-    both_rpc(
-        &h,
-        "directory.query-source",
-        json!({ "run_id": run_id, "source": "did:key:hForeign", "query": {} }),
-    )
-    .await;
+    one_rpc(&h, true, "directory.query-source", qs(&run_w)).await;
+    one_rpc(&h, false, "directory.query-source", qs(&run_n)).await;
 
-    let (mw, mn) = both_rpc(&h, "directory.merge", json!({ "run_id": run_id })).await;
+    let mw = one_rpc(&h, true, "directory.merge", json!({ "run_id": run_w })).await;
+    let mn = one_rpc(&h, false, "directory.merge", json!({ "run_id": run_n })).await;
     assert_eq!(stripped(&mw), stripped(&mn));
     let hits = mw["result"]["hits"].as_array().unwrap();
     assert_eq!(hits.len(), 1, "{mw}");
@@ -4154,4 +4394,207 @@ async fn scenario_117_directory_export_import_round_trip_reindexes_and_carries_t
     let (sw, sn) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
     assert_eq!(stripped(&sw), stripped(&sn));
     assert_eq!(sw["result"]["hits"].as_array().unwrap().len(), 1, "{sw}");
+}
+
+// ---------------- directory: the two-directory scenarios ----------------
+//
+// These need a *second*, independently-stored directory -- one this node
+// does not own and cannot reach by a local dispatch. `did:key:hForeignWire`
+// routes, over a genuine `execute_wasm_json_from_wire` / `host_for_wire`
+// round trip with a verified caller, to this node's own directory;
+// `did:key:hForeignWire2` routes the same way to a second directory
+// instance holding its own store. `did:key:hForge1` / `hForge2` are canned
+// hostile sources that serve forgeries the consumer's own verification
+// rejects. Without this a merge scenario can only drive one directory
+// against itself, which never disagrees with itself about a version and
+// never crowds its own page.
+
+/// `directory.set-settings` on the second directory, so its `directory.info`
+/// probe answers and `directory.publish` is not refused as "no SynOrg".
+async fn ensure_dir2_synorg(h: &Harness) {
+    let (w, n) = h
+        .dir2_local(
+            "directory.set-settings",
+            json!({
+                "name": "Second Guild", "rules": "r", "area": [], "categories": [],
+                "support_contact": "s@example.org", "dispute_path": "d",
+                "retention_secs": 2_592_000,
+                "publication_limits": { "window_secs": 86400, "max_per_window": 50 }
+            }),
+        )
+        .await;
+    assert!(w["result"].is_object(), "dir2 set-settings wasm: {w}");
+    assert!(n["result"].is_object(), "dir2 set-settings native: {n}");
+}
+
+/// Signs one listing on this node and publishes it into the **second**
+/// directory (a local dispatch on that instance -- this is setup, not the
+/// path under test, and `directory.publish` over the wire needs a verified
+/// caller). Returns the signed envelope string.
+async fn publish_listing_to_dir2(h: &Harness, slug: &str, title: &str) -> String {
+    let (_id, gw, _gn) = set_and_get(h, full_listing_params(slug, title)).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    let (pw, pn) = h.dir2_local("directory.publish", json!({ "envelope": e })).await;
+    assert!(pw["result"]["listing_id"].is_string(), "dir2 publish wasm: {pw}");
+    assert!(pn["result"]["listing_id"].is_string(), "dir2 publish native: {pn}");
+    e
+}
+
+/// The same, into this node's own (primary) directory over the wire.
+async fn publish_listing_to_primary(h: &Harness, slug: &str, title: &str) -> String {
+    let (_id, gw, _gn) = set_and_get(h, full_listing_params(slug, title)).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    let (pw, pn) = publish_signed_listing(h, &e).await;
+    assert!(pw["result"]["listing_id"].is_string(), "primary publish wasm: {pw}");
+    assert!(pn["result"]["listing_id"].is_string(), "primary publish native: {pn}");
+    e
+}
+
+/// One build's full fan-out: mint a run, drive one `query-source` per
+/// source, merge. Returns `(run_id, merged)`. Each build must mint and use
+/// its *own* run id -- `start-run` folds the guest's own wall clock into
+/// the id (`run_{secs}_{n}`), and the two builds' clocks are unsynchronized
+/// (permitted difference 7), so a run id minted on one build is not
+/// guaranteed to exist on the other.
+async fn fan_out_one(h: &Harness, wasm: bool, sources: &[&str]) -> (String, Value) {
+    let start = one_rpc(h, wasm, "directory.start-run", json!({})).await;
+    let run_id = start["result"]["run_id"].as_str().unwrap().to_string();
+    for did in sources {
+        one_rpc(
+            h,
+            wasm,
+            "directory.query-source",
+            json!({ "run_id": run_id, "source": did, "query": {} }),
+        )
+        .await;
+    }
+    let merged = one_rpc(h, wasm, "directory.merge", json!({ "run_id": run_id })).await;
+    (run_id, merged)
+}
+
+/// Adds the sources, then runs `fan_out_one` on each build. Returns each
+/// build's run id and merged response.
+async fn fan_out(h: &Harness, sources: &[&str]) -> (String, String, Value, Value) {
+    for did in sources {
+        both_rpc(h, "directory.add-source", json!({ "did": did })).await;
+    }
+    let (rw, mw) = fan_out_one(h, true, sources).await;
+    let (rn, mn) = fan_out_one(h, false, sources).await;
+    (rw, rn, mw, mn)
+}
+
+#[tokio::test]
+async fn scenario_98_two_directories_disagreeing_about_a_version_merge_to_one_hit_parity() {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+    ensure_dir2_synorg(&h).await;
+    enrol_signing(&h, "catalog").await;
+
+    // Version one into the second directory; version two (same slug -> same
+    // listing_id, superseding version one) into the primary. The two
+    // directories now genuinely hold different current versions of one
+    // listing.
+    let e1 = publish_listing_to_dir2(&h, "hedge-trimming-98", "Version one").await;
+    let e2 = publish_listing_to_primary(&h, "hedge-trimming-98", "Version two").await;
+    assert_ne!(e1, e2, "the two versions must be distinct signed envelopes");
+
+    let (run_w, run_n, mw, mn) =
+        fan_out(&h, &["did:key:hForeignWire", "did:key:hForeignWire2"]).await;
+    assert_eq!(stripped(&mw), stripped(&mn));
+    let hits = mw["result"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1, "one listing_id, whatever the version disagreement: {mw}");
+    assert_eq!(hits[0]["versions_differ"], true, "{mw}");
+    assert_eq!(
+        hits[0]["sources"].as_array().unwrap().len(),
+        2,
+        "both directories must be listed as sources: {mw}"
+    );
+
+    // Whichever version won the merge, its bytes must be retrievable and be
+    // one of the two we actually published -- `merge` returns projections,
+    // never envelopes.
+    assert!(hits[0].get("envelope").is_none(), "merge leaked an envelope: {mw}");
+    let kept = hits[0]["record_id"].as_str().unwrap();
+    let ew =
+        one_rpc(&h, true, "directory.run-envelope", json!({ "run_id": run_w, "record_id": kept }))
+            .await;
+    let en =
+        one_rpc(&h, false, "directory.run-envelope", json!({ "run_id": run_n, "record_id": kept }))
+            .await;
+    assert_eq!(ew, en);
+    let got = ew["result"]["envelope"].as_str().unwrap();
+    assert!(
+        got == e1 || got == e2,
+        "run-envelope must return a published envelope byte-for-byte: {ew}"
+    );
+}
+
+#[tokio::test]
+async fn scenario_102c_a_source_is_capped_at_its_per_source_share_of_the_merged_page_parity() {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+    ensure_dir2_synorg(&h).await;
+    enrol_signing(&h, "catalog").await;
+
+    // The second directory holds more valid, recent listings than one
+    // source is allowed to contribute to a merged page; the primary holds
+    // two. The split alone does not fix this -- only the per-source share
+    // does (`D-C6-18`).
+    let over = MAX_HITS_PER_SOURCE as usize + 1;
+    for i in 0..over {
+        publish_listing_to_dir2(&h, &format!("crowd-{i}"), &format!("Crowd {i}")).await;
+    }
+    for i in 0..2 {
+        publish_listing_to_primary(&h, &format!("primary-{i}"), &format!("Primary {i}")).await;
+    }
+
+    let (_rw, _rn, mw, mn) = fan_out(&h, &["did:key:hForeignWire", "did:key:hForeignWire2"]).await;
+    assert_eq!(stripped(&mw), stripped(&mn));
+    let hits = mw["result"]["hits"].as_array().unwrap();
+
+    let from = |dir: &str| {
+        hits.iter()
+            .filter(|hit| hit["sources"].as_array().unwrap().iter().any(|s| s["directory"] == dir))
+            .count()
+    };
+    assert_eq!(
+        from("did:key:hForeignWire2"),
+        MAX_HITS_PER_SOURCE as usize,
+        "the crowding source contributes exactly its share, not all {over}: {mw}"
+    );
+    assert_eq!(from("did:key:hForeignWire"), 2, "the other source's results all survive: {mw}");
+    assert_eq!(hits.len(), MAX_HITS_PER_SOURCE as usize + 2);
+}
+
+#[tokio::test]
+async fn scenario_102d_forged_sources_are_refused_round_robined_and_crowd_out_no_hits_parity() {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+    enrol_signing(&h, "catalog").await;
+
+    for i in 0..3 {
+        publish_listing_to_primary(&h, &format!("good-{i}"), &format!("Good {i}")).await;
+    }
+
+    let (_rw, _rn, mw, mn) =
+        fan_out(&h, &["did:key:hForeignWire", "did:key:hForge1", "did:key:hForge2"]).await;
+    assert_eq!(stripped(&mw), stripped(&mn));
+
+    let hits = mw["result"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 3, "forged sources reduce the genuine hit count by nothing: {mw}");
+    for hit in hits {
+        assert_eq!(hit["verified"], true, "{mw}");
+    }
+
+    let refused = mw["result"]["refused"].as_array().unwrap();
+    assert_eq!(refused.len(), MAX_REFUSED_RESULTS as usize, "refused evidence fills its cap: {mw}");
+    let from = |dir: &str| {
+        refused.iter().filter(|r| r["sources"].as_array().unwrap().iter().any(|s| s == dir)).count()
+    };
+    let (a, b) = (from("did:key:hForge1"), from("did:key:hForge2"));
+    assert_eq!(a + b, MAX_REFUSED_RESULTS as usize, "{mw}");
+    assert!(
+        a >= MAX_REFUSED_RESULTS as usize / 3 && b >= MAX_REFUSED_RESULTS as usize / 3,
+        "one forger must not dominate the refused block: hForge1={a} hForge2={b}: {mw}"
+    );
 }

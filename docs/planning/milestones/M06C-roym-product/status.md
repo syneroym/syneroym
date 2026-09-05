@@ -882,14 +882,12 @@ pickup trigger.
    existing two-substrate suites (`roym_conversation_e2e.rs`,
    `roym_app_e2e.rs`) are unmodified and still pass in full.
 3. **No second, independently-stored directory in the parity harness.**
-   The plan's `did:key:hForeignWire`/`hForeignWire2` scaffolding, needed
-   to prove two directories genuinely disagreeing about a version
-   (`versions_differ`) and a directory crowding a page with forged *or*
-   genuinely signed recent listings (`D-C6-18`'s per-source share), was
-   not built. What the new scenarios do prove — the admission table,
-   `publish`/`search`/`settings`/roster, and the client verbs' own shape
-   and validity checks — is real and passes on both builds; two-directory
-   merge behaviour is unverified.
+   ~~The plan's `did:key:hForeignWire`/`hForeignWire2` scaffolding was not
+   built.~~ **Built in the post-C6 follow-up (2026-09-06) — see its own
+   section below.** The parity suite now carries a genuine second
+   directory instance with its own store, plus scenarios 98 / 102c / 102d
+   for `versions_differ`, the per-source share, and refused-evidence
+   round-robining, all passing on both builds (110 scenarios total).
 4. **WO5 was not attempted** (severable by the plan's own design): the
    native shim's guest-HTTP/websocket sinks are not wired through
    `host_for_wire`, so that permitted difference is carried forward
@@ -1227,4 +1225,92 @@ suite) regressed. It does **not** prove R1 row 5's acceptance
 test end to end: that needs the Hub UI (item 1 above) and, for the
 cross-installation half, the three-substrate e2e (item 2 above). Both are
 named, not hidden, in "What C6 did not build."
+
+---
+
+## Post-C6 follow-up (2026-09-06) — picking up "What C6 did not build"
+
+A follow-up pass on `feat/m06c-slice-c6` to close the four items C6 left
+open, in the order the plan makes them depend on each other. This section
+records what landed and what did not with the same discipline as the C6
+section above — no rounding up.
+
+### Item 1 — the two-directory parity harness (plan §11.2) — **DONE**
+
+`crates/roym_web/tests/dual_build_parity.rs`:
+
+- The `directory` component is deployed a **second time** under its own
+  service id (`did_for_service("directory2")`), on both builds, with its
+  own store — the wasm engine keys service DBs by service id, and the
+  native side gets its own `NativeHostFactory`. Its registry app-context
+  maps to logical name `directory` so it is a genuine peer, not a
+  different service.
+- New proxy routing, shared by `TestWasmServiceProxy` /
+  `TestNativeServiceProxy` through one free function
+  (`foreign_wire_route`), so the two builds see identical behaviour:
+  `did:key:hForeignWire` and `did:key:hForeignAnon` reach this node's own
+  directory over a genuine `execute_wasm_json_from_wire` / `host_for_wire`
+  round trip (verified caller / anonymous caller respectively);
+  `did:key:hForeignWire2` reaches the **second** directory the same way.
+  `did:key:hForeign` keeps its existing local routing so no pre-existing
+  scenario changes (`F10`). `did:key:hForge1` / `hForge2` are canned
+  hostile sources (`hostile_source_response`) that serve a page of
+  malformed envelopes — a real second directory cannot serve forgeries
+  because its own `directory.publish` verifies at the door, so a canned
+  response is the only way to drive "a source that returns nothing but
+  forgeries".
+- New scenarios, all passing on both builds:
+  - **98** — two directories holding different signed versions of one
+    `listing_id` merge to a single hit carrying `versions_differ: true`
+    with both directories in `sources[]`; `merge` returns projections
+    (no `envelope` key) and `run-envelope` returns a byte-identical
+    published envelope.
+  - **102c** — a source offering more valid, recent listings than
+    `MAX_HITS_PER_SOURCE` contributes exactly that share to the merged
+    page, and the other source's results all survive (`D-C6-18`'s
+    per-source share, which the split lists alone do not provide).
+  - **102d** — two forged sources land only in `refused[]`, round-robined
+    across the two sources (neither dominates), never in `hits[]`, and
+    reduce the genuine hit count by nothing.
+- **A latent clock-skew flake this change surfaced and fixed.**
+  `directory.start-run` folds the guest's own wall clock into the run id
+  (`run_{secs}_{n}`), and the two builds' clocks are unsynchronized
+  (permitted difference 7). Pre-existing scenarios 97 / 102 / 116 minted
+  the run id on the wasm build and reused it on the native build, which
+  works only while both clocks land in the same second. The extra
+  second-directory deploy shifted the harness timing enough that
+  `scenario_102` began failing **deterministically**
+  (`"source is not in this person's own sources"` on wasm vs `"run_id
+  does not name a run this node minted"` on native — the native build
+  never minted the wasm build's id). Fixed by reworking `fan_out` and
+  those three scenarios to mint and use a **per-build** run id, never
+  comparing one across builds. This is the same class of fix the C6
+  flaky-test section applied to `scenario_83` / `scenario_86`.
+
+**Verification (item 1):**
+
+1. `cargo test -p syneroym-roym-web --test dual_build_parity`: **110
+   passed, 0 failed** (`finished in 2351s`) — the 107 C6 scenarios
+   (unchanged behaviour; 97/102/116 reworked to per-build run ids) plus
+   `scenario_98`, `scenario_102c`, `scenario_102d`. The pre-fix run of
+   the same suite failed exactly once (`scenario_102`, the flake above)
+   and passed the other 109.
+2. `cargo clippy -p syneroym-roym-web --tests --all-features`: **clean.**
+3. `cargo +nightly fmt --all -- --check`: **clean.**
+4. `cargo deny check licenses`: **`licenses ok`.** `cargo audit`: **clean,
+   0 vulnerabilities** (no dependency change — a test-only edit).
+
+### Items 2, 3, 4 — not started in this pass
+
+- **Item 2** (`crates/substrate/tests/roym_directory_e2e.rs`, plan §11.3):
+  not started. The three-substrate e2e does not exist. `Node` and its
+  helpers still live inside `roym_conversation_e2e.rs` (not a shared
+  module), so a new file needs that harness extracted or duplicated
+  first.
+- **Item 3** (Hub Directory/SynOrg tabs + 10 `roym-hub.spec.ts` cases,
+  plan §11.4 / §10): not started.
+- **Item 4** (WO5, `D-C6-17`): not started.
+
+The `deferred-backlog.md` §11 rows for items 2, 3, and 4 are unchanged;
+only item 1's row moved to "Recently resolved".
 
