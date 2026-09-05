@@ -3291,6 +3291,23 @@ async fn publish_signed_listing(h: &Harness, envelope: &str) -> (Value, Value) {
         .await
 }
 
+/// `directory.publish` refuses on a node that has never declared itself a
+/// SynOrg (no `settings` row) -- call this before publishing in any
+/// scenario that expects the publish to succeed.
+async fn ensure_synorg(h: &Harness) {
+    both_rpc(
+        h,
+        "directory.set-settings",
+        json!({
+            "name": "Guild", "rules": "r", "area": [], "categories": [],
+            "support_contact": "s@example.org", "dispute_path": "d",
+            "retention_secs": 2_592_000,
+            "publication_limits": { "window_secs": 86400, "max_per_window": 20 }
+        }),
+    )
+    .await;
+}
+
 /// `wire_invoke` is a `Harness` method; this free function exists only so
 /// the helper above can call it with the same signature as `h.wire_invoke`
 /// without borrowing conflicts inside this module's scenario functions.
@@ -3389,6 +3406,7 @@ async fn scenario_78_member_list_over_the_wire_is_refused_parity() {
 #[tokio::test]
 async fn scenario_79_publish_from_verified_wire_caller_stores_the_envelope_byte_for_byte_parity() {
     let h = harness().await;
+    ensure_synorg(&h).await;
     enrol_signing(&h, "catalog").await;
     let (_id, gw, _gn) =
         set_and_get(&h, full_listing_params("hedge-trimming-79", "Hedge trimming")).await;
@@ -3475,6 +3493,7 @@ async fn scenario_83_publication_limiter_refuses_past_the_budget_with_a_usable_r
 #[tokio::test]
 async fn scenario_84_a_withdrawn_publication_consumes_no_budget_and_clears_the_index_parity() {
     let h = harness().await;
+    ensure_synorg(&h).await;
     enrol_signing(&h, "catalog").await;
     let (id, gw, _gn) =
         set_and_get(&h, full_listing_params("hedge-trimming-84", "Withdraw me")).await;
@@ -3497,6 +3516,7 @@ async fn scenario_84_a_withdrawn_publication_consumes_no_budget_and_clears_the_i
 #[tokio::test]
 async fn scenario_84b_republishing_with_fewer_service_areas_leaves_no_stale_index_rows_parity() {
     let h = harness().await;
+    ensure_synorg(&h).await;
     enrol_signing(&h, "catalog").await;
     let five_areas: Vec<Value> = (0..5)
         .map(|i| json!({ "kind": "circle", "lat_e6": 52_000_000 + i, "lon_e6": 13_000_000, "radius_m": 1000 }))
@@ -3545,6 +3565,7 @@ async fn scenario_84c_a_draft_listing_is_refused_at_publish_parity() {
 #[tokio::test]
 async fn scenario_86_search_by_category_parity() {
     let h = harness().await;
+    ensure_synorg(&h).await;
     enrol_signing(&h, "catalog").await;
     let (_id, gw, _gn) =
         set_and_get(&h, full_listing_params("hedge-trimming-86", "Hedge trimming")).await;
@@ -3573,6 +3594,7 @@ async fn scenario_86_search_by_category_parity() {
 #[tokio::test]
 async fn scenario_87_search_by_free_text_case_insensitive_parity() {
     let h = harness().await;
+    ensure_synorg(&h).await;
     enrol_signing(&h, "catalog").await;
     let (_id, gw, _gn) =
         set_and_get(&h, full_listing_params("hedge-trimming-87", "Hedge Trimming")).await;
@@ -3589,6 +3611,7 @@ async fn scenario_87_search_by_free_text_case_insensitive_parity() {
 #[tokio::test]
 async fn scenario_88_89_geometric_search_refines_exactly_parity() {
     let h = harness().await;
+    ensure_synorg(&h).await;
     enrol_signing(&h, "catalog").await;
     // The listing's own circle is centred at (52.0, 13.0) with radius 5 km.
     let (_id, gw, _gn) =
@@ -3632,6 +3655,7 @@ async fn scenario_88_89_geometric_search_refines_exactly_parity() {
 #[tokio::test]
 async fn scenario_90_a_named_area_listing_matches_only_by_label_parity() {
     let h = harness().await;
+    ensure_synorg(&h).await;
     enrol_signing(&h, "catalog").await;
     let mut params = full_listing_params("hedge-trimming-90", "Hedge trimming");
     params["location"]["service_area"] = json!([{ "kind": "named", "label": "Bengaluru" }]);
@@ -3666,6 +3690,7 @@ async fn scenario_90_a_named_area_listing_matches_only_by_label_parity() {
 #[tokio::test]
 async fn scenario_91_no_location_block_shows_only_under_a_no_area_query_parity() {
     let h = harness().await;
+    ensure_synorg(&h).await;
     enrol_signing(&h, "catalog").await;
     let mut params = full_listing_params("hedge-trimming-91", "Hedge trimming");
     params.as_object_mut().unwrap().remove("location");
@@ -3692,6 +3717,7 @@ async fn scenario_91_no_location_block_shows_only_under_a_no_area_query_parity()
 #[tokio::test]
 async fn scenario_93_a_search_response_carries_no_verification_verdict_parity() {
     let h = harness().await;
+    ensure_synorg(&h).await;
     enrol_signing(&h, "catalog").await;
     let (_id, gw, _gn) =
         set_and_get(&h, full_listing_params("hedge-trimming-93", "Hedge trimming")).await;
@@ -3709,6 +3735,7 @@ async fn scenario_93_a_search_response_carries_no_verification_verdict_parity() 
 #[tokio::test]
 async fn scenario_94_search_over_the_wire_anonymous_succeeds_parity() {
     let h = harness().await;
+    ensure_synorg(&h).await;
     enrol_signing(&h, "catalog").await;
     let (_id, gw, _gn) =
         set_and_get(&h, full_listing_params("hedge-trimming-94", "Hedge trimming")).await;
@@ -3748,6 +3775,7 @@ async fn scenario_96_client_sources_add_list_remove_round_trip_parity() {
 #[tokio::test]
 async fn scenario_97_client_fan_out_over_one_source_yields_a_merged_hit_parity() {
     let h = harness().await;
+    ensure_synorg(&h).await;
     enrol_signing(&h, "catalog").await;
     let (_id, gw, _gn) =
         set_and_get(&h, full_listing_params("hedge-trimming-97", "Hedge trimming")).await;
@@ -3893,4 +3921,133 @@ async fn scenario_109_no_wire_reachable_method_calls_a_sibling_parity() {
             "{method} made a native proxy call"
         );
     }
+}
+
+// ---------------- directory: code-review regression scenarios ----------------
+
+#[tokio::test]
+async fn scenario_110_search_with_an_extreme_radius_is_refused_not_a_crash_parity() {
+    let h = harness().await;
+    // Reachable by an anonymous stranger; before the fix this drove
+    // `bounding_box`/`areas_intersect` into `i64`/`u64` overflow instead
+    // of being refused by `Area::validate`.
+    let (w, n) = wire_invoke_as(
+        &h,
+        services::DIRECTORY,
+        &env(
+            "directory.search",
+            json!({ "area": { "kind": "circle", "lat_e6": 1, "lon_e6": 1, "radius_m": u64::MAX } }),
+        ),
+        AuthLevel::System,
+    )
+    .await;
+    assert_eq!(w, n);
+    assert_eq!(w["error"]["code"], -32602, "{w}");
+}
+
+#[tokio::test]
+async fn scenario_111_search_with_too_many_categories_is_refused_parity() {
+    let h = harness().await;
+    let categories: Vec<String> = (0..1000).map(|i| format!("cat{i}")).collect();
+    let (w, n) = wire_invoke_as(
+        &h,
+        services::DIRECTORY,
+        &env("directory.search", json!({ "categories": categories })),
+        AuthLevel::System,
+    )
+    .await;
+    assert_eq!(w, n);
+    assert_eq!(w["error"]["code"], -32602, "{w}");
+}
+
+#[tokio::test]
+async fn scenario_112_publish_is_refused_on_a_node_with_no_synorg_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    // Deliberately no `ensure_synorg`: this node has never declared
+    // itself a SynOrg (no `settings` row).
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming-112", "Hedge trimming")).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    let (w, n) = publish_signed_listing(&h, &e).await;
+    assert_eq!(w, n);
+    assert_eq!(w["error"]["code"], -32602, "{w}");
+    assert!(w["error"]["message"].as_str().unwrap().contains("no SynOrg"), "{w}");
+}
+
+#[tokio::test]
+async fn scenario_113_a_local_publish_uses_this_installations_own_owner_as_published_by_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    ensure_synorg(&h).await;
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("hedge-trimming-113", "Hedge trimming")).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    // `both_rpc` drives this through `web`'s local dispatch path (`
+    // Caller::Internal`), not the wire -- the case the review found
+    // `publish()` could never complete before.
+    let (pw, pn) = both_rpc(&h, "directory.publish", json!({ "envelope": e })).await;
+    assert_eq!(pw, pn);
+    assert!(pw["result"]["listing_id"].is_string(), "{pw}");
+
+    let (lw, ln) = both_rpc(&h, "directory.publications", json!({})).await;
+    assert_eq!(lw, ln);
+    let pubs = lw["result"]["publications"].as_array().unwrap();
+    assert_eq!(pubs.len(), 1);
+    assert_eq!(pubs[0]["published_by"], h.owner_did);
+}
+
+#[tokio::test]
+async fn scenario_114_search_filters_by_the_serde_spelling_of_a_multi_word_enum_value_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    ensure_synorg(&h).await;
+    let mut params = full_listing_params("hedge-trimming-114", "Hedge trimming");
+    params["relationship"] = json!({ "open_to": "existing-customers" });
+    let (_id, gw, _gn) = set_and_get(&h, params).await;
+    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &e).await;
+
+    // Before the fix this indexed as `Debug`'s "existingcustomers" and a
+    // query for the documented, serde-spelled value matched nothing.
+    let (w, n) = wire_invoke(
+        &h,
+        services::DIRECTORY,
+        &env("directory.search", json!({ "open_to": "existing-customers" })),
+    )
+    .await;
+    assert_eq!(w, n);
+    assert_eq!(w["result"]["hits"].as_array().unwrap().len(), 1, "{w}");
+}
+
+#[tokio::test]
+async fn scenario_115_a_replayed_older_envelope_is_refused_while_a_same_second_edit_is_not_parity()
+{
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    ensure_synorg(&h).await;
+
+    let (_id, gw1, _gn1) =
+        set_and_get(&h, full_listing_params("hedge-trimming-115", "Version one")).await;
+    let e1 = gw1["result"]["envelope"].as_str().unwrap().to_string();
+    let (pw1, pn1) = publish_signed_listing(&h, &e1).await;
+    assert_eq!(pw1, pn1);
+    assert!(pw1["result"]["listing_id"].is_string(), "{pw1}");
+
+    // A same-second edit: the parity harness pins the signing clock, so
+    // this envelope's `issued_at_secs` ties `e1`'s exactly -- only a
+    // correct `supersedes` chain (not the timestamp) tells the two
+    // apart.
+    let (_id2, gw2, _gn2) =
+        set_and_get(&h, full_listing_params("hedge-trimming-115", "Version two")).await;
+    let e2 = gw2["result"]["envelope"].as_str().unwrap().to_string();
+    let (pw2, pn2) = publish_signed_listing(&h, &e2).await;
+    assert_eq!(pw2, pn2);
+    assert!(pw2["result"]["listing_id"].is_string(), "a same-second edit must be accepted: {pw2}");
+
+    // Replaying the *first* envelope now must be refused: it neither
+    // supersedes the currently-stored version (e2) nor postdates it.
+    let (rw, rn) = publish_signed_listing(&h, &e1).await;
+    assert_eq!(rw, rn);
+    assert_eq!(rw["error"]["code"], -32602, "a replayed older envelope must be refused: {rw}");
 }

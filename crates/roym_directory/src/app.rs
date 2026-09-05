@@ -13,12 +13,12 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use syneroym_app_host::{
-    AppDataLayer, AppHost,
+    AppDataLayer, AppHost, AppSigning,
     types::{
         data_layer::{
             CollectionSchema, IndexDefinition, IndexType, Mutation, QueryOptions, RecordWriteValue,
         },
-        proxy::{CallOptions, CallTarget},
+        proxy::{CallOptions, CallTarget, ProxyError},
     },
 };
 use syneroym_roym_core::{
@@ -30,8 +30,9 @@ use syneroym_roym_core::{
     },
     clock,
     directory::{
-        AreaMatch, DEFAULT_SOURCE_TIMEOUT_MS, DIRECTORY_SCHEMA_VERSION, MAX_CLIENT_CONCURRENCY,
-        MAX_HITS_PER_QUERY, MAX_REFUSED_RESULTS, MAX_SOURCES, MAX_STORED_PER_SOURCE, Member,
+        AreaMatch, DEFAULT_SOURCE_TIMEOUT_MS, DIRECTORY_SCHEMA_VERSION, MAX_CATEGORIES,
+        MAX_CLIENT_CONCURRENCY, MAX_HITS_PER_QUERY, MAX_HITS_PER_SOURCE, MAX_QUERY_TEXT_LEN,
+        MAX_REFUSED_RESULTS, MAX_SEARCH_RESULTS, MAX_SOURCES, MAX_STORED_PER_SOURCE, Member,
         RUN_RETENTION_SECS, SearchHit, SearchQuery, SourceError, SynOrgSettings, category_tokens,
         normalize_category, normalize_text,
     },
@@ -321,6 +322,10 @@ struct PublicationRow {
     listing_id: String,
     issuer: String,
     published_by: String,
+    /// The envelope's own signed clock -- never the directory's
+    /// `received_at_secs` -- so a later publish can tell whether an
+    /// incoming envelope is actually newer.
+    issued_at_secs: u64,
     received_at_secs: u64,
 }
 
@@ -355,6 +360,17 @@ fn search_index_key(listing_id: &str, area_index: u32) -> String {
     format!("{listing_id}#{area_index}")
 }
 
+/// A value's own serde wire spelling (e.g. `existing-customers`, not
+/// `Debug`'s `ExistingCustomers`) -- the shape every enum here declares
+/// with `#[serde(rename_all = "kebab-case")]`, and the shape a caller
+/// filters on. `{:?}` and `.to_lowercase()` agree only for single-word
+/// variants; a multi-word one indexes under a string nothing else in the
+/// product ever produces, and a query for the documented value silently
+/// matches nothing.
+fn serde_str<T: Serialize>(v: &T) -> String {
+    serde_json::to_value(v).ok().and_then(|j| j.as_str().map(str::to_string)).unwrap_or_default()
+}
+
 async fn load_publication_limits<H: AppHost>(host: &H) -> Result<PublicationLimits, String> {
     match load_settings(host).await? {
         Some(s) => Ok(s.publication_limits),
@@ -362,23 +378,25 @@ async fn load_publication_limits<H: AppHost>(host: &H) -> Result<PublicationLimi
     }
 }
 
-/// Every `publication_log` row for `issuer` strictly newer than
-/// `now - window_secs`. Filtered at
-/// the host, not scanned and dropped in the guest.
+/// Every `publication_log` row for `published_by` -- the identity the
+/// router verified for the connection, never the envelope's own `issuer`
+/// -- strictly newer than `now - window_secs`. Filtered at the host, not
+/// scanned and dropped in the guest.
 async fn publication_secs_in_window<H: AppHost>(
     host: &H,
-    issuer: &str,
+    published_by: &str,
     window_secs: u64,
     now: u64,
 ) -> Result<Vec<u64>, String> {
     ensure_coll(
         host,
         PUBLICATION_LOG,
-        &[idx("issuer", IndexType::String), idx("at_secs", IndexType::Numeric)],
+        &[idx("published_by", IndexType::String), idx("at_secs", IndexType::Numeric)],
     )
     .await?;
     let floor = now.saturating_sub(window_secs);
-    let filter = json!({ "$and": [ { "issuer": issuer }, { "at_secs": { "$gt": floor } } ] });
+    let filter =
+        json!({ "$and": [ { "published_by": published_by }, { "at_secs": { "$gt": floor } } ] });
     let mut out = Vec::new();
     let mut cursor = None;
     loop {
@@ -427,6 +445,7 @@ fn build_index_rows(
     payload: &listing::ListingPayload,
     record_id: &str,
     issuer: &str,
+    issued_at_secs: u64,
     received_at_secs: u64,
 ) -> Vec<SearchIndexRow> {
     let status = match payload.status {
@@ -442,8 +461,8 @@ fn build_index_rows(
         payload.summary,
         payload.categories.join(" ")
     ));
-    let open_to = payload.relationship.as_ref().map(|r| format!("{:?}", r.open_to).to_lowercase());
-    let booking_mode = payload.booking.as_ref().map(|b| format!("{:?}", b.mode).to_lowercase());
+    let open_to = payload.relationship.as_ref().map(|r| serde_str(&r.open_to));
+    let booking_mode = payload.booking.as_ref().map(|b| serde_str(&b.mode));
 
     let areas: Vec<Area> =
         payload.location.as_ref().map(|l| l.service_area.clone()).unwrap_or_default();
@@ -454,7 +473,7 @@ fn build_index_rows(
             area_index: 0,
             issuer: issuer.to_string(),
             status,
-            issued_at_secs: received_at_secs,
+            issued_at_secs,
             received_at_secs,
             categories,
             text,
@@ -478,7 +497,7 @@ fn build_index_rows(
                 area_index: i as u32,
                 issuer: issuer.to_string(),
                 status: status.clone(),
-                issued_at_secs: received_at_secs,
+                issued_at_secs,
                 received_at_secs,
                 categories: categories.clone(),
                 text: text.clone(),
@@ -495,12 +514,26 @@ fn build_index_rows(
 }
 
 async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Response {
+    // A local dispatch (this node's own owner, through the Hub or
+    // `roymctl`, or a same-node `directory.publish-to-source` loopback)
+    // arrives `Caller::Internal` -- `admit()` short-circuits to it
+    // regardless of the wire table, by design (a local dispatch is
+    // trusted for where it came from). It is a real, supported path, not
+    // a state that "never happens": it publishes under this
+    // installation's own recorded owner, never from a caller-supplied
+    // value. `Caller::Anonymous` cannot reach a `VerifiedOnly` method
+    // from the wire (`admit()` refuses it before this handler runs); the
+    // arm exists only so the match stays exhaustive against a future
+    // change to that contract.
     let published_by = match caller {
         Caller::Verified(did) => did,
-        // `admit` never returns `Internal`/`Anonymous` for a
-        // `VerifiedOnly` method -- it either admits `Verified` or refuses
-        // before this handler runs.
-        _ => return Response::internal_error("directory.publish reached with no verified caller"),
+        Caller::Internal => owner_did_or_node(host).await,
+        Caller::Anonymous => {
+            return Response::internal_error(
+                "directory.publish reached with an anonymous caller, which admit() must never \
+                 allow",
+            );
+        }
     };
     let envelope = match req.params.get("envelope").and_then(Value::as_str) {
         Some(e) => e.to_string(),
@@ -513,13 +546,14 @@ async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Respons
             verdict.reason.unwrap_or_else(|| "not verified".to_string()),
         );
     }
-    let (Some(payload), Some(record_id), Some(issuer)) =
-        (verdict.payload, verdict.record_id, verdict.issuer)
+    let (Some(payload), Some(record_id), Some(issuer), Some(issued_at_secs)) =
+        (verdict.payload, verdict.record_id, verdict.issuer, verdict.issued_at_secs)
     else {
         return Response::internal_error(
             "a verified verdict carried no payload, record id or issuer",
         );
     };
+    let supersedes = verdict.supersedes;
 
     match payload.status {
         listing::ListingStatus::Draft => {
@@ -530,6 +564,19 @@ async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Respons
     if payload.conversation_address.trim().is_empty() {
         return Response::internal_error("a verified listing had an empty conversation_address");
     }
+
+    // A directory that has never declared itself (no `settings` row) is
+    // not a SynOrg -- `directory.info` already answers `null` for it, and
+    // `directory.publish` must refuse rather than silently accept a
+    // stranger's bytes onto a disk with no stated retention policy to
+    // bound them.
+    let settings = match load_settings(host).await {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return Response::invalid_params("this installation runs no SynOrg yet");
+        }
+        Err(e) => return Response::internal_error(e),
+    };
 
     if let Err(e) = ensure_coll(host, PUBLICATIONS, &[idx("listing_id", IndexType::String)]).await {
         return Response::internal_error(e);
@@ -544,13 +591,32 @@ async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Respons
         return Response::internal_error(e);
     }
 
+    // Freshness: refuse an envelope that is neither strictly newer than,
+    // nor a declared edit of, whatever this directory already holds for
+    // the listing. Without this, replaying an old signed envelope -- of
+    // any status, withdrawal included -- silently rewrites or deletes a
+    // provider's current, live listing. Strict `issued_at_secs` alone is
+    // not enough: the signing clock's resolution is one second, so a
+    // second, legitimate edit issued in the same second as the one it
+    // replaces would tie on timestamp -- `supersedes` naming the stored
+    // `record_id` is what tells the two cases apart.
+    let existing_row = match load_publication_for_listing(host, &payload.listing_id).await {
+        Ok(v) => v,
+        Err(e) => return Response::internal_error(e),
+    };
+    if let Some(existing) = &existing_row
+        && existing.record_id != record_id
+        && issued_at_secs <= existing.issued_at_secs
+        && supersedes.as_deref() != Some(existing.record_id.as_str())
+    {
+        return Response::invalid_params(
+            "a newer or equal version of this listing is already published here",
+        );
+    }
+
     // Withdrawal: remove the stored publication and its index rows, consume
     // no budget.
     if matches!(payload.status, listing::ListingStatus::Withdrawn) {
-        let existed = load_publication_for_listing(host, &payload.listing_id).await;
-        if let Err(e) = existed {
-            return Response::internal_error(e);
-        }
         if let Err(e) = AppDataLayer::delete_many(
             host,
             PUBLICATIONS.to_string(),
@@ -566,25 +632,22 @@ async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Respons
         return Response::ok(json!({ "listing_id": payload.listing_id, "withdrawn": true }));
     }
 
-    let settings = match load_settings(host).await {
-        Ok(s) => s.unwrap_or(SynOrgSettings {
-            name: String::new(),
-            rules: String::new(),
-            area: vec![],
-            categories: vec![],
-            support_contact: String::new(),
-            dispute_path: String::new(),
-            retention_secs: syneroym_roym_core::directory::MAX_RETENTION_SECS,
-            publication_limits: PublicationLimits::default(),
-        }),
-        Err(e) => return Response::internal_error(e),
-    };
     let limits = settings.publication_limits;
-    let prior_secs = match publication_secs_in_window(host, &issuer, limits.window_secs, now).await
-    {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
+    // Keyed on `published_by` -- the identity the router verified for
+    // this connection -- never on the envelope's own `issuer`. An issuer
+    // key is self-minted and rotatable by whoever holds it, and the
+    // envelope's bytes are served back verbatim by `directory.search`, so
+    // keying on `issuer` would let any caller either mint a fresh budget
+    // by rotating keys, or exhaust a stranger's budget by replaying a
+    // signed envelope that names them. `published_by` is stable per
+    // connection (a person's own owner DID locally, an instance DID over
+    // the wire) and is exactly the party a rate limit is supposed to
+    // bind.
+    let prior_secs =
+        match publication_secs_in_window(host, &published_by, limits.window_secs, now).await {
+            Ok(v) => v,
+            Err(e) => return Response::internal_error(e),
+        };
     match safety::admit_publication(&prior_secs, &limits, now) {
         Admission::Allow => {}
         Admission::RateLimited { retry_after_secs } => {
@@ -599,6 +662,25 @@ async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Respons
         Admission::Blocked => {
             return Response::internal_error("admit_publication returned Blocked");
         }
+    }
+
+    // The ledger row is written immediately on admission, not after the
+    // several other awaited writes below: the read (above) and this
+    // write are still two separate host calls, not one atomic operation
+    // -- the data layer offers no compare-and-swap this call could use
+    // instead -- but writing right away narrows the window a second,
+    // concurrent `publish` could race through to the smallest span
+    // available rather than the whole rest of this function.
+    let log_key = format!("{published_by}:{now}:{record_id}");
+    if let Err(e) = put_json(
+        host,
+        PUBLICATION_LOG,
+        &log_key,
+        &json!({ "published_by": published_by, "at_secs": now }),
+    )
+    .await
+    {
+        return Response::internal_error(e);
     }
 
     // Prune the limiter ledger and, per the SynOrg's own retention policy,
@@ -654,29 +736,19 @@ async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Respons
         record_id: record_id.clone(),
         listing_id: payload.listing_id.clone(),
         issuer: issuer.clone(),
-        published_by,
+        published_by: published_by.clone(),
+        issued_at_secs,
         received_at_secs: now,
     };
     if let Err(e) = put_json(host, PUBLICATIONS, &record_id, &pub_row).await {
         return Response::internal_error(e);
     }
 
-    for row in build_index_rows(&payload, &record_id, &issuer, now) {
+    for row in build_index_rows(&payload, &record_id, &issuer, issued_at_secs, now) {
         let key = search_index_key(&row.listing_id, row.area_index);
         if let Err(e) = put_json(host, SEARCH_INDEX, &key, &row).await {
             return Response::internal_error(e);
         }
-    }
-
-    if let Err(e) = put_json(
-        host,
-        PUBLICATION_LOG,
-        &format!("{issuer}:{now}:{record_id}"),
-        &json!({ "issuer": issuer, "at_secs": now }),
-    )
-    .await
-    {
-        return Response::internal_error(e);
     }
 
     Response::ok(json!({ "listing_id": payload.listing_id, "record_id": record_id }))
@@ -771,6 +843,31 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
         Ok(q) => q,
         Err(e) => return Response::invalid_params(format!("invalid query: {e}")),
     };
+    // This is the one query shape an anonymous stranger controls end to
+    // end, so every field gets checked before it reaches arithmetic or a
+    // filter document: an unvalidated `Area` can drive `bounding_box`/
+    // `areas_intersect` into overflow, an unbounded category list turns
+    // into an unbounded `$and`, and unbounded text turns into an unbounded
+    // bound-parameter list.
+    if let Some(q_area) = &query.area
+        && let Err(e) = q_area.validate()
+    {
+        return Response::invalid_params(e.to_string());
+    }
+    if query.categories.len() > MAX_CATEGORIES {
+        return Response::invalid_params(format!(
+            "more than {} categories in a query",
+            MAX_CATEGORIES
+        ));
+    }
+    if let Some(text) = &query.text
+        && text.len() > MAX_QUERY_TEXT_LEN
+    {
+        return Response::invalid_params(format!(
+            "query text is longer than {} bytes",
+            MAX_QUERY_TEXT_LEN
+        ));
+    }
     if let Err(e) = ensure_coll(host, SEARCH_INDEX, &[]).await {
         return Response::internal_error(e);
     }
@@ -898,7 +995,12 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
 
     let mut out = Vec::with_capacity(hits.len());
     for (row, area_match) in hits {
-        let envelope = match load_publication_for_listing(host, &row.listing_id).await {
+        // `publications` is keyed by `record_id`, which the index row
+        // already carries -- a direct get, not the full-collection scan
+        // `load_publication_for_listing` does for the (rare, owner-only)
+        // withdrawal/republish path.
+        let envelope = match get_json::<H, PublicationRow>(host, PUBLICATIONS, &row.record_id).await
+        {
             Ok(Some(p)) => p.envelope,
             Ok(None) => continue,
             Err(e) => return Response::internal_error(e),
@@ -913,7 +1015,7 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
         });
     }
 
-    let directory_did = match syneroym_app_host::AppSigning::signing_identity(host).await {
+    let directory_did = match AppSigning::signing_identity(host).await {
         Ok(id) => id.signing_did,
         Err(_) => String::new(),
     };
@@ -926,33 +1028,43 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
 }
 
 async fn reindex<H: AppHost>(host: &H) -> Response {
-    if let Err(e) = ensure_coll(host, SEARCH_INDEX, &[]).await {
-        return Response::internal_error(e);
+    match rebuild_search_index(host).await {
+        Ok(rebuilt) => Response::ok(json!({ "rebuilt": rebuilt })),
+        Err(e) => Response::internal_error(e),
     }
-    if let Err(e) =
-        AppDataLayer::delete_many(host, SEARCH_INDEX.to_string(), json!({}).to_string()).await
-    {
-        return Response::internal_error(e.to_string());
-    }
-    let rows = match collect_raw(host, PUBLICATIONS).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
+}
+
+/// Drops and rebuilds `search_index` from `publications`. Shared by the
+/// `directory.reindex` verb and `import()`: an imported bundle writes
+/// `publications` directly and nothing else would ever populate the
+/// projection from it, so `directory.search` would answer zero hits for
+/// listings that are demonstrably present until an owner happened to
+/// notice and reindex by hand.
+async fn rebuild_search_index<H: AppHost>(host: &H) -> Result<u64, String> {
+    ensure_coll(host, SEARCH_INDEX, &[]).await?;
+    AppDataLayer::delete_many(host, SEARCH_INDEX.to_string(), json!({}).to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    let rows = collect_raw(host, PUBLICATIONS).await?;
     let mut rebuilt = 0u64;
     for (_, v) in rows {
         let Ok(row) = serde_json::from_value::<PublicationRow>(v) else { continue };
         let verdict = listing::verify_envelope(&row.envelope, clock::now_secs());
         let Some(payload) = verdict.payload else { continue };
-        for index_row in
-            build_index_rows(&payload, &row.record_id, &row.issuer, row.received_at_secs)
-        {
+        for index_row in build_index_rows(
+            &payload,
+            &row.record_id,
+            &row.issuer,
+            row.issued_at_secs,
+            row.received_at_secs,
+        ) {
             let key = search_index_key(&index_row.listing_id, index_row.area_index);
             if put_json(host, SEARCH_INDEX, &key, &index_row).await.is_ok() {
                 rebuilt += 1;
             }
         }
     }
-    Response::ok(json!({ "rebuilt": rebuilt }))
+    Ok(rebuilt)
 }
 
 // ---------------------------------------------------------------------
@@ -960,7 +1072,7 @@ async fn reindex<H: AppHost>(host: &H) -> Response {
 // ---------------------------------------------------------------------
 
 async fn owner_did_or_node<H: AppHost>(host: &H) -> String {
-    match syneroym_app_host::AppSigning::signing_identity(host).await {
+    match AppSigning::signing_identity(host).await {
         Ok(id) => id.owner_did.unwrap_or(id.signing_did),
         Err(_) => String::new(),
     }
@@ -1107,7 +1219,14 @@ async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
             }
         }
     }
-    Response::ok(json!({ "imported": counts }))
+    // `search_index` is derived from `publications`, and nothing else
+    // populates it -- an import that skipped this would leave a fresh
+    // node answering zero hits for listings it demonstrably holds.
+    let rebuilt = match rebuild_search_index(host).await {
+        Ok(n) => n,
+        Err(e) => return Response::internal_error(e),
+    };
+    Response::ok(json!({ "imported": counts, "reindexed": rebuilt }))
 }
 
 // ---------------------------------------------------------------------
@@ -1129,10 +1248,7 @@ struct SourceRow {
 /// side effect. What `add_source`'s own probe does; also its own verb, for
 /// a caller (`roymctl roym directory info`) that wants to read a
 /// directory's public statement without adding it as a source.
-async fn probe_info<H: AppHost>(
-    host: &H,
-    did: &str,
-) -> Result<String, syneroym_app_host::types::proxy::ProxyError> {
+async fn probe_info<H: AppHost>(host: &H, did: &str) -> Result<String, ProxyError> {
     let probe_params = json!({ "method": "directory.info", "params": {} }).to_string();
     host.call(
         CallTarget::Service(did.to_string()),
@@ -1410,7 +1526,7 @@ async fn query_source<H: AppHost>(host: &H, req: &Request) -> Response {
             json!({ "source": source, "verified": 0, "refused": 0, "error": source_error }),
         );
     };
-    let hits: Vec<SearchHit> =
+    let mut hits: Vec<SearchHit> =
         match serde_json::from_value(result.get("hits").cloned().unwrap_or(json!([]))) {
             Ok(h) => h,
             Err(e) => {
@@ -1421,6 +1537,12 @@ async fn query_source<H: AppHost>(host: &H, req: &Request) -> Response {
                 );
             }
         };
+    // Bound *before* verifying: a source answering with far more than it
+    // could ever have stored must not get every one of them materialized
+    // and signature-checked in guest memory. This dispatch has a hard
+    // wall-clock budget, and verification cost is what a hostile source
+    // controls directly by returning more hits.
+    hits.truncate((MAX_STORED_PER_SOURCE + MAX_REFUSED_RESULTS) as usize);
 
     let now = clock::now_secs();
     let mut verified_count = 0u32;
@@ -1441,8 +1563,7 @@ async fn query_source<H: AppHost>(host: &H, req: &Request) -> Response {
                 summary: payload.summary,
                 categories: payload.categories,
                 conversation_address: verdict.conversation_address.unwrap_or_default(),
-                status: format!("{:?}", verdict.status.unwrap_or(listing::ListingStatus::Active))
-                    .to_lowercase(),
+                status: serde_str(&verdict.status.unwrap_or(listing::ListingStatus::Active)),
                 verified: true,
                 reason: None,
                 revocation_status: verdict
@@ -1455,7 +1576,13 @@ async fn query_source<H: AppHost>(host: &H, req: &Request) -> Response {
                 envelope: hit.envelope,
                 refused: false,
             };
-            let key = format!("{run_id}#{}", row.record_id);
+            // `source` is part of the key: two directories can serve the
+            // same signed envelope (same `record_id`), and without the
+            // source disambiguating them one `query-source` call's row
+            // would silently overwrite the other's -- `merge`'s per-hit
+            // `sources[]` would then undercount, showing one directory
+            // instead of two.
+            let key = format!("{run_id}#{source}#{}", row.record_id);
             if put_json(host, SEARCH_RUNS, &key, &row).await.is_ok() {
                 verified_count += 1;
             }
@@ -1483,7 +1610,7 @@ async fn query_source<H: AppHost>(host: &H, req: &Request) -> Response {
                 envelope: hit.envelope,
                 refused: true,
             };
-            let key = format!("{run_id}#refused#{}", row.record_id);
+            let key = format!("{run_id}#refused#{source}#{}", row.record_id);
             if put_json(host, SEARCH_RUNS, &key, &row).await.is_ok() {
                 refused_count += 1;
             }
@@ -1511,8 +1638,7 @@ async fn query_source<H: AppHost>(host: &H, req: &Request) -> Response {
     )
 }
 
-fn map_proxy_error(e: &syneroym_app_host::types::proxy::ProxyError) -> SourceError {
-    use syneroym_app_host::types::proxy::ProxyError;
+fn map_proxy_error(e: &ProxyError) -> SourceError {
     match e {
         ProxyError::ServiceNotFound(_) | ProxyError::DependencyNotBound(_) => SourceError::NotFound,
         ProxyError::TimedOut => SourceError::TimedOut,
@@ -1577,14 +1703,22 @@ async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
         rows.sort_by(|a, b| {
             b.issued_at_secs.cmp(&a.issued_at_secs).then(a.listing_id.cmp(&b.listing_id))
         });
-        rows.truncate(syneroym_roym_core::directory::MAX_HITS_PER_SOURCE as usize);
+        rows.truncate(MAX_HITS_PER_SOURCE as usize);
     }
 
-    // Round-robin across sources, visited in DID order.
+    // Round-robin across sources, visited in DID order, to decide *which*
+    // listings make the merged page and to enforce the per-source share
+    // and the total cap. `seen` is the resulting set, nothing more -- the
+    // value each selected listing carries is computed afterward, in one
+    // pass over every source's row for it, so which source's turn
+    // happened to select it first cannot change the result. (The
+    // previous version rebuilt each hit's `sources` list while mutating
+    // the "kept" row in the same loop, which let a source already
+    // recorded be recorded a second time once `kept` moved to a
+    // different source mid-loop.)
     let mut positions: BTreeMap<String, usize> =
         by_source.keys().map(|k| (k.clone(), 0usize)).collect();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut merged: BTreeMap<String, (SearchRunRow, Vec<Value>)> = BTreeMap::new();
     let mut merge_truncated = false;
     'outer: loop {
         let mut advanced = false;
@@ -1596,93 +1730,133 @@ async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
             if *pos >= rows.len() {
                 continue;
             }
-            let row = &rows[*pos];
+            let listing_id = rows[*pos].listing_id.clone();
             *pos += 1;
             advanced = true;
-            seen.insert(row.listing_id.clone());
-            if merged.len() as u32 >= syneroym_roym_core::directory::MAX_SEARCH_RESULTS {
+            if seen.len() as u32 >= MAX_SEARCH_RESULTS {
                 merge_truncated = true;
                 break 'outer;
             }
-            merged.insert(row.listing_id.clone(), (row.clone(), vec![json!({ "directory": row.source, "record_id": row.record_id, "received_at_secs": row.received_at_secs })]));
+            seen.insert(listing_id);
         }
         if !advanced {
             break;
         }
     }
 
-    // A listing more than one source returned: keep the row with the
-    // greatest issued_at_secs, ties by record_id ascending; union sources.
+    // Every source's row for each selected listing -- at most one per
+    // (source, listing_id) pair, by construction of the per-source
+    // dedup/truncate above.
+    let mut candidates_by_listing: BTreeMap<String, Vec<&SearchRunRow>> = BTreeMap::new();
     for rows in by_source.values() {
         for row in rows {
-            if let Some((kept, source_list)) = merged.get_mut(&row.listing_id)
-                && kept.source != row.source
-            {
-                source_list.push(json!({ "directory": row.source, "record_id": row.record_id, "received_at_secs": row.received_at_secs }));
-                let better = row.issued_at_secs > kept.issued_at_secs
-                    || (row.issued_at_secs == kept.issued_at_secs
-                        && row.record_id < kept.record_id);
-                if better {
-                    *kept = row.clone();
-                }
+            if seen.contains(&row.listing_id) {
+                candidates_by_listing.entry(row.listing_id.clone()).or_default().push(row);
             }
         }
     }
 
     let now = clock::now_secs();
-    let hits: Vec<Value> = merged
-        .into_values()
-        .map(|(row, source_list)| {
-            let distinct_record_ids: std::collections::BTreeSet<&str> = source_list
+    let hits: Vec<Value> = seen
+        .into_iter()
+        .filter_map(|listing_id| {
+            // Keep the row with the greatest `issued_at_secs`, ties by
+            // `record_id` ascending; union every source that answered.
+            let mut candidates = candidates_by_listing.remove(&listing_id)?;
+            candidates.sort_by(|a, b| {
+                b.issued_at_secs.cmp(&a.issued_at_secs).then(a.record_id.cmp(&b.record_id))
+            });
+            let winner = *candidates.first()?;
+            let source_list: Vec<Value> = candidates
                 .iter()
-                .filter_map(|s| s.get("record_id").and_then(Value::as_str))
+                .map(|r| {
+                    json!({ "directory": r.source, "record_id": r.record_id, "received_at_secs": r.received_at_secs })
+                })
                 .collect();
-            json!({
-                "listing_id": row.listing_id,
-                "record_id": row.record_id,
-                "issuer": row.issuer,
-                "title": row.title,
-                "summary": row.summary,
-                "categories": row.categories,
-                "conversation_address": row.conversation_address,
-                "status": row.status,
+            let distinct_record_ids: std::collections::BTreeSet<&str> =
+                candidates.iter().map(|r| r.record_id.as_str()).collect();
+            Some(json!({
+                "listing_id": winner.listing_id,
+                "record_id": winner.record_id,
+                "issuer": winner.issuer,
+                "title": winner.title,
+                "summary": winner.summary,
+                "categories": winner.categories,
+                "conversation_address": winner.conversation_address,
+                "status": winner.status,
                 "verified": true,
-                "revocation_status": row.revocation_status,
-                "credential": row.credential,
-                "age_secs": now.saturating_sub(row.issued_at_secs),
+                "revocation_status": winner.revocation_status,
+                "credential": winner.credential,
+                "age_secs": now.saturating_sub(winner.issued_at_secs),
                 "sources": source_list,
                 "versions_differ": distinct_record_ids.len() > 1,
-            })
+            }))
         })
         .collect();
 
-    // Refused hits, grouped by listing_id, sorted by (directory,
-    // listing_id) -- never by anything the forger controls.
-    let mut refused_by_listing: BTreeMap<String, Vec<SearchRunRow>> = BTreeMap::new();
+    // Refused evidence: grouped by source and round-robined across
+    // sources, the same way verified hits are (above), then merged by
+    // listing_id. A per-source sort key alone -- the previous version
+    // used the row's own `listing_id`, which a forger fully controls --
+    // buys no resistance: a hostile source whose forged `listing_id`
+    // (or whose DID) happens to sort first would otherwise fill every
+    // slot before a second, honest source's evidence is ever reached.
+    // Round-robin is what actually bounds one source's share.
+    let mut refused_by_source: BTreeMap<String, Vec<SearchRunRow>> = BTreeMap::new();
     for row in refused_rows {
-        refused_by_listing.entry(row.listing_id.clone()).or_default().push(row);
+        refused_by_source.entry(row.source.clone()).or_default().push(row);
     }
+    for rows in refused_by_source.values_mut() {
+        rows.sort_by(|a, b| a.listing_id.cmp(&b.listing_id).then(a.record_id.cmp(&b.record_id)));
+    }
+    let mut refused_positions: BTreeMap<String, usize> =
+        refused_by_source.keys().map(|k| (k.clone(), 0usize)).collect();
+    let mut refused_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut refused_truncated = false;
-    let mut refused: Vec<Value> = Vec::new();
-    let mut refused_entries: Vec<(String, Vec<SearchRunRow>)> =
-        refused_by_listing.into_iter().collect();
-    refused_entries.sort_by(|a, b| {
-        let a_dir = a.1.first().map(|r| r.source.as_str()).unwrap_or_default();
-        let b_dir = b.1.first().map(|r| r.source.as_str()).unwrap_or_default();
-        a_dir.cmp(b_dir).then(a.0.cmp(&b.0))
-    });
-    for (listing_id, rows) in refused_entries {
-        if refused.len() as u32 >= MAX_REFUSED_RESULTS {
-            refused_truncated = true;
+    'refused_outer: loop {
+        let mut advanced = false;
+        for (source, rows) in &refused_by_source {
+            let Some(pos) = refused_positions.get_mut(source) else { continue };
+            while *pos < rows.len() && refused_seen.contains(&rows[*pos].listing_id) {
+                *pos += 1;
+            }
+            if *pos >= rows.len() {
+                continue;
+            }
+            let listing_id = rows[*pos].listing_id.clone();
+            *pos += 1;
+            advanced = true;
+            if refused_seen.len() as u32 >= MAX_REFUSED_RESULTS {
+                refused_truncated = true;
+                break 'refused_outer;
+            }
+            refused_seen.insert(listing_id);
+        }
+        if !advanced {
             break;
         }
-        let sources: Vec<Value> = rows.iter().map(|r| json!(r.source)).collect();
-        refused.push(json!({
-            "listing_id": listing_id,
-            "reason": rows.first().and_then(|r| r.reason.clone()).unwrap_or_default(),
-            "sources": sources,
-        }));
     }
+
+    let mut refused_candidates: BTreeMap<String, Vec<&SearchRunRow>> = BTreeMap::new();
+    for rows in refused_by_source.values() {
+        for row in rows {
+            if refused_seen.contains(&row.listing_id) {
+                refused_candidates.entry(row.listing_id.clone()).or_default().push(row);
+            }
+        }
+    }
+    let refused: Vec<Value> = refused_seen
+        .into_iter()
+        .filter_map(|listing_id| {
+            let rows = refused_candidates.remove(&listing_id)?;
+            let sources: Vec<Value> = rows.iter().map(|r| json!(r.source)).collect();
+            Some(json!({
+                "listing_id": listing_id,
+                "reason": rows.first().and_then(|r| r.reason.clone()).unwrap_or_default(),
+                "sources": sources,
+            }))
+        })
+        .collect();
 
     Response::ok(json!({
         "hits": hits,
@@ -1704,12 +1878,28 @@ async fn run_envelope<H: AppHost>(host: &H, req: &Request) -> Response {
     if let Err(e) = ensure_coll(host, SEARCH_RUNS, &[]).await {
         return Response::internal_error(e);
     }
-    let key = format!("{run_id}#{record_id}");
-    match get_json::<H, SearchRunRow>(host, SEARCH_RUNS, &key).await {
-        Ok(Some(row)) => Response::ok(json!({ "envelope": row.envelope })),
-        Ok(None) => Response::ok(Value::Null),
-        Err(e) => Response::internal_error(e),
+    // The key carries `source` too (so two directories serving the same
+    // record don't collide), which this lookup does not know -- any
+    // surviving row for `record_id` carries the identical signed bytes,
+    // since `record_id` is itself content-derived from the envelope. A
+    // scan of this one run's rows, bounded by `MAX_SOURCES`, not the
+    // whole collection.
+    let rows = match collect_raw(host, SEARCH_RUNS).await {
+        Ok(v) => v,
+        Err(e) => return Response::internal_error(e),
+    };
+    let prefix = format!("{run_id}#");
+    for (id, v) in rows {
+        if !id.starts_with(&prefix) {
+            continue;
+        }
+        if let Ok(row) = serde_json::from_value::<SearchRunRow>(v)
+            && row.record_id == record_id
+        {
+            return Response::ok(json!({ "envelope": row.envelope }));
+        }
     }
+    Response::ok(Value::Null)
 }
 
 async fn publish_to_source<H: AppHost>(host: &H, req: &Request) -> Response {

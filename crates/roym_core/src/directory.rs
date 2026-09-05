@@ -16,6 +16,10 @@ pub const MAX_DISPUTE_PATH_LEN: usize = 2048;
 pub const MAX_CATEGORIES: usize = 32;
 pub const MAX_CATEGORY_LEN: usize = 64;
 pub const MAX_AREAS: usize = 8;
+/// A search query's own free-text field. Bounded because `directory.search`
+/// is reachable by an anonymous stranger, and an unbounded string turns
+/// into an unbounded `LIKE` bind parameter.
+pub const MAX_QUERY_TEXT_LEN: usize = 256;
 pub const MIN_RETENTION_SECS: u64 = 3600;
 pub const MAX_RETENTION_SECS: u64 = 5 * 365 * 24 * 3600;
 

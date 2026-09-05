@@ -440,6 +440,11 @@ pub struct ListingVerdict {
     pub status: Option<ListingStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issued_at_secs: Option<u64>,
+    /// The envelope's own `supersedes` -- the prior version's `record_id`,
+    /// when this one is an edit. `None` for a listing's first version, or
+    /// when `verified` is `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<ListingPayload>,
 }
@@ -456,6 +461,7 @@ impl ListingVerdict {
             conversation_address: None,
             status: None,
             issued_at_secs: None,
+            supersedes: None,
             payload: None,
         }
     }
@@ -514,6 +520,7 @@ pub fn verify_envelope(envelope: &str, now_secs: u64) -> ListingVerdict {
         conversation_address: Some(payload.conversation_address.clone()),
         status: Some(payload.status),
         issued_at_secs: Some(verified.issued_at_secs),
+        supersedes: verified.supersedes.clone(),
         payload: Some(payload),
     }
 }

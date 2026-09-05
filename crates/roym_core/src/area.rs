@@ -102,6 +102,17 @@ impl Area {
     }
 }
 
+/// `f64::ceil()` then a saturating cast to `i64` -- `as i64` alone already
+/// saturates on out-of-range floats in Rust, but going through `.ceil()`
+/// first on a value already at the edge of `f64`'s range (an unvalidated
+/// `radius_m` can produce one) can turn a huge finite value into infinity,
+/// which still casts to `i64::MAX`/`MIN`, so this is belt and braces rather
+/// than a behaviour change -- named so the saturation is explicit at the
+/// call site instead of relying on a cast's own default.
+fn saturating_f64_to_i64(v: f64) -> i64 {
+    v.ceil() as i64
+}
+
 /// A conservative metres-per-degree of latitude. The real value ranges
 /// ~110 574 (equator) to ~111 694 (pole); the smaller number turns a given
 /// radius into *more* degrees, so the box always over-covers.
@@ -131,13 +142,18 @@ pub fn bounding_box(area: &Area) -> Option<BoundingBox> {
             // fall back to the whole meridian rather than an infinity.
             let cos_lat = lat_deg.to_radians().cos().abs();
             let d_lon_deg = if cos_lat < 0.01 { 360.0 } else { d_lat_deg / cos_lat };
-            let d_lat_e6 = (d_lat_deg * 1e6).ceil() as i64;
-            let d_lon_e6 = (d_lon_deg * 1e6).ceil() as i64;
+            // Saturating, not `as i64`: a caller-supplied `radius_m` this
+            // function has not validated (`search()`'s query area, in
+            // particular -- reachable by an anonymous stranger) can drive
+            // `d_lat_deg`/`d_lon_deg` far past any real span, and the
+            // following `lat_e6 +/- d_lat_e6` must not wrap or panic.
+            let d_lat_e6 = saturating_f64_to_i64(d_lat_deg * 1e6);
+            let d_lon_e6 = saturating_f64_to_i64(d_lon_deg * 1e6);
             Some(BoundingBox {
-                min_lat_e6: (lat_e6 - d_lat_e6).max(LAT_E6_MIN),
-                max_lat_e6: (lat_e6 + d_lat_e6).min(LAT_E6_MAX),
-                min_lon_e6: (lon_e6 - d_lon_e6).max(LON_E6_MIN),
-                max_lon_e6: (lon_e6 + d_lon_e6).min(LON_E6_MAX),
+                min_lat_e6: lat_e6.saturating_sub(d_lat_e6).max(LAT_E6_MIN),
+                max_lat_e6: lat_e6.saturating_add(d_lat_e6).min(LAT_E6_MAX),
+                min_lon_e6: lon_e6.saturating_sub(d_lon_e6).max(LON_E6_MIN),
+                max_lon_e6: lon_e6.saturating_add(d_lon_e6).min(LON_E6_MAX),
             })
         }
         Area::Named { .. } => None,
@@ -184,7 +200,9 @@ pub fn areas_intersect(a: &Area, b: &Area) -> Option<bool> {
             Area::Circle { lat_e6: lb, lon_e6: lob, radius_m: rb },
         ) => {
             let d = approx_distance_m(*la, *lo, *lb, *lob);
-            Some(d <= (*ra + *rb) as f64)
+            // `saturating_add`: an unvalidated `radius_m` (e.g. a caller
+            // that skipped `Area::validate`) must not overflow `u64`.
+            Some(d <= ra.saturating_add(*rb) as f64)
         }
         (
             Area::Circle { lat_e6, lon_e6, radius_m },
@@ -322,6 +340,31 @@ mod tests {
         let b = bounding_box(&c).unwrap();
         assert_eq!(b.min_lon_e6, LON_E6_MIN);
         assert_eq!(b.max_lon_e6, LON_E6_MAX);
+    }
+
+    #[test]
+    fn bounding_box_does_not_overflow_on_an_unvalidated_extreme_radius() {
+        // `directory.search` is reachable by an anonymous stranger and,
+        // before this fix, did not call `Area::validate()` on the query's
+        // area -- so `bounding_box`/`areas_intersect` had to survive
+        // whatever `radius_m` arrived, not just a validated one. A
+        // *non-zero* `lat_e6`/`lon_e6` is the case that actually
+        // overflowed plain `i64` addition/subtraction against a
+        // near-`i64::MAX` degree span (`0 +/- d_lat_e6` alone happens not
+        // to overflow, which is why this is not `lat_e6: 0`).
+        let c = Area::Circle { lat_e6: 1, lon_e6: 1, radius_m: u64::MAX };
+        let b = bounding_box(&c).unwrap();
+        assert_eq!(b.min_lat_e6, LAT_E6_MIN);
+        assert_eq!(b.max_lat_e6, LAT_E6_MAX);
+        assert_eq!(b.min_lon_e6, LON_E6_MIN);
+        assert_eq!(b.max_lon_e6, LON_E6_MAX);
+    }
+
+    #[test]
+    fn areas_intersect_does_not_overflow_on_two_extreme_radii() {
+        let a = Area::Circle { lat_e6: 0, lon_e6: 0, radius_m: u64::MAX };
+        let b = Area::Circle { lat_e6: 1, lon_e6: 1, radius_m: u64::MAX };
+        assert_eq!(areas_intersect(&a, &b), Some(true));
     }
 
     #[test]

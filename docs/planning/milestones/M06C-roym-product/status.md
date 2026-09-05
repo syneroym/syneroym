@@ -849,7 +849,7 @@ looked up.
 | **3** (no Directory deployed anywhere) | Not re-proven at e2e level in this pass (the three-substrate e2e was not built); the two-substrate suites this slice left untouched (`roym_conversation_e2e.rs`, `roym_app_e2e.rs`) still pass, so the R1 rows 1-4 path by direct link is intact, but R1 row 5's own "optional by construction" claim (`D-06C-6a`) is proven only at verb level here (parity 101: a run with zero sources succeeds with zero hits, never an error). |
 | **12** (flooding) | The publication half is now complete: the directory-side caller of `safety::admit_publication` ships, keyed on the issuer (parity 83), the withdrawal exemption holds (parity 84), a `draft` is refused before it can consume budget (parity 84c), and the ledger prunes itself. `[PRD-SAF]` is fixed at both call sites (`catalog`, `directory`) against the one function. |
 | **18** (an unaffiliated caller resolves the Directory) | Proven at the wire-admission level: `directory.search`/`info` admit an anonymous wire caller (parity 94, 76) and every other verb on every service still answers `-32013` (parity 106b, and the pre-existing 67/68 unchanged). **Not** proven with a real cross-substrate registry resolution (`topology_visibility = "open"` / `supervisor/resolve`) — `deferred-backlog.md`'s existing row on that gap is unchanged, not closed, by this slice. |
-| **19** (build divergence) | 25 new parity scenarios (74-109, some plan numbers merged or renumbered against what actually needed separate coverage), all passing identically on both builds, including the wire admission table in both directions and the confused-deputy invariant (parity 109: no `WIRE_REACHABLE` method makes a proxy call). |
+| **19** (build divergence) | 31 new parity scenarios (74-115, some plan numbers merged or renumbered against what actually needed separate coverage; 110-115 added by the code-review follow-up below), all passing identically on both builds, including the wire admission table in both directions and the confused-deputy invariant (parity 109: no `WIRE_REACHABLE` method makes a proxy call). |
 
 Rows C6 explicitly does **not** close: the credential half of row 2 and
 the revocation half of row 15 (both C9's, by `D-06C-6`'s R1/R3 split);
@@ -886,7 +886,7 @@ pickup trigger.
    to prove two directories genuinely disagreeing about a version
    (`versions_differ`) and a directory crowding a page with forged *or*
    genuinely signed recent listings (`D-C6-18`'s per-source share), was
-   not built. What the 25 new scenarios do prove — the admission table,
+   not built. What the new scenarios do prove — the admission table,
    `publish`/`search`/`settings`/roster, and the client verbs' own shape
    and validity checks — is real and passes on both builds; two-directory
    merge behaviour is unverified.
@@ -931,9 +931,147 @@ pickup trigger.
 
 ---
 
+### C6 — Code review follow-up (2026-09-05)
+
+An independent code review of the Rust core (the admission table,
+`publish()`, `search()`, `query_source()`, `merge()`) found 15 issues,
+concentrated on exactly what a slice adding the product's first
+wire-reachable verbs should be scrutinized hardest for: input a stranger
+fully controls, and the rate limiter and freshness checks around a
+durable write. All 15 were incorporated; none were pushed back on. In
+order of what an anonymous stranger can reach first:
+
+1. **`search()` never validated the caller-supplied `Area`.** An extreme
+   `radius_m` drove `bounding_box`/`areas_intersect` into `i64`/`u64`
+   overflow (a debug-build panic, a release-build wrong answer). Fixed by
+   calling `Area::validate()` in `search()` before any arithmetic, and —
+   belt and braces, since the arithmetic itself should not depend on every
+   caller validating first — making `bounding_box` and the circle-circle
+   radius sum in `areas_intersect` saturating rather than wrapping/
+   panicking. Two new `roym_core::area` unit tests and parity scenario 110.
+2. **`publish()` stored a stranger's bytes even on a node running no
+   SynOrg.** `directory.info` already answers `null` for such a node;
+   `directory.publish` now refuses with the same reasoning, before ever
+   touching storage. Parity scenario 112.
+3. **The publication limiter was keyed on the envelope's `issuer`, not
+   the verified caller.** Since `directory.search` serves envelopes back
+   verbatim, this let a caller either mint a fresh budget by rotating
+   issuer keys, or exhaust a *stranger's* budget by replaying their own
+   signed envelope under a connection the attacker controls. Re-keyed on
+   `published_by` — the identity the router actually verified for the
+   connection — everywhere: `publication_secs_in_window`'s filter, the
+   `publication_log` row shape, and its index.
+4. **Republishing accepted an older or replayed envelope with no
+   freshness check**, including on the withdrawal path (replaying an old
+   `withdrawn` envelope could delete a provider's current live listing
+   for free). Fixed with a check against the stored row: refuse unless
+   the incoming envelope is strictly newer, *or* its own `supersedes`
+   names the stored `record_id`. The `or` is load-bearing, not
+   cosmetic — the parity harness pins the signing clock, so two
+   legitimate versions signed in the same test run tie exactly on
+   `issued_at_secs`, and only `supersedes` tells a real edit apart from a
+   replay. This required threading `supersedes` through
+   `roym_core::listing::ListingVerdict`, which did not carry it before.
+   Parity scenario 115 proves both halves in one scenario: a same-second
+   edit is accepted, and replaying the superseded envelope afterward is
+   refused.
+5. **`query.categories` and `query.text` had no cap** on the anonymous
+   search path, despite the same limits existing and being enforced
+   everywhere else. Added `roym_core::directory::MAX_QUERY_TEXT_LEN` and
+   a `MAX_CATEGORIES` check in `search()`. Parity scenario 111.
+6. **`search()` full-scanned `publications` once per hit** (up to 50 full
+   collection scans per anonymous-reachable request) where a direct
+   `get_json` by `record_id` — which the index row already carries —
+   does the same job in one read.
+7. **A local `directory.publish` could never succeed.** The router routes
+   the whole `directory.` prefix to this service as an owner method, but
+   the handler refused anything that was not `Caller::Verified` — and a
+   local dispatch legitimately arrives `Caller::Internal` by the
+   admission rule's own design (a local caller is trusted for where it
+   came from, whatever the wire table says). Decided, rather than
+   mechanically patched: a local publish now uses this installation's own
+   recorded owner as `published_by`, read from the host and never from a
+   caller-supplied value. Parity scenario 113.
+8. **The search index stored the directory's own receive time as
+   `issued_at_secs`**, so a stale listing re-served today outranked a
+   genuinely newer one, silently contradicting `roym_core::directory`'s
+   own documented meaning of the two fields. `build_index_rows` now takes
+   the signed `issued_at_secs` and the directory's `received_at_secs` as
+   two separate parameters, threaded correctly from both `publish()` and
+   `reindex()`.
+9. **`merge()` could list one source twice in a hit's `sources[]`.** The
+   cross-source union pass compared against a `kept` row that the same
+   loop was mutating, so a source already recorded could be recorded
+   again once `kept` moved to a different source mid-loop. Restructured
+   into two passes: round-robin selection decides *which* listings are
+   included (unchanged), then a separate pass gathers every source's row
+   for each selected listing and computes the winner and the source list
+   once, from data that does not change under it.
+10. **`query_source` verified every hit a source returned before applying
+    the stored cap**, so a source answering with far more hits than it
+    could ever have stored got all of them signature-checked in guest
+    memory — exactly the dispatch-epoch budget the timeout constants were
+    sized against. Now truncates to `MAX_STORED_PER_SOURCE +
+    MAX_REFUSED_RESULTS` before verifying, not after.
+11. **`search_runs` keys collided across sources.** Two directories
+    serving the same signed envelope (same `record_id`) would have the
+    second `query-source` call's row silently overwrite the first's,
+    undercounting `sources[]` in the merged hit. `source` is now part of
+    the key; `run-envelope`'s lookup (which only ever took `record_id`,
+    an API shape kept as-is) now scans this one run's rows for a matching
+    `record_id` instead of doing an exact-key `get`.
+12. **A single directory could fill every refused-evidence slot**, since
+    the list was sorted by `(source, listing_id)` — both values a forger
+    or a hostile directory controls — rather than round-robined the way
+    verified hits are. Fixed with the same per-source round-robin
+    `merge()`'s verified path already used.
+13. **`import()` never rebuilt `search_index`.** A restored node answered
+    zero hits for listings it demonstrably held until an owner happened
+    to run `directory.reindex` by hand. `reindex`'s body is now a shared
+    `rebuild_search_index` helper, called automatically at the end of
+    `import()`.
+14. **`open_to`/`booking_mode`/`status` were indexed via `{:?}`
+    (`Debug`), not their declared `#[serde(rename_all = "kebab-case")]`
+    spelling.** Every multi-word variant (`existing-customers`, etc.)
+    indexed under a string nothing else in the product produces, so a
+    query for the documented value matched nothing. Fixed with a small
+    `serde_str` helper used at both call sites. Parity scenario 114.
+15. **The rate-limiter's read-then-write was not atomic**, and the
+    ledger row was written last, after several other awaited operations
+    — the widest window available for two concurrent publishes to both
+    read the same prior state and both be admitted. The data layer
+    offers no compare-and-swap this call could use instead, so the fix
+    narrows rather than eliminates the window: the ledger row is now
+    written immediately on admission, before the prune/replace work that
+    used to sit between the decision and the record of it.
+
+Six new parity scenarios (110–115) were added for the findings with a
+clean, harness-reachable repro; findings 9 and 11 (the merge/storage
+fixes) do not have a dedicated regression test, because reproducing them
+needs two genuinely independent directories with separate stores — the
+same two-directory parity-harness gap already recorded above and in
+`deferred-backlog.md` §11. Both were verified by re-tracing the fixed
+code by hand against the exact sequence the review described, and by the
+existing 105-scenario suite continuing to pass (which would have caught
+a `merge()` regression against a single source, just not the two-source
+case the finding was about).
+
+**One residual noticed while fixing finding 4, not in the original 15:**
+withdrawal deletes the `PublicationRow` entirely rather than keeping a
+tombstone, so once a listing is withdrawn there is no stored
+`issued_at_secs` left to compare a later publish against — a stale,
+pre-withdrawal envelope replayed *after* a legitimate withdrawal would be
+accepted as if new, since the freshness check has nothing to refuse it
+against. Not fixed in this pass (it is a storage-shape change —
+keeping a withdrawn row as its own anchor — adjacent to but outside the
+15 reported findings); recorded as its own backlog row rather than
+folded silently into finding 4's fix.
+
+---
+
 ## C6 — Verification evidence
 
-1. `cargo test -p syneroym-roym-core --lib`: **88 passed, 0 failed** —
+1. `cargo test -p syneroym-roym-core --lib`: **90 passed, 0 failed** —
    `admit`'s wire-exception table, `area`'s exact intersection functions,
    `listing::verify_envelope`'s verdicts (accept/tamper/issuer-mismatch),
    and `directory`'s settings validation, text/category normalization, and
@@ -944,18 +1082,22 @@ pickup trigger.
    roym,dual_build_fixture`: **all clean, 0 warnings** (three `expect()`
    call sites in `roym_directory`'s non-test code were rewritten to
    returned errors during this pass rather than left as warnings).
-3. `cargo test -p syneroym-roym-web --test dual_build_parity`: **99
-   passed, 0 failed** (rerun in full after every fix below landed) — the
-   73 pre-existing scenarios (unchanged behaviour, includes one merged
-   plan-numbered pair) plus 25 new functions covering scenarios 74-109
-   (`scenario_88_89` covers two plan-numbered cases in one function). All six `wasm32-wasip2` Roym components were rebuilt with
-   `cargo component build --release --target wasm32-wasip2` before this
-   run; two real bugs were caught and fixed in the process: `directory`'s
-   own `SCHEMA_VERSION` bump needed the harness's `expected_schema_version`
-   map updated (scenarios 8, 71), and `start_run`'s process-derived run id
-   (`uuidish()`, see above) both trapped the wasm build outright and, once
-   fixed the first way, produced non-reproducible ids across builds —
-   fixed by deriving the id from storage state instead.
+3. `cargo test -p syneroym-roym-web --test dual_build_parity`: **105
+   passed, 0 failed** (rerun in full after every implementation fix and
+   every code-review fix landed) — the 73 pre-existing scenarios
+   (unchanged behaviour, includes one merged plan-numbered pair) plus 31
+   new functions covering scenarios 74-115 (`scenario_88_89` covers two
+   plan-numbered cases in one function; 110-115 are the code-review
+   follow-up's own regression scenarios). All six `wasm32-wasip2` Roym
+   components were rebuilt with `cargo component build --release --target
+   wasm32-wasip2` before each run; three real bugs were caught and fixed
+   in the process: `directory`'s own `SCHEMA_VERSION` bump needed the
+   harness's `expected_schema_version` map updated (scenarios 8, 71),
+   `start_run`'s process-derived run id (`uuidish()`, see above) both
+   trapped the wasm build outright and, once fixed the first way,
+   produced non-reproducible ids across builds — fixed by deriving the id
+   from storage state instead — and the code review's own 15 findings,
+   detailed in "Code review follow-up" above.
 4. `cargo xtask check-roym-deps`: **Clean.**
 5. Planning-identifier grep over every file this slice touched or added
    (`crates/roym_core/src/{admit,area,listing,router,backup,directory}.rs`,
@@ -973,23 +1115,23 @@ pickup trigger.
 7. `cargo clippy --workspace --all-targets --all-features`: **clean, 0
    warnings.**
 8. `cargo test --workspace` (sandbox off, per the repository's own
-   sandbox note): **2465 passed, 0 failed** across 151 test binaries,
-   including `dual_build_parity`'s 99 (again), `roym_conversation_e2e.rs`,
-   and `roym_app_e2e.rs` (both unmodified by this slice and both still
-   green).
-9. `cargo audit`: **clean (0 vulnerabilities)**.
-10. `cargo deny check licenses`: **clean (`licenses ok`)**.
-11. `mise run test:e2e`: **31 passed (default config, 3.0m) + 4 passed
-    (multi-hop, 19.4s)** — identical counts to C5's own baseline; this
-    slice added no new Playwright cases (the Hub UI gap above), so this
-    run proves no regression rather than new browser coverage.
+   sandbox note), re-run after the code-review fixes: **2473 passed, 0
+   failed** across 151 test binaries — including `dual_build_parity`'s 105
+   (again), `roym_conversation_e2e.rs`, and `roym_app_e2e.rs` (both
+   unmodified by this slice and both still green).
+9. `cargo audit` (re-run): **clean (0 vulnerabilities)**.
+10. `cargo deny check licenses` (re-run): **clean (`licenses ok`)**.
+11. `mise run test:e2e` (re-run): **31 passed (default config, 1.2m) + 4
+    passed (multi-hop, 19.4s)** — identical counts to C5's own baseline;
+    this slice added no new Playwright cases (the Hub UI gap above), so
+    this run proves no regression rather than new browser coverage.
 
 **What this evidence does, and does not, prove.** It proves the Rust
 core — the admission rule, the server half, the client half, the manifest
 wiring, and `roymctl` — is correct and behaves identically on both
-builds, to the depth the 25 new parity scenarios reach, and that nothing
-else in the workspace (2465 tests, the two-substrate e2e suites, the
-Playwright suite) regressed. It does **not** prove R1 row 5's acceptance
+builds, to the depth the 31 new parity scenarios reach, and that nothing
+else in the workspace (the two-substrate e2e suites, the Playwright
+suite) regressed. It does **not** prove R1 row 5's acceptance
 test end to end: that needs the Hub UI (item 1 above) and, for the
 cross-installation half, the three-substrate e2e (item 2 above). Both are
 named, not hidden, in "What C6 did not build."
