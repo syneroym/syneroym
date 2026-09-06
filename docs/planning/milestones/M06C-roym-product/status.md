@@ -1700,3 +1700,7 @@ both builds · scenario 119's strengthened form confirmed to fail against
 a temporary set-iteration patch before trusting it · `mise run
 test:e2e` — 42 passed (default) + 4 passed (multihop), 0 failed.
 
+**N8 re-verified (2026-09-06).** fmt + `clippy -p syneroym-roym-directory
+--all-targets` clean · full `dual_build_parity` — 115/115 both builds ·
+`roym_directory_e2e` (export/import/reindex step) — 1 passed.
+
