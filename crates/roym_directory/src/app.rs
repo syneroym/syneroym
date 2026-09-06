@@ -52,6 +52,11 @@ pub const PUBLICATION_LOG: &str = "publication_log";
 pub const SOURCES: &str = "sources";
 pub const SEARCH_RUNS: &str = "search_runs";
 pub const RUNS: &str = "runs";
+/// Transient per-node bookkeeping (the retention-prune rate marker).
+/// Deliberately its own collection: it must never ride into an
+/// `export` bundle, where a stale or future `at_secs` from another node
+/// would skew the importing node's prune schedule.
+pub const NODE_STATE: &str = "node_state";
 
 const SETTINGS_KEY: &str = "synorg";
 
@@ -761,7 +766,8 @@ async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Respons
     }
     // Record this prune so a read verb in the next few minutes skips its
     // own -- the marker means "last time any path pruned", not "last read".
-    let _ = put_json(host, SETTINGS, PRUNE_MARKER_KEY, &json!({ "at_secs": now })).await;
+    let _ = ensure_coll(host, NODE_STATE, &[]).await;
+    let _ = put_json(host, NODE_STATE, PRUNE_MARKER_KEY, &json!({ "at_secs": now })).await;
 
     // Replace the prior version, new row written before the old is
     // deleted: a crash between the two steps then leaves both the old and
@@ -818,8 +824,8 @@ const PRUNE_MIN_INTERVAL_SECS: u64 = 300;
 
 /// Deletes publications and their index rows past the SynOrg's stated
 /// retention window -- but at most once per `PRUNE_MIN_INTERVAL_SECS`,
-/// gated by a stored `settings` marker, so it is cheap to call on every
-/// read path (`info`, `publications`, `search`) including the
+/// gated by a `node_state` marker, so it is cheap to call on every read
+/// path (`info`, `publications`, `search`) including the
 /// anonymous-reachable ones and a quiet directory still ages its rows
 /// out. `publish` prunes unconditionally instead: that path is
 /// owner-gated and already writing.
@@ -828,8 +834,8 @@ async fn prune_expired_publications<H: AppHost>(
     retention_secs: u64,
 ) -> Result<(), String> {
     let now = clock::now_secs();
-    ensure_coll(host, SETTINGS, &[]).await?;
-    let last_at = get_json::<H, Value>(host, SETTINGS, PRUNE_MARKER_KEY)
+    ensure_coll(host, NODE_STATE, &[]).await?;
+    let last_at = get_json::<H, Value>(host, NODE_STATE, PRUNE_MARKER_KEY)
         .await?
         .as_ref()
         .and_then(|v| v.get("at_secs"))
@@ -839,7 +845,7 @@ async fn prune_expired_publications<H: AppHost>(
         return Ok(());
     }
     prune_expired_publications_now(host, retention_secs, now).await?;
-    put_json(host, SETTINGS, PRUNE_MARKER_KEY, &json!({ "at_secs": now })).await
+    put_json(host, NODE_STATE, PRUNE_MARKER_KEY, &json!({ "at_secs": now })).await
 }
 
 /// The prune itself, with no rate gate -- the publish path calls this
