@@ -1595,8 +1595,10 @@ retried source loses its stale line.
 understated the WO5 change: the harness's native `web` HTTP sink now
 builds from `host_for_wire`, so **every** native-build scenario that
 drives `/rpc` goes through the changed host origin, not just the 10
-re-run then. The full binary was run this pass — see the gate evidence
-at the end of this section — with the 5 new directory scenarios added.
+re-run then. The full binary was run this pass:
+`cargo test -p syneroym-roym-web --test dual_build_parity` —
+**115 passed, 0 failed** (110 existing + scenarios 118–121 and the
+host-side constant test added here), on both builds.
 
 **Division of labour for the admission rule (R21).** The single-node Hub
 browser suite (`roym-hub.spec.ts`) covers the Directory/SynOrg **UI and
