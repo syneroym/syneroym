@@ -20,8 +20,8 @@ under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-servic
 | C3 | Signed records: host signing interface and envelope | **Complete (2026-08-31)** — [implementation plan](slice-c3-implementation-plan.md), evidence below | C1.1 |
 | C4 | Identity, profile, contacts, and safety (R1 rows 1 and 6) | **Complete (2026-09-01)** — [implementation plan](slice-c4-implementation-plan.md), evidence below | C3 |
 | C5 | Catalog and conversation in the product (R1 rows 2 and 3) | **Complete (2026-09-03)** — [implementation plan](slice-c5-implementation-plan.md), evidence below | C4 |
-| C6 | Directory: the search half (R1 row 5) | **Complete (2026-09-06)** — core service, admission rule, roymctl, and 34 parity scenarios (2026-09-05); the two-directory parity harness, the three-substrate e2e, the Hub Directory/SynOrg UI + `roym-hub.spec.ts` cases 13–23b, and WO5 (native guest-HTTP wire origin) in the Post-C6 follow-up (2026-09-06). Two narrower gaps tracked as backlog rows: a canned-hostile-source fixture (Hub case 15 / forged e2e path) and the faithfulness of Hub cases 22/23b. See its own section, "What C6 did not build", and "Post-C6 follow-up" below | C5 |
-| C7 | A need becomes an offer, and the card contract (R1 row 4) | Not started | C5, C6 |
+| C6 | Directory: the search half (R1 row 5) | **Complete (2026-09-06) — shipped as [PR #161](https://github.com/syneroym/syneroym/pull/161)** — core service, admission rule, roymctl, 34 parity scenarios (2026-09-05); the two-directory parity harness, three-substrate e2e, Hub Directory/SynOrg UI + `roym-hub.spec.ts` cases 13–23b, and WO5 in the Post-C6 follow-up; a 35-finding review (28 + N1–N8) fully incorporated in two passes (`0487c42`..`c5871a9`). Gates: workspace 152/0, parity 115/0 both builds, e2e 42+4. R1 row 5's acceptance test is markable (rendered + cross-installation halves both covered). One backlog row stays open (a `roymctl` CLI-argument test); narrower notes on Hub cases 15 / 22 / 23b. See its own section, "What C6 did not build", "Post-C6 follow-up", and "Second review pass" below | C5 |
+| C7 | A need becomes an offer, and the card contract (R1 row 4) | Not started — **R1's acceptance gate closes here (row 4, D-06C-3); the card contract and signing shape are fixed by D-06C-3 / D-06C-12 and must not be re-decided** | C5, C6 |
 | C8 | The transaction vertical (R2, all five rows) | Not started | C7 |
 | C9 | Cross-installation trust (R3, all three rows) | Not started | C8 |
 | C10 | Private group chat in the product (R4, all five rows) | Not started | C5, C9 |
@@ -1686,6 +1686,11 @@ themselves introduced. All addressed:
 - **N7** — the Hub's fan-out passes a `phase` on `SearchProgress`; the
   retry phase shows "Retrying directories this installation was too busy
   to start…" instead of repeating a stale count.
+- **N8** — the N1 prune marker was landing in `SETTINGS`, which `export`
+  enumerates whole, so it rode into bundles; a stale/future `at_secs`
+  from another node would skew the importing node's prune schedule.
+  Moved to a dedicated `node_state` collection that `export` / `import`
+  never touch.
 
 **Gates re-run after N1–N7 (2026-09-06).** `cargo +nightly fmt` + stable
 check clean · `clippy --workspace --all-targets --all-features` clean ·
