@@ -47,6 +47,11 @@ pub const MAX_SOURCES: usize = 8;
 /// below it, so a search cannot consume every admission permit this
 /// service has and stall the rest of the Hub. `start-run` returns this
 /// value so the client does not carry its own copy.
+///
+/// The relationship to the real node default is asserted host-side, in
+/// `roym_web`'s `dual_build_parity` binary, which can import the actual
+/// `AppSandboxRole` defaults -- this guest crate cannot depend on the
+/// substrate config crate, so the check cannot live here.
 pub const MAX_CLIENT_CONCURRENCY: usize = 3;
 /// Verified hits one `query-source` call stores. Twice the per-source
 /// share, because the round-robin skips a listing another source already
@@ -56,10 +61,13 @@ pub const MAX_STORED_PER_SOURCE: u32 = 2 * MAX_HITS_PER_SOURCE;
 /// Per-source deadline for the one proxy call `directory.query-source`
 /// makes. Derived from the guest dispatch epoch, not chosen: the dispatch
 /// traps after `dispatch_epoch_timeout_secs` of wall clock -- 5s by
-/// default -- and that budget is spent while waiting on the call.
+/// default -- and that budget is spent while waiting on the call. The
+/// `DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS < epoch` relationship
+/// is asserted host-side (see `MAX_CLIENT_CONCURRENCY`), against the real
+/// `AppSandboxRole` default rather than a literal copied here.
 pub const DEFAULT_SOURCE_TIMEOUT_MS: u32 = 2_000;
-/// Headroom the assertion reserves for verifying a full page of envelopes
-/// and writing the run rows.
+/// Headroom the host-side assertion reserves for verifying a full page of
+/// envelopes and writing the run rows.
 pub const DISPATCH_HEADROOM_MS: u32 = 1_500;
 /// A search run's rows are pruned once older than this. Runs are working
 /// state, not a cache.
@@ -340,25 +348,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn source_timeout_fits_inside_the_dispatch_epoch() {
-        // A guest dispatch traps after this many milliseconds of wall
-        // clock, whether the guest is running or suspended in a host
-        // call -- so the source timeout plus verification headroom must
-        // fit inside it, checked here at build time rather than
-        // discovered as an intermittent trap in production.
-        let epoch_ms = 5_000u32;
-        assert!(
-            DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS < epoch_ms,
-            "source timeout plus headroom must fit inside the dispatch epoch"
-        );
-    }
-
-    #[test]
-    fn client_concurrency_stays_below_guest_http_admission() {
-        // Leaving at least one admission permit spare keeps the rest of
-        // the Hub responsive while a search's fan-out is in flight.
-        let max_concurrent_guest_http_per_service = 4usize;
-        assert!(MAX_CLIENT_CONCURRENCY < max_concurrent_guest_http_per_service);
-    }
+    // `DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS < dispatch epoch`
+    // and `MAX_CLIENT_CONCURRENCY < max_concurrent_guest_http_per_service`
+    // are asserted in `roym_web/tests/dual_build_parity.rs`, which links
+    // the real `AppSandboxRole` defaults. A copy of those literals here
+    // would pass even after the node default moved.
 }

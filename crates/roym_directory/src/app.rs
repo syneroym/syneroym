@@ -91,6 +91,14 @@ fn idx(field: &str, ty: IndexType) -> IndexDefinition {
     IndexDefinition { field_name: field.to_string(), type_: ty }
 }
 
+/// `search_runs` rows are per-run working state. `run_id` is the filter
+/// `merge` and `run-envelope` narrow on; `at_secs` is the field
+/// `start-run` prunes by. Both halves of the service that touch this
+/// collection create it with the same indexes.
+fn search_runs_indexes() -> [IndexDefinition; 2] {
+    [idx("run_id", IndexType::String), idx("at_secs", IndexType::Numeric)]
+}
+
 /// Every row of `collection`, oldest write order, paging until the
 /// data-layer's own cursor answers `None`.
 async fn collect_raw<H: AppHost>(
@@ -104,6 +112,41 @@ async fn collect_raw<H: AppHost>(
             host,
             collection.to_string(),
             QueryOptions { filter: None, limit: Some(500), cursor: cursor.clone() },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        for r in page.records {
+            if let Ok(parsed) = serde_json::from_slice::<Value>(&r.payload) {
+                out.push((r.id, parsed));
+            }
+        }
+        if page.next_cursor.is_none() || page.next_cursor == cursor {
+            break;
+        }
+        cursor = page.next_cursor;
+    }
+    Ok(out)
+}
+
+/// Every row of `collection` whose stored JSON matches `filter`, paging
+/// the data-layer cursor. The filter runs at the host, so a large
+/// collection is never materialized whole in guest memory.
+async fn collect_raw_where<H: AppHost>(
+    host: &H,
+    collection: &str,
+    filter: &Value,
+) -> Result<Vec<(String, Value)>, String> {
+    let mut out = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = AppDataLayer::query(
+            host,
+            collection.to_string(),
+            QueryOptions {
+                filter: Some(filter.to_string()),
+                limit: Some(500),
+                cursor: cursor.clone(),
+            },
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -340,6 +383,13 @@ struct SearchIndexRow {
     received_at_secs: u64,
     categories: String,
     text: String,
+    /// Case-folded, trimmed label of this row's named service area, if it
+    /// has one. Lets a named-area query push a label equality down into
+    /// the host filter, the way a geometric query pushes its bounding
+    /// box -- without it the sieve keeps the alphabetically-first rows and
+    /// a late-hashing label can be truncated away to zero hits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    area_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     open_to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -477,6 +527,7 @@ fn build_index_rows(
             received_at_secs,
             categories,
             text,
+            area_label: None,
             open_to,
             booking_mode,
             min_lat_e6: None,
@@ -491,6 +542,10 @@ fn build_index_rows(
         .enumerate()
         .map(|(i, a)| {
             let bbox = area::bounding_box(&a);
+            let area_label = match &a {
+                Area::Named { label, .. } => Some(area::normalize_label(label)),
+                _ => None,
+            };
             SearchIndexRow {
                 listing_id: payload.listing_id.clone(),
                 record_id: record_id.to_string(),
@@ -501,6 +556,7 @@ fn build_index_rows(
                 received_at_secs,
                 categories: categories.clone(),
                 text: text.clone(),
+                area_label,
                 open_to: open_to.clone(),
                 booking_mode: booking_mode.clone(),
                 min_lat_e6: bbox.map(|b| b.min_lat_e6),
@@ -716,21 +772,11 @@ async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Respons
         return Response::internal_error(e.to_string());
     }
 
-    // Replace the prior version: index rows deleted first, so a republish
-    // with fewer areas never leaves an orphaned row behind.
-    if let Err(e) = delete_search_index_for(host, &payload.listing_id).await {
-        return Response::internal_error(e);
-    }
-    if let Err(e) = AppDataLayer::delete_many(
-        host,
-        PUBLICATIONS.to_string(),
-        json!({ "listing_id": payload.listing_id }).to_string(),
-    )
-    .await
-    {
-        return Response::internal_error(e.to_string());
-    }
-
+    // Replace the prior version, new row written before the old is
+    // deleted: a crash between the two steps then leaves both the old and
+    // the new publication briefly present (a later publish or `reindex`
+    // reconciles), never neither -- losing the row outright would also
+    // have spent one of the provider's daily publications on nothing.
     let pub_row = PublicationRow {
         envelope: envelope.clone(),
         record_id: record_id.clone(),
@@ -743,7 +789,25 @@ async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Respons
     if let Err(e) = put_json(host, PUBLICATIONS, &record_id, &pub_row).await {
         return Response::internal_error(e);
     }
+    if let Err(e) = AppDataLayer::delete_many(
+        host,
+        PUBLICATIONS.to_string(),
+        json!({ "$and": [
+            { "listing_id": payload.listing_id },
+            { "record_id": { "$ne": record_id } },
+        ] })
+        .to_string(),
+    )
+    .await
+    {
+        return Response::internal_error(e.to_string());
+    }
 
+    // Index rows deleted before the rebuild, so a republish with fewer
+    // areas never leaves an orphaned row behind.
+    if let Err(e) = delete_search_index_for(host, &payload.listing_id).await {
+        return Response::internal_error(e);
+    }
     for row in build_index_rows(&payload, &record_id, &issuer, issued_at_secs, now) {
         let key = search_index_key(&row.listing_id, row.area_index);
         if let Err(e) = put_json(host, SEARCH_INDEX, &key, &row).await {
@@ -868,6 +932,23 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
             MAX_QUERY_TEXT_LEN
         ));
     }
+    // The text index is ASCII-folded (see `normalize_text`). A query in a
+    // script that folds to nothing -- Kannada, Devanagari, CJK -- must be
+    // refused, not quietly dropped: dropping the clause returns every
+    // active listing, the opposite of what the person asked for. Widening
+    // the index alphabet is a projection change, tracked in the backlog.
+    let normalized_text = query.text.as_deref().map(normalize_text);
+    if let (Some(raw), Some(norm)) = (query.text.as_deref(), normalized_text.as_deref())
+        && !raw.trim().is_empty()
+        && norm.is_empty()
+    {
+        return Response::err(
+            -32602,
+            "the directory's text index holds only ASCII letters, digits, spaces and hyphens; \
+             this query has no searchable characters"
+                .to_string(),
+        );
+    }
     if let Err(e) = ensure_coll(host, SEARCH_INDEX, &[]).await {
         return Response::internal_error(e);
     }
@@ -880,11 +961,8 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
         let normalized = normalize_category(cat);
         and_clauses.push(json!({ "categories": { "$regex": category_tokens(&[normalized]) } }));
     }
-    if let Some(text) = &query.text {
-        let normalized = normalize_text(text);
-        if !normalized.is_empty() {
-            and_clauses.push(json!({ "text": { "$regex": normalized } }));
-        }
+    if let Some(normalized) = normalized_text.as_deref().filter(|n| !n.is_empty()) {
+        and_clauses.push(json!({ "text": { "$regex": normalized } }));
     }
     if let Some(open_to) = &query.open_to {
         and_clauses.push(json!({ "open_to": open_to.to_lowercase() }));
@@ -902,10 +980,21 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
         and_clauses.push(json!({ "min_lon_e6": { "$lte": bbox.max_lon_e6 } }));
         and_clauses.push(json!({ "max_lon_e6": { "$gte": bbox.min_lon_e6 } }));
     }
+    // A named-area query narrows the sieve by label, the way a geometric
+    // one narrows it by bounding box -- so a directory with more matching
+    // listings than the candidate ceiling cannot truncate the wanted
+    // label away in hash order.
+    if let Some(Area::Named { label, .. }) = &query.area {
+        and_clauses.push(json!({ "area_label": area::normalize_label(label) }));
+    }
     let filter = json!({ "$and": and_clauses });
 
+    // The ceiling counts *distinct listings*, not index rows: one listing
+    // holds up to `MAX_AREAS` rows, so a row count would let a page of
+    // multi-area listings starve the limit.
     let ceiling = (MAX_HITS_PER_QUERY as usize) * 4;
     let mut candidates: Vec<SearchIndexRow> = Vec::new();
+    let mut distinct_listings: BTreeSet<String> = BTreeSet::new();
     let mut truncated = false;
     let mut cursor = None;
     loop {
@@ -925,10 +1014,11 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
         };
         for r in page.records {
             if let Ok(row) = serde_json::from_slice::<SearchIndexRow>(&r.payload) {
+                distinct_listings.insert(row.listing_id.clone());
                 candidates.push(row);
             }
         }
-        if candidates.len() >= ceiling {
+        if distinct_listings.len() >= ceiling {
             truncated = true;
             break;
         }
@@ -1386,11 +1476,28 @@ async fn start_run<H: AppHost>(host: &H) -> Response {
     if let Err(e) = ensure_coll(host, SOURCES, &[]).await {
         return Response::internal_error(e);
     }
+    if let Err(e) = ensure_coll(host, SEARCH_RUNS, &search_runs_indexes()).await {
+        return Response::internal_error(e);
+    }
     let now = clock::now_secs();
+    let run_floor = now.saturating_sub(RUN_RETENTION_SECS);
     if let Err(e) = AppDataLayer::delete_many(
         host,
         RUNS.to_string(),
-        json!({ "at_secs": { "$lte": now.saturating_sub(RUN_RETENTION_SECS) } }).to_string(),
+        json!({ "at_secs": { "$lte": run_floor } }).to_string(),
+    )
+    .await
+    {
+        return Response::internal_error(e.to_string());
+    }
+    // The per-hit rows carry a full signed envelope each. Prune them on
+    // the same schedule as the run rows above -- nothing else ever
+    // deletes from this collection, and a person who searches every day
+    // would otherwise grow it without bound.
+    if let Err(e) = AppDataLayer::delete_many(
+        host,
+        SEARCH_RUNS.to_string(),
+        json!({ "at_secs": { "$lte": run_floor } }).to_string(),
     )
     .await
     {
@@ -1418,6 +1525,11 @@ async fn start_run<H: AppHost>(host: &H) -> Response {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SearchRunRow {
+    /// The run this row belongs to, its own top-level field so `merge`
+    /// and `run-envelope` filter at the host instead of scanning every
+    /// run ever stored. The record key still carries it too, for a
+    /// stable per-row id.
+    run_id: String,
     listing_id: String,
     record_id: String,
     source: String,
@@ -1435,9 +1547,10 @@ struct SearchRunRow {
     issued_at_secs: u64,
     received_at_secs: u64,
     at_secs: u64,
-    /// Present only for a verified row that has not yet been fetched by
-    /// `run-envelope` -- blanked (empty string) once `merge` reads the
-    /// row, so a merge never carries the envelope through by accident.
+    /// The provider's signed bytes, kept on a verified row so a later
+    /// `run-envelope` call can hand them back. `merge` builds projections
+    /// and never reads this field, so an envelope never travels through a
+    /// merge result.
     envelope: String,
     refused: bool,
 }
@@ -1494,7 +1607,7 @@ async fn query_source<H: AppHost>(host: &H, req: &Request) -> Response {
         )
         .await;
 
-    if let Err(e) = ensure_coll(host, SEARCH_RUNS, &[]).await {
+    if let Err(e) = ensure_coll(host, SEARCH_RUNS, &search_runs_indexes()).await {
         return Response::internal_error(e);
     }
 
@@ -1504,7 +1617,7 @@ async fn query_source<H: AppHost>(host: &H, req: &Request) -> Response {
             let source_error = map_proxy_error(&e);
             record_source_error(host, &source, &source_error).await;
             return Response::ok(
-                json!({ "source": source, "verified": 0, "refused": 0, "error": source_error }),
+                json!({ "source": source, "verified": 0, "refused": 0, "truncated": false, "error": source_error }),
             );
         }
     };
@@ -1514,7 +1627,7 @@ async fn query_source<H: AppHost>(host: &H, req: &Request) -> Response {
             let source_error = SourceError::Unreadable { reason: e.to_string() };
             record_source_error(host, &source, &source_error).await;
             return Response::ok(
-                json!({ "source": source, "verified": 0, "refused": 0, "error": source_error }),
+                json!({ "source": source, "verified": 0, "refused": 0, "truncated": false, "error": source_error }),
             );
         }
     };
@@ -1525,20 +1638,27 @@ async fn query_source<H: AppHost>(host: &H, req: &Request) -> Response {
         };
         record_source_error(host, &source, &source_error).await;
         return Response::ok(
-            json!({ "source": source, "verified": 0, "refused": 0, "error": source_error }),
+            json!({ "source": source, "verified": 0, "refused": 0, "truncated": false, "error": source_error }),
         );
     };
-    let mut hits: Vec<SearchHit> =
-        match serde_json::from_value(result.get("hits").cloned().unwrap_or(json!([]))) {
-            Ok(h) => h,
-            Err(e) => {
-                let source_error = SourceError::Unreadable { reason: e.to_string() };
-                record_source_error(host, &source, &source_error).await;
-                return Response::ok(
-                    json!({ "source": source, "verified": 0, "refused": 0, "error": source_error }),
-                );
-            }
-        };
+    // The directory's own statement that it had more matches for this
+    // query than it would return -- distinct from `merge`'s own page cap.
+    // A source that returns zero rows can still set this, so it rides the
+    // per-source reply rather than the run rows (a zero-row source writes
+    // none).
+    let source_truncated = result.get("truncated").and_then(Value::as_bool).unwrap_or(false);
+    let mut hits: Vec<SearchHit> = match serde_json::from_value(
+        result.get("hits").cloned().unwrap_or(json!([])),
+    ) {
+        Ok(h) => h,
+        Err(e) => {
+            let source_error = SourceError::Unreadable { reason: e.to_string() };
+            record_source_error(host, &source, &source_error).await;
+            return Response::ok(
+                json!({ "source": source, "verified": 0, "refused": 0, "truncated": false, "error": source_error }),
+            );
+        }
+    };
     // Bound *before* verifying: a source answering with far more than it
     // could ever have stored must not get every one of them materialized
     // and signature-checked in guest memory. This dispatch has a hard
@@ -1557,6 +1677,7 @@ async fn query_source<H: AppHost>(host: &H, req: &Request) -> Response {
             }
             let Some(payload) = verdict.payload else { continue };
             let row = SearchRunRow {
+                run_id: run_id.clone(),
                 listing_id: verdict.listing_id.unwrap_or_default(),
                 record_id: verdict.record_id.unwrap_or_default(),
                 source: source.clone(),
@@ -1593,6 +1714,7 @@ async fn query_source<H: AppHost>(host: &H, req: &Request) -> Response {
                 continue;
             }
             let row = SearchRunRow {
+                run_id: run_id.clone(),
                 listing_id: hit.listing_id.clone(),
                 record_id: hit.record_id.clone(),
                 source: source.clone(),
@@ -1635,9 +1757,13 @@ async fn query_source<H: AppHost>(host: &H, req: &Request) -> Response {
     .await
     .ok();
 
-    Response::ok(
-        json!({ "source": source, "verified": verified_count, "refused": refused_count, "error": Value::Null }),
-    )
+    Response::ok(json!({
+        "source": source,
+        "verified": verified_count,
+        "refused": refused_count,
+        "truncated": source_truncated,
+        "error": Value::Null,
+    }))
 }
 
 fn map_proxy_error(e: &ProxyError) -> SourceError {
@@ -1670,23 +1796,20 @@ async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
         Some(r) => r.to_string(),
         None => return Response::invalid_params("run_id is required"),
     };
-    if let Err(e) = ensure_coll(host, SEARCH_RUNS, &[]).await {
+    if let Err(e) = ensure_coll(host, SEARCH_RUNS, &search_runs_indexes()).await {
         return Response::internal_error(e);
     }
-    // `search_runs` keys are `<run_id>#<record_id>` (verified) or
-    // `<run_id>#refused#<record_id>` (refused); no host-side filter can
-    // match a key prefix, so this scans and filters here.
-    let rows = match collect_raw(host, SEARCH_RUNS).await {
+    // Rows carry `run_id` as a top-level field (the key is
+    // `<run_id>#<source>#<record_id>`, or `<run_id>#refused#<source>#
+    // <record_id>`, and no host filter can match a key prefix). Filter on
+    // the field, so this reads one run's rows, not every run ever stored.
+    let rows = match collect_raw_where(host, SEARCH_RUNS, &json!({ "run_id": run_id })).await {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
-    let prefix = format!("{run_id}#");
     let mut verified_rows: Vec<SearchRunRow> = Vec::new();
     let mut refused_rows: Vec<SearchRunRow> = Vec::new();
-    for (id, v) in rows {
-        if !id.starts_with(&prefix) {
-            continue;
-        }
+    for (_id, v) in rows {
         let Ok(row) = serde_json::from_value::<SearchRunRow>(v) else { continue };
         if row.refused {
             refused_rows.push(row);
@@ -1729,17 +1852,18 @@ async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
 
     // Round-robin across sources, visited in DID order, to decide *which*
     // listings make the merged page and to enforce the per-source share
-    // and the total cap. `seen` is the resulting set, nothing more -- the
-    // value each selected listing carries is computed afterward, in one
-    // pass over every source's row for it, so which source's turn
-    // happened to select it first cannot change the result. (The
-    // previous version rebuilt each hit's `sources` list while mutating
-    // the "kept" row in the same loop, which let a source already
-    // recorded be recorded a second time once `kept` moved to a
-    // different source mid-loop.)
+    // and the total cap. `order` is the merged page order the round-robin
+    // produces -- recency within a source, interleaved across sources;
+    // `seen` is only the membership check. Iterating `seen` (a
+    // `BTreeSet`) instead would re-sort the page by `listing_id`, a
+    // content hash a forger picks, discarding the round-robin entirely.
+    // The value each selected listing carries is still computed
+    // afterward, in one pass over every source's row for it, so which
+    // source's turn selected it first cannot change the result.
     let mut positions: BTreeMap<String, usize> =
         by_source.keys().map(|k| (k.clone(), 0usize)).collect();
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut order: Vec<String> = Vec::new();
     let mut merge_truncated = false;
     'outer: loop {
         let mut advanced = false;
@@ -1758,7 +1882,8 @@ async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
                 merge_truncated = true;
                 break 'outer;
             }
-            seen.insert(listing_id);
+            seen.insert(listing_id.clone());
+            order.push(listing_id);
         }
         if !advanced {
             break;
@@ -1778,7 +1903,7 @@ async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
     }
 
     let now = clock::now_secs();
-    let hits: Vec<Value> = seen
+    let hits: Vec<Value> = order
         .into_iter()
         .filter_map(|listing_id| {
             // Keep the row with the greatest `issued_at_secs`, ties by
@@ -1833,6 +1958,7 @@ async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
     let mut refused_positions: BTreeMap<String, usize> =
         refused_by_source.keys().map(|k| (k.clone(), 0usize)).collect();
     let mut refused_seen: BTreeSet<String> = BTreeSet::new();
+    let mut refused_order: Vec<String> = Vec::new();
     let mut refused_truncated = false;
     'refused_outer: loop {
         let mut advanced = false;
@@ -1851,7 +1977,8 @@ async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
                 refused_truncated = true;
                 break 'refused_outer;
             }
-            refused_seen.insert(listing_id);
+            refused_seen.insert(listing_id.clone());
+            refused_order.push(listing_id);
         }
         if !advanced {
             break;
@@ -1866,7 +1993,7 @@ async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
             }
         }
     }
-    let refused: Vec<Value> = refused_seen
+    let refused: Vec<Value> = refused_order
         .into_iter()
         .filter_map(|listing_id| {
             let rows = refused_candidates.remove(&listing_id)?;
@@ -1896,28 +2023,21 @@ async fn run_envelope<H: AppHost>(host: &H, req: &Request) -> Response {
         Some(r) => r,
         None => return Response::invalid_params("record_id is required"),
     };
-    if let Err(e) = ensure_coll(host, SEARCH_RUNS, &[]).await {
+    if let Err(e) = ensure_coll(host, SEARCH_RUNS, &search_runs_indexes()).await {
         return Response::internal_error(e);
     }
-    // The key carries `source` too (so two directories serving the same
-    // record don't collide), which this lookup does not know -- any
-    // surviving *verified* row for `record_id` carries the identical
-    // signed bytes, since `record_id` is content-derived from the
-    // envelope. That derivation only holds once verified: a refused row's
-    // `record_id` is whatever the source claimed, unverified, so a
-    // hostile source could set one to collide with a genuine record and
-    // must be excluded here rather than relied on to sort last. A scan of
-    // this one run's rows, bounded by `MAX_SOURCES`, not the whole
-    // collection.
-    let rows = match collect_raw(host, SEARCH_RUNS).await {
+    // Filtered on the `run_id` field at the host -- one run's rows, not
+    // the whole collection. Only a *verified* row is accepted: its
+    // `record_id` is content-derived from the envelope, so any surviving
+    // verified row for `record_id` carries the identical signed bytes. A
+    // refused row's `record_id` is whatever the source claimed,
+    // unverified, so a hostile source could set one to collide with a
+    // genuine record -- excluded here rather than trusted to sort last.
+    let rows = match collect_raw_where(host, SEARCH_RUNS, &json!({ "run_id": run_id })).await {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
-    let prefix = format!("{run_id}#");
-    for (id, v) in rows {
-        if !id.starts_with(&prefix) {
-            continue;
-        }
+    for (_id, v) in rows {
         if let Ok(row) = serde_json::from_value::<SearchRunRow>(v)
             && !row.refused
             && row.record_id == record_id

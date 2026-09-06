@@ -122,9 +122,15 @@ const M_PER_LAT_DEG: f64 = 110_000.0;
 /// service that publishes an area and the service that indexes it cannot
 /// disagree about what it covers.
 ///
-/// A `Circle` is projected to a box that **over**-covers, never
-/// under-covers: an index built on it can return a false positive a later
-/// exact check drops, and can never miss a match.
+/// A `Circle` is projected to a box that **over**-covers within one
+/// hemisphere of longitude: an index built on it can return a false
+/// positive a later exact check drops. The one case it can miss is a
+/// circle whose longitude span crosses the antimeridian (about +/-180
+/// deg): the span is clamped to `LON_E6_MIN`/`LON_E6_MAX` here rather than
+/// wrapped, so a listing just across the date line is not a candidate.
+/// `approx_distance_m` shares the same non-wrapping model, so the sieve
+/// and the exact check at least agree. Real antimeridian support is
+/// tracked in the deferred backlog.
 #[must_use]
 pub fn bounding_box(area: &Area) -> Option<BoundingBox> {
     match area {
@@ -248,13 +254,21 @@ pub fn areas_intersect(a: &Area, b: &Area) -> Option<bool> {
     }
 }
 
+/// The one spelling of a named-area label the index stores and a query
+/// filters on: trimmed and case-folded. One function, so the write side
+/// and the query side cannot drift.
+#[must_use]
+pub fn normalize_label(label: &str) -> String {
+    label.trim().to_lowercase()
+}
+
 /// Case-folded, trimmed label equality. `false` for any pairing that is not
 /// two `Named` areas.
 #[must_use]
 pub fn labels_match(a: &Area, b: &Area) -> bool {
     match (a, b) {
         (Area::Named { label: la, .. }, Area::Named { label: lb, .. }) => {
-            la.trim().to_lowercase() == lb.trim().to_lowercase()
+            normalize_label(la) == normalize_label(lb)
         }
         _ => false,
     }
