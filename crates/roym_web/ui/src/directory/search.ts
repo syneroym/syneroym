@@ -130,6 +130,11 @@ export interface SearchProgress {
   answered: number;
   total: number;
   runId: string;
+  /// `"fanout"` while the run is still answering sources; `"retry"` for
+  /// the second attempt at a source this node was too busy to start. In
+  /// the retry phase `answered` is already `total` (every source
+  /// answered once), so the view should not render it as a live count.
+  phase: "fanout" | "retry";
 }
 
 export interface RunSearchOptions {
@@ -162,7 +167,12 @@ export async function runSearch(
       const outcome = await queryOneSource(run.runId, source, query);
       outcomes.push(outcome);
       answered += 1;
-      await onSource?.(outcome, { answered, total: run.sources.length, runId: run.runId });
+      await onSource?.(outcome, {
+        answered,
+        total: run.sources.length,
+        runId: run.runId,
+        phase: "fanout",
+      });
     }
   }
 
@@ -180,7 +190,12 @@ export async function runSearch(
     const again = await queryOneSource(run.runId, source, query);
     const idx = outcomes.findIndex((o) => o.source === source);
     if (idx >= 0) outcomes[idx] = again;
-    await onSource?.(again, { answered, total: run.sources.length, runId: run.runId });
+    await onSource?.(again, {
+      answered,
+      total: run.sources.length,
+      runId: run.runId,
+      phase: "retry",
+    });
   }
 
   const merged = await call<MergeResult>("directory.merge", { run_id: run.runId });

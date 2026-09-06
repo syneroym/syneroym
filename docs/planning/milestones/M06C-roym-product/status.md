@@ -1654,3 +1654,37 @@ rather than stripping one of three inconsistently.
   pre-built `wasm32-wasip2` artifacts, so a stale build would compare a
   fixed WASM side against a freshly-built native side.
 
+### N1–N7 — regressions the fix pass opened, now closed
+
+A verification read of `0487c42..f347e42` found seven issues the fixes
+themselves introduced. All addressed:
+
+- **N1** (retention prune landed on the anonymous-reachable
+  `directory.info`, two unindexed delete scans per call — the exact
+  lever the prune's own comment says to keep off `search`). Fixed
+  properly: the prune is now rate-gated by a `prune_marker` row in the
+  `settings` collection (`PRUNE_MIN_INTERVAL_SECS`, 5 min), so it is
+  cheap on every read path — and now runs on `directory.search` too,
+  which closes R07's remaining corner (a directory nobody probes with
+  `info` still ages its rows out). `publish` prunes unconditionally as
+  before, through the shared `prune_expired_publications_now`.
+- **N2** — `roymctl` read the merged `credential` field again and maps
+  it (`unknown` → "not checked", other values pass through), instead of
+  a hardcoded string that would have swallowed a real C9 verdict.
+- **N3** — `session::rpc_call` now returns a typed `RpcHttpError`
+  carrying the HTTP status; `roymctl` branches on `http.status == 503`
+  rather than substring-matching the Display text, and keeps the
+  underlying error on the `Failed` arm.
+- **N4** — scenario 119 rewritten: 3+2 split, asserts the exact
+  round-robin source sequence *and* that the page is not sorted by
+  `listing_id` (a `BTreeSet` iteration is always sorted, so that half
+  fails 100% against the regression).
+- **N5** — the `ALL_DIRECTORY_VERBS` comment no longer claims a
+  compile-time guarantee; scenario 118 now also asserts each listed verb
+  dispatches locally (catches a typo or a removed verb).
+- **N6** — the developer guide's per-source-error sentence now describes
+  the actual order (notes first, refused evidence after the results).
+- **N7** — the Hub's fan-out passes a `phase` on `SearchProgress`; the
+  retry phase shows "Retrying directories this installation was too busy
+  to start…" instead of repeating a stale count.
+

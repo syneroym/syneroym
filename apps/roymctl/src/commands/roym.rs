@@ -495,13 +495,15 @@ impl SourceOutcome {
         let result = match reply {
             Ok(v) => v,
             Err(e) => {
-                let s = e.to_string();
-                if s.contains("(503") {
+                // A 503 is this node's own guest-HTTP admission refusing
+                // to start the call -- matched on the typed status, not
+                // the error's Display text.
+                if let Some(http) = e.downcast_ref::<super::session::RpcHttpError>()
+                    && http.status == 503
+                {
                     return SourceOutcome::NotStarted;
                 }
-                return SourceOutcome::Failed {
-                    words: "the directory could not be reached".into(),
-                };
+                return SourceOutcome::Failed { words: format!("could not be reached: {e}") };
             }
         };
         let truncated = result.get("truncated").and_then(Value::as_bool).unwrap_or(false);
@@ -527,6 +529,17 @@ impl SourceOutcome {
             }
             SourceOutcome::Failed { words } => Some(words.clone()),
         }
+    }
+}
+
+/// Words for a merged hit's `credential` (membership) verdict. `unknown`
+/// -- its only value until a membership-credential source lands -- reads
+/// as "not checked"; other values pass through so a real verdict is not
+/// hidden behind a constant.
+fn membership_words(credential: &str) -> String {
+    match credential {
+        "unknown" => "not checked".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -674,10 +687,16 @@ async fn find(
         let issuer = hit.get("issuer").and_then(|v| v.as_str()).unwrap_or("?");
         let age = hit.get("age_secs").and_then(|v| v.as_u64()).unwrap_or(0);
         let revocation = hit.get("revocation_status").and_then(|v| v.as_str()).unwrap_or("unknown");
+        // `credential` is the membership verdict `merge` carries. "unknown"
+        // (its only value in R1) renders as "not checked"; a later slice
+        // adds real values without changing the field, and each gets its
+        // own word here rather than a hardcoded string swallowing it.
+        let membership =
+            membership_words(hit.get("credential").and_then(|v| v.as_str()).unwrap_or("unknown"));
         let sources_val = hit.get("sources").cloned().unwrap_or_default();
         println!(
             "- {listing_id} \"{title}\" by {issuer}, age {age}s, revocation: {revocation}, \
-             membership: not checked, sources: {sources_val}"
+             membership: {membership}, sources: {sources_val}"
         );
     }
 

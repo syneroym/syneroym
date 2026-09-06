@@ -292,9 +292,9 @@ async fn info<H: AppHost>(host: &H) -> Response {
         // address a friend gave them.
         return Response::ok(Value::Null);
     };
-    if let Err(e) = prune_expired_publications(host, settings.retention_secs).await {
-        return Response::internal_error(e);
-    }
+    // Best-effort: a retention prune that fails must not fail the probe a
+    // stranger makes while deciding whether to trust this group.
+    let _ = prune_expired_publications(host, settings.retention_secs).await;
     let count = match member_count(host).await {
         Ok(c) => c,
         Err(e) => return Response::internal_error(e),
@@ -744,7 +744,8 @@ async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Respons
 
     // Prune the limiter ledger and, per the SynOrg's own retention policy,
     // publications and their index rows past their retention window --
-    // in the one pass that already touches this data.
+    // in the one pass that already touches this data. Unconditional here
+    // (owner-gated, already writing), unlike the rate-gated read paths.
     let log_floor = now.saturating_sub(limits.window_secs);
     if let Err(e) = AppDataLayer::delete_many(
         host,
@@ -755,24 +756,8 @@ async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Respons
     {
         return Response::internal_error(e.to_string());
     }
-    let retention_floor = now.saturating_sub(settings.retention_secs);
-    if let Err(e) = AppDataLayer::delete_many(
-        host,
-        PUBLICATIONS.to_string(),
-        json!({ "received_at_secs": { "$lte": retention_floor } }).to_string(),
-    )
-    .await
-    {
-        return Response::internal_error(e.to_string());
-    }
-    if let Err(e) = AppDataLayer::delete_many(
-        host,
-        SEARCH_INDEX.to_string(),
-        json!({ "received_at_secs": { "$lte": retention_floor } }).to_string(),
-    )
-    .await
-    {
-        return Response::internal_error(e.to_string());
+    if let Err(e) = prune_expired_publications_now(host, settings.retention_secs, now).await {
+        return Response::internal_error(e);
     }
 
     // Replace the prior version, new row written before the old is
@@ -821,21 +806,47 @@ async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Respons
     Response::ok(json!({ "listing_id": payload.listing_id, "record_id": record_id }))
 }
 
+const PRUNE_MARKER_KEY: &str = "prune_marker";
+/// The retention prune runs at most this often. A read verb that finds
+/// the stored marker fresher than this skips the prune entirely, so an
+/// anonymous caller looping `directory.info` or `directory.search`
+/// cannot turn every call into a pair of unindexed delete scans.
+const PRUNE_MIN_INTERVAL_SECS: u64 = 300;
+
 /// Deletes publications and their index rows past the SynOrg's stated
-/// retention window. The publish path already prunes as it writes; this
-/// runs the same prune on `directory.info` and `directory.publications`
-/// so a directory that has stopped receiving publishes still ages its
-/// rows out, instead of serving a listing older than the retention
-/// policy it advertises. Not run on `directory.search`: that path is
-/// anonymous-reachable and hot, and turning every stranger's search into
-/// a batch of deletes is a denial-of-service lever; a directory quiet
-/// enough that nobody calls `info` or `publications` either is a corner
-/// the plan accepts.
+/// retention window -- but at most once per `PRUNE_MIN_INTERVAL_SECS`,
+/// gated by a stored `settings` marker, so it is cheap to call on every
+/// read path (`info`, `publications`, `search`) including the
+/// anonymous-reachable ones and a quiet directory still ages its rows
+/// out. `publish` prunes unconditionally instead: that path is
+/// owner-gated and already writing.
 async fn prune_expired_publications<H: AppHost>(
     host: &H,
     retention_secs: u64,
 ) -> Result<(), String> {
-    let floor = clock::now_secs().saturating_sub(retention_secs);
+    let now = clock::now_secs();
+    ensure_coll(host, SETTINGS, &[]).await?;
+    let last_at = get_json::<H, Value>(host, SETTINGS, PRUNE_MARKER_KEY)
+        .await?
+        .as_ref()
+        .and_then(|v| v.get("at_secs"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if now.saturating_sub(last_at) < PRUNE_MIN_INTERVAL_SECS {
+        return Ok(());
+    }
+    prune_expired_publications_now(host, retention_secs, now).await?;
+    put_json(host, SETTINGS, PRUNE_MARKER_KEY, &json!({ "at_secs": now })).await
+}
+
+/// The prune itself, with no rate gate -- the publish path calls this
+/// directly in the pass that already touches these collections.
+async fn prune_expired_publications_now<H: AppHost>(
+    host: &H,
+    retention_secs: u64,
+    now: u64,
+) -> Result<(), String> {
+    let floor = now.saturating_sub(retention_secs);
     ensure_coll(host, PUBLICATIONS, &[]).await?;
     ensure_coll(host, SEARCH_INDEX, &[]).await?;
     AppDataLayer::delete_many(
@@ -897,10 +908,8 @@ async fn publications<H: AppHost>(host: &H) -> Response {
     if let Err(e) = ensure_coll(host, PUBLICATIONS, &[]).await {
         return Response::internal_error(e);
     }
-    if let Ok(Some(settings)) = load_settings(host).await
-        && let Err(e) = prune_expired_publications(host, settings.retention_secs).await
-    {
-        return Response::internal_error(e);
+    if let Ok(Some(settings)) = load_settings(host).await {
+        let _ = prune_expired_publications(host, settings.retention_secs).await;
     }
     match collect_raw(host, PUBLICATIONS).await {
         Ok(rows) => Response::ok(
@@ -996,6 +1005,13 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
     }
     if let Err(e) = ensure_coll(host, PUBLICATIONS, &[]).await {
         return Response::internal_error(e);
+    }
+    // Rate-gated by the stored marker (see `prune_expired_publications`),
+    // so an anonymous stranger looping this verb pays one indexed marker
+    // read, not a pair of delete scans, on all but one call per five
+    // minutes -- and a directory nobody probes with `info` still ages out.
+    if let Ok(Some(settings)) = load_settings(host).await {
+        let _ = prune_expired_publications(host, settings.retention_secs).await;
     }
 
     let mut and_clauses: Vec<Value> = vec![json!({ "status": "active" })];

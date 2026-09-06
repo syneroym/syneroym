@@ -1497,11 +1497,13 @@ roymctl --dir <DIR> --as owner roym directory find --category plumbing --near 12
 `find`'s output columns: the listing id and title, the issuer, the age
 computed on this node's own clock (never a directory's claim), and the
 two honestly-unknown verdicts — `revocation: unknown`, `membership: not
-checked` — since C6 checks no revocation or credential source. Refused
-evidence (a forged or unparseable listing a directory served) and any
-per-source errors print as their own blocks below the results, never
-mixed into them. A provider publishes their own listing to a directory
-they chose:
+checked` — since C6 checks no revocation or credential source. Any
+per-source problems (a directory that timed out, was refused, was not
+found, or that this node was too busy to call) print first, one line
+each, before the `N result(s):` header. Refused evidence (a forged or
+unparseable listing a directory served) prints in its own block after
+the results. Neither is ever mixed into the result list. A provider
+publishes their own listing to a directory they chose:
 
 ```bash
 roymctl --dir <DIR> --as owner roym directory publish <listing-id> --to did:key:z...

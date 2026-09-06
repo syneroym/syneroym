@@ -4251,10 +4251,13 @@ async fn scenario_109_no_wire_reachable_method_calls_a_sibling_parity() {
     );
 }
 
-/// Every arm of `directory`'s `invoke` dispatch. If someone adds a verb
-/// and forgets to decide its wire posture, this list stops compiling
-/// (the match below is not exhaustive over it by the compiler, but the
-/// scenario fails loudly on the new name).
+/// Every arm of `directory`'s `invoke` dispatch, maintained by hand:
+/// nothing links this list to the `match` in `app.rs` at compile time.
+/// Scenario 118 asserts each of these dispatches locally (a typo or a
+/// removed verb fails there) and has exactly the wire posture below -- a
+/// verb *added* to `app.rs` and not added here is simply untested, the
+/// risk this shape accepts. A real guarantee would need `invoke` to
+/// dispatch through a `const` table the test could import.
 const ALL_DIRECTORY_VERBS: &[&str] = &[
     "directory.ping",
     "directory.settings",
@@ -4292,6 +4295,17 @@ const WIRE_REACHABLE_DIRECTORY_VERBS: &[&str] =
 async fn scenario_118_exactly_three_directory_verbs_are_wire_reachable_parity() {
     let h = harness().await;
     for &method in ALL_DIRECTORY_VERBS {
+        // Every listed verb must be a real dispatch arm, not a stale or
+        // mistyped name: a local call must not answer method-not-found.
+        let (lw, ln) = h.local_invoke(services::DIRECTORY, &env(method, json!({}))).await;
+        for (label, v) in [("wasm", &lw), ("native", &ln)] {
+            assert_ne!(
+                v["error"]["code"].as_i64(),
+                Some(-32601),
+                "{label} {method} is in ALL_DIRECTORY_VERBS but the dispatch does not know it: {v}"
+            );
+        }
+
         let (w, n) = h.wire_invoke(services::DIRECTORY, &env(method, json!({}))).await;
         let reachable = WIRE_REACHABLE_DIRECTORY_VERBS.contains(&method);
         for (label, v) in [("wasm", &w), ("native", &n)] {
@@ -4723,37 +4737,53 @@ async fn scenario_102d_forged_sources_are_refused_round_robined_and_crowd_out_no
 }
 
 #[tokio::test]
-async fn scenario_119_merged_page_interleaves_sources_not_listing_id_order_parity() {
+async fn scenario_119_merged_page_is_round_robin_order_not_listing_id_order_parity() {
     let h = harness().await;
     ensure_synorg(&h).await;
     ensure_dir2_synorg(&h).await;
     enrol_signing(&h, "catalog").await;
 
-    // Two listings in each of two directories. `merge` picks membership by
-    // round-robin and must emit the page in that order -- interleaved
-    // across sources. Iterating the `seen` set instead (a `BTreeSet`)
-    // would re-sort the whole page by `listing_id`, a content hash, and
-    // adjacent hits would then run in blocks of one source.
+    // Three listings in one directory, two in the other. `merge` visits
+    // sources in DID order (`hForeignWire` < `hForeignWire2`), so
+    // round-robin produces exactly [W, W2, W, W2, W]. Iterating the
+    // `seen` set instead (a `BTreeSet`) would emit the page sorted by
+    // `listing_id` -- a content hash -- which cannot equal that sequence
+    // except by a 1-in-120 coincidence, and is never *un*sorted.
+    for i in 0..3 {
+        publish_listing_to_primary(&h, &format!("rr-p-{i}"), &format!("Primary {i}")).await;
+    }
     for i in 0..2 {
-        publish_listing_to_primary(&h, &format!("intl-p-{i}"), &format!("Primary {i}")).await;
-        publish_listing_to_dir2(&h, &format!("intl-d-{i}"), &format!("Dir2 {i}")).await;
+        publish_listing_to_dir2(&h, &format!("rr-d-{i}"), &format!("Dir2 {i}")).await;
     }
 
     let (_rw, _rn, mw, mn) = fan_out(&h, &["did:key:hForeignWire", "did:key:hForeignWire2"]).await;
     assert_eq!(stripped(&mw), stripped(&mn));
     let hits = mw["result"]["hits"].as_array().unwrap();
-    assert_eq!(hits.len(), 4, "all four listings make the page: {mw}");
+    assert_eq!(hits.len(), 5, "all five listings make the page: {mw}");
 
     let source_of = |hit: &Value| {
         hit["sources"].as_array().unwrap()[0]["directory"].as_str().unwrap().to_string()
     };
-    for pair in hits.windows(2) {
-        assert_ne!(
-            source_of(&pair[0]),
-            source_of(&pair[1]),
-            "adjacent hits must come from different sources (round-robin order): {mw}"
-        );
-    }
+    let sequence: Vec<String> = hits.iter().map(source_of).collect();
+    assert_eq!(
+        sequence,
+        vec![
+            "did:key:hForeignWire",
+            "did:key:hForeignWire2",
+            "did:key:hForeignWire",
+            "did:key:hForeignWire2",
+            "did:key:hForeignWire",
+        ],
+        "the page must be in round-robin source order: {mw}"
+    );
+
+    // The bulletproof half: a `BTreeSet` iteration is *always* sorted by
+    // listing_id, so this fails 100% of the time against that regression.
+    let ids: Vec<String> =
+        hits.iter().map(|h| h["listing_id"].as_str().unwrap().to_string()).collect();
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert_ne!(ids, sorted, "the merged page must not be sorted by listing_id: {mw}");
 }
 
 #[tokio::test]

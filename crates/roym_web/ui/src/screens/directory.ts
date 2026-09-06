@@ -255,7 +255,10 @@ function buildSearch(): HTMLElement {
 
     try {
       const { run, merged } = await runSearch(query, (outcome, prog) => {
-        progress.textContent = `${prog.answered} of ${prog.total} directories answered...`;
+        progress.textContent =
+          prog.phase === "retry"
+            ? "Retrying directories this installation was too busy to start..."
+            : `${prog.answered} of ${prog.total} directories answered...`;
         renderSourceOutcome(errorsHost, sourceLines, outcome);
         // Fire, do not await: the worker moves straight to the next
         // source while this catches up in the background.
