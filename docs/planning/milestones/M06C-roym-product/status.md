@@ -1300,17 +1300,87 @@ section above — no rounding up.
 4. `cargo deny check licenses`: **`licenses ok`.** `cargo audit`: **clean,
    0 vulnerabilities** (no dependency change — a test-only edit).
 
-### Items 2, 3, 4 — not started in this pass
+### Item 2 — the three-substrate e2e (plan §11.3) — **DONE**
 
-- **Item 2** (`crates/substrate/tests/roym_directory_e2e.rs`, plan §11.3):
-  not started. The three-substrate e2e does not exist. `Node` and its
-  helpers still live inside `roym_conversation_e2e.rs` (not a shared
-  module), so a new file needs that harness extracted or duplicated
-  first.
-- **Item 3** (Hub Directory/SynOrg tabs + 10 `roym-hub.spec.ts` cases,
-  plan §11.4 / §10): not started.
+`crates/substrate/tests/roym_directory_e2e.rs` — one test,
+`roym_directory_search_half_across_three_substrates`, over three genuinely
+independent substrates on one shared registry, plus a transient fourth
+node for the certificate-dependency sub-step.
+
+- The `Node` harness (`boot` / `deploy` / `teardown`, `mint_masters`,
+  `substitute_plan`, `certify_and_publish`, `SIGNING_SERVICES`,
+  `SUBSTRATE_TEST_LOCK`, the `PORTS_*` blocks) is **duplicated** from
+  `roym_conversation_e2e.rs`, not extracted — the plan and the repo both
+  allow this, and it keeps `roym_conversation_e2e.rs` byte-for-byte
+  untouched (its single-node test re-run green, 22 s). `SIGNING_SERVICES`
+  is unchanged (`profile`, `catalog`, `conversation`); `directory` signs
+  nothing. Fresh port block `14_4xx`–`14_7xx`.
+- **Deviation from the plan's harness note.** Only the first node runs the
+  `community_registry`; the others point at it. Three registry servers
+  plus three iroh relays in one process kept the first node's own registry
+  from binding inside its 30-attempt / 15 s registration window, and the
+  next heartbeat is `HEARTBEAT_INTERVAL_SECS` (1 hour) away, so the node
+  never became ready. One shared registry is also the more realistic
+  topology.
+- **Deviation: no substrate restart.** None of the 14 steps needs one, so
+  the `resume()` redeploy path is not exercised here (the plan's §15 note
+  is about not assuming a *bare* restart rehydrates routes — moot when
+  nothing restarts). Step 7b uses a fresh fourth node whose `directory`
+  service is deployed with **no instance certificate at all**
+  (`CertOverrides::skip_instance_cert`), which is `F6c`'s "absent"
+  half rather than "expired" — the outbound proxy attaches no delegation,
+  the call arrives anonymous, and `directory.publish` (VerifiedOnly)
+  answers `-32013`, byte-identical to "not yours to call".
+- Steps covered (numbering per §11.3's table): 1 (three nodes boot,
+  deploy, enrol), 2 (Z creates the SynOrg via `directory.set-settings`; X
+  reads it back with `directory.probe-info` over a real transport, no
+  roster), 3 (Y signs a listing, in no directory), 4 (X reaches Y by
+  direct link — `listing.verify` + `conversation.open` + one delivered
+  message — **before any publication exists**), 5 (`member.add`;
+  `directory.info`'s `member_count` reflects it), 6
+  (`directory.publish-to-source` Y→Z, over the wire, verified), 7 (X adds
+  Z, runs `start-run`→`query-source`→`merge`; asserts one hit,
+  `age_secs` on X's clock, `revocation_status`/`credential` both
+  `"unknown"`, `sources[0].directory == Z`, and `run-envelope` returns
+  bytes byte-identical to what Y signed), 7b (the certificate dependency,
+  above), 8 (X starts a conversation from the search result's own
+  `conversation_address`, no prior contact), 9 (an **anonymous raw
+  JSON-RPC wire frame** — a fresh `SyneroymClient` with a generated
+  identity, no delegation — reaches `directory.search` and succeeds, and
+  reaches `member.list` and gets `-32013`), 10 (Y publishes past a
+  lowered limit and is refused with a `retry_after_secs` visible to Y),
+  11 (`directory.unpublish`; X's next search drops it and X's
+  already-held copy still verifies), 12 (the no-directory regression: X
+  removes Z, step 4's whole path re-runs and passes, at the end after a
+  directory has existed), 13 (Y's own node becomes a second SynOrg
+  holding the older version; a search over both merges to one hit with
+  `versions_differ: true` and two `sources[]`), 13b (the loop at
+  `MAX_SOURCES` = 8, six unreachable, over real transports — the two live
+  directories still contribute, the six carry an error each, and no
+  source is blamed as `not-started` for this node's own admission
+  limit), 14 (`directory.export`/`import`/`reindex` on Z, then an
+  identical search).
+
+**Verification (item 2):**
+
+1. `cargo test -p syneroym-substrate --test roym_directory_e2e` (sandbox
+   off): **1 passed, 0 failed** (`finished in 67s`). Not skipped — the
+   Roym wasm/UI artifacts are present.
+2. `cargo test -p syneroym-substrate --test roym_conversation_e2e
+   a_message_that_never_reaches_its_peer_settles_failed_with_the_hosts_reason`:
+   **1 passed** — the duplicated-from file is unchanged and still green.
+3. `cargo clippy -p syneroym-substrate --test roym_directory_e2e
+   --all-features`: **clean.** `cargo +nightly fmt --all`: **clean.**
+4. Planning-identifier grep over the new file: **none** (`D-C6-*`,
+   `D-06C-*`, `F6c`, `\bR1 row`, `\bC[0-9]`, `Slice ` all scrubbed from
+   comments; §-references removed).
+
+### Items 3, 4 — status
+
+- **Item 3** (Hub Directory/SynOrg tabs + `roym-hub.spec.ts` cases 13–23,
+  plan §11.4 / §10): in progress — see below when it lands.
 - **Item 4** (WO5, `D-C6-17`): not started.
 
-The `deferred-backlog.md` §11 rows for items 2, 3, and 4 are unchanged;
-only item 1's row moved to "Recently resolved".
+The `deferred-backlog.md` §11 row for item 2 moved to "Recently
+resolved"; the rows for items 3 and 4 are unchanged.
 
