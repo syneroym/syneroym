@@ -759,6 +759,9 @@ async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Respons
     if let Err(e) = prune_expired_publications_now(host, settings.retention_secs, now).await {
         return Response::internal_error(e);
     }
+    // Record this prune so a read verb in the next few minutes skips its
+    // own -- the marker means "last time any path pruned", not "last read".
+    let _ = put_json(host, SETTINGS, PRUNE_MARKER_KEY, &json!({ "at_secs": now })).await;
 
     // Replace the prior version, new row written before the old is
     // deleted: a crash between the two steps then leaves both the old and
