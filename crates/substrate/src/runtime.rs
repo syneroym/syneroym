@@ -1341,8 +1341,12 @@ async fn init_dual_build_fixture(
     );
     factory.set_record_signer(shared.record_signer.clone());
     let f = factory.clone();
-    let fixture =
-        Arc::new(NativeFixture::new(service_id.clone(), move |caller| f.host_for(caller)));
+    let f_http = factory.clone();
+    let fixture = Arc::new(NativeFixture::new(
+        service_id.clone(),
+        move |caller| f.host_for(caller),
+        move |caller| f_http.host_for_wire(caller),
+    ));
     factory.set_sink(Arc::downgrade(&fixture) as Weak<dyn MessageSink>);
     factory.set_conversation_sink(
         Arc::downgrade(&fixture) as Weak<dyn syneroym_app_host_native::ConversationSink>
@@ -1562,9 +1566,14 @@ async fn init_roym(
         shared.websocket_senders.clone(),
     );
     let f_web = factory_web.clone();
+    let f_web_http = factory_web.clone();
     let web = Arc::new(syneroym_roym_web::native::NativeWeb::new(
         roym_dispatch_id(services::WEB.name),
         move |caller| f_web.host_for(caller),
+        // A guest HTTP / websocket request is router ingress, so the
+        // native shim builds a wire-origin host for it, matching the WASM
+        // engine's unconditional `from_wire` on every guest HTTP request.
+        move |caller| f_web_http.host_for_wire(caller),
     ));
     shared
         .native_dispatch

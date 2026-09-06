@@ -780,8 +780,12 @@ async fn build_native_stack(
         ws_senders.clone(),
     );
     let f = factory.clone();
-    let fixture =
-        Arc::new(NativeFixture::new(SERVICE_ID.to_string(), move |caller| f.host_for(caller)));
+    let f_http = factory.clone();
+    let fixture = Arc::new(NativeFixture::new(
+        SERVICE_ID.to_string(),
+        move |caller| f.host_for(caller),
+        move |caller| f_http.host_for_wire(caller),
+    ));
     factory.set_service_proxy(Arc::downgrade(stub_proxy) as Weak<dyn ServiceProxy>);
     let record_signer =
         NodeRecordSigner::with_clock(node_identity, endpoint_registry.clone(), clock);
@@ -1423,31 +1427,38 @@ async fn both_builds_answer_an_http_request_identically() {
     assert_eq!(wasm_resp.headers, native_resp.headers);
 }
 
-/// C5-1 regression guard: a guest HTTP request is router ingress, so the
-/// WASM build must report the request's real origin through
-/// `invocation.caller()`, never `internal`. With no caller the arm is
-/// `anonymous`; reverting `handle_guest_http_request`'s
-/// `InstanceOptions::from_wire()` to `default()` makes this `internal`.
+/// A guest HTTP request is router ingress, so `invocation.caller()` must
+/// report the request's real origin and never `internal` -- on **both**
+/// builds. The WASM engine sets `InstanceOptions::from_wire()`
+/// unconditionally for every guest HTTP request; the native shim's
+/// `HttpSink` / `WebSocketSink` are built from `host_for_wire`, matching
+/// it. Reverting either -- the engine's `from_wire()` to `default()`, or
+/// the shim's `http_host_for` back to `host_for` -- turns one of these
+/// answers into `internal` and fails this test.
 ///
-/// WASM-only: the native shim's `HttpSink` is still built from
-/// `host_for` (`runtime.rs`), so native guest HTTP reports `internal` --
-/// the mirror of this bug on the native side, tracked as its own backlog
-/// row (§14 permitted-difference, targeted C6). Not a parity assertion
-/// yet for that reason.
+/// No caller -> `anonymous`; a verified delegated caller -> `verified`.
 #[tokio::test]
-async fn a_guest_http_request_reports_a_wire_origin_on_the_wasm_build() {
+async fn a_guest_http_request_reports_the_same_wire_origin_on_both_builds() {
     let h = harness().await;
-    let resp = h.wasm_http.get("/origin", None).await;
-    assert_eq!(resp.status, 200);
+
+    let wasm_anon = h.wasm_http.get("/origin", None).await;
+    let native_anon = h.native_http.get("/origin", None).await;
+    assert_eq!(wasm_anon.status, 200);
+    assert_eq!(native_anon.status, 200);
     assert_eq!(
-        String::from_utf8_lossy(&resp.body),
+        String::from_utf8_lossy(&wasm_anon.body),
         "anonymous",
         "a guest HTTP call with no caller must observe `anonymous`, never `internal`"
     );
+    assert_eq!(
+        wasm_anon.body, native_anon.body,
+        "the native shim's HTTP sink must report the same origin as the WASM engine"
+    );
 
-    // A verified caller surfaces as `verified`, still not `internal`.
-    let verified = h.wasm_http.get("/origin", Some(caller())).await;
-    assert_eq!(String::from_utf8_lossy(&verified.body), "verified");
+    let wasm_verified = h.wasm_http.get("/origin", Some(caller())).await;
+    let native_verified = h.native_http.get("/origin", Some(caller())).await;
+    assert_eq!(String::from_utf8_lossy(&wasm_verified.body), "verified");
+    assert_eq!(wasm_verified.body, native_verified.body);
 }
 
 #[tokio::test]
@@ -2377,7 +2388,12 @@ async fn caller_origin_is_identical_on_both_builds() {
     // built with `host_for_wire`, the parity harness's only such caller.
     let wire_fixture = {
         let f = h.native_factory.clone();
-        Arc::new(NativeFixture::new(SERVICE_ID.to_string(), move |c| f.host_for_wire(c)))
+        let f_http = h.native_factory.clone();
+        Arc::new(NativeFixture::new(
+            SERVICE_ID.to_string(),
+            move |c| f.host_for_wire(c),
+            move |c| f_http.host_for_wire(c),
+        ))
     };
     let wasm_wire = unwrap_str(
         h.wasm_engine

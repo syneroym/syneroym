@@ -1214,8 +1214,12 @@ async fn harness() -> Harness {
     let f_directory2 = make_factory("directory2");
 
     let f_web_cl = f_web.clone();
-    let native_web =
-        Arc::new(NativeWeb::new(did_for_service("web"), move |caller| f_web_cl.host_for(caller)));
+    let f_web_http = f_web.clone();
+    let native_web = Arc::new(NativeWeb::new(
+        did_for_service("web"),
+        move |caller| f_web_cl.host_for(caller),
+        move |caller| f_web_http.host_for_wire(caller),
+    ));
 
     let f_prof_cl = f_profile.clone();
     let native_profile = Arc::new(NativeProfile::new(did_for_service("profile"), move |caller| {
@@ -1286,11 +1290,15 @@ async fn harness() -> Harness {
             f_transaction.clone(),
             f_directory.clone(),
         );
+        let fw_http = f_web.clone();
         vec![
             (
                 "web",
-                Arc::new(NativeWeb::new(did_for_service("web"), move |c| fw.host_for_wire(c)))
-                    as Arc<dyn NativeService>,
+                Arc::new(NativeWeb::new(
+                    did_for_service("web"),
+                    move |c| fw.host_for_wire(c),
+                    move |c| fw_http.host_for_wire(c),
+                )) as Arc<dyn NativeService>,
             ),
             (
                 "profile",

@@ -6,7 +6,7 @@
 under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)),
 [slice-c2-implementation-plan.md](slice-c2-implementation-plan.md) (C2)
 
-**Overall:** Slices C1 (2026-08-25), C1.1 (2026-08-28), C2 (2026-08-29), C3 (2026-08-31), C4 (2026-09-01), C5 (2026-09-03), and **C6 (2026-09-05, partial — see its own section)** complete or landed. C1.1, added by ADR-0024, makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a node auth service; C2 builds the six-service Roym SynApp skeleton and the Hub shell on top of that model; C3 provides the host record-signing capability interface (`syneroym:signing`), canonical JSON record envelope format, verification, and tri-state revocation checking; C4 gives `profile` real product state (profile, contacts, block, report, contact rate limits), an owner-only authorization gate on `web`, the certificate lifecycle C3 required as a hard prerequisite, and an encrypted identity backup/restore; C5 adds the versioned signed listing schema (`catalog`), Roym's own copy of every message plus a block-enforcing inbox (`conversation`), the `syneroym:invocation` host interface with a local-only admission rule on every service, and the two `depends_on` edges those callers traverse; C6 adds the `directory` service's server and client halves (SynOrg settings/roster, provider-initiated publication, search over a derived projection, and a consumer's own directory list/fan-out/merge), the first wire-reachable Roym verbs, and the directory-side publication limiter that closes `[PRD-SAF]` — with the full Hub UI, the three-substrate e2e, and part of the plan's own 51-scenario parity matrix explicitly not built in this pass (see C6's "What C6 did not build" below).
+**Overall:** Slices C1 (2026-08-25), C1.1 (2026-08-28), C2 (2026-08-29), C3 (2026-08-31), C4 (2026-09-01), C5 (2026-09-03), and **C6 (2026-09-05 core; completed 2026-09-06 in the Post-C6 follow-up)** complete or landed. C1.1, added by ADR-0024, makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a node auth service; C2 builds the six-service Roym SynApp skeleton and the Hub shell on top of that model; C3 provides the host record-signing capability interface (`syneroym:signing`), canonical JSON record envelope format, verification, and tri-state revocation checking; C4 gives `profile` real product state (profile, contacts, block, report, contact rate limits), an owner-only authorization gate on `web`, the certificate lifecycle C3 required as a hard prerequisite, and an encrypted identity backup/restore; C5 adds the versioned signed listing schema (`catalog`), Roym's own copy of every message plus a block-enforcing inbox (`conversation`), the `syneroym:invocation` host interface with a local-only admission rule on every service, and the two `depends_on` edges those callers traverse; C6 adds the `directory` service's server and client halves (SynOrg settings/roster, provider-initiated publication, search over a derived projection, and a consumer's own directory list/fan-out/merge), the first wire-reachable Roym verbs, and the directory-side publication limiter that closes `[PRD-SAF]`. The Hub Directory/SynOrg UI, the two-directory parity harness, the three-substrate e2e, and the native guest-HTTP wire-origin fix (WO5) landed in the Post-C6 follow-up on 2026-09-06 (see that section); two narrower gaps — a canned-hostile-source fixture and the faithfulness of two Hub cases — are tracked as `deferred-backlog.md` rows.
 
 ---
 
@@ -20,7 +20,7 @@ under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-servic
 | C3 | Signed records: host signing interface and envelope | **Complete (2026-08-31)** — [implementation plan](slice-c3-implementation-plan.md), evidence below | C1.1 |
 | C4 | Identity, profile, contacts, and safety (R1 rows 1 and 6) | **Complete (2026-09-01)** — [implementation plan](slice-c4-implementation-plan.md), evidence below | C3 |
 | C5 | Catalog and conversation in the product (R1 rows 2 and 3) | **Complete (2026-09-03)** — [implementation plan](slice-c5-implementation-plan.md), evidence below | C4 |
-| C6 | Directory: the search half (R1 row 5) | **Partial (2026-09-05)** — core service, admission rule, roymctl, and 34 parity scenarios shipped; Hub UI and the three-substrate e2e were not built. See its own section and "What C6 did not build" below | C5 |
+| C6 | Directory: the search half (R1 row 5) | **Complete (2026-09-06)** — core service, admission rule, roymctl, and 34 parity scenarios (2026-09-05); the two-directory parity harness, the three-substrate e2e, the Hub Directory/SynOrg UI + `roym-hub.spec.ts` cases 13–23b, and WO5 (native guest-HTTP wire origin) in the Post-C6 follow-up (2026-09-06). Two narrower gaps tracked as backlog rows: a canned-hostile-source fixture (Hub case 15 / forged e2e path) and the faithfulness of Hub cases 22/23b. See its own section, "What C6 did not build", and "Post-C6 follow-up" below | C5 |
 | C7 | A need becomes an offer, and the card contract (R1 row 4) | Not started | C5, C6 |
 | C8 | The transaction vertical (R2, all five rows) | Not started | C7 |
 | C9 | Cross-installation trust (R3, all three rows) | Not started | C8 |
@@ -1230,10 +1230,13 @@ named, not hidden, in "What C6 did not build."
 
 ## Post-C6 follow-up (2026-09-06) — picking up "What C6 did not build"
 
-A follow-up pass on `feat/m06c-slice-c6` to close the four items C6 left
-open, in the order the plan makes them depend on each other. This section
-records what landed and what did not with the same discipline as the C6
-section above — no rounding up.
+A follow-up pass on `feat/m06c-slice-c6` closing **all four** items C6
+left open, in the order the plan makes them depend on each other. This
+section records what landed and what did not with the same discipline as
+the C6 section above — no rounding up. The two narrower gaps that remain
+(a canned-hostile-source fixture for Hub case 15 / the forged e2e path,
+and the best-effort faithfulness of Hub cases 22/23b) are recorded as
+their own `deferred-backlog.md` §11 rows, not left implied here.
 
 ### Item 1 — the two-directory parity harness (plan §11.2) — **DONE**
 
@@ -1473,14 +1476,65 @@ timed out.
 5. Planning-identifier grep over the new / edited TS files: **none** (one
    `D-C6-26` reference removed from a `search.ts` comment).
 
-### Item 4 — status
+### Item 4 — WO5, `D-C6-17` (the native shim's guest-HTTP/websocket wire origin) — **DONE**
 
-**Item 4** (WO5, `D-C6-17` — wire the native shim's guest-HTTP/websocket
-sinks through `host_for_wire`): **not started.** Explicitly severable in
-the plan; cutting it unwinds nothing. Its trigger (a Roym component with
-`admit::require_internal` in an `incoming-handler`) has still not fired.
+A guest HTTP (or websocket) request is router ingress, never a local
+dispatch. The WASM engine already sets `InstanceOptions::from_wire()`
+**unconditionally** for every guest HTTP request, so `invocation.caller()`
+reports `anonymous` / `verified` and never `internal`. The native shim's
+`HttpSink` / `WebSocketSink` were still building their host from
+`host_for` (local origin → `internal`) — the one remaining divergence.
 
-The `deferred-backlog.md` §11 rows for items 2 and 3 moved to "Recently
-resolved" (item 3's leaves a narrower row: the case-15 hostile-source
-fixture); the row for item 4 is unchanged.
+- `NativeWeb` and `NativeFixture` (`crates/roym_web/src/native.rs`,
+  `test-components/dual-build-fixture/src/native.rs`) now hold a second
+  closure, `http_host_for`. The `NativeService::dispatch` (RPC) and
+  message-sink paths keep `host_for` (`internal`); the `HttpSink` and
+  `WebSocketSink` impls use `http_host_for`.
+- `crates/substrate/src/runtime.rs` passes `move |c| factory.host_for_wire(c)`
+  as that second closure for `web` and the dual-build fixture. The
+  `NativeHttpAdapter` is unchanged — it already carries the caller
+  through; only the host it is built against changed.
+- **No behavioural change to `web`.** `web`'s `admit()` reads
+  `HttpRequest.caller` (the router-verified session identity), never
+  `invocation.caller()` — the plan's own point. The change is observable
+  only through `invocation.caller()`, which no Roym component reads in an
+  HTTP handler.
+- The proving scenario is in the **shim's own suite**, not Roym's:
+  `crates/app_host_native/tests/dual_build_parity.rs`'s former
+  `a_guest_http_request_reports_a_wire_origin_on_the_wasm_build` is
+  rewritten as `a_guest_http_request_reports_the_same_wire_origin_on_both_builds`
+  — it drives `GET /origin` at the dual-build fixture on both builds and
+  asserts the reported arm is identical (`anonymous` with no caller,
+  `verified` with a delegated one) and never `internal`.
+
+**Verification (item 4):**
+
+1. `cargo build -p syneroym-roym-web -p syneroym-substrate` and
+   `cargo build --manifest-path test-components/dual-build-fixture/Cargo.toml`:
+   **clean.**
+2. `cargo test -p syneroym-app-host-native --test dual_build_parity`
+   (full suite): **40 passed, 0 failed** — including the rewritten
+   `a_guest_http_request_reports_the_same_wire_origin_on_both_builds`.
+3. `cargo test -p syneroym-roym-web --test dual_build_parity` (the HTTP
+   and wire scenarios — 6, 9, 67, 68, 70, 71, 72, 73, 106b, 109):
+   **10 passed, 0 failed.** The change to that harness is the mechanical
+   second-closure arg on two `NativeWeb::new` call sites; no scenario
+   logic changed.
+4. `cargo test --workspace` (2026-09-06, sandbox off, pre-WO5 baseline
+   for the two parity binaries): **152 test binaries, exit 0, 0
+   failures** — confirms items 2 and 3.
+5. `mise run test:e2e` (re-run, `runtime.rs` changed the `web` HTTP sink
+   wiring): **42 passed (default) + 4 (multihop)** — the Hub's real
+   guest-HTTP path is unaffected.
+6. `cargo +nightly fmt --all` clean · `cargo clippy -p syneroym-roym-web
+   -p syneroym-substrate -p syneroym-app-host-native --all-targets`
+   clean. Planning-identifier grep over the WO5 diff: none.
+
+§14's permitted-difference item 16 now applies (it was contingent on WO5
+shipping): guest-HTTP and websocket sinks report the same origin on both
+builds, a compared property rather than a permitted difference.
+
+The `deferred-backlog.md` §11 rows for items 2, 3 and 4 all moved to
+"Recently resolved" (item 3's leaves a narrower row: the case-15
+hostile-source fixture).
 

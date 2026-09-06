@@ -16,9 +16,18 @@ use syneroym_rpc::{CallerContext, NativeInvocation, NativeResponse, RpcError, Rp
 /// tests cannot drift on the interface name.
 pub const FIXTURE_INTERFACE: &str = "syneroym-test:dual-build-fixture/test-driver@0.1.0";
 
+type HostFn<H> = Box<dyn Fn(CallerContext) -> H + Send + Sync>;
+
 pub struct NativeFixture<H: AppHost + 'static> {
     service_id: String,
-    host_for: Box<dyn Fn(CallerContext) -> H + Send + Sync>,
+    /// Builds a host for the RPC dispatch and message-sink paths -- a
+    /// local call, so the guest sees `invocation.caller()` as `internal`.
+    host_for: HostFn<H>,
+    /// Builds a host for the inbound HTTP / websocket path. A guest HTTP
+    /// request is always router ingress, so the guest must never see
+    /// `internal` for one -- the WASM engine makes the identical choice
+    /// unconditionally.
+    http_host_for: HostFn<H>,
 }
 
 /// `NativeService`/`MessageSink` require `Debug`, and a boxed closure has
@@ -35,8 +44,9 @@ impl<H: AppHost + 'static> NativeFixture<H> {
     pub fn new(
         service_id: String,
         host_for: impl Fn(CallerContext) -> H + Send + Sync + 'static,
+        http_host_for: impl Fn(CallerContext) -> H + Send + Sync + 'static,
     ) -> Self {
-        Self { service_id, host_for: Box::new(host_for) }
+        Self { service_id, host_for: Box::new(host_for), http_host_for: Box::new(http_host_for) }
     }
 }
 
@@ -99,7 +109,7 @@ impl<H: AppHost + 'static> syneroym_app_host_native::HttpSink for NativeFixture<
         caller: CallerContext,
         request: syneroym_app_host::types::http::HttpRequest,
     ) -> Result<syneroym_app_host::types::http::HttpResponse, String> {
-        let host = (self.host_for)(caller);
+        let host = (self.http_host_for)(caller);
         crate::app::handle_http(&host, request).await
     }
 }
@@ -107,7 +117,7 @@ impl<H: AppHost + 'static> syneroym_app_host_native::HttpSink for NativeFixture<
 #[async_trait::async_trait]
 impl<H: AppHost + 'static> syneroym_app_host_native::WebSocketSink for NativeFixture<H> {
     async fn on_open(&self, caller: CallerContext, conn: String) {
-        let host = (self.host_for)(caller);
+        let host = (self.http_host_for)(caller);
         crate::app::on_ws_open(&host, conn).await;
     }
 
@@ -118,12 +128,12 @@ impl<H: AppHost + 'static> syneroym_app_host_native::WebSocketSink for NativeFix
         frame: Vec<u8>,
         kind: syneroym_app_host::types::http::FrameKind,
     ) {
-        let host = (self.host_for)(caller);
+        let host = (self.http_host_for)(caller);
         crate::app::on_ws_message(&host, conn, frame, kind).await;
     }
 
     async fn on_close(&self, caller: CallerContext, conn: String) {
-        let host = (self.host_for)(caller);
+        let host = (self.http_host_for)(caller);
         crate::app::on_ws_close(&host, conn).await;
     }
 }
