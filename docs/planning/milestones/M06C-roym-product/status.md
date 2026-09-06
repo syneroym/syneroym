@@ -860,27 +860,21 @@ three-substrate e2e below).
 ### What C6 did not build
 
 Recorded here in full, once, rather than scattered as a hedge on every
-claim above. Each has its own row in `deferred-backlog.md` §11 with a
-pickup trigger.
+claim above. **Items 1–4 were all built in the post-C6 follow-up
+(2026-09-06)** and are struck through below with a pointer to their own
+section; only item 5 (a `roymctl` CLI-argument test) is still open, and
+it has its row in `deferred-backlog.md` §11.
 
-1. **The Hub has no Directory or SynOrg tab.** No person can add a
-   source, run a search, read a result's source/age/unknowns, see refused
-   evidence rendered distinctly, create a SynOrg, edit its publication
-   limit, or publish a listing to a directory, from the browser. This is
-   the single largest gap: R1 row 5's acceptance test has a rendered half
-   ("missing evidence shows as unknown, never as positive") that only a
-   browser can prove, and nothing in this pass drives one.
-   `roymctl roym directory` is a full, working second client that drives
-   the same JSON-RPC verbs the Hub would — exit criterion 2's "a second
-   client drives the same flow through the same API with no UI involved"
-   is met — but it is not a substitute for the Hub existing.
-2. **No `crates/substrate/tests/roym_directory_e2e.rs`.** The plan's
-   three-substrate reference scenario (a SynOrg owner, a provider
-   publishing to it, a consumer finding it, the no-directory regression
-   run twice, a certificate-dependency failure over a real transport, the
-   loop at `MAX_SOURCES` over real transports) does not exist. The
-   existing two-substrate suites (`roym_conversation_e2e.rs`,
-   `roym_app_e2e.rs`) are unmodified and still pass in full.
+1. ~~**The Hub has no Directory or SynOrg tab.**~~ **Built in the post-C6
+   follow-up (2026-09-06) — see "Item 3" below.** The Directory tab (add
+   a source, search, read source/age/unknowns, refused evidence rendered
+   distinctly, publish a listing) and the SynOrg tab (settings, roster,
+   publication limit) exist, with `roym-hub.spec.ts` cases 13–23b.
+2. ~~**No `crates/substrate/tests/roym_directory_e2e.rs`.**~~ **Built in
+   the post-C6 follow-up (2026-09-06) — see "Item 2" below.** One test
+   over three independent substrates on a shared registry (plus a
+   transient fourth for the certificate sub-step) covering all 14 §11.3
+   steps.
 3. **No second, independently-stored directory in the parity harness.**
    ~~The plan's `did:key:hForeignWire`/`hForeignWire2` scaffolding was not
    built.~~ **Built in the post-C6 follow-up (2026-09-06) — see its own
@@ -888,10 +882,15 @@ pickup trigger.
    directory instance with its own store, plus scenarios 98 / 102c / 102d
    for `versions_differ`, the per-source share, and refused-evidence
    round-robining, all passing on both builds (110 scenarios total).
-4. **WO5 was not attempted** (severable by the plan's own design): the
+4. ~~**WO5 was not attempted** (severable by the plan's own design): the
    native shim's guest-HTTP/websocket sinks are not wired through
    `host_for_wire`, so that permitted difference is carried forward
-   unchanged rather than closed.
+   unchanged rather than closed.~~ **Done in the post-C6 follow-up
+   (2026-09-06) — see "Item 4 — WO5, `D-C6-17`" below.** `NativeWeb` /
+   `NativeFixture` now hold an `http_host_for` closure built from
+   `factory.host_for_wire`, so a guest HTTP / websocket request reports
+   `anonymous` / `verified` on the native build too; §14's
+   permitted-difference item 16 now applies as a compared property.
 5. **`roymctl roym directory`'s `find`, `serve`, and `member` subcommands
    have no automated test of their own** — they are exercised only by
    hand against the same verbs the Rust suites cover directly. A

@@ -1,6 +1,6 @@
 //! Commands specific to the Roym product app.
 
-use std::{path::Path, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
 use syneroym_sdk::DeployedService;
 use syneroym_signed_record::SCOPE_RECORD_SIGNING;
+use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::DEFAULT_GATEWAY_URL;
 
@@ -625,8 +626,8 @@ async fn find(
         }
     };
 
-    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrency.max(1)));
-    let mut set = tokio::task::JoinSet::new();
+    let permits = Arc::new(Semaphore::new(max_concurrency.max(1)));
+    let mut set = JoinSet::new();
     for source in &sources {
         // The semaphore is never closed, so acquire only ever succeeds;
         // if it somehow did not, running the source unbounded is a safe

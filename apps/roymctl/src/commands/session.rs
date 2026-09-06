@@ -4,7 +4,8 @@
 //! person sessions at the node auth service.
 
 use std::{
-    fs,
+    error::Error,
+    fmt, fs,
     io::Write,
     path::{Path, PathBuf},
 };
@@ -583,10 +584,10 @@ pub struct RpcHttpError {
     pub body: String,
 }
 
-impl std::fmt::Display for RpcHttpError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for RpcHttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "RPC call to '{}' failed (HTTP {}): {}", self.method, self.status, self.body)
     }
 }
 
-impl std::error::Error for RpcHttpError {}
+impl Error for RpcHttpError {}
