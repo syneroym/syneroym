@@ -187,8 +187,9 @@ fn anon_wire_caller() -> CallerContext {
 /// whether the call arrives anonymously. `hForeignWire` / `hForeignAnon`
 /// reach this node's own directory over a genuine wire round trip;
 /// `hForeignWire2` reaches the second, independently-stored directory.
-/// `hForeign` is intentionally absent: it keeps its existing local routing
-/// so no pre-existing scenario changes (`F10`).
+/// `hForeign` is intentionally absent: it keeps its existing local
+/// routing so the earlier client-half scenarios that use it are
+/// unchanged.
 fn foreign_wire_route(target: &str) -> Option<(String, bool)> {
     match target {
         "did:key:hForeignWire" => Some((did_for_service("directory"), false)),
@@ -3359,7 +3360,7 @@ async fn scenario_68_every_service_invoke_locally_is_not_wire_refused_parity() {
 
 #[tokio::test]
 async fn scenario_70_local_call_with_delegated_caller_admitted_on_both_builds() {
-    // F17's regression guard: the parity driver already presents a verified
+    // A regression guard: the parity driver already presents a verified
     // delegated caller on a purely local drive. A native mapping that read
     // the caller's auth level on a local path would answer -32013 here while
     // the wasm build passed.
@@ -3481,22 +3482,20 @@ async fn scenario_36_profile_import_foreign_subject_refused_parity() {
 
 // ---------------- directory ----------------
 //
-// A note on coverage. The plan this suite was written against (§11.2)
-// calls for a second, independently-stored "foreign" directory reached
-// through a dedicated wire-flavoured proxy target
-// (`did:key:hForeignWire`/`hForeignWire2`), so a merge scenario can prove
-// two directories disagreeing about a version. That harness extension was
-// not built in this pass -- it is a real gap, recorded in `status.md`
-// rather than silently narrowed. What *is* built here instead: every
-// scenario below drives this node's own directory service, either through
-// `wire_invoke` (a genuine `execute_wasm_json_from_wire` / `host_for_wire`
-// round trip, proving the new admission table on both builds) or through
-// `both_rpc` (the local `web` path, proving the client half locally). The
-// client-half scenarios use `did:key:hForeign` as a source, which
-// `TestWasmServiceProxy`/`TestNativeServiceProxy` already route back to
-// this same directory instance over the *local* dispatch path (`F10`) --
-// a degenerate but real exercise of `query-source`'s verification and
-// `merge`'s collation against data this same test published.
+// A note on coverage. Directory scenarios run against three shapes of
+// source:
+//   - `wire_invoke` / `wire_invoke_as` -- a genuine
+//     `execute_wasm_json_from_wire` / `host_for_wire` round trip into
+//     this node's own directory, proving the admission table on both
+//     builds.
+//   - `did:key:hForeignWire` and `did:key:hForeignWire2` -- two
+//     independently-stored directories (`directory` and `directory2`)
+//     reached through the wire-flavoured proxy target, so a merge
+//     scenario can show two directories disagreeing about a version and
+//     that one source's results survive another's forgeries.
+//   - `did:key:hForeign` -- the degenerate loopback, routed back to this
+//     same directory over the local dispatch path, kept for the earlier
+//     client-half scenarios that a real second store would not change.
 
 /// `wire_invoke` with a caller other than the module's verified owner --
 /// for proving `directory.publish`'s `VerifiedOnly` rule refuses an
@@ -4048,7 +4047,7 @@ async fn scenario_97_client_fan_out_over_one_source_yields_a_merged_hit_parity()
     // Published as this node's own SynOrg, through the wire path, so it is
     // reachable by `directory.search` on `did:key:hForeign` -- which
     // `TestWasmServiceProxy`/`TestNativeServiceProxy` route back to this
-    // very directory over the *local* path (`F10`).
+    // very directory over the local dispatch path.
     publish_signed_listing(&h, &e).await;
 
     both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
@@ -4546,8 +4545,8 @@ async fn scenario_102c_a_source_is_capped_at_its_per_source_share_of_the_merged_
 
     // The second directory holds more valid, recent listings than one
     // source is allowed to contribute to a merged page; the primary holds
-    // two. The split alone does not fix this -- only the per-source share
-    // does (`D-C6-18`).
+    // two. Splitting the stores alone does not bound one source's share
+    // of the page -- only the per-source cap in `merge` does.
     let over = MAX_HITS_PER_SOURCE as usize + 1;
     for i in 0..over {
         publish_listing_to_dir2(&h, &format!("crowd-{i}"), &format!("Crowd {i}")).await;

@@ -453,9 +453,10 @@ async fn publication_secs_in_window<H: AppHost>(
 ) -> Result<Vec<u64>, String> {
     ensure_coll(host, PUBLICATIONS, &[idx("at_secs", IndexType::Numeric)]).await?;
     let floor = now.saturating_sub(limits.window_secs);
-    // Filtered at the host rather than scanned and dropped in the guest. `F4` still
-    // applies -- a filter is not an indexed scan -- but it is fewer rows
-    // crossing the host boundary.
+    // Filtered at the host rather than scanned and dropped in the guest.
+    // Still not an indexed scan -- the filter compiler binds the JSON
+    // path as a parameter, which SQLite will not match against an
+    // expression index -- but far fewer rows cross the host boundary.
     let filter = json!({ "at_secs": { "$gt": floor } });
     let mut out = Vec::new();
     let mut cursor = None;
@@ -676,10 +677,10 @@ async fn listing_history<H: AppHost>(host: &H, req: &Request) -> Response {
     // order; the `supersedes` chain in each payload is the exact order if
     // a consumer needs it.
     //
-    // Filtered at the host on the payload's own `listing_id`
-    // field, rather than parsing every envelope in the collection to find
-    // the ones that match (`F4`: still a scan, but far fewer rows cross
-    // the host boundary).
+    // Filtered at the host on the payload's own `listing_id` field,
+    // rather than parsing every envelope in the collection to find the
+    // ones that match -- still a scan (no expression index on a JSON
+    // path), but far fewer rows cross the host boundary.
     let history_filter = json!({ "payload.listing_id": listing_id }).to_string();
     let mut envelopes: Vec<(u64, String)> = Vec::new();
     let mut cursor = None;
@@ -725,7 +726,10 @@ async fn listing_history<H: AppHost>(host: &H, req: &Request) -> Response {
 /// A thin wrapper over `roym_core::listing::verify_envelope` -- the one
 /// verification body this handler and the directory client both call, so a
 /// stranger's listing is never verified twice by two copies of the same
-/// logic that could quietly disagree.
+/// logic that could quietly disagree. The response is the whole
+/// `ListingVerdict` (record id, revocation status, issued-at, supersedes
+/// and the full payload), not a five-field subset; an underivable
+/// listing_id comes back as `verified: false`, not an internal error.
 async fn verify_listing<H: AppHost>(host: &H, req: &Request) -> Response {
     let _ = host;
     let now = clock::now_secs();
