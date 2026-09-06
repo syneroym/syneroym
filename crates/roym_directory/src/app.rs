@@ -292,6 +292,9 @@ async fn info<H: AppHost>(host: &H) -> Response {
         // address a friend gave them.
         return Response::ok(Value::Null);
     };
+    if let Err(e) = prune_expired_publications(host, settings.retention_secs).await {
+        return Response::internal_error(e);
+    }
     let count = match member_count(host).await {
         Ok(c) => c,
         Err(e) => return Response::internal_error(e),
@@ -818,6 +821,40 @@ async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Respons
     Response::ok(json!({ "listing_id": payload.listing_id, "record_id": record_id }))
 }
 
+/// Deletes publications and their index rows past the SynOrg's stated
+/// retention window. The publish path already prunes as it writes; this
+/// runs the same prune on `directory.info` and `directory.publications`
+/// so a directory that has stopped receiving publishes still ages its
+/// rows out, instead of serving a listing older than the retention
+/// policy it advertises. Not run on `directory.search`: that path is
+/// anonymous-reachable and hot, and turning every stranger's search into
+/// a batch of deletes is a denial-of-service lever; a directory quiet
+/// enough that nobody calls `info` or `publications` either is a corner
+/// the plan accepts.
+async fn prune_expired_publications<H: AppHost>(
+    host: &H,
+    retention_secs: u64,
+) -> Result<(), String> {
+    let floor = clock::now_secs().saturating_sub(retention_secs);
+    ensure_coll(host, PUBLICATIONS, &[]).await?;
+    ensure_coll(host, SEARCH_INDEX, &[]).await?;
+    AppDataLayer::delete_many(
+        host,
+        PUBLICATIONS.to_string(),
+        json!({ "received_at_secs": { "$lte": floor } }).to_string(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    AppDataLayer::delete_many(
+        host,
+        SEARCH_INDEX.to_string(),
+        json!({ "received_at_secs": { "$lte": floor } }).to_string(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 async fn load_publication_for_listing<H: AppHost>(
     host: &H,
     listing_id: &str,
@@ -858,6 +895,11 @@ async fn unpublish<H: AppHost>(host: &H, req: &Request) -> Response {
 
 async fn publications<H: AppHost>(host: &H) -> Response {
     if let Err(e) = ensure_coll(host, PUBLICATIONS, &[]).await {
+        return Response::internal_error(e);
+    }
+    if let Ok(Some(settings)) = load_settings(host).await
+        && let Err(e) = prune_expired_publications(host, settings.retention_secs).await
+    {
         return Response::internal_error(e);
     }
     match collect_raw(host, PUBLICATIONS).await {
@@ -964,11 +1006,33 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
     if let Some(normalized) = normalized_text.as_deref().filter(|n| !n.is_empty()) {
         and_clauses.push(json!({ "text": { "$regex": normalized } }));
     }
+    // The index stores the enum's serde spelling (`existing-customers`,
+    // not `ExistingCustomers`). Round-trip the query value through the
+    // same enum so both sides speak one vocabulary; a value that is not a
+    // spelling the enum declares is refused, not silently matched to
+    // nothing.
     if let Some(open_to) = &query.open_to {
-        and_clauses.push(json!({ "open_to": open_to.to_lowercase() }));
+        match serde_json::from_value::<listing::OpenTo>(json!(open_to)) {
+            Ok(v) => and_clauses.push(json!({ "open_to": serde_str(&v) })),
+            Err(_) => {
+                return Response::err(
+                    -32602,
+                    "open_to must be one of: anyone, members, referral, existing-customers"
+                        .to_string(),
+                );
+            }
+        }
     }
     if let Some(booking_mode) = &query.booking_mode {
-        and_clauses.push(json!({ "booking_mode": booking_mode.to_lowercase() }));
+        match serde_json::from_value::<listing::BookingMode>(json!(booking_mode)) {
+            Ok(v) => and_clauses.push(json!({ "booking_mode": serde_str(&v) })),
+            Err(_) => {
+                return Response::err(
+                    -32602,
+                    "booking_mode must be one of: slots, order, enquiry".to_string(),
+                );
+            }
+        }
     }
     let geometric_query = matches!(query.area, Some(Area::Bbox { .. }) | Some(Area::Circle { .. }));
     if let Some(q_area) = &query.area
@@ -2048,6 +2112,16 @@ async fn run_envelope<H: AppHost>(host: &H, req: &Request) -> Response {
     Response::ok(Value::Null)
 }
 
+/// Push one of this installation's own listings to a directory. The
+/// `source` is not required to be a registered search source: publishing
+/// to a directory and searching one are two separate lists on purpose --
+/// a provider may publish to a guild directory they never search, and
+/// search directories they never publish to. The target is dialled
+/// directly; the far end's `directory.publish` verifies the envelope and
+/// enforces its own rate limit, so an unknown target costs this node
+/// nothing beyond one outbound call. The caller is already this node's
+/// own owner (the verb is local-only), and the envelope comes from the
+/// local catalog, so there is no third party to protect here.
 async fn publish_to_source<H: AppHost>(host: &H, req: &Request) -> Response {
     let source = match req.params.get("source").and_then(Value::as_str) {
         Some(s) => s.to_string(),
