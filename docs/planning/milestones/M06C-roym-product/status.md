@@ -1517,9 +1517,14 @@ reports `anonymous` / `verified` and never `internal`. The native shim's
    `a_guest_http_request_reports_the_same_wire_origin_on_both_builds`.
 3. `cargo test -p syneroym-roym-web --test dual_build_parity` (the HTTP
    and wire scenarios — 6, 9, 67, 68, 70, 71, 72, 73, 106b, 109):
-   **10 passed, 0 failed.** The change to that harness is the mechanical
-   second-closure arg on two `NativeWeb::new` call sites; no scenario
-   logic changed.
+   **10 passed, 0 failed.** What changed in that harness: the native
+   `web` HTTP sink now builds from `host_for_wire`, so the host origin
+   under every native-build `/rpc` call in the suite moved from
+   `internal` to a wire origin. `handle_http` gates on
+   `HttpRequest.caller`, never `AppInvocation::caller`, and dependency
+   calls re-originate at the destination, so the trace is safe — but
+   "no scenario logic changed" understated the blast radius. The full
+   binary is run in the second review pass below.
 4. `cargo test --workspace` (2026-09-06, sandbox off, pre-WO5 baseline
    for the two parity binaries): **152 test binaries, exit 0, 0
    failures** — confirms items 2 and 3.
@@ -1537,4 +1542,87 @@ builds, a compared property rather than a permitted difference.
 The `deferred-backlog.md` §11 rows for items 2, 3 and 4 all moved to
 "Recently resolved" (item 3's leaves a narrower row: the case-15
 hostile-source fixture).
+
+## Second review pass (2026-09-06) — 28 findings incorporated
+
+An independent review of the whole C6 slice (`main..feat/m06c-slice-c6`,
+including the Post-C6 follow-up commits) raised 28 findings. All are
+addressed on the branch:
+
+**Blocking set (4).**
+- `search_runs` was never pruned and `merge`/`run-envelope` scanned the
+  whole collection every call. Rows now carry a `run_id` field; `merge`
+  and `run-envelope` filter on it at the host, and `start_run` prunes
+  `search_runs` by `at_secs` alongside `runs`.
+- `merge` built its page from `BTreeSet` iteration, discarding the
+  round-robin order (recency within a source, interleaved across
+  sources) in favour of a `listing_id` (content-hash) sort a forger
+  picks. Fixed with an ordered `Vec` for both hits and refused
+  evidence; new parity scenario 119 asserts adjacent hits come from
+  different sources.
+- `search` truncated its candidate set in hash order for named-area and
+  bare text/category queries, and the directory's `truncated` flag was
+  dropped by `query-source`. `search` now pushes a named-area label
+  filter down (like the geometric bbox) and counts distinct listings
+  toward the ceiling; `truncated` rides the per-source `query-source`
+  reply through to the Hub and `roymctl`. New parity scenarios 120, 121.
+- Nothing enumerated the wire table and scenario 109 passed vacuously.
+  New parity scenario 118 drives every one of `directory`'s 25 verbs
+  over the wire and asserts exactly `search` / `info` / `publish` answer
+  non-`-32013` on both builds; scenario 109 is rebuilt with a real
+  SynOrg, a member, a published listing, a valid-envelope publish and a
+  hit-returning search, then asserts the proxy counter is unmoved. The
+  three-substrate e2e step 9 gains an anonymous `directory.publish`
+  attempt (the only rule that separates an anonymous caller from a
+  merely unknown one).
+
+**Should-fix (13).** Non-Latin text queries are refused `-32602` rather
+than returning everything; `roymctl directory find` prints per-source
+failures and truncation in the Hub's wording, adds the `NotStarted` arm
+and a single post-drain retry, and runs a continuous worker pool;
+retention is enforced on `directory.info` / `directory.publications` as
+well as publish; the e2e header claim is earned (above); seven planning
+identifiers were stripped from comments; three stale docs corrected
+(this file, the guide, the parity coverage note); the constant-
+relationship assertions moved from `roym_core` (a guest crate) to a
+host-side parity test against the real `AppSandboxRole` defaults;
+`open_to` / `booking_mode` query values round-trip through their enums;
+the Hub no longer awaits a partial merge inside each fan-out worker
+(debounced instead) and keys each source's progress line by DID so a
+retried source loses its stale line.
+
+**Full `roym_web` parity run after WO5 (R11).** Item 4 point 3 above
+understated the WO5 change: the harness's native `web` HTTP sink now
+builds from `host_for_wire`, so **every** native-build scenario that
+drives `/rpc` goes through the changed host origin, not just the 10
+re-run then. The full binary was run this pass — see the gate evidence
+at the end of this section — with the 5 new directory scenarios added.
+
+**Division of labour for the admission rule (R21).** The single-node Hub
+browser suite (`roym-hub.spec.ts`) covers the Directory/SynOrg **UI and
+the client fan-out loop**; its loopback directory is reached over the
+local dispatch path, so `admit()` short-circuits and the wire table is
+never exercised there. The **wire admission table** is guarded by the
+`dual_build_parity` suite (scenarios 67, 78, 80, 106b, 109, 118) and the
+three-substrate `roym_directory_e2e.rs` (step 9). Reading the browser
+suite as admission coverage and deleting a parity scenario as redundant
+would remove the rule's only real test.
+
+**Accepted with a tradeoff (11).** `publish-to-source` keeps its
+unvalidated target (documented: publishing and searching are separate
+lists); `ignoreConcurrency` stays a localhost affordance (backlog row);
+`age_secs` cannot be value-asserted under the pinned future clock
+(backlog row); the antimeridian circle limit, harvested-envelope
+republication, and the four-substrate e2e peak each get a backlog row;
+the hostile-source fixture gains more forged shapes; browser case 23b is
+renamed to what it asserts; `catalog.listing.verify`'s doc comment now
+says it returns the whole verdict.
+
+**Two pushbacks.** R12 (`publish-to-source` registered-source check) —
+declined in favour of a doc comment: the caller is the local owner, the
+envelope is the owner's own signed bytes from the local catalog, and the
+far-end `directory.publish` still verifies and rate-limits, so the check
+conflates two deliberately-separate lists for little gain. R25
+(build-time stripping of the `window` test hooks) — deferred as a set
+rather than stripping one of three inconsistently.
 

@@ -48,7 +48,10 @@ use syneroym_roym_catalog::native::NativeCatalog;
 use syneroym_roym_conversation::native::NativeConversation;
 use syneroym_roym_core::{
     backup::Bundle,
-    directory::{MAX_HITS_PER_SOURCE, MAX_REFUSED_RESULTS},
+    directory::{
+        DEFAULT_SOURCE_TIMEOUT_MS, DISPATCH_HEADROOM_MS, MAX_CLIENT_CONCURRENCY,
+        MAX_HITS_PER_SOURCE, MAX_REFUSED_RESULTS,
+    },
     envelope::Response,
     listing, services,
 };
@@ -108,6 +111,15 @@ fn strip_volatile(val: &mut Value) {
             // (`retry_after_secs`, `age_secs`) -- neither build's clock is
             // pinned, only the signed listing envelope's `issued_at_secs`
             // is, so these can legitimately differ by the odd second.
+            //
+            // `age_secs` could in principle be value-asserted (it must be
+            // `consumer_now - issued_at_secs`, never the directory's own
+            // `received_at_secs`), but not in this harness: the signing
+            // clock is pinned 240 s in the *future* (for certificate
+            // freshness), so `now - issued_at` saturates to 0 on both
+            // builds and a refactor to `received_at` would also read ~0.
+            // A past-clock signer fixture would be needed; tracked in the
+            // deferred backlog.
             map.remove("received_at_secs");
             map.remove("answered_at_secs");
             map.remove("retry_after_secs");
@@ -202,15 +214,37 @@ fn foreign_wire_route(target: &str) -> Option<(String, bool)> {
 /// How many forged hits a hostile fake source returns per `query-source`.
 const HOSTILE_SOURCE_FORGERIES: usize = 15;
 
+/// A few shapes a forged envelope can take, cycled across a hostile
+/// source's hits so the consumer's verification is exercised past its
+/// outermost JSON parse: not-an-object, an object with no signature, an
+/// object with an unusable signature, a wrong record type, and an
+/// issued-at far in the future.
+const FORGED_ENVELOPE_SHAPES: &[&str] = &[
+    "{\"not\":\"a signed listing envelope\"}",
+    "\"just a string\"",
+    "{\"payload\":{\"record_type\":\"listing\"},\"delegation\":null}",
+    "{\"payload\":{\"record_type\":\"listing\"},\"signature\":\"!!not-base64!!\"}",
+    "{\"payload\":{\"record_type\":\"profile\"},\"signature\":\"AAAA\"}",
+    "{\"payload\":{\"record_type\":\"listing\",\"issued_at_secs\":9999999999},\"signature\":\"\
+     AAAA\"}",
+];
+
 /// Canned response for the hostile fake sources `did:key:hForge1` /
-/// `did:key:hForge2`. A real second directory cannot serve forgeries --
-/// its own `directory.publish` verifies every envelope at the door -- so a
-/// canned page of malformed envelopes is the only way to drive "a source
-/// that returns nothing but forgeries". The consumer's own verification in
-/// `query-source`, not the source, is what must reject them. Returned as
-/// the `Value::String` shape both real directory calls produce, so the two
-/// builds see byte-identical input.
+/// `did:key:hForge2`, and the `did:key:hTrunc` source that answers with
+/// no hits but `truncated: true`. A real second directory cannot serve
+/// forgeries -- its own `directory.publish` verifies every envelope at
+/// the door -- so a canned page is the only way to drive "a source that
+/// returns nothing but forgeries" or "a source that had more matches
+/// than it would return". The consumer's own verification in
+/// `query-source`, not the source, is what must reject a forgery.
+/// Returned as the `Value::String` shape both real directory calls
+/// produce, so the two builds see byte-identical input.
 fn hostile_source_response(target: &str) -> Option<Value> {
+    if target == "did:key:hTrunc" {
+        return Some(Value::String(
+            json!({ "result": { "hits": [], "truncated": true } }).to_string(),
+        ));
+    }
     let tag = match target {
         "did:key:hForge1" => "a",
         "did:key:hForge2" => "b",
@@ -221,8 +255,7 @@ fn hostile_source_response(target: &str) -> Option<Value> {
             json!({
                 "listing_id": format!("forged-{tag}-{i}"),
                 "record_id": format!("forged-rec-{tag}-{i}"),
-                // Structurally JSON, but carries no valid signature.
-                "envelope": "{\"not\":\"a signed listing envelope\"}",
+                "envelope": FORGED_ENVELOPE_SHAPES[i % FORGED_ENVELOPE_SHAPES.len()],
                 "issued_at_secs": 4_000_000_000u64,
                 "received_at_secs": 4_000_000_000u64,
                 "area_match": { "kind": "not-queried" }
@@ -3485,17 +3518,16 @@ async fn scenario_36_profile_import_foreign_subject_refused_parity() {
 // A note on coverage. Directory scenarios run against three shapes of
 // source:
 //   - `wire_invoke` / `wire_invoke_as` -- a genuine
-//     `execute_wasm_json_from_wire` / `host_for_wire` round trip into
-//     this node's own directory, proving the admission table on both
-//     builds.
+//     `execute_wasm_json_from_wire` / `host_for_wire` round trip into this
+//     node's own directory, proving the admission table on both builds.
 //   - `did:key:hForeignWire` and `did:key:hForeignWire2` -- two
-//     independently-stored directories (`directory` and `directory2`)
-//     reached through the wire-flavoured proxy target, so a merge
-//     scenario can show two directories disagreeing about a version and
-//     that one source's results survive another's forgeries.
-//   - `did:key:hForeign` -- the degenerate loopback, routed back to this
-//     same directory over the local dispatch path, kept for the earlier
-//     client-half scenarios that a real second store would not change.
+//     independently-stored directories (`directory` and `directory2`) reached
+//     through the wire-flavoured proxy target, so a merge scenario can show two
+//     directories disagreeing about a version and that one source's results
+//     survive another's forgeries.
+//   - `did:key:hForeign` -- the degenerate loopback, routed back to this same
+//     directory over the local dispatch path, kept for the earlier client-half
+//     scenarios that a real second store would not change.
 
 /// `wire_invoke` with a caller other than the module's verified owner --
 /// for proving `directory.publish`'s `VerifiedOnly` rule refuses an
@@ -4175,25 +4207,109 @@ async fn scenario_106b_every_client_half_verb_is_refused_over_the_wire_parity() 
 #[tokio::test]
 async fn scenario_109_no_wire_reachable_method_calls_a_sibling_parity() {
     let h = harness().await;
-    for method in ["directory.search", "directory.info", "directory.publish"] {
-        let params = if method == "directory.publish" {
-            json!({ "envelope": "not-a-real-envelope" })
-        } else {
-            json!({})
-        };
-        let before_w = h.wasm_proxy.invocations.load(Ordering::SeqCst);
-        let before_n = h.native_proxy.invocations.load(Ordering::SeqCst);
-        h.wire_invoke(services::DIRECTORY, &env(method, params)).await;
-        assert_eq!(
-            h.wasm_proxy.invocations.load(Ordering::SeqCst),
-            before_w,
-            "{method} made a wasm proxy call"
-        );
-        assert_eq!(
-            h.native_proxy.invocations.load(Ordering::SeqCst),
-            before_n,
-            "{method} made a native proxy call"
-        );
+    ensure_synorg(&h).await;
+    both_rpc(&h, "member.add", json!({ "did": "did:key:zMember109" })).await;
+    enrol_signing(&h, "catalog").await;
+
+    // Real state, not an empty directory: a published listing search can
+    // return, settings info can read, and a valid envelope publish can
+    // reach the handler body -- so the proxy counter has a genuine chance
+    // to move if any handler were to call a sibling.
+    let e = publish_listing_to_primary(&h, "hedge-109", "Hedge 109").await;
+
+    let before_w = h.wasm_proxy.invocations.load(Ordering::SeqCst);
+    let before_n = h.native_proxy.invocations.load(Ordering::SeqCst);
+
+    // A valid-envelope publish (reaches the handler, consumes budget, writes
+    // rows), an anonymous search that returns the hit, and info.
+    let (_pw, _pn) = publish_signed_listing(&h, &e).await;
+    let (sw, _sn) = wire_invoke_as(
+        &h,
+        services::DIRECTORY,
+        &env("directory.search", json!({})),
+        AuthLevel::System,
+    )
+    .await;
+    assert!(
+        !sw["result"]["hits"].as_array().unwrap().is_empty(),
+        "the search must actually return a hit for this to prove anything: {sw}"
+    );
+    h.wire_invoke(services::DIRECTORY, &env("directory.info", json!({}))).await;
+    // And the original degenerate case: a junk envelope returns before the
+    // handler does anything.
+    h.wire_invoke(services::DIRECTORY, &env("directory.publish", json!({ "envelope": "x" }))).await;
+
+    assert_eq!(
+        h.wasm_proxy.invocations.load(Ordering::SeqCst),
+        before_w,
+        "a wire-reachable directory method made a wasm proxy call"
+    );
+    assert_eq!(
+        h.native_proxy.invocations.load(Ordering::SeqCst),
+        before_n,
+        "a wire-reachable directory method made a native proxy call"
+    );
+}
+
+/// Every arm of `directory`'s `invoke` dispatch. If someone adds a verb
+/// and forgets to decide its wire posture, this list stops compiling
+/// (the match below is not exhaustive over it by the compiler, but the
+/// scenario fails loudly on the new name).
+const ALL_DIRECTORY_VERBS: &[&str] = &[
+    "directory.ping",
+    "directory.settings",
+    "directory.set-settings",
+    "directory.info",
+    "member.add",
+    "member.remove",
+    "member.list",
+    "directory.publish",
+    "directory.unpublish",
+    "directory.publications",
+    "directory.search",
+    "directory.limits",
+    "directory.set-limits",
+    "directory.reindex",
+    "directory.export",
+    "directory.import",
+    "directory.add-source",
+    "directory.probe-info",
+    "directory.remove-source",
+    "directory.sources",
+    "directory.start-run",
+    "directory.query-source",
+    "directory.merge",
+    "directory.run-envelope",
+    "directory.publish-to-source",
+];
+
+/// The whole security claim of this slice: exactly these three verbs
+/// answer anything other than `-32013` over the wire.
+const WIRE_REACHABLE_DIRECTORY_VERBS: &[&str] =
+    &["directory.search", "directory.info", "directory.publish"];
+
+#[tokio::test]
+async fn scenario_118_exactly_three_directory_verbs_are_wire_reachable_parity() {
+    let h = harness().await;
+    for &method in ALL_DIRECTORY_VERBS {
+        let (w, n) = h.wire_invoke(services::DIRECTORY, &env(method, json!({}))).await;
+        let reachable = WIRE_REACHABLE_DIRECTORY_VERBS.contains(&method);
+        for (label, v) in [("wasm", &w), ("native", &n)] {
+            let code = v["error"]["code"].as_i64();
+            if reachable {
+                assert_ne!(
+                    code,
+                    Some(-32013),
+                    "{label} {method} must be reachable over the wire: {v}"
+                );
+            } else {
+                assert_eq!(
+                    code,
+                    Some(-32013),
+                    "{label} {method} must answer -32013 over the wire: {v}"
+                );
+            }
+        }
     }
 }
 
@@ -4603,5 +4719,120 @@ async fn scenario_102d_forged_sources_are_refused_round_robined_and_crowd_out_no
     assert!(
         a >= MAX_REFUSED_RESULTS as usize / 3 && b >= MAX_REFUSED_RESULTS as usize / 3,
         "one forger must not dominate the refused block: hForge1={a} hForge2={b}: {mw}"
+    );
+}
+
+#[tokio::test]
+async fn scenario_119_merged_page_interleaves_sources_not_listing_id_order_parity() {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+    ensure_dir2_synorg(&h).await;
+    enrol_signing(&h, "catalog").await;
+
+    // Two listings in each of two directories. `merge` picks membership by
+    // round-robin and must emit the page in that order -- interleaved
+    // across sources. Iterating the `seen` set instead (a `BTreeSet`)
+    // would re-sort the whole page by `listing_id`, a content hash, and
+    // adjacent hits would then run in blocks of one source.
+    for i in 0..2 {
+        publish_listing_to_primary(&h, &format!("intl-p-{i}"), &format!("Primary {i}")).await;
+        publish_listing_to_dir2(&h, &format!("intl-d-{i}"), &format!("Dir2 {i}")).await;
+    }
+
+    let (_rw, _rn, mw, mn) = fan_out(&h, &["did:key:hForeignWire", "did:key:hForeignWire2"]).await;
+    assert_eq!(stripped(&mw), stripped(&mn));
+    let hits = mw["result"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 4, "all four listings make the page: {mw}");
+
+    let source_of = |hit: &Value| {
+        hit["sources"].as_array().unwrap()[0]["directory"].as_str().unwrap().to_string()
+    };
+    for pair in hits.windows(2) {
+        assert_ne!(
+            source_of(&pair[0]),
+            source_of(&pair[1]),
+            "adjacent hits must come from different sources (round-robin order): {mw}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn scenario_120_a_source_that_truncates_says_so_per_source_parity() {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+
+    // `did:key:hTrunc` answers with no hits but `truncated: true` -- the
+    // "500 listings, wanted rows hashed late, zero results" case. The flag
+    // must ride the `query-source` reply, since a zero-row source writes
+    // no run rows for `merge` to carry it on.
+    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hTrunc" })).await;
+    for wasm in [true, false] {
+        let start = one_rpc(&h, wasm, "directory.start-run", json!({})).await;
+        let run_id = start["result"]["run_id"].as_str().unwrap().to_string();
+        let reply = one_rpc(
+            &h,
+            wasm,
+            "directory.query-source",
+            json!({ "run_id": run_id, "source": "did:key:hTrunc", "query": {} }),
+        )
+        .await;
+        assert_eq!(reply["result"]["verified"], 0, "{reply}");
+        assert_eq!(
+            reply["result"]["truncated"], true,
+            "the directory's truncated flag must reach the per-source reply: {reply}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn scenario_121_a_named_area_query_discriminates_by_label_parity() {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+    enrol_signing(&h, "catalog").await;
+
+    let mut blr_id = String::new();
+    for (slug, label) in [("area-blr", "Bengaluru"), ("area-bom", "Mumbai")] {
+        let mut params = full_listing_params(slug, label);
+        params["location"]["service_area"] = json!([{ "kind": "named", "label": label }]);
+        let (id, gw, _gn) = set_and_get(&h, params).await;
+        if label == "Bengaluru" {
+            blr_id = id;
+        }
+        let e = gw["result"]["envelope"].as_str().unwrap().to_string();
+        publish_signed_listing(&h, &e).await;
+    }
+
+    let (w, n) = wire_invoke(
+        &h,
+        services::DIRECTORY,
+        &env("directory.search", json!({ "area": { "kind": "named", "label": "BENGALURU" } })),
+    )
+    .await;
+    assert_eq!(stripped(&w), stripped(&n));
+    let hits = w["result"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1, "only the Bengaluru listing matches: {w}");
+    assert_eq!(hits[0]["listing_id"], blr_id, "{w}");
+    assert_eq!(hits[0]["area_match"]["kind"], "named");
+}
+
+#[test]
+fn directory_source_timeout_and_concurrency_fit_the_real_sandbox_defaults() {
+    // The constants in `roym_core::directory` are derived from node
+    // limits, not chosen -- and `roym_core` is a guest crate that cannot
+    // import the config crate, so the relationship is asserted here,
+    // against the real `AppSandboxRole` defaults rather than a literal
+    // copied by hand.
+    let defaults = AppSandboxRole::default();
+    let epoch_ms = defaults.dispatch_epoch_timeout_secs.saturating_mul(1000);
+    assert!(
+        u64::from(DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS) < epoch_ms,
+        "source timeout ({DEFAULT_SOURCE_TIMEOUT_MS}) + headroom ({DISPATCH_HEADROOM_MS}) must \
+         fit inside the dispatch epoch ({epoch_ms} ms)"
+    );
+    assert!(
+        (MAX_CLIENT_CONCURRENCY as u32) < defaults.max_concurrent_guest_http_per_service,
+        "client fan-out concurrency ({MAX_CLIENT_CONCURRENCY}) must stay below the guest-HTTP \
+         admission limit ({})",
+        defaults.max_concurrent_guest_http_per_service
     );
 }

@@ -21,8 +21,11 @@
 //! sees is computed on their own clock; missing evidence renders as
 //! `unknown`, never as a positive default; the directory verifies nothing
 //! on the consumer's behalf; a publication past the SynOrg's limit is
-//! refused visibly to the provider; `member.list` is never reachable off
-//! the node while `directory.search` is; a stale or absent certificate on
+//! refused visibly to the provider; an anonymous wire caller reaches
+//! `directory.search` but is refused both `member.list` (unlisted) and
+//! `directory.publish` (`VerifiedOnly` -- the rule that actually
+//! distinguishes an anonymous caller from a merely unknown one); a stale
+//! or absent certificate on
 //! the provider's own node is indistinguishable, at the provider, from
 //! "this directory does not want you"; two directories disagreeing about a
 //! version surface the disagreement rather than resolve it silently; and
@@ -879,6 +882,22 @@ async fn roym_directory_search_half_across_three_substrates() {
     assert_eq!(
         anon_members["error"]["code"], -32013,
         "member.list is never reachable off the node: {anon_members}"
+    );
+    // `member.list` being refused proves nothing about anonymity on its
+    // own -- it is unlisted, so a *verified* stranger is refused it too.
+    // `directory.publish` is `VerifiedOnly`: an anonymous caller is
+    // refused it, a verified one is not. This is the assertion that the
+    // caller above actually arrived anonymous, not merely unknown.
+    let anon_publish = anon_wire_invoke(
+        &shared_registry,
+        &z_dir_did,
+        "directory.publish",
+        json!({ "envelope": y_envelope }),
+    )
+    .await;
+    assert_eq!(
+        anon_publish["error"]["code"], -32013,
+        "an anonymous caller is refused directory.publish (VerifiedOnly): {anon_publish}"
     );
 
     // --- Step 10: Y publishes past the limit and is refused with a

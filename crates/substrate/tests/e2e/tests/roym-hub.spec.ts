@@ -719,7 +719,11 @@ test.describe('Roym Hub', () => {
     expect(errorsText.toLowerCase()).not.toContain('this installation was busy');
   });
 
-  test('23b. Directory tab: a source this node refuses to start is NotStarted, never TimedOut', async ({ page }) => {
+  // The deterministic NotStarted-vs-TimedOut mapping is proven by the
+  // vitest suite; this case only asserts that a run at full concurrency
+  // never blames the loopback source for a timeout and never conflates
+  // the two outcome kinds.
+  test('23b. Directory tab: a run at full concurrency never blames the loopback source for a timeout', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
