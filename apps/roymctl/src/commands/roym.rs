@@ -4,7 +4,7 @@ use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use serde_json::json;
+use serde_json::{Value, json};
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
 use syneroym_sdk::DeployedService;
 use syneroym_signed_record::SCOPE_RECORD_SIGNING;
@@ -479,6 +479,68 @@ fn parse_near(input: &str) -> Result<serde_json::Value> {
     }))
 }
 
+/// What one directory contributed, as this client saw it -- mirrors the
+/// Hub's `SourceOutcome`. A `directory.query-source` reply is always a
+/// JSON-RPC success whose `result.error` carries any per-source failure;
+/// a 503 from this node's own guest-HTTP admission arrives as an `Err`
+/// from `rpc_call` instead and maps to `NotStarted`.
+enum SourceOutcome {
+    Ok { truncated: bool },
+    NotStarted,
+    Failed { words: String },
+}
+
+impl SourceOutcome {
+    fn from_reply(reply: anyhow::Result<Value>) -> Self {
+        let result = match reply {
+            Ok(v) => v,
+            Err(e) => {
+                let s = e.to_string();
+                if s.contains("(503") {
+                    return SourceOutcome::NotStarted;
+                }
+                return SourceOutcome::Failed {
+                    words: "the directory could not be reached".into(),
+                };
+            }
+        };
+        let truncated = result.get("truncated").and_then(Value::as_bool).unwrap_or(false);
+        match result.get("error") {
+            Some(err) if !err.is_null() => {
+                let kind = err.get("kind").and_then(Value::as_str).unwrap_or("unreadable");
+                SourceOutcome::Failed { words: source_error_words(kind).to_string() }
+            }
+            _ => SourceOutcome::Ok { truncated },
+        }
+    }
+
+    /// The line to print for this source, or `None` when it answered
+    /// cleanly with nothing worth saying.
+    fn note(&self) -> Option<String> {
+        match self {
+            SourceOutcome::Ok { truncated: false } => None,
+            SourceOutcome::Ok { truncated: true } => {
+                Some("this directory had more matches than it would return".to_string())
+            }
+            SourceOutcome::NotStarted => {
+                Some("this installation was busy and did not start the call".to_string())
+            }
+            SourceOutcome::Failed { words } => Some(words.clone()),
+        }
+    }
+}
+
+/// The same wording the Hub shows for each `SourceError` kind.
+fn source_error_words(kind: &str) -> &'static str {
+    match kind {
+        "not-started" => "this installation was busy and did not start the call",
+        "timed-out" => "the directory did not answer in time",
+        "not-found" => "no directory answers at that address",
+        "refused" => "the directory refused the request",
+        _ => "the directory's answer could not be read",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn find(
     text: Option<&str>,
@@ -524,35 +586,71 @@ async fn find(
         println!("or reach a provider directly by link -- a directory is optional.");
     }
 
-    for chunk in sources.chunks(max_concurrency) {
-        let mut set = tokio::task::JoinSet::new();
-        for source in chunk {
-            let source = source.clone();
-            let gateway_url = gateway_url.to_string();
-            let host = host.map(str::to_string);
-            let dir = dir.to_path_buf();
-            let run_as = run_as.map(str::to_string);
-            let ucan_path = ucan_path.map(|p| p.to_path_buf());
-            let query = query.clone();
-            let run_id = run_id.clone();
-            set.spawn(async move {
-                let result = super::session::rpc_call(
-                    &gateway_url,
-                    host.as_deref(),
-                    run_as.as_deref(),
-                    ucan_path.as_deref(),
-                    &dir,
-                    "directory.query-source",
-                    json!({ "run_id": run_id, "source": source, "query": query }),
-                )
-                .await;
-                (source, result)
-            });
+    // A continuous worker pool capped at `max_concurrency`, the same
+    // shape the Hub's fan-out uses -- not a per-chunk barrier that idles
+    // the pool while the slowest source in a chunk finishes.
+    let query_one = |source: String| {
+        let gateway_url = gateway_url.to_string();
+        let host = host.map(str::to_string);
+        let dir = dir.to_path_buf();
+        let run_as = run_as.map(str::to_string);
+        let ucan_path = ucan_path.map(|p| p.to_path_buf());
+        let query = query.clone();
+        let run_id = run_id.clone();
+        async move {
+            let result = super::session::rpc_call(
+                &gateway_url,
+                host.as_deref(),
+                run_as.as_deref(),
+                ucan_path.as_deref(),
+                &dir,
+                "directory.query-source",
+                json!({ "run_id": run_id, "source": source, "query": query }),
+            )
+            .await;
+            (source, SourceOutcome::from_reply(result))
         }
-        while let Some(joined) = set.join_next().await {
-            if let Ok((source, Err(e))) = joined {
-                println!("source {source}: could not run the query ({e})");
-            }
+    };
+
+    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrency.max(1)));
+    let mut set = tokio::task::JoinSet::new();
+    for source in &sources {
+        // The semaphore is never closed, so acquire only ever succeeds;
+        // if it somehow did not, running the source unbounded is a safe
+        // fallback.
+        let permit = permits.clone().acquire_owned().await.ok();
+        let fut = query_one(source.clone());
+        set.spawn(async move {
+            let out = fut.await;
+            drop(permit);
+            out
+        });
+    }
+    let mut outcomes: Vec<(String, SourceOutcome)> = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        if let Ok(pair) = joined {
+            outcomes.push(pair);
+        }
+    }
+
+    // A source this node refused to start (a 503 from guest-HTTP
+    // admission) is retried once, serially, now that the fan-out's
+    // permits are free again -- the same single retry the Hub does.
+    let retry: Vec<String> = outcomes
+        .iter()
+        .filter(|(_, o)| matches!(o, SourceOutcome::NotStarted))
+        .map(|(s, _)| s.clone())
+        .collect();
+    for source in retry {
+        let (_, again) = query_one(source.clone()).await;
+        if let Some(slot) = outcomes.iter_mut().find(|(s, _)| *s == source) {
+            slot.1 = again;
+        }
+    }
+
+    for (source, outcome) in &outcomes {
+        if let Some(line) = outcome.note() {
+            println!("source {source}: {line}");
         }
     }
 
@@ -576,11 +674,10 @@ async fn find(
         let issuer = hit.get("issuer").and_then(|v| v.as_str()).unwrap_or("?");
         let age = hit.get("age_secs").and_then(|v| v.as_u64()).unwrap_or(0);
         let revocation = hit.get("revocation_status").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let credential = hit.get("credential").and_then(|v| v.as_str()).unwrap_or("unknown");
         let sources_val = hit.get("sources").cloned().unwrap_or_default();
         println!(
             "- {listing_id} \"{title}\" by {issuer}, age {age}s, revocation: {revocation}, \
-             membership: {credential}, sources: {sources_val}"
+             membership: not checked, sources: {sources_val}"
         );
     }
 

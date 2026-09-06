@@ -44,6 +44,9 @@ export interface SourceOutcome {
   kind: SourceOutcomeKind;
   verified: number;
   refused: number;
+  /// The directory said it had more matches for this query than it would
+  /// return -- its own statement, distinct from the merged page cap.
+  truncated: boolean;
   message?: string;
 }
 
@@ -70,6 +73,7 @@ interface QuerySourceReply {
   source: string;
   verified: number;
   refused: number;
+  truncated?: boolean;
   error: { kind: string; code?: number; message?: string } | null;
 }
 
@@ -92,19 +96,27 @@ async function queryOneSource(
         kind: (reply.error.kind as SourceOutcomeKind) || "unreadable",
         verified: reply.verified ?? 0,
         refused: reply.refused ?? 0,
+        truncated: reply.truncated ?? false,
         message: reply.error.message,
       };
     }
-    return { source, kind: "ok", verified: reply.verified ?? 0, refused: reply.refused ?? 0 };
+    return {
+      source,
+      kind: "ok",
+      verified: reply.verified ?? 0,
+      refused: reply.refused ?? 0,
+      truncated: reply.truncated ?? false,
+    };
   } catch (err) {
     if (err instanceof RpcError && err.code === 503) {
-      return { source, kind: "not-started", verified: 0, refused: 0 };
+      return { source, kind: "not-started", verified: 0, refused: 0, truncated: false };
     }
     return {
       source,
       kind: "unreadable",
       verified: 0,
       refused: 0,
+      truncated: false,
       message: err instanceof Error ? err.message : String(err),
     };
   }

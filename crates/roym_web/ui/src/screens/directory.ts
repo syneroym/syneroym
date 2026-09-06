@@ -206,10 +206,16 @@ function buildSearch(): HTMLElement {
   const errorsHost = document.createElement("div");
   errorsHost.className = "search-source-errors";
 
+  // One partial merge at a time, at most one queued. The fan-out workers
+  // never wait on it -- they only mark the results dirty -- so a slow
+  // merge cannot serialize the queries behind it.
+  const sourceLines = new Map<string, HTMLElement>();
+
   goBtn.onclick = async () => {
     results.replaceChildren();
     refusedHost.replaceChildren();
     errorsHost.replaceChildren();
+    sourceLines.clear();
     progress.textContent = "Starting...";
     goBtn.disabled = true;
 
@@ -221,24 +227,39 @@ function buildSearch(): HTMLElement {
       .filter(Boolean);
     if (cats.length) query.categories = cats;
 
-    try {
-      let lastRunId = "";
-      const { run, merged } = await runSearch(query, async (outcome, prog) => {
-        lastRunId = prog.runId;
-        progress.textContent = `${prog.answered} of ${prog.total} directories answered...`;
-        renderSourceOutcome(errorsHost, outcome);
-        // Render what has come in so far while slower sources are still
-        // outstanding -- `merge` returns whatever `query-source` rows exist
-        // at the moment it is called.
-        try {
-          const partial = await call<MergeResult>("directory.merge", { run_id: prog.runId });
+    let mergeRunning = false;
+    let mergeDirty = false;
+    let lastRunId = "";
+    async function refreshPartial(runId: string) {
+      lastRunId = runId;
+      if (mergeRunning) {
+        mergeDirty = true;
+        return;
+      }
+      mergeRunning = true;
+      try {
+        do {
+          mergeDirty = false;
+          const partial = await call<MergeResult>("directory.merge", { run_id: runId });
           results.replaceChildren();
           refusedHost.replaceChildren();
-          renderHits(results, partial.hits, partial.hits_truncated, prog.runId);
+          renderHits(results, partial.hits, partial.hits_truncated, runId);
           renderRefused(refusedHost, partial.refused, partial.refused_truncated);
-        } catch {
-          /* the final merge below is authoritative */
-        }
+        } while (mergeDirty);
+      } catch {
+        /* the final merge below is authoritative */
+      } finally {
+        mergeRunning = false;
+      }
+    }
+
+    try {
+      const { run, merged } = await runSearch(query, (outcome, prog) => {
+        progress.textContent = `${prog.answered} of ${prog.total} directories answered...`;
+        renderSourceOutcome(errorsHost, sourceLines, outcome);
+        // Fire, do not await: the worker moves straight to the next
+        // source while this catches up in the background.
+        void refreshPartial(prog.runId);
       });
       progress.textContent =
         run.sources.length === 0
@@ -258,14 +279,39 @@ function buildSearch(): HTMLElement {
   return wrap;
 }
 
-function renderSourceOutcome(host: HTMLElement, outcome: SourceOutcome) {
-  if (outcome.kind === "ok") return;
+/// One line per source, keyed by DID and replaced in place -- so a source
+/// that was `not-started` and then succeeded on retry loses its old line
+/// instead of keeping a stale "this installation was busy" note next to
+/// results it did contribute.
+function renderSourceOutcome(
+  host: HTMLElement,
+  lines: Map<string, HTMLElement>,
+  outcome: SourceOutcome,
+) {
+  const clean = outcome.kind === "ok" && !outcome.truncated;
+  const existing = lines.get(outcome.source);
+  if (clean) {
+    if (existing) {
+      existing.remove();
+      lines.delete(outcome.source);
+    }
+    return;
+  }
   const line = document.createElement("div");
   line.className = "source-error-line";
-  line.dataset.kind = outcome.kind;
+  line.dataset.kind = outcome.kind === "ok" ? "truncated" : outcome.kind;
   line.appendChild(text("span", outcome.source, "source-error-did"));
-  line.appendChild(text("span", sourceErrorWords(outcome.kind), "source-error-reason"));
-  host.appendChild(line);
+  const reason =
+    outcome.kind === "ok"
+      ? "this directory had more matches than it would return"
+      : sourceErrorWords(outcome.kind);
+  line.appendChild(text("span", reason, "source-error-reason"));
+  if (existing) {
+    existing.replaceWith(line);
+  } else {
+    host.appendChild(line);
+  }
+  lines.set(outcome.source, line);
 }
 
 function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, runId: string) {

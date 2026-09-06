@@ -113,6 +113,23 @@ describe("directory client fan-out loop", () => {
     expect(seen.sort()).toEqual(["did:a", "did:b", "did:c"]);
   });
 
+  it("carries a directory's own truncated flag onto the source outcome", async () => {
+    stubRpc({
+      sources: ["did:full", "did:normal"],
+      maxConcurrency: 3,
+      reply: (source) => ({
+        source,
+        verified: 1,
+        refused: 0,
+        truncated: source === "did:full",
+        error: null,
+      }),
+    });
+    const { outcomes } = await runSearch({});
+    expect(outcomes.find((o) => o.source === "did:full")?.truncated).toBe(true);
+    expect(outcomes.find((o) => o.source === "did:normal")?.truncated).toBe(false);
+  });
+
   it("a run with zero sources makes no query-source call and still merges", async () => {
     const probe = stubRpc({
       sources: [],

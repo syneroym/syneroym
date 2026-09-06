@@ -1512,10 +1512,10 @@ No Directory needs to be deployed anywhere for the rest of Roym's flow to
 work — a consumer reaching a provider by direct link completes the whole
 find-and-engage path with `roym directory sources` returning nothing.
 
-**Not yet built (see `status.md`'s C6 section and `deferred-backlog.md`
-§11):** the Hub has no Directory or SynOrg tab, so this command group is
-today the *only* way to run a SynOrg or search one from this
-installation.
+The Hub has a **Directory** tab (add a directory, search, read the merged
+hits and refused evidence) and a **SynOrg** tab (settings and roster) that
+drive the same JSON-RPC API. This command group and the browser Hub are
+two clients of one service; each still owns its own fan-out loop.
 
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy
 
