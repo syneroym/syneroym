@@ -1572,9 +1572,14 @@ addressed on the branch:
   non-`-32013` on both builds; scenario 109 is rebuilt with a real
   SynOrg, a member, a published listing, a valid-envelope publish and a
   hit-returning search, then asserts the proxy counter is unmoved. The
-  three-substrate e2e step 9 gains an anonymous `directory.publish`
-  attempt (the only rule that separates an anonymous caller from a
-  merely unknown one).
+  three-substrate e2e's step-9 "anonymous" caller was actually mislabeled
+  — `SyneroymClient` with a generated `Identity` is a *verified*
+  connection (unknown DID, no delegation), not anonymous, and a key-less
+  wire caller is not expressible over iroh. The helper is renamed
+  `stranger_wire_invoke`, its doc corrected, and step 9 now asserts the
+  stranger *is* admitted to `VerifiedOnly` `directory.publish` (only a
+  `Verified` caller can be) — with the truly-anonymous arm left to
+  parity scenario 80.
 
 **Should-fix (13).** Non-Latin text queries are refused `-32602` rather
 than returning everything; `roymctl directory find` prints per-source

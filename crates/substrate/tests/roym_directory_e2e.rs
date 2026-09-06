@@ -21,11 +21,12 @@
 //! sees is computed on their own clock; missing evidence renders as
 //! `unknown`, never as a positive default; the directory verifies nothing
 //! on the consumer's behalf; a publication past the SynOrg's limit is
-//! refused visibly to the provider; an anonymous wire caller reaches
-//! `directory.search` but is refused both `member.list` (unlisted) and
-//! `directory.publish` (`VerifiedOnly` -- the rule that actually
-//! distinguishes an anonymous caller from a merely unknown one); a stale
-//! or absent certificate on
+//! refused visibly to the provider; a stranger dialling in from a
+//! self-minted identity reaches `directory.search` and is refused
+//! `member.list`, and -- because a generated key is still a verified
+//! connection -- is admitted to `VerifiedOnly` `directory.publish` (the
+//! truly key-less anonymous arm lives in the parity suite); a stale or
+//! absent certificate on
 //! the provider's own node is indistinguishable, at the provider, from
 //! "this directory does not want you"; two directories disagreeing about a
 //! version surface the disagreement rather than resolve it silently; and
@@ -604,9 +605,13 @@ where
 
 /// One JSON-RPC `invoke` frame delivered to `target_did`'s directory
 /// interface over a real QUIC stream, from a freshly generated identity
-/// with no delegation -- so the router reads `CallerOrigin::Anonymous`.
+/// with no delegation. The connection key is still verified by the
+/// handshake, so the router reads `CallerOrigin::Verified(<generated
+/// did>)` -- a stranger, not an anonymous caller. A truly key-less
+/// `Anonymous` wire caller cannot be expressed over iroh; the parity
+/// suite covers that arm with `AuthLevel::System`.
 /// Returns the inner `envelope::Response`-shaped value the guest produced.
-async fn anon_wire_invoke(
+async fn stranger_wire_invoke(
     registry_url: &str,
     target_did: &str,
     method: &str,
@@ -864,9 +869,11 @@ async fn roym_directory_search_half_across_three_substrates() {
     deliver_one_message(&node_x, "node-y", &result_address, "found you through the directory")
         .await;
 
-    // --- Step 9: an anonymous raw wire caller reaches directory.search
-    //     and succeeds, and reaches member.list and gets -32013. --------
-    let anon_search = anon_wire_invoke(
+    // --- Step 9: a stranger dialling in over the wire from a self-minted
+    //     identity reaches directory.search, is refused member.list, and
+    //     -- because a generated key is still a *verified* connection --
+    //     is admitted to the VerifiedOnly directory.publish. -------------
+    let stranger_search = stranger_wire_invoke(
         &shared_registry,
         &z_dir_did,
         "directory.search",
@@ -874,30 +881,34 @@ async fn roym_directory_search_half_across_three_substrates() {
     )
     .await;
     assert!(
-        anon_search["result"]["hits"].as_array().is_some(),
-        "an anonymous stranger may read a directory: {anon_search}"
+        stranger_search["result"]["hits"].as_array().is_some(),
+        "a stranger may read a directory: {stranger_search}"
     );
-    let anon_members =
-        anon_wire_invoke(&shared_registry, &z_dir_did, "member.list", json!({})).await;
+    let stranger_members =
+        stranger_wire_invoke(&shared_registry, &z_dir_did, "member.list", json!({})).await;
     assert_eq!(
-        anon_members["error"]["code"], -32013,
-        "member.list is never reachable off the node: {anon_members}"
+        stranger_members["error"]["code"], -32013,
+        "member.list is never reachable off the node: {stranger_members}"
     );
-    // `member.list` being refused proves nothing about anonymity on its
-    // own -- it is unlisted, so a *verified* stranger is refused it too.
-    // `directory.publish` is `VerifiedOnly`: an anonymous caller is
-    // refused it, a verified one is not. This is the assertion that the
-    // caller above actually arrived anonymous, not merely unknown.
-    let anon_publish = anon_wire_invoke(
+    // `member.list` being refused proves only that the method is
+    // unlisted, not anything about the caller's identity. `search`
+    // (Open) and `publish` (VerifiedOnly) together do: this stranger is
+    // admitted to both, which is only possible for a `Verified` caller.
+    // A key-less, truly `Anonymous` wire caller -- refused `publish`
+    // with -32013 -- is not expressible over iroh (every connection is
+    // keyed); that arm is covered by parity scenario 80.
+    let stranger_publish = stranger_wire_invoke(
         &shared_registry,
         &z_dir_did,
         "directory.publish",
         json!({ "envelope": y_envelope }),
     )
     .await;
-    assert_eq!(
-        anon_publish["error"]["code"], -32013,
-        "an anonymous caller is refused directory.publish (VerifiedOnly): {anon_publish}"
+    assert_ne!(
+        stranger_publish["error"]["code"].as_i64(),
+        Some(-32013),
+        "a self-minted identity is a verified connection, so VerifiedOnly admits it: \
+         {stranger_publish}"
     );
 
     // --- Step 10: Y publishes past the limit and is refused with a
