@@ -1688,3 +1688,11 @@ themselves introduced. All addressed:
   retry phase shows "Retrying directories this installation was too busy
   to start…" instead of repeating a stale count.
 
+**Gates re-run after N1–N7 (2026-09-06).** `cargo +nightly fmt` + stable
+check clean · `clippy --workspace --all-targets --all-features` clean ·
+`cargo test --workspace --no-fail-fast` (sandbox off) — 152 binaries,
+exit 0, 0 failures · full `dual_build_parity` — 115 passed, 0 failed,
+both builds · scenario 119's strengthened form confirmed to fail against
+a temporary set-iteration patch before trusting it · `mise run
+test:e2e` — 42 passed (default) + 4 passed (multihop), 0 failed.
+
