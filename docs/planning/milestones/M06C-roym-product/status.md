@@ -1633,3 +1633,24 @@ conflates two deliberately-separate lists for little gain. R25
 (build-time stripping of the `window` test hooks) — deferred as a set
 rather than stripping one of three inconsistently.
 
+**Gate evidence (2026-09-06, second review pass).**
+- `cargo +nightly fmt --all` — clean; stable `cargo fmt --all -- --check`
+  (the pre-commit hook) — clean.
+- `cargo clippy --workspace --all-targets --all-features` — clean, 0
+  warnings.
+- `cargo test --workspace --no-fail-fast` (sandbox off) — **152 test
+  binaries, exit 0, 0 failures.** Includes `roym_directory_e2e` (1
+  passed, 71 s) after the step-9 fix.
+- `cargo test -p syneroym-roym-web --test dual_build_parity` —
+  **115 passed, 0 failed** on both builds.
+- `mise run test:roym-ui` — 34 vitest passed; `tsc` + `eslint` clean.
+- `cargo audit` — exit 0, no advisories. `cargo deny check licenses` —
+  ok.
+- `mise run test:e2e` (sandbox off) — Playwright `.last-run.json`:
+  `status: "passed"`, `failedTests: []`. Includes `roym-hub.spec.ts`
+  with the renamed case 23b.
+- WASM components (`directory`, `catalog`, `web`) and the Hub UI bundle
+  were rebuilt before the parity and e2e runs — the parity harness loads
+  pre-built `wasm32-wasip2` artifacts, so a stale build would compare a
+  fixed WASM side against a freshly-built native side.
+
