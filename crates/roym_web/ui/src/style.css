@@ -137,3 +137,79 @@ body {
 .verify-bad {
   color: #b91c1c;
 }
+
+/* --- Directory & SynOrg --- */
+.directory-intro,
+.synorg-intro,
+.search-help,
+.refused-intro,
+.roster-note {
+  font-size: 0.9em;
+  color: #475569;
+}
+.directory-source-row,
+.roster-row,
+.publication-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  background: white;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 4px 0;
+}
+.source-did,
+.member-did,
+.publication-listing {
+  font-family: ui-monospace, monospace;
+  font-size: 0.8em;
+  color: #64748b;
+}
+.source-last-error,
+.source-error-reason {
+  color: #b45309;
+}
+.search-hit {
+  background: white;
+  border: 1px solid #cbd5e1;
+  border-left: 4px solid #15803d;
+  border-radius: 6px;
+  padding: 10px;
+  margin: 6px 0;
+}
+.search-hit[data-verified="false"] {
+  border-left-color: #b91c1c;
+  background: #fef2f2;
+}
+.hit-evidence {
+  font-size: 0.85em;
+  color: #475569;
+  margin: 6px 0;
+}
+.evidence-signature {
+  font-weight: 600;
+}
+.hit-versions-differ {
+  color: #b45309;
+  font-size: 0.85em;
+}
+.search-refused {
+  margin-top: 16px;
+  border-top: 2px dashed #cbd5e1;
+  padding-top: 8px;
+}
+.refused-hit {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 4px 0;
+  font-size: 0.9em;
+}
+.source-error-line {
+  display: flex;
+  gap: 10px;
+  font-size: 0.85em;
+  color: #b45309;
+}

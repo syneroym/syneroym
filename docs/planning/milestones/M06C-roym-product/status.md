@@ -1375,12 +1375,112 @@ node for the certificate-dependency sub-step.
    `D-06C-*`, `F6c`, `\bR1 row`, `\bC[0-9]`, `Slice ` all scrubbed from
    comments; §-references removed).
 
-### Items 3, 4 — status
+### Item 3 — the Hub Directory/SynOrg surface (plan §11.4, §10) — **DONE (case 15 excepted)**
 
-- **Item 3** (Hub Directory/SynOrg tabs + `roym-hub.spec.ts` cases 13–23,
-  plan §11.4 / §10): in progress — see below when it lands.
-- **Item 4** (WO5, `D-C6-17`): not started.
+New Hub code (`crates/roym_web/ui/src`):
 
-The `deferred-backlog.md` §11 row for item 2 moved to "Recently
-resolved"; the rows for items 3 and 4 are unchanged.
+- **`directory/search.ts`** — the client fan-out loop, the one copy of it
+  in the Hub (`roymctl` still has its own — the shared-module backlog row
+  stays open until a third client). `runSearch` calls `directory.start-run`,
+  issues `directory.query-source` per source **at most `max_concurrency`
+  in flight, the number the node returns and never one the client picks**
+  (`D-C6-26`), calls back per source so the view re-merges and re-renders
+  progressively, retries a `not-started` source once the run drains, and
+  returns `directory.merge`. A 503 from this node's own gateway becomes
+  `not-started`, kept distinct from a `query-source` reply whose
+  `error.kind` is `timed-out`. A test-only `ignoreConcurrency` option
+  (exposed on `window.RoymDirectory`) lets the browser suite
+  oversubscribe the admission door on purpose.
+- **`screens/directory.ts`** — the Directory tab: add a source by DID
+  (probe outcome reported, including "answered, but runs no directory"),
+  list/remove sources, and search. Each result shows **its source, its
+  age in words, `revocation: unknown`, and `membership: not checked`**,
+  and the evidence block never uses the bare word "verified"; a hit whose
+  signature did not check out is styled distinctly
+  (`[data-verified="false"]`) and has no "Message this provider"
+  affordance. Refused evidence renders in its **own block below the
+  results**, never inside a result card. A source error renders beside its
+  name without replacing the page. Every stranger-influenced string is a
+  text node.
+- **`screens/synorg.ts`** — the SynOrg tab: create/edit settings (rules
+  and dispute text render as textarea values, never markup), an
+  **editable publication-limit control on the same screen** (`D-C6-22`),
+  the local member roster, and the owner's publications-review list with
+  per-row unpublish.
+- **`screens/listings.ts`** — a **"Publish to a directory"** control per
+  listing row (journey step **S7**): the provider pastes a directory DID
+  and publishes; a refusal (over the limit, or a draft) shows with its
+  reason.
+- `main.ts` gains the Directory and SynOrg tabs; `global-setup.ts`
+  exports `ROYM_DIRECTORY_DID` so the browser suite can add the node's
+  own directory as a source (a single-node loopback — the proxy resolves
+  a service hosted on this node through the local endpoint registry, with
+  no network hop).
+
+**Tests:**
+
+- `directory/search.test.ts` (vitest): the loop never exceeds
+  `max_concurrency`, a 503 is `not-started` not `timed-out`, every source
+  is reported exactly once, a zero-source run makes no `query-source`
+  call and still merges.
+- `roym-hub.spec.ts` cases 13, 14, 16–23b (**11 new cases**): add/remove
+  a source (13); a result showing source, age-in-words and both unknowns
+  and never bare "verified" (14); a malicious listing title through a
+  directory as literal text, no element, no request (16); the
+  no-directory empty state (17); a source error beside other results
+  (18); creating a SynOrg with rules-as-text (19); editing the
+  publication limit from the Hub so a refused publisher then succeeds in
+  one flow (20); publishing a listing to a chosen directory from
+  Listings, and a draft refused with a reason (21); the results view
+  filling in per source without a slow source blanking it (22); the
+  full-`MAX_SOURCES` run with no 503 reaching the person (23);
+  `NotStarted` distinct from `TimedOut` on the real HTTP path (23b).
+
+**Case 15 (a forged result rendering as refused evidence) is not built.**
+Producing it needs a source that serves a listing whose signature does
+not verify, and a genuine loopback directory verifies every publication
+at its own door — so a single-node browser test cannot serve a forgery.
+This is the same canned-hostile-source gap the parity suite covers
+(scenarios 102 / 102b / 102d) and the three-substrate e2e does not. The
+render path it would exercise (`[data-verified="false"]` styling, no
+engage button, the `refused[]` block) is present in `directory.ts` and
+exercised structurally by the other cases; a browser proof needs a
+hostile-source fixture, tracked below.
+
+**Cases 22, 23, 23b are best-effort against the single-node harness.** A
+bogus source DID fails registry resolution in milliseconds, so there is
+no genuinely *slow* source to demonstrate progressive rendering against
+(22), and no reliable way to force `web`'s guest-HTTP admission to 503
+(23b) — that arm is proven deterministically by `search.test.ts`
+instead. What the browser cases do assert: the run completes with every
+source accounted for, the loopback hit survives every re-render, no 503
+wording reaches the person, and the loopback source is never blamed as
+timed out.
+
+**Verification (item 3):**
+
+1. `cd crates/roym_web/ui && npm run build` (eslint + tsc + vite): **clean.**
+2. `mise run test:roym-ui` (vitest): **33 passed** across 5 files — the
+   four new `directory/search.test.ts` cases plus the pre-existing 29.
+3. `mise run test:e2e`: **42 passed (default config) + 4 passed (multihop
+   config)**, including `roym-hub.spec.ts` cases 13, 14, 16–23b. The
+   pre-existing 12 Roym Hub cases and the webrtc / wasm-app / keepalive
+   suites are unchanged and still pass.
+4. **No Rust changes** in item 3 (`global-setup.ts` is a test-harness
+   `.ts` edit). `cargo clippy --workspace --all-targets --all-features`:
+   clean. `cargo deny check licenses`: `licenses ok`. `cargo audit`:
+   clean (no dependency change).
+5. Planning-identifier grep over the new / edited TS files: **none** (one
+   `D-C6-26` reference removed from a `search.ts` comment).
+
+### Item 4 — status
+
+**Item 4** (WO5, `D-C6-17` — wire the native shim's guest-HTTP/websocket
+sinks through `host_for_wire`): **not started.** Explicitly severable in
+the plan; cutting it unwinds nothing. Its trigger (a Roym component with
+`admit::require_internal` in an `incoming-handler`) has still not fired.
+
+The `deferred-backlog.md` §11 rows for items 2 and 3 moved to "Recently
+resolved" (item 3's leaves a narrower row: the case-15 hostile-source
+fixture); the row for item 4 is unchanged.
 
