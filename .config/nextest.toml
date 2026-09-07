@@ -1,0 +1,41 @@
+# cargo-nextest configuration.
+#
+# nextest runs every test binary's tests in one shared parallel pool, rather
+# than `cargo test`'s one-binary-at-a-time. That is the whole point -- the
+# workspace has ~150 test binaries and most of the wall-clock was spent
+# waiting for the next binary to start.
+#
+# The exception is the substrate end-to-end suite. Each of those tests boots
+# a full `syneroym-substrate` node (iroh coordinator, registry, gateway, the
+# WASM sandbox). `cargo test` never ran two at once because an in-process
+# `SUBSTRATE_TEST_LOCK` serialised them; nextest runs each test in its own
+# process, so that lock no longer spans anything. The `substrate-e2e` group
+# below restores the guarantee -- one substrate node live at a time -- while
+# every other test still runs fully parallel.
+
+[test-groups.substrate-e2e]
+max-threads = 1
+
+[profile.default]
+# A test that has not finished in 90s is reported; one still running at
+# 6 * 90s = 9min is killed (a hung node, not a slow one). Local runs do
+# not retry -- a failure should be visible immediately.
+slow-timeout = { period = "90s", terminate-after = 6 }
+
+[[profile.default.overrides]]
+filter = 'package(syneroym-substrate) & kind(test)'
+test-group = 'substrate-e2e'
+
+[profile.ci]
+# CI shows every failure at the end again, and never stops early -- one
+# flaky test should not mask the rest of the run.
+fail-fast = false
+failure-output = "immediate-final"
+
+[[profile.ci.overrides]]
+# The e2e suite has rare infrastructure flakes (mbuf exhaustion / ENOBUFS
+# when a previous run left sockets behind). Two retries hide those without
+# hiding a real regression, which fails every time.
+filter = 'package(syneroym-substrate) & kind(test)'
+test-group = 'substrate-e2e'
+retries = { backoff = "fixed", count = 2, delay = "5s" }

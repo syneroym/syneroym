@@ -8,6 +8,13 @@ rust = "stable"
 "cargo:cargo-deny" = "latest"
 "cargo:cargo-llvm-cov" = "latest"
 "cargo:cargo-sweep" = "latest"
+# Test runner. `cargo nextest run` replaces `cargo test` for the workspace
+# suite (see `test:rust`); it runs every test binary in one parallel pool
+# instead of one binary at a time, and honours `.config/nextest.toml` (the
+# serialized `substrate-e2e` group). CI installs the prebuilt binary via
+# `taiki-e/install-action`; `cargo:` here builds it from source for local
+# `mise install`.
+"cargo:cargo-nextest" = "latest"
 node = "20"
 
 [settings]
@@ -75,7 +82,12 @@ run = """
 [tasks."test:rust"]
 description = "Run all Rust unit and integration tests"
 depends = ["build:test-components", "build:roym", "check:roym-deps", "test:roym-ui"]
-run = "cargo test --workspace"
+# nextest runs every test binary in one parallel pool (see .config/nextest.toml);
+# it does not run doctests, so those follow in a second `cargo test --doc` pass.
+run = [
+  "cargo nextest run --workspace",
+  "cargo test --workspace --doc",
+]
 
 [tasks."test:e2e"]
 description = "Run Playwright WebRTC end-to-end browser tests"

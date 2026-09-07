@@ -2,7 +2,7 @@
 
 ## General Instructions
 - Focus religiously on these code aspects: Simplicity, performance, readability, testability, overall beauty, robustness, scalability, reliability.
-- Follow standard Rust `clippy` guidelines. Before completion, confirm that `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, `cargo test --workspace`, `cargo audit`, `cargo deny check licenses`, and `mise run test:e2e` succeed. As part of the same completion pass, update [docs/planning/deferred-backlog.md](docs/planning/deferred-backlog.md) if the change deferred or shortcut anything (see the Mandatory Deferred-Backlog Update rule under AI Agent Guidelines).
+- Follow standard Rust `clippy` guidelines. Before completion, confirm that `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, `cargo nextest run --workspace` (plus `cargo test --workspace --doc` for doctests), `cargo audit`, `cargo deny check licenses`, and `mise run test:e2e` succeed. As part of the same completion pass, update [docs/planning/deferred-backlog.md](docs/planning/deferred-backlog.md) if the change deferred or shortcut anything (see the Mandatory Deferred-Backlog Update rule under AI Agent Guidelines).
 - Try to use the latest stable versions of any library added.
 - Have extensive integration and end to end tests for end user facing interfaces.
 - Have solid unit tests for internal code if it is complex and delicate, even if it is not user facing.
@@ -41,11 +41,14 @@ cargo audit
 # License check (SPDX compliance against deny.toml)
 cargo deny check licenses
 
-# Full Rust test suite
-cargo test --workspace
+# Full Rust test suite -- nextest runs every test binary in one parallel
+# pool (see .config/nextest.toml); it does not run doctests.
+cargo nextest run --workspace
+cargo test --workspace --doc
 # Single crate / single test
-cargo test -p syneroym-router routing::tests::some_test_name
-# Via mise (recommended, matches CI)
+cargo nextest run -p syneroym-router routing::tests::some_test_name
+# Via mise (recommended, matches CI -- runs both of the above plus the
+# WASM/UI build prerequisites)
 mise run test:rust
 
 # Playwright WebRTC end-to-end tests (crates/substrate/tests/e2e)
@@ -76,7 +79,7 @@ mise run deps:update
 # Prune stale target/ artifacts (untouched 14+ days) instead of `cargo clean`
 mise run clean:sweep
 ```
-Crate names are `syneroym-<dir>` (e.g. `crates/data_db` → `syneroym-data-db`, `crates/coordinator_iroh` → `syneroym-coordinator-iroh`) — use these with `cargo test -p` / `cargo build -p`.
+Crate names are `syneroym-<dir>` (e.g. `crates/data_db` → `syneroym-data-db`, `crates/coordinator_iroh` → `syneroym-coordinator-iroh`) — use these with `cargo nextest run -p` / `cargo build -p`.
 
 ## Project & Rust Specifics
 - Given the presence of WASM component configurations (`wasm32-wasip2`), maintain clean `wit` file boundaries and consider cross-compilation constraints.
@@ -91,7 +94,7 @@ Crate names are `syneroym-<dir>` (e.g. `crates/data_db` → `syneroym-data-db`, 
 - The above docs are starting points for the implementation. It is likely that during implementation we deviate and improvise from those, and later get them in sync.
 
 ## AI Agent Guidelines
-- **Mandatory Pre-Completion Verification**: Before concluding any coding task, you MUST execute and confirm success for all standard quality gates: `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, `cargo test --workspace`, `cargo audit`, `cargo deny check licenses`, and `mise run test:e2e`. Do not skip `cargo audit` and `cargo deny check licenses`—they are fast, lightweight, and required for CI.
+- **Mandatory Pre-Completion Verification**: Before concluding any coding task, you MUST execute and confirm success for all standard quality gates: `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, `cargo nextest run --workspace` and `cargo test --workspace --doc`, `cargo audit`, `cargo deny check licenses`, and `mise run test:e2e`. Do not skip `cargo audit` and `cargo deny check licenses`—they are fast, lightweight, and required for CI.
 - **Mandatory Import Cleanup**: Before finishing any coding task, you MUST perform a dedicated final pass over the files you edited to clean up imports. You must strictly enforce the import rules (Types via standard `use`, Functions qualified by parent module) and proactively remove inline fully-qualified paths (lines with multiple `::`). For conflicting types like `Result` or `Error`, import their parent module (e.g., `use std::fmt;`) and use `fmt::Result` to avoid multiple `::`.
 - **Mandatory Deferred-Backlog Update**: Before finishing any task, do a final sanity pass (same discipline as the import cleanup) asking: *did this change postpone, shortcut, coarsely gate as a stand-in, or scope out anything?* If yes, record it in [docs/planning/deferred-backlog.md](docs/planning/deferred-backlog.md) — the single running backlog — under the right theme, with the reason, a target milestone/phase (or `TBD`), and a link to the source of record or `file.rs:line`. Every new open `TODO`/`FIXME` marker that encodes a real deferral needs a matching row in that doc's "Open in-code markers" section. Conversely, when you *resolve* a deferral, delete its code marker and move its backlog row to "Recently resolved". Keeping this doc current is part of "done," not optional.
 - **No Planning-Doc References in Code**: Never cite milestone/slice/task IDs (`M04A`, `Slice B6`, `B7a`, etc.) or planning-doc section numbers in code comments, doc comments, or test names. These docs get archived, renumbered, or deleted, so the reference rots and the comment becomes misleading noise. ADR references (`ADR-0014`) are fine since ADRs are stable, permanent records. Comments should explain the current WHY (invariant, constraint, non-obvious tradeoff) standing on its own — that context belongs in the commit message or PR description, not the code.
@@ -101,16 +104,16 @@ Crate names are `syneroym-<dir>` (e.g. `crates/data_db` → `syneroym-data-db`, 
 - **Security and Dependencies**: Do not exfiltrate secrets. Use minimal, pinned, widely-used libraries. Update manifests appropriately.
 - **Git Commit Messages (Conventional Commits + 50/72 Rule)**: Prefix the subject line with a [Conventional Commits](https://www.conventionalcommits.org/) type (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `build`, `ci`, `style`, `revert`), plus an optional scope, e.g. `fix(data-db): ...`. The description after the colon is lowercase, in the imperative mood, with no trailing period, and the whole subject line stays at or under 50 characters where practical. The second line must be empty. The body (lines 3+) must be wrapped at 72 characters and explain the what and why, not the how.
 - **Pull Request CLA Checkbox**: `.github/workflows/cla-enforcer.yml` fails any PR whose description doesn't contain this exact line, checked and unmodified, on its own line: `- [x] I have read and agree to the [Syneroym CLA](https://github.com/syneroym/syneroym/blob/main/CLA.md).` `gh pr create --body` overrides `.github/PULL_REQUEST_TEMPLATE.md` entirely, so always include this line verbatim in any PR body you author.
-- **Context Budget**: This is a large workspace, so avoid letting noise from clean runs fill the context window. When a workspace-wide command (`cargo test --workspace`, `cargo clippy --workspace --all-targets --all-features`, `mise run test:all`, etc.) succeeds, don't paste its full passing/clean output — a short "N tests passed" / "clippy clean" suffices. The instant a command fails, show its full relevant output (the failing test's output, the clippy diagnostic, the panic/backtrace) — never trim or summarize a failure or anything you're actively diagnosing. Keep the *tool result itself* small. While iterating, prefer a targeted `cargo test -p syneroym-<crate> --quiet`. For a full run, send everything to a file so only the exit code and a short tail enter context (`--quiet` alone is not enough — the substrate's `tracing` output goes to the real stdout fd, past libtest's capture):
+- **Context Budget**: This is a large workspace, so avoid letting noise from clean runs fill the context window. When a workspace-wide command (`cargo nextest run --workspace`, `cargo clippy --workspace --all-targets --all-features`, `mise run test:all`, etc.) succeeds, don't paste its full passing/clean output — a short "N tests passed" / "clippy clean" suffices. The instant a command fails, show its full relevant output (the failing test's output, the clippy diagnostic, the panic/backtrace) — never trim or summarize a failure or anything you're actively diagnosing. Keep the *tool result itself* small. While iterating, prefer a targeted `cargo nextest run -p syneroym-<crate>`. For a full run, send everything to a file so only the exit code and a short tail enter context (nextest's own summary is compact, but the substrate's `tracing` output goes to the real stdout fd):
 
 ```bash
-cargo test --workspace --quiet > target/test-run.log 2>&1; echo "exit=$?"; tail -n 15 target/test-run.log
+cargo nextest run --workspace > target/test-run.log 2>&1; echo "exit=$?"; tail -n 20 target/test-run.log
 ```
 
-On `exit=0` you are done. On failure, find the failing test in the file and read only that region — don't cat the whole log:
+On `exit=0` you are done (doctests still need a separate `cargo test --workspace --doc`). On failure, nextest prints a `--- STDERR ---` block per failing test and a `Summary` list at the end; read those regions:
 
 ```bash
-grep -nE 'error\[|panicked|test result: FAILED|^test .* FAILED' target/test-run.log
+grep -nE 'error\[|panicked|FAIL \[|^\s+FAIL|Summary' target/test-run.log
 ```
 
 The substrate's log level already defaults to `warn` (`.cargo/config.toml` `[env]`); don't add `RUST_LOG=info`/`debug` or `-- --nocapture` to a routine run — only when actively diagnosing a specific failure. Likewise prefer targeted `Read` ranges over re-reading whole files you've already seen, and push pure exploration/search legs of a task (finding call sites, scanning logs) into a subagent so only the distilled answer lands in the main thread.

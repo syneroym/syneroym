@@ -43,6 +43,19 @@ runs:
       run: mise run test:roym-ui
       shell: bash
 
+    - name: Install cargo-nextest
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-nextest
+
+    # nextest runs every test binary in one parallel pool instead of
+    # `cargo test`'s one-at-a-time; `.config/nextest.toml`'s `substrate-e2e`
+    # group keeps the node-booting e2e tests serialised. Doctests are a
+    # separate pass -- nextest does not run them.
     - name: Run Tests
-      run: cargo test --workspace --all-targets --all-features ${{ inputs.release_flag }}
+      run: cargo nextest run --workspace --all-features --profile ci ${{ inputs.release_flag }}
+      shell: bash
+
+    - name: Run Doctests
+      run: cargo test --workspace --all-features --doc ${{ inputs.release_flag }}
       shell: bash
