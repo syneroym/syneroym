@@ -30,6 +30,9 @@ pub const RECORD_TYPES: &[(&str, u32)] = &[
 
 pub const RECORD_PROFILE: &str = "profile";
 pub const RECORD_LISTING: &str = "listing";
+pub const RECORD_REQUEST: &str = "request";
+pub const RECORD_QUOTE: &str = "quote";
+pub const RECORD_AGREEMENT_RECEIPT: &str = "agreement-receipt";
 
 pub fn is_known_record(record_type: &str, version: u32) -> bool {
     RECORD_TYPES.iter().any(|&(t, v)| t == record_type && v == version)

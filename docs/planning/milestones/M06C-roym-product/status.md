@@ -1704,3 +1704,66 @@ test:e2e` — 42 passed (default) + 4 passed (multihop), 0 failed.
 --all-targets` clean · full `dual_build_parity` — 115/115 both builds ·
 `roym_directory_e2e` (export/import/reindex step) — 1 passed.
 
+---
+
+## C7 — Work Order 1 (WO1): Foundation, Records, and Card Types
+
+### What shipped in Work Order 1 (2026-09-07)
+
+Slice C7 implements R1 row 4: signed request, quote, and agreement receipts, the card envelope protocol, and the transaction service data layer. Work Order 1 delivers the complete data model, signing foundation, validation logic, ISO-4217 money handling, and router/manifest wiring:
+
+1. **`syneroym-signed-record` — `allow_expired` option (Step 0):**
+   - Added `pub allow_expired: bool` and builder `.allowing_expired(mut self)` to `VerifyOptions` in `crates/signed_record/src/verify.rs`.
+   - When enabled, an envelope past its own `expires_at_secs` still verifies signature, issuer, delegation, and revocation; expiration is not a fatal verification failure, allowing callers to inspect what was offered in expired records.
+   - Unit tests: `an_expired_envelope_is_refused_by_default` and `an_expired_envelope_verifies_under_allowing_expired_with_expires_at_secs_reported`. (29/29 tests passed).
+
+2. **ISO-4217 minor units — `roym_core::money` and UI `money.ts` (Step 1):**
+   - Added `crates/roym_core/src/money.rs`: 180 active ISO-4217 sorted uppercase currency codes (`CURRENCY_CODES`), 0-exponent currencies (`EXPONENT_0`), 3-exponent currencies (`EXPONENT_3`), `is_currency_shape`, and `currency_minor_exponent`. Unknown currencies return `None`.
+   - Added `crates/roym_web/ui/src/money.ts`: exported shared constants, `MoneyInputError`, `ListingInputError`, `currencyMinorExponent`, `toMinorUnits`, and `formatMinor`. Updated `editor.ts` to re-export.
+   - Cross-language equality test pins exact parity between Rust and TypeScript currency sets. (All unit and vitest tests pass).
+
+3. **`listing.rs` currency validation (Step 2):**
+   - Replaced ASCII uppercase shape check with `money::currency_minor_exponent(&p.currency).is_none()`.
+   - Renamed `ListingError::CurrencyShape` to `ListingError::CurrencyUnknown(String)`.
+   - Lifted `valid_token` to `pub(crate)` for category token validation in transactions.
+
+4. **Card envelope and record constants (Step 3):**
+   - Added `Card`, `CardError`, `CARD_CONTENT_TYPE` (`application/vnd.roym.card+json`), `CARD_WRAPPER_VERSION` (1), `MAX_CARD_BODY_BYTES` (160 KiB), `parse_card`, and `card_body` to `crates/roym_core/src/card.rs`.
+   - Added record type constants `RECORD_REQUEST`, `RECORD_QUOTE`, `RECORD_AGREEMENT_RECEIPT` to `crates/roym_core/src/record.rs`.
+   - Cross-language parity test pins `CARD_TYPES` between Rust and UI `cards/registry.ts`.
+
+5. **`roym_core::transaction` data layer (Step 4):**
+   - Created `crates/roym_core/src/transaction.rs` with payload structures:
+     - `PaymentTiming`, `Role`, `TimeWindow`, `QuoteLocation`, `AgreedTerms`.
+     - `RequestPayload`: derives `request_id` via `content_digest("req_", ...)`. Carries `DEFAULT_DATA_USE_NOTICE`.
+     - `QuotePayload`: derives `quote_id` via `content_digest("quo_", ...)`. Binds `consumer_did` and `terms`.
+     - `AgreementReceiptPayload`: mutual attestation half referencing `quote_record_id`.
+     - `ReceiptHalf`, `PairState`, `pair_state` helper.
+     - `derive_request_id`, `derive_quote_id`, `halves_agree`.
+     - `verify_request`, `verify_quote`, `verify_agreement_receipt` with `RecordVerdict<P>`.
+   - 14 comprehensive unit tests covering validation constraints, ID stability, issuer derivation checks, role matching, and expired quote envelope verification.
+
+6. **Manifest and Router wiring (Step 5):**
+   - Mounted `("transaction.", TRANSACTION, MethodAuth::Owner)` in `crates/roym_core/src/router.rs`.
+   - Added `depends_on = ["conversation"]` to `[services.transaction]` in `crates/roym_core/app/roym.toml`.
+   - Registered backup sections `SECTION_REQUESTS`, `SECTION_QUOTES`, `SECTION_AGREEMENTS`, `SECTION_CARDS` in `crates/roym_core/src/backup.rs`.
+
+---
+
+## C7 — Work Order 1: Verification evidence
+
+1. `cargo test -p syneroym-signed-record`: **29 passed, 0 failed**
+2. `cargo test -p syneroym-roym-core`: **111 passed, 0 failed**
+3. `npm test` in `crates/roym_web/ui`: **34 passed, 0 failed** (5 test files)
+4. `npm run build` in `crates/roym_web/ui`: **Clean** (`eslint`, `tsc`, and `vite build`)
+5. Roym WASM components build: **Clean** (`syneroym-roym-{web,profile,catalog,conversation,transaction,directory}` all compiled for `wasm32-wasip2`)
+6. `cargo xtask check-roym-deps`: **Clean** (dependency hygiene verified)
+7. `cargo test -p syneroym-roym-web --test dual_build_parity`: **115 passed, 0 failed** (both native and WASM builds)
+8. `cargo +nightly fmt --all`: **Clean**
+9. `cargo clippy --workspace --all-targets --all-features`: **Clean (0 errors, 0 warnings)**
+10. `cargo test --workspace`: **Clean (exit=0, all tests passed)**
+11. `cargo audit`: **Clean (0 vulnerabilities)**
+12. `cargo deny check licenses`: **Clean (`licenses ok`)**
+13. `mise run test:e2e`: **4 passed, 0 failed (clean)**
+
+

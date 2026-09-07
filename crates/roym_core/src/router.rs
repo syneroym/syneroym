@@ -35,6 +35,11 @@ const ROUTES: &[(&str, Service, MethodAuth)] = &[
     ("quote.", TRANSACTION, MethodAuth::Owner),
     ("agreement.", TRANSACTION, MethodAuth::Owner),
     ("receipt.", TRANSACTION, MethodAuth::Owner),
+    // The certificate verbs (`transaction.signing-status` /
+    // `transaction.install-signing-certificate`) reach the transaction
+    // service through its own name, and `transaction.sync` / `.thread` /
+    // `.export` / `.import` ride the same prefix.
+    ("transaction.", TRANSACTION, MethodAuth::Owner),
     ("directory.", DIRECTORY, MethodAuth::Owner),
     ("member.", DIRECTORY, MethodAuth::Owner),
 ];
@@ -116,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn every_declared_dependency_names_a_sibling_and_the_three_edges_are_present() {
+    fn every_declared_dependency_names_a_sibling_and_the_named_edges_are_present() {
         let manifest_str = include_str!("../app/roym.toml");
         let manifest: toml::Value = toml::from_str(manifest_str).expect("parse roym.toml");
         let services = manifest["services"].as_table().expect("services table");
@@ -148,6 +153,16 @@ mod tests {
         assert!(
             directory_deps.contains(&"catalog"),
             "'directory' must declare a dependency on 'catalog'"
+        );
+        let transaction_deps: Vec<&str> = services["transaction"]["depends_on"]
+            .as_array()
+            .unwrap_or_else(|| panic!("'transaction' must declare depends_on"))
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(
+            transaction_deps.contains(&"conversation"),
+            "'transaction' must declare a dependency on 'conversation'"
         );
     }
 
@@ -208,10 +223,10 @@ mod tests {
 
     #[test]
     fn every_certificate_mounted_service_routes_under_its_own_name() {
-        // `handle_certificate_verb` is mounted on these three; each must
+        // `handle_certificate_verb` is mounted on these four; each must
         // have a routable `<name>.signing-status`, or `roym enrol-signing`
         // cannot reach it.
-        for name in ["profile", "catalog", "conversation"] {
+        for name in ["profile", "catalog", "conversation", "transaction"] {
             let method = format!("{name}.signing-status");
             let service = route(&method).unwrap_or_else(|| panic!("{method} is not routable"));
             assert_eq!(service.name, name, "{method} must route to the '{name}' service");

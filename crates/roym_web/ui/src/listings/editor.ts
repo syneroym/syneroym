@@ -86,44 +86,25 @@ export interface ListingForm {
   service_record: BlockToggle<ServiceRecordFields>;
 }
 
-export class ListingInputError extends Error {}
+import {
+  EXPONENT_0,
+  EXPONENT_3,
+  ListingInputError,
+  MoneyInputError,
+  currencyMinorExponent,
+  formatMinor,
+  toMinorUnits,
+} from "../money.js";
 
-/// ISO-4217 minor-unit exponent. Two decimal places is the common case
-/// and the default; only the currencies that are *not* two matter here,
-/// because those are the ones a hard-coded "×100" mis-scales (a JPY price
-/// by 100, a KWD price by one tenth). The two lists are the full set of
-/// active exponent-0 and exponent-3 currencies, so any other code is two.
-const EXPONENT_0 = new Set([
-  "BIF", "CLP", "DJF", "GNF", "ISK", "JPY", "KMF", "KRW", "PYG",
-  "RWF", "UGX", "UYI", "VND", "VUV", "XAF", "XOF", "XPF",
-]);
-const EXPONENT_3 = new Set(["BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"]);
-
-export function currencyMinorExponent(code: string): number {
-  const c = code.trim().toUpperCase();
-  if (EXPONENT_0.has(c)) return 0;
-  if (EXPONENT_3.has(c)) return 3;
-  return 2;
-}
-
-/// "35.50", exponent 2 -> 3550; "35", 2 -> 3500; "1200", 0 -> 1200;
-/// "2.5", 3 -> 2500; "" -> undefined. Rejects an amount with more decimal
-/// places than the currency has, so the result is always an integer
-/// number of minor units.
-export function toMinorUnits(input: string, exponent = 2): number | undefined {
-  const t = input.trim();
-  if (t === "") return undefined;
-  const frac = exponent > 0 ? `(?:\\.(\\d{1,${exponent}}))?` : "";
-  const m = new RegExp(`^(\\d+)${frac}$`).exec(t);
-  if (!m) {
-    const example = exponent > 0 ? `12 or 12.${"5".padEnd(exponent, "0")}` : "12";
-    throw new ListingInputError(
-      `"${input}" is not an amount like ${example} for this currency`,
-    );
-  }
-  const minor = m[1] + (m[2] ?? "").padEnd(exponent, "0");
-  return Number.parseInt(minor, 10);
-}
+export {
+  EXPONENT_0,
+  EXPONENT_3,
+  ListingInputError,
+  MoneyInputError,
+  currencyMinorExponent,
+  formatMinor,
+  toMinorUnits,
+};
 
 /// "48.8566" -> 48856600, "-2.35" -> -2350000, "48" -> 48000000.
 /// At most six decimal places (a micro-degree is about 11 cm); the result

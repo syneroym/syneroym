@@ -75,6 +75,10 @@ service_type = "wasm"
 source = "target/wasm32-wasip2/release/syneroym_roym_transaction.wasm"
 interfaces = ["syneroym-roym:transaction/api@0.1.0"]
 visibility = "public"
+# A card is sent over a conversation, and the transaction service files
+# both sent and incoming cards by reading that conversation -- so it
+# calls `conversation.send` and `conversation.history`.
+depends_on = ["conversation"]
 
 [services.transaction.health_check.rpc]
 interface = "syneroym-roym:transaction/api@0.1.0"
