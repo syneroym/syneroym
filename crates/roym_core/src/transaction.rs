@@ -319,6 +319,9 @@ pub enum TransactionError {
     #[error("did '{0}' is not a valid did:key")]
     InvalidDid(String),
 
+    #[error("consumer and provider cannot be the same DID")]
+    SamePartyDid,
+
     #[error("request_id is empty")]
     RequestIdEmpty,
 
@@ -516,6 +519,9 @@ impl AgreementReceiptPayload {
         if !person::is_did_key(&self.provider_did) {
             return Err(TransactionError::InvalidDid(self.provider_did.clone()));
         }
+        if self.consumer_did == self.provider_did {
+            return Err(TransactionError::SamePartyDid);
+        }
         self.terms.validate()?;
         Ok(())
     }
@@ -552,7 +558,7 @@ pub fn derive_quote_id(
 }
 
 /// True when two halves of a pair agree on everything a pair must agree
-/// on: every field except `role`.
+/// on: every other field matches and they come from opposite roles.
 #[must_use]
 pub fn halves_agree(a: &AgreementReceiptPayload, b: &AgreementReceiptPayload) -> bool {
     a.quote_record_id == b.quote_record_id
@@ -664,6 +670,14 @@ pub fn verify_quote(envelope: &str, now_secs: u64) -> RecordVerdict<QuotePayload
     };
     if let Err(e) = payload.validate() {
         return RecordVerdict::refused(e.to_string());
+    }
+    if verified.expires_at_secs != Some(payload.terms.quote_expires_at_secs) {
+        return RecordVerdict::refused(
+            "envelope expires_at_secs does not match quote_expires_at_secs in terms",
+        );
+    }
+    if payload.consumer_did == verified.issuer {
+        return RecordVerdict::refused("consumer_did cannot be the quote issuer");
     }
     let expected_id =
         match derive_quote_id(&payload.conversation, &verified.issuer, payload.sequence) {
@@ -893,9 +907,12 @@ mod tests {
         assert!(matches!(t.validate(), Err(TransactionError::NegativeFees(-1))));
         t.fees_minor = 2000;
 
-        // Breakdown exceeds total
+        // Breakdown exceeds total (including checked_add overflow)
         t.tax_minor = 40000;
         t.fees_minor = 20000; // 40000 + 20000 = 60000 > 50000
+        assert!(matches!(t.validate(), Err(TransactionError::BreakdownExceedsTotal { .. })));
+        t.tax_minor = i64::MAX;
+        t.fees_minor = 1;
         assert!(matches!(t.validate(), Err(TransactionError::BreakdownExceedsTotal { .. })));
         t.tax_minor = 5000;
         t.fees_minor = 2000;
@@ -1035,11 +1052,15 @@ mod tests {
 
         a.consumer_did = "invalid".to_string();
         assert!(matches!(a.validate(), Err(TransactionError::InvalidDid(_))));
-        a.consumer_did = consumer_did;
+        a.consumer_did = consumer_did.clone();
 
         a.provider_did = "invalid".to_string();
         assert!(matches!(a.validate(), Err(TransactionError::InvalidDid(_))));
-        a.provider_did = provider_did;
+        a.provider_did = provider_did.clone();
+
+        a.consumer_did = provider_did;
+        assert_eq!(a.validate(), Err(TransactionError::SamePartyDid));
+        a.consumer_did = consumer_did;
         assert!(a.validate().is_ok());
     }
 
@@ -1155,6 +1176,37 @@ mod tests {
         );
         let verdict_ok = verify_agreement_receipt(&env_valid, 1000);
         assert!(verdict_ok.verified);
+
+        // A receipt saying role is Provider, but signed by consumer_key!
+        let payload_provider = AgreementReceiptPayload { role: Role::Provider, ..payload };
+        let env_consumer_signing_provider_half = sign_envelope(
+            &consumer_key,
+            RECORD_AGREEMENT_RECEIPT,
+            AGREEMENT_RECEIPT_VERSION,
+            &payload_provider.quote_record_id,
+            serde_json::to_value(&payload_provider).unwrap(),
+            None,
+            1000,
+        );
+        let verdict_prov_bad = verify_agreement_receipt(&env_consumer_signing_provider_half, 1000);
+        assert!(!verdict_prov_bad.verified);
+        assert_eq!(
+            verdict_prov_bad.reason.as_deref(),
+            Some("provider receipt issuer does not match provider_did")
+        );
+
+        // Valid provider half signed by provider_key
+        let env_provider_valid = sign_envelope(
+            &provider_key,
+            RECORD_AGREEMENT_RECEIPT,
+            AGREEMENT_RECEIPT_VERSION,
+            &payload_provider.quote_record_id,
+            serde_json::to_value(&payload_provider).unwrap(),
+            None,
+            1000,
+        );
+        let verdict_prov_ok = verify_agreement_receipt(&env_provider_valid, 1000);
+        assert!(verdict_prov_ok.verified);
     }
 
     #[test]
@@ -1214,8 +1266,9 @@ mod tests {
         let consumer_key = Identity::generate().unwrap();
         let consumer_did = substrate::derive_did_key(&consumer_key.public_key());
 
-        let quote = sample_quote(&issuer, &consumer_did);
+        let mut quote = sample_quote(&issuer, &consumer_did);
         let quote_expiry = 1500;
+        quote.terms.quote_expires_at_secs = quote_expiry;
         let env = sign_envelope(
             &key,
             RECORD_QUOTE,
@@ -1305,6 +1358,100 @@ mod tests {
         assert_eq!(
             v_bad.reason.as_deref(),
             Some("request_id is not derivable from the signature's own issuer")
+        );
+    }
+
+    #[test]
+    fn verify_quote_refuses_envelope_whose_expiry_mismatches_terms() {
+        let key = Identity::generate().unwrap();
+        let issuer = substrate::derive_did_key(&key.public_key());
+        let consumer_key = Identity::generate().unwrap();
+        let consumer_did = substrate::derive_did_key(&consumer_key.public_key());
+
+        let quote = sample_quote(&issuer, &consumer_did);
+        // terms say quote_expires_at_secs = 15000, but envelope says 5000
+        let env = sign_envelope(
+            &key,
+            RECORD_QUOTE,
+            QUOTE_VERSION,
+            &quote.quote_id,
+            serde_json::to_value(&quote).unwrap(),
+            Some(5000),
+            1000,
+        );
+        let verdict = verify_quote(&env, 1000);
+        assert!(!verdict.verified);
+        assert_eq!(
+            verdict.reason.as_deref(),
+            Some("envelope expires_at_secs does not match quote_expires_at_secs in terms")
+        );
+
+        // Envelope has no expiry at all
+        let env_no_exp = sign_envelope(
+            &key,
+            RECORD_QUOTE,
+            QUOTE_VERSION,
+            &quote.quote_id,
+            serde_json::to_value(&quote).unwrap(),
+            None,
+            1000,
+        );
+        let verdict_no_exp = verify_quote(&env_no_exp, 1000);
+        assert!(!verdict_no_exp.verified);
+        assert_eq!(
+            verdict_no_exp.reason.as_deref(),
+            Some("envelope expires_at_secs does not match quote_expires_at_secs in terms")
+        );
+    }
+
+    #[test]
+    fn verify_quote_refuses_same_consumer_and_provider_did() {
+        let key = Identity::generate().unwrap();
+        let issuer = substrate::derive_did_key(&key.public_key());
+
+        // consumer_did is the provider issuer itself
+        let quote = sample_quote(&issuer, &issuer);
+        let env = sign_envelope(
+            &key,
+            RECORD_QUOTE,
+            QUOTE_VERSION,
+            &quote.quote_id,
+            serde_json::to_value(&quote).unwrap(),
+            Some(quote.terms.quote_expires_at_secs),
+            1000,
+        );
+        let verdict = verify_quote(&env, 1000);
+        assert!(!verdict.verified);
+        assert_eq!(verdict.reason.as_deref(), Some("consumer_did cannot be the quote issuer"));
+    }
+
+    #[test]
+    fn verifiers_refuse_wrong_record_type() {
+        let key = Identity::generate().unwrap();
+        let issuer = substrate::derive_did_key(&key.public_key());
+        let req = sample_request(&issuer);
+        let env = sign_envelope(
+            &key,
+            RECORD_REQUEST,
+            REQUEST_VERSION,
+            &req.request_id,
+            serde_json::to_value(&req).unwrap(),
+            None,
+            1000,
+        );
+
+        let quote_verdict = verify_quote(&env, 1000);
+        assert!(!quote_verdict.verified);
+        assert_eq!(
+            quote_verdict.reason.as_deref(),
+            Some("not a quote record this build understands")
+        );
+
+        let receipt_verdict = verify_agreement_receipt(&env, 1000);
+        assert!(!receipt_verdict.verified);
+        assert_eq!(
+            receipt_verdict.reason.as_deref(),
+            Some("not an agreement-receipt record this build understands")
         );
     }
 }

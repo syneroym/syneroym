@@ -3,6 +3,7 @@ import {
   buildSetListingParams,
   currencyMinorExponent,
   ListingInputError,
+  MoneyInputError,
   slotFromLocalDatetimes,
   toMicroDegrees,
   toMinorUnits,
@@ -87,9 +88,9 @@ describe("toMinorUnits", () => {
   });
 
   it("rejects more than two decimal places and non-numeric input", () => {
-    expect(() => toMinorUnits("35.555")).toThrow(ListingInputError);
-    expect(() => toMinorUnits("abc")).toThrow(ListingInputError);
-    expect(() => toMinorUnits("-1")).toThrow(ListingInputError);
+    expect(() => toMinorUnits("35.555")).toThrow(MoneyInputError);
+    expect(() => toMinorUnits("abc")).toThrow(MoneyInputError);
+    expect(() => toMinorUnits("-1")).toThrow(MoneyInputError);
   });
 
   it("scales by the currency's own minor-unit exponent", () => {
@@ -98,8 +99,8 @@ describe("toMinorUnits", () => {
     expect(toMinorUnits("2.5", 3)).toBe(2500);
     // A JPY price with a fractional part, or a 3-place currency with four,
     // is rejected rather than truncated.
-    expect(() => toMinorUnits("1200.5", 0)).toThrow(ListingInputError);
-    expect(() => toMinorUnits("2.5555", 3)).toThrow(ListingInputError);
+    expect(() => toMinorUnits("1200.5", 0)).toThrow(MoneyInputError);
+    expect(() => toMinorUnits("2.5555", 3)).toThrow(MoneyInputError);
   });
 });
 
@@ -179,6 +180,19 @@ describe("buildSetListingParams", () => {
     f.payment.enabled = true;
     f.payment.value.model = "fixed";
     expect(() => buildSetListingParams(f)).toThrow(ListingInputError);
+  });
+
+  it("refuses a payment with a malformed amount and throws ListingInputError", () => {
+    const f = emptyForm();
+    f.title = "x";
+    f.payment.enabled = true;
+    f.payment.value.currency = "USD";
+    f.payment.value.model = "fixed";
+    f.payment.value.amount = "12.345";
+    expect(() => buildSetListingParams(f)).toThrow(ListingInputError);
+    expect(() => buildSetListingParams(f)).toThrow(
+      '"12.345" is not an amount like 12 or 12.50 for this currency',
+    );
   });
 
   it("refuses a members-only relationship with no group DID", () => {

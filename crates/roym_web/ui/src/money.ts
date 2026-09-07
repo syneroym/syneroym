@@ -7,8 +7,12 @@ export const EXPONENT_0 = new Set([
 /// Currencies with three minor digits.
 export const EXPONENT_3 = new Set(["BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"]);
 
-export class MoneyInputError extends Error {}
-export const ListingInputError = MoneyInputError;
+export class MoneyInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MoneyInputError";
+  }
+}
 
 /// ISO-4217 minor-unit exponent. Two decimal places is the common case
 /// and the default; only the currencies that are *not* two matter here,
@@ -46,11 +50,12 @@ export function toMinorUnits(input: string, exponent = 2): number | undefined {
 export function formatMinor(minor: number, currency: string): string {
   const c = currency.trim().toUpperCase();
   const exp = currencyMinorExponent(c);
+  const rounded = Math.round(minor);
   if (exp === 0) {
-    return `${minor} ${c}`;
+    return `${rounded} ${c}`;
   }
-  const sign = minor < 0 ? "-" : "";
-  const abs = Math.abs(minor).toString().padStart(exp + 1, "0");
+  const sign = rounded < 0 ? "-" : "";
+  const abs = Math.abs(rounded).toString().padStart(exp + 1, "0");
   const whole = abs.slice(0, -exp);
   const frac = abs.slice(-exp);
   return `${sign}${whole}.${frac} ${c}`;

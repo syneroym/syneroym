@@ -89,17 +89,22 @@ export interface ListingForm {
 import {
   EXPONENT_0,
   EXPONENT_3,
-  ListingInputError,
   MoneyInputError,
   currencyMinorExponent,
   formatMinor,
   toMinorUnits,
 } from "../money.js";
 
+export class ListingInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ListingInputError";
+  }
+}
+
 export {
   EXPONENT_0,
   EXPONENT_3,
-  ListingInputError,
   MoneyInputError,
   currencyMinorExponent,
   formatMinor,
@@ -156,6 +161,17 @@ function bookingBlock(f: BookingFields): Block {
   };
 }
 
+function parseMoney(input: string, exponent: number): number | undefined {
+  try {
+    return toMinorUnits(input, exponent);
+  } catch (err) {
+    if (err instanceof MoneyInputError) {
+      throw new ListingInputError(err.message);
+    }
+    throw err;
+  }
+}
+
 function paymentBlock(f: PaymentFields): Block {
   const currency = f.currency.trim().toUpperCase();
   const block: Block = {
@@ -166,7 +182,7 @@ function paymentBlock(f: PaymentFields): Block {
     payee: f.payee.trim(),
   };
   const exponent = currencyMinorExponent(currency);
-  const amount = toMinorUnits(f.amount, exponent);
+  const amount = parseMoney(f.amount, exponent);
   if (f.model !== "quote-only") {
     if (amount === undefined) {
       throw new ListingInputError("an amount is required unless the model is quote-only");
@@ -175,7 +191,7 @@ function paymentBlock(f: PaymentFields): Block {
   } else if (amount !== undefined) {
     throw new ListingInputError("a quote-only listing must not carry an amount");
   }
-  const fees = toMinorUnits(f.fees, exponent);
+  const fees = parseMoney(f.fees, exponent);
   if (fees !== undefined) block.fees_minor = fees;
   return block;
 }

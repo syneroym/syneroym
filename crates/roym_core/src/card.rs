@@ -181,4 +181,18 @@ mod tests {
         let missing_env = r#"{"card_version": 1, "type": "request", "version": 1}"#;
         assert!(matches!(parse_card(missing_env), Err(CardError::Json(_))));
     }
+
+    #[test]
+    fn quote_dense_envelope_near_max_payload_fits_in_card_body() {
+        // Build a ~64 KiB envelope string filled with quotes and backslashes,
+        // which forces heavy escaping when embedded into the Card JSON wrapper.
+        let heavy_escapes = r#"\""#.repeat(32_000); // 64,000 bytes
+        let env = format!(r#"{{"payload":"{heavy_escapes}"}}"#);
+        let res = card_body("request", 1, &env);
+        assert!(res.is_ok(), "heavy-escape envelope should fit under MAX_CARD_BODY_BYTES");
+        let body = res.unwrap();
+        assert!(body.len() <= MAX_CARD_BODY_BYTES);
+        let parsed = parse_card(&body).expect("card body with heavy escapes should parse");
+        assert_eq!(parsed.envelope, env);
+    }
 }
