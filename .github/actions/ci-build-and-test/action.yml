@@ -1,10 +1,14 @@
 name: 'CI Build and Test'
-description: 'Compiles workspace and runs tests'
+description: 'Builds the WASM fixtures and runs one shard of the nextest suite'
 inputs:
   release_flag:
     description: 'Flag to pass to cargo for release mode (e.g. --release)'
     required: false
     default: ''
+  partition:
+    description: 'nextest --partition value for this shard, e.g. "count:1/6". The default runs the whole suite.'
+    required: false
+    default: 'count:1/1'
 runs:
   using: "composite"
   steps:
@@ -21,26 +25,15 @@ runs:
       shell: bash
 
     - name: Build WASM Test Components
-      run: |
-        mise run build:test-components
+      run: mise run build:test-components
       shell: bash
 
     # `dual_build_parity` reads pre-built `target/wasm32-wasip2/release/*.wasm`
     # artifacts for all six Roym services directly off disk (see
     # `crates/roym_web/tests/dual_build_parity.rs`'s `harness`) -- nothing in
-    # `cargo test --workspace` triggers a `cargo component build` for them, so
-    # without this step the suite fails on every run, cache or no cache.
+    # `cargo nextest run` triggers a `cargo component build` for them.
     - name: Build Roym WASM Components
-      run: |
-        mise run build:roym
-      shell: bash
-
-    - name: Check Roym Service Crate Dependency Hygiene
-      run: cargo xtask check-roym-deps
-      shell: bash
-
-    - name: Run Roym Hub UI Tests
-      run: mise run test:roym-ui
+      run: mise run build:roym
       shell: bash
 
     - name: Install cargo-nextest
@@ -48,14 +41,12 @@ runs:
       with:
         tool: cargo-nextest
 
-    # nextest runs every test binary in one parallel pool instead of
-    # `cargo test`'s one-at-a-time; `.config/nextest.toml`'s `substrate-e2e`
-    # group keeps the node-booting e2e tests serialised. Doctests are a
-    # separate pass -- nextest does not run them.
+    # nextest runs every test binary in one parallel pool; `--partition`
+    # then keeps only this shard's slice. `.config/nextest.toml`'s
+    # `substrate-e2e` group still serialises the node-booting tests within
+    # the shard.
     - name: Run Tests
-      run: cargo nextest run --workspace --all-features --profile ci ${{ inputs.release_flag }}
-      shell: bash
-
-    - name: Run Doctests
-      run: cargo test --workspace --all-features --doc ${{ inputs.release_flag }}
+      run: >-
+        cargo nextest run --workspace --all-features --profile ci
+        --partition ${{ inputs.partition }} ${{ inputs.release_flag }}
       shell: bash

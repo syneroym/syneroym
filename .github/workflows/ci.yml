@@ -31,6 +31,10 @@ on:
         type: boolean
         default: false
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   # `warn` keeps CI logs readable: the e2e suites emit tens of thousands of
@@ -38,67 +42,142 @@ env:
   RUST_LOG: warn
 
 jobs:
-  ci-pipeline:
-    name: CI Pipeline
+  # Formatting, clippy, security/license audit, and the cheap workspace
+  # checks. Independent of the test jobs -- runs on its own runner.
+  lints:
+    name: Lints, licenses & checks
     runs-on: ubuntu-latest
     steps:
-      # ========================================
-      # 1. Base Setup (Shared for all)
-      # ========================================
       - uses: actions/checkout@v6
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/ci-setup
         with:
-          targets: wasm32-wasip2
-          components: clippy, rustfmt
-
-      - name: Install cargo-component
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-component@0.21.1
-
-      - name: Install mise
-        uses: jdx/mise-action@v4
-      - name: Setup Rust Cache
-        uses: Swatinem/rust-cache@v2
-
-
-
-      # ========================================
-      # 2. Composite Actions
-      # ========================================
+          cache-key: lints
       - name: Run Lints, Audit & Licenses
         uses: ./.github/actions/ci-lints
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check Roym Service Crate Dependency Hygiene
+        run: cargo xtask check-roym-deps
+      - name: Run Roym Hub UI Tests
+        run: mise run test:roym-ui
+      # Doctests are not partitioned and nextest does not run them; parking
+      # them here keeps them off the critical-path test shards.
+      - name: Run Doctests
+        run: cargo test --workspace --all-features --doc
 
-      # Note: 'Run Build & Test' and 'Run Code Coverage' are mutually exclusive.
-      # `cargo llvm-cov` inherently runs the test suite. If coverage is requested,
-      # we skip the standard test step to avoid running all tests twice.
+  # The Rust suite, split into shards by `cargo nextest --partition`. Each
+  # shard builds the workspace and the WASM fixtures, then runs its slice of
+  # the tests (the `substrate-e2e` group stays serialised within a shard, so
+  # the shard count is really about spreading that group). Skipped when
+  # coverage is requested -- `cargo llvm-cov` runs the suite itself.
+  test:
+    name: Test ${{ matrix.shard }}/6
+    runs-on: ubuntu-latest
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.coverage) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/ci-setup
+        with:
+          cache-key: test
       - name: Run Build & Test
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.coverage == true) }}
         uses: ./.github/actions/ci-build-and-test
         with:
           release_flag: ${{ github.event.inputs.build_mode == 'release' && '--release' || '' }}
+          # `count` round-robins the sorted test list -- an approximate but
+          # workable spread of the node-booting e2e tests, which dominate a
+          # shard's runtime. See deferred-backlog for the balance caveat.
+          partition: "count:${{ matrix.shard }}/6"
 
+  # Playwright WebRTC browser suite. Enforced on every push/PR to main; on
+  # workflow_dispatch it stays opt-in via the `e2e` input.
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.e2e }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/ci-setup
+        with:
+          cache-key: e2e
+      # Playwright's global-setup has a 5-minute budget and shells out to
+      # `cargo build` / `cargo component build`. In the old single job the
+      # test step had already compiled everything; as its own job nothing
+      # is built yet, so do it here -- outside that budget -- and let
+      # global-setup's calls hit the cache.
+      - name: Pre-build e2e binaries and components
+        run: |
+          rm -rf target/wasm32-wasip2 target/wasm32-wasip1
+          mise run build:test-components
+          mise run build:roym
+          cargo build ${{ github.event.inputs.build_mode == 'release' && '--release' || '' }} \
+            --bin syneroym-substrate --bin roymctl --bin miniapp-demo1-web
+      - name: Run Playwright E2E
+        uses: ./.github/actions/ci-e2e
+        with:
+          release_flag: ${{ github.event.inputs.build_mode == 'release' && '--release' || '' }}
+
+  # `cargo llvm-cov` inherently runs the test suite, so this replaces the
+  # `test` job when coverage is requested (workflow_dispatch only).
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.coverage }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/ci-setup
+        with:
+          cache-key: coverage
+      - name: Build WASM Test Components
+        run: |
+          rm -rf target/wasm32-wasip2 target/wasm32-wasip1
+          mise run build:test-components
+          mise run build:roym
       - name: Run Code Coverage
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.coverage == true }}
         uses: ./.github/actions/ci-coverage
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           release_flag: ${{ github.event.inputs.build_mode == 'release' && '--release' || '' }}
 
-      # Enforced on every push/PR to main so the suite cannot silently rot
-      # again. On workflow_dispatch it stays opt-in via the `e2e` input.
-      - name: Run Playwright E2E
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.e2e == true }}
-        uses: ./.github/actions/ci-e2e
+  benchmarks:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmarks }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/ci-setup
         with:
-          release_flag: ${{ github.event.inputs.build_mode == 'release' && '--release' || '' }}
-
+          cache-key: benchmarks
       - name: Run Benchmarks
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmarks == true }}
         uses: ./.github/actions/ci-benchmarks
         with:
           release_flag: ${{ github.event.inputs.build_mode == 'release' && '--release' || '' }}
+
+  # Single gate the branch ruleset requires as "CI Pipeline". Green only when
+  # every job that actually ran (a `skipped` job did not apply to this event)
+  # succeeded.
+  ci-pipeline:
+    name: CI Pipeline
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [lints, test, e2e, coverage, benchmarks]
+    steps:
+      - name: Check job results
+        run: |
+          set -euo pipefail
+          for job in lints:${{ needs.lints.result }} \
+                     test:${{ needs.test.result }} \
+                     e2e:${{ needs.e2e.result }} \
+                     coverage:${{ needs.coverage.result }} \
+                     benchmarks:${{ needs.benchmarks.result }}; do
+            name=${job%%:*}; result=${job##*:}
+            echo "$name = $result"
+            case "$result" in
+              success|skipped) ;;
+              *) echo "::error::$name did not pass ($result)"; fail=1 ;;
+            esac
+          done
+          exit "${fail:-0}"
