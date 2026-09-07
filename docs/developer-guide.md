@@ -78,13 +78,27 @@ You can run all benchmarking suites (Criterion, Latency, Concurrency, and Soak) 
 ### Suite 1: Rust Unit & Integration Tests (SUT)
 These verify code correctness in isolation. Unit tests cover individual helper modules, and integration tests cover complex multi-system flows (e.g. substrate lifecycles).
 
+The runner is [`cargo-nextest`](https://nexte.st/). It runs every test binary
+in one parallel pool instead of `cargo test`'s one-binary-at-a-time, which is
+most of the wall-clock on a workspace this size. `.config/nextest.toml`
+serialises one group -- the substrate end-to-end tests, which each boot a full
+node -- and lets everything else run fully parallel. nextest does not run
+doctests, so `test:rust` runs a `cargo test --doc` pass after it.
+
 * **Run via Mise (Recommended):**
   ```bash
   mise run test:rust
   ```
 * **Run via Cargo:**
   ```bash
-  cargo test --workspace
+  cargo nextest run --workspace   # unit + integration
+  cargo test --workspace --doc    # doctests
+  ```
+  Plain `cargo test --workspace` still works if nextest is not installed; it
+  is just much slower.
+* **One crate / one test:**
+  ```bash
+  cargo nextest run -p syneroym-router routing
   ```
 
 ### Suite 2: Playwright WebRTC End-to-End Tests

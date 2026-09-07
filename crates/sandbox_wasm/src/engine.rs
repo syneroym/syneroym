@@ -63,7 +63,8 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 use wasmtime::{
-    Config, Engine, InstanceAllocationStrategy, PoolingAllocationConfig, Store, Trap,
+    Cache, CacheConfig, Config, Engine, InstanceAllocationStrategy, PoolingAllocationConfig, Store,
+    Trap,
     component::{
         Component, Func, HasSelf, Instance, InstancePre, Linker, Val, types::ComponentItem,
     },
@@ -707,6 +708,24 @@ impl AppSandboxEngine {
         wasmtime_config.epoch_interruption(true);
 
         if let (Some(instances), Some(memory)) = (max_instances, max_memory) {
+            // Cranelift compiles every component from scratch on
+            // `Component::new` (see `compile_and_cache_wasm`). The on-disk
+            // compile cache keys compiled artifacts by wasm bytes plus
+            // compiler flags, so a component seen before -- a substrate
+            // restart, a redeploy, or the next test in a suite that loads the
+            // same components -- loads in milliseconds instead. Wasmtime's
+            // default cache directory is per-user, content-addressed, and
+            // self-pruning; a broken or unwritable directory must not stop the
+            // sandbox from starting, so a failure here only disables the cache.
+            match Cache::new(CacheConfig::new()) {
+                Ok(cache) => {
+                    wasmtime_config.cache(Some(cache));
+                }
+                Err(e) => {
+                    warn!("wasmtime compile cache disabled: {e}");
+                }
+            }
+
             wasmtime_config.memory_init_cow(true);
             let mut pooling_config = PoolingAllocationConfig::default();
             pooling_config.total_component_instances(instances);

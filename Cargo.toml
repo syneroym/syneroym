@@ -22,6 +22,22 @@ split-debuginfo = "unpacked" # Keep debug info out-of-line instead of duplicated
 [profile.dev.package."*"]
 debug = false     # Disable debug symbols for all dependencies
 
+# Cranelift is the compiler behind every WASM component the test suite loads
+# (the sandbox, every substrate e2e that deploys a service, and the
+# `dual_build_parity` suite that deploys the Roym services once per test).
+# Left at the dev profile's `opt-level = 0` a single component takes several
+# seconds to compile; built optimized it is several times faster. These
+# crates change rarely, so the one-time optimized rebuild is cached in
+# `target/` like any other dependency.
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 3
+[profile.dev.package.cranelift-codegen]
+opt-level = 3
+[profile.dev.package.cranelift-frontend]
+opt-level = 3
+[profile.dev.package.regalloc2]
+opt-level = 3
+
 [profile.release]
 codegen-units = 1 # Allows LLVM to perform better optimization.
 lto = true        # Enables link-time-optimizations.
@@ -182,7 +198,7 @@ iroh = "0.97"
 iroh-relay = { version = "0.97", features = ["server"] }
 
 # WASM
-wasmtime = { version = "46.0.2", features = ["component-model"] }
+wasmtime = { version = "46.0.2", features = ["component-model", "cache"] }
 wasmtime-wasi = "46.0.2"
 wit-bindgen = "0.57"
 wit-parser = "0.251"
