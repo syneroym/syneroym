@@ -24,6 +24,22 @@
 > number in a crate name, module name, collection name, JSON-RPC method
 > name, card type, record type, config key, metric name, test name, or
 > comment. Every name and comment proposed below already has that applied.
+>
+> **Revised 2026-09-07 after review.** Four defects in the first draft
+> were load-bearing and are fixed here, not patched over: the currency
+> table was a rename that closed nothing (§3.1, `D-C7-14`); the
+> verification bodies refused an expired quote and three callers read the
+> payload anyway, breaking `agreement.get` and `maybe_countersign` the
+> moment a quote lapsed (§3.0, §3.4); the two expiry tests could not run
+> at all (§9.1, §9.3); and `file_own_card` had no host timestamp to file
+> (§4 preamble). The `sync` loop's cost (§4.6) and its
+> watermark-past-unfiled-cards bug (§4.6) are fixed with it. **One review
+> point is answered rather than adopted**: the mediated-send shape that
+> would remove `D-C7-3`'s cost is now analysed in §16-F2 and rejected,
+> with the escape hatch named. Scope the review found narrowed against the
+> spec — reject/withdraw, the data-use and address notices, the
+> enrolment gate, the Backup tab's already-wrong count — is either built
+> (§4.5b, §7.3, §7.4, §7.5) or listed in §13 with a backlog row.
 
 ---
 
@@ -173,12 +189,19 @@ verifies (`D-06C-6c`); the Hub displays that verdict and must have a
 distinct block for a refused card, the same shape the Directory tab already
 uses (`crates/roym_web/ui/src/screens/directory.ts`, `renderRefused`).
 
-### F11 — the Hub's Backup tab hard-codes three bundles and the browser suite counts them
+### F11 — the Hub's Backup tab is already one bundle short, before this slice
 
-`BUNDLES` has three entries and a note saying "The three bundles below"
-(`crates/roym_web/ui/src/screens/backup.ts:5-50`); `roym-hub.spec.ts` case
-8 asserts `toHaveCount(3)`. A fourth bundle changes all three places plus
-the test's own title.
+`BUNDLES` has three entries — `profile`, `conversation`, `catalog` — with
+a doc comment calling them *"The three app-data bundles Roym can export
+today"* and a visible note saying "The three bundles below"
+(`crates/roym_web/ui/src/screens/backup.ts:2, 5-50`); `roym-hub.spec.ts`
+case 8 asserts `toHaveCount(3)`.
+
+**That count is stale on `main`.** C6 shipped `directory.export` and
+`directory.import` (`crates/roym_directory/src/app.rs:234-235`), so Roym
+exports four bundles today and the tab shows three. C7 adds the fifth, so
+the fix is two new entries, not one, and the note goes from "three" to
+"five" (§7.4).
 
 ### F12 — a guest dispatch's five-second wall-clock budget is spent while waiting on a host call
 
@@ -217,7 +240,7 @@ signature's own issuer (`crates/roym_core/src/listing.rs:380`, checked at
 | **D-C7-3** | **Ingestion is `transaction.sync { conversation }`, called by the client.** It is idempotent, keyed by the conversation message id, and safe to call as often as a client likes | The consequence of `D-C7-2`. A client (the Hub, `roymctl`) calls it when it opens a thread. The honest cost: a person who never opens a thread never files its cards. Recorded as a backlog row rather than papered over — a node-side trigger needs either the forbidden edge or a host-level hook, neither of which is C7's to build |
 | **D-C7-4** | **A card on the wire carries the signed envelope and nothing else derived from it.** Body shape: `{"card_version":1,"type":"quote","version":1,"envelope":"<the signed envelope, as JSON text>"}`. There is no sender-supplied `data` field on the wire | A card carrying both an envelope and a rendered projection lets the two disagree, and the reader has no way to know which one the sender meant. The receiving **node** verifies the envelope and produces the projection; the Hub renders the node's projection. This is `D-06C-6c`'s rule ("the consumer's own node verifies") applied to cards, and it is why `renderCard`'s `data` parameter can stay exactly as it is |
 | **D-C7-5** | **The card's declared `(type, version)` must equal the signed envelope's own `record_type` and `version`, or the card is refused.** | Otherwise a signed `request` could be presented in a `quote` card and rendered by the quote template. The check is one line and closes a whole class |
-| **D-C7-6** | **`sync` scans a bounded, overlapping window of the conversation and dedupes by message id.** State per conversation: `scanned_count`. A run starts at `max(0, scanned_count - SYNC_OVERLAP)` and reads at most `MAX_SYNC_PAGES` pages of `SYNC_PAGE` messages. A message whose id is already in the `cards` collection is skipped without parsing. `transaction.sync { conversation, full: true }` starts at 0 | `F5`: `history`'s cursor is an offset into a list that a late message can shift, so a bare watermark can skip. Dedupe by id makes re-scanning free, and the overlap makes ordinary reordering invisible. `F12` is why the page count is bounded rather than "until a short page". The residual — a message landing more than `SYNC_OVERLAP` positions behind the watermark waits for a `full` sync — is a backlog row, not a silent hole |
+| **D-C7-6** | **`sync` makes exactly one `conversation.history` call, over an overlapping window, and dedupes by message id.** State per conversation: `scanned_count`. A run reads `SYNC_WINDOW` messages from `max(0, scanned_count - SYNC_OVERLAP)`, point-reads `cards` for each card-typed message, and never loops. `transaction.sync { conversation, full: true }` starts at 0. The watermark never advances past a card the run declined to file | `F5`: `history`'s cursor is an offset into a list that a late message can shift, so a bare watermark can skip. Dedupe by id makes re-scanning free, and the overlap makes ordinary reordering invisible. **One call, not a page loop**, because `conversation.history` scans the whole conversation and reconciles every undelivered row on *each* call — so a five-page loop is five full scans plus five reconcile passes, on a verb the Hub runs at every thread open. `F12` bounds a dispatch; this bounds the work inside it. The two residuals — a message landing more than `SYNC_OVERLAP` positions behind the watermark, and a conversation with more than `SYNC_WINDOW` unfiled messages needing a second call — are backlog rows, not silent holes |
 | **D-C7-7** | **Stable ids are content-derived from signed fields, the `listing_id` way.** `request_id = content_digest("req_", {conversation, issuer, sequence})`; `quote_id = content_digest("quo_", {conversation, issuer, sequence})`. `conversation`, `issuer` and `sequence` are all in the signed payload (`issuer` implicitly, as the envelope's own), so the receiver re-derives the id and refuses a mismatch — the same check `verify_envelope` already makes for a listing (`F14`) | A new version of a request or a quote must keep one identity while `supersedes` chains the versions, and the id has to be derivable by the receiver rather than asserted by the sender. `F3` makes `conversation` the one symmetric ingredient. `sequence` (the nth record of that kind this issuer made in that conversation) makes two records in one conversation distinct without a clock — the guest clock is not reproducible and must never enter a derived id |
 | **D-C7-8** | **`agreement-receipt` has no id of its own. Its envelope `subject` is the quote's `record_id`, and its identity is `(quote_record_id, role, issuer)`.** | `D-06C-12`: an attestation references its subject record by that record's derived `record_id`, and neither half references the other. The quote's `record_id` is a content hash of the whole quote envelope, so it pins the terms exactly; a second digest would add nothing |
 | **D-C7-9** | **Both halves of an `agreement-receipt` carry the full `AgreedTerms`, copied verbatim from the quote, and are byte-identical apart from `role`.** | Two reasons, and both are required. R1 row 4's acceptance test is *"a signed agreement receipt containing every field listed in [Records]"*, and the Records table's `agreement-receipt` row names payee, expiry, cancellation and refund terms, and dispute path — a bare hash reference does not contain them. And `D-06C-12`'s completeness rule is *"the payloads are identical apart from `role`"*, which needs payloads with something in them to compare |
@@ -225,13 +248,57 @@ signature's own issuer (`crates/roym_core/src/listing.rs:380`, checked at
 | **D-C7-11** | **A card's issuer is recorded and shown; it is never assumed to be the conversation peer.** What C7 *does* enforce: the payload's `conversation` equals the conversation the card arrived in, and the derived `request_id`/`quote_id` matches the envelope's own issuer. What binds the two parties is the **quote**, which names `consumer_did` and is issued by the provider — so the agreement pair's "one attestation from each of the two named parties" is fully checkable | The conversation interface addresses a service, not a person (Gap 5), and `peer_person_did` is only known when a contact carries it. Claiming "this card is from the person you are talking to" would be exactly the confidence the carried-forward-limits table forbids: *"two different strengths, two different words in the UI"* |
 | **D-C7-12** | **`amount_minor` is the total the consumer owes, inclusive. `tax_minor` and `fees_minor` are informational breakdowns and must satisfy `tax_minor + fees_minor <= amount_minor`.** | The listing's `PaymentTerms` leaves `tax_included` to say whether tax is inside `amount_minor`, which is ambiguous the moment two parties have to agree on one number. A quote is that agreement, so it states one total and checks the parts against it |
 | **D-C7-13** | **A quote's expiry rides the envelope (`expires_at_secs`), and the agreement receipt copies it into `AgreedTerms.quote_expires_at_secs` as a record of what it was.** The receipt itself never expires | `F6`: an envelope expiry is enforced by the signer and by every verifier, which is failure-matrix row 9 with no product code. But an agreement made inside the window must stand after it, so the receipt must not inherit the quote's expiry — it records it instead |
-| **D-C7-14** | **The currency minor-unit exponent table moves to `roym_core::money` and becomes the source of truth; `PaymentTerms::validate` refuses a code this build does not know.** A Rust test pins `editor.ts`'s copy to it, the way `card.rs` already pins `registry.ts` | The backlog row targeted at this slice. A non-Hub signer can otherwise mint a mis-scaled `amount_minor`, and a consumer rendering a quote must re-derive the same table to display it. Refusing an unknown code rather than assuming two is the honest floor; the product is pre-release, so the behaviour changes in place with no ladder |
-| **D-C7-15** | **`transaction` gets its own export/import bundle, with four sections.** | Every other stateful Roym service has one, R1's identity row says a restore reproduces history, and R2's export row (C8) will need agreements and receipts to already be exportable. Four sections, not one composed bundle: `D-C4-…`'s "a single signed bundle that combines them comes later" still stands |
+| **D-C7-14** | **`roym_core::money` carries the full ISO-4217 code list and becomes the source of truth. `ListingPayload::validate` (the check is inline there, at `listing.rs:295-302` — there is no `PaymentTerms::validate`) and `AgreedTerms::validate` both refuse a code outside it, including a well-shaped unassigned one such as `"XYZ"`.** A Rust test pins the Hub's exponent sets to it, the way `card.rs` already pins `registry.ts` | The backlog row targeted at this slice. A non-Hub signer can otherwise mint a mis-scaled `amount_minor`, and a consumer rendering a quote must re-derive the same table to display it. **Without the full code list this decision is a rename**: `listing.rs:300` already refuses everything a shape check refuses, so the row would stay open. Refusing an unknown code rather than assuming two is the honest floor; the product is pre-release, so the behaviour changes in place with no ladder |
+| **D-C7-17** | **`transaction` sends its own cards; the send is not mediated by `web` or by a client.** The rejected alternative is spelled out in §16-F | Recorded because the alternative removes `D-C7-3`'s cost and deserves a stated reason, not silence |
+| **D-C7-18** | **Declining a quote is local state on the decliner's node. It mints no record and sends no card, and the UI says the other side has not been told.** | The spec's journey step C14 is *"accepts, **rejects**, or asks for changes"*, but `D-06C-3` fixes the card set at seven types and `RECORD_TYPES` carries no rejection type — so a signed reject cannot exist in this release without reopening a decision C7 is forbidden to re-decide. A local flag that stops the Hub offering Accept is the honest subset: it changes what this person sees and claims nothing about the other party. "Asks for changes" is already served — it is an ordinary chat message, and a revised request is a new version |
+| **D-C7-15** | **`transaction` gets its own export/import bundle, with four sections.** | Every other stateful Roym service has one, R1's identity row says a restore reproduces history, and R2's export row (C8) will need agreements and receipts to already be exportable. Four sections, not one composed bundle: the Hub's own Backup note already says *"a single signed bundle that combines them comes later"* (`crates/roym_web/ui/src/screens/backup.ts:2`), and that still stands |
 | **D-C7-16** | **`payment-request` does not enter `RECORD_TYPES` in this slice.** | `D-06C-12` settles that it *is* a signed record. C7 builds no producer for it (it is journey step C17, C8's). A record type with no producer is a claim the tree does not back; C8 adds the row with the verb that mints it. Recorded in §15 so C8 inherits it explicitly |
 
 ---
 
 ## §3 `syneroym-roym-core` — the shared vocabulary
+
+### 3.0 `crates/signed_record` — one additive field on `VerifyOptions`
+
+A completed agreement must stay readable after the quote it references
+expires (`D-C7-13`), and a quote card first synced *after* its expiry must
+still show the person the terms they were offered. Both need to verify a
+signature on an envelope whose expiry has passed. Today `verify` returns
+`Err(VerifyError::Expired)` (`crates/signed_record/src/verify.rs:171-176`)
+and a refused verdict carries no payload at all, so there is nothing to
+read.
+
+`VerifyOptions` (`verify.rs:55-61`) gains one field:
+
+```rust
+pub struct VerifyOptions<'a> {
+    …
+    /// When true, an envelope past its own `expires-at-secs` still
+    /// verifies. The signature, the issuer, the delegation window and
+    /// the revocation check are unchanged -- only the expiry stops being
+    /// fatal, and `VerifiedRecord.expires_at_secs` (already present) is
+    /// how the caller sees that it passed. For a reader that must show
+    /// what a lapsed offer said, rather than decide whether to act on it.
+    pub allow_expired: bool,
+}
+
+impl<'a> VerifyOptions<'a> {
+    /// Off in `new()`. A caller opts in, so no existing verifier changes
+    /// behaviour.
+    #[must_use]
+    pub fn allowing_expired(mut self) -> Self { self.allow_expired = true; self }
+}
+```
+
+and the `Expired` branch becomes `if !o.allow_expired && …`. Two unit
+tests in `signed_record`: an expired envelope still errors by default,
+and verifies under `allowing_expired` with `expires_at_secs` reported.
+
+This is the one change outside `crates/roym_*` the slice makes. It is
+additive, `VerifyOptions::new` is unchanged, and every existing caller —
+`listing::verify_envelope`, `catalog`'s import, `directory`'s publish
+path — keeps refusing expired records exactly as it does today. Land it
+first: §3.4's three verification bodies depend on it.
 
 ### 3.1 `src/money.rs` — new file
 
@@ -250,8 +317,17 @@ pub const EXPONENT_0: &[&str] = &[
 /// Currencies with three minor digits.
 pub const EXPONENT_3: &[&str] = &["BHD","IQD","JOD","KWD","LYD","OMR","TND"];
 
-/// `None` for a code this build does not know. Callers refuse rather than
-/// assume two -- assuming two signs a Kuwaiti dinar a thousand times low.
+/// Every ISO-4217 alphabetic code this build accepts, sorted, so a
+/// lookup is a binary search and a reviewer can see the whole set. A code
+/// outside this list is refused, not assumed to have two minor digits:
+/// assuming two signs a Kuwaiti dinar a thousand times low, and assuming
+/// a currency exists at all lets a signed amount name nothing.
+pub const CURRENCY_CODES: &[&str] = &[ /* the ~180 active ISO-4217
+    alphabetic codes, sorted, including the two lists above */ ];
+
+/// `None` for a code outside `CURRENCY_CODES`, including a well-shaped
+/// but unassigned one such as `"XYZ"`. This is the whole point of the
+/// function: a caller refuses rather than assumes.
 #[must_use]
 pub fn currency_minor_exponent(code: &str) -> Option<u32>;
 
@@ -261,26 +337,43 @@ pub fn currency_minor_exponent(code: &str) -> Option<u32>;
 pub fn is_currency_shape(code: &str) -> bool;
 ```
 
-`currency_minor_exponent` returns `Some(0)` / `Some(3)` for the two lists,
-`Some(2)` for any other well-shaped three-letter uppercase code that is a
-recognised ISO-4217 alphabetic code, and `None` otherwise. Keeping a full
-ISO-4217 list in the crate is not worth it; take the pragmatic rule and say
-so in the doc comment: **any well-shaped three-uppercase-letter code that
-is not in either exception list is exponent 2**, and `None` is returned
-only for a badly shaped code. This keeps the function total for real
-currencies, matches `editor.ts` exactly, and is the shape the pinning test
-below can actually check.
+`currency_minor_exponent` is `Some(0)` for a member of `EXPONENT_0`,
+`Some(3)` for a member of `EXPONENT_3`, `Some(2)` for any other member of
+`CURRENCY_CODES`, and **`None` for everything else** — a badly shaped
+string *and* a well-shaped code that is not an assigned currency.
+
+**Why the full list, when the first draft of this plan said it was not
+worth it.** Without it the function is a pure rename of the check
+`listing.rs:300` already makes, `D-C7-14` cannot be true, and
+`deferred-backlog.md` §2's row — *"a non-Hub signer can still mint a
+mis-scaled `amount_minor`"* — stays open for `"XYZ"`. The list is the
+only thing that closes it.
+
+**The TypeScript side does not mirror `CURRENCY_CODES`, deliberately.**
+`editor.ts` needs the *exponent* locally, to turn a typed decimal into
+minor units before anything is signed; it does not need membership,
+because the service refuses an unknown code and the client shows the
+refusal. So the Hub keeps `currencyMinorExponent` (the two exception sets
+plus a default of 2) and Rust holds the authority. The two sides can only
+disagree if a code is in a Rust exception list and not in the TypeScript
+one, which is exactly what the pinning test below prevents.
 
 Tests in this module:
 
-- `exponent_0_and_3_lists_are_sorted_and_disjoint`.
-- `an_unshaped_code_has_no_exponent` — `"us"`, `"USDX"`, `"usd"`, `""`.
+- `exponent_0_and_3_lists_are_sorted_and_disjoint`, and both are subsets
+  of `CURRENCY_CODES`.
+- `currency_codes_is_sorted_and_has_no_duplicates` — the binary search
+  depends on it.
+- `an_unknown_code_has_no_exponent` — `"XYZ"` (well-shaped, unassigned),
+  `"us"`, `"USDX"`, `"usd"`, `""`. **`"XYZ"` is the case the backlog row
+  is about**; a test that only covers badly shaped strings proves nothing.
 - `the_ui_currency_table_matches_this_crate` — reads
-  `../roym_web/ui/src/listings/editor.ts`, parses the `EXPONENT_0` and
-  `EXPONENT_3` `new Set([...])` literals, and asserts each equals the Rust
-  slice. Modelled exactly on
+  `../roym_web/ui/src/money.ts`, parses the `EXPONENT_0` and `EXPONENT_3`
+  `new Set([...])` literals, and asserts each equals the Rust slice.
+  Modelled exactly on
   `card::tests::the_ui_card_registry_matches_this_crate`
-  (`crates/roym_core/src/card.rs`).
+  (`crates/roym_core/src/card.rs`). Note the path: §7.1 moves the table
+  out of `listings/editor.ts` into `src/money.ts`.
 
 ### 3.2 `src/listing.rs` — one behaviour change
 
@@ -294,12 +387,29 @@ if p.currency.len() != 3 || !p.currency.chars().all(|c| c.is_ascii_uppercase()) 
 }
 // after
 if crate::money::currency_minor_exponent(&p.currency).is_none() {
-    return Err(ListingError::CurrencyShape(p.currency.clone()));
+    return Err(ListingError::CurrencyUnknown(p.currency.clone()));
 }
 ```
 
-The variant and its message stay as they are, so no caller changes. **Call
-sites to check for a fixture using a made-up code:**
+**The error variant is renamed, not reused.** `CurrencyShape`'s message is
+*"currency '{0}' is not three uppercase letters"*, which is now wrong for
+the case that matters: `"XYZ"` **is** three uppercase letters and is still
+refused. Replace the variant in `ListingError`
+(`crates/roym_core/src/listing.rs:225`):
+
+```rust
+#[error("currency '{0}' is not a currency code this build knows")]
+CurrencyUnknown(String),
+```
+
+`CurrencyShape` has one construction site and no matcher outside the
+crate's own tests, so this is a rename plus a message. Grep
+`CurrencyShape` before and after.
+
+**Call sites to check for a fixture using a made-up code** (`USD` and
+`EUR` are the only codes any fixture uses today — verified by grep across
+`crates/` and `apps/` — so this sweep is expected to be a no-op, and is
+listed so the executor confirms rather than assumes):
 `crates/roym_web/tests/dual_build_parity.rs` (`full_listing_params`),
 `crates/roym_core/src/listing.rs`'s own tests,
 `crates/roym_web/ui/src/listings/editor.test.ts`,
@@ -348,9 +458,13 @@ pub enum CardError {
     TooLarge,
 }
 
-/// Twice the envelope's own payload ceiling, leaving room for the
-/// envelope's own fields and the wrapper. A body over this is refused
-/// before it is parsed.
+/// The envelope's own 64 KiB payload ceiling (`MAX_PAYLOAD_BYTES`) plus
+/// room for what wraps it: the envelope's other fields, a delegation
+/// certificate, and the JSON string escaping that carries the whole
+/// envelope inside this body's `envelope` field -- escaping alone can
+/// nearly double a payload made of quotes and backslashes. Not a round
+/// multiple of the payload ceiling, and deliberately not described as
+/// one. A body over this is refused before it is parsed.
 pub const MAX_CARD_BODY_BYTES: usize = 160 * 1024;
 
 /// Parses a card body. Refuses an unknown wrapper version rather than
@@ -365,6 +479,22 @@ pub fn card_body(card_type: &str, version: u32, envelope: &str) -> Result<String
 Tests: round trip; an unknown wrapper version is refused; an unknown
 `(type, version)` parses; an oversize body is refused; a body with extra
 keys parses (serde ignores them) but a body missing `envelope` does not.
+
+### 3.3b `src/record.rs` — three new type constants
+
+`RECORD_PROFILE` and `RECORD_LISTING` already sit beside `RECORD_TYPES`
+here (`crates/roym_core/src/record.rs:35-36`). The three C7 types join
+them rather than living in `transaction.rs`, so every record-type name in
+the product has one home:
+
+```rust
+pub const RECORD_REQUEST: &str = "request";
+pub const RECORD_QUOTE: &str = "quote";
+pub const RECORD_AGREEMENT_RECEIPT: &str = "agreement-receipt";
+```
+
+`RECORD_TYPES` itself is unchanged: all three are already in it at
+version 1.
 
 ### 3.4 `src/transaction.rs` — new file, the record vocabulary
 
@@ -387,15 +517,32 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use syneroym_signed_record::{EnvelopeError, content_digest};
 
-use crate::{area::{Area, AreaError}, listing::ServiceLocation, money};
+use crate::{
+    area::{Area, AreaError},
+    listing::ServiceLocation,
+    money,
+    record::{RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RECORD_REQUEST},
+};
 
 pub const REQUEST_VERSION: u32 = 1;
 pub const QUOTE_VERSION: u32 = 1;
 pub const AGREEMENT_RECEIPT_VERSION: u32 = 1;
 
-pub const RECORD_REQUEST: &str = "request";
-pub const RECORD_QUOTE: &str = "quote";
-pub const RECORD_AGREEMENT_RECEIPT: &str = "agreement-receipt";
+/// The notice a consumer is shown before a request is signed, and which
+/// the request then carries under their own signature. One constant, so
+/// the Hub, `roymctl` and the record cannot drift apart, and so the
+/// notice is never an empty string nobody noticed.
+pub const DEFAULT_DATA_USE_NOTICE: &str =
+    "This request is signed by you and sent to the provider you chose. \
+     They keep a copy. It carries the area you gave, not your exact \
+     address; an address is disclosed only inside a quote you accept.";
+
+/// Shown above the address field whenever a quote states one, and pinned
+/// character-for-character by the browser suite -- the same discipline
+/// `messages.ts` already applies to the deletion notes.
+pub const ADDRESS_DISCLOSURE_NOTICE: &str =
+    "This address becomes part of a signed record that both parties keep \
+     and can export. It cannot be removed from a record already signed.";
 
 const REQUEST_ID_PREFIX: &str = "req_";
 const QUOTE_ID_PREFIX: &str = "quo_";
@@ -560,7 +707,9 @@ pub fn halves_agree(a: &AgreementReceiptPayload, b: &AgreementReceiptPayload) ->
 
 1. `scope` non-empty and `<= MAX_SCOPE_LEN`.
 2. `money::currency_minor_exponent(&currency).is_some()`, else
-   `CurrencyUnknown`.
+   `CurrencyUnknown` — the same rule and the same variant name
+   `ListingPayload::validate` now uses (§3.2), so a code refused on a
+   listing is refused on a quote.
 3. `amount_minor >= 0`, `tax_minor >= 0`, `fees_minor >= 0`.
 4. `tax_minor.checked_add(fees_minor)` exists and is `<= amount_minor`
    (`D-C7-12`), else `BreakdownExceedsTotal`.
@@ -596,6 +745,14 @@ body per record type, pure, no host, no storage:
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordVerdict<P> {
     pub verified: bool,
+    /// **Expiry is not a refusal here.** A record past its own
+    /// `expires_at_secs` still verifies -- the signature, the issuer and
+    /// the delegation window are all still good -- and this says the
+    /// window has passed. A caller that must decide whether to *act*
+    /// (`agreement.accept`) refuses on this; a caller that must *show
+    /// what was offered* (the card filer, the Hub) does not. Always
+    /// false for a record type that carries no expiry.
+    pub expired: bool,
     #[serde(skip_serializing_if = "Option::is_none")] pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] pub revocation_status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] pub record_id: Option<String>,
@@ -612,17 +769,31 @@ pub fn verify_agreement_receipt(envelope: &str, now_secs: u64)
     -> RecordVerdict<AgreementReceiptPayload>;
 ```
 
-Each does, in order: `record::verify_json` with `VerifyOptions::new(now)`;
-refuse unless `record_type` and `version` are this build's; deserialize the
-payload; `payload.validate()`; for `request`/`quote`, re-derive the id from
+Each does, in order: `record::verify_json` with
+**`VerifyOptions::new(now).allowing_expired()`** (§3.0); refuse unless
+`record_type` and `version` are this build's; deserialize the payload;
+`payload.validate()`; for `request`/`quote`, re-derive the id from
 `(payload.conversation, verified.issuer, payload.sequence)` and refuse a
 mismatch (`F14`'s rule); for `agreement-receipt`, refuse unless
 `envelope.subject == payload.quote_record_id`, unless
 `payload.role == Consumer` implies `verified.issuer == payload.consumer_did`,
 and unless `payload.role == Provider` implies
-`verified.issuer == payload.provider_did`. `revocation_status` is
+`verified.issuer == payload.provider_did`. Then set
+`expired = expires_at_secs.is_some_and(|e| now_secs >= e)`.
+`revocation_status` is
 `listing::revocation_status_word(verified.revocation_status)` — reuse it,
 do not spell the words a second time.
+
+**There is deliberately no second, expiry-strict variant of these three
+functions.** One function per record type, tolerating expiry and
+reporting it, means a caller cannot forget to pass a flag — it has to
+look at `expired` and decide. The three places that must refuse an
+expired quote (`agreement.accept`, `maybe_countersign`, and the Hub's
+Accept button) each say so in one line, and every other reader gets the
+terms. The first draft of this plan had these functions refuse an expired
+quote outright, which broke `agreement.get` and `maybe_countersign` the
+moment a quote lapsed and left a late-synced quote card with nothing to
+render — the exact window `D-C7-13` says a completed pair must survive.
 
 Unit tests in this module (all pure, no host):
 
@@ -636,8 +807,11 @@ Unit tests in this module (all pure, no host):
   issuer.
 - `halves_agree` is true for two halves differing only in `role`, false for
   any other single-field difference — write it as a table over every field.
-- An expired quote envelope verifies `false` with an `Expired` reason
-  (`F6`).
+- An expired quote envelope verifies **`true`** with `expired: true` and a
+  full payload, and a quote inside its window verifies `true` with
+  `expired: false`. This is the test that would have caught the first
+  draft's mistake.
+- `AgreedTerms::validate` refuses `"XYZ"` as a currency.
 
 ### 3.5 `src/agreement.rs` — or fold into `transaction.rs`
 
@@ -725,6 +899,32 @@ imports `syneroym:proxy`, `syneroym:signing`, `syneroym:data-layer` and
 `syneroym:invocation`. `cargo xtask check-roym-deps`'s allowlist is
 unchanged.
 
+**One sibling does change.** `conversation.send` answers
+`{ message_id, state }` (`crates/roym_conversation/src/app.rs:594`) and
+consumes the host's `sender_timestamp` internally (`:571`). A card filed
+by its sender must carry the **host's** timestamp, not the guest clock's,
+or `transaction.thread` orders the same exchange differently on the two
+installations — and no single-node test can catch that, because both
+builds would be wrong the same way. So `send`'s response gains one field:
+
+```rust
+Response::ok(json!({
+    "message_id": message_id,
+    "state": state,
+    // The host's own sender timestamp, the value the peer also stores.
+    // A caller that keeps its own copy of a message orders it by this,
+    // never by its own clock, so two nodes agree.
+    "sender_timestamp_ms": row.sender_timestamp_ms,
+}))
+```
+
+This is an app-level JSON field, not a WIT change, so `F4`'s "no change
+to the conversation service is needed to carry a card" still holds for
+carrying; this is about *filing*. Safe for the parity suite: no test
+asserts the response's exact key set (scenario 53 and the e2e files all
+read named keys — verified by grep), and `strip_volatile` already removes
+`sender_timestamp_ms` before any comparison.
+
 ### 4.1 Collections
 
 | Collection | Id | Payload | Indexes |
@@ -771,6 +971,12 @@ struct AgreementRow {
     conversation: String,
     consumer_did: String,
     provider_did: String,
+    /// The agreed terms, copied in when the first half is filed. Both
+    /// halves carry identical terms, and each half's terms were checked
+    /// against the quote before it was stored -- so this row is the
+    /// answer, and `agreement.get` never re-reads the quote. It must not:
+    /// a completed agreement outlives the quote's own expiry window.
+    terms: AgreedTerms,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     consumer: Option<ReceiptHalf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -792,6 +998,10 @@ struct CardRow {
     /// client draws the neutral block; nothing here is parsed.
     known: bool,
     verified: bool,
+    /// A quote past its own expiry. Verified and shown -- a person must be
+    /// able to read the offer they were made -- but never acceptable. Only
+    /// ever true for a `quote`.
+    #[serde(default)] expired: bool,
     #[serde(skip_serializing_if = "Option::is_none")] reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] issuer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] record_id: Option<String>,
@@ -811,12 +1021,18 @@ Constants, in `roym_core::transaction` so both the service and the tests
 read one definition:
 
 ```rust
-/// How many messages one `sync` page asks `conversation.history` for.
-pub const SYNC_PAGE: u32 = 200;
-/// How many pages one `sync` reads. Bounds the dispatch: a guest's
-/// wall-clock budget is spent while it waits on a host call, and an
-/// unbounded page loop is how that budget is exhausted.
-pub const MAX_SYNC_PAGES: u32 = 5;
+/// How many messages one `sync` reads, in **one** `conversation.history`
+/// call. Not a page size: `sync` never loops.
+///
+/// Looping is what the first draft of this plan did, and it was wrong for
+/// a reason the page count does not express. `conversation.history` reads
+/// every message of the conversation, then re-reads the host's delivery
+/// state and rewrites the row for every message not yet delivered -- on
+/// *every* call. Five calls are five full scans and five reconcile
+/// passes, and the Hub calls `sync` each time a thread opens. One call
+/// costs what the Hub's own `conversation.history` already costs, which
+/// is the honest ceiling for this design.
+pub const SYNC_WINDOW: u32 = 500;
 /// How far behind its own watermark a `sync` re-reads. `history` orders by
 /// sender timestamp, so a message that arrives late inserts before the
 /// watermark; this is the window in which that is invisible.
@@ -852,6 +1068,7 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
         "quote.list"       => quote_list(host, &req).await,
         "quote.history"    => quote_history(host, &req).await,
         "quote.verify"     => verify_verb(host, &req, RecordKind::Quote).await,
+        "quote.decline"    => quote_decline(host, &req).await,
 
         "agreement.accept" => agreement_accept(host, &req).await,
         "agreement.get"    => agreement_get(host, &req).await,
@@ -1018,9 +1235,10 @@ now = clock::now_secs()
 
 quote_envelope = get(QUOTE_HISTORY, quote_record_id)? or -32602 "no such quote"
 v = verify_quote(&quote_envelope, now)
-if !v.verified:
-    if reason names an expiry -> -32602 "quote-expired"
-    else                      -> -32602 "the quote does not verify: {reason}"
+if !v.verified                -> -32602 "the quote does not verify: {reason}"
+// The one place expiry is a refusal rather than a label. `verify_quote`
+// reports it; acting on it is this verb's decision alone.
+if v.expired                  -> -32602 "quote-expired"
 provider_did = v.issuer
 consumer_did = v.payload.consumer_did
 role = if owner == consumer_did { Consumer }
@@ -1054,6 +1272,39 @@ request or a quote is: `D-06C-12` fixes it as a single statement about a
 fixed subject, and a change of mind is a different record type (C8's
 cancellation), never an edit. Say so in a comment.
 
+### 4.5b `quote.decline` (`D-C7-18`)
+
+```
+params: { quote_record_id: String, note: String | null }
+result: { quote_record_id, declined: true, note }
+```
+
+Sets `declined_at_secs` (and an optional local `note`) on the `quotes`
+pointer row. Refuses if this installation's owner is not the quote's
+`consumer_did`, and refuses if a half already exists in `agreements` for
+this quote — declining something already accepted is a different act, and
+C7 does not have it.
+
+It mints no record and sends no card. `RecordPointerRow` gains:
+
+```rust
+/// Set by `quote.decline`. Local to this node: no record was signed and
+/// nothing was sent, so the other party does not know. The UI has to say
+/// that, in those words.
+#[serde(default, skip_serializing_if = "Option::is_none")]
+declined_at_secs: Option<u64>,
+#[serde(default, skip_serializing_if = "Option::is_none")]
+decline_note: Option<String>,
+```
+
+`transaction.thread` carries `declined` through onto the quote's card row
+so the Hub can drop the Accept button without a second lookup.
+
+Why not a signed rejection: `D-06C-3` fixes the card set at seven types
+and `RECORD_TYPES` has no rejection type. Minting either would re-decide a
+milestone decision inside a slice, which `D-06C-3` exists to prevent. §13
+and §15 record what is therefore not built.
+
 ### 4.6 `transaction.sync`
 
 ```
@@ -1069,35 +1320,53 @@ ensure collections
 state = load(SYNC_STATE, conversation) or { scanned_count: 0 }
 start = if params.full { 0 } else { state.scanned_count.saturating_sub(SYNC_OVERLAP) }
 
-// One query, not one read per message: the ids this node already filed.
-already = set of `cards` row ids where row.conversation == conversation
-card_count = already.len()
+// Exactly one call. `history` scans the whole conversation and runs a
+// reconcile pass on every undelivered row, so a second call is a second
+// scan, not a cheap continuation.
+page = conversation_call("conversation.history",
+          { conversation, limit: SYNC_WINDOW, cursor: start })
 
+card_count = count of `cards` rows for this conversation   // one query, for the cap
 offset = start
-pages = 0
-loop {
-    page = conversation_call("conversation.history",
-              { conversation, limit: SYNC_PAGE, cursor: offset })
-    msgs = page.messages
-    for m in msgs:
-        offset += 1
-        if already.contains(m.id): continue
-        if m.content_type != card::CARD_CONTENT_TYPE: continue
-        if m.deleted_at_secs.is_some(): continue
-        if card_count >= MAX_CARDS_PER_CONVERSATION: break the loop
-        file_incoming_card(host, &m, conversation, now)   // §4.7
-        card_count += 1
-    pages += 1
-    if msgs.len() < SYNC_PAGE as usize or pages >= MAX_SYNC_PAGES: break
-}
+first_declined = None
 
-put(SYNC_STATE, conversation, { scanned_count: max(state.scanned_count, offset) })
+for m in page.messages:
+    offset += 1
+    if m.content_type != card::CARD_CONTENT_TYPE: continue
+    if m.deleted_at_secs.is_some(): continue
+    // A point read on the primary key, and only for a card-typed
+    // message. Cards are rare among messages, so this is a handful of
+    // indexed reads -- not the full `cards` scan the first draft used to
+    // build a set of ids it mostly did not need.
+    if get(CARDS, m.id).is_some(): continue
+    if card_count >= MAX_CARDS_PER_CONVERSATION:
+        // The watermark must not move past a card this node declined to
+        // file, or the cap silently becomes data loss: the next `sync`
+        // starts after it and `full: true` re-hits the same cap.
+        first_declined = first_declined.or(Some(offset - 1))
+        continue
+    file_incoming_card(host, &m, conversation, now)   // §4.7
+    card_count += 1
+
+reached = match first_declined { Some(o) => o, None => offset }
+put(SYNC_STATE, conversation, { scanned_count: max(state.scanned_count, reached) })
 ```
 
 `conversation.history`'s response shape is `{ "messages": [MessageRow] }`
 with `cursor` as an integer offset (`crates/roym_conversation/src/app.rs:648-654`).
 `MessageRow.body` is the card JSON as UTF-8 (`F4`), `direction` is
 `incoming`/`outgoing`, `content_type` is preserved.
+
+**The cost, stated rather than discovered.** One `sync` is one
+`conversation.history` (a full scan of that conversation's messages plus a
+reconcile pass over the undelivered ones — the C5-7 whole-collection-scan
+row, still open and now cited here), one filtered `cards` query for the
+cap, and one point read per card-typed message in the window. The Hub
+already pays the `history` cost to draw the thread, so `sync` roughly
+doubles a thread open rather than multiplying it. A conversation with more
+than `SYNC_WINDOW` unfiled messages behind its watermark needs a second
+`sync` call; the client may simply call it again, and the result's
+`scanned_count` says whether it advanced.
 
 ### 4.7 `file_incoming_card`
 
@@ -1132,7 +1401,7 @@ match card.card_type:
      row.record_id = v.record_id; row.revocation_status = v.revocation_status
 
   "quote" =>
-     v = verify_quote(&card.envelope, now)
+     v = verify_quote(&card.envelope, now)      // tolerates expiry (§3.4)
      if !v.verified                    -> refuse(v.reason)
      if v.payload.conversation != conversation -> refuse(..)
      // The quote must answer a request this node holds, so the two-party
@@ -1141,23 +1410,34 @@ match card.card_type:
      if get(REQUEST_HISTORY, v.payload.request_record_id).is_none()
                                        -> refuse("answers a request this node does not hold")
      store_received_quote(host, &card.envelope, &v)
-     row.verified = true; row.data = Some(json!(v.payload)); ..
+     row.verified = true; row.expired = v.expired
+     row.data = Some(json!(v.payload)); ..
+     // An expired quote is filed, stored and shown. A person who opens a
+     // thread late must be able to read the offer they were made -- and
+     // because a card is filed only when somebody opens the thread
+     // (D-C7-3), late is the ordinary case, not the edge one. Whether it
+     // can still be accepted is `agreement.accept`'s decision, not this
+     // one's.
 
   "agreement-receipt" =>
      v = verify_agreement_receipt(&card.envelope, now)
      if !v.verified                    -> refuse(v.reason)
      q = get(QUOTE_HISTORY, v.payload.quote_record_id)
          or -> refuse("attests a quote this node does not hold")
-     qv = verify_quote(&q, now)   // may be Expired; that is not a refusal here
+     qv = verify_quote(&q, now)   // expired or not, the payload is there
+     if !qv.verified                   -> refuse("the quote it attests does not verify")
      // The terms in the half must be the terms the quote stated, byte for
      // byte. A half that agrees to something else is not half of a pair.
      if qv.payload.terms != v.payload.terms -> refuse("terms differ from the quote")
      if v.payload.consumer_did != qv.payload.consumer_did
         or v.payload.provider_did != qv.issuer -> refuse("names the wrong parties")
-     // The acceptance had to fall inside the quote's own window.
+     // The acceptance had to fall inside the quote's own window. Note
+     // this is a comparison of two recorded numbers, not of anything
+     // against `now`: a pair completed in time stays complete forever.
      if v.issued_at_secs >= v.payload.terms.quote_expires_at_secs
                                             -> refuse("accepted after the quote expired")
-     row_agr = load(AGREEMENTS, quote_record_id) or new
+     row_agr = load(AGREEMENTS, quote_record_id)
+               or new AgreementRow { terms: qv.payload.terms.clone(), .. }
      if row_agr.half(v.payload.role).is_none():
          row_agr.set_half(v.payload.role, ReceiptHalf { .. })
          put(AGREEMENTS, ..)
@@ -1189,7 +1469,9 @@ if row.consumer.is_none()                        { return }
 owner = signing::owner_did(host)?
 if owner != row.provider_did                     { return }   // not this node's to make
 if qv.payload.terms != consumer_half_terms       { return }   // checked already, restated
-if now >= qv.payload.terms.quote_expires_at_secs { return }   // expired: the person decides
+// `qv` carries its payload whether or not the quote has lapsed (§3.4), so
+// this reads a number rather than depending on the verify having passed.
+if now >= row.terms.quote_expires_at_secs        { return }   // expired: the person decides
 (principal, _) = signing::person_principal(host, now)?  // not enrolled => leave the half
 sign an AgreementReceiptPayload identical to the consumer half except
     `role: Provider`
@@ -1275,8 +1557,16 @@ of the `envelope` parameter.
 
 - `agreement.get { quote_record_id }` →
   `{ quote_record_id, conversation, consumer_did, provider_did, consumer, provider, pair, terms }`
-  where `terms` is read from the quote (the two halves are byte-identical
-  on it) and `pair` is `PairState`. `null` when no row.
+  where `terms` is **`AgreementRow.terms`**, this row's own copy, and
+  `pair` is `PairState`. `null` when no row.
+
+  It must not re-read the quote. A completed pair outlives the quote's
+  expiry by design (`D-C7-13`), so a verb that re-derived the terms from
+  the quote envelope would work until the window closed and then start
+  answering with no terms — the exact failure the first draft of this plan
+  had. `AgreementRow.terms` is filled when the first half is filed, and
+  every half was already checked byte-for-byte against the quote before it
+  was stored (§4.7), so the row is the answer.
 - `agreement.list { conversation? }` → the rows, newest first.
 
 ### 4.16 `transaction.export` / `.import`
@@ -1372,16 +1662,28 @@ DIDs, and the pair state in words: *"Both parties have signed these terms."*
 / *"Only the consumer has signed so far."* / *"Only the provider has signed
 so far."* It never says *verified*.
 
-Add `src/cards/money.ts`:
+Add `src/money.ts`, holding **everything** the two callers share — the
+first draft moved only the exponent function and left `toMinorUnits`
+behind in `editor.ts`, which §7.3's quote form also needs:
 
 ```ts
-export function formatMinor(minor: number, currency: string): string
+export const EXPONENT_0: Set<string>;
+export const EXPONENT_3: Set<string>;
+export function currencyMinorExponent(code: string): number;
+export function toMinorUnits(input: string, exponent?: number): number | undefined;
+export function formatMinor(minor: number, currency: string): string;
 ```
-using the same exponent table `editor.ts` holds — move
-`currencyMinorExponent`, `EXPONENT_0` and `EXPONENT_3` from
-`listings/editor.ts` into `src/money.ts`, re-export from `editor.ts` so its
-own tests keep working, and point `roym_core::money`'s pinning test at the
-new file path.
+
+`currencyMinorExponent`, `EXPONENT_0`, `EXPONENT_3` and `toMinorUnits` all
+move out of `listings/editor.ts`; `editor.ts` re-exports them so its own
+tests and `ListingInputError` handling keep working unchanged.
+`roym_core::money`'s pinning test reads `src/money.ts`.
+
+`toMinorUnits` throws `ListingInputError` today, which now lives in the
+wrong module for a card form. Move the error type to `src/money.ts` too
+and re-export it, or rename it — either is fine, but a quote form
+throwing something called a *listing* input error is the kind of thing
+that reads as a copy-paste bug in review.
 
 ### 7.2 `src/cards/refused.ts` — new
 
@@ -1405,27 +1707,94 @@ the node's verdict (`F10`).
   and `renderCard` (which falls through to `renderUnknown`) when `!known`.
   Never render the raw JSON body.
 - A **"Send a request"** form in the thread: description, categories,
-  optional listing id, optional window. Posts `request.set`.
+  optional listing id, optional window. It **displays
+  `DEFAULT_DATA_USE_NOTICE` above the send button and sends that exact
+  string** as `data_use_notice` — it is not a field the person types, and
+  it is not optional. A notice the record carries but nobody was shown is
+  worse than no notice, because it looks like consent.
 - A **"Quote this request"** control on a verified `request` card the person
   did not issue: opens a form for the `AgreedTerms` fields plus
   `expires_in_secs`, converts the amount with `toMinorUnits(amount,
   currencyMinorExponent(currency))` so no decimal is ever sent, and posts
-  `quote.set`.
+  `quote.set`. The address field appears only when *where* is
+  `at-customer`, and **`ADDRESS_DISCLOSURE_NOTICE` is rendered directly
+  above it**, pinned character-for-character by the browser suite the way
+  `messages.ts` already pins the two delete notes.
 - An **"Accept these terms"** button on a verified `quote` card whose
-  `consumer_did` is this person and whose expiry is in the future. Posts
-  `agreement.accept`. The button is absent, with a line of text saying the
-  quote expired, when it is past.
+  `consumer_did` is this person, whose `expired` is false, and which has
+  not been declined. Posts `agreement.accept`.
+- A **"Decline"** button beside it, posting `quote.decline`. Before it
+  runs, the dialog says: *"This only changes what you see. The other side
+  is not told, and no record is signed. Send them a message if you want
+  them to know."* — the same honesty rule the delete dialog follows.
+- An **expired** quote card still renders its full terms, with the Accept
+  and Decline buttons absent and a line reading *"This quote expired on
+  <date>. Ask for a new one."* The terms are there because the node files
+  and stores an expired quote (§4.7) — a person who opens a thread late
+  must be able to read what they were offered.
+- A quote whose `request_record_id` is not the newest version of that
+  request carries a line: *"This quote answers an earlier version of your
+  request."* Derived from data the thread already holds; no new verb.
 - Refusals surface as text: `-32602 "quote-expired"` renders *"This quote
   has expired. Ask for a new one."*
 
-### 7.4 `src/screens/backup.ts` (`F11`)
+### 7.4 `src/screens/backup.ts` (`F11`, corrected)
 
-Fourth entry: `{ label: "Requests, quotes, and agreements", exportMethod:
-"transaction.export", importMethod: "transaction.import", file:
-"roym-transaction-bundle.json" }`. Change "The three bundles below" to
-"The four bundles below".
+**The count is already wrong before this slice.** `BUNDLES` lists three,
+but C6 shipped `directory.export` / `directory.import`
+(`crates/roym_directory/src/app.rs:234-235`), so Roym exports **four**
+bundles today and the file's own doc comment (`backup.ts:2`, *"The three
+app-data bundles Roym can export today"*) and its visible note are both
+stale. C7 adds the fifth.
 
-### 7.5 `src/main.ts`
+Add two entries, not one:
+
+```ts
+{ label: "Requests, quotes, and agreements",
+  exportMethod: "transaction.export", importMethod: "transaction.import",
+  file: "roym-transaction-bundle.json" },
+{ label: "This installation's SynOrg directory, if it runs one",
+  exportMethod: "directory.export", importMethod: "directory.import",
+  file: "roym-directory-bundle.json" },
+```
+
+Update the doc comment at `backup.ts:2` and the visible
+`.backup-separate-note` to say **five**. If a reviewer decides the
+directory bundle does not belong on a person's backup screen — it is the
+SynOrg's data, not theirs — then remove it deliberately and say so in the
+note; what must not survive is a screen that calls itself complete while
+silently omitting an export verb that exists.
+
+### 7.5 `src/main.ts` and `src/screens/setup.ts` — the enrolment gate
+
+**The gate is wrong today and this slice makes it bite.** `main.ts:83`
+checks `profile.signing-status` alone and shows the tabs when that one
+service is enrolled; `setup.ts:24`'s "Check again" does the same. Anyone
+who enrolled before this slice has `profile`, `catalog` and `conversation`
+installed and `transaction` missing — so the Hub looks ready, the Messages
+tab offers "Send a request", and `request.set` answers
+`signing-not-enrolled`. Parity 124 asserts that error exists; nothing
+would surface it.
+
+Add to `src/session/enrolment.ts` (new):
+
+```ts
+/// Every Roym service that signs a record, and therefore needs the
+/// person's record-signing certificate installed. Kept beside the Hub's
+/// own gate so a service added later fails the gate rather than failing
+/// a verb.
+export const SIGNING_SERVICES = ["profile", "catalog", "conversation", "transaction"] as const;
+
+/// The services still missing a certificate. Empty means the Hub is ready.
+export async function pendingEnrolment(): Promise<string[]>;
+```
+
+`main.ts` shows the tabs only when `pendingEnrolment()` is empty;
+`setup.ts` lists the missing service names as text and keeps its "Check
+again" button, which now re-runs the same helper. The instruction text
+already names `roymctl roym enrol-signing`, which enrols all four once
+§8's `SIGNING_SERVICES` grows — so the fix for a partially enrolled
+installation is to run the same command again.
 
 `renderHome`'s gallery samples for `request`, `quote` and
 `agreement-receipt` become realistic fixtures matching the new interfaces,
@@ -1473,14 +1842,22 @@ roym transaction quote --request <record_id> --scope <text>
         --cancellation-file <path> --refund-file <path> --dispute <text>
         --expires-hours <n>
 roym transaction accept --quote <record_id>
+roym transaction decline --quote <record_id> [--note <text>]
 roym transaction sync --conversation <id> [--full]
 roym transaction thread --conversation <id>
 roym transaction agreement --quote <record_id>
 ```
 
-`--amount`, `--tax` and `--fees` are decimals converted to minor units at
-this boundary with `roym_core::money::currency_minor_exponent`, never
-signed as a decimal — the same rule the Hub editor follows. `--near` uses
+`--notice` **defaults to `roym_core::transaction::DEFAULT_DATA_USE_NOTICE`
+and is printed before the request is sent**, so the CLI shows the same
+notice the Hub does and the record never carries an empty one. `--amount`,
+`--tax` and `--fees` are decimals converted to minor units at this
+boundary with `roym_core::money::currency_minor_exponent`, never signed as
+a decimal — the same rule the Hub editor follows; an unknown code is
+refused here with the same wording the service uses, rather than being
+sent to be refused remotely. `--address`, when given, prints
+`ADDRESS_DISCLOSURE_NOTICE` before signing. `decline` prints the same
+"the other side is not told" sentence the Hub dialog shows. `--near` uses
 the existing `lat,lon,radius_m` → micro-degrees parser that
 `directory find` already has; lift it to a shared helper in the same file
 rather than copying it.
@@ -1530,6 +1907,26 @@ show.
    signs the bytes with `peer_identity()`, attaches the z-base-32 signature
    and returns the JSON — the same shape `crates/roym_core/src/listing.rs`'s
    own test helper `sign_listing_with_own_issuer` already uses.
+
+   **`sign_as_peer` is also how an expired quote is minted.** No quote
+   signed through `quote.set` can expire inside a test:
+   `MIN_QUOTE_LIFETIME_SECS` is 300 and `RecordDraft::validate` refuses an
+   expiry already past (`crates/signed_record/src/envelope.rs:120`), so
+   waiting is the only way — and five minutes is not a test. Instead pass
+   `issued_at_secs = wall_now - 3600` and
+   `expires_at_secs = Some(wall_now - 60)`: `unsigned` validates the draft
+   against the *passed* `issued_at`, and `wall_now - 60` is comfortably
+   after `wall_now - 3600`, so the draft is legal and the envelope is born
+   already lapsed. `verify` then accepts it (`issued_at` is in the past,
+   so the clock-skew check passes) and `verify_quote` reports
+   `expired: true` with a full payload.
+
+   **This works only because of §3.0.** With the first draft's
+   expiry-refusing verify, the card would be filed refused, the quote
+   would never reach `quote_history`, and `agreement.accept` would answer
+   *"no such quote"* rather than `quote-expired` — so scenario 133 would
+   assert the wrong thing while appearing to pass. The two fixes are one
+   fix.
 5. **`inbound_card`**: `inbound()` with `content_type` set to
    `CARD_CONTENT_TYPE` and the body from `card::card_body`.
 6. **`strip_volatile`**: no new names needed if every transaction row uses
@@ -1554,22 +1951,25 @@ The file's last scenario today is 121. Use 122+.
 | 130 | The full pair, one stack at a time: the peer's consumer half is delivered as a card, `sync` files it **and countersigns**, `agreement.get` reports `pair: complete`, and the two halves' payloads differ only in `role` |
 | 131 | A consumer half whose `terms` differ from the quote by one byte is filed refused, no half is stored, and nothing is countersigned |
 | 132 | A consumer half issued by a DID the quote does not name is filed refused |
-| 133 | `agreement.accept` on an expired quote answers `quote-expired`; the pair stays incomplete |
+| 133 | An expired quote, minted by `sign_as_peer` with a past `expires_at_secs` (§9.1 item 4) and delivered as a card, is **filed verified with its full terms and `expired: true`**; `agreement.accept` on it answers `quote-expired`; the pair stays incomplete. Both halves of this matter: the terms are readable and the offer is not acceptable |
+| 133b | A completed pair survives its quote's expiry: accept inside the window, then re-read `agreement.get` with the quote lapsed — `pair: complete`, terms still returned in full (`D-C7-13`). This is the regression test for the first draft's broken read |
 | 134 | `sync` is idempotent: running it three times leaves one card row, one request, one agreement half, and `filed: 0` on the second and third runs |
 | 135 | `sync` with `full: true` after the watermark has moved re-scans from 0 and files nothing new |
 | 136 | A card whose declared type is `quote` and whose envelope is a signed `request` is filed refused (`D-C7-5`) |
 | 137 | A card whose `(type, version)` is not in `CARD_TYPES` is filed with `known: false`, `verified: false`, no `data`, and no parse attempt |
 | 138 | A card of a known type with no producer (`payment-request`) is filed `known: true`, `verified: false`, with the "no producer in this build" reason |
 | 139 | A card whose payload names another conversation is filed refused |
-| 140 | A card body that is not JSON, and one over `MAX_CARD_BODY_BYTES`, are each filed refused without a panic |
+| 140 | A card body that is not JSON, one over `MAX_CARD_BODY_BYTES`, and one whose envelope JSON has **no `version` field**, are each filed refused without a panic. The third is failure-matrix row 14's own test |
+| 140b | `sync` at `MAX_CARDS_PER_CONVERSATION` leaves the watermark on the first card it declined to file, and the next `sync` files it once the cap is raised — the cap bounds storage, never silently drops a card |
+| 140c | `quote.decline` hides Accept without minting a record: the quote row carries `declined_at_secs`, no new envelope exists in `quote_history`, and no card was sent |
 | 141 | `transaction.thread` orders cards by sender timestamp then message id, identically on both builds |
 | 142 | `transaction.export` / `.import` round-trip: integrity passes, a tampered `quotes` envelope refuses the whole import naming the id, and a card row's `verified` is recomputed rather than trusted |
 | 143 | Guard, in the shape of scenario 73: every C7 verb driven once locally with params that reach the handler answers neither `-32601` nor `-32013` |
 | 144 | Every C7 verb over the wire answers `-32013`, both builds (shape of 106b) |
-| 145 | `listing.set` with a currency this build does not know is refused, and one with `JPY` signs an `amount_minor` the Hub's exponent table agrees with |
+| 145 | `listing.set` and `quote.set` each refuse `"XYZ"` — well-shaped, unassigned, and the case backlog §2's row is actually about — and a `JPY` quote signs an `amount_minor` the Hub's exponent table agrees with. A scenario that only refuses `"us"` proves nothing this slice did not already have |
 
-Scenarios 127–140 all run on one stack with the peer identity of §9.1 item
-4 — the parity suite's job is that the two builds agree, and a second
+Scenarios 127–140c all run on one stack with the peer identity of §9.1
+item 4 — the parity suite's job is that the two builds agree, and a second
 installation is the e2e's job.
 
 ### 9.3 `crates/substrate/tests/roym_transaction_e2e.rs` — new
@@ -1613,9 +2013,21 @@ One test, `an_offer_is_agreed_across_two_installations`, steps:
     complete, both envelopes byte-identical to what step 10 saw.
 13. X sends a plain chat message claiming a different payee; the
     agreement's `terms.payee` is unchanged (failure-matrix row 5).
-14. Y `quote.set` with `expires_in_secs = MIN_QUOTE_LIFETIME_SECS`; after
-    that window, X `agreement.accept` answers `quote-expired` (row 9). Use
-    a second quote and a short sleep rather than a real hour.
+14. **No directory is deployed on either installation, and the whole path
+    in steps 3–12 completes anyway.** Assert it rather than leaving it
+    implicit: `directory.sources` on X returns an empty list. This is
+    `D-06C-6a`'s R1 half, now including row 4 — see §9.5.
+
+**There is no expiry step in this e2e, deliberately.** The first draft had
+one with "a short sleep", which does not exist: `MIN_QUOTE_LIFETIME_SECS`
+is 300 and the host refuses a shorter one, so the only honest e2e version
+waits five real minutes on top of a test that already boots two
+substrates. Expiry is a record-layer rule with no cross-installation
+content — the same envelope field, checked by the same pure function on
+both nodes — so it is proven where it can be proven cheaply and on both
+builds: parity 133 (refused), 133b (a completed pair survives it), and the
+`roym_core::transaction` unit test on `verify_quote`. §9.5 credits row 9
+there, not here.
 
 A second test, `a_tampered_card_is_filed_refused_and_never_verified`:
 deliver a card whose envelope has one byte changed in its payload, and
@@ -1630,7 +2042,11 @@ assert `transaction.thread`'s row is `verified: false` with a reason, no
 | 25 | Card safety on the real templates: `window.RoymRegistry.renderCard` with every string field set to markup and a `javascript:` payee yields no element from the data, no network request, and literal text (extends case 4) |
 | 26 | Messages tab: opening a thread and sending a request posts a card, and the thread renders it as `.card-request` with its description, never as raw JSON |
 | 27 | Messages tab: a refused card renders as `.card-refused` with `data-verified="false"` and no engage affordance (driven through `RoymRegistry` plus the caller's own branch, since a single node cannot serve itself a forgery — the same limit the Directory tab's case 15 records) |
-| 28 | Backup tab: four bundles, and the note says "four" — case 8's `toHaveCount(3)` becomes 4 and its title changes |
+| 28 | Backup tab: **five** bundles, and the note says "five" — case 8's `toHaveCount(3)` becomes 5 and its title changes. Three of the five are pre-existing; `directory` was already missing before this slice (§7.4) |
+| 29 | Messages tab: the request form shows `DEFAULT_DATA_USE_NOTICE` before sending, and the quote form shows `ADDRESS_DISCLOSURE_NOTICE` above the address field, both pinned character-for-character — the discipline case 10 already applies to the two delete notes |
+| 30 | Messages tab: an expired quote card renders its full terms with no Accept and no Decline button, and a line naming the expiry date. Driven through `RoymRegistry` with an `expired: true` fixture |
+| 31 | Declining a quote hides Accept and shows the "the other side is not told" sentence before it runs |
+| 32 | An installation with `transaction` unenrolled shows the setup gate naming the missing service, not the tabs (§7.5). Without this, the gate regression is invisible until somebody sends a request |
 
 Case 27's limitation is the same one already carried as a backlog row for
 the Directory tab; extend that row rather than adding a second.
@@ -1641,11 +2057,21 @@ the Directory tab; extend that row rather than adding a second.
 |---|---|
 | 4 — an unknown card type, or a known type at an unknown version | Parity 137; browser case 3 (already) plus 25 |
 | 5 — a quote's payee contradicted by a later chat message | e2e step 13 |
-| 9 — an unaccepted quote expires rather than staying live | Parity 133; e2e step 14 |
-| 10 — either party tries to alter a signed receipt | Parity 130/131 (a half that does not match the quote is refused) and the `supersedes: None` rule; a correction is a separate record referencing the same subject |
+| 9 — an unaccepted quote expires rather than staying live | Parity 133 and 133b, plus the `verify_quote` unit test. **Not** the e2e — see §9.3's closing note |
+| 10 — either party tries to alter a signed receipt | **Partly.** What C7 proves: a filed half is immutable (no verb edits one, `agreement.accept` is idempotent, and §4.7 refuses a half whose terms differ from the quote by a byte) — parity 130, 131 and 142. What C7 does **not** build is the correction path: nothing mints a record that supersedes a receipt, and the type that would (a cancellation) is in neither `RECORD_TYPES`, `CARD_TYPES`, `D-06C-13`, nor `task.md`'s C8 row. The first draft credited this row in full, which was wrong. The corrections half is C8's, with a backlog row (§15) |
 | 13 — an import reproduces verification status | Parity 142 |
-| 14 — a record with no version field | Already structural; parity 143's guard keeps it so |
+| 14 — a record with no version field | **Parity 140**, whose third case is a card whose envelope JSON has no `version`. The first draft credited scenario 143, which is the `-32601`/`-32013` verb guard and asserts nothing about version fields |
 | 19 — any interface behaving differently on the two builds | Every parity scenario |
+
+**Exit criterion 6, claimed here rather than left to C8.** *"The whole
+R1+R2 flow completes with no Directory deployed anywhere"* is a hard gate
+on `D-06C-6a`. `status.md:441` credits only C5's step 11, which predates
+the offer flow entirely — so R1 row 4 has never been run without a
+directory. C7's e2e is the first run that covers it: step 3 reaches the
+provider by the conversation address inside their signed listing, and
+steps 4–12 complete the request → quote → agreement path with no
+directory on either node (asserted at step 14). Record it in `status.md`
+and in this table when the slice lands; R2's half stays C8's.
 
 ---
 
@@ -1654,25 +2080,33 @@ the Directory tab; extend that row rather than adding a second.
 Five work orders. Each compiles and its own tests pass before the next.
 
 **WO1 — the vocabulary.**
-1. `roym_core::money` and its two tests, then the `editor.ts` move and the
-   pinning test (§3.1, §7.1's money half).
-2. `listing.rs`'s currency check (§3.2) and the fixture sweep it forces.
+0. `signed_record`'s `allow_expired` field and its two unit tests (§3.0).
+   **First**, because §3.4's three verification bodies depend on it and
+   getting the expiry rule wrong breaks `agreement.get`,
+   `maybe_countersign` and every late-synced quote at once.
+1. `roym_core::money` with the full `CURRENCY_CODES` list and its four
+   tests, then the `src/money.ts` move and the pinning test (§3.1, §7.1's
+   money half).
+2. `listing.rs`'s currency check and the `CurrencyUnknown` rename (§3.2),
+   plus the fixture sweep it forces.
 3. `roym_core::card`'s `Card` wrapper, `CARD_CONTENT_TYPE`, `parse_card`,
-   `card_body` (§3.3).
-4. `roym_core::transaction` — payloads, validation, id derivation, the
-   three verification bodies, `halves_agree`, `PairState` — with its unit
-   tests (§3.4, §3.5). **This is the choke point**: every later step reads
-   these shapes, and a payload field added after WO2 means re-signing every
-   fixture.
+   `card_body` (§3.3); `record.rs`'s three type constants (§3.3b).
+4. `roym_core::transaction` — payloads, validation, id derivation, the two
+   notice constants, the three verification bodies with `expired`,
+   `halves_agree`, `PairState` — with its unit tests (§3.4, §3.5). **This
+   is the choke point**: every later step reads these shapes, and a
+   payload field added after WO2 means re-signing every fixture.
 5. `router.rs`'s `transaction.` prefix and the two test updates (§3.6);
    `backup.rs`'s four section names (§3.7); `lib.rs` (§3.8).
 
 **WO2 — the service.**
-6. Collections, row types, `SCHEMA_VERSION` 2, the verb table (§4.1, §4.2).
-7. `request.set` / `quote.set` and the `write_version`-shaped body they
+6. `conversation.send`'s `sender_timestamp_ms` response field (§4
+   preamble). Small, and everything in `file_own_card` rests on it.
+7. Collections, row types, `SCHEMA_VERSION` 2, the verb table (§4.1, §4.2).
+8. `request.set` / `quote.set` and the `write_version`-shaped body they
    share (§4.3, §4.4), with `count_mine` (§4.10) and `file_own_card`
    (§4.11).
-8. `agreement.accept` (§4.5).
+9. `agreement.accept` (§4.5) and `quote.decline` (§4.5b).
 9. `transaction.sync`, `file_incoming_card`, `maybe_countersign` (§4.6–4.8).
 10. `transaction.thread`, the get/list/history trio for each record, the
     three `*.verify` verbs (§4.12–4.15).
@@ -1755,6 +2189,17 @@ row for `status.md`'s §14 list.
   stated reason (§4.7's last arm).
 - **`payment-request` in `RECORD_TYPES`** — `D-C7-16`.
 - **A node-side trigger for `sync`.** `D-C7-3`'s cost.
+- **A signed rejection, and a quote withdrawal.** The spec's journey step
+  C14 is *"accepts, **rejects**, or asks for changes"*. C7 ships accept, a
+  local-only decline (`D-C7-18`), and "asks for changes" as an ordinary
+  message plus a revised request. It does **not** ship a signed rejection
+  a provider can verify, nor a `quote.withdraw` the way `catalog` has
+  `listing.withdraw` — both need a record type and a card type, and
+  `D-06C-3` fixes the card set at seven. Consequence to state in the UI
+  and carry in the backlog: **revising a request does not retract the
+  quote that answered the old version.** The old quote stays acceptable
+  until its own expiry, and §7.3's "answers an earlier version of your
+  request" line is the only thing that says so.
 - **Binding a card's issuer to the conversation peer** — `D-C7-11`.
 - **Negotiation history rendering, or quote templates** — excluded by R1
   row 4's own "Excluded" column.
@@ -1770,7 +2215,9 @@ row for `status.md`'s §14 list.
 2. A `request` and a `quote` each re-derive their id from the signature's
    own issuer, and a mismatch is refused.
 3. A quote's expiry rides its envelope; an accept after it answers
-   `quote-expired`; an unaccepted quote stops verifying at its own expiry.
+   `quote-expired`; an expired quote is still filed, stored and shown with
+   its full terms; and a pair completed inside the window still reads
+   complete, with terms, long after the quote lapses.
 4. An `agreement-receipt` pair is complete on **both** installations after
    one consumer accept and one provider `sync`, and the two halves' payloads
    differ only in `role`.
@@ -1787,10 +2234,17 @@ row for `status.md`'s §14 list.
 10. The Hub renders the three real card templates safely — no markup
     inserted, no URL fetched — and shows a refused card distinctly from a
     verified one.
-11. The currency exponent table lives in `roym_core::money`, `editor.ts`
-    is pinned to it, and an unknown code is refused rather than assumed.
-12. No planning identifier in any name or comment, checked by grep.
-13. All six gates clean.
+11. `roym_core::money` holds the full ISO-4217 code list, the Hub's
+    exponent sets are pinned to it, and `"XYZ"` — well-shaped and
+    unassigned — is refused on both a listing and a quote.
+12. Every notice the records carry was shown before it was signed: the
+    data-use notice on the request form and in `roymctl`, the address
+    disclosure notice above the address field.
+13. The Hub's enrolment gate covers all four signing services, so an
+    installation missing `transaction` sees the setup screen rather than a
+    verb failing later.
+14. No planning identifier in any name or comment, checked by grep.
+15. All six gates clean.
 14. `status.md` gains a C7 section; `task.md`'s C7 row is marked complete;
     the spec's scope table marks **R1 passed**.
 
@@ -1810,8 +2264,11 @@ row for `status.md`'s §14 list.
 **Backlog rows closed**
 
 - §2's currency-exponent row (`M06C C7`) moves to "Recently resolved":
-  `roym_core::money` is the source of truth, `PaymentTerms::validate`
-  refuses an unknown code, and a Rust test pins the TypeScript copy.
+  `roym_core::money` is the source of truth with the full ISO-4217 code
+  list, `ListingPayload::validate` and `AgreedTerms::validate` both refuse
+  a code outside it — including a well-shaped unassigned one such as
+  `"XYZ"`, which is the case the row is actually about — and a Rust test
+  pins the Hub's two exponent sets to it.
 
 **Backlog rows opened**
 
@@ -1822,6 +2279,11 @@ row for `status.md`'s §14 list.
 | **Two concurrent `request.set` / `quote.set` calls in one conversation derive the same id** — both read the same sequence and the second overwrites the first's pointer row. Same shape as `catalog`'s unfenced `version_count`; the fix is the same compare-and-set the data layer does not offer. | A client sends two records in one conversation concurrently |
 | **A card's issuer is not bound to the conversation peer** — `D-C7-11`. What binds the parties is the quote's `consumer_did`, so a *request* card from an unexpected issuer is filed and shown with that issuer, not refused. Fixing it needs the peer's `profile` record and Gap 5's person↔address mapping applied at the inbox. | A person is confused by a card from a DID they do not recognise |
 | **`resolve_principal_and_owner`, `ensure_coll`, `idx`, `collect` and the export/import bodies now exist in five services** — consolidating them into `roym_core` touches every service and was not folded into this slice. | A sixth copy appears, or one copy drifts |
+| **No signed rejection and no quote withdrawal** — `D-06C-3` fixes the card set at seven types and `RECORD_TYPES` carries no rejection type, so C7 ships a local-only decline instead (`D-C7-18`). The consequence: a revised request does not retract the quote that answered the earlier version, and that quote stays acceptable until its own expiry. | The card set is reopened, or a provider asks to withdraw a quote |
+| **A second service cannot observe an inbound conversation message without a `depends_on` edge** — the cycle check forbids the edge C7 would need, so ingestion is a client-driven pull (§16-F2). The clean fix is the inbox publishing on `syneroym:messaging` and `transaction` subscribing, which needs a guest delivery export for messaging that does not exist. | A second consumer wants inbound message events, or `sync`'s "nobody opened the thread" hole is felt in practice |
+| **`sync` reads the whole conversation on every call** — `conversation.history` scans every message and reconciles every undelivered row per call, so `sync` costs what a thread open costs. Bounded and acceptable at R1 sizes; it is the C5-7 whole-collection-scan row, still open, now with a second caller. | The C5-7 row's own trigger, or a conversation grows past a scan |
+| **A conversation past `MAX_CARDS_PER_CONVERSATION` stops filing new cards** — the watermark correctly stays on the first declined card so nothing is lost, but nothing prunes and nothing tells the person. | A real conversation approaches the cap |
+| **Failure-matrix row 10's correction path is not built** — C7 proves a filed receipt is immutable, not that a correction exists. Nothing mints a record superseding a receipt, and the type that would is in no decision or type table yet. | C8 |
 | **`payment-request` is a signed record with no `RECORD_TYPES` row** — `D-06C-12` settles that it is one; C7 builds no producer, so the entry lands with C8's verb. | C8 |
 | **A card of a known type with no producer files `known: true, verified: false`** — correct today and wrong the moment C8 ships the four producers. C8 must revisit §4.7's last arm. | C8 |
 | Extend the existing "no single-node browser fixture serves a forged listing" row (§11) to cover a forged **card** — browser case 27 has the same limit for the same reason. | Same trigger as that row |
@@ -1873,6 +2335,44 @@ card into a conversation" cannot hold at once (`F1`, verified in
 `crates/app_orchestration/src/models.rs:722`). `D-C7-2` and `D-C7-3` are
 the consequence. Any executor who reaches for the push will hit a deploy
 failure, not a compile error, so it is worth knowing first.
+
+**F2 — the third option, and why it is not taken (`D-C7-17`).** The cycle
+exists only because `transaction` makes the send. If `request.set`,
+`quote.set` and `agreement.accept` instead *returned* a card body and
+somebody else sent it, `conversation → transaction` becomes legal, the
+inbox can push, and `D-C7-3`'s cost — cards filed only when a client opens
+a thread — disappears along with the watermark, the overlap window and the
+cap-versus-watermark bug. That is a real prize and the first draft of this
+plan never named it. Two candidate senders:
+
+- **`web` sends.** It already declares all five siblings. But it would
+  have to call `transaction`, take the body, call `conversation`, and call
+  `transaction` back with the `message_id` and the host timestamp — a
+  three-call, two-phase flow with a crash window in the middle. C2's own
+  scope row says `web` is *"serving the UI bundle and forwarding JSON-RPC
+  from one origin — no business logic in it"*, and this is business logic
+  by any reading. It also breaks the one-method-one-verb shape of the
+  JSON-RPC API: `request.set` stops being a thing a second client can call.
+- **The Hub and `roymctl` send.** Then the card content type, the wrapper
+  version and the two-phase recovery live in two clients, which is
+  precisely the backlog row C6 already opened about the search loop, and a
+  crash between the two steps leaves a signed record nobody sent.
+
+Against that, the pull's cost is now much smaller than the first draft
+made it: §4.6 is one `conversation.history` call — the same call the Hub
+already makes to draw the thread — plus a point read per card message.
+`sync` roughly doubles a thread open rather than multiplying it.
+
+**So the shape stays, and the escape hatch is named rather than left to be
+rediscovered.** The clean fix is neither of the two above: it is a host
+mechanism that lets a second service observe an inbound message without a
+`depends_on` edge — the conversation inbox publishing on
+`syneroym:messaging` and `transaction` subscribing. That needs a guest
+delivery export for messaging, which does not exist today, so it is
+substrate work and outside this slice. It is the row in §15, with its own
+trigger. If the pull's cost or its "nobody opened the thread" hole proves
+worse in practice than this analysis expects, that is the direction to
+go — not `web`.
 
 **G. `D-06C-7` says "C7/C9 must pass canonical DIDs, never registry
 aliases."** C7 passes no DID over the wire at all — every record travels
