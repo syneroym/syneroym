@@ -1341,8 +1341,12 @@ async fn init_dual_build_fixture(
     );
     factory.set_record_signer(shared.record_signer.clone());
     let f = factory.clone();
-    let fixture =
-        Arc::new(NativeFixture::new(service_id.clone(), move |caller| f.host_for(caller)));
+    let f_http = factory.clone();
+    let fixture = Arc::new(NativeFixture::new(
+        service_id.clone(),
+        move |caller| f.host_for(caller),
+        move |caller| f_http.host_for_wire(caller),
+    ));
     factory.set_sink(Arc::downgrade(&fixture) as Weak<dyn MessageSink>);
     factory.set_conversation_sink(
         Arc::downgrade(&fixture) as Weak<dyn syneroym_app_host_native::ConversationSink>
@@ -1562,9 +1566,14 @@ async fn init_roym(
         shared.websocket_senders.clone(),
     );
     let f_web = factory_web.clone();
+    let f_web_http = factory_web.clone();
     let web = Arc::new(syneroym_roym_web::native::NativeWeb::new(
         roym_dispatch_id(services::WEB.name),
         move |caller| f_web.host_for(caller),
+        // A guest HTTP / websocket request is router ingress, so the
+        // native shim builds a wire-origin host for it, matching the WASM
+        // engine's unconditional `from_wire` on every guest HTTP request.
+        move |caller| f_web_http.host_for_wire(caller),
     ));
     shared
         .native_dispatch
@@ -1818,6 +1827,26 @@ async fn init_roym(
             )
             .await?;
     }
+
+    // `directory` declares a `catalog` dependency: a provider's own
+    // `directory.publish-to-source` reads the signed envelope from
+    // `catalog` through this edge before sending it to a chosen source.
+    let catalog_entry = TopologyEntry {
+        mode: TopologyMode::Singleton,
+        members: vec![ServiceId::new(roym_dispatch_id(services::CATALOG.name))],
+        sharding_strategy: None,
+        epoch: TopologyEpoch(1),
+        cache_ttl: Duration::from_secs(60),
+        not_after: None,
+    };
+    endpoint_registry
+        .save_binding(
+            &roym_dispatch_id(services::DIRECTORY.name),
+            ROYM_APP_INSTANCE,
+            services::CATALOG.name,
+            &serde_json::to_string(&catalog_entry)?,
+        )
+        .await?;
 
     // 4. The UI bundle.
     if let Some(path) = config.roles.roym.as_ref().and_then(|r| r.ui_bundle_path.as_ref()) {

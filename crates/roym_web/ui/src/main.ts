@@ -1,12 +1,15 @@
 import { renderCard } from "./cards/render";
+import { runSearch } from "./directory/search";
 import { call } from "./rpc";
 import { renderBackup } from "./screens/backup";
 import { renderContacts } from "./screens/contacts";
+import { renderDirectory } from "./screens/directory";
 import { renderListings } from "./screens/listings";
 import { renderMessages } from "./screens/messages";
 import { renderProfile } from "./screens/profile";
 import { renderSafety } from "./screens/safety";
 import { renderSetup } from "./screens/setup";
+import { renderSynOrg } from "./screens/synorg";
 import {
   authHeaders,
   fetchMethods,
@@ -27,6 +30,9 @@ declare global {
       authHeaders: typeof authHeaders;
       whoami: typeof whoami;
     };
+    RoymDirectory?: {
+      runSearch: typeof runSearch;
+    };
   }
 }
 
@@ -34,6 +40,10 @@ declare global {
 // crafted fixture, instead of only ever seeing the sample gallery below.
 window.RoymRegistry = { renderCard };
 window.RoymSession = { storedToken, authHeaders, whoami };
+// Test hook: the `roym-hub.spec.ts` `NotStarted` case drives the real
+// client loop with `ignoreConcurrency` so it can oversubscribe this node's
+// admission limit on purpose.
+window.RoymDirectory = { runSearch };
 
 async function main() {
   const app = document.getElementById("app");
@@ -101,6 +111,8 @@ async function renderTabs(container: HTMLElement, did: string) {
     { name: "Contacts", render: () => renderContacts(tabContainer) },
     { name: "Messages", render: () => renderMessages(tabContainer) },
     { name: "Listings", render: () => renderListings(tabContainer) },
+    { name: "Directory", render: () => renderDirectory(tabContainer) },
+    { name: "SynOrg", render: () => renderSynOrg(tabContainer) },
     { name: "Safety", render: () => renderSafety(tabContainer) },
     { name: "Backup", render: () => renderBackup(tabContainer) },
     { name: "Components", render: () => renderHome(tabContainer, did) },

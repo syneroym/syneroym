@@ -177,7 +177,40 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
   };
 
   wrap.append(historyBtn, withdrawBtn, historyHost);
+  wrap.appendChild(publishToDirectory(row.listing_id));
   wrap.appendChild(availabilityEditor(row.listing_id));
+  return wrap;
+}
+
+/// Journey step S7: the provider chooses a directory and publishes this
+/// listing to it. Publishing is always the provider's own action -- a
+/// directory never pulls. A refusal (over the limit, or a draft) is shown
+/// with its reason.
+function publishToDirectory(listingId: string): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "publish-to-directory";
+  wrap.appendChild(text("h4", "Publish to a directory"));
+
+  const didInput = input("Roym Directory service DID");
+  didInput.className = "publish-directory-did";
+  const btn = text("button", "Publish here", "button publish-listing") as HTMLButtonElement;
+  const status = text("p", "", "publish-status");
+
+  btn.onclick = async () => {
+    status.textContent = "";
+    const source = didInput.value.trim();
+    if (!source) return;
+    btn.disabled = true;
+    try {
+      await call("directory.publish-to-source", { source, listing_id: listingId });
+      status.textContent = "Published.";
+    } catch (err) {
+      status.textContent = `Not published: ${errText(err)}`;
+    }
+    btn.disabled = false;
+  };
+
+  wrap.append(didInput, btn, status);
   return wrap;
 }
 
@@ -190,8 +223,11 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   const title = input("title");
   title.className = "listing-title-input";
   const summary = input("summary");
+  summary.className = "listing-summary-input";
   const categories = input("categories, comma separated");
+  categories.className = "listing-categories-input";
   const address = input("conversation address (optional; taken from your profile)");
+  address.className = "listing-address-input";
   const status = select(["active", "draft", "withdrawn"], "active");
 
   root.append(

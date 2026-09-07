@@ -22,4 +22,5 @@ async-trait.workspace = true
 toml.workspace = true
 syneroym-identity.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+z32.workspace = true
 

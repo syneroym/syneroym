@@ -4,7 +4,8 @@
 //! person sessions at the node auth service.
 
 use std::{
-    fs,
+    error::Error,
+    fmt, fs,
     io::Write,
     path::{Path, PathBuf},
 };
@@ -556,7 +557,12 @@ pub async fn rpc_call(
     if !resp.status().is_success() {
         let status = resp.status();
         let err_text = resp.text().await.unwrap_or_default();
-        bail!("RPC call to '{method}' failed ({status}): {err_text}");
+        return Err(RpcHttpError {
+            method: method.to_string(),
+            status: status.as_u16(),
+            body: err_text,
+        }
+        .into());
     }
 
     let val: Value = resp.json().await?;
@@ -566,3 +572,22 @@ pub async fn rpc_call(
 
     Ok(val.get("result").cloned().unwrap_or(Value::Null))
 }
+
+/// A non-2xx HTTP response from the gateway. Carries the status code as a
+/// number so a caller can branch on it (e.g. 503 -> the node's own
+/// guest-HTTP admission refused to start the call) instead of
+/// substring-matching this type's `Display` text.
+#[derive(Debug)]
+pub struct RpcHttpError {
+    pub method: String,
+    pub status: u16,
+    pub body: String,
+}
+
+impl fmt::Display for RpcHttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RPC call to '{}' failed (HTTP {}): {}", self.method, self.status, self.body)
+    }
+}
+
+impl Error for RpcHttpError {}

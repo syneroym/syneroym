@@ -356,4 +356,422 @@ test.describe('Roym Hub', () => {
     await page.getByRole('button', { name: 'Save limit' }).click();
     await expect(page.locator('.contact-limit-status')).toHaveText('Saved.', { timeout: 15_000 });
   });
+
+  // --- C6: the Directory and SynOrg surfaces -------------------------------
+
+  const DIRECTORY_DID = process.env.ROYM_DIRECTORY_DID;
+  // Six random-looking DIDs that resolve to nothing; used as unreachable
+  // sources. `add-source` stores a source even when its probe fails.
+  const bogusDid = (n: number) =>
+    `did:key:h7wybogusdirectory${n}00000000000000000000000000000000`.slice(0, 56);
+
+  /// Turn this node into a SynOrg (idempotent) and make sure one signed
+  /// listing has been published to its own directory over the loopback
+  /// path, so a search has something real to return.
+  async function ensureSynOrgWithListing(page: Page, title: string) {
+    expect(DIRECTORY_DID, 'ROYM_DIRECTORY_DID must be set by global-setup').toBeTruthy();
+    await page.getByRole('button', { name: 'SynOrg', exact: true }).click();
+    const status = await page.locator('.synorg-status').innerText();
+    if (status.includes('runs no SynOrg')) {
+      await page.locator('.synorg-name').fill('E2E Trades');
+      await page.locator('.synorg-rules').fill('Be honest. Show up.');
+      await page.locator('.synorg-categories').fill('cycling');
+      await page.locator('.synorg-support').fill('help@example.org');
+      await page.locator('.synorg-dispute').fill('Email support.');
+      await page.locator('.synorg-retention-days').fill('30');
+      await page.getByRole('button', { name: 'Save settings' }).click();
+      await expect(page.locator('.synorg-save-status')).toHaveText('Saved.', { timeout: 15_000 });
+      await page.getByRole('button', { name: 'SynOrg', exact: true }).click();
+    }
+    // Every test shares this one node, so publications from earlier tests
+    // sit in the 24 h ledger. Keep the limit generous so a fresh publish
+    // does not hit it -- the one case that tests the limit lowers it again.
+    await expect(page.locator('.limit-max')).toBeVisible({ timeout: 15_000 });
+    await page.locator('.limit-window').fill('86400');
+    await page.locator('.limit-max').fill('1000'); // the ceiling; 0 would block every publish
+    await page.getByRole('button', { name: 'Save limit' }).click();
+    await expect(page.locator('.limit-status')).toHaveText('Saved.', { timeout: 15_000 });
+
+    await page.getByRole('button', { name: 'Listings' }).click();
+    await page.locator('.listing-title-input').fill(title);
+    await page.locator('.listing-categories-input').fill('cycling');
+    await page.locator('.listing-address-input').fill(DIRECTORY_DID!);
+    await page.locator('.block-payment .block-enabled').check();
+    await page.locator('.payment-amount-input').fill('40');
+    await page.locator('.save-listing').click();
+    await expect(page.locator('.listing-save-result')).toContainText('Saved lst_', { timeout: 15_000 });
+
+    const row = page.locator('.listing-row', { hasText: title }).first();
+    await row.locator('.publish-directory-did').fill(DIRECTORY_DID!);
+    await row.locator('.publish-listing').click();
+    await expect(row.locator('.publish-status')).toContainText('Published', { timeout: 15_000 });
+  }
+
+  async function removeAllSources(page: Page) {
+    await page.getByRole('button', { name: 'Directory', exact: true }).click();
+    // Wait for the sources list to finish its first async render.
+    await expect(page.locator('.directory-sources h3')).toBeVisible({ timeout: 15_000 });
+    for (let i = 0; i < 12; i++) {
+      const rows = page.locator('.directory-source-row');
+      const n = await rows.count();
+      if (n === 0) break;
+      await rows.first().locator('.remove-source').click();
+      await expect(page.locator('.directory-source-row')).toHaveCount(n - 1, { timeout: 10_000 });
+    }
+    await expect(page.locator('.directory-source-row')).toHaveCount(0);
+  }
+
+  test('13. Directory tab: adding a source by DID lists it; removing it empties the list', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await removeAllSources(page);
+
+    const did = bogusDid(9);
+    await page.locator('.add-source-did').fill(did);
+    await page.locator('.add-source-label').fill('a friend gave me this');
+    await page.getByRole('button', { name: 'Add directory' }).click();
+    await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+
+    const row = page.locator('.directory-source-row', { hasText: did });
+    await expect(row).toHaveCount(1);
+    await expect(row.locator('.source-label')).toHaveText('a friend gave me this');
+
+    await row.locator('.remove-source').click();
+    await expect(page.locator('.directory-source-row')).toHaveCount(0);
+    await expect(page.locator('.directory-empty')).toBeVisible();
+  });
+
+  test('14. Directory tab: a result shows its source, age in words, and both unknowns as words, never bare "verified"', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await ensureSynOrgWithListing(page, 'Wheel truing service');
+
+    await removeAllSources(page);
+    await page.locator('.add-source-did').fill(DIRECTORY_DID!);
+    await page.getByRole('button', { name: 'Add directory' }).click();
+    await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+
+    await page.locator('.search-categories').fill('cycling');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+
+    const hit = page.locator('.search-hit', { hasText: 'Wheel truing service' });
+    await expect(hit).toHaveCount(1, { timeout: 20_000 });
+    await expect(hit.locator('.hit-sources')).toContainText(DIRECTORY_DID!);
+    await expect(hit.locator('.hit-age')).toContainText('ago');
+    await expect(hit.locator('.evidence-revocation')).toHaveText('revocation: unknown');
+    await expect(hit.locator('.evidence-membership')).toHaveText('membership: not checked');
+
+    // The evidence block never uses the bare word "verified" -- it says what
+    // was and was not checked.
+    const evidenceText = (await hit.locator('.hit-evidence').innerText()).toLowerCase();
+    expect(evidenceText, `evidence was: ${evidenceText}`).not.toMatch(/\bverified\b/);
+    expect(evidenceText).toContain('signature: checked on your node');
+
+    // Refused evidence, when present, renders in its own block below the
+    // results, never inside a result card.
+    expect(await hit.locator('.refused-hit').count()).toBe(0);
+  });
+
+  test('16. Directory tab: a malicious listing title from a directory renders as literal text, no element, no request', async ({ page }) => {
+    const externalRequests: string[] = [];
+    const hubOrigin = new URL(HUB_URL).origin;
+    page.on('request', (req) => {
+      const url = req.url();
+      if (!url.startsWith(hubOrigin) && !url.startsWith('http://auth.localhost:7660')) {
+        externalRequests.push(url);
+      }
+    });
+
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await ensureSynOrgWithListing(page, '<img src=x onerror=window.dirEvil=true> bike wash');
+
+    await removeAllSources(page);
+    await page.locator('.add-source-did').fill(DIRECTORY_DID!);
+    await page.getByRole('button', { name: 'Add directory' }).click();
+    await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+
+    await page.locator('.search-categories').fill('cycling');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+
+    const hit = page.locator('.search-hit', { hasText: '<img src=x' });
+    await expect(hit).toHaveCount(1, { timeout: 20_000 });
+    expect(await hit.locator('.hit-title img').count()).toBe(0);
+    expect(await page.evaluate(() => (window as any).dirEvil)).toBeUndefined();
+    expect(externalRequests).toEqual([]);
+  });
+
+  test('17. Directory tab: a search with no sources shows the empty state that a directory is optional', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await removeAllSources(page);
+
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await expect(page.locator('.search-progress')).toContainText('not added any directories', {
+      timeout: 15_000,
+    });
+    await expect(page.locator('.search-progress')).toContainText('direct link');
+    await expect(page.locator('.search-results .no-results')).toBeVisible();
+  });
+
+  test('18. Directory tab: a source that errored shows its error beside it and the other sources still render', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await ensureSynOrgWithListing(page, 'Chain lube special');
+
+    await removeAllSources(page);
+    await page.locator('.add-source-did').fill(DIRECTORY_DID!);
+    await page.getByRole('button', { name: 'Add directory' }).click();
+    await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+    await page.locator('.add-source-did').fill(bogusDid(1));
+    await page.getByRole('button', { name: 'Add directory' }).click();
+    await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+
+    await page.locator('.search-categories').fill('cycling');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+
+    await expect(page.locator('.search-hit', { hasText: 'Chain lube special' })).toHaveCount(1, {
+      timeout: 20_000,
+    });
+    // The failed source's error is shown, and it did not replace the page.
+    await expect(page.locator('.search-source-errors .source-error-line')).toHaveCount(1, {
+      timeout: 20_000,
+    });
+  });
+
+  test('19. SynOrg tab: creating a SynOrg writes settings and the rules text renders as text, not markup', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await page.getByRole('button', { name: 'SynOrg', exact: true }).click();
+    const status = await page.locator('.synorg-status').innerText();
+    if (status.includes('runs no SynOrg')) {
+      await page.locator('.synorg-name').fill('E2E Trades');
+      await page.locator('.synorg-categories').fill('cycling');
+      await page.locator('.synorg-support').fill('help@example.org');
+      await page.locator('.synorg-dispute').fill('Email support.');
+      await page.locator('.synorg-retention-days').fill('30');
+    }
+    await page.locator('.synorg-rules').fill('<b>bold</b> rule and <script>window.rulesEvil=1</script>');
+    await page.getByRole('button', { name: 'Save settings' }).click();
+    await expect(page.locator('.synorg-save-status')).toHaveText('Saved.', { timeout: 15_000 });
+
+    await page.getByRole('button', { name: 'SynOrg', exact: true }).click();
+    const rules = page.locator('.synorg-rules');
+    await expect(rules).toHaveValue(/<b>bold<\/b>/);
+    expect(await page.evaluate(() => (window as any).rulesEvil)).toBeUndefined();
+  });
+
+  test('20. SynOrg tab: raising the publication limit from the Hub lets a refused publisher succeed in one flow', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await ensureSynOrgWithListing(page, 'Warm-up publication');
+
+    // Clamp the limit to 1 from the Hub.
+    await page.getByRole('button', { name: 'SynOrg', exact: true }).click();
+    await page.locator('.limit-window').fill('86400');
+    await page.locator('.limit-max').fill('1');
+    await page.getByRole('button', { name: 'Save limit' }).click();
+    await expect(page.locator('.limit-status')).toHaveText('Saved.', { timeout: 15_000 });
+
+    // A second listing is refused at publish, over the limit, with a reason.
+    await page.getByRole('button', { name: 'Listings' }).click();
+    await page.locator('.listing-title-input').fill('Over-the-limit listing');
+    await page.locator('.listing-address-input').fill(DIRECTORY_DID!);
+    await page.locator('.block-payment .block-enabled').check();
+    await page.locator('.payment-amount-input').fill('30');
+    await page.locator('.save-listing').click();
+    await expect(page.locator('.listing-save-result')).toContainText('Saved lst_', { timeout: 15_000 });
+    const row = page.locator('.listing-row', { hasText: 'Over-the-limit listing' });
+    await row.locator('.publish-directory-did').fill(DIRECTORY_DID!);
+    await row.locator('.publish-listing').click();
+    await expect(row.locator('.publish-status')).toContainText('Not published', { timeout: 15_000 });
+    await expect(row.locator('.publish-status')).toContainText('rate limit');
+
+    // Raise the limit from the Hub, then the same publish succeeds -- one
+    // flow. (A large ceiling, because every earlier test's publications also
+    // sit in this shared node's 24 h window.)
+    await page.getByRole('button', { name: 'SynOrg', exact: true }).click();
+    await page.locator('.limit-max').fill('1000'); // the ceiling; 0 would block every publish
+    await page.getByRole('button', { name: 'Save limit' }).click();
+    await expect(page.locator('.limit-status')).toHaveText('Saved.', { timeout: 15_000 });
+
+    await page.getByRole('button', { name: 'Listings' }).click();
+    const row2 = page.locator('.listing-row', { hasText: 'Over-the-limit listing' });
+    await row2.locator('.publish-directory-did').fill(DIRECTORY_DID!);
+    await row2.locator('.publish-listing').click();
+    await expect(row2.locator('.publish-status')).toContainText('Published', { timeout: 15_000 });
+  });
+
+  test('21. Listings tab: a provider chooses a directory and publishes a listing to it, and a draft is refused with a reason', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    // A SynOrg must exist for a publication to land.
+    await page.getByRole('button', { name: 'SynOrg', exact: true }).click();
+    if ((await page.locator('.synorg-status').innerText()).includes('runs no SynOrg')) {
+      await page.locator('.synorg-name').fill('E2E Trades');
+      await page.locator('.synorg-categories').fill('cycling');
+      await page.locator('.synorg-support').fill('help@example.org');
+      await page.locator('.synorg-dispute').fill('Email support.');
+      await page.locator('.synorg-retention-days').fill('30');
+      await page.locator('.synorg-rules').fill('rules');
+      await page.getByRole('button', { name: 'Save settings' }).click();
+      await expect(page.locator('.synorg-save-status')).toHaveText('Saved.', { timeout: 15_000 });
+    }
+
+    await page.getByRole('button', { name: 'Listings' }).click();
+
+    // An active listing publishes.
+    await page.locator('.listing-title-input').fill('Journey step S7 listing');
+    await page.locator('.listing-address-input').fill(DIRECTORY_DID!);
+    await page.locator('.block-payment .block-enabled').check();
+    await page.locator('.payment-amount-input').fill('25');
+    await page.locator('.save-listing').click();
+    await expect(page.locator('.listing-save-result')).toContainText('Saved lst_', { timeout: 15_000 });
+    const active = page.locator('.listing-row', { hasText: 'Journey step S7 listing' });
+    await active.locator('.publish-directory-did').fill(DIRECTORY_DID!);
+    await active.locator('.publish-listing').click();
+    await expect(active.locator('.publish-status')).toContainText('Published', { timeout: 15_000 });
+
+    // A draft listing is refused at the directory with a reason.
+    await page.locator('.listing-title-input').fill('Draft that cannot publish');
+    await page.locator('.listing-address-input').fill(DIRECTORY_DID!);
+    await page.locator('.listing-editor select').first().selectOption('draft');
+    await page.locator('.block-payment .block-enabled').check();
+    await page.locator('.payment-amount-input').fill('25');
+    await page.locator('.save-listing').click();
+    await expect(page.locator('.listing-save-result')).toContainText('Saved lst_', { timeout: 15_000 });
+    const draft = page.locator('.listing-row', { hasText: 'Draft that cannot publish' });
+    await draft.locator('.publish-directory-did').fill(DIRECTORY_DID!);
+    await draft.locator('.publish-listing').click();
+    await expect(draft.locator('.publish-status')).toContainText('Not published', { timeout: 15_000 });
+    await expect(draft.locator('.publish-status')).toContainText('draft');
+  });
+
+  test('22. Directory tab: the results view fills in per source and a slow source does not blank the page', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await ensureSynOrgWithListing(page, 'Progressive render listing');
+
+    await removeAllSources(page);
+    await page.locator('.add-source-did').fill(DIRECTORY_DID!);
+    await page.getByRole('button', { name: 'Add directory' }).click();
+    await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+    for (const n of [1, 2, 3]) {
+      await page.locator('.add-source-did').fill(bogusDid(n));
+      await page.getByRole('button', { name: 'Add directory' }).click();
+      await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+    }
+
+    await page.locator('.search-categories').fill('cycling');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+
+    // The results view is re-merged and re-rendered as each source answers
+    // (the client calls `directory.merge` per source, not only at the end),
+    // and the loopback hit survives every re-render while the unreachable
+    // sources are still being tried.
+    const hit = page.locator('.search-hit', { hasText: 'Progressive render listing' });
+    await expect(hit).toHaveCount(1, { timeout: 20_000 });
+    await expect(page.locator('.search-progress')).toContainText('4 directories searched', {
+      timeout: 20_000,
+    });
+    await expect(hit).toHaveCount(1);
+    // The unreachable sources are reported and did not replace the results.
+    expect(await page.locator('.search-source-errors .source-error-line').count()).toBeGreaterThan(0);
+  });
+
+  test('23. Directory tab: a run at the full MAX_SOURCES completes with no 503 reaching the person', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await ensureSynOrgWithListing(page, 'Ceiling run listing');
+
+    await removeAllSources(page);
+    await page.locator('.add-source-did').fill(DIRECTORY_DID!);
+    await page.getByRole('button', { name: 'Add directory' }).click();
+    await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+    for (const n of [1, 2, 3, 4, 5, 6, 7] as const) {
+      await page.locator('.add-source-did').fill(bogusDid(n));
+      await page.getByRole('button', { name: 'Add directory' }).click();
+      await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+    }
+
+    await page.locator('.search-categories').fill('cycling');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await expect(page.locator('.search-progress')).toContainText('8 directories searched', {
+      timeout: 40_000,
+    });
+
+    await expect(page.locator('.search-hit', { hasText: 'Ceiling run listing' })).toHaveCount(1);
+    // No 503 and no "busy" wording reached the person, and every source that
+    // did not answer is shown as a directory problem, not this node's.
+    const errorsText = await page.locator('.search-source-errors').innerText();
+    expect(errorsText).not.toContain('503');
+    expect(errorsText.toLowerCase()).not.toContain('this installation was busy');
+  });
+
+  // The deterministic NotStarted-vs-TimedOut mapping is proven by the
+  // vitest suite; this case only asserts that a run at full concurrency
+  // never blames the loopback source for a timeout and never conflates
+  // the two outcome kinds.
+  test('23b. Directory tab: a run at full concurrency never blames the loopback source for a timeout', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await ensureSynOrgWithListing(page, 'NotStarted listing');
+
+    await removeAllSources(page);
+    await page.locator('.add-source-did').fill(DIRECTORY_DID!);
+    await page.getByRole('button', { name: 'Add directory' }).click();
+    await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+    for (const n of [1, 2, 3, 4, 5, 6, 7] as const) {
+      await page.locator('.add-source-did').fill(bogusDid(n));
+      await page.getByRole('button', { name: 'Add directory' }).click();
+      await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+    }
+
+    // Drive the real client loop with `ignoreConcurrency` so it
+    // oversubscribes this node's four-permit guest-HTTP admission door.
+    const result = await page.evaluate(async () => {
+      const win = window as unknown as {
+        RoymDirectory: { runSearch: (q: unknown, o: unknown) => Promise<{ outcomes: Array<{ source: string; kind: string }> }> };
+      };
+      const { outcomes } = await win.RoymDirectory.runSearch(
+        { categories: ['cycling'] },
+        { ignoreConcurrency: true },
+      );
+      return outcomes;
+    });
+
+    const timedOut = result.filter((o) => o.kind === 'timed-out');
+    // Whether or not a real 503 fired this run (it is scheduling-dependent),
+    // the loopback source must never be blamed as timed out, and no outcome
+    // conflates "this node was busy" with "the directory did not answer" --
+    // `search.ts` keeps the 503 -> not-started mapping separate, proven
+    // deterministically by the vitest suite.
+    for (const o of timedOut) {
+      expect(o.source).not.toBe(process.env.ROYM_DIRECTORY_DID);
+    }
+    expect(result.every((o) => ['ok', 'not-started', 'timed-out', 'not-found', 'refused', 'unreadable'].includes(o.kind))).toBe(true);
+    // The node kept no `last_error` for a source it never actually called.
+    const sources = await page.evaluate(async () => {
+      const res = await fetch('/rpc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(window as any).RoymSession.authHeaders() },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'directory.sources', params: {} }),
+      });
+      return (await res.json()).result.sources as Array<{ did: string; last_error?: { kind: string } }>;
+    });
+    const loopback = sources.find((s) => s.did === process.env.ROYM_DIRECTORY_DID);
+    expect(loopback?.last_error ?? null).toBeNull();
+  });
 });

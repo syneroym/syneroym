@@ -350,6 +350,20 @@ registry_url = "http://127.0.0.1:7661"
   const roymWebDid = roymWebDidMatch[1];
   console.log('Roym Web DID:', roymWebDid);
 
+  // The Roym directory service's own DID. The Hub's Directory tab has no
+  // way to learn its own node's directory address, so the browser suite
+  // adds it as a source itself (a single-node loopback: the proxy resolves
+  // a service hosted on this node through the local endpoint registry, no
+  // network hop) to exercise search, publish-to-a-directory, and the
+  // publication limit against a real SynOrg.
+  const roymDirectoryOutput = execSync(
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity show --name "member-roym#directory-0"`,
+    { cwd: WORKSPACE_DIR }).toString();
+  const roymDirectoryDidMatch = roymDirectoryOutput.match(/(did:key:[a-z0-9]+)/);
+  if (!roymDirectoryDidMatch) throw new Error('Could not find Roym directory DID in roymctl output');
+  const roymDirectoryDid = roymDirectoryDidMatch[1];
+  console.log('Roym Directory DID:', roymDirectoryDid);
+
   // `app deploy` registers the member master with no nickname (a separate,
   // operator-set annotation); add the one the gateway hostname scheme needs.
   console.log('Registering the Roym web service nickname...');
@@ -392,6 +406,7 @@ registry_url = "http://127.0.0.1:7661"
   process.env.WASM_APP_DID = wasmDid;
   process.env.WASM_APP_ALIAS = wasmAlias;
   process.env.ROYM_WEB_DID = roymWebDid;
+  process.env.ROYM_DIRECTORY_DID = roymDirectoryDid;
   process.env.ROYM_WEB_ALIAS = roymWebAlias;
   process.env.ROYM_HUB_URL = `http://${roymWebAlias}:7660`;
   process.env.ROYM_SESSION_KEY_FILE = sessionKeyFile;

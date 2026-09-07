@@ -13,6 +13,11 @@ pub const SECTION_CONVERSATIONS: &str = "conversations";
 pub const SECTION_MESSAGES: &str = "messages";
 pub const SECTION_LISTINGS: &str = "listings";
 pub const SECTION_AVAILABILITY: &str = "availability";
+pub const SECTION_SYNORG: &str = "synorg";
+pub const SECTION_MEMBERS: &str = "members";
+pub const SECTION_PUBLICATIONS: &str = "publications";
+pub const SECTION_PUBLICATION_LOG: &str = "publication_log";
+pub const SECTION_SOURCES: &str = "sources";
 /// The digest prefix, so a section digest can never be mistaken for a
 /// record id or a report id.
 pub const SECTION_DIGEST_PREFIX: &str = "sec_";
@@ -232,9 +237,17 @@ mod tests {
 
     #[test]
     fn each_new_section_passes_check_integrity_on_its_own() {
-        for section in
-            [SECTION_CONVERSATIONS, SECTION_MESSAGES, SECTION_LISTINGS, SECTION_AVAILABILITY]
-        {
+        for section in [
+            SECTION_CONVERSATIONS,
+            SECTION_MESSAGES,
+            SECTION_LISTINGS,
+            SECTION_AVAILABILITY,
+            SECTION_SYNORG,
+            SECTION_MEMBERS,
+            SECTION_PUBLICATIONS,
+            SECTION_PUBLICATION_LOG,
+            SECTION_SOURCES,
+        ] {
             assert!(
                 single_section_bundle(section).check_integrity().is_ok(),
                 "section '{section}' should round-trip through check_integrity"
