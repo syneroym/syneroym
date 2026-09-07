@@ -1,0 +1,28 @@
+name: 'CI Setup'
+description: 'Rust toolchain, cargo-component, mise, and the cargo build cache. Assumes the repo is already checked out.'
+inputs:
+  cache-key:
+    description: 'Extra key segment for Swatinem/rust-cache, so unrelated jobs do not share (and thrash) one cache entry.'
+    required: false
+    default: ''
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-wasip2
+        components: clippy, rustfmt
+
+    - name: Install cargo-component
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-component@0.21.1
+
+    - name: Install mise
+      uses: jdx/mise-action@v4
+
+    - name: Setup Rust Cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ inputs.cache-key }}
