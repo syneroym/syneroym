@@ -105,8 +105,13 @@ export default async function globalSetup() {
            { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   console.log('Building the Roym Hub UI bundle and service components...');
-  execSync('npm run build && npm run pack',
-           { cwd: path.join(WORKSPACE_DIR, 'crates/roym_web/ui'), stdio: 'inherit' });
+  // Self-contained: `npm run build` here runs eslint/tsc/vite from
+  // `node_modules/.bin`, so the deps have to be installed first. This used to
+  // be covered by an earlier `mise run test:roym-ui` in the same CI job; the
+  // e2e job no longer runs that.
+  const roymUiDir = path.join(WORKSPACE_DIR, 'crates/roym_web/ui');
+  execSync(`${NPM_CI} || ${NPM_INSTALL}`, { cwd: roymUiDir, stdio: 'inherit' });
+  execSync('npm run build && npm run pack', { cwd: roymUiDir, stdio: 'inherit' });
   for (const svc of ['profile', 'conversation', 'catalog', 'transaction', 'directory', 'web']) {
     execSync(`cargo component build --release --target wasm32-wasip2 -p syneroym-roym-${svc}`,
              { cwd: WORKSPACE_DIR, stdio: 'inherit' });

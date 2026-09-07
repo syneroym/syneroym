@@ -157,6 +157,14 @@ impl SubstrateTestContext {
 
         let lock_guard = SUBSTRATE_TEST_LOCK.lock().await;
 
+        // The iroh coordinator's QUIC listener defaults to a fixed port
+        // (`0.0.0.0:7965`). The caller only allocates the HTTP/registry/gateway
+        // ports, so left at the default every substrate test process binds the
+        // same QUIC port -- fine while `cargo test` runs one test binary at a
+        // time, an `AddrInUse` the moment a runner (nextest) runs two
+        // concurrently. Allocate it here alongside the rest.
+        let [quic_port] = alloc_ports::<1>();
+
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let base_path = temp_dir.path();
         let mut config = SubstrateConfig {
@@ -174,6 +182,7 @@ impl SubstrateTestContext {
             iroh: Some(CoordinatorIrohConfig {
                 enable_relay: true,
                 http_bind_address: format!("127.0.0.1:{iroh_port}"),
+                quic_bind_address: format!("127.0.0.1:{quic_port}"),
                 ..Default::default()
             }),
             ..Default::default()
