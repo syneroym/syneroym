@@ -890,7 +890,8 @@ async fn an_offer_is_agreed_across_two_installations() {
         node_x.rpc_ok("agreement.get", json!({ "quote_record_id": quote_record_id })).await;
     assert_eq!(x_agr_check["terms"]["payee"], "Y Repairs");
 
-    // Step 14: No directory deployed on either installation; sources is empty.
+    // Step 14: No directory source configured on either installation; sources is
+    // empty.
     let dir_sources = node_x.rpc_ok("directory.sources", json!({})).await;
     let empty_sources = dir_sources["sources"].as_array().map(Vec::is_empty).unwrap_or(true);
     assert!(empty_sources, "no directory sources on X");

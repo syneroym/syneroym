@@ -2113,7 +2113,7 @@ the offer flow entirely — so R1 row 4 has never been run without a
 directory. C7's e2e is the first run that covers it: step 3 reaches the
 provider by the conversation address inside their signed listing, and
 steps 4–12 complete the request → quote → agreement path with no
-directory on either node (asserted at step 14). Record it in `status.md`
+directory source configured on either node (asserted at step 14). Record it in `status.md`
 and in this table when the slice lands; R2's half stays C8's.
 
 ---

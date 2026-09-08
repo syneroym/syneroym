@@ -640,16 +640,18 @@ pub fn verify_request(envelope: &str, now_secs: u64) -> RecordVerdict<RequestPay
             "request_id is not derivable from the signature's own issuer",
         );
     }
-    let expired = verified.expires_at_secs.is_some_and(|e| now_secs >= e);
+    if verified.expires_at_secs.is_some() {
+        return RecordVerdict::refused("a request may not declare an expiry");
+    }
     RecordVerdict {
         verified: true,
-        expired,
+        expired: false,
         reason: None,
         revocation_status: Some(listing::revocation_status_word(verified.revocation_status)),
         record_id: Some(verified.record_id),
         issuer: Some(verified.issuer),
         issued_at_secs: Some(verified.issued_at_secs),
-        expires_at_secs: verified.expires_at_secs,
+        expires_at_secs: None,
         supersedes: verified.supersedes,
         payload: Some(payload),
     }
@@ -675,6 +677,10 @@ pub fn verify_quote(envelope: &str, now_secs: u64) -> RecordVerdict<QuotePayload
         return RecordVerdict::refused(
             "envelope expires_at_secs does not match quote_expires_at_secs in terms",
         );
+    }
+    let lifetime = verified.expires_at_secs.unwrap_or(0).saturating_sub(verified.issued_at_secs);
+    if !(MIN_QUOTE_LIFETIME_SECS..=MAX_QUOTE_LIFETIME_SECS).contains(&lifetime) {
+        return RecordVerdict::refused("quote lifetime outside permitted bounds");
     }
     if payload.consumer_did == verified.issuer {
         return RecordVerdict::refused("consumer_did cannot be the quote issuer");
@@ -726,6 +732,9 @@ pub fn verify_agreement_receipt(
     if verified.subject != payload.quote_record_id {
         return RecordVerdict::refused("envelope subject does not match quote_record_id");
     }
+    if verified.expires_at_secs.is_some() {
+        return RecordVerdict::refused("an agreement receipt may not declare an expiry");
+    }
     match payload.role {
         Role::Consumer => {
             if verified.issuer != payload.consumer_did {
@@ -742,10 +751,9 @@ pub fn verify_agreement_receipt(
             }
         }
     }
-    let expired = verified.expires_at_secs.is_some_and(|e| now_secs >= e);
     RecordVerdict {
         verified: true,
-        expired,
+        expired: false,
         reason: None,
         revocation_status: Some(listing::revocation_status_word(verified.revocation_status)),
         record_id: Some(verified.record_id),
@@ -1452,6 +1460,150 @@ mod tests {
         assert_eq!(
             receipt_verdict.reason.as_deref(),
             Some("not an agreement-receipt record this build understands")
+        );
+    }
+
+    #[test]
+    fn verify_request_refuses_expiry() {
+        let key = Identity::generate().unwrap();
+        let issuer = substrate::derive_did_key(&key.public_key());
+        let req = sample_request(&issuer);
+        let env = sign_envelope(
+            &key,
+            RECORD_REQUEST,
+            REQUEST_VERSION,
+            &req.request_id,
+            serde_json::to_value(&req).unwrap(),
+            Some(20000),
+            1000,
+        );
+        let verdict = verify_request(&env, 1000);
+        assert!(!verdict.verified);
+        assert_eq!(verdict.reason.as_deref(), Some("a request may not declare an expiry"));
+    }
+
+    #[test]
+    fn verify_agreement_receipt_refuses_expiry() {
+        let key = Identity::generate().unwrap();
+        let issuer = substrate::derive_did_key(&key.public_key());
+        let receipt = AgreementReceiptPayload {
+            quote_record_id: "rec_quote123".to_string(),
+            consumer_did: issuer.clone(),
+            provider_did: "did:key:provider123".to_string(),
+            role: Role::Consumer,
+            terms: sample_terms(),
+        };
+        let env = sign_envelope(
+            &key,
+            RECORD_AGREEMENT_RECEIPT,
+            AGREEMENT_RECEIPT_VERSION,
+            &receipt.quote_record_id,
+            serde_json::to_value(&receipt).unwrap(),
+            Some(20000),
+            1000,
+        );
+        let verdict = verify_agreement_receipt(&env, 1000);
+        assert!(!verdict.verified);
+        assert_eq!(
+            verdict.reason.as_deref(),
+            Some("an agreement receipt may not declare an expiry")
+        );
+    }
+
+    #[test]
+    fn verify_quote_refuses_lifetime_outside_bounds() {
+        let key = Identity::generate().unwrap();
+        let issuer = substrate::derive_did_key(&key.public_key());
+        let mut quote = sample_quote(&issuer, "did:key:consumer123");
+
+        // Lifetime too short (< MIN_QUOTE_LIFETIME_SECS = 300)
+        quote.terms.quote_expires_at_secs = 1100; // 1100 - 1000 = 100s
+        let env_short = sign_envelope(
+            &key,
+            RECORD_QUOTE,
+            QUOTE_VERSION,
+            &quote.quote_id,
+            serde_json::to_value(&quote).unwrap(),
+            Some(quote.terms.quote_expires_at_secs),
+            1000,
+        );
+        let v_short = verify_quote(&env_short, 1000);
+        assert!(!v_short.verified);
+        assert_eq!(v_short.reason.as_deref(), Some("quote lifetime outside permitted bounds"));
+
+        // Lifetime too long (> MAX_QUOTE_LIFETIME_SECS = 90 * 86400 = 7_776_000)
+        quote.terms.quote_expires_at_secs = 1000 + 8_000_000;
+        let env_long = sign_envelope(
+            &key,
+            RECORD_QUOTE,
+            QUOTE_VERSION,
+            &quote.quote_id,
+            serde_json::to_value(&quote).unwrap(),
+            Some(quote.terms.quote_expires_at_secs),
+            1000,
+        );
+        let v_long = verify_quote(&env_long, 1000);
+        assert!(!v_long.verified);
+        assert_eq!(v_long.reason.as_deref(), Some("quote lifetime outside permitted bounds"));
+    }
+
+    #[test]
+    fn the_ui_notices_match_this_crate() {
+        use std::{fs, path::PathBuf};
+
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let messages_path = manifest_dir.join("../roym_web/ui/src/screens/messages.ts");
+        assert!(messages_path.exists(), "missing ../roym_web/ui/src/screens/messages.ts");
+
+        let content = fs::read_to_string(&messages_path)
+            .expect("Failed to read ../roym_web/ui/src/screens/messages.ts");
+
+        fn parse_ts_const_string(content: &str, const_name: &str) -> String {
+            let start_idx = content
+                .find(const_name)
+                .and_then(|idx| content[idx..].find('='))
+                .map(|offset| content.find(const_name).unwrap() + offset)
+                .unwrap_or_else(|| panic!("{const_name} assignment not found"));
+            let slice = &content[start_idx + 1..];
+            let mut in_quote = false;
+            let mut quote_char = ' ';
+            let mut end_idx = slice.len();
+            for (i, c) in slice.char_indices() {
+                if in_quote {
+                    if c == quote_char {
+                        in_quote = false;
+                    }
+                } else if c == '"' || c == '\'' {
+                    in_quote = true;
+                    quote_char = c;
+                } else if c == ';' {
+                    end_idx = i;
+                    break;
+                }
+            }
+            let expr = &slice[..end_idx];
+            let mut result = String::new();
+            for part in expr.split('+') {
+                let trimmed = part.trim();
+                if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+                    || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+                {
+                    result.push_str(&trimmed[1..trimmed.len() - 1]);
+                }
+            }
+            result
+        }
+
+        let ui_data_use = parse_ts_const_string(&content, "DEFAULT_DATA_USE_NOTICE");
+        assert_eq!(
+            ui_data_use, DEFAULT_DATA_USE_NOTICE,
+            "UI DEFAULT_DATA_USE_NOTICE must match Rust DEFAULT_DATA_USE_NOTICE"
+        );
+
+        let ui_address_disc = parse_ts_const_string(&content, "ADDRESS_DISCLOSURE_NOTICE");
+        assert_eq!(
+            ui_address_disc, ADDRESS_DISCLOSURE_NOTICE,
+            "UI ADDRESS_DISCLOSURE_NOTICE must match Rust ADDRESS_DISCLOSURE_NOTICE"
         );
     }
 }

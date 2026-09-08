@@ -21,11 +21,16 @@ describe("currencyMinorExponent", () => {
     expect(currencyMinorExponent(" kwd ")).toBe(3);
   });
 
-  it("defaults to 2 for all other currencies", () => {
+  it("defaults to 2 for all other accepted currencies", () => {
     expect(currencyMinorExponent("USD")).toBe(2);
     expect(currencyMinorExponent("EUR")).toBe(2);
     expect(currencyMinorExponent("GBP")).toBe(2);
-    expect(currencyMinorExponent("XYZ")).toBe(2);
+  });
+
+  it("returns undefined for unknown currency codes", () => {
+    expect(currencyMinorExponent("XYZ")).toBeUndefined();
+    expect(currencyMinorExponent("")).toBeUndefined();
+    expect(currencyMinorExponent("USDX")).toBeUndefined();
   });
 });
 

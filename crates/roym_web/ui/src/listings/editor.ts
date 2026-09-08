@@ -182,6 +182,9 @@ function paymentBlock(f: PaymentFields): Block {
     payee: f.payee.trim(),
   };
   const exponent = currencyMinorExponent(currency);
+  if (exponent === undefined) {
+    throw new ListingInputError(`unknown currency '${currency}'`);
+  }
   const amount = parseMoney(f.amount, exponent);
   if (f.model !== "quote-only") {
     if (amount === undefined) {

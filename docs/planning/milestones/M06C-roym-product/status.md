@@ -1847,7 +1847,7 @@ Slice C7 implements R1 row 4: signed request, quote, and agreement receipts, the
 - **D-C7-3**: Ingestion is `transaction.sync { conversation }`, called by the client on thread open. It is idempotent, keyed by the message ID, and safe to call repeatedly.
 - **D-C7-4**: A card on the wire carries the signed envelope and nothing else derived from it (`{"card_version":1,"type":...,"version":...,"envelope":...}`). The receiving node verifies and derives projections locally.
 - **D-C7-5**: The card's declared `(type, version)` must equal the signed envelope's `record_type` and `version`, or the card is refused.
-- **D-C7-6**: `sync` makes exactly one `conversation.history` call over an overlapping window (`SYNC_WINDOW = 50`, `SYNC_OVERLAP = 10`) and dedupes by message ID without unbounded loops.
+- **D-C7-6**: `sync` makes exactly one `conversation.history` call over an overlapping window (`SYNC_WINDOW = 500`, `SYNC_OVERLAP = 50`) and dedupes by message ID without unbounded loops.
 - **D-C7-7**: Stable IDs are content-derived from signed fields: `request_id = content_digest("req_", {conversation, issuer, sequence})`; `quote_id = content_digest("quo_", {conversation, issuer, sequence})`.
 - **D-C7-8**: `agreement-receipt` has no ID of its own. Its envelope subject is `quote_record_id`, and its identity is `(quote_record_id, role, issuer)`.
 - **D-C7-9**: Both halves of an `agreement-receipt` carry the full `AgreedTerms` copied verbatim from the quote, and are byte-identical apart from `role`.

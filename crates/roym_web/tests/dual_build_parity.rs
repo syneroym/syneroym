@@ -3112,7 +3112,7 @@ fn peer_signed_request(conv: &str, seq: u32, issued_at: u64) -> (String, String)
 }
 
 fn wall_now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
 }
 
 fn peer_signed_quote(
@@ -3177,6 +3177,114 @@ fn peer_signed_consumer_receipt(
         issued_at,
     );
     let env = Envelope::from_json(&env_json).unwrap();
+    let record_id = env.record_id().unwrap();
+    (record_id, env_json)
+}
+
+fn peer_signed_request_with(
+    conv: &str,
+    seq: u32,
+    issued_at: u64,
+    expires_at_secs: Option<u64>,
+    supersedes: Option<String>,
+) -> (String, String) {
+    let req_id = transaction::derive_request_id(conv, &peer_did(), seq).unwrap();
+    let payload = json!({
+        "request_id": req_id,
+        "conversation": conv,
+        "sequence": seq,
+        "categories": ["gardening"],
+        "description": "Prune apple tree",
+        "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
+    });
+    let peer = peer_identity();
+    let issuer = peer_did();
+    let draft = RecordDraft {
+        version: transaction::REQUEST_VERSION,
+        record_type: transaction::RECORD_REQUEST.to_string(),
+        subject: req_id,
+        payload,
+        expires_at_secs,
+        supersedes,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, issuer, None, issued_at).unwrap();
+    let sig = z32::encode(&peer.sign(&bytes).to_bytes());
+    env.attach_signature(sig).unwrap();
+    let env_json = env.to_json().unwrap();
+    let record_id = env.record_id().unwrap();
+    (record_id, env_json)
+}
+
+fn peer_signed_quote_with(
+    conv: &str,
+    seq: u32,
+    req_record_id: &str,
+    consumer_did: &str,
+    expires_at: Option<u64>,
+    issued_at: u64,
+    supersedes: Option<String>,
+) -> (String, String) {
+    let quote_id = transaction::derive_quote_id(conv, &peer_did(), seq).unwrap();
+    let exp_secs = expires_at.unwrap_or(issued_at + 3600);
+    let mut terms = sample_quote_terms();
+    terms["quote_expires_at_secs"] = json!(exp_secs);
+    let payload = json!({
+        "quote_id": quote_id,
+        "conversation": conv,
+        "sequence": seq,
+        "request_record_id": req_record_id,
+        "consumer_did": consumer_did,
+        "terms": terms,
+    });
+    let peer = peer_identity();
+    let issuer = peer_did();
+    let draft = RecordDraft {
+        version: transaction::QUOTE_VERSION,
+        record_type: transaction::RECORD_QUOTE.to_string(),
+        subject: quote_id,
+        payload,
+        expires_at_secs: expires_at,
+        supersedes,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, issuer, None, issued_at).unwrap();
+    let sig = z32::encode(&peer.sign(&bytes).to_bytes());
+    env.attach_signature(sig).unwrap();
+    let env_json = env.to_json().unwrap();
+    let record_id = env.record_id().unwrap();
+    (record_id, env_json)
+}
+
+fn peer_signed_consumer_receipt_with_expiry(
+    conv: &str,
+    quote_record_id: &str,
+    consumer_did: &str,
+    provider_did: &str,
+    terms: Value,
+    issued_at: u64,
+    expires_at_secs: Option<u64>,
+) -> (String, String) {
+    let _ = conv;
+    let payload = json!({
+        "quote_record_id": quote_record_id,
+        "consumer_did": consumer_did,
+        "provider_did": provider_did,
+        "role": "consumer",
+        "terms": terms,
+    });
+    let peer = peer_identity();
+    let issuer = peer_did();
+    let draft = RecordDraft {
+        version: transaction::AGREEMENT_RECEIPT_VERSION,
+        record_type: transaction::RECORD_AGREEMENT_RECEIPT.to_string(),
+        subject: quote_record_id.to_string(),
+        payload,
+        expires_at_secs,
+        supersedes: None,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, issuer, None, issued_at).unwrap();
+    let sig = z32::encode(&peer.sign(&bytes).to_bytes());
+    env.attach_signature(sig).unwrap();
+    let env_json = env.to_json().unwrap();
     let record_id = env.record_id().unwrap();
     (record_id, env_json)
 }
@@ -5622,7 +5730,7 @@ async fn scenario_133_expired_quote_card_filed_verified_with_terms_accept_refuse
     let my_req_rec_id = my_req_w["result"]["record_id"].as_str().unwrap();
 
     let (q_rec_id, q_env) =
-        peer_signed_quote(&conv, 1, my_req_rec_id, &owner_did(), Some(500), 400);
+        peer_signed_quote(&conv, 1, my_req_rec_id, &owner_did(), Some(500), 100);
     let card_msg = inbound_card(
         "m-expired-quote-133",
         &conv,
@@ -5687,7 +5795,7 @@ async fn scenario_133b_completed_pair_survives_quote_expiry_parity() {
 
         let quote_params = json!({
             "request_record_id": req_rec_id,
-            "expires_in_secs": 300,
+            "expires_in_secs": 3600,
             "terms": sample_quote_terms(),
         });
         let q = one_rpc(&h, wasm, "quote.set", quote_params).await;
@@ -6272,7 +6380,7 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
     .await;
     let req_rec_id = rw["result"]["record_id"].as_str().unwrap();
 
-    let (_, q_env) = peer_signed_quote(&conv, 1, req_rec_id, &owner_did(), None, 1_000);
+    let (q_rec_id, q_env) = peer_signed_quote(&conv, 1, req_rec_id, &owner_did(), None, 1_000);
     let card_msg = inbound_card(
         "m-quote-142",
         &conv,
@@ -6285,6 +6393,7 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
     h.deliver(true, card_msg.clone()).await;
     h.deliver(false, card_msg).await;
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+    both_rpc(&h, "agreement.accept", json!({ "quote_record_id": q_rec_id })).await;
 
     let (exp_w, exp_n) = both_rpc(&h, "transaction.export", json!({})).await;
     for side in [&exp_w, &exp_n] {
@@ -6305,7 +6414,7 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
     assert_eq!(iw["result"]["imported"], true);
 
     // Tampered quotes envelope refuses the whole import naming the id
-    let mut tampered_bundle: Bundle = serde_json::from_value(bundle_val).unwrap();
+    let mut tampered_bundle: Bundle = serde_json::from_value(bundle_val.clone()).unwrap();
     let quote_rows = tampered_bundle.sections.get_mut("quotes").unwrap();
     let tampered_id = quote_rows[0].get("id").unwrap().as_str().unwrap().to_string();
     let mut payload = quote_rows[0].get("payload").unwrap().clone();
@@ -6321,6 +6430,25 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
     assert_eq!(tw, tn);
     assert_eq!(tw["error"]["code"], -32602);
     assert!(tw["error"]["message"].as_str().unwrap().contains(&tampered_id));
+
+    // Tampered agreement half refuses the whole import naming the id (C7-2)
+    let mut tampered_bundle_agr: Bundle = serde_json::from_value(bundle_val).unwrap();
+    let agr_rows = tampered_bundle_agr.sections.get_mut("agreements").unwrap();
+    let tampered_agr_id = agr_rows[0].get("id").unwrap().as_str().unwrap().to_string();
+    let mut agr_payload = agr_rows[0].get("payload").unwrap().clone();
+    let consumer_env_str = agr_payload["consumer"]["envelope"].as_str().unwrap();
+    let mut c_env: Value = serde_json::from_str(consumer_env_str).unwrap();
+    c_env["payload"]["terms"]["scope"] = json!("Tampered agreement scope");
+    agr_payload["consumer"]["envelope"] = json!(c_env.to_string());
+    agr_rows[0]["payload"] = agr_payload;
+    let new_agr_digest = Bundle::digest(transaction_app::SCHEMA_VERSION, agr_rows).unwrap();
+    tampered_bundle_agr.manifest.sections.insert("agreements".to_string(), new_agr_digest);
+
+    let (aw, an) =
+        both_rpc(&h, "transaction.import", json!({ "bundle": tampered_bundle_agr })).await;
+    assert_eq!(aw, an);
+    assert_eq!(aw["error"]["code"], -32602);
+    assert!(aw["error"]["message"].as_str().unwrap().contains(&tampered_agr_id));
 }
 
 #[tokio::test]
@@ -6526,4 +6654,402 @@ async fn scenario_145_currency_unknown_refused_and_jpy_accepted_parity() {
     assert_eq!(q_data_w["terms"]["amount_minor"], 5000);
     assert_eq!(q_data_n["terms"]["currency"], "JPY");
     assert_eq!(q_data_n["terms"]["amount_minor"], 5000);
+}
+
+#[tokio::test]
+async fn scenario_146_peer_replaying_older_request_or_quote_refused_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "conversation").await;
+    enrol_signing(&h, "transaction").await;
+    let conv = open_conv(&h, &peer_did()).await;
+
+    // 1. Peer sends Request version 2 (newer timestamp 2_000)
+    let (req_v2_rec_id, req_v2_env) = peer_signed_request_with(&conv, 1, 2_000, None, None);
+    let card_msg_v2 = inbound_card(
+        "m-req-146-v2",
+        &conv,
+        &peer_did(),
+        2_000,
+        transaction::RECORD_REQUEST,
+        transaction::REQUEST_VERSION,
+        &req_v2_env,
+    );
+    h.deliver(true, card_msg_v2.clone()).await;
+    h.deliver(false, card_msg_v2).await;
+    let (sw1, sn1) = both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+    assert_eq!(sw1, sn1);
+    assert_eq!(sw1["result"]["filed"], 1);
+    assert_eq!(sw1["result"]["refused"], 0);
+
+    // Peer replaying older Request version 1 (older timestamp 1_000, not
+    // superseding) is refused
+    let (req_v1_rec_id, req_v1_env) = peer_signed_request_with(&conv, 1, 1_000, None, None);
+    assert_ne!(req_v1_rec_id, req_v2_rec_id);
+    let card_msg_v1 = inbound_card(
+        "m-req-146-v1",
+        &conv,
+        &peer_did(),
+        2_100,
+        transaction::RECORD_REQUEST,
+        transaction::REQUEST_VERSION,
+        &req_v1_env,
+    );
+    h.deliver(true, card_msg_v1.clone()).await;
+    h.deliver(false, card_msg_v1).await;
+    let (sw2, sn2) = both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+    assert_eq!(sw2, sn2);
+    assert_eq!(sw2["result"]["filed"], 1);
+    assert_eq!(sw2["result"]["refused"], 1);
+
+    let (tw, tn) = both_rpc(&h, "transaction.thread", json!({ "conversation": conv })).await;
+    assert_eq!(tw, tn);
+    let cards = tw["result"]["cards"].as_array().unwrap();
+    let refused_card = cards.iter().find(|c| c["message_id"] == "m-req-146-v1").unwrap();
+    assert_eq!(refused_card["verified"], false);
+    assert!(refused_card["reason"].as_str().unwrap().contains("newer or equal version"));
+
+    // 2. Quote: node creates a request, then peer sends quotes answering it
+    let (rw, _) = both_rpc(
+        &h,
+        "request.set",
+        json!({
+            "conversation": conv,
+            "description": "Replay quote test",
+            "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
+        }),
+    )
+    .await;
+    let own_req_rec_id = rw["result"]["record_id"].as_str().unwrap();
+
+    let (q_v2_rec_id, q_v2_env) =
+        peer_signed_quote_with(&conv, 1, own_req_rec_id, &owner_did(), Some(10_000), 2_000, None);
+    let card_q_v2 = inbound_card(
+        "m-quote-146-v2",
+        &conv,
+        &peer_did(),
+        2_000,
+        transaction::RECORD_QUOTE,
+        transaction::QUOTE_VERSION,
+        &q_v2_env,
+    );
+    h.deliver(true, card_q_v2.clone()).await;
+    h.deliver(false, card_q_v2).await;
+    let (sw3, sn3) = both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+    assert_eq!(sw3, sn3);
+    assert_eq!(sw3["result"]["filed"], 1);
+    assert_eq!(sw3["result"]["refused"], 0);
+
+    // Peer replaying older Quote version 1 (issued_at 1_000) is refused
+    let (q_v1_rec_id, q_v1_env) =
+        peer_signed_quote_with(&conv, 1, own_req_rec_id, &owner_did(), Some(10_000), 1_000, None);
+    assert_ne!(q_v1_rec_id, q_v2_rec_id);
+    let card_q_v1 = inbound_card(
+        "m-quote-146-v1",
+        &conv,
+        &peer_did(),
+        2_200,
+        transaction::RECORD_QUOTE,
+        transaction::QUOTE_VERSION,
+        &q_v1_env,
+    );
+    h.deliver(true, card_q_v1.clone()).await;
+    h.deliver(false, card_q_v1).await;
+    let (sw4, sn4) = both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+    assert_eq!(sw4, sn4);
+    assert_eq!(sw4["result"]["filed"], 1);
+    assert_eq!(sw4["result"]["refused"], 1);
+
+    let (mut tw2, mut tn2) =
+        both_rpc(&h, "transaction.thread", json!({ "conversation": conv })).await;
+    let cards2 = tw2["result"]["cards"].as_array().unwrap();
+    let refused_quote_card = cards2.iter().find(|c| c["message_id"] == "m-quote-146-v1").unwrap();
+    assert_eq!(refused_quote_card["verified"], false);
+    assert!(refused_quote_card["reason"].as_str().unwrap().contains("newer or equal version"));
+
+    strip_volatile(&mut tw2);
+    strip_volatile(&mut tn2);
+    normalize_message_ids(&mut tw2);
+    normalize_message_ids(&mut tn2);
+    assert_eq!(tw2, tn2);
+}
+
+#[tokio::test]
+async fn scenario_147_replaying_declined_quote_preserves_decline_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "conversation").await;
+    enrol_signing(&h, "transaction").await;
+    let conv = open_conv(&h, &peer_did()).await;
+
+    let (rw, _) = both_rpc(
+        &h,
+        "request.set",
+        json!({
+            "conversation": conv,
+            "description": "Decline replay job",
+            "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
+        }),
+    )
+    .await;
+    let req_rec_id = rw["result"]["record_id"].as_str().unwrap();
+
+    let (q_rec_id, q_env) = peer_signed_quote(&conv, 1, req_rec_id, &owner_did(), None, 1_000);
+    let card_msg = inbound_card(
+        "m-quote-147",
+        &conv,
+        &peer_did(),
+        1_000,
+        transaction::RECORD_QUOTE,
+        transaction::QUOTE_VERSION,
+        &q_env,
+    );
+    h.deliver(true, card_msg.clone()).await;
+    h.deliver(false, card_msg).await;
+    both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+
+    let (gw, gn) = both_rpc(&h, "quote.list", json!({ "conversation": conv })).await;
+    assert_eq!(gw, gn);
+    let quote_id = gw["result"]["quotes"][0]["quote_id"].as_str().unwrap();
+
+    // Node declines the quote using quote_record_id
+    let (dw, dn) = both_rpc(
+        &h,
+        "quote.decline",
+        json!({
+            "quote_record_id": q_rec_id,
+            "note": "Price is too high",
+        }),
+    )
+    .await;
+    assert_eq!(dw, dn);
+    assert_eq!(dw["result"]["declined"], true);
+
+    // In thread, quote shows declined: Some(true)
+    let (mut tw1, mut tn1) =
+        both_rpc(&h, "transaction.thread", json!({ "conversation": conv })).await;
+    let cards1 = tw1["result"]["cards"].as_array().unwrap();
+    let q_card1 = cards1.iter().find(|c| c["card_type"] == "quote").unwrap();
+    assert_eq!(q_card1["declined"], true);
+
+    strip_volatile(&mut tw1);
+    strip_volatile(&mut tn1);
+    normalize_message_ids(&mut tw1);
+    normalize_message_ids(&mut tn1);
+    assert_eq!(tw1, tn1);
+
+    // Peer replays the exact same quote card in a new message
+    let card_msg_replay = inbound_card(
+        "m-quote-147-replay",
+        &conv,
+        &peer_did(),
+        1_100,
+        transaction::RECORD_QUOTE,
+        transaction::QUOTE_VERSION,
+        &q_env,
+    );
+    h.deliver(true, card_msg_replay.clone()).await;
+    h.deliver(false, card_msg_replay).await;
+    let (sw, sn) = both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+    assert_eq!(sw, sn);
+
+    // Quote pointer row still has declined_at_secs and note
+    let (qg_w, qg_n) = both_rpc(&h, "quote.get", json!({ "quote_id": quote_id })).await;
+    assert_eq!(qg_w, qg_n);
+    assert!(qg_w["result"]["declined_at_secs"].is_number());
+    assert_eq!(qg_w["result"]["decline_note"], "Price is too high");
+
+    // Thread still shows declined: Some(true) on the quote
+    let (mut tw2, mut tn2) =
+        both_rpc(&h, "transaction.thread", json!({ "conversation": conv })).await;
+    let cards2 = tw2["result"]["cards"].as_array().unwrap();
+    let q_cards: Vec<_> = cards2.iter().filter(|c| c["card_type"] == "quote").collect();
+    for qc in q_cards {
+        assert_eq!(qc["declined"], true);
+    }
+
+    strip_volatile(&mut tw2);
+    strip_volatile(&mut tn2);
+    normalize_message_ids(&mut tw2);
+    normalize_message_ids(&mut tn2);
+    assert_eq!(tw2, tn2);
+}
+
+#[tokio::test]
+async fn scenario_148_request_or_receipt_with_expiry_is_refused_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "conversation").await;
+    enrol_signing(&h, "transaction").await;
+    let conv = open_conv(&h, &peer_did()).await;
+
+    // 1. Peer sends Request with expires_at_secs: Some(...)
+    let (_, req_env) = peer_signed_request_with(&conv, 1, 1_000, Some(5_000), None);
+    let card_req = inbound_card(
+        "m-req-148",
+        &conv,
+        &peer_did(),
+        1_000,
+        transaction::RECORD_REQUEST,
+        transaction::REQUEST_VERSION,
+        &req_env,
+    );
+    h.deliver(true, card_req.clone()).await;
+    h.deliver(false, card_req).await;
+    let (sw1, sn1) = both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+    assert_eq!(sw1, sn1);
+    assert_eq!(sw1["result"]["filed"], 1);
+    assert_eq!(sw1["result"]["refused"], 1);
+
+    let (mut tw1, mut tn1) =
+        both_rpc(&h, "transaction.thread", json!({ "conversation": conv })).await;
+    let cards1 = tw1["result"]["cards"].as_array().unwrap();
+    let req_card = cards1.iter().find(|c| c["message_id"] == "m-req-148").unwrap();
+    assert_eq!(req_card["verified"], false);
+    assert!(req_card["reason"].as_str().unwrap().contains("may not declare an expiry"));
+
+    strip_volatile(&mut tw1);
+    strip_volatile(&mut tn1);
+    normalize_message_ids(&mut tw1);
+    normalize_message_ids(&mut tn1);
+    assert_eq!(tw1, tn1);
+
+    // 2. Setup a valid request and quote so we can test peer sending receipt with
+    //    expiry
+    let (rw, _) = both_rpc(
+        &h,
+        "request.set",
+        json!({
+            "conversation": conv,
+            "description": "Receipt expiry test",
+            "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
+        }),
+    )
+    .await;
+    let valid_req_id = rw["result"]["record_id"].as_str().unwrap();
+
+    let (q_rec_id, q_env) = peer_signed_quote(&conv, 2, valid_req_id, &owner_did(), None, 1_000);
+    let card_q = inbound_card(
+        "m-quote-148",
+        &conv,
+        &peer_did(),
+        1_000,
+        transaction::RECORD_QUOTE,
+        transaction::QUOTE_VERSION,
+        &q_env,
+    );
+    h.deliver(true, card_q.clone()).await;
+    h.deliver(false, card_q).await;
+    both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+
+    // Peer sends agreement-receipt with expires_at_secs set
+    let qg = both_rpc(&h, "quote.list", json!({ "conversation": conv })).await.0;
+    let env_json = qg["result"]["quotes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|q| q["record_id"] == q_rec_id)
+        .unwrap()["envelope"]
+        .as_str()
+        .unwrap();
+    let quote_envelope = Envelope::from_json(env_json).unwrap();
+    let terms = quote_envelope.payload["terms"].clone();
+
+    let (_, peer_receipt_env) = peer_signed_consumer_receipt_with_expiry(
+        &conv,
+        &q_rec_id,
+        &peer_did(),
+        &owner_did(),
+        terms,
+        1_050,
+        Some(10_000),
+    );
+    let card_receipt = inbound_card(
+        "m-receipt-148",
+        &conv,
+        &peer_did(),
+        1_050,
+        transaction::RECORD_AGREEMENT_RECEIPT,
+        transaction::AGREEMENT_RECEIPT_VERSION,
+        &peer_receipt_env,
+    );
+    h.deliver(true, card_receipt.clone()).await;
+    h.deliver(false, card_receipt).await;
+    let (sw2, sn2) = both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+    assert_eq!(sw2, sn2);
+    assert_eq!(sw2["result"]["filed"], 1);
+    assert_eq!(sw2["result"]["refused"], 1);
+
+    let (mut tw2, mut tn2) =
+        both_rpc(&h, "transaction.thread", json!({ "conversation": conv })).await;
+    let cards2 = tw2["result"]["cards"].as_array().unwrap();
+    let rec_card = cards2.iter().find(|c| c["message_id"] == "m-receipt-148").unwrap();
+    assert_eq!(rec_card["verified"], false);
+    assert!(rec_card["reason"].as_str().unwrap().contains("may not declare an expiry"));
+
+    strip_volatile(&mut tw2);
+    strip_volatile(&mut tn2);
+    normalize_message_ids(&mut tw2);
+    normalize_message_ids(&mut tn2);
+    assert_eq!(tw2, tn2);
+
+    let (gw, gn) = both_rpc(&h, "agreement.get", json!({ "quote_record_id": q_rec_id })).await;
+    assert_eq!(gw, gn);
+    assert!(gw["result"].is_null());
+}
+
+#[tokio::test]
+async fn scenario_149_quote_naming_wrong_consumer_did_refused_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "conversation").await;
+    enrol_signing(&h, "transaction").await;
+    let conv = open_conv(&h, &peer_did()).await;
+
+    let (rw, _) = both_rpc(
+        &h,
+        "request.set",
+        json!({
+            "conversation": conv,
+            "description": "Wrong consumer DID test",
+            "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
+        }),
+    )
+    .await;
+    let req_rec_id = rw["result"]["record_id"].as_str().unwrap();
+
+    // Peer creates quote for req_rec_id, but sets consumer_did to a stranger DID
+    let stranger_did = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    let (q_rec_id, q_env) = peer_signed_quote(&conv, 1, req_rec_id, stranger_did, None, 1_000);
+    let card_msg = inbound_card(
+        "m-quote-149",
+        &conv,
+        &peer_did(),
+        1_000,
+        transaction::RECORD_QUOTE,
+        transaction::QUOTE_VERSION,
+        &q_env,
+    );
+    h.deliver(true, card_msg.clone()).await;
+    h.deliver(false, card_msg).await;
+    let (sw, sn) = both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+    assert_eq!(sw, sn);
+    assert_eq!(sw["result"]["filed"], 1);
+    assert_eq!(sw["result"]["refused"], 1);
+
+    let (mut tw, mut tn) =
+        both_rpc(&h, "transaction.thread", json!({ "conversation": conv })).await;
+    let cards = tw["result"]["cards"].as_array().unwrap();
+    let q_card = cards.iter().find(|c| c["message_id"] == "m-quote-149").unwrap();
+    assert_eq!(q_card["verified"], false);
+    assert!(
+        q_card["reason"].as_str().unwrap().contains("consumer_did does not match request issuer")
+    );
+
+    strip_volatile(&mut tw);
+    strip_volatile(&mut tn);
+    normalize_message_ids(&mut tw);
+    normalize_message_ids(&mut tn);
+    assert_eq!(tw, tn);
+
+    // Attempting to accept the quote fails with -32602
+    let (aw, an) = both_rpc(&h, "agreement.accept", json!({ "quote_record_id": q_rec_id })).await;
+    assert_eq!(aw, an);
+    assert_eq!(aw["error"]["code"], -32602);
 }

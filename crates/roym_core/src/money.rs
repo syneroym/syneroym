@@ -162,5 +162,9 @@ mod tests {
         let ui_exp3 = parse_set(&content, "EXPONENT_3");
         let expected_exp3: Vec<String> = EXPONENT_3.iter().map(|s| s.to_string()).collect();
         assert_eq!(ui_exp3, expected_exp3, "UI EXPONENT_3 must match Rust EXPONENT_3");
+
+        let ui_codes = parse_set(&content, "CURRENCY_CODES");
+        let expected_codes: Vec<String> = CURRENCY_CODES.iter().map(|s| s.to_string()).collect();
+        assert_eq!(ui_codes, expected_codes, "UI CURRENCY_CODES must match Rust CURRENCY_CODES");
     }
 }

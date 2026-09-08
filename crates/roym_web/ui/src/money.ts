@@ -7,6 +7,23 @@ export const EXPONENT_0 = new Set([
 /// Currencies with three minor digits.
 export const EXPONENT_3 = new Set(["BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"]);
 
+/// Every ISO-4217 alphabetic code this build accepts, sorted.
+export const CURRENCY_CODES = new Set([
+  "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN", "BAM", "BBD", "BDT",
+  "BGN", "BHD", "BIF", "BMD", "BND", "BOB", "BOV", "BRL", "BSD", "BTN", "BWP", "BYN", "BZD",
+  "CAD", "CDF", "CHE", "CHF", "CHW", "CLP", "CNY", "COP", "COU", "CRC", "CUP", "CVE", "CZK",
+  "DJF", "DKK", "DOP", "DZD", "EGP", "ERN", "ETB", "EUR", "FJD", "FKP", "GBP", "GEL", "GHS",
+  "GIP", "GMD", "GNF", "GTQ", "GYD", "HKD", "HNL", "HTG", "HUF", "IDR", "ILS", "INR", "IQD",
+  "IRR", "ISK", "JMD", "JOD", "JPY", "KES", "KGS", "KHR", "KMF", "KPW", "KRW", "KWD", "KYD",
+  "KZT", "LAK", "LBP", "LKR", "LRD", "LSL", "LYD", "MAD", "MDL", "MGA", "MKD", "MMK", "MNT",
+  "MOP", "MRU", "MUR", "MVR", "MWK", "MXN", "MXV", "MYR", "MZN", "NAD", "NGN", "NIO", "NOK",
+  "NPR", "NZD", "OMR", "PAB", "PEN", "PGK", "PHP", "PKR", "PLN", "PYG", "QAR", "RON", "RSD",
+  "RUB", "RWF", "SAR", "SBD", "SCR", "SDG", "SEK", "SGD", "SHP", "SLE", "SOS", "SRD", "SSP",
+  "STN", "SVC", "SYP", "SZL", "THB", "TJS", "TMT", "TND", "TOP", "TRY", "TTD", "TWD", "TZS",
+  "UAH", "UGX", "USD", "USN", "UYI", "UYU", "UZS", "VED", "VES", "VND", "VUV", "WST", "XAF",
+  "XCD", "XOF", "XPF", "YER", "ZAR", "ZMW",
+]);
+
 export class MoneyInputError extends Error {
   constructor(message: string) {
     super(message);
@@ -14,13 +31,12 @@ export class MoneyInputError extends Error {
   }
 }
 
-/// ISO-4217 minor-unit exponent. Two decimal places is the common case
-/// and the default; only the currencies that are *not* two matter here,
-/// because those are the ones a hard-coded "×100" mis-scales (a JPY price
-/// by 100, a KWD price by one tenth). The two lists are the full set of
-/// active exponent-0 and exponent-3 currencies, so any other code is two.
-export function currencyMinorExponent(code: string): number {
+/// ISO-4217 minor-unit exponent. Returns undefined for an unknown code
+/// outside CURRENCY_CODES; 0 for exponent-0 currencies; 3 for exponent-3;
+/// and 2 for all other accepted codes.
+export function currencyMinorExponent(code: string): number | undefined {
   const c = code.trim().toUpperCase();
+  if (!CURRENCY_CODES.has(c)) return undefined;
   if (EXPONENT_0.has(c)) return 0;
   if (EXPONENT_3.has(c)) return 3;
   return 2;
@@ -49,7 +65,7 @@ export function toMinorUnits(input: string, exponent = 2): number | undefined {
 /// 1200 JPY -> "1200 JPY", 2500 KWD -> "2.500 KWD".
 export function formatMinor(minor: number, currency: string): string {
   const c = currency.trim().toUpperCase();
-  const exp = currencyMinorExponent(c);
+  const exp = currencyMinorExponent(c) ?? 2;
   const rounded = Math.round(minor);
   if (exp === 0) {
     return `${rounded} ${c}`;

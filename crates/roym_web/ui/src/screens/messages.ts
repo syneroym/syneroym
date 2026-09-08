@@ -78,6 +78,7 @@ export interface CardRow {
   };
   stored_at_secs: number;
   declined?: boolean;
+  version_count?: number;
 }
 
 function errText(err: unknown): string {
@@ -338,22 +339,7 @@ async function renderThread(pane: HTMLElement, conv: ConversationRow, myDid: str
       // transaction service may be unavailable
     }
 
-    // Map canonical request_id -> newest record_id
-    const newestRequestMap = new Map<string, string>();
-    for (const c of allCards) {
-      if (c.card_type === "request" && c.verified && c.data?.request_id && c.record_id) {
-        const reqId = c.data.request_id;
-        const currNewestRecord = newestRequestMap.get(reqId);
-        if (!currNewestRecord) {
-          newestRequestMap.set(reqId, c.record_id);
-        } else {
-          const existing = allCards.find((x) => x.record_id === currNewestRecord);
-          if (existing && (c.data.sequence ?? 0) > (existing.data?.sequence ?? 0)) {
-            newestRequestMap.set(reqId, c.record_id);
-          }
-        }
-      }
-    }
+    const newestRequestMap = computeNewestRequestMap(allCards);
 
     let messages: MessageRow[] = [];
     try {
@@ -374,6 +360,52 @@ async function renderThread(pane: HTMLElement, conv: ConversationRow, myDid: str
   }
 
   await loadHistory();
+}
+
+export function computeNewestRequestMap(allCards: CardRow[]): Map<string, string> {
+  const newestRequestMap = new Map<string, string>();
+  for (const c of allCards) {
+    if (c.card_type === "request" && c.verified && c.data?.request_id && c.record_id) {
+      const reqId = c.data.request_id;
+      const currNewestRecord = newestRequestMap.get(reqId);
+      if (!currNewestRecord) {
+        newestRequestMap.set(reqId, c.record_id);
+      } else {
+        const existing = allCards.find((x) => x.record_id === currNewestRecord);
+        const cVer = c.version_count ?? 0;
+        const exVer = existing?.version_count ?? 0;
+        if (
+          cVer > exVer ||
+          (cVer === exVer && c.sender_timestamp_ms > (existing?.sender_timestamp_ms ?? 0))
+        ) {
+          newestRequestMap.set(reqId, c.record_id);
+        }
+      }
+    }
+  }
+  return newestRequestMap;
+}
+
+export function isQuoteSuperseded(
+  cardRow: CardRow,
+  allCards: CardRow[],
+  newestRequestMap: Map<string, string>,
+): boolean {
+  const reqRecordId = cardRow.data?.request_record_id;
+  if (cardRow.card_type === "quote" && cardRow.verified && reqRecordId) {
+    const matchingReq = allCards.find(
+      (c) =>
+        c.card_type === "request" &&
+        (c.record_id === reqRecordId || c.data?.request_id === cardRow.data?.request_id),
+    );
+    if (matchingReq && matchingReq.data?.request_id) {
+      const newestRecordId = newestRequestMap.get(matchingReq.data.request_id);
+      if (newestRecordId && newestRecordId !== reqRecordId) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function messageElement(
@@ -407,22 +439,11 @@ function messageElement(
       }
 
       // Check if quote answers an earlier version of the request
-      const reqRecordId = cardRow.data?.request_record_id;
-      if (cardRow.card_type === "quote" && cardRow.verified && reqRecordId) {
-        const matchingReq = allCards.find(
-          (c) =>
-            c.card_type === "request" &&
-            (c.record_id === reqRecordId || c.data?.request_id === cardRow.data?.request_id),
-        );
-        if (matchingReq && matchingReq.data?.request_id) {
-          const newestRecordId = newestRequestMap.get(matchingReq.data.request_id);
-          if (newestRecordId && newestRecordId !== reqRecordId) {
-            const supP = document.createElement("p");
-            supP.className = "quote-superseded-notice";
-            supP.textContent = "This quote answers an earlier version of your request.";
-            wrap.appendChild(supP);
-          }
-        }
+      if (isQuoteSuperseded(cardRow, allCards, newestRequestMap)) {
+        const supP = document.createElement("p");
+        supP.className = "quote-superseded-notice";
+        supP.textContent = "This quote answers an earlier version of your request.";
+        wrap.appendChild(supP);
       }
 
       // Render contextual card action buttons
@@ -491,7 +512,7 @@ export function renderCardActions(
 
   // Accept / Decline: on verified quote for me, not expired, not declined
   if (card.card_type === "quote" && card.verified) {
-    const forMe = card.direction === "incoming" || card.data?.consumer_did === myDid;
+    const forMe = !!myDid && card.data?.consumer_did === myDid;
     const nowSecs = Math.floor(Date.now() / 1000);
     const expSecs = card.data?.terms?.quote_expires_at_secs ?? card.data?.quote_expires_at_secs;
     const isExpired = card.expired || (expSecs !== undefined && nowSecs > expSecs);
@@ -679,9 +700,14 @@ export function openQuoteForm(
       errP.textContent = "Currency is required";
       return;
     }
+    const exp = currencyMinorExponent(currency);
+    if (exp === undefined) {
+      errP.textContent = `Unknown currency code "${currency}"`;
+      return;
+    }
     let amountMinor: number | undefined;
     try {
-      amountMinor = toMinorUnits(amountInput.value, currencyMinorExponent(currency));
+      amountMinor = toMinorUnits(amountInput.value, exp);
     } catch (e) {
       errP.textContent = errText(e);
       return;
@@ -694,7 +720,7 @@ export function openQuoteForm(
     let taxMinor = 0;
     if (taxInput.value.trim()) {
       try {
-        taxMinor = toMinorUnits(taxInput.value, currencyMinorExponent(currency)) ?? 0;
+        taxMinor = toMinorUnits(taxInput.value, exp) ?? 0;
       } catch (e) {
         errP.textContent = errText(e);
         return;
@@ -704,7 +730,7 @@ export function openQuoteForm(
     let feesMinor = 0;
     if (feesInput.value.trim()) {
       try {
-        feesMinor = toMinorUnits(feesInput.value, currencyMinorExponent(currency)) ?? 0;
+        feesMinor = toMinorUnits(feesInput.value, exp) ?? 0;
       } catch (e) {
         errP.textContent = errText(e);
         return;

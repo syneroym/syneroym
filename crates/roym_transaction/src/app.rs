@@ -61,6 +61,8 @@ struct RecordPointerRow {
     mine: bool,
     updated_at_secs: u64,
     version_count: u64,
+    #[serde(default)]
+    issued_at_secs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     request_record_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,6 +128,8 @@ struct CardRow {
     stored_at_secs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     declined: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -414,6 +418,7 @@ async fn file_own_card<H: AppHost>(
     envelope_json: &str,
     sender_timestamp_ms: i64,
     now: u64,
+    version_count: Option<u64>,
 ) -> Result<(), String> {
     let envelope = Envelope::from_json(envelope_json).map_err(|e| e.to_string())?;
     let record_id = envelope.record_id().map_err(|e| e.to_string())?;
@@ -434,6 +439,7 @@ async fn file_own_card<H: AppHost>(
         data: Some(envelope.payload),
         stored_at_secs: now,
         declined: None,
+        version_count,
     };
     put_row(host, CARDS, message_id, &card_row).await
 }
@@ -565,6 +571,7 @@ async fn request_set<H: AppHost>(host: &H, req: &Request) -> Response {
         mine: true,
         updated_at_secs: now,
         version_count: next_count,
+        issued_at_secs: now,
         request_record_id: None,
         consumer_did: None,
         declined_at_secs: None,
@@ -590,7 +597,7 @@ async fn request_set<H: AppHost>(host: &H, req: &Request) -> Response {
     )
     .await;
 
-    let (message_id, state, sender_timestamp_ms, send_error) = match send_resp {
+    let (message_id, state, sender_timestamp_ms, mut send_error) = match send_resp {
         Ok(r) if r.error.is_none() => {
             let res = r.result.unwrap_or(Value::Null);
             let mid = res.get("message_id").and_then(Value::as_str).unwrap_or("").to_string();
@@ -606,8 +613,8 @@ async fn request_set<H: AppHost>(host: &H, req: &Request) -> Response {
         Err(e) => (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(e)),
     };
 
-    if !message_id.is_empty() {
-        let _ = file_own_card(
+    if !message_id.is_empty()
+        && let Err(e) = file_own_card(
             host,
             &message_id,
             &params.conversation,
@@ -616,8 +623,11 @@ async fn request_set<H: AppHost>(host: &H, req: &Request) -> Response {
             &envelope_json,
             sender_timestamp_ms,
             now,
+            Some(next_count),
         )
-        .await;
+        .await
+    {
+        send_error = send_error.or(Some(format!("file own card failed: {e}")));
     }
 
     let mut out = json!({
@@ -801,6 +811,7 @@ async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
         mine: true,
         updated_at_secs: now,
         version_count: next_count,
+        issued_at_secs: now,
         request_record_id: Some(params.request_record_id),
         consumer_did: Some(consumer_did),
         declined_at_secs: None,
@@ -826,7 +837,7 @@ async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
     )
     .await;
 
-    let (message_id, state, sender_timestamp_ms, send_error) = match send_resp {
+    let (message_id, state, sender_timestamp_ms, mut send_error) = match send_resp {
         Ok(r) if r.error.is_none() => {
             let res = r.result.unwrap_or(Value::Null);
             let mid = res.get("message_id").and_then(Value::as_str).unwrap_or("").to_string();
@@ -842,8 +853,8 @@ async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
         Err(e) => (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(e)),
     };
 
-    if !message_id.is_empty() {
-        let _ = file_own_card(
+    if !message_id.is_empty()
+        && let Err(e) = file_own_card(
             host,
             &message_id,
             &conversation,
@@ -852,8 +863,11 @@ async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
             &envelope_json,
             sender_timestamp_ms,
             now,
+            Some(next_count),
         )
-        .await;
+        .await
+    {
+        send_error = send_error.or(Some(format!("file own card failed: {e}")));
     }
 
     let mut out = json!({
@@ -1037,7 +1051,7 @@ async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Response {
     )
     .await;
 
-    let (message_id, state, sender_timestamp_ms, send_error) = match send_resp {
+    let (message_id, state, sender_timestamp_ms, mut send_error) = match send_resp {
         Ok(r) if r.error.is_none() => {
             let res = r.result.unwrap_or(Value::Null);
             let mid = res.get("message_id").and_then(Value::as_str).unwrap_or("").to_string();
@@ -1053,8 +1067,8 @@ async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Response {
         Err(e) => (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(e)),
     };
 
-    if !message_id.is_empty() {
-        let _ = file_own_card(
+    if !message_id.is_empty()
+        && let Err(e) = file_own_card(
             host,
             &message_id,
             &quote_payload.conversation,
@@ -1063,8 +1077,11 @@ async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Response {
             &envelope_json,
             sender_timestamp_ms,
             now,
+            None,
         )
-        .await;
+        .await
+    {
+        send_error = send_error.or(Some(format!("file own card failed: {e}")));
     }
 
     let pair = pair_state(row.consumer.as_ref(), row.provider.as_ref());
@@ -1331,6 +1348,7 @@ async fn file_incoming_card<H: AppHost>(
         data: None,
         stored_at_secs: now,
         declined: None,
+        version_count: None,
     };
 
     let body = match m.get("body").and_then(Value::as_str) {
@@ -1410,8 +1428,22 @@ async fn file_incoming_card<H: AppHost>(
                     countersigned: false,
                 });
             }
-            store_received_request(host, &card.envelope, &v, payload, now).await?;
+            let version_count =
+                match store_received_request(host, &card.envelope, &v, payload, now).await {
+                    Ok(vc) => vc,
+                    Err(e) => {
+                        row.reason = Some(e);
+                        put_row(host, CARDS, &msg_id, &row).await?;
+                        return Ok(FileCardResult {
+                            filed: true,
+                            refused: true,
+                            unknown: false,
+                            countersigned: false,
+                        });
+                    }
+                };
             row.verified = true;
+            row.version_count = Some(version_count);
             row.data = Some(serde_json::to_value(payload).unwrap_or(Value::Null));
             row.issuer = v.issuer;
             row.record_id = v.record_id;
@@ -1454,10 +1486,36 @@ async fn file_incoming_card<H: AppHost>(
                     countersigned: false,
                 });
             }
-            let req_exists =
-                get_bytes(host, REQUEST_HISTORY, &payload.request_record_id).await?.is_some();
-            if !req_exists {
-                row.reason = Some("answers a request this node does not hold".to_string());
+            let req_bytes =
+                match get_bytes(host, REQUEST_HISTORY, &payload.request_record_id).await? {
+                    Some(b) => b,
+                    None => {
+                        row.reason = Some("answers a request this node does not hold".to_string());
+                        put_row(host, CARDS, &msg_id, &row).await?;
+                        return Ok(FileCardResult {
+                            filed: true,
+                            refused: true,
+                            unknown: false,
+                            countersigned: false,
+                        });
+                    }
+                };
+            let req_str = match String::from_utf8(req_bytes) {
+                Ok(s) => s,
+                Err(_) => {
+                    row.reason = Some("stored request envelope is invalid utf8".to_string());
+                    put_row(host, CARDS, &msg_id, &row).await?;
+                    return Ok(FileCardResult {
+                        filed: true,
+                        refused: true,
+                        unknown: false,
+                        countersigned: false,
+                    });
+                }
+            };
+            let req_v = transaction::verify_request(&req_str, now);
+            if !req_v.verified || req_v.issuer.as_deref() != Some(payload.consumer_did.as_str()) {
+                row.reason = Some("quote consumer_did does not match request issuer".to_string());
                 put_row(host, CARDS, &msg_id, &row).await?;
                 return Ok(FileCardResult {
                     filed: true,
@@ -1466,9 +1524,23 @@ async fn file_incoming_card<H: AppHost>(
                     countersigned: false,
                 });
             }
-            store_received_quote(host, &card.envelope, &v, payload, now).await?;
+            let version_count =
+                match store_received_quote(host, &card.envelope, &v, payload, now).await {
+                    Ok(vc) => vc,
+                    Err(e) => {
+                        row.reason = Some(e);
+                        put_row(host, CARDS, &msg_id, &row).await?;
+                        return Ok(FileCardResult {
+                            filed: true,
+                            refused: true,
+                            unknown: false,
+                            countersigned: false,
+                        });
+                    }
+                };
             row.verified = true;
             row.expired = v.expired;
+            row.version_count = Some(version_count);
             row.data = Some(serde_json::to_value(payload).unwrap_or(Value::Null));
             row.issuer = v.issuer;
             row.record_id = v.record_id;
@@ -1633,11 +1705,29 @@ async fn store_received_request<H: AppHost>(
     v: &RecordVerdict<RequestPayload>,
     payload: &RequestPayload,
     now: u64,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     let record_id = v.record_id.as_deref().unwrap_or_default();
-    put_bytes(host, REQUEST_HISTORY, record_id, envelope.as_bytes()).await?;
     let prior: Option<RecordPointerRow> = get_row(host, REQUESTS, &payload.request_id).await?;
-    let version_count = prior.as_ref().map(|p| p.version_count).unwrap_or(0) + 1;
+    let incoming_issued = v.issued_at_secs.unwrap_or(now);
+    if let Some(existing) = &prior
+        && existing.record_id != record_id
+        && incoming_issued <= existing.issued_at_secs
+        && v.supersedes.as_deref() != Some(existing.record_id.as_str())
+    {
+        return Err("a newer or equal version of this request is already held here".to_string());
+    }
+    put_bytes(host, REQUEST_HISTORY, record_id, envelope.as_bytes()).await?;
+    let version_count = if let Some(existing) = &prior {
+        if existing.record_id == record_id {
+            existing.version_count
+        } else {
+            existing.version_count + 1
+        }
+    } else {
+        1
+    };
+    let owner = signing::owner_did(host).await.unwrap_or_default();
+    let mine = v.issuer.as_deref() == Some(&owner);
     let pointer = RecordPointerRow {
         envelope: envelope.to_string(),
         record_id: record_id.to_string(),
@@ -1645,15 +1735,17 @@ async fn store_received_request<H: AppHost>(
         conversation: payload.conversation.clone(),
         sequence: payload.sequence,
         issuer: v.issuer.clone().unwrap_or_default(),
-        mine: false,
+        mine,
         updated_at_secs: now,
         version_count,
+        issued_at_secs: incoming_issued,
         request_record_id: None,
         consumer_did: None,
         declined_at_secs: None,
         decline_note: None,
     };
-    put_row(host, REQUESTS, &payload.request_id, &pointer).await
+    put_row(host, REQUESTS, &payload.request_id, &pointer).await?;
+    Ok(version_count)
 }
 
 async fn store_received_quote<H: AppHost>(
@@ -1662,11 +1754,31 @@ async fn store_received_quote<H: AppHost>(
     v: &RecordVerdict<QuotePayload>,
     payload: &QuotePayload,
     now: u64,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     let record_id = v.record_id.as_deref().unwrap_or_default();
-    put_bytes(host, QUOTE_HISTORY, record_id, envelope.as_bytes()).await?;
     let prior: Option<RecordPointerRow> = get_row(host, QUOTES, &payload.quote_id).await?;
-    let version_count = prior.as_ref().map(|p| p.version_count).unwrap_or(0) + 1;
+    let incoming_issued = v.issued_at_secs.unwrap_or(now);
+    if let Some(existing) = &prior
+        && existing.record_id != record_id
+        && incoming_issued <= existing.issued_at_secs
+        && v.supersedes.as_deref() != Some(existing.record_id.as_str())
+    {
+        return Err("a newer or equal version of this quote is already held here".to_string());
+    }
+    put_bytes(host, QUOTE_HISTORY, record_id, envelope.as_bytes()).await?;
+    let (version_count, declined_at_secs, decline_note) = if let Some(existing) = &prior {
+        if existing.record_id == record_id {
+            // Idempotent replay: preserve decline and version count
+            (existing.version_count, existing.declined_at_secs, existing.decline_note.clone())
+        } else {
+            // New version: fresh offer, not declined
+            (existing.version_count + 1, None, None)
+        }
+    } else {
+        (1, None, None)
+    };
+    let owner = signing::owner_did(host).await.unwrap_or_default();
+    let mine = v.issuer.as_deref() == Some(&owner);
     let pointer = RecordPointerRow {
         envelope: envelope.to_string(),
         record_id: record_id.to_string(),
@@ -1674,15 +1786,17 @@ async fn store_received_quote<H: AppHost>(
         conversation: payload.conversation.clone(),
         sequence: payload.sequence,
         issuer: v.issuer.clone().unwrap_or_default(),
-        mine: false,
+        mine,
         updated_at_secs: now,
         version_count,
+        issued_at_secs: incoming_issued,
         request_record_id: Some(payload.request_record_id.clone()),
         consumer_did: Some(payload.consumer_did.clone()),
-        declined_at_secs: None,
-        decline_note: None,
+        declined_at_secs,
+        decline_note,
     };
-    put_row(host, QUOTES, &payload.quote_id, &pointer).await
+    put_row(host, QUOTES, &payload.quote_id, &pointer).await?;
+    Ok(version_count)
 }
 
 async fn maybe_countersign<H: AppHost>(
@@ -1781,7 +1895,7 @@ async fn maybe_countersign<H: AppHost>(
     };
 
     if !message_id.is_empty() {
-        let _ = file_own_card(
+        file_own_card(
             host,
             &message_id,
             &row.conversation,
@@ -1790,8 +1904,9 @@ async fn maybe_countersign<H: AppHost>(
             &envelope_json,
             sender_timestamp_ms,
             now,
+            None,
         )
-        .await;
+        .await?;
     }
 
     Ok(true)
@@ -1820,7 +1935,57 @@ async fn thread<H: AppHost>(host: &H, req: &Request) -> Response {
         return Response::internal_error(e);
     }
 
+    let now = clock::now_secs();
     let filter = json!({ "conversation": params.conversation }).to_string();
+
+    let mut quote_map: HashMap<String, RecordPointerRow> = HashMap::new();
+    let mut cursor = None;
+    loop {
+        let page = match AppDataLayer::query(
+            host,
+            QUOTES.to_string(),
+            QueryOptions { filter: Some(filter.clone()), limit: Some(500), cursor: cursor.clone() },
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => return Response::internal_error(e.to_string()),
+        };
+        for r in page.records {
+            if let Ok(pointer) = serde_json::from_slice::<RecordPointerRow>(&r.payload) {
+                quote_map.insert(pointer.id.clone(), pointer);
+            }
+        }
+        if page.next_cursor.is_none() || page.next_cursor == cursor {
+            break;
+        }
+        cursor = page.next_cursor;
+    }
+
+    let mut request_map: HashMap<String, RecordPointerRow> = HashMap::new();
+    let mut cursor = None;
+    loop {
+        let page = match AppDataLayer::query(
+            host,
+            REQUESTS.to_string(),
+            QueryOptions { filter: Some(filter.clone()), limit: Some(500), cursor: cursor.clone() },
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => return Response::internal_error(e.to_string()),
+        };
+        for r in page.records {
+            if let Ok(pointer) = serde_json::from_slice::<RecordPointerRow>(&r.payload) {
+                request_map.insert(pointer.id.clone(), pointer);
+            }
+        }
+        if page.next_cursor.is_none() || page.next_cursor == cursor {
+            break;
+        }
+        cursor = page.next_cursor;
+    }
+
     let mut rows = Vec::new();
     let mut cursor = None;
     loop {
@@ -1836,15 +2001,35 @@ async fn thread<H: AppHost>(host: &H, req: &Request) -> Response {
         };
         for r in page.records {
             if let Ok(mut row) = serde_json::from_slice::<CardRow>(&r.payload) {
-                if row.card_type == "quote"
-                    && row.verified
-                    && let Some(qid) =
+                if row.card_type == "quote" && row.verified {
+                    if let Some(qid) =
                         row.data.as_ref().and_then(|q| q.get("quote_id")).and_then(Value::as_str)
-                    && let Ok(Some(pointer)) =
-                        get_row::<RecordPointerRow, _>(host, QUOTES, qid).await
-                    && pointer.declined_at_secs.is_some()
+                        && let Some(pointer) = quote_map.get(qid)
+                    {
+                        if pointer.declined_at_secs.is_some() {
+                            row.declined = Some(true);
+                        }
+                        if row.version_count.is_none() {
+                            row.version_count = Some(pointer.version_count);
+                        }
+                    }
+                    if let Some(exp) = row
+                        .data
+                        .as_ref()
+                        .and_then(|q| q.get("terms"))
+                        .and_then(|t| t.get("quote_expires_at_secs"))
+                        .and_then(Value::as_u64)
+                    {
+                        row.expired = now >= exp;
+                    }
+                } else if row.card_type == "request"
+                    && row.verified
+                    && let Some(rid) =
+                        row.data.as_ref().and_then(|r| r.get("request_id")).and_then(Value::as_str)
+                    && let Some(pointer) = request_map.get(rid)
+                    && row.version_count.is_none()
                 {
-                    row.declined = Some(true);
+                    row.version_count = Some(pointer.version_count);
                 }
                 rows.push(row);
             }
@@ -2419,7 +2604,7 @@ async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
     for r in req_rows {
         let id = r.get("id").and_then(Value::as_str).unwrap_or("");
         let payload = r.get("payload").cloned().unwrap_or(Value::Null);
-        let row: RecordPointerRow = match serde_json::from_value(payload) {
+        let mut row: RecordPointerRow = match serde_json::from_value(payload) {
             Ok(row) => row,
             Err(e) => return Response::invalid_params(format!("request '{id}': invalid row: {e}")),
         };
@@ -2430,14 +2615,36 @@ async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
                 v.reason.as_deref().unwrap_or("unknown")
             ));
         }
-        verified_requests.push((id.to_string(), row));
+        let p = match v.payload.as_ref() {
+            Some(p) => p,
+            None => return Response::invalid_params(format!("request '{id}' has missing payload")),
+        };
+        if id != p.request_id {
+            return Response::invalid_params(format!(
+                "request '{id}' declared id does not match payload request_id '{}'",
+                p.request_id
+            ));
+        }
+        let verified_record_id = match v.record_id.as_deref() {
+            Some(rid) => rid,
+            None => return Response::invalid_params(format!("request '{id}' has no record_id")),
+        };
+        row.record_id = verified_record_id.to_string();
+        row.id = p.request_id.clone();
+        row.conversation = p.conversation.clone();
+        row.sequence = p.sequence;
+        row.issuer = v.issuer.clone().unwrap_or_default();
+        row.mine = v.issuer.as_deref() == Some(&owner);
+        row.issued_at_secs = v.issued_at_secs.unwrap_or(row.issued_at_secs);
+        verified_requests.push((p.request_id.clone(), row));
     }
 
     let mut verified_quotes = Vec::new();
+    let mut quotes_by_record_id: HashMap<String, (String, QuotePayload)> = HashMap::new();
     for r in quote_rows {
         let id = r.get("id").and_then(Value::as_str).unwrap_or("");
         let payload = r.get("payload").cloned().unwrap_or(Value::Null);
-        let row: RecordPointerRow = match serde_json::from_value(payload) {
+        let mut row: RecordPointerRow = match serde_json::from_value(payload) {
             Ok(row) => row,
             Err(e) => return Response::invalid_params(format!("quote '{id}': invalid row: {e}")),
         };
@@ -2448,20 +2655,217 @@ async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
                 v.reason.as_deref().unwrap_or("unknown")
             ));
         }
-        verified_quotes.push((id.to_string(), row));
+        let p = match v.payload.as_ref() {
+            Some(p) => p,
+            None => return Response::invalid_params(format!("quote '{id}' has missing payload")),
+        };
+        if id != p.quote_id {
+            return Response::invalid_params(format!(
+                "quote '{id}' declared id does not match payload quote_id '{}'",
+                p.quote_id
+            ));
+        }
+        let verified_record_id = match v.record_id.as_deref() {
+            Some(rid) => rid,
+            None => return Response::invalid_params(format!("quote '{id}' has no record_id")),
+        };
+        row.record_id = verified_record_id.to_string();
+        row.id = p.quote_id.clone();
+        row.conversation = p.conversation.clone();
+        row.sequence = p.sequence;
+        row.issuer = v.issuer.clone().unwrap_or_default();
+        row.mine = v.issuer.as_deref() == Some(&owner);
+        row.issued_at_secs = v.issued_at_secs.unwrap_or(row.issued_at_secs);
+        row.request_record_id = Some(p.request_record_id.clone());
+        row.consumer_did = Some(p.consumer_did.clone());
+
+        quotes_by_record_id.insert(verified_record_id.to_string(), (row.issuer.clone(), p.clone()));
+        verified_quotes.push((p.quote_id.clone(), row));
     }
 
     let mut verified_agreements = Vec::new();
     for r in agr_rows {
         let id = r.get("id").and_then(Value::as_str).unwrap_or("");
         let payload = r.get("payload").cloned().unwrap_or(Value::Null);
-        let row: AgreementRow = match serde_json::from_value(payload) {
+        let mut row: AgreementRow = match serde_json::from_value(payload) {
             Ok(row) => row,
             Err(e) => {
                 return Response::invalid_params(format!("agreement '{id}': invalid row: {e}"));
             }
         };
-        verified_agreements.push((id.to_string(), row));
+        if id != row.quote_record_id {
+            return Response::invalid_params(format!(
+                "agreement '{id}' declared id does not match quote_record_id '{}'",
+                row.quote_record_id
+            ));
+        }
+        if row.consumer.is_none() && row.provider.is_none() {
+            return Response::invalid_params(format!(
+                "agreement '{id}' has neither consumer nor provider receipt"
+            ));
+        }
+
+        let (quote_provider_did, quote_payload) = if let Some(entry) =
+            quotes_by_record_id.get(&row.quote_record_id)
+        {
+            entry.clone()
+        } else if let Ok(Some(bytes)) = get_bytes(host, QUOTE_HISTORY, &row.quote_record_id).await {
+            let q_str = match String::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(_) => {
+                    return Response::invalid_params(format!(
+                        "agreement '{id}': quote in history is invalid utf8"
+                    ));
+                }
+            };
+            let qv = transaction::verify_quote(&q_str, now);
+            if !qv.verified {
+                return Response::invalid_params(format!(
+                    "agreement '{id}': quote in history does not verify"
+                ));
+            }
+            match (qv.issuer, qv.payload) {
+                (Some(iss), Some(qp)) => (iss, qp),
+                _ => {
+                    return Response::invalid_params(format!(
+                        "agreement '{id}': quote in history has missing issuer or payload"
+                    ));
+                }
+            }
+        } else {
+            return Response::invalid_params(format!(
+                "agreement '{id}' references quote '{}' not present in bundle or node",
+                row.quote_record_id
+            ));
+        };
+
+        if let Some(ref mut c) = row.consumer {
+            let cv = transaction::verify_agreement_receipt(&c.envelope, now);
+            if !cv.verified {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' consumer receipt does not verify: {}",
+                    cv.reason.as_deref().unwrap_or("unknown")
+                ));
+            }
+            let cp = match cv.payload.as_ref() {
+                Some(p) => p,
+                None => {
+                    return Response::invalid_params(format!(
+                        "agreement '{id}' consumer receipt missing payload"
+                    ));
+                }
+            };
+            if cp.role != Role::Consumer {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' consumer receipt has role {:?}",
+                    cp.role
+                ));
+            }
+            if cp.quote_record_id != row.quote_record_id {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' consumer receipt names different quote_record_id '{}'",
+                    cp.quote_record_id
+                ));
+            }
+            if cp.consumer_did != quote_payload.consumer_did
+                || cp.provider_did != quote_provider_did
+            {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' consumer receipt names wrong parties"
+                ));
+            }
+            if cp.terms != quote_payload.terms {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' consumer receipt terms differ from quote"
+                ));
+            }
+            let issued_at = cv.issued_at_secs.unwrap_or(0);
+            if issued_at >= quote_payload.terms.quote_expires_at_secs {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' consumer receipt accepted after quote expired"
+                ));
+            }
+            if cv.issuer.as_deref() != Some(cp.consumer_did.as_str()) {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' consumer receipt issuer does not match consumer_did"
+                ));
+            }
+            let rec_id = cv.record_id.as_deref().unwrap_or_default();
+            if c.record_id != rec_id {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' consumer receipt record_id mismatch"
+                ));
+            }
+            c.issuer = cp.consumer_did.clone();
+            c.issued_at_secs = issued_at;
+        }
+
+        if let Some(ref mut p) = row.provider {
+            let pv = transaction::verify_agreement_receipt(&p.envelope, now);
+            if !pv.verified {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' provider receipt does not verify: {}",
+                    pv.reason.as_deref().unwrap_or("unknown")
+                ));
+            }
+            let pp = match pv.payload.as_ref() {
+                Some(p) => p,
+                None => {
+                    return Response::invalid_params(format!(
+                        "agreement '{id}' provider receipt missing payload"
+                    ));
+                }
+            };
+            if pp.role != Role::Provider {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' provider receipt has role {:?}",
+                    pp.role
+                ));
+            }
+            if pp.quote_record_id != row.quote_record_id {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' provider receipt names different quote_record_id '{}'",
+                    pp.quote_record_id
+                ));
+            }
+            if pp.consumer_did != quote_payload.consumer_did
+                || pp.provider_did != quote_provider_did
+            {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' provider receipt names wrong parties"
+                ));
+            }
+            if pp.terms != quote_payload.terms {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' provider receipt terms differ from quote"
+                ));
+            }
+            let issued_at = pv.issued_at_secs.unwrap_or(0);
+            if issued_at >= quote_payload.terms.quote_expires_at_secs {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' provider receipt accepted after quote expired"
+                ));
+            }
+            if pv.issuer.as_deref() != Some(pp.provider_did.as_str()) {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' provider receipt issuer does not match provider_did"
+                ));
+            }
+            let rec_id = pv.record_id.as_deref().unwrap_or_default();
+            if p.record_id != rec_id {
+                return Response::invalid_params(format!(
+                    "agreement '{id}' provider receipt record_id mismatch"
+                ));
+            }
+            p.issuer = pp.provider_did.clone();
+            p.issued_at_secs = issued_at;
+        }
+
+        row.consumer_did = quote_payload.consumer_did.clone();
+        row.provider_did = quote_provider_did;
+        row.terms = quote_payload.terms;
+
+        verified_agreements.push((row.quote_record_id.clone(), row));
     }
 
     let mut imported_history: HashMap<String, (String, String)> = HashMap::new();
