@@ -87,10 +87,11 @@ jobs:
         uses: ./.github/actions/ci-build-and-test
         with:
           release_flag: ${{ github.event.inputs.build_mode == 'release' && '--release' || '' }}
-          # `count` round-robins the sorted test list -- an approximate but
-          # workable spread of the node-booting e2e tests, which dominate a
-          # shard's runtime. See deferred-backlog for the balance caveat.
-          partition: "count:${{ matrix.shard }}/6"
+          # `slice` round-robins tests across all binaries together, so the
+          # many one- and two-test e2e binaries (each 70-150 s) spread evenly
+          # instead of piling onto shards 1-2 the way `count` (per-binary
+          # round-robin, now deprecated) did.
+          partition: "slice:${{ matrix.shard }}/6"
 
   # Playwright WebRTC browser suite. Enforced on every push/PR to main; on
   # workflow_dispatch it stays opt-in via the `e2e` input.

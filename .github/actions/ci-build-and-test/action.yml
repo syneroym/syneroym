@@ -6,9 +6,9 @@ inputs:
     required: false
     default: ''
   partition:
-    description: 'nextest --partition value for this shard, e.g. "count:1/6". The default runs the whole suite.'
+    description: 'nextest --partition value for this shard, e.g. "slice:1/6". The default runs the whole suite.'
     required: false
-    default: 'count:1/1'
+    default: 'slice:1/1'
 runs:
   using: "composite"
   steps:
