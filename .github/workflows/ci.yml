@@ -49,9 +49,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # The planning-ref gate diffs against the pull request's base
+          # commit, so it needs history rather than a depth-1 checkout.
+          fetch-depth: 0
       - uses: ./.github/actions/ci-setup
         with:
           cache-key: lints
+      - name: Check for planning-doc refs added to comments
+        if: ${{ github.event_name == 'pull_request' }}
+        run: python3 .github/scripts/check-planning-refs.py "${{ github.event.pull_request.base.sha }}"
       - name: Run Lints, Audit & Licenses
         uses: ./.github/actions/ci-lints
         with:
