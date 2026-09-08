@@ -1,6 +1,6 @@
 import { call } from "../rpc";
 
-/// The three app-data bundles Roym can export today. Each service owns its
+/// The five app-data bundles Roym can export today. Each service owns its
 /// own bundle; a single signed bundle that composes them comes later.
 const BUNDLES: Array<{ label: string; exportMethod: string; importMethod: string; file: string }> = [
   {
@@ -20,6 +20,18 @@ const BUNDLES: Array<{ label: string; exportMethod: string; importMethod: string
     exportMethod: "catalog.export",
     importMethod: "catalog.import",
     file: "roym-catalog-bundle.json",
+  },
+  {
+    label: "Requests, quotes, and agreements",
+    exportMethod: "transaction.export",
+    importMethod: "transaction.import",
+    file: "roym-transaction-bundle.json",
+  },
+  {
+    label: "This installation's SynOrg directory, if it runs one",
+    exportMethod: "directory.export",
+    importMethod: "directory.import",
+    file: "roym-directory-bundle.json",
   },
 ];
 
@@ -45,7 +57,7 @@ export async function renderBackup(container: HTMLElement) {
   box.appendChild(
     text(
       "p",
-      "The three bundles below are exported separately today; a single signed bundle that combines them comes later.",
+      "The five bundles below are exported separately today; a single signed bundle that combines them comes later.",
       "backup-separate-note",
     ),
   );
@@ -83,27 +95,34 @@ function bundleRow(b: (typeof BUNDLES)[number]): HTMLElement {
   };
 
   const importLabel = document.createElement("label");
-  importLabel.className = "button file-button bundle-import";
+  importLabel.className = "button bundle-import-label";
   importLabel.textContent = "Import";
-  const importInput = document.createElement("input");
-  importInput.type = "file";
-  importInput.accept = ".json";
-  importInput.style.display = "none";
-  importInput.onchange = async () => {
-    const file = importInput.files?.[0];
-    if (!file) return;
-    status.textContent = "";
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = "application/json,.json";
+  fileInput.style.display = "none";
+  fileInput.onchange = async () => {
+    const f = fileInput.files?.[0];
+    if (!f) return;
+    status.textContent = "Reading file...";
     try {
-      const parsed = JSON.parse(await file.text());
-      await call(b.importMethod, { bundle: parsed });
-      status.textContent = "Restored.";
+      const textContent = await f.text();
+      const parsed = JSON.parse(textContent);
+      status.textContent = "Importing...";
+      const res = await call<{ imported_records?: number; imported?: number }>(b.importMethod, { bundle: parsed });
+      const count = res?.imported_records ?? res?.imported ?? "bundle";
+      status.textContent = `Imported: ${count} record(s).`;
     } catch (err) {
       status.textContent = `Import failed: ${err instanceof Error ? err.message : String(err)}`;
     }
-    importInput.value = "";
+    fileInput.value = "";
   };
-  importLabel.appendChild(importInput);
+  importLabel.appendChild(fileInput);
 
-  wrap.append(exportBtn, importLabel, status);
+  const actions = document.createElement("div");
+  actions.className = "bundle-actions";
+  actions.append(exportBtn, importLabel);
+
+  wrap.append(actions, status);
   return wrap;
 }

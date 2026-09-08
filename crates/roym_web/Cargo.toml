@@ -53,6 +53,8 @@ syneroym-roym-profile = { path = "../roym_profile" }
 syneroym-roym-catalog = { path = "../roym_catalog" }
 syneroym-roym-transaction = { path = "../roym_transaction" }
 syneroym-roym-directory = { path = "../roym_directory" }
+syneroym-signed-record.workspace = true
+z32.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tempfile.workspace = true
 

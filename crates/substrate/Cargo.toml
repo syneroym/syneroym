@@ -133,3 +133,4 @@ ed25519-dalek.workspace = true
 roymctl.workspace = true
 syneroym-ucan.workspace = true
 syneroym-signed-record.workspace = true
+syneroym-roym-core.workspace = true

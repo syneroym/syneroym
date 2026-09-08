@@ -591,7 +591,11 @@ async fn send<H: AppHost>(host: &H, req: &Request) -> Response {
         return Response::internal_error(e);
     }
 
-    Response::ok(json!({ "message_id": message_id, "state": state }))
+    Response::ok(json!({
+        "message_id": message_id,
+        "state": state,
+        "sender_timestamp_ms": row.sender_timestamp_ms,
+    }))
 }
 
 async fn upsert_conversation_activity<H: AppHost>(

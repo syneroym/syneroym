@@ -86,9 +86,9 @@ const PORTS_B: (u16, u16, u16) = (14_300, 14_301, 14_302);
 /// at once -- same fix as every other multi-node e2e file here.
 static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
-/// The three Roym services that sign a record and so need a record-signing
+/// Every Roym service that signs a record and so needs a record-signing
 /// certificate. Mirrors `roymctl`'s own list.
-const SIGNING_SERVICES: &[&str] = &["profile", "catalog", "conversation"];
+const SIGNING_SERVICES: &[&str] = &["profile", "catalog", "conversation", "transaction"];
 
 fn far_future_not_after() -> u64 {
     SystemTime::now()

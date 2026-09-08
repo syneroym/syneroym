@@ -111,7 +111,7 @@ static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 /// The Roym services that sign a record and so need a record-signing
 /// certificate. `directory` signs nothing and is deliberately
 /// absent. Mirrors `roymctl`'s own list.
-const SIGNING_SERVICES: &[&str] = &["profile", "catalog", "conversation"];
+const SIGNING_SERVICES: &[&str] = &["profile", "catalog", "conversation", "transaction"];
 
 fn far_future_not_after() -> u64 {
     SystemTime::now()
