@@ -7,6 +7,17 @@ same commands again, compare the numbers.
 The current baseline is [`baseline-2026-09-08/`](baseline-2026-09-08/), measured
 on commit `8d0444a` (main, right after slice C7 merged).
 
+The tag `before-quality-round-2026-09-08` marks the last commit before the
+cleanup started, so the whole round's effect is one command:
+
+```bash
+git diff before-quality-round-2026-09-08 main
+```
+
+[`progress.md`](progress.md) tracks what is done.
+[`comment-convention.md`](comment-convention.md) says how to rewrite a comment
+that cites a planning document.
+
 ## What is in a baseline folder
 
 | File | What it holds |

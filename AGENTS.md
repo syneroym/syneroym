@@ -88,6 +88,44 @@ Crate names are `syneroym-<dir>` (e.g. `crates/data_db` → `syneroym-data-db`, 
 - **New crate naming**: a new crate always goes under `crates/<snake_case_name>/` with Cargo package name `syneroym-<kebab-case-name>` — directory uses underscores, package name uses hyphens (e.g. `crates/mqtt_broker` → `syneroym-mqtt-broker`), matching every existing crate. This holds even when a planning doc's prose uses a hyphenated directory name (e.g. writes `crates/mqtt-broker/`) — the directory name is still snake_case.
 - **Dynamic Port Allocation in Tests**: Integration and E2E tests must never rely on hardcoded port numbers or static assignments. Substrate test harnesses must dynamically allocate ports using `common::alloc_ports::<N>()` to ensure collision-free parallel execution across test binaries.
 
+## Code Quality Standards
+
+These exist because the codebase drifted badly on all of them before they were
+written down (see [docs/planning/code-quality/](docs/planning/code-quality/) for
+the measurements). Each rule names how it is checked. **A rule nobody checks is
+how the drift happened, so do not add one here without an enforcement path.**
+
+- **Function length.** The limit is `too-many-lines-threshold` in `clippy.toml`.
+  It ratchets down as the cleanup lands, so read the current value rather than
+  assuming one. If your function trips it, extract, do not raise the threshold.
+  *Checked by:* `cargo clippy --workspace --all-targets --all-features`.
+- **Match arms are not a place to put a function.** An arm longer than a few
+  lines becomes a named function or a method on the type it works with, so the
+  `match` reads as a table of contents. A 993-line `invoke` with 37 arms is what
+  this rule prevents. *Checked by:* the function-length lint, plus review.
+- **File size.** A source file over roughly 800 production lines should be split
+  by responsibility into `foo/mod.rs` plus siblings. Test modules over ~500 lines
+  move to a sibling file under `tests/`. Prefer a new file over growing an
+  existing one. *Checked by:* review, and the file census in the code-quality
+  README.
+- **Look for an existing helper before writing a new one.** Duplication here is
+  rarely a literal copy — it is the same shape with different names and config
+  values, which a text search misses. Run `cargo dupes report --exclude
+  'bindings.rs' --exclude 'target'` over your change before you finish.
+  *Checked by:* `cargo dupes check --max-exact-percent`.
+- **Reuse the test harness.** Substrate integration tests use
+  `crates/substrate/tests/common` (`SubstrateTestContext`, `alloc_ports`). Do not
+  write your own `struct Node` / `fn boot`; extend the shared one if it does not
+  fit. Never hardcode a port — `alloc_ports` exists because hand-picked ones
+  collided. *Checked by:* review, and `no_ephemeral_port_literals.rs`.
+- **Comments explain why, not which plan.** No milestone, slice, task, design
+  id, review finding, test number, or planning-doc section — those documents get
+  archived and the comment then lies. ADR references are fine; ADRs are
+  permanent. See
+  [comment-convention.md](docs/planning/code-quality/comment-convention.md) for
+  the shapes and how to rewrite them. *Checked by:* a CI grep over the diff.
+- **Keep dependencies used.** *Checked by:* `cargo shear`.
+
 ## Functionality, Architecture Documents
 - The [vision doc](docs/VISION.md) contains the vision for Syneroym
 - The [requirements](docs/system-requirements-spec.md) contains high-level function requirements
