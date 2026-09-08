@@ -18,4 +18,3 @@ metrics.workspace = true
 sysinfo.workspace = true
 dashmap.workspace = true
 serde.workspace = true
-serde_json.workspace = true

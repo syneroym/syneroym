@@ -32,7 +32,7 @@ fn get_sys_info() -> (String, String, String) {
         .map(|c| c.brand().trim().to_string())
         .unwrap_or_else(|| "Unknown CPU".to_string());
     let memory_gb = sys.total_memory() as f64 / 1024.0 / 1024.0 / 1024.0;
-    let memory = format!("{:.1} GB", memory_gb);
+    let memory = format!("{memory_gb:.1} GB");
     (os, cpu, memory)
 }
 
@@ -187,7 +187,7 @@ fn perf_summary() -> Result<()> {
     let (os, cpu, mem) = get_sys_info();
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    let env_line = format!("| {} | {} | {} | {} | {} |", commit, timestamp, os, cpu, mem);
+    let env_line = format!("| {commit} | {timestamp} | {os} | {cpu} | {mem} |");
 
     println!("Running cargo bench...");
     let status = Command::new("cargo")
@@ -265,8 +265,7 @@ fn perf_summary() -> Result<()> {
                 let thr = s.get("throughput_rps").and_then(|t| t.as_f64()).unwrap_or(0.0);
                 let err = s.get("error_rate").and_then(|e| e.as_f64()).unwrap_or(0.0) * 100.0;
                 let p95 = s.get("latency_p95_ms").and_then(|l| l.as_f64()).unwrap_or(0.0);
-                concurrency_rows
-                    .push(format!("| {} | {:.1} | {:.2}% | {:.2} ms |", name, thr, err, p95));
+                concurrency_rows.push(format!("| {name} | {thr:.1} | {err:.2}% | {p95:.2} ms |"));
             }
         }
     }
@@ -294,7 +293,7 @@ fn perf_summary() -> Result<()> {
             let pass = json.get("overall_pass").and_then(|p| p.as_bool()).unwrap_or(false);
             let rss = json.get("rss_peak_mb").and_then(|r| r.as_f64()).unwrap_or(0.0);
             let res = if pass { "✅ PASS" } else { "❌ FAIL" };
-            soak_rows.push(format!("| {}s | {:.1} | {:.1} MB | {} |", dur, thr, rss, res));
+            soak_rows.push(format!("| {dur}s | {thr:.1} | {rss:.1} MB | {res} |"));
         }
     }
 
@@ -308,18 +307,18 @@ fn perf_summary() -> Result<()> {
         writeln!(file, "\nThis file is automatically updated by `cargo xtask perf-summary`.")?;
     }
 
-    writeln!(file, "\n## Run: {} ({})", timestamp, commit)?;
+    writeln!(file, "\n## Run: {timestamp} ({commit})")?;
     writeln!(file, "\n### Environment")?;
     writeln!(file, "| Commit | Timestamp | OS | CPU | Memory |")?;
     writeln!(file, "|--------|-----------|----|-----|--------|")?;
-    writeln!(file, "{}", env_line)?;
+    writeln!(file, "{env_line}")?;
 
     if !bench_rows.is_empty() {
         writeln!(file, "\n### Criterion Micro-Benchmarks")?;
         writeln!(file, "| Benchmark | Mean Time (ms) |")?;
         writeln!(file, "|-----------|----------------|")?;
         for row in bench_rows {
-            writeln!(file, "{}", row)?;
+            writeln!(file, "{row}")?;
         }
     }
 
@@ -328,7 +327,7 @@ fn perf_summary() -> Result<()> {
         writeln!(file, "| Scenario | p50 | p95 |")?;
         writeln!(file, "|----------|-----|-----|")?;
         for row in latency_rows {
-            writeln!(file, "{}", row)?;
+            writeln!(file, "{row}")?;
         }
     }
 
@@ -337,7 +336,7 @@ fn perf_summary() -> Result<()> {
         writeln!(file, "| Scenario | Throughput (rps) | Error Rate | p95 Latency |")?;
         writeln!(file, "|----------|------------------|------------|-------------|")?;
         for row in concurrency_rows {
-            writeln!(file, "{}", row)?;
+            writeln!(file, "{row}")?;
         }
     }
 
@@ -346,7 +345,7 @@ fn perf_summary() -> Result<()> {
         writeln!(file, "| Duration | Throughput (rps) | Peak RSS | Result |")?;
         writeln!(file, "|----------|------------------|----------|--------|")?;
         for row in soak_rows {
-            writeln!(file, "{}", row)?;
+            writeln!(file, "{row}")?;
         }
     }
 

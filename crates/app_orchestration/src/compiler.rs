@@ -136,10 +136,7 @@ fn compile_recursive<'a>(
         }
         // Check instance cycle (Bind cycle)
         if compilation_stack.contains(instance_id) {
-            return Err(anyhow!(
-                "Circular dependency detected involving instance '{}'",
-                instance_id
-            ));
+            return Err(anyhow!("Circular dependency detected involving instance '{instance_id}'"));
         }
 
         blueprint_stack.push(manifest.id.clone());
@@ -152,8 +149,7 @@ fn compile_recursive<'a>(
         for (dep_name, dep_spec) in &manifest.dependencies {
             match dep_spec {
                 AppDependencySpec::Spawn { blueprint, manifest_path } => {
-                    let child_instance_id =
-                        AppInstanceId::new(format!("{}:{}", instance_id, dep_name));
+                    let child_instance_id = AppInstanceId::new(format!("{instance_id}:{dep_name}"));
                     let child_manifest =
                         catalog.resolve(blueprint, manifest_path.as_deref()).await?;
                     compile_recursive(
@@ -172,10 +168,8 @@ fn compile_recursive<'a>(
                     // a cycle!
                     if compilation_stack.contains(instance) {
                         return Err(anyhow!(
-                            "Circular Spawn vs Bind dependency detected: instance '{}' binds to \
-                             '{}' which is still compiling",
-                            instance_id,
-                            instance
+                            "Circular Spawn vs Bind dependency detected: instance '{instance_id}' \
+                             binds to '{instance}' which is still compiling"
                         ));
                     }
                 }
@@ -192,7 +186,7 @@ fn compile_recursive<'a>(
             let spec = manifest
                 .services
                 .get(&name)
-                .ok_or_else(|| anyhow!("Service spec not found for '{}'", name))?;
+                .ok_or_else(|| anyhow!("Service spec not found for '{name}'"))?;
 
             let logical_ref = LogicalServiceRef {
                 app_instance_id: instance_id.clone(),
@@ -843,11 +837,10 @@ mod tests {
         for i in 0..50 {
             services_toml.push_str(&format!(
                 r#"
-                [services.svc-{}]
+                [services.svc-{i}]
                 service_type = "wasm"
                 source = "svc.wasm"
-            "#,
-                i
+            "#
             ));
             if i > 0 {
                 services_toml
@@ -861,9 +854,8 @@ mod tests {
             r#"
             id = "syneroym:perf-app"
             version = "1.0.0"
-            {}
-        "#,
-            services_toml
+            {services_toml}
+        "#
         );
 
         let manifest = SynAppManifest::from_toml(&manifest_toml).unwrap();
@@ -874,7 +866,7 @@ mod tests {
         let duration = start.elapsed();
 
         assert_eq!(compiled.plans[0].services.len(), 50);
-        assert!(duration < Duration::from_millis(50), "Compilation took {:?}", duration);
+        assert!(duration < Duration::from_millis(50), "Compilation took {duration:?}");
     }
 
     #[tokio::test]

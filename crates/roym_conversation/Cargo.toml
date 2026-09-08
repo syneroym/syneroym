@@ -13,7 +13,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 syneroym-app-host.workspace = true
 syneroym-roym-core.workspace = true
-serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -33,7 +32,6 @@ syneroym-wit-interfaces = { path = "../wit_interfaces", default-features = false
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 syneroym-rpc.workspace = true
-syneroym-app-host-native = { path = "../app_host_native" }
 async-trait.workspace = true
 
 [package.metadata.component.target.dependencies]

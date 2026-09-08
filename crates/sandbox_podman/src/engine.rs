@@ -132,7 +132,7 @@ impl ContainerEngine {
         let staging = Self::sibling_dir(volume_root, ".staging")?;
         let _ = fs::remove_dir_all(&staging);
         fs::create_dir_all(&staging)
-            .with_context(|| format!("Failed to create staging directory {:?}", staging))?;
+            .with_context(|| format!("Failed to create staging directory {staging:?}"))?;
 
         if let Err(e) = Self::write_staged_files(&staging, &resolved) {
             let _ = fs::remove_dir_all(&staging);
@@ -146,9 +146,8 @@ impl ContainerEngine {
     fn write_staged_files(staging: &Path, resolved: &[(PathBuf, String)]) -> Result<()> {
         for (relative, content) in resolved {
             let target = staging.join(relative);
-            let parent = target
-                .parent()
-                .ok_or_else(|| anyhow!("volume file {:?} has no parent", relative))?;
+            let parent =
+                target.parent().ok_or_else(|| anyhow!("volume file {relative:?} has no parent"))?;
             fs::create_dir_all(parent)?;
 
             // `create_new` is `O_CREAT|O_EXCL`, which fails on an existing
@@ -160,10 +159,10 @@ impl ContainerEngine {
                 .write(true)
                 .create_new(true)
                 .open(&target)
-                .with_context(|| format!("Failed to create volume file {:?}", target))?;
+                .with_context(|| format!("Failed to create volume file {target:?}"))?;
             handle
                 .write_all(content.as_bytes())
-                .with_context(|| format!("Failed to write volume file {:?}", target))?;
+                .with_context(|| format!("Failed to write volume file {target:?}"))?;
         }
         Ok(())
     }
@@ -179,7 +178,7 @@ impl ContainerEngine {
         let had_previous = volume_root.exists();
         if had_previous {
             fs::rename(volume_root, &retired).with_context(|| {
-                format!("Failed to move aside container volume {:?}", volume_root)
+                format!("Failed to move aside container volume {volume_root:?}")
             })?;
         }
 
@@ -201,10 +200,10 @@ impl ContainerEngine {
     fn sibling_dir(volume_root: &Path, suffix: &str) -> Result<PathBuf> {
         let parent = volume_root
             .parent()
-            .ok_or_else(|| anyhow!("container volume {:?} has no parent directory", volume_root))?;
+            .ok_or_else(|| anyhow!("container volume {volume_root:?} has no parent directory"))?;
         let name = volume_root
             .file_name()
-            .ok_or_else(|| anyhow!("container volume {:?} has no directory name", volume_root))?;
+            .ok_or_else(|| anyhow!("container volume {volume_root:?} has no directory name"))?;
         let mut staged = name.to_os_string();
         staged.push(suffix);
         Ok(parent.join(staged))
@@ -249,7 +248,7 @@ impl ContainerEngine {
         for vol in &container_manifest.volumes {
             let host_path = self.resolve_host_path(service_id, &vol.host_path);
             fs::create_dir_all(&host_path)
-                .with_context(|| format!("Failed to create host path directory {:?}", host_path))?;
+                .with_context(|| format!("Failed to create host path directory {host_path:?}"))?;
 
             // Only a volume that declares files is managed. An empty list is
             // left strictly alone rather than replaced, because that is the
@@ -325,7 +324,7 @@ impl ContainerEngine {
 
         for (key, val) in &config_map {
             env_args.push("-e".to_string());
-            env_args.push(format!("{}={}", key, val));
+            env_args.push(format!("{key}={val}"));
         }
 
         // 4. Command arguments
@@ -357,7 +356,7 @@ impl ContainerEngine {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("podman run failed: {}", stderr));
+            return Err(anyhow!("podman run failed: {stderr}"));
         }
 
         // 5. Query and map dynamic ports or verify running ports
@@ -386,13 +385,13 @@ impl ContainerEngine {
         let protocol = if protocol.is_empty() { "tcp" } else { protocol };
         let sanitized_id = sanitize_id(service_id);
         let output = Command::new(&self.podman_path)
-            .args(["port", &sanitized_id, &format!("{}/{}", container_port, protocol)])
+            .args(["port", &sanitized_id, &format!("{container_port}/{protocol}")])
             .output()
             .context("Failed to execute podman port")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("podman port failed: {}", stderr));
+            return Err(anyhow!("podman port failed: {stderr}"));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -402,10 +401,10 @@ impl ContainerEngine {
         let port_part = line
             .split(':')
             .next_back()
-            .ok_or_else(|| anyhow!("Invalid output from podman port: {}", line))?;
+            .ok_or_else(|| anyhow!("Invalid output from podman port: {line}"))?;
 
         let parsed_port = port_part.trim().parse::<u16>().with_context(|| {
-            format!("Failed to parse port '{}' from podman port output", port_part)
+            format!("Failed to parse port '{port_part}' from podman port output")
         })?;
 
         Ok(parsed_port)
@@ -488,7 +487,7 @@ impl ContainerEngine {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("podman inspect failed: {}", stderr));
+            return Err(anyhow!("podman inspect failed: {stderr}"));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);

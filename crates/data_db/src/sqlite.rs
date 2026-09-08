@@ -1396,10 +1396,10 @@ impl SqliteStorageProvider {
             return Ok(None);
         }
         if !SERVICE_ID_REGEX.is_match(service_id) {
-            return Err(anyhow::anyhow!("Invalid service ID format: {}", service_id));
+            return Err(anyhow::anyhow!("Invalid service ID format: {service_id}"));
         }
         let conn =
-            self.substrate_conn.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            self.substrate_conn.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
         let dek = match key_store.load_dek(service_id, &conn) {
             Ok(bytes) => bytes,
             Err(KeyStoreError::Database(SqliteError::QueryReturnedNoRows)) => {
@@ -1415,14 +1415,13 @@ impl SqliteStorageProvider {
     /// filesystem.
     fn resolve_service_db_dir(&self, service_id: &str) -> anyhow::Result<PathBuf> {
         if !SERVICE_ID_REGEX.is_match(service_id) {
-            return Err(anyhow::anyhow!("Invalid service ID format: {}", service_id));
+            return Err(anyhow::anyhow!("Invalid service ID format: {service_id}"));
         }
         let services_dir = self.db_dir.join("services");
         let service_db_dir = services_dir.join(service_id);
         if !service_db_dir.starts_with(&services_dir) {
             return Err(anyhow::anyhow!(
-                "Path traversal attempt rejected for service ID: {}",
-                service_id
+                "Path traversal attempt rejected for service ID: {service_id}"
             ));
         }
         Ok(service_db_dir)
@@ -1510,7 +1509,7 @@ fn run_writer_loop(
 
                 let ciphertext_res = cipher
                     .encrypt(nonce, secret_bytes.as_slice())
-                    .map_err(|e| anyhow::anyhow!("Encryption failure: {}", e));
+                    .map_err(|e| anyhow::anyhow!("Encryption failure: {e}"));
 
                 let res = match ciphertext_res {
                     Ok(ciphertext) => {
@@ -1548,7 +1547,7 @@ fn run_writer_loop(
 
                         let decrypted = cipher
                             .decrypt(nonce, ciphertext.as_slice())
-                            .map_err(|e| anyhow::anyhow!("Decryption failure: {}", e))?;
+                            .map_err(|e| anyhow::anyhow!("Decryption failure: {e}"))?;
 
                         Ok(Some(decrypted))
                     } else {
@@ -1624,7 +1623,7 @@ impl StorageProvider for SqliteStorageProvider {
         if let Some(store) = self
             .service_stores
             .lock()
-            .map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?
+            .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?
             .get(service_id)
             .cloned()
         {
@@ -1696,7 +1695,7 @@ impl StorageProvider for SqliteStorageProvider {
                         let pragma_val = Zeroizing::new(format!("x'{}'", hex::encode(*reader_dek)));
                         conn.interact(move |conn| conn.pragma_update(None, "key", &*pragma_val))
                             .await
-                            .map_err(|e| HookError::message(format!("Interact error: {}", e)))?
+                            .map_err(|e| HookError::message(format!("Interact error: {e}")))?
                             .map_err(HookError::Backend)?;
                         Ok(())
                     })
@@ -1707,7 +1706,7 @@ impl StorageProvider for SqliteStorageProvider {
         let new_store = Arc::new(SqliteServiceStore { reader_pool, writer_tx });
         let store = {
             let mut stores =
-                self.service_stores.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+                self.service_stores.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             stores.entry(service_id.to_string()).or_insert_with(|| new_store.clone()).clone()
         };
 
@@ -1718,7 +1717,7 @@ impl StorageProvider for SqliteStorageProvider {
         let conn_arc = self.substrate_conn.clone();
         let ks = key_store.clone();
         task::spawn_blocking(move || -> anyhow::Result<()> {
-            let mut conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let mut conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             ks.rotate_kek(new_kek, &mut conn)?;
             Ok(())
         })
@@ -1752,7 +1751,7 @@ impl StorageProvider for SqliteStorageProvider {
         let s_id = service_id.to_string();
         let blob = config_blob.to_string();
         task::spawn_blocking(move || -> anyhow::Result<u64> {
-            let mut conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let mut conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             let tx = conn.transaction()?;
 
             let current_gen: Option<i64> = tx
@@ -1791,7 +1790,7 @@ impl StorageProvider for SqliteStorageProvider {
         let conn_arc = self.substrate_conn.clone();
         let s_id = service_id.to_string();
         task::spawn_blocking(move || -> anyhow::Result<()> {
-            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             conn.execute(
                 "DELETE FROM config_generations WHERE service_id = ?1 AND generation = ?2",
                 params![s_id, generation as i64],
@@ -1809,7 +1808,7 @@ impl StorageProvider for SqliteStorageProvider {
         let conn_arc = self.substrate_conn.clone();
         let s_id = service_id.to_string();
         task::spawn_blocking(move || -> anyhow::Result<Option<String>> {
-            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             let mut stmt = conn.prepare(
                 "SELECT config_blob FROM config_generations WHERE service_id = ?1 AND generation \
                  = ?2",
@@ -1828,7 +1827,7 @@ impl StorageProvider for SqliteStorageProvider {
         let conn_arc = self.substrate_conn.clone();
         let s_id = service_id.to_string();
         task::spawn_blocking(move || -> anyhow::Result<Option<(u64, String)>> {
-            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             let mut stmt = conn.prepare(
                 "SELECT generation, config_blob FROM config_generations WHERE service_id = ?1 \
                  ORDER BY generation DESC LIMIT 1",
@@ -1853,7 +1852,7 @@ impl StorageProvider for SqliteStorageProvider {
         let s_id = service_id.to_string();
         let topic = topic.to_string();
         task::spawn_blocking(move || -> anyhow::Result<()> {
-            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             let now = Utc::now().timestamp_millis();
             conn.execute(
                 "INSERT INTO messaging_subscriptions (service_id, topic, created_at)
@@ -1875,7 +1874,7 @@ impl StorageProvider for SqliteStorageProvider {
         let s_id = service_id.to_string();
         let topic = topic.to_string();
         task::spawn_blocking(move || -> anyhow::Result<()> {
-            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             conn.execute(
                 "DELETE FROM messaging_subscriptions WHERE service_id = ?1 AND topic = ?2",
                 params![s_id, topic],
@@ -1892,7 +1891,7 @@ impl StorageProvider for SqliteStorageProvider {
         let conn_arc = self.substrate_conn.clone();
         let s_id = service_id.to_string();
         task::spawn_blocking(move || -> anyhow::Result<()> {
-            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             conn.execute(
                 "DELETE FROM messaging_subscriptions WHERE service_id = ?1",
                 params![s_id],
@@ -1905,7 +1904,7 @@ impl StorageProvider for SqliteStorageProvider {
     async fn list_all_messaging_subscriptions(&self) -> anyhow::Result<Vec<(String, String)>> {
         let conn_arc = self.substrate_conn.clone();
         task::spawn_blocking(move || -> anyhow::Result<Vec<(String, String)>> {
-            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             let mut stmt = conn.prepare("SELECT service_id, topic FROM messaging_subscriptions")?;
             let rows = stmt
                 .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
@@ -1920,7 +1919,7 @@ impl StorageProvider for SqliteStorageProvider {
         let s_id = service_id.to_string();
         let policy = policy_json.to_string();
         task::spawn_blocking(move || -> anyhow::Result<()> {
-            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             let now = Utc::now().timestamp_millis();
             conn.execute(
                 "INSERT INTO fdae_policies (service_id, policy_json, updated_at)
@@ -1939,7 +1938,7 @@ impl StorageProvider for SqliteStorageProvider {
         let conn_arc = self.substrate_conn.clone();
         let s_id = service_id.to_string();
         task::spawn_blocking(move || -> anyhow::Result<Option<String>> {
-            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             let mut stmt =
                 conn.prepare("SELECT policy_json FROM fdae_policies WHERE service_id = ?1")?;
             let mut rows = stmt.query(params![s_id])?;
@@ -1952,7 +1951,7 @@ impl StorageProvider for SqliteStorageProvider {
         let conn_arc = self.substrate_conn.clone();
         let s_id = service_id.to_string();
         task::spawn_blocking(move || -> anyhow::Result<()> {
-            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             conn.execute("DELETE FROM fdae_policies WHERE service_id = ?1", params![s_id])?;
             Ok(())
         })

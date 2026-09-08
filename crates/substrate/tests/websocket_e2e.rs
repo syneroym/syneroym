@@ -172,10 +172,9 @@ async fn open_http_stream(
 
 fn build_websocket_upgrade_request(path: &str) -> Vec<u8> {
     let req = format!(
-        "GET {} HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: \
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: \
          Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: \
-         13\r\n\r\n",
-        path
+         13\r\n\r\n"
     );
     req.into_bytes()
 }

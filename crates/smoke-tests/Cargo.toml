@@ -24,10 +24,8 @@ syneroym-mqtt-broker.workspace = true
 
 anyhow.workspace = true
 tokio.workspace = true
-serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 reqwest.workspace = true
 clap = { workspace = true, features = ["derive"] }
 iroh.workspace = true
-dashmap.workspace = true
 rand.workspace = true

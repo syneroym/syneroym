@@ -246,7 +246,7 @@ pub async fn handle(
             let master_id = substrate::derive_did_key(&identity.public_key());
 
             client.publish_master_anchor(&master_id, vec![], None, &identity, true).await?;
-            println!("Successfully published MasterAnchorPayload to {}", registry_url);
+            println!("Successfully published MasterAnchorPayload to {registry_url}");
         }
         IdentityCommands::IssueGrant { from, to, can, with, expires_days, no_delegate } => {
             let key_path = dir.join("identities").join(format!("{from}.key"));

@@ -210,7 +210,7 @@ pub fn read_local_artifact(path: &Path) -> anyhow::Result<Vec<u8>> {
             }
             fs::read(path)
         })
-        .map_err(|e| anyhow::anyhow!("Failed to read file at {:?}: {}", path, e))
+        .map_err(|e| anyhow::anyhow!("Failed to read file at {path:?}: {e}"))
 }
 
 #[cfg(test)]

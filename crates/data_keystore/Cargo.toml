@@ -15,7 +15,6 @@ sha2.workspace = true
 zeroize.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 anyhow.workspace = true
 
 [dev-dependencies]

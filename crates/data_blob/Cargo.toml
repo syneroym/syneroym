@@ -20,10 +20,8 @@ aws = ["object_store/aws"]
 anyhow.workspace = true
 async-trait.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 rand.workspace = true
 regex.workspace = true
 sha2.workspace = true
@@ -34,7 +32,6 @@ aes-gcm.workspace = true
 aead = { workspace = true, features = ["stream"] }
 futures.workspace = true
 zeroize.workspace = true
-uuid.workspace = true
 object_store.workspace = true
 bytes.workspace = true
 

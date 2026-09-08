@@ -1567,7 +1567,7 @@ async fn scenario_5_unbound_dependency_returns_32001() {
     let err_code = val["error"]["code"].as_i64().unwrap();
     let err_msg = val["error"]["message"].as_str().unwrap();
     assert_eq!(err_code, -32001);
-    assert!(!err_msg.contains("did:"), "error message must not leak a DID: {}", err_msg);
+    assert!(!err_msg.contains("did:"), "error message must not leak a DID: {err_msg}");
 }
 
 #[tokio::test]

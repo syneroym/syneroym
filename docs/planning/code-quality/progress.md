@@ -15,7 +15,7 @@ git diff before-quality-round-2026-09-08 main
 
 | # | Step | Status | PR |
 | --- | --- | --- | --- |
-| G1 | Unused dependencies (`cargo shear --fix`) + machine-fixable lints | not started | |
+| G1 | Unused dependencies (`cargo shear --fix`) + machine-fixable lints | done | [#168](https://github.com/syneroym/syneroym/pull/168) |
 | G2 | False-comment sweep: comments whose claims are no longer true | not started | |
 | G3 | CI gate on planning refs **added in a diff** | not started | |
 | G4 | e2e harness: move 25 files onto `tests/common` | not started | |

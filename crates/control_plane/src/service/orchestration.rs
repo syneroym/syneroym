@@ -482,7 +482,7 @@ async fn resolve_document(
             let path = PathBuf::from(path);
             task::spawn_blocking(move || deploy_docs::read_host_document(&path, field_name))
                 .await
-                .map_err(|e| format!("Failed to spawn blocking task: {}", e))?
+                .map_err(|e| format!("Failed to spawn blocking task: {e}"))?
         }
     }
 }
@@ -1345,14 +1345,12 @@ impl OrchestratorInterface for ControlPlaneService {
                         {
                             return Err(format!(
                                 "Arbitrary file read prevented: Path traversal or absolute paths \
-                                 are not allowed in deploy-plan: {:?}",
-                                path
+                                 are not allowed in deploy-plan: {path:?}"
                             ));
                         }
 
-                        let bytes = util::read_local_artifact(&path).map_err(|e| {
-                            format!("Failed to read WASM file at {:?}: {}", path, e)
-                        })?;
+                        let bytes = util::read_local_artifact(&path)
+                            .map_err(|e| format!("Failed to read WASM file at {path:?}: {e}"))?;
                         wasm_manifest.source = ArtifactSource::Binary(bytes);
                     }
                 }
@@ -1723,7 +1721,7 @@ impl ControlPlaneService {
         let mut http_routes = Vec::new();
         if let Some(custom_config_str) = &manifest.config.custom_config {
             let custom_json: Value = serde_json::from_str(custom_config_str)
-                .map_err(|e| format!("custom_config is not valid JSON: {}", e))?;
+                .map_err(|e| format!("custom_config is not valid JSON: {e}"))?;
             http_routes = http_routes::parse_http_routes(&custom_json)?;
 
             if let Some(schema_source) = &manifest.config.schema {
@@ -1732,10 +1730,10 @@ impl ControlPlaneService {
                 let custom_json_clone = custom_json.clone();
                 task::spawn_blocking(move || -> Result<(), String> {
                     let schema_json: Value = serde_json::from_str(&schema_str)
-                        .map_err(|e| format!("JSON schema is not valid JSON: {}", e))?;
+                        .map_err(|e| format!("JSON schema is not valid JSON: {e}"))?;
 
                     let compiled_schema = jsonschema::validator_for(&schema_json)
-                        .map_err(|e| format!("Invalid JSON schema: {}", e))?;
+                        .map_err(|e| format!("Invalid JSON schema: {e}"))?;
 
                     if let Err(error) = compiled_schema.validate(&custom_json_clone) {
                         return Err(format!(
@@ -1747,7 +1745,7 @@ impl ControlPlaneService {
                     Ok(())
                 })
                 .await
-                .map_err(|e| format!("Failed to spawn blocking task: {}", e))??;
+                .map_err(|e| format!("Failed to spawn blocking task: {e}"))??;
             }
 
             config_utils::flatten_json_config(&custom_json, "", &mut flat_config);
@@ -1847,13 +1845,13 @@ impl ControlPlaneService {
         };
 
         let config_blob = serde_json::to_string(&flat_config)
-            .map_err(|e| format!("Failed to serialize flattened config: {}", e))?;
+            .map_err(|e| format!("Failed to serialize flattened config: {e}"))?;
 
         let new_gen = self
             .storage_provider
             .save_config_generation(&service_id, &config_blob)
             .await
-            .map_err(|e| format!("Failed to save config generation: {}", e))?;
+            .map_err(|e| format!("Failed to save config generation: {e}"))?;
         tracing::info!("Saved configuration generation {} for service {}", new_gen, service_id);
 
         // Persist before the service is actually instantiated below, so the
@@ -1879,12 +1877,12 @@ impl ControlPlaneService {
             .storage_provider
             .load_fdae_policy(&service_id)
             .await
-            .map_err(|e| format!("Failed to check existing FDAE policy: {}", e))?;
+            .map_err(|e| format!("Failed to check existing FDAE policy: {e}"))?;
         if let Some((policy_doc, _)) = &fdae_policy {
             self.storage_provider
                 .save_fdae_policy(&service_id, policy_doc)
                 .await
-                .map_err(|e| format!("Failed to save FDAE policy: {}", e))?;
+                .map_err(|e| format!("Failed to save FDAE policy: {e}"))?;
         } else {
             // A manifest that no longer declares `fdae_policy` clears
             // any previously-declared policy -- a deploy's `config` fully
@@ -1897,7 +1895,7 @@ impl ControlPlaneService {
             self.storage_provider
                 .delete_fdae_policy(&service_id)
                 .await
-                .map_err(|e| format!("Failed to clear FDAE policy: {}", e))?;
+                .map_err(|e| format!("Failed to clear FDAE policy: {e}"))?;
         }
 
         // M06A A1: static asset bundle unpack, before the wasm/tcp/container
@@ -6645,7 +6643,7 @@ mod tests {
 
         let _ = fs::remove_file(&policy_filename);
 
-        assert!(result.is_ok(), "{:?}", result);
+        assert!(result.is_ok(), "{result:?}");
         let loaded = storage_provider.load_fdae_policy("fdae_test_service").await.unwrap();
         assert_eq!(loaded, Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string()));
     }
@@ -11439,7 +11437,7 @@ mod tests {
         // service and reported the resulting failure as unreadiness.
         let result =
             service.readyz("tcp-readyz-svc".to_string(), &status_capable_caller("owner")).await;
-        assert!(result.is_ok(), "{:?}", result);
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[tokio::test]

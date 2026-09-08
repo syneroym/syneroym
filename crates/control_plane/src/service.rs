@@ -1095,8 +1095,8 @@ mod tests {
             let res = service.dispatch(invocation).await;
             if let Err(RpcError::MethodNotFound(m)) = res {
                 panic!(
-                    "WIT function '{}' maps to method name '{}' but was NOT found in dispatcher",
-                    name, m
+                    "WIT function '{name}' maps to method name '{m}' but was NOT found in \
+                     dispatcher"
                 );
             }
         }

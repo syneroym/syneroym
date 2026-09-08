@@ -125,7 +125,7 @@ impl RangeRoutingTable {
             if let (Some(start), Some(end)) = (&current.start_key, &current.end_key)
                 && start >= end
             {
-                return Err(anyhow!("Range chunk {} has start_key >= end_key", i));
+                return Err(anyhow!("Range chunk {i} has start_key >= end_key"));
             }
 
             if i < self.chunks.len() - 1 {

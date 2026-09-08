@@ -789,8 +789,7 @@ async fn test_23_login_with_no_published_anchor_is_refused_with_409() {
     let err_val: Value = login_resp.json().await.unwrap();
     assert!(
         err_val["error"].as_str().unwrap().contains("master anchor is not resolvable"),
-        "error message must name master anchor resolution failure: {:?}",
-        err_val
+        "error message must name master anchor resolution failure: {err_val:?}"
     );
 
     // Requests through gateway still report self-asserted

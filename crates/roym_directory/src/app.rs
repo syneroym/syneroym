@@ -980,16 +980,14 @@ async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
     }
     if query.categories.len() > MAX_CATEGORIES {
         return Response::invalid_params(format!(
-            "more than {} categories in a query",
-            MAX_CATEGORIES
+            "more than {MAX_CATEGORIES} categories in a query"
         ));
     }
     if let Some(text) = &query.text
         && text.len() > MAX_QUERY_TEXT_LEN
     {
         return Response::invalid_params(format!(
-            "query text is longer than {} bytes",
-            MAX_QUERY_TEXT_LEN
+            "query text is longer than {MAX_QUERY_TEXT_LEN} bytes"
         ));
     }
     // The text index is ASCII-folded (see `normalize_text`). A query in a

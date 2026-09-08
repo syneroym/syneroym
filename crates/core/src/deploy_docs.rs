@@ -46,22 +46,20 @@ pub fn reject_path_escape(path: &Path, field_name: &str) -> Result<(), String> {
     if path.components().any(|c| matches!(c, Component::ParentDir)) || path.is_absolute() {
         return Err(format!(
             "Arbitrary file read prevented: Path traversal or absolute paths are not allowed in \
-             {field_name}: {:?}",
-            path
+             {field_name}: {path:?}"
         ));
     }
 
-    let cwd = std::env::current_dir()
-        .map_err(|e| format!("Failed to resolve working directory: {}", e))?;
-    let canonical_cwd = fs::canonicalize(&cwd)
-        .map_err(|e| format!("Failed to resolve working directory: {}", e))?;
+    let cwd =
+        std::env::current_dir().map_err(|e| format!("Failed to resolve working directory: {e}"))?;
+    let canonical_cwd =
+        fs::canonicalize(&cwd).map_err(|e| format!("Failed to resolve working directory: {e}"))?;
     let resolved = fs::canonicalize(cwd.join(path))
         .map_err(|e| format!("Failed to resolve {field_name} at {}: {}", path.display(), e))?;
     if !resolved.starts_with(&canonical_cwd) {
         return Err(format!(
             "Arbitrary file read prevented: {field_name} resolves outside the working directory \
-             via a symlink: {:?}",
-            path
+             via a symlink: {path:?}"
         ));
     }
     Ok(())
@@ -128,15 +126,14 @@ pub fn reject_relative_escape(relative_path: &str, field_name: &str) -> Result<(
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
                 return Err(format!(
                     "{field_name} must be a relative path inside the volume, with no '..', root, \
-                     or drive prefix: {:?}",
-                    relative_path
+                     or drive prefix: {relative_path:?}"
                 ));
             }
         }
     }
 
     if !has_content {
-        return Err(format!("{field_name} must not be empty: {:?}", relative_path));
+        return Err(format!("{field_name} must not be empty: {relative_path:?}"));
     }
     Ok(())
 }
@@ -161,7 +158,7 @@ pub const MAX_ASSET_FILE_COUNT: usize = 10_000;
 /// success, so callers don't re-derive it.
 pub fn reject_archive_entry_path(path: &Path, field_name: &str) -> Result<String, String> {
     let name =
-        path.to_str().ok_or_else(|| format!("{field_name} has a non-UTF-8 name: {:?}", path))?;
+        path.to_str().ok_or_else(|| format!("{field_name} has a non-UTF-8 name: {path:?}"))?;
 
     let mut has_content = false;
     for component in path.components() {
@@ -172,15 +169,14 @@ pub fn reject_archive_entry_path(path: &Path, field_name: &str) -> Result<String
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
                 return Err(format!(
                     "{field_name} must be a relative path inside the archive, with no '..', root, \
-                     or drive prefix: {:?}",
-                    name
+                     or drive prefix: {name:?}"
                 ));
             }
         }
     }
 
     if !has_content {
-        return Err(format!("{field_name} must not be empty: {:?}", name));
+        return Err(format!("{field_name} must not be empty: {name:?}"));
     }
 
     Ok(name.to_string())

@@ -440,9 +440,8 @@ impl RegistryClient {
             }
         }
 
-        let mut info = result.ok_or_else(|| {
-            anyhow::anyhow!("Endpoint not found in registry or DHT for ID: {}", id)
-        })?;
+        let mut info = result
+            .ok_or_else(|| anyhow::anyhow!("Endpoint not found in registry or DHT for ID: {id}"))?;
 
         // Proactively backfill cache if it was found via DHT
         if is_dht_lookup && self.registry_url.is_some() {
@@ -539,7 +538,7 @@ impl RegistryClient {
         }
 
         result.ok_or_else(|| {
-            anyhow::anyhow!("Master Anchor not found in registry or DHT for ID: {}", master_id)
+            anyhow::anyhow!("Master Anchor not found in registry or DHT for ID: {master_id}")
         })
     }
 

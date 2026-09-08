@@ -80,7 +80,7 @@ impl KeyStore {
         let mut guard = self
             .kek
             .lock()
-            .map_err(|e| KeyStoreError::Internal(anyhow::anyhow!("Mutex poisoned: {}", e)))?;
+            .map_err(|e| KeyStoreError::Internal(anyhow::anyhow!("Mutex poisoned: {e}")))?;
         if guard.is_some() {
             return Err(KeyStoreError::KekAlreadyInjected);
         }
@@ -107,7 +107,7 @@ impl KeyStore {
         let guard = self
             .kek
             .lock()
-            .map_err(|e| KeyStoreError::Internal(anyhow::anyhow!("Mutex poisoned: {}", e)))?;
+            .map_err(|e| KeyStoreError::Internal(anyhow::anyhow!("Mutex poisoned: {e}")))?;
         match &*guard {
             Some(k) => Ok(k.clone()),
             None => Err(KeyStoreError::KekRequired),
@@ -217,8 +217,7 @@ impl KeyStore {
 
                 if nonce_bytes.len() != 12 {
                     return Err(KeyStoreError::Crypto(format!(
-                        "Invalid nonce length for {}",
-                        service_id
+                        "Invalid nonce length for {service_id}"
                     )));
                 }
 
@@ -272,7 +271,7 @@ impl KeyStore {
         let mut guard = self
             .kek
             .lock()
-            .map_err(|e| KeyStoreError::Internal(anyhow::anyhow!("Mutex poisoned: {}", e)))?;
+            .map_err(|e| KeyStoreError::Internal(anyhow::anyhow!("Mutex poisoned: {e}")))?;
         *guard = Some(new_kek);
 
         // Lock new KEK memory pages at its heap location

@@ -759,19 +759,18 @@ pub async fn handle(
 
             if let Some(recovery_plan) = reconciler.recover_applying(&instance_id)? {
                 println!(
-                    "Found APPLYING or DEGRADED state for {}. Computed recovery plan:",
-                    instance_id
+                    "Found APPLYING or DEGRADED state for {instance_id}. Computed recovery plan:"
                 );
                 for action in recovery_plan.actions {
-                    println!(" - {:?}", action);
+                    println!(" - {action:?}");
                 }
             } else {
                 let active = journal.get_last_state(&instance_id, DeploymentState::Active)?;
                 if active.is_some() {
                     if let Some(manifest_path) = manifest_path {
                         println!(
-                            "App {} is ACTIVE. Diffing active deployment against manifest at {:?}",
-                            instance_id, manifest_path
+                            "App {instance_id} is ACTIVE. Diffing active deployment against \
+                             manifest at {manifest_path:?}"
                         );
 
                         let toml_str = fs::read_to_string(manifest_path)?;
@@ -789,7 +788,7 @@ pub async fn handle(
                                 println!(" (No changes)");
                             } else {
                                 for action in diff.actions {
-                                    println!(" - {:?}", action);
+                                    println!(" - {action:?}");
                                 }
                             }
                         } else {
@@ -797,12 +796,12 @@ pub async fn handle(
                         }
                     } else {
                         println!(
-                            "App {} is ACTIVE. Provide a --manifest-path to compute a diff.",
-                            instance_id
+                            "App {instance_id} is ACTIVE. Provide a --manifest-path to compute a \
+                             diff."
                         );
                     }
                 } else {
-                    println!("No ACTIVE, APPLYING or DEGRADED state found for {}", instance_id);
+                    println!("No ACTIVE, APPLYING or DEGRADED state found for {instance_id}");
                 }
             }
         }

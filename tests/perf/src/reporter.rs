@@ -17,7 +17,7 @@ pub fn print_latency_comparison(
     baseline: (u64, u64, u64),
     via_substrate: (u64, u64, u64),
 ) {
-    println!("=== Latency Comparison: {} ===", scenario);
+    println!("=== Latency Comparison: {scenario} ===");
     println!("{:<20} | {:<10} | {:<10} | {:<10}", "Path", "p50 (ms)", "p95 (ms)", "p99 (ms)");
     println!("{:-<20}-+-{:-<10}-+-{:-<10}-+-{:-<10}-", "", "", "", "");
     println!(
@@ -100,9 +100,9 @@ pub fn print_concurrency_summary(
         "------------------------------------------------------------------------------------------"
     );
     println!("Resource Utilization under Stress:");
-    println!("  Memory (RSS): Baseline = {:.1} MB, Peak = {:.1} MB", baseline_rss_mb, peak_rss_mb);
-    println!("  CPU Usage:    Baseline = {:.1}%, Peak = {:.1}%", baseline_cpu, peak_cpu);
-    println!("  WASM sandbox: Peak Active Instances = {}", peak_wasm_instances);
+    println!("  Memory (RSS): Baseline = {baseline_rss_mb:.1} MB, Peak = {peak_rss_mb:.1} MB");
+    println!("  CPU Usage:    Baseline = {baseline_cpu:.1}%, Peak = {peak_cpu:.1}%");
+    println!("  WASM sandbox: Peak Active Instances = {peak_wasm_instances}");
     println!(
         "==========================================================================================\n"
     );
@@ -113,7 +113,7 @@ pub fn save_concurrency_results(results: &serde_json::Value, timestamp: &str) ->
     if !results_dir.exists() {
         fs::create_dir_all(results_dir)?;
     }
-    let filepath = results_dir.join(format!("concurrency_{}.json", timestamp));
+    let filepath = results_dir.join(format!("concurrency_{timestamp}.json"));
     let file_str = filepath.to_string_lossy().to_string();
     let content = serde_json::to_string_pretty(results)?;
     fs::write(&filepath, content)?;
@@ -125,7 +125,7 @@ pub fn save_soak_results(results: &serde_json::Value, timestamp: &str) -> Result
     if !results_dir.exists() {
         fs::create_dir_all(results_dir)?;
     }
-    let filepath = results_dir.join(format!("soak_{}.json", timestamp));
+    let filepath = results_dir.join(format!("soak_{timestamp}.json"));
     let file_str = filepath.to_string_lossy().to_string();
     let content = serde_json::to_string_pretty(results)?;
     fs::write(&filepath, content)?;
