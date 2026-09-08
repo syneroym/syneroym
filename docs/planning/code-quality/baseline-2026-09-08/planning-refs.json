@@ -1,36 +1,38 @@
 {
- "total": 1410,
+ "total": 1596,
  "by_kind": {
-  "design id": 499,
   "milestone": 587,
+  "design id": 499,
   "slice/task id": 490,
-  "planning doc": 94,
-  "review finding": 97
+  "bare section ref": 304,
+  "review finding": 97,
+  "planning doc": 94
  },
  "by_crate": {
-  "crates/app_supervisor": 301,
-  "crates/control_plane": 164,
-  "crates/router": 150,
-  "crates/substrate": 141,
-  "crates/sdk": 122,
-  "crates/sandbox_wasm": 109,
-  "crates/core": 78,
-  "apps/roymctl": 77,
-  "crates/app_orchestration": 49,
-  "crates/async_queue": 40,
-  "crates/data_db": 39,
-  "crates/fdae": 26,
-  "crates/rpc": 26,
-  "crates/ucan": 20,
-  "crates/coordinator_webrtc": 10,
-  "crates/coordinator_iroh": 9,
+  "crates/app_supervisor": 354,
+  "crates/control_plane": 200,
+  "crates/router": 181,
+  "crates/substrate": 151,
+  "crates/sdk": 126,
+  "crates/sandbox_wasm": 114,
+  "crates/core": 92,
+  "apps/roymctl": 80,
+  "crates/app_orchestration": 53,
+  "crates/async_queue": 42,
+  "crates/data_db": 41,
+  "crates/fdae": 36,
+  "crates/rpc": 31,
+  "crates/ucan": 21,
+  "crates/coordinator_iroh": 11,
+  "crates/coordinator_webrtc": 11,
   "crates/data_keystore": 8,
   "crates/community_registry": 6,
   "crates/data_blob": 5,
   "crates/mqtt_broker": 5,
+  "crates/conversation": 4,
   "test-components/stream-test": 3,
+  "crates/app_host_native": 2,
   "crates/chunk_transfer": 2,
-  "crates/conversation": 2,
   "crates/identity": 2,
   "test-components/abac-test": 2,
   "test-components/http-guest-test": 2,
@@ -38,81 +40,82 @@
   "test-components/proxy-test": 2,
   "tests/perf": 2,
   "crates/app_host": 1,
-  "crates/app_host_native": 1,
   "crates/sandbox_podman": 1,
   "test-components/data-layer-test": 1,
   "test-components/dual-build-fixture": 1,
   "test-components/greeter": 1
  },
  "by_file": {
-  "crates/app_supervisor/src/service.rs": 220,
-  "crates/control_plane/src/service/orchestration.rs": 114,
-  "crates/async_queue/src/lib.rs": 40,
-  "crates/sandbox_wasm/src/engine.rs": 39,
-  "crates/app_supervisor/src/keys.rs": 35,
-  "crates/router/src/route_handler/http.rs": 35,
-  "apps/roymctl/src/commands/app.rs": 31,
+  "crates/app_supervisor/src/service.rs": 265,
+  "crates/control_plane/src/service/orchestration.rs": 147,
+  "crates/async_queue/src/lib.rs": 41,
+  "crates/sandbox_wasm/src/engine.rs": 41,
+  "crates/router/src/route_handler/http.rs": 39,
+  "crates/app_supervisor/src/keys.rs": 36,
+  "crates/app_supervisor/src/store.rs": 35,
+  "apps/roymctl/src/commands/app.rs": 34,
+  "crates/fdae/src/compile.rs": 31,
   "crates/sdk/src/deploy.rs": 31,
-  "crates/app_supervisor/src/store.rs": 29,
-  "crates/sdk/src/topology.rs": 29,
+  "crates/sdk/src/topology.rs": 30,
   "crates/sdk/src/lib.rs": 27,
-  "crates/fdae/src/compile.rs": 21,
-  "crates/router/src/proxy.rs": 20,
-  "crates/sdk/src/health.rs": 20,
-  "crates/router/src/route_handler/io.rs": 19,
-  "crates/sandbox_wasm/src/host_capabilities.rs": 19,
-  "crates/control_plane/src/synsvc_native.rs": 18,
-  "crates/router/tests/native_dispatch_identity.rs": 18,
-  "crates/core/src/config.rs": 17,
+  "crates/router/src/proxy.rs": 21,
+  "crates/router/src/route_handler/io.rs": 21,
+  "crates/sandbox_wasm/src/host_capabilities.rs": 21,
+  "crates/sdk/src/health.rs": 21,
+  "crates/router/tests/native_dispatch_identity.rs": 20,
+  "crates/control_plane/src/synsvc_native.rs": 19,
+  "crates/core/src/config.rs": 19,
+  "crates/router/tests/deploy_grant.rs": 19,
+  "crates/control_plane/src/service.rs": 18,
+  "crates/core/src/local_registry.rs": 17,
+  "crates/sdk/src/mapper.rs": 17,
   "crates/substrate/src/runtime.rs": 17,
-  "crates/control_plane/src/service.rs": 16,
-  "crates/core/src/local_registry.rs": 16,
+  "crates/app_orchestration/src/models.rs": 16,
   "crates/sandbox_wasm/tests/abac_integration.rs": 16,
-  "crates/app_orchestration/src/models.rs": 15,
   "crates/router/src/route_handler.rs": 15,
-  "crates/sdk/src/mapper.rs": 15,
   "crates/substrate/tests/guest_http_e2e.rs": 15,
   "apps/roymctl/src/commands/supervisor.rs": 13,
+  "crates/substrate/tests/durable_outbox_e2e.rs": 13,
   "crates/app_orchestration/src/alerts.rs": 12,
-  "crates/substrate/tests/durable_outbox_e2e.rs": 12,
-  "crates/ucan/src/capability.rs": 11,
+  "crates/router/src/route_handler/dispatch.rs": 12,
+  "crates/substrate/tests/supervisor_interface_e2e.rs": 12,
+  "crates/ucan/src/capability.rs": 12,
+  "crates/coordinator_iroh/tests/multi_hop_relay.rs": 11,
+  "crates/core/src/util.rs": 11,
+  "crates/core/src/protocol_utils.rs": 10,
   "crates/data_db/src/registry_store.rs": 10,
+  "crates/router/tests/proxy_dispatch.rs": 10,
+  "crates/substrate/tests/health_monitoring_e2e.rs": 10,
   "apps/roymctl/src/commands/member_identity.rs": 9,
+  "crates/app_orchestration/src/compiler.rs": 9,
   "crates/app_supervisor/src/outbox.rs": 9,
-  "crates/coordinator_iroh/tests/multi_hop_relay.rs": 9,
-  "crates/router/src/route_handler/dispatch.rs": 9,
-  "crates/substrate/tests/health_monitoring_e2e.rs": 9,
+  "crates/coordinator_webrtc/src/bootstrap.rs": 9,
   "crates/substrate/tests/http_passthrough_e2e.rs": 9,
-  "crates/substrate/tests/supervisor_interface_e2e.rs": 9,
   "crates/control_plane/src/assets.rs": 8,
-  "crates/coordinator_webrtc/src/bootstrap.rs": 8,
   "crates/core/src/http_routes.rs": 8,
   "crates/core/src/storage.rs": 8,
+  "crates/data_db/src/tests_fdae.rs": 8,
   "crates/data_keystore/src/key_store.rs": 8,
-  "crates/router/tests/deploy_grant.rs": 8,
-  "crates/router/tests/proxy_dispatch.rs": 8,
   "crates/rpc/src/relationship_proof.rs": 8,
   "crates/substrate/tests/multi_substrate_placement_e2e.rs": 8,
   "apps/roymctl/src/commands/svc.rs": 7,
   "apps/roymctl/tests/cli_args.rs": 7,
   "crates/core/src/dht_registry.rs": 7,
-  "crates/core/src/util.rs": 7,
   "crates/data_db/src/sqlite.rs": 7,
   "crates/router/src/preamble.rs": 7,
+  "crates/router/tests/service_ownership.rs": 7,
+  "crates/rpc/src/fdae_fetch.rs": 7,
   "crates/substrate/tests/app_instance_identity_e2e.rs": 7,
   "crates/substrate/tests/federated_fdae_e2e.rs": 7,
   "crates/substrate/tests/gateway_hostname_e2e.rs": 7,
   "crates/substrate/tests/static_assets_e2e.rs": 7,
-  "crates/app_orchestration/src/compiler.rs": 6,
   "crates/community_registry/src/registry.rs": 6,
-  "crates/data_db/src/tests_fdae.rs": 6,
+  "crates/rpc/src/native.rs": 6,
   "crates/sandbox_wasm/tests/messaging_integration.rs": 6,
   "apps/roymctl/src/commands.rs": 5,
   "crates/app_orchestration/src/journal.rs": 5,
   "crates/core/src/asset_manifest.rs": 5,
   "crates/core/src/test_constants.rs": 5,
-  "crates/rpc/src/fdae_fetch.rs": 5,
-  "crates/rpc/src/native.rs": 5,
   "crates/sandbox_wasm/tests/data_layer_integration.rs": 5,
   "crates/sandbox_wasm/tests/stream_integration.rs": 5,
   "crates/app_supervisor/src/tier1.rs": 4,
@@ -120,21 +123,23 @@
   "crates/control_plane/src/http_routes.rs": 4,
   "crates/data_db/benches/security_config_bench.rs": 4,
   "crates/data_db/src/traits.rs": 4,
-  "crates/router/tests/service_ownership.rs": 4,
   "crates/sandbox_wasm/benches/abac_bench.rs": 4,
   "crates/sandbox_wasm/src/conversions.rs": 4,
   "crates/sandbox_wasm/src/stream.rs": 4,
   "crates/substrate/tests/reference_scenario_e2e.rs": 4,
   "crates/substrate/tests/stream_client_e2e.rs": 4,
+  "crates/substrate/tests/supervisor_alerts_e2e.rs": 4,
   "crates/ucan/src/session.rs": 4,
   "crates/app_orchestration/benches/resolver.rs": 3,
   "crates/app_orchestration/src/reconcile.rs": 3,
   "crates/app_orchestration/src/resolver.rs": 3,
-  "crates/core/src/protocol_utils.rs": 3,
+  "crates/conversation/src/lib.rs": 3,
   "crates/fdae/src/policy.rs": 3,
   "crates/mqtt_broker/src/lib.rs": 3,
+  "crates/rpc/src/conversation.rs": 3,
   "crates/rpc/src/fdae_abac.rs": 3,
   "crates/rpc/src/proxy.rs": 3,
+  "crates/sandbox_wasm/tests/lifecycle_hooks.rs": 3,
   "crates/substrate/tests/master_endpoint_record_e2e.rs": 3,
   "crates/substrate/tests/messaging_client_e2e.rs": 3,
   "crates/substrate/tests/service_visibility_e2e.rs": 3,
@@ -142,6 +147,8 @@
   "crates/ucan/src/token.rs": 3,
   "test-components/stream-test/src/lib.rs": 3,
   "apps/roymctl/src/main.rs": 2,
+  "crates/app_host_native/src/factory.rs": 2,
+  "crates/app_supervisor/src/inventory.rs": 2,
   "crates/chunk_transfer/src/lib.rs": 2,
   "crates/coordinator_webrtc/src/coordinator.rs": 2,
   "crates/data_blob/benches/blob_bench.rs": 2,
@@ -151,11 +158,11 @@
   "crates/fdae/src/trace.rs": 2,
   "crates/mqtt_broker/src/tests.rs": 2,
   "crates/sandbox_wasm/src/http.rs": 2,
-  "crates/sandbox_wasm/tests/lifecycle_hooks.rs": 2,
   "crates/substrate/tests/basic_lifecycle.rs": 2,
   "crates/substrate/tests/binding_push_e2e.rs": 2,
   "crates/substrate/tests/cert_renewal_e2e.rs": 2,
   "crates/substrate/tests/common/mod.rs": 2,
+  "crates/substrate/tests/proxy_outbox_e2e.rs": 2,
   "crates/substrate/tests/tier1_endpoint_record_e2e.rs": 2,
   "crates/ucan/benches/chain_verify.rs": 2,
   "test-components/abac-test/src/lib.rs": 2,
@@ -167,14 +174,12 @@
   "apps/roymctl/src/commands/roym.rs": 1,
   "apps/roymctl/src/lib.rs": 1,
   "crates/app_host/src/lib.rs": 1,
-  "crates/app_host_native/src/factory.rs": 1,
   "crates/app_orchestration/src/substrate_inventory.rs": 1,
   "crates/app_orchestration/src/topology_document.rs": 1,
   "crates/app_supervisor/src/anchors.rs": 1,
-  "crates/app_supervisor/src/inventory.rs": 1,
   "crates/app_supervisor/src/lib.rs": 1,
   "crates/app_supervisor/src/topology.rs": 1,
-  "crates/conversation/src/lib.rs": 1,
+  "crates/async_queue/src/dedup.rs": 1,
   "crates/conversation/src/outbox.rs": 1,
   "crates/core/src/deploy_docs.rs": 1,
   "crates/core/src/streaming.rs": 1,
@@ -186,26 +191,28 @@
   "crates/identity/src/delegation.rs": 1,
   "crates/identity/src/keys.rs": 1,
   "crates/router/benches/proxy.rs": 1,
+  "crates/router/src/call_dedup.rs": 1,
   "crates/router/src/connection_router.rs": 1,
   "crates/router/src/net_iroh.rs": 1,
+  "crates/router/src/proxy_outbox.rs": 1,
   "crates/router/src/routing.rs": 1,
   "crates/router/src/stop_signal.rs": 1,
+  "crates/router/tests/call_dedup_dispatch.rs": 1,
   "crates/router/tests/ucan_context.rs": 1,
   "crates/router/tests/unsupported_protocol.rs": 1,
-  "crates/rpc/src/conversation.rs": 1,
   "crates/rpc/src/framing.rs": 1,
   "crates/sandbox_podman/src/engine.rs": 1,
   "crates/sandbox_wasm/benches/data_layer_bench.rs": 1,
   "crates/sandbox_wasm/tests/blob_store_integration.rs": 1,
   "crates/sandbox_wasm/tests/guest_http_integration.rs": 1,
   "crates/substrate/tests/conversation_e2e.rs": 1,
-  "crates/substrate/tests/proxy_outbox_e2e.rs": 1,
+  "crates/substrate/tests/saga_e2e.rs": 1,
   "crates/substrate/tests/scheduled_task_e2e.rs": 1,
-  "crates/substrate/tests/supervisor_alerts_e2e.rs": 1,
   "test-components/data-layer-test/src/lib.rs": 1,
   "test-components/dual-build-fixture/src/app.rs": 1,
   "test-components/greeter/src/lib.rs": 1
  },
+ "_note": "Every comment line citing a planning document, across six families. ADR-anchored section refs are allowed and excluded. Patterns in ../README.md.",
  "hits": [
   {
    "file": "apps/roymctl/src/commands.rs",
@@ -292,6 +299,14 @@
   },
   {
    "file": "apps/roymctl/src/commands/app.rs",
+   "line": 142,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a73): look the app DID up in the registry (Tier 1), fetch the signed"
+  },
+  {
+   "file": "apps/roymctl/src/commands/app.rs",
    "line": 163,
    "kinds": [
     "design id"
@@ -334,7 +349,8 @@
    "file": "apps/roymctl/src/commands/app.rs",
    "line": 339,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5a \u00a74.5: the standing backlog row \"`app deploy` without"
   },
@@ -396,6 +412,14 @@
   },
   {
    "file": "apps/roymctl/src/commands/app.rs",
+   "line": 623,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// --- masters (\u00a76) -------------------------------------------------"
+  },
+  {
+   "file": "apps/roymctl/src/commands/app.rs",
    "line": 624,
    "kinds": [
     "design id"
@@ -438,7 +462,8 @@
    "file": "apps/roymctl/src/commands/app.rs",
    "line": 693,
    "kinds": [
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "// --- post-apply registry verification (D-A3-17, \u00a70.12) ---------"
   },
@@ -449,6 +474,14 @@
     "milestone"
    ],
    "text": "// M05A A5e: the journal now keys every action row on a"
+  },
+  {
+   "file": "apps/roymctl/src/commands/app.rs",
+   "line": 938,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// (\u00a70.3), so re-derive."
   },
   {
    "file": "apps/roymctl/src/commands/app.rs",
@@ -495,7 +528,8 @@
    "file": "apps/roymctl/src/commands/app.rs",
    "line": 1785,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// \u2500\u2500 M05A A5a \u00a74.5: unmastered deploy refused when deps are declared \u2500\u2500"
   },
@@ -512,7 +546,8 @@
    "line": 10,
    "kinds": [
     "milestone",
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "//! `syneroym_sdk::deploy` (M05A Slice A3 \u00a76), not here: it needs the"
   },
@@ -562,7 +597,8 @@
    "line": 154,
    "kinds": [
     "milestone",
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "/// substrate** (M05A Slice A3 \u00a70.1) -- a certificate minted through one"
   },
@@ -849,6 +885,14 @@
   },
   {
    "file": "crates/app_host_native/src/factory.rs",
+   "line": 118,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// `\u00a76.5`: registers itself as this service's conversation"
+  },
+  {
+   "file": "crates/app_host_native/src/factory.rs",
    "line": 385,
    "kinds": [
     "slice/task id"
@@ -973,7 +1017,8 @@
    "file": "crates/app_orchestration/src/alerts.rs",
    "line": 446,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5c \u00a719.6: `AlertKind` has a `Display` and a `FromStr`, and a"
   },
@@ -995,6 +1040,14 @@
   },
   {
    "file": "crates/app_orchestration/src/compiler.rs",
+   "line": 210,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// its dependency (D-A5e-4/\u00a733.7), since a binding write reaches"
+  },
+  {
+   "file": "crates/app_orchestration/src/compiler.rs",
    "line": 281,
    "kinds": [
     "milestone"
@@ -1003,11 +1056,27 @@
   },
   {
    "file": "crates/app_orchestration/src/compiler.rs",
+   "line": 566,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// D-A5e-3 (\u00a733.3, revised after review R1): `derive_deterministic_"
+  },
+  {
+   "file": "crates/app_orchestration/src/compiler.rs",
    "line": 614,
    "kinds": [
     "milestone"
    ],
    "text": "// \u2500\u2500 M05A A5e phase 2: `replicas` and the compiler (D-A5e-3/D-A5e-4) \u2500"
+  },
+  {
+   "file": "crates/app_orchestration/src/compiler.rs",
+   "line": 810,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// D-A5e-16 (\u00a741 answer 3): `replicas > 1` alongside a declared"
   },
   {
    "file": "crates/app_orchestration/src/compiler.rs",
@@ -1037,7 +1106,8 @@
    "file": "crates/app_orchestration/src/journal.rs",
    "line": 79,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// No `Pending` variant (M05A A5c \u00a724): nothing in this tree ever wrote one"
   },
@@ -1122,6 +1192,14 @@
     "milestone"
    ],
    "text": "/// Static assets served directly from blob storage (M06A A1)."
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 569,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// not propagated\" has nothing to mean. \u00a75 also forbids a filtered member"
   },
   {
    "file": "crates/app_orchestration/src/models.rs",
@@ -1270,6 +1348,14 @@
    "text": "//! The wire shape of `submission.inventory-json` (D-A5-7): alias -> `{did,"
   },
   {
+   "file": "crates/app_supervisor/src/inventory.rs",
+   "line": 19,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// The supervisor's own credential against this substrate (\u00a711.2):"
+  },
+  {
    "file": "crates/app_supervisor/src/keys.rs",
    "line": 6,
    "kinds": [
@@ -1298,7 +1384,8 @@
    "file": "crates/app_supervisor/src/keys.rs",
    "line": 132,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// This member's ordinal (M05A A5e, D-A5e-2/\u00a733.17): `submit` returns"
   },
@@ -1455,7 +1542,8 @@
    "file": "crates/app_supervisor/src/keys.rs",
    "line": 450,
    "kinds": [
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "/// The `submit` path's own custody step (\u00a70.30/D-A5-26): resolve-or-mint one"
   },
@@ -1513,7 +1601,8 @@
    "file": "crates/app_supervisor/src/keys.rs",
    "line": 878,
    "kinds": [
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "/// D-A7-3, \u00a70.3 as corrected in review. `AppInstanceId::try_new`"
   },
@@ -1559,6 +1648,14 @@
     "review finding"
    ],
    "text": "/// D-A7-9, review finding 10: `get_or_mint`'s warning names the right"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 997,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// safe, \u00a70.5's own handover sequence): if `import-master` lands"
   },
   {
    "file": "crates/app_supervisor/src/lib.rs",
@@ -1650,6 +1747,14 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 6,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//! (\u00a711.2): submitting desired state hands the supervisor deploy authority"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 130,
    "kinds": [
     "milestone"
@@ -1692,6 +1797,14 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 310,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// D-A5c-6 (\u00a719.5): this node's shared broker, registered under"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 316,
    "kinds": [
     "design id"
@@ -1702,9 +1815,26 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 319,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// loop's `tokio::interval` period (M05A A5c \u00a719.7/\u00a719.14, D-A5c-7)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 322,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// restart-in-place ceiling (\u00a719.14, phase 6)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 325,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// between two restart attempts for one service (\u00a719.14, phase 6)."
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
@@ -1734,7 +1864,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 383,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// writes) or `status`/`alerts` (reads) (M05A A5c \u00a719.7, D-A5c-7)."
   },
@@ -1750,7 +1881,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 413,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// dropped mid-pass (M05A A5c \u00a719.8, D-A5c-8). The `JoinHandle`"
   },
@@ -1792,7 +1924,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 563,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// The resident reconcile loop (M05A A5c \u00a719.7/\u00a719.8, D-A5c-7/D-A5c-8)."
   },
@@ -1800,9 +1933,18 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 580,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// `MissedTickBehavior::Skip` (M05A A5c \u00a719.7, D-A5c-7): a pass that"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 585,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// involved (\u00a723 test 34)."
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
@@ -1825,7 +1967,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 627,
    "kinds": [
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "// D-B1-8/\u00a70.7: shutdown abandons work in flight rather than"
   },
@@ -1955,9 +2098,18 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 944,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// property rather than a correctness one (\u00a719.14's `all_active`"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 993,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// One instance's share of a loop pass (M05A A5c \u00a719.2/\u00a719.9/\u00a719.11,"
   },
@@ -1981,7 +2133,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 1246,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5c phase 6 (\u00a714 step 3, matrix row 13): landed services"
   },
@@ -2074,6 +2227,14 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 2344,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// findings \u00a733.7/D-A5e-7 for one path and not the other is exactly the"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 2345,
    "kinds": [
     "milestone"
@@ -2082,11 +2243,28 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 2601,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// The sentinel, never `substrate_did` -- \u00a70.9."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 2662,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// service (M05A A5c phase 6, \u00a714 step 3, matrix row 13): refuses if"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 2671,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// against a fake actor with no live substrate (\u00a723 tests 35-38)."
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
@@ -2100,7 +2278,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 2812,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// (M05A A5c D-A5c-9/\u00a719.9): the union of every alias the plan"
   },
@@ -2108,7 +2287,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 2854,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5c D-A5c-1 (\u00a719.1): refuses a submission whose plan would move"
   },
@@ -2119,6 +2299,22 @@
     "design id"
    ],
    "text": "/// live copy of the same member: the two-publisher state D-A3-12's"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 2869,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// Review finding A-4: \u00a721 q9 specifies that a refusal here raises"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3028,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// the inventory or carrying no credential (\u00a711.2)."
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
@@ -2140,7 +2336,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 3078,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// `SyneroymClient` (M05A A5c \u00a723) -- callers upcast their real,"
   },
@@ -2280,9 +2477,18 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 3520,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5c \u00a719.3/D-A5c-4: the counter always advances before a"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3548,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// Always true on the supervisor's apply path (\u00a712): the"
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
@@ -2304,7 +2510,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 3599,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// instead (M05A A5e, D-A5e-8/\u00a733.19) -- the clear site this alert"
   },
@@ -2312,7 +2519,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 3604,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// (M05A A5e, \u00a733.21) -- not `svc.substrate`, an operator-chosen"
   },
@@ -2365,6 +2573,14 @@
     "milestone"
    ],
    "text": "// M05A A5c D-A5c-7: held for the whole call, so a loop pass or"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3893,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// with it (\u00a719.7's read-then-write races)."
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
@@ -2461,6 +2677,14 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 4189,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// D-A5c-20 (\u00a719.20/F5): a fresh generation is a fresh start, so a"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 4212,
    "kinds": [
     "slice/task id"
@@ -2503,6 +2727,22 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 4452,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// D-A5c-20 (\u00a719.20/F5): a directed reconcile is a fresh start,"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 4664,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// The read half of D-A5c-4/D-A5c-5 (\u00a719.4): per declared dependency"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 4709,
    "kinds": [
     "milestone"
@@ -2511,11 +2751,35 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 4710,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// phase 6, \u00a721/D-A5c-17). Deliberately excludes `ProbeFailing` (an"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 4712,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// only, per \u00a721's own three reasons) and `SubstrateUnreachable`"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 4713,
    "kinds": [
     "design id"
    ],
    "text": "/// (D-A4-13: restarting cannot fix a substrate that did not answer)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 4715,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// synthetic `HealthReport`, with no live substrate (\u00a723 tests"
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
@@ -2545,7 +2809,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 4870,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5c D-A5c-10 (\u00a719.11): a planned service the journal has"
   },
@@ -2569,7 +2834,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 5002,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5c D-A5c-13 (\u00a719.15): a reconcile in flight is now"
   },
@@ -2580,6 +2846,14 @@
     "milestone"
    ],
    "text": "// M05A A5e (D-A5e-8, ADR-0021 \u00a75): a binding push that has been"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5039,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// D-A5c-10 (\u00a719.11): a service the plan names but the journal has"
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
@@ -2618,7 +2892,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 5077,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5c \u00a719.4/D-A5c-5 (F7, the exit criterion's own test):"
   },
@@ -2701,6 +2976,14 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 5667,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// refuses reads. \u00a70.31's whole point is that a"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 5694,
    "kinds": [
     "milestone",
@@ -2717,6 +3000,14 @@
     "slice/task id"
    ],
    "text": "/// returning, which was true before that fix). M05A A7's handover"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5700,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// test owns and passes one in, held for the whole test (\u00a70.5)."
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
@@ -2806,7 +3097,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 6224,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5e \u00a733.22/test 82: the journal keys every completed action row"
   },
@@ -2814,7 +3106,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 6293,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5c D-A5c-1 (\u00a719.1, matrix row 20's blast-radius neighbor): a"
   },
@@ -2830,7 +3123,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 6470,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5c D-A5c-10 (\u00a719.11, matrix row 12): a planned service the"
   },
@@ -2846,7 +3140,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 6576,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5c D-A5c-13 (\u00a719.15): a reconcile in flight is now"
   },
@@ -2854,7 +3149,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 6600,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5c D-A5c-9 (\u00a719.9): the whole point of the fix is that an"
   },
@@ -2877,25 +3173,108 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 6753,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a719.5f: `publish_opened_alerts` returns `()`, not a `Result` --"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 6877,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a70.29's by-construction property, pinned so a later slice cannot"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 6909,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// \u2500\u2500 M05A A5c phase 5: the loop (\u00a719.7/\u00a719.8/\u00a719.12/\u00a719.16, D-A5c-7/8/11/14) \u2500\u2500"
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 6911,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a719.16/D-A5c-14: `all_active` already excludes both flags from the"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 6956,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a719.16/F6/D-A5c-14: `apply_write_phase` is the write phase"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 7018,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// (D-A5c-1), but nothing raised the alert \u00a721 q9 specifies for it --"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 7059,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5e \u00a733.6/D-A5e-6, test 59: `refuse_placement_change` used to"
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 7064,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// though nothing moved. Keying on `member_ref()` (\u00a733.2) is what"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 7196,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// D-A5c-11 (\u00a719.12): `update_superseded_alert` is the exact decision"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 7276,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// D-A5c-7 (\u00a719.7): `instance_lock` itself, which two concurrently"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 7392,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// D-A5c-8 (\u00a719.8/F1): the loop is spawned, not pinned in a `select!`"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 7417,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// D-A5c-7/\u00a719.7: pins `run`'s interval configuration directly, under"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 7447,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// \u2500\u2500 M05A A5c phase 6: remediation (\u00a714 step 3/6, \u00a721, D-A5c-15/17/20/21) \u2500\u2500"
   },
@@ -2909,11 +3288,36 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 7451,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a723, tests 35-38)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 7516,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a714 step 3: a landed service the sweep finds `InstanceNotRunning`"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 7544,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5e \u00a733.11, test 60: two members of one scaled service must"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 7800,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a721/D-A5c-17: a declared readiness probe failing is an author"
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
@@ -2925,9 +3329,18 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 7862,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// D-A5c-3/D-A5c-21 (\u00a719.2a/\u00a719.21): a service the resubmitted plan no"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 7901,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// \u2500\u2500 M05A A5c phase 7: the binding push and convergence (\u00a719.3/\u00a719.4/\u00a719.19,"
   },
@@ -2935,7 +3348,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 7907,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// push test (M05A A5c \u00a723, tests 42-47)."
   },
@@ -2967,6 +3381,14 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 8451,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// D-A5e-7/\u00a733.7: `Reconciler::compute_diff` produces one `Update`"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 8492,
    "kinds": [
     "milestone",
@@ -2986,11 +3408,28 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 8682,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// D-A5e-8/\u00a733.19: `push_bindings` clears `BindingConflict` for that"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 8773,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5e \u00a733.21/S2: the raise site must write the substrate's real"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 8852,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// Review finding C-1: \u00a723 test 45 (above) calls"
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
@@ -3007,6 +3446,14 @@
     "review finding"
    ],
    "text": "/// visible on the operator read surface (review finding A-5: the"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 8919,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// against a fake actor, deliberately (\u00a723's own note: the wire path"
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
@@ -3036,9 +3483,18 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 9888,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// are exactly the bug \u00a719.20 exists to prevent. Recomputed from the"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 10212,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5e \u00a733.5/D-A5e-5, test 63: `refresh_due_master_anchors` reads"
   },
@@ -3093,6 +3549,14 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 10558,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// followed by an `adopt`, A7 \u00a70.5) must refuse and raise, never"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 10580,
    "kinds": [
     "slice/task id"
@@ -3125,6 +3589,14 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 10936,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// so no substrate is involved (\u00a70.12) -- `adopt` mints an app master"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 10965,
    "kinds": [
     "design id"
@@ -3152,6 +3624,14 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 11020,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// minting, on the second call. Over a services-less plan (\u00a70.12), the"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 11027,
    "kinds": [
     "milestone",
@@ -3172,7 +3652,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 11090,
    "kinds": [
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "/// D-A7-6/\u00a70.7: absent, not an empty string -- an instance that has"
   },
@@ -3196,7 +3677,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 11217,
    "kinds": [
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "/// D-A7-5/\u00a70.5: the handover-order repair inside one vault -- mint by"
   },
@@ -3218,9 +3700,18 @@
   },
   {
    "file": "crates/app_supervisor/src/service.rs",
+   "line": 11282,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// (\u00a70.12) has no substrate to remember `2` was already claimed and"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
    "line": 11290,
    "kinds": [
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "/// D-A7-8/\u00a70.8: the A5b S1 failure, asserted directly -- the returned"
   },
@@ -3228,7 +3719,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 11321,
    "kinds": [
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "/// D-A7-4, added in review (\u00a70.4/test 99): `status` must stay readable"
   },
@@ -3244,7 +3736,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 11367,
    "kinds": [
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "/// D-A7-5, the slice's most important new case (\u00a70.5/test 100): a"
   },
@@ -3252,7 +3745,8 @@
    "file": "crates/app_supervisor/src/service.rs",
    "line": 11441,
    "kinds": [
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "/// D-A7-1/D-A7-5, optional (\u00a70.12/test 101): the mint-before-claim,"
   },
@@ -3509,6 +4003,14 @@
   },
   {
    "file": "crates/app_supervisor/src/store.rs",
+   "line": 39,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// One service's bounded-restart bookkeeping (\u00a714 step 6, D-A5c-20)."
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
    "line": 63,
    "kinds": [
     "milestone",
@@ -3542,6 +4044,30 @@
     "design id"
    ],
    "text": "// M05A A7 (D-A7-2): `desired_state` predates this column, so the"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 316,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// -- the retry half of D-A5c-19 (\u00a719.19/F4): a `Stale(held)` push"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 365,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// policy (\u00a714 step 3, Phase 6) compares this against"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 410,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// own clearing path (\u00a714 step 6): the service recovered on its own"
   },
   {
    "file": "crates/app_supervisor/src/store.rs",
@@ -3677,6 +4203,14 @@
   },
   {
    "file": "crates/app_supervisor/src/store.rs",
+   "line": 1186,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// (\u00a719.3, revised after review F2): there is only one row for"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
    "line": 1198,
    "kinds": [
     "slice/task id"
@@ -3695,9 +4229,18 @@
    "file": "crates/app_supervisor/src/store.rs",
    "line": 1220,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// \u2500\u2500 M05A A5c: remediation bookkeeping (\u00a714 step 6, D-A5c-20) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 1222,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a714 step 6's durability claim: a supervisor restart must resume"
   },
   {
    "file": "crates/app_supervisor/src/store.rs",
@@ -3746,7 +4289,8 @@
    "file": "crates/app_supervisor/src/tier1.rs",
    "line": 79,
    "kinds": [
-    "planning doc"
+    "planning doc",
+    "bare section ref"
    ],
    "text": "/// (A7 \u00a70.5, task.md's own S1 note). Publishing here would name a DID"
   },
@@ -3781,6 +4325,14 @@
     "slice/task id"
    ],
    "text": "/// Test 77: the mapping S2's post-merge finding 12 established for"
+  },
+  {
+   "file": "crates/async_queue/src/dedup.rs",
+   "line": 4,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//! \u00a71, \u00a74)."
   },
   {
    "file": "crates/async_queue/src/lib.rs",
@@ -4018,7 +4570,8 @@
    "file": "crates/async_queue/src/lib.rs",
    "line": 828,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// unjittered total the configured defaults promise (M05B B1 plan \u00a70.12)"
   },
@@ -4044,9 +4597,18 @@
    "file": "crates/async_queue/src/lib.rs",
    "line": 1018,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// Test 7: M05B B1 plan \u00a70.12's arithmetic, pinned against the actual"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 1038,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// \u00a70.12's own corrected arithmetic)."
   },
   {
    "file": "crates/async_queue/src/lib.rs",
@@ -4383,9 +4945,18 @@
   },
   {
    "file": "crates/control_plane/src/service.rs",
+   "line": 372,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// capability, not as a skipped check (design \u00a76.1.1). An unowned"
+  },
+  {
+   "file": "crates/control_plane/src/service.rs",
    "line": 378,
    "kinds": [
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "/// fix): B7b's design (\u00a73.1 A2) deliberately keeps the three"
   },
@@ -4406,6 +4977,14 @@
     "slice/task id"
    ],
    "text": "/// M04A Slice B7b: a caller holding node-wide orchestrator authority on"
+  },
+  {
+   "file": "crates/control_plane/src/service.rs",
+   "line": 911,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// capability (\u00a73.2), so any test that deploys/undeploys a service as"
   },
   {
    "file": "crates/control_plane/src/service.rs",
@@ -4483,7 +5062,8 @@
    "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 168,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// `adopt`'s read half (M05A A5a, \u00a70.26): the management stamp an app"
   },
@@ -4499,7 +5079,8 @@
    "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 188,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// Clear an app instance's management stamp (M05A A5a, \u00a70.24):"
   },
@@ -4587,7 +5168,8 @@
    "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 629,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// here (M05A A5a \u00a70.27) -- `deploy_with_context` persists it right"
   },
@@ -4611,7 +5193,8 @@
    "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 690,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// (M05A A5a \u00a70.27) -- it records *who is writing*, not what was"
   },
@@ -4653,9 +5236,18 @@
    "line": 1096,
    "kinds": [
     "milestone",
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "/// M04A Slice B7b (\u00a72.4.1): `readyz` has two forms, and only one is a"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1101,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a76.1.2's spirit: liveness is not an authorization surface). A"
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
@@ -4680,6 +5272,14 @@
     "design id"
    ],
    "text": "// A standalone deploy carries no app context (D-A2-2), so it"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1386,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// The trait method's entire body (\u00a73.1's `deploy` <->"
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
@@ -4711,7 +5311,8 @@
    "line": 1463,
    "kinds": [
     "milestone",
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "// M04A Slice B7b (\u00a73.2): Tier-1 deploy admission. The caller must"
   },
@@ -4741,10 +5342,19 @@
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1563,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// fails (\u00a70.27) -- this write records *who is writing*, not"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 1587,
    "kinds": [
     "milestone",
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "// M05A A5a \u00a74A / D-A5-18: deploy idempotency (failure-matrix row"
   },
@@ -4752,9 +5362,18 @@
    "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 1596,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5a \u00a70.23: every rollback below re-enters through"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1608,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// \u00a74A already applies to `generation` above."
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
@@ -4872,6 +5491,14 @@
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2245,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// across config-generation / engine / registry writes (plan \u00a72.3,"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 2287,
    "kinds": [
     "milestone"
@@ -4896,6 +5523,22 @@
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2518,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// \u00a74A's dedup key hashes what a deploy *sends*, not what is"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2523,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// bindings in place -- exactly the case \u00a74A's \"restart is the cheap"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 2545,
    "kinds": [
     "milestone",
@@ -4905,18 +5548,44 @@
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2552,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// Safe to call from `deploy`'s own rollback path (\u00a72.3): at that point"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 2592,
    "kinds": [
     "milestone",
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "// M04A Slice B7b (\u00a73.2): Tier-1 undeploy admission, the same shape"
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2596,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// Interaction with `deploy`'s own rollback path (\u00a72.3): `deploy`"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2599,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// and independently grantable (\u00a73.1 A2), so \"deploy but not"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 2627,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5a \u00a70.23: `undeploy` is a lifecycle action, gated the same"
   },
@@ -4940,7 +5609,8 @@
    "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 2792,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5a \u00a75.6: the standing backlog row `app_instance_owners`"
   },
@@ -4956,15 +5626,33 @@
    "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 2829,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5c \u00a719.17: `deploy`/`undeploy`/`write-bindings` all refuse a"
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2843,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// Generation gate, only where an app instance exists (\u00a70.23) --"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2977,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// \u00a73): the caller's next tick is the retry."
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 3173,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5a \u00a70.26/\u00a75.7: `adopt`'s read half. `Ok(None)` (not an error)"
   },
@@ -4972,7 +5660,8 @@
    "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 3196,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5a \u00a70.26/\u00a75.7: `adopt`'s write half. Subject to the same"
   },
@@ -4988,9 +5677,18 @@
    "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 3236,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5a \u00a70.24/\u00a75.6: clears an app instance's management stamp --"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 3238,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// `owner_did`. Gated node-wide (\u00a70.28), not on an invented"
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
@@ -5000,6 +5698,14 @@
     "slice/task id"
    ],
    "text": "// M04A Slice B7a: node-wide orchestrator authority sees everything --"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 3332,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// pre-B7a, or the \u00a72.3 crash window) filters OUT: an unattributed"
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
@@ -5045,7 +5751,8 @@
    "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 3491,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5a \u00a76: read from the per-dependent persisted row, not the"
   },
@@ -5078,7 +5785,8 @@
    "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 3675,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5c \u00a719.13/D-A5c-12: `execute_probe_json`, not"
   },
@@ -5106,6 +5814,14 @@
     "slice/task id"
    ],
    "text": "/// M04A Slice B7b: a caller holding node-wide orchestrator authority on"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 3804,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// (\u00a73.2), so every test below that exercises `deploy`/`deploy_plan`/"
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
@@ -5166,6 +5882,54 @@
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 4717,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a70.18's regression guard: the bug that would have locked a"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 4829,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a70.24: releasing an app instance clears its management stamp"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 4909,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a70.26: `adopt`'s read half must report the held generation to the"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 4938,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// A4-10's rule, applied here too (\u00a70.26): a caller with no visibility"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 4968,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a70.26: the property that makes `adopt` durable at the moment of the"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 5010,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a70.28: `claim`/`release` are node-scoped acts (an app instance"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 5048,
    "kinds": [
     "milestone"
@@ -5182,6 +5946,22 @@
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 5218,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// generation, the same property \u00a70.27 proves on the deploy path."
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 5407,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a70.20: the epoch guard and the convergence read both classify"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 5485,
    "kinds": [
     "milestone"
@@ -5190,11 +5970,35 @@
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 5489,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// service -- is a no-op. \u00a70.27's regression guard: the management"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 5770,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// the cheap path, deploy is the repair path\" (\u00a74A)."
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 5833,
    "kinds": [
     "milestone"
    ],
    "text": "/// unconditionally on every successful deploy (M04A B7a) -- rather"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 5899,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a70.27's other half: the management stamp records *who is writing*,"
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
@@ -5222,11 +6026,52 @@
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 6013,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a70.23: `restart` is a lifecycle action and must be generation-gated"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 6036,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5c \u00a719.17: `restart` was the one lifecycle write with no"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 6058,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// grantee -- the shape a supervisor holds (\u00a70.28) -- restarts a"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 6262,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// The whole of \u00a70.1's authorization argument: the target observes"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 6299,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a70.10 bullet 2: absent `params-json` sends an empty positional array,"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 6384,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a70.23 / matrix row 14's blast-radius half at the substrate level: a"
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
@@ -5307,9 +6152,18 @@
    "line": 9740,
    "kinds": [
     "milestone",
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "/// M04A Slice B7a (\u00a72.3, F11): `deploy` records `caller.caller_did` as"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 9958,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// (\u00a70.28's own flat-abilities split) -- bob needs the former here."
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
@@ -5326,6 +6180,14 @@
     "milestone"
    ],
    "text": "// M05A A4: health-check declaration, deploy-facts recording, status"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 11056,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// the \u00a70.5 finding -- so the distinction must come from the"
   },
   {
    "file": "crates/control_plane/src/service/orchestration.rs",
@@ -5347,7 +6209,8 @@
    "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 11512,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5a \u00a76: `status` reports the epoch this substrate currently"
   },
@@ -5355,7 +6218,8 @@
    "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 11565,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// A4-10's rule, re-pinned (M05A A5a \u00a76 adds `binding-epochs` to the"
   },
@@ -5363,7 +6227,8 @@
    "file": "crates/control_plane/src/service/orchestration.rs",
    "line": 12237,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5c \u00a719.13 / D-A5c-12: the health-poll-cost budget, measured"
   },
@@ -5390,6 +6255,14 @@
     "slice/task id"
    ],
    "text": "/// This *service's own* signing identity (Slice B3), derived from the"
+  },
+  {
+   "file": "crates/control_plane/src/synsvc_native.rs",
+   "line": 80,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a76/\u00a77's \"`hr-svc` asserts...\" / \"the service's own identity\" model:"
   },
   {
    "file": "crates/control_plane/src/synsvc_native.rs",
@@ -5532,6 +6405,22 @@
   },
   {
    "file": "crates/conversation/src/lib.rs",
+   "line": 118,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// service with no override registered (`\u00a78.2`)."
+  },
+  {
+   "file": "crates/conversation/src/lib.rs",
+   "line": 127,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// its `NativeHostFactory` (`\u00a76.5`) -- tried before the default."
+  },
+  {
+   "file": "crates/conversation/src/lib.rs",
    "line": 221,
    "kinds": [
     "design id"
@@ -5592,7 +6481,8 @@
    "line": 437,
    "kinds": [
     "milestone",
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "// *before* `RouteHandler::init` (M04A Slice A1, \u00a76): the Universal"
   },
@@ -5601,7 +6491,8 @@
    "line": 586,
    "kinds": [
     "milestone",
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "// *before* `RouteHandler::init` (M04A Slice A1, \u00a76) -- see the matching"
   },
@@ -5610,9 +6501,26 @@
    "line": 638,
    "kinds": [
     "milestone",
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "/// M04A Slice A1 (\u00a711.6, reference scenario step 20): a real cross-node"
+  },
+  {
+   "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
+   "line": 646,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// exercises the full remote hop end to end -- \u00a76's outbound-endpoint fix,"
+  },
+  {
+   "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
+   "line": 647,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a75.5's `IrohHop`/retry loop, and proof/identity forwarding -- not just"
   },
   {
    "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
@@ -5671,6 +6579,14 @@
     "design id"
    ],
    "text": "/// Test 94: D-S3-16 -- a host with an explicit `-i` renders that hash"
+  },
+  {
+   "file": "crates/coordinator_webrtc/src/bootstrap.rs",
+   "line": 906,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a70.1 describes (every host silently losing its interface) has no"
   },
   {
    "file": "crates/coordinator_webrtc/src/bootstrap.rs",
@@ -5791,11 +6707,27 @@
   },
   {
    "file": "crates/core/src/config.rs",
+   "line": 546,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// hot path, and \u00a77's optional read-only lookups are the thing this"
+  },
+  {
+   "file": "crates/core/src/config.rs",
    "line": 551,
    "kinds": [
     "review finding"
    ],
    "text": "/// Deliberately **not** `Option<u64>` (review finding B4-07): the"
+  },
+  {
+   "file": "crates/core/src/config.rs",
+   "line": 758,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// 10 seconds per peer (\u00a76.16) times a generous 16-member allowance;"
   },
   {
    "file": "crates/core/src/config.rs",
@@ -5818,7 +6750,8 @@
    "file": "crates/core/src/config.rs",
    "line": 900,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// 10-hour outage -- see the M05B B1 plan \u00a70.12 for the arithmetic. Must"
   },
@@ -5981,7 +6914,8 @@
    "file": "crates/core/src/http_routes.rs",
    "line": 41,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// `dispatch_native`, and `stream` predates this field (M06A \u00a79.5)."
   },
@@ -6137,6 +7071,14 @@
   },
   {
    "file": "crates/core/src/local_registry.rs",
+   "line": 570,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// wrong (\u00a70.11)."
+  },
+  {
+   "file": "crates/core/src/local_registry.rs",
    "line": 649,
    "kinds": [
     "design id"
@@ -6154,11 +7096,35 @@
   },
   {
    "file": "crates/core/src/protocol_utils.rs",
+   "line": 66,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a77). Absent means unkeyed. A header rather than a hostname segment"
+  },
+  {
+   "file": "crates/core/src/protocol_utils.rs",
+   "line": 118,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// segment that merely starts with the same letter (\u00a70.12)."
+  },
+  {
+   "file": "crates/core/src/protocol_utils.rs",
    "line": 137,
    "kinds": [
     "design id"
    ],
    "text": "/// app-declared interface\", resolved at the destination (D-S3-15)."
+  },
+  {
+   "file": "crates/core/src/protocol_utils.rs",
+   "line": 159,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// cannot check an alias lookup itself, by construction (\u00a70.4)."
   },
   {
    "file": "crates/core/src/protocol_utils.rs",
@@ -6170,11 +7136,43 @@
   },
   {
    "file": "crates/core/src/protocol_utils.rs",
+   "line": 189,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// app hash (\u00a70.12) -- `data-api-s12345678` must not parse as an app host"
+  },
+  {
+   "file": "crates/core/src/protocol_utils.rs",
+   "line": 320,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// Test 63: \u00a70.12's defect, the one this plan's own first draft"
+  },
+  {
+   "file": "crates/core/src/protocol_utils.rs",
+   "line": 351,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// Test 65: \u00a70.12's asymmetry -- `-i` stays permissive, `-a`/`-s` do"
+  },
+  {
+   "file": "crates/core/src/protocol_utils.rs",
    "line": 367,
    "kinds": [
     "design id"
    ],
    "text": "/// destination resolves it (D-S3-15)."
+  },
+  {
+   "file": "crates/core/src/protocol_utils.rs",
+   "line": 391,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// Test 67: \u00a70.10's claim that the parser is domain-agnostic."
   },
   {
    "file": "crates/core/src/storage.rs",
@@ -6308,11 +7306,35 @@
   },
   {
    "file": "crates/core/src/util.rs",
+   "line": 108,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// \u00a70.12's irreducible residue: a nickname whose own final dash-segment"
+  },
+  {
+   "file": "crates/core/src/util.rs",
+   "line": 146,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// segment would misread as an `-a<hash>` segment (\u00a70.12) -- the parser"
+  },
+  {
+   "file": "crates/core/src/util.rs",
    "line": 150,
    "kinds": [
     "design id"
    ],
    "text": "/// to the service's one app-declared interface (D-S3-15)."
+  },
+  {
+   "file": "crates/core/src/util.rs",
+   "line": 181,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// own final segment would misread as an `-a<hash>` segment (\u00a70.12)."
   },
   {
    "file": "crates/core/src/util.rs",
@@ -6337,6 +7359,14 @@
     "design id"
    ],
    "text": "/// Test 69: D-S3-9, on both builders, asserting the message names 63."
+  },
+  {
+   "file": "crates/core/src/util.rs",
+   "line": 266,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// Test 70: \u00a70.12's irreducible residue -- refused at build, not"
   },
   {
    "file": "crates/core/src/util.rs",
@@ -6582,7 +7612,8 @@
    "line": 2579,
    "kinds": [
     "milestone",
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "/// M04A Slice B6 \u00a75 test 5: two distinct `service_id`s under one master"
   },
@@ -6591,7 +7622,8 @@
    "line": 2604,
    "kinds": [
     "milestone",
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "/// M04A Slice B6 \u00a75 test 6 -- the failure row mirrored at the storage"
   },
@@ -6640,6 +7672,14 @@
   },
   {
    "file": "crates/data_db/src/tests_fdae.rs",
+   "line": 263,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// (\u00a76.6): this must fail closed, not leak."
+  },
+  {
+   "file": "crates/data_db/src/tests_fdae.rs",
    "line": 344,
    "kinds": [
     "slice/task id"
@@ -6661,6 +7701,14 @@
     "slice/task id"
    ],
    "text": "// data-layer/write, so D2's write-mode compile must deny every row."
+  },
+  {
+   "file": "crates/data_db/src/tests_fdae.rs",
+   "line": 982,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// Plan \u00a711's \"adversarial `subject_did`/caveat bound not interpolated"
   },
   {
    "file": "crates/data_db/src/tests_fdae.rs",
@@ -6735,7 +7783,8 @@
    "line": 329,
    "kinds": [
     "milestone",
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "/// M04A Slice B6 \u00a75 test 1: guards the derive path end-to-end."
   },
@@ -6745,7 +7794,8 @@
    "kinds": [
     "milestone",
     "slice/task id",
-    "planning doc"
+    "planning doc",
+    "bare section ref"
    ],
    "text": "/// M04A Slice B6 \u00a75 test 2 \u2014 the failure-table proof (task.md's"
   },
@@ -6754,7 +7804,8 @@
    "line": 403,
    "kinds": [
     "milestone",
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "/// M04A Slice B6 \u00a75 test 3 (extends the former `test_rotate_kek`) --"
   },
@@ -6788,7 +7839,8 @@
    "file": "crates/fdae/src/compile.rs",
    "line": 81,
    "kinds": [
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "/// `IN (...)` list's cardinality (Slice B3 plan \u00a75, fan-out containment). An"
   },
@@ -6799,6 +7851,14 @@
     "slice/task id"
    ],
    "text": "/// can be finalized (ADR-0017 \u00a76 / pipeline stage 2, Slice B3). The"
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
+   "line": 97,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// crate (`crates/fdae` stays proxy-free, plan \u00a71.1); this struct is only"
   },
   {
    "file": "crates/fdae/src/compile.rs",
@@ -6820,7 +7880,8 @@
    "file": "crates/fdae/src/compile.rs",
    "line": 175,
    "kinds": [
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "/// (Slice B3 plan \u00a71.1). Opaque outside this module; the only thing a"
   },
@@ -6828,7 +7889,8 @@
    "file": "crates/fdae/src/compile.rs",
    "line": 431,
    "kinds": [
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "/// The two-phase counterpart of [`compile_read`] (Slice B3 plan \u00a71.1): same"
   },
@@ -6882,6 +7944,38 @@
   },
   {
    "file": "crates/fdae/src/compile.rs",
+   "line": 1105,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// relation is recursive (\u00a73.4), or -- when the last relation is remote (B3)"
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
+   "line": 1153,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// is recursive (\u00a73.4, ADR-0017), or emitting a direct `IN (...)`"
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
+   "line": 1154,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// membership check when the final hop is remote (B3, \u00a73)."
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
+   "line": 1217,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// The terminal hop of a path whose last relation is remote (B3, plan \u00a73):"
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
    "line": 2075,
    "kinds": [
     "design id"
@@ -6890,11 +7984,27 @@
   },
   {
    "file": "crates/fdae/src/compile.rs",
+   "line": 2238,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// Guards the \u00a73.2 finding: a capability scoped to"
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
    "line": 2307,
    "kinds": [
     "slice/task id"
    ],
    "text": "/// `compile_read` (B2's synchronous, local-only entry point) still fails"
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
+   "line": 2330,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// closed -- the plan half of the two-phase compile (B3 plan \u00a71.1)."
   },
   {
    "file": "crates/fdae/src/compile.rs",
@@ -6914,11 +8024,35 @@
   },
   {
    "file": "crates/fdae/src/compile.rs",
+   "line": 2860,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// Plan \u00a71.2: \"one fetch shape serves both [Mode A and Mode B].\" Mode A"
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
+   "line": 2945,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// plan \u00a75, fan-out containment)."
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
    "line": 2994,
    "kinds": [
     "design id"
    ],
    "text": "/// D-B3-5: a `recursive: true` relation that is also remote"
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
+   "line": 3026,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// relation)`, plan \u00a75) even though the marker text appears twice."
   },
   {
    "file": "crates/fdae/src/compile.rs",
@@ -7059,6 +8193,14 @@
     "slice/task id"
    ],
    "text": "//! Universal Proxy same-node latency (M04A Slice A1, F8): the `< 5ms p99`"
+  },
+  {
+   "file": "crates/router/src/call_dedup.rs",
+   "line": 3,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//! \u00a74)."
   },
   {
    "file": "crates/router/src/connection_router.rs",
@@ -7252,6 +8394,14 @@
   },
   {
    "file": "crates/router/src/proxy.rs",
+   "line": 3116,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// -- native capability gate (\u00a75.3) -------------------------------------"
+  },
+  {
+   "file": "crates/router/src/proxy.rs",
    "line": 3228,
    "kinds": [
     "design id"
@@ -7297,6 +8447,14 @@
     "slice/task id"
    ],
    "text": "// case (B2's N1). `CALL_ALREADY_RUNNING_RPC_CODE` is a *different*"
+  },
+  {
+   "file": "crates/router/src/proxy_outbox.rs",
+   "line": 4,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//! \u00a72, \u00a74, \u00a75)."
   },
   {
    "file": "crates/router/src/route_handler.rs",
@@ -7443,6 +8601,14 @@
   },
   {
    "file": "crates/router/src/route_handler/dispatch.rs",
+   "line": 124,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// caller, per design \u00a76.1.2."
+  },
+  {
+   "file": "crates/router/src/route_handler/dispatch.rs",
    "line": 197,
    "kinds": [
     "slice/task id"
@@ -7453,7 +8619,8 @@
    "file": "crates/router/src/route_handler/dispatch.rs",
    "line": 200,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// FDAE/M04B policy question (ADR-0017 Open, design \u00a79.8; this"
   },
@@ -7467,11 +8634,27 @@
   },
   {
    "file": "crates/router/src/route_handler/dispatch.rs",
+   "line": 208,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// \u00a76.1.2): native interfaces reject anonymous callers, WASM"
+  },
+  {
+   "file": "crates/router/src/route_handler/dispatch.rs",
    "line": 234,
    "kinds": [
     "design id"
    ],
    "text": "// D-04-02-h ingress (i): forward the router-verified"
+  },
+  {
+   "file": "crates/router/src/route_handler/dispatch.rs",
+   "line": 236,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// which WASM guests admit -- design \u00a76.1.2) into"
   },
   {
    "file": "crates/router/src/route_handler/dispatch.rs",
@@ -7485,7 +8668,8 @@
    "file": "crates/router/src/route_handler/dispatch.rs",
    "line": 504,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// (M05A A5c \u00a719.5c/\u00a719.5e, D-A5c-6). Every *deployed service*'s"
   },
@@ -7493,7 +8677,8 @@
    "file": "crates/router/src/route_handler/dispatch.rs",
    "line": 639,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5c \u00a719.5e (D-A5c-6, review F10): a subscribe naming a topic"
   },
@@ -7593,6 +8778,22 @@
   },
   {
    "file": "crates/router/src/route_handler/http.rs",
+   "line": 297,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a75.2): `text/html`'s name is stable while its content changes every"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 311,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a713.1.2: a bare `*` matches unconditionally (the entry was already"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
    "line": 399,
    "kinds": [
     "slice/task id",
@@ -7660,6 +8861,14 @@
   },
   {
    "file": "crates/router/src/route_handler/http.rs",
+   "line": 803,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// service is rejected with 401 before dispatch (\u00a75.3); a WASM-component"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
    "line": 808,
    "kinds": [
     "design id"
@@ -7673,6 +8882,14 @@
     "planning doc"
    ],
    "text": "// regardless of which 4xx it is; task.md/status.md record 405"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 837,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// Mirrors `dispatch_native`'s guard (\u00a75.3): only the native-service"
   },
   {
    "file": "crates/router/src/route_handler/http.rs",
@@ -7816,7 +9033,8 @@
    "file": "crates/router/src/route_handler/io.rs",
    "line": 125,
    "kinds": [
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "/// \u00a74.2, Slice B1). A caller whose master DID equals the configured"
   },
@@ -7849,9 +9067,26 @@
    "file": "crates/router/src/route_handler/io.rs",
    "line": 150,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// Open, design \u00a79.8; this comment previously mis-addressed it to M04B)."
+  },
+  {
+   "file": "crates/router/src/route_handler/io.rs",
+   "line": 156,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// The `None` rejection below is correct and settled (design \u00a76.1.2):"
+  },
+  {
+   "file": "crates/router/src/route_handler/io.rs",
+   "line": 176,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// design's \u00a76.1.1: no \"is this substrate owned?\" branch"
   },
   {
    "file": "crates/router/src/route_handler/io.rs",
@@ -7960,6 +9195,14 @@
    "text": "//! read-until-EOF detection can't see (task.md's \"Dead-subscriber"
   },
   {
+   "file": "crates/router/tests/call_dedup_dispatch.rs",
+   "line": 3,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//! ([ADR-0023](../../../docs/decisions/0023-durable-async-primitives.md) \u00a74)."
+  },
+  {
    "file": "crates/router/tests/deploy_grant.rs",
    "line": 2,
    "kinds": [
@@ -7971,11 +9214,83 @@
   },
   {
    "file": "crates/router/tests/deploy_grant.rs",
+   "line": 7,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//! \u00a73.2, \u00a72.4.1), independent of ownership:"
+  },
+  {
+   "file": "crates/router/tests/deploy_grant.rs",
+   "line": 13,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//!    own app but not a different one (\u00a73.2's table, rows 3-4)."
+  },
+  {
+   "file": "crates/router/tests/deploy_grant.rs",
+   "line": 15,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//!    `list` -- the selector excludes them from `has_node_wide_ability` (\u00a72.2's"
+  },
+  {
+   "file": "crates/router/tests/deploy_grant.rs",
+   "line": 17,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//! 4. Per-service `readyz` is gated the same way (\u00a72.4.1); the empty-"
+  },
+  {
+   "file": "crates/router/tests/deploy_grant.rs",
    "line": 32,
    "kinds": [
     "planning doc"
    ],
    "text": "//! `ControlPlaneService::deploy` gate -- closing the gap task.md item 1's"
+  },
+  {
+   "file": "crates/router/tests/deploy_grant.rs",
+   "line": 82,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// deploy grant produces (plan \u00a73.2's grant JSON)."
+  },
+  {
+   "file": "crates/router/tests/deploy_grant.rs",
+   "line": 241,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a73.2's table, row 5: an ordinary caller holding no grant at all is"
+  },
+  {
+   "file": "crates/router/tests/deploy_grant.rs",
+   "line": 264,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a73.2's table, row 4: an app-scoped grantee's capability is prefix-covered"
+  },
+  {
+   "file": "crates/router/tests/deploy_grant.rs",
+   "line": 277,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a73.2's table, row 3, positive path: the same grantee may deploy the app"
+  },
+  {
+   "file": "crates/router/tests/deploy_grant.rs",
+   "line": 289,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a72.2's predicate: a selector-bearing capability is not `is_substrate_scope`"
   },
   {
    "file": "crates/router/tests/deploy_grant.rs",
@@ -7985,6 +9300,22 @@
     "slice/task id"
    ],
    "text": "/// (M04A Slice B7b/F2), so an app-scoped grantee does not gain the node-wide"
+  },
+  {
+   "file": "crates/router/tests/deploy_grant.rs",
+   "line": 308,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// \u00a72.4.1: the per-service form of `readyz` (a non-empty `service_id`) is"
+  },
+  {
+   "file": "crates/router/tests/deploy_grant.rs",
+   "line": 327,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// The `wait_for_ready` regression guard (\u00a72.4.1): the empty-`service_id`"
   },
   {
    "file": "crates/router/tests/deploy_grant.rs",
@@ -8045,6 +9376,14 @@
   },
   {
    "file": "crates/router/tests/native_dispatch_identity.rs",
+   "line": 431,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// admitted to native `execute-ddl` (B0.md \u00a711.2)."
+  },
+  {
+   "file": "crates/router/tests/native_dispatch_identity.rs",
    "line": 471,
    "kinds": [
     "slice/task id"
@@ -8058,6 +9397,14 @@
     "planning doc"
    ],
    "text": "/// End-to-end injection resistance (task.md:439): a `query-raw` `params`"
+  },
+  {
+   "file": "crates/router/tests/native_dispatch_identity.rs",
+   "line": 641,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// Flag F1 (B5.md \u00a74/\u00a77): the hand-rolled `SqlValueDto`'s unit `Null` variant"
   },
   {
    "file": "crates/router/tests/native_dispatch_identity.rs",
@@ -8111,7 +9458,8 @@
    "file": "crates/router/tests/native_dispatch_identity.rs",
    "line": 1874,
    "kinds": [
-    "slice/task id"
+    "slice/task id",
+    "bare section ref"
    ],
    "text": "/// B3 plan \u00a75 fan-out containment: A1's `ServiceStore::query` limit is"
   },
@@ -8190,6 +9538,14 @@
   },
   {
    "file": "crates/router/tests/proxy_dispatch.rs",
+   "line": 471,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// through the proxy is denied -- the \u00a75.3 guest native-capability gate,"
+  },
+  {
+   "file": "crates/router/tests/proxy_dispatch.rs",
    "line": 515,
    "kinds": [
     "design id",
@@ -8204,6 +9560,14 @@
     "design id"
    ],
    "text": "/// (D-04-02-h ingress (ii)'s closure)."
+  },
+  {
+   "file": "crates/router/tests/proxy_dispatch.rs",
+   "line": 916,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// unauthenticated connection -- WASM guests admit these, design \u00a76.1.2),"
   },
   {
    "file": "crates/router/tests/proxy_dispatch.rs",
@@ -8250,6 +9614,22 @@
   },
   {
    "file": "crates/router/tests/service_ownership.rs",
+   "line": 15,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//!    non-owner, non-node-wide caller the same way (\u00a72.3)."
+  },
+  {
+   "file": "crates/router/tests/service_ownership.rs",
+   "line": 54,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// not gated on any ability -- \u00a72.4/\u00a73.2). **Not** used for `deploy`/"
+  },
+  {
+   "file": "crates/router/tests/service_ownership.rs",
    "line": 55,
    "kinds": [
     "milestone",
@@ -8265,6 +9645,14 @@
     "slice/task id"
    ],
    "text": "/// M04A Slice B7b: a caller holding an app-scoped `orchestrator/{deploy,"
+  },
+  {
+   "file": "crates/router/tests/service_ownership.rs",
+   "line": 71,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// grant produces (\u00a73.2's `substrate:<node>/app/<name>` selector), as"
   },
   {
    "file": "crates/router/tests/service_ownership.rs",
@@ -8301,6 +9689,22 @@
    "text": "/// B4's own store."
   },
   {
+   "file": "crates/rpc/src/conversation.rs",
+   "line": 95,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// so one service can never reach another's conversation store (\u00a75.3: \"no"
+  },
+  {
+   "file": "crates/rpc/src/conversation.rs",
+   "line": 212,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// `MessageSink`'s shape (B3 \u00a713 item 3): the half with no automatic parity,"
+  },
+  {
    "file": "crates/rpc/src/fdae_abac.rs",
    "line": 1,
    "kinds": [
@@ -8334,6 +9738,22 @@
   },
   {
    "file": "crates/rpc/src/fdae_fetch.rs",
+   "line": 4,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//! \u00a71.1) and outside `crates/data_db` (no `ServiceProxy` dependency there"
+  },
+  {
+   "file": "crates/rpc/src/fdae_fetch.rs",
+   "line": 6,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//! path, native dispatch) share, per plan \u00a74's \"a small `fdae-runtime`-style"
+  },
+  {
+   "file": "crates/rpc/src/fdae_fetch.rs",
    "line": 21,
    "kinds": [
     "planning doc"
@@ -8344,7 +9764,8 @@
    "file": "crates/rpc/src/fdae_fetch.rs",
    "line": 62,
    "kinds": [
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "/// pure perf follow-up, not a correctness dependency -- see plan \u00a75/D-B3-6's"
   },
@@ -8398,6 +9819,14 @@
     "slice/task id"
    ],
    "text": "/// Signed, forwardable proof of this caller's identity (M04A Slice A1,"
+  },
+  {
+   "file": "crates/rpc/src/native.rs",
+   "line": 68,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// is exempt from the FDAE sieve, per \u00a77's \"the escape hatches run under"
   },
   {
    "file": "crates/rpc/src/native.rs",
@@ -8656,7 +10085,8 @@
    "file": "crates/sandbox_wasm/src/engine.rs",
    "line": 268,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// short-lived ordinary calls generally (M05A A5c \u00a719.13/D-A5c-12,"
   },
@@ -8758,7 +10188,8 @@
    "file": "crates/sandbox_wasm/src/engine.rs",
    "line": 1106,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// The `rpc` health-probe entry point (M05A A5c \u00a719.13/D-A5c-12):"
   },
@@ -8887,6 +10318,14 @@
   },
   {
    "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 3134,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// 0016, B0.md \u00a711.2)."
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
    "line": 3136,
    "kinds": [
     "slice/task id"
@@ -8902,6 +10341,14 @@
     "review finding"
    ],
    "text": "/// Pins `classify_call_failure`'s taxonomy (M06A D-A2-6, review finding"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 3621,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// expected, and an unrelated error falls through to `Other`. \u00a78's own"
   },
   {
    "file": "crates/sandbox_wasm/src/engine.rs",
@@ -9018,11 +10465,27 @@
   },
   {
    "file": "crates/sandbox_wasm/src/host_capabilities.rs",
+   "line": 2415,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// `invoke_count` lets a test pin the \"no network hop\" budget (plan \u00a77):"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/host_capabilities.rs",
    "line": 2633,
    "kinds": [
     "design id"
    ],
    "text": "/// D-04-02-h ingress (ii)'s self-proxy forwarding (`proxy::Host::call`)"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/host_capabilities.rs",
+   "line": 2781,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// Plan \u00a77's \"no network hop\" budget: dependency resolution happens"
   },
   {
    "file": "crates/sandbox_wasm/src/host_capabilities.rs",
@@ -9311,6 +10774,14 @@
   },
   {
    "file": "crates/sandbox_wasm/tests/lifecycle_hooks.rs",
+   "line": 184,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// admitted to guest `execute-ddl` too (ADR-0015/0016, B0.md \u00a711.2)."
+  },
+  {
+   "file": "crates/sandbox_wasm/tests/lifecycle_hooks.rs",
    "line": 225,
    "kinds": [
     "slice/task id"
@@ -9419,7 +10890,8 @@
    "file": "crates/sdk/src/deploy.rs",
    "line": 3,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "//! multi-substrate placement requires (M05A \u00a70.1)."
   },
@@ -9436,7 +10908,8 @@
    "file": "crates/sdk/src/deploy.rs",
    "line": 96,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// ever recorded one (M05A A5c \u00a719.7/\u00a719.12) -- the supervisor's own"
   },
@@ -9535,7 +11008,8 @@
    "file": "crates/sdk/src/deploy.rs",
    "line": 425,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// keyed by the dependent's `MemberRef` (M05A A5c \u00a719.3/D-A5c-4;"
   },
@@ -9726,9 +11200,18 @@
   },
   {
    "file": "crates/sdk/src/health.rs",
+   "line": 102,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// substrate reports them (`ServiceStatus.binding_epochs`, A5a \u00a76)."
+  },
+  {
+   "file": "crates/sdk/src/health.rs",
    "line": 105,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// has no record of (M05A A5c \u00a719.4) -- rather than fabricating one."
   },
@@ -9816,7 +11299,8 @@
    "file": "crates/sdk/src/health.rs",
    "line": 684,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5c \u00a719.4: `ServiceHealth.binding_epochs` must actually carry"
   },
@@ -10009,7 +11493,8 @@
    "file": "crates/sdk/src/lib.rs",
    "line": 1023,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// Clear an app instance's management stamp (M05A A5a \u00a70.24):"
   },
@@ -10124,7 +11609,8 @@
    "file": "crates/sdk/src/mapper.rs",
    "line": 369,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5c \u00a719.3/D-A5c-4: the epoch belongs to the"
   },
@@ -10146,6 +11632,22 @@
   },
   {
    "file": "crates/sdk/src/mapper.rs",
+   "line": 760,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// *target's* own topology mode, not the dependent's\" (\u00a73.3's landmine:"
+  },
+  {
+   "file": "crates/sdk/src/mapper.rs",
+   "line": 840,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// This is the latent bug \u00a75.1 exists to fix: `backend`'s topology mode"
+  },
+  {
+   "file": "crates/sdk/src/mapper.rs",
    "line": 842,
    "kinds": [
     "slice/task id"
@@ -10156,7 +11658,8 @@
    "file": "crates/sdk/src/mapper.rs",
    "line": 877,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5c \u00a719.3/D-A5c-4: the epoch is keyed by the *dependent*"
   },
@@ -10231,6 +11734,14 @@
     "design id"
    ],
    "text": "/// D-S3-5's first half: `RegistryClient::lookup` cannot bind an *alias*"
+  },
+  {
+   "file": "crates/sdk/src/topology.rs",
+   "line": 248,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// lookup to what was asked for, by construction (\u00a70.4) -- a registry"
   },
   {
    "file": "crates/sdk/src/topology.rs",
@@ -10374,7 +11885,8 @@
    "file": "crates/sdk/src/topology.rs",
    "line": 868,
    "kinds": [
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "/// milestone (\u00a70.13, D-S3-17) -- one Tier-1 lookup per cold app-scoped"
   },
@@ -10406,7 +11918,8 @@
    "file": "crates/substrate/src/runtime.rs",
    "line": 183,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5c \u00a719.8/D-A5c-8: the supervisor's resident loop is spawned"
   },
@@ -10439,7 +11952,8 @@
    "file": "crates/substrate/src/runtime.rs",
    "line": 307,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5c \u00a719.8/D-A5c-8: spawned here, at the top of this"
   },
@@ -10447,7 +11961,8 @@
    "file": "crates/substrate/src/runtime.rs",
    "line": 432,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5c \u00a719.8/D-A5c-8: races the spawned loop's `JoinHandle`"
   },
@@ -10480,7 +11995,8 @@
    "file": "crates/substrate/src/runtime.rs",
    "line": 571,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// Spawns the supervisor's resident loop (M05A A5c \u00a719.8/D-A5c-8) so it"
   },
@@ -10505,7 +12021,8 @@
    "file": "crates/substrate/src/runtime.rs",
    "line": 739,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "// M05A A5c \u00a719.5a/D-A5c-6: gives the supervisor's own alert"
   },
@@ -10513,7 +12030,8 @@
    "file": "crates/substrate/src/runtime.rs",
    "line": 872,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// M05A A5c \u00a719.5a/D-A5c-6: the same broker `AppSandboxEngine` and"
   },
@@ -10626,7 +12144,8 @@
    "file": "crates/substrate/tests/binding_push_e2e.rs",
    "line": 523,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "/// through `status`'s `binding-epochs` (M05A A5a \u00a76) -- the persisted,"
   },
@@ -10698,6 +12217,14 @@
   },
   {
    "file": "crates/substrate/tests/durable_outbox_e2e.rs",
+   "line": 27,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//! production defaults (\u00a70.12's ~10-hour attempt budget) so step 8"
+  },
+  {
+   "file": "crates/substrate/tests/durable_outbox_e2e.rs",
    "line": 215,
    "kinds": [
     "milestone"
@@ -10708,7 +12235,8 @@
    "file": "crates/substrate/tests/durable_outbox_e2e.rs",
    "line": 216,
    "kinds": [
-    "planning doc"
+    "planning doc",
+    "bare section ref"
    ],
    "text": "/// ~10-hour attempt budget (`slice-b1-implementation-plan.md` \u00a70.12) --"
   },
@@ -11070,6 +12598,14 @@
   },
   {
    "file": "crates/substrate/tests/health_monitoring_e2e.rs",
+   "line": 541,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// Buildable only because of \u00a70.5's fix: a `tcp` service's phase stays"
+  },
+  {
+   "file": "crates/substrate/tests/health_monitoring_e2e.rs",
    "line": 607,
    "kinds": [
     "design id"
@@ -11258,9 +12794,18 @@
    "file": "crates/substrate/tests/multi_substrate_placement_e2e.rs",
    "line": 1095,
    "kinds": [
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "// configured registry -- the D-A3-17/\u00a70.12 precondition proven directly:"
+  },
+  {
+   "file": "crates/substrate/tests/proxy_outbox_e2e.rs",
+   "line": 4,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//! \u00a72, \u00a74, \u00a75)."
   },
   {
    "file": "crates/substrate/tests/proxy_outbox_e2e.rs",
@@ -11305,6 +12850,14 @@
    "text": "// R5's own fix: assert actual cross-member resolution, not merely that a"
   },
   {
+   "file": "crates/substrate/tests/saga_e2e.rs",
+   "line": 3,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//! \u00a77, as amended)."
+  },
+  {
    "file": "crates/substrate/tests/scheduled_task_e2e.rs",
    "line": 281,
    "kinds": [
@@ -11316,7 +12869,8 @@
    "file": "crates/substrate/tests/service_visibility_e2e.rs",
    "line": 3,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "//! `syneroym-substrate` instance (M06B B2). \u00a77 tests 33-36, 40 of the"
   },
@@ -11429,9 +12983,34 @@
    "file": "crates/substrate/tests/supervisor_alerts_e2e.rs",
    "line": 2,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "//! M05A A5c phase 4 (\u00a719.5, D-A5c-6), test 27: the `messaging` registration"
+  },
+  {
+   "file": "crates/substrate/tests/supervisor_alerts_e2e.rs",
+   "line": 191,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// it manages (\u00a713's fixture note, copied unchanged from"
+  },
+  {
+   "file": "crates/substrate/tests/supervisor_alerts_e2e.rs",
+   "line": 277,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// Test 27 (\u00a723 phase 4): an operator connects to the supervisor node's own"
+  },
+  {
+   "file": "crates/substrate/tests/supervisor_alerts_e2e.rs",
+   "line": 281,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// D-A5c-6's `messaging` registration and D-A5c-6/\u00a719.5c's publish-side"
   },
   {
    "file": "crates/substrate/tests/supervisor_interface_e2e.rs",
@@ -11440,6 +13019,14 @@
     "milestone"
    ],
    "text": "//! The `supervisor` interface end to end (M05A A5b), across two genuinely"
+  },
+  {
+   "file": "crates/substrate/tests/supervisor_interface_e2e.rs",
+   "line": 10,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "//! (\u00a713's fixture note): `submit` cannot bootstrap its own authority, and"
   },
   {
    "file": "crates/substrate/tests/supervisor_interface_e2e.rs",
@@ -11453,7 +13040,8 @@
    "file": "crates/substrate/tests/supervisor_interface_e2e.rs",
    "line": 243,
    "kinds": [
-    "design id"
+    "design id",
+    "bare section ref"
    ],
    "text": "/// `deploy` alone (\u00a70.28/D-A5-24's own focus, `claim`/`release`'s gate) is"
   },
@@ -11499,6 +13087,22 @@
   },
   {
    "file": "crates/substrate/tests/supervisor_interface_e2e.rs",
+   "line": 706,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "// `emit_bindings: true` on the supervisor's apply path (\u00a712) means the"
+  },
+  {
+   "file": "crates/substrate/tests/supervisor_interface_e2e.rs",
+   "line": 732,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// Matrix row 9 (\u00a713 test 9,"
+  },
+  {
+   "file": "crates/substrate/tests/supervisor_interface_e2e.rs",
    "line": 739,
    "kinds": [
     "slice/task id"
@@ -11509,7 +13113,8 @@
    "file": "crates/substrate/tests/supervisor_loop_e2e.rs",
    "line": 2,
    "kinds": [
-    "milestone"
+    "milestone",
+    "bare section ref"
    ],
    "text": "//! M05A A5c phase 7 (\u00a723), test 48, matrix row 12: a partial deploy across"
   },
@@ -11586,6 +13191,14 @@
     "slice/task id"
    ],
    "text": "/// M04A Slice B7a/B7b: deploy/undeploy/status-check on the orchestrator"
+  },
+  {
+   "file": "crates/ucan/src/capability.rs",
+   "line": 123,
+   "kinds": [
+    "bare section ref"
+   ],
+   "text": "/// interface. Flat -- each entails only itself (\u00a76 Q6: no `tier` entry),"
   },
   {
    "file": "crates/ucan/src/capability.rs",
@@ -11844,6 +13457,5 @@
    ],
    "text": "// Slice A5e, `greeter`'s `context::get-test-context`), so only the fixed"
   }
- ],
- "_note": "Every comment line citing a milestone, slice/task id, design id, review finding, or planning document. All are banned by AGENTS.md. Patterns are listed in ../README.md."
+ ]
 }

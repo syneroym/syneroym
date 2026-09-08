@@ -45,21 +45,22 @@
   }
  },
  "planning_refs": {
-  "total_comment_lines": 1410,
+  "total_comment_lines": 1596,
   "by_kind": {
-   "design id": 499,
    "milestone": 587,
+   "design id": 499,
    "slice/task id": 490,
-   "planning doc": 94,
-   "review finding": 97
+   "bare section ref": 304,
+   "review finding": 97,
+   "planning doc": 94
   },
   "top_crates": {
-   "crates/app_supervisor": 301,
-   "crates/control_plane": 164,
-   "crates/router": 150,
-   "crates/substrate": 141,
-   "crates/sdk": 122,
-   "crates/sandbox_wasm": 109
+   "crates/app_supervisor": 354,
+   "crates/control_plane": 200,
+   "crates/router": 181,
+   "crates/substrate": 151,
+   "crates/sdk": 126,
+   "crates/sandbox_wasm": 114
   }
  },
  "clippy_pedantic_nursery_findings": 3804,

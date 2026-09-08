@@ -96,20 +96,27 @@ write to `~/.cargo`.
 planning-doc section numbers, because those docs get archived and renumbered
 and the comment then lies. ADR references are fine; ADRs are permanent.
 
-There are five separate families, and it is easy to search for only the first
+There are six separate families, and it is easy to search for only the first
 one and think the job is nearly done. Match all of these, on comment lines only:
 
-| Family | Pattern | Example in the code |
-|---|---|---|
-| Milestone | `\bM0[0-9][A-Z]?\b` | `M04A Slice B7a` |
-| Slice / task id | `\bSlice [A-Z]?[0-9]` and `\b[A-Z][0-9][a-z]?\b` before `review`, `slice`, or `'s` | `A5e's resident loop` |
-| Design id | `\bD-[0-9A-Z]{1,4}-[0-9]+\b` | `D-B1-9`, `D-06C-3` |
-| Review finding | `\breview finding` / `\breview round [0-9]` | `M05B B1 review finding 4` |
-| Planning doc | `\b(status\|task)\.md\b`, `implementation-plan` | `` see `status.md`'s Slice 6A `` |
+| Family | Pattern | Count | Example in the code |
+|---|---|---:|---|
+| Milestone | `\bM0[0-9][A-Z]?\b` | 587 | `M04A Slice B7a` |
+| Design id | `\bD-[0-9A-Z]{1,4}-[0-9]+\b` | 499 | `D-B1-9`, `D-06C-3` |
+| Slice / task id | `\bSlice [A-Z]?[0-9]`, and `\b[A-Z][0-9][a-z]?\b` before `review`, `slice`, or `'s` | 490 | `A5e's resident loop` |
+| Bare section ref | `§\s?[0-9]` **not** preceded by `ADR-nnnn` | 304 | `(§11.2)`, `A7 §0.5` |
+| Review finding | `\breview finding`, `\breview round [0-9]` | 97 | `M05B B1 review finding 4` |
+| Planning doc | `\b(status\|task)\.md\b`, `implementation-plan` | 94 | `` see `status.md`'s Slice 6A `` |
 
-Searching only for milestone IDs finds 683 lines. Matching all five families
-finds **1,410**. The design-id family alone is 499 lines and shares no
-characters with the milestone pattern.
+A section reference anchored to an ADR (`ADR-0022 §7`) is allowed and must not
+be stripped — 325 comment lines carry one. Only a bare `§` pointing at a
+planning document is banned.
+
+Searching only for milestone IDs finds 683 comment lines. Matching all six
+families finds **1,596** — the union, since many lines carry two or three
+families at once. The design-id family alone is 499 lines and shares no
+characters with the milestone pattern, so a milestone-only search misses it
+completely.
 
 Some of these comments are not merely stale references — they make claims that
 are now false. `app_supervisor/src/lib.rs` described the crate as having "no
