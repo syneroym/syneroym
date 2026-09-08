@@ -427,7 +427,14 @@ Slice C7 implements R1 row 4: signed request, quote, and agreement receipts, the
 | **`payment-request` is a signed record with no `RECORD_TYPES` row** | `D-06C-12` settles that it is one; C7 builds no producer, so the entry lands with C8's verb (`D-C7-16`). **Pickup trigger: C8.** | C8 | [M06C slice-c7 plan](./milestones/M06C-roym-product/slice-c7-implementation-plan.md) `D-C7-16`, §15; `crates/roym_core/src/record.rs` |
 | **A card of a known type with no producer files `known: true, verified: false`** | Correct today and wrong the moment C8 ships the four producers. C8 must revisit the unproduced card type arm in `file_incoming_card`. **Pickup trigger: C8.** | C8 | [M06C slice-c7 plan](./milestones/M06C-roym-product/slice-c7-implementation-plan.md) §4.7, §15; `crates/roym_transaction/src/app.rs` (`file_incoming_card`) |
 
-## 13. Open in-code markers
+## 13. Developer tooling & build pipeline
+
+| Item | Reason | Target | Source of record |
+|---|---|---|---|
+| Code-quality analysis tools are not in `mise.toml` | The 2026-09-08 quality baseline was measured with `cargo-dupes`, `tokei` and `cargo-shear`, installed by hand. They are deliberately left out of `mise.toml` until the cleanup round shows which ones earn a permanent place in the build pipeline. Add the survivors, and drop the rest. | End of the current code-quality round | [code-quality/README.md](./code-quality/README.md) |
+| No CI guard against long functions, duplication, or planning refs regrowing | The baseline records 125 functions over 100 lines, 10.9% exact duplication, and 683 comments citing milestone IDs. None of these is enforced yet, so all three can grow back while the cleanup is in progress. Add a `clippy.toml` threshold, `cargo dupes check --max-exact-percent`, and a grep gate, ratcheting each one down as batches land. | End of the current code-quality round | [code-quality/README.md](./code-quality/README.md) ("Guarding the gains") |
+
+## 14. Open in-code markers
 
 Live `TODO`/`FIXME` markers that encode a real deferral. Remove both the code marker **and** its row here when resolved. (Excludes markers already resolved in-tree, e.g. the former `TODO(M4)` init-context gates removed in B0 and the `session.rs` `TODO(B7)` resolved in B7b.)
 

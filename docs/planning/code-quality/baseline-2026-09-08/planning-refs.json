@@ -1,0 +1,3449 @@
+{
+ "total": 683,
+ "by_crate": {
+  "crates/app_supervisor": 158,
+  "crates/control_plane": 91,
+  "crates/router": 82,
+  "crates/sdk": 48,
+  "crates/substrate": 48,
+  "crates/core": 43,
+  "crates/sandbox_wasm": 43,
+  "apps/roymctl": 36,
+  "crates/app_orchestration": 31,
+  "crates/data_db": 23,
+  "crates/async_queue": 17,
+  "crates/ucan": 16,
+  "crates/rpc": 10,
+  "crates/fdae": 9,
+  "crates/coordinator_iroh": 8,
+  "crates/data_keystore": 7,
+  "crates/chunk_transfer": 2,
+  "test-components/http-guest-test": 2,
+  "test-components/proxy-test": 2,
+  "crates/app_host": 1,
+  "crates/data_blob": 1,
+  "crates/identity": 1,
+  "crates/mqtt_broker": 1,
+  "crates/sandbox_podman": 1,
+  "test-components/greeter": 1,
+  "tests/perf": 1
+ },
+ "hits": [
+  {
+   "file": "apps/roymctl/src/commands.rs",
+   "line": 144,
+   "text": "/// key `SyneroymClient::new` generates (today's behavior) -- M04A Slice B7a,"
+  },
+  {
+   "file": "apps/roymctl/src/commands.rs",
+   "line": 147,
+   "text": "/// <path>` names a signed `CapabilityToken` JSON file (M04A Slice B7b,"
+  },
+  {
+   "file": "apps/roymctl/src/commands/app.rs",
+   "line": 64,
+   "text": "/// capabilities (M05A Slice A3). Defaults to"
+  },
+  {
+   "file": "apps/roymctl/src/commands/app.rs",
+   "line": 103,
+   "text": "/// report per-service health (M05A A4). Read-only: nothing is restarted,"
+  },
+  {
+   "file": "apps/roymctl/src/commands/app.rs",
+   "line": 339,
+   "text": "/// M05A A5a \u00a74.5: the standing backlog row \"`app deploy` without"
+  },
+  {
+   "file": "apps/roymctl/src/commands/app.rs",
+   "line": 677,
+   "text": "// Unmanaged (M05A A5a): `roymctl app deploy` is the"
+  },
+  {
+   "file": "apps/roymctl/src/commands/app.rs",
+   "line": 683,
+   "text": "// resident loop's counter (M05A A5c), and an absent"
+  },
+  {
+   "file": "apps/roymctl/src/commands/app.rs",
+   "line": 815,
+   "text": "// M05A A5e: the journal now keys every action row on a"
+  },
+  {
+   "file": "apps/roymctl/src/commands/app.rs",
+   "line": 1699,
+   "text": "/// M05A A5e review: `--service` names a logical service, and this"
+  },
+  {
+   "file": "apps/roymctl/src/commands/app.rs",
+   "line": 1785,
+   "text": "// \u2500\u2500 M05A A5a \u00a74.5: unmastered deploy refused when deps are declared \u2500\u2500"
+  },
+  {
+   "file": "apps/roymctl/src/commands/member_identity.rs",
+   "line": 10,
+   "text": "//! `syneroym_sdk::deploy` (M05A Slice A3 \u00a76), not here: it needs the"
+  },
+  {
+   "file": "apps/roymctl/src/commands/member_identity.rs",
+   "line": 36,
+   "text": "/// The `app_instance_id`/`service_name` boundary is `#`, not `-` (M05A A5e,"
+  },
+  {
+   "file": "apps/roymctl/src/commands/member_identity.rs",
+   "line": 71,
+   "text": "/// (M05A A4, D-A4-11)."
+  },
+  {
+   "file": "apps/roymctl/src/commands/member_identity.rs",
+   "line": 154,
+   "text": "/// substrate** (M05A Slice A3 \u00a70.1) -- a certificate minted through one"
+  },
+  {
+   "file": "apps/roymctl/src/commands/member_identity.rs",
+   "line": 249,
+   "text": "/// M05A A5e closed this one layer up: `AppInstanceId::try_new` itself"
+  },
+  {
+   "file": "apps/roymctl/src/commands/supervisor.rs",
+   "line": 4,
+   "text": "//! adopt a master (M05A A5b) -- a member master, or, since M05A A7, the"
+  },
+  {
+   "file": "apps/roymctl/src/commands/supervisor.rs",
+   "line": 76,
+   "text": "/// instance's own (M05A A7, named `app-<instance-id>`) -- into its"
+  },
+  {
+   "file": "apps/roymctl/src/commands/supervisor.rs",
+   "line": 91,
+   "text": "/// under the same name (M05A A7)."
+  },
+  {
+   "file": "apps/roymctl/src/commands/supervisor.rs",
+   "line": 106,
+   "text": "/// `<instance-id>/<service-name>#<index>` (M05A A5e)."
+  },
+  {
+   "file": "apps/roymctl/src/commands/supervisor.rs",
+   "line": 110,
+   "text": "/// delivery, or currently claimed by the worker (M05B B1 review"
+  },
+  {
+   "file": "apps/roymctl/src/commands/supervisor.rs",
+   "line": 116,
+   "text": "/// delivery attempt budget is exhausted (M05B B1)."
+  },
+  {
+   "file": "apps/roymctl/src/commands/supervisor.rs",
+   "line": 245,
+   "text": "// Same treatment for a declared asset bundle's archive (M06A"
+  },
+  {
+   "file": "apps/roymctl/src/commands/supervisor.rs",
+   "line": 337,
+   "text": "// M05A A7 (D-A7-8): told at the moment the key exists, the same"
+  },
+  {
+   "file": "apps/roymctl/src/commands/svc.rs",
+   "line": 110,
+   "text": "/// Path to a gzip-compressed tar archive of static assets (M06A"
+  },
+  {
+   "file": "apps/roymctl/src/commands/svc.rs",
+   "line": 123,
+   "text": "/// what declares HTTP routes (M3B Slice 7, M06A A2). Only"
+  },
+  {
+   "file": "apps/roymctl/src/commands/svc.rs",
+   "line": 153,
+   "text": "/// Restart a deployed `SynSvc` in place, without reinstalling it (M05A"
+  },
+  {
+   "file": "apps/roymctl/src/commands/svc.rs",
+   "line": 490,
+   "text": "// Unmanaged (M05A A5a): an operator-driven `svc remove` always"
+  },
+  {
+   "file": "apps/roymctl/src/commands/svc.rs",
+   "line": 581,
+   "text": "// Unmanaged (M05A A5a): an operator-driven `svc restart`"
+  },
+  {
+   "file": "apps/roymctl/src/lib.rs",
+   "line": 2,
+   "text": "//! Library surface for `roymctl` (M05A A5a): `main.rs` is reduced to the"
+  },
+  {
+   "file": "apps/roymctl/src/main.rs",
+   "line": 33,
+   "text": "/// nothing and can see nothing on an owned substrate (M04A Slice B7a)."
+  },
+  {
+   "file": "apps/roymctl/src/main.rs",
+   "line": 41,
+   "text": "/// identity issue-grant`) to present on connect (M04A Slice B7b) --"
+  },
+  {
+   "file": "apps/roymctl/tests/cli_args.rs",
+   "line": 31,
+   "text": "/// M04A Slice B7b: `identity issue-grant --help` parses (the subcommand and"
+  },
+  {
+   "file": "apps/roymctl/tests/cli_args.rs",
+   "line": 50,
+   "text": "/// M04A Slice B7b: the global `--ucan <path>` flag parses alongside an"
+  },
+  {
+   "file": "apps/roymctl/tests/cli_args.rs",
+   "line": 83,
+   "text": "/// M04A Slice B7b end to end: `identity create` then `identity issue-grant`"
+  },
+  {
+   "file": "apps/roymctl/tests/cli_args.rs",
+   "line": 170,
+   "text": "/// M05A Slice A3: `app deploy --help` lists the new `--inventory` flag."
+  },
+  {
+   "file": "apps/roymctl/tests/cli_args.rs",
+   "line": 346,
+   "text": "/// Test 97 (M05C S3): `roymctl alias --service` prints the app-scoped"
+  },
+  {
+   "file": "crates/app_host/src/lib.rs",
+   "line": 103,
+   "text": "/// `D-06C-4` forbids using `reveal` to hand a signing key to an app."
+  },
+  {
+   "file": "crates/app_orchestration/benches/resolver.rs",
+   "line": 2,
+   "text": "//! `LogicalResolver::resolve`'s \"no network hop\" budget (M05A A2/A5e,"
+  },
+  {
+   "file": "crates/app_orchestration/benches/resolver.rs",
+   "line": 74,
+   "text": "/// M05A A5e: the first slice where a `Redundant` topology is real"
+  },
+  {
+   "file": "crates/app_orchestration/src/alerts.rs",
+   "line": 51,
+   "text": "/// service becoming healthy (M05A A5c, failure-matrix row 13). Terminal:"
+  },
+  {
+   "file": "crates/app_orchestration/src/alerts.rs",
+   "line": 57,
+   "text": "/// requires be reported distinctly from a stale rejection (M05A A5c,"
+  },
+  {
+   "file": "crates/app_orchestration/src/alerts.rs",
+   "line": 62,
+   "text": "/// retried -- relocation is a milestone non-goal (M05A A5c, D-A5c-1)."
+  },
+  {
+   "file": "crates/app_orchestration/src/alerts.rs",
+   "line": 72,
+   "text": "/// (M05A A5d). The ordinary state of a freshly-booted supervisor,"
+  },
+  {
+   "file": "crates/app_orchestration/src/alerts.rs",
+   "line": 82,
+   "text": "/// `submit`, not `force-reconcile` (M05A A5d). Distinct from"
+  },
+  {
+   "file": "crates/app_orchestration/src/alerts.rs",
+   "line": 94,
+   "text": "/// (M05B B1, D-B1-6). One standing row per `(instance, logical_ref,"
+  },
+  {
+   "file": "crates/app_orchestration/src/alerts.rs",
+   "line": 187,
+   "text": "/// `conn: Arc<Mutex<Connection>>` (M05A A5b, D-A5-8) -- see"
+  },
+  {
+   "file": "crates/app_orchestration/src/alerts.rs",
+   "line": 446,
+   "text": "/// M05A A5c \u00a719.6: `AlertKind` has a `Display` and a `FromStr`, and a"
+  },
+  {
+   "file": "crates/app_orchestration/src/compiler.rs",
+   "line": 281,
+   "text": "/// `member_index` folds into the hash **only above index 0** (M05A A5e,"
+  },
+  {
+   "file": "crates/app_orchestration/src/compiler.rs",
+   "line": 614,
+   "text": "// \u2500\u2500 M05A A5e phase 2: `replicas` and the compiler (D-A5e-3/D-A5e-4) \u2500"
+  },
+  {
+   "file": "crates/app_orchestration/src/journal.rs",
+   "line": 79,
+   "text": "/// No `Pending` variant (M05A A5c \u00a724): nothing in this tree ever wrote one"
+  },
+  {
+   "file": "crates/app_orchestration/src/journal.rs",
+   "line": 116,
+   "text": "/// `conn: Arc<Mutex<Connection>>`, not a bare `Connection` (M05A A5b,"
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 108,
+   "text": "// M05A A5e (D-A5e-2/D-A5e-12): `#` is `MemberRef`'s own index"
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 118,
+   "text": "// M05A A7 review finding 5: `..` and `\\` are valid here but not as"
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 147,
+   "text": "// M05A A5e (D-A5e-2): `#` is `MemberRef`'s own index separator --"
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 283,
+   "text": "/// the logical service itself (M05A A5e, D-A5e-2)."
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 496,
+   "text": "/// Author-declared readiness probe (M05A A4). Absent = liveness only."
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 499,
+   "text": "/// Static assets served directly from blob storage (M06A A1)."
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 605,
+   "text": "/// A `replicas` value above this is refused at `validate()` (M05A A5e,"
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 631,
+   "text": "/// How many members the compiler emits for this service (M05A A5e,"
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 774,
+   "text": "// 3. `replicas`, all three rules in one place (M05A A5e,"
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 895,
+   "text": "/// one entry per member of that dependency (M05A A5e `replicas`)."
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 900,
+   "text": "/// This member's ordinal within its logical service (M05A A5e,"
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 934,
+   "text": "/// This member's identity as a managed unit (M05A A5e, D-A5e-2) -- the"
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 1221,
+   "text": "// \u2500\u2500 M05A A5e: `MemberRef` and the `#`/`/` validators (D-A5e-2) \u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 1276,
+   "text": "/// M05A A7 review finding 5: `..` and `\\` are refused at construction"
+  },
+  {
+   "file": "crates/app_orchestration/src/reconcile.rs",
+   "line": 14,
+   "text": "/// Remove an existing member, named by its own `MemberRef` (M05A A5e,"
+  },
+  {
+   "file": "crates/app_orchestration/src/resolver.rs",
+   "line": 1,
+   "text": "//! Slice 3 \u2014 Addressing & Resolution Overlay"
+  },
+  {
+   "file": "crates/app_orchestration/src/resolver.rs",
+   "line": 1641,
+   "text": "// \u2500\u2500 classify_binding_write (M05A A5a) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/anchors.rs",
+   "line": 2,
+   "text": "//! (M05A A5d): the periodic republication that keeps every managed master's"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 6,
+   "text": "//! **Also holds the app instance's own master** (M05A A7, ADR-0022 \u00a71),"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 111,
+   "text": "/// mint-warning's wording (M05A A7, D-A7-9). A member master's loss story"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 132,
+   "text": "/// This member's ordinal (M05A A5e, D-A5e-2/\u00a733.17): `submit` returns"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 151,
+   "text": "/// read-then-write, and `import`'s (M05A A7 review round 2, finding"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 234,
+   "text": "/// (M05A A7, D-A7-9) picks only the mint-warning's wording below."
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 266,
+   "text": "/// read them from the backup directory. Takes `mint_lock` (M05A A7"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 330,
+   "text": "/// The `app_instance_id`/`service_name` boundary is `#`, not `-` (M05A A5e,"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 357,
+   "text": "/// `app-<app_instance_id>` -- the app instance's own master (M05A A7,"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 374,
+   "text": "/// M05A A7 review round 2, finding 5), so a caller that only ever"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 396,
+   "text": "/// vault name `export-master`/`import-master` accept (M05A A7,"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 431,
+   "text": "/// `index` is the member's own ordinal (M05A A5e, D-A5e-5) -- reading it"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 755,
+   "text": "/// M05A A5e's `AppInstanceId` validator now closes that one layer up --"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 785,
+   "text": "/// M05A A5e (D-A5e-12): the collision `member_master_name`'s `#`"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 859,
+   "text": "// \u2500\u2500 M05A A7: the app-instance master (D-A7-3/D-A7-5) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 879,
+   "text": "/// itself now also refuses `..` and `\\` (M05A A7 review round 2,"
+  },
+  {
+   "file": "crates/app_supervisor/src/keys.rs",
+   "line": 969,
+   "text": "// \u2500\u2500 M05A A7 code review (2026-08-04): findings 1, 2, 7b, 10 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/lib.rs",
+   "line": 4,
+   "text": "//! `supervisor` WIT interface. This slice (M05A A5b) is the role, the"
+  },
+  {
+   "file": "crates/app_supervisor/src/outbox.rs",
+   "line": 3,
+   "text": "//! `syneroym_async_queue::Queue` (M05B Slice B1, D-B1-1/D-B1-5). The queue"
+  },
+  {
+   "file": "crates/app_supervisor/src/outbox.rs",
+   "line": 133,
+   "text": "// letters (M05B B1 review finding 4). A queue key this crate wrote"
+  },
+  {
+   "file": "crates/app_supervisor/src/outbox.rs",
+   "line": 154,
+   "text": "/// scan of every payload (M05B B1 review finding 15)."
+  },
+  {
+   "file": "crates/app_supervisor/src/outbox.rs",
+   "line": 160,
+   "text": "/// the duplicate row the guard exists to prevent (M05B B1 review"
+  },
+  {
+   "file": "crates/app_supervisor/src/outbox.rs",
+   "line": 213,
+   "text": "/// M05B B1 review: A5e's resident loop reclassifies an unlanded push as"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 130,
+   "text": "/// only `resolved_dependencies` (M05A A5e, D-A5e-7): a membership"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 168,
+   "text": "/// This member's own `MemberRef` display string (M05A A5e, D-A5e-2) --"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 179,
+   "text": "/// This member's ordinal (M05A A5e, D-A5e-5) -- what"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 209,
+   "text": "/// (M05B B1, D-B1-1). A trait rather than a direct call to"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 267,
+   "text": "/// to an already-pending queue item\" (M05B B1 review, two review passes"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 319,
+   "text": "/// loop's `tokio::interval` period (M05A A5c \u00a719.7/\u00a719.14, D-A5c-7)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 342,
+   "text": "/// `SupervisorRole.queue_tick_secs` (default 5s, M05B B1) -- the"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 348,
+   "text": "/// substrate (M05B B1). `LiveQueueConnector` in production; a test"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 383,
+   "text": "/// writes) or `status`/`alerts` (reads) (M05A A5c \u00a719.7, D-A5c-7)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 413,
+   "text": "/// dropped mid-pass (M05A A5c \u00a719.8, D-A5c-8). The `JoinHandle`"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 419,
+   "text": "/// for exactly this service's own lifetime (M05A A7 review finding"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 551,
+   "text": "/// shared by every later caller that names the same instance (M05A"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 563,
+   "text": "/// The resident reconcile loop (M05A A5c \u00a719.7/\u00a719.8, D-A5c-7/D-A5c-8)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 580,
+   "text": "/// `MissedTickBehavior::Skip` (M05A A5c \u00a719.7, D-A5c-7): a pass that"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 598,
+   "text": "/// The durable outbox worker (M05B B1, D-B1-1): claims items due from"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 633,
+   "text": "// unreachable substrates this is meant never to wait on (M05B"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 640,
+   "text": "// M05B B1 review finding 7: an item claimed `max_attempts`"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 683,
+   "text": "/// without `fail` ever being called for it (M05B B1 review finding 7)"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 741,
+   "text": "// (M05B B1 review finding 16)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 776,
+   "text": "// (M05B B1 review finding 8)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 837,
+   "text": "// text (M05B B1 review finding 10). Treating every callee"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 899,
+   "text": "// nothing can ever clear (failure-matrix row 4a, M05B B1 review"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 934,
+   "text": "/// the only place that holds it (M05A A5c D-A5c-8)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 993,
+   "text": "/// One instance's share of a loop pass (M05A A5c \u00a719.2/\u00a719.9/\u00a719.11,"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 1192,
+   "text": "// M05A A5e (D-A5e-7): a dependent member whose diff against the"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 1246,
+   "text": "// M05A A5c phase 6 (\u00a714 step 3, matrix row 13): landed services"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 1257,
+   "text": "// M05A A5d: the fourth work-list. Its input is this pass's own"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 1359,
+   "text": "/// The write half of a loop pass (M05A A5c D-A5c-14/F6): mints,"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 1471,
+   "text": "// M05A A5e (D-A5e-7): every member whose only change is which DIDs"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 1478,
+   "text": "// M05A A5e review (matrix row 11): a dependent this pass could"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 1486,
+   "text": "// M05B B1 review: raising the alert and moving on used to be"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 1532,
+   "text": "// count the same as an error here (M05B B1 review follow-on"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 1538,
+   "text": "// success, not deferred (M05B B1 review follow-up: an earlier"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 2269,
+   "text": "/// deploys (M05A A5c review finding A-1). Recording only the touched"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 2296,
+   "text": "/// else about this member itself (M05A A5e, D-A5e-7). `logical_ref` is"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 2345,
+   "text": "/// gap the M05A review round found."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 2662,
+   "text": "/// service (M05A A5c phase 6, \u00a714 step 3, matrix row 13): refuses if"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 2812,
+   "text": "/// (M05A A5c D-A5c-9/\u00a719.9): the union of every alias the plan"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 2854,
+   "text": "/// M05A A5c D-A5c-1 (\u00a719.1): refuses a submission whose plan would move"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3072,
+   "text": "/// M05A A5c D-A5c-9: takes already-connected clients, keyed by alias,"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3078,
+   "text": "/// `SyneroymClient` (M05A A5c \u00a723) -- callers upcast their real,"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3100,
+   "text": "/// undurable constructor (M05B B1): every actor this builds is used for"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3111,
+   "text": "/// real client builds through (M05B B1, D-B1-4/D-B1-5): `write_bindings`"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3142,
+   "text": "/// Shared by `handle_status` and the loop's own pass (M05A A5c"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3240,
+   "text": "/// the rest, rather than a full `deploy_with_context` reinstall (M05A"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3282,
+   "text": "// M05A A5e review (matrix row 11): visible on `alerts`, the"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3286,
+   "text": "// this one clears. M05B B1: also queued, the same reason"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3316,
+   "text": "// count the same as an error here too (M05B B1 review"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3400,
+   "text": "/// deliberately wider than it for the loop's filtered pass (M05A"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3412,
+   "text": "// M05A A5d / D-A5d-15: the one place every certificate-minting"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3500,
+   "text": "// Deliberately the plain, undurable constructor (M05B B1): `deploy::"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3520,
+   "text": "// M05A A5c \u00a719.3/D-A5c-4: the counter always advances before a"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3584,
+   "text": "/// redeploy (M05A A5c phase 7, D-A5c-16): reuses `map_deployment_"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3590,
+   "text": "/// `apply_write_phase` (M05A A5e, D-A5e-7)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3599,
+   "text": "/// instead (M05A A5e, D-A5e-8/\u00a733.19) -- the clear site this alert"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3604,
+   "text": "/// (M05A A5e, \u00a733.21) -- not `svc.substrate`, an operator-chosen"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3622,
+   "text": "// M05B B1 review finding 1: this call advances the binding epoch"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3650,
+   "text": "// never happened and was never durably queued either (M05B B1"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3891,
+   "text": "// M05A A5c D-A5c-7: held for the whole call, so a loop pass or"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3952,
+   "text": "// M05A A5c D-A5c-1: checked in the same pre-flight as `retired`/"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3997,
+   "text": "// M05A A5c (matrix row 12): persisted here, before the deploy"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 4146,
+   "text": "// M05A A7 (D-A7-1): resolved or minted before any substrate"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 4172,
+   "text": "// M05A A7 (D-A7-5, review finding 6): the generation, the"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 4225,
+   "text": "// `queue_worker_tick`'s per-item check (M05B B1 review finding"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 4443,
+   "text": "// M05A A5c D-A5c-1: `force-reconcile` never calls `store.submit`,"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 4709,
+   "text": "/// landed (a real `substrate_did`) -- restart candidates (M05A A5c"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 4811,
+   "text": "// M05A A5c D-A5c-9: one client set for the whole call, shared by"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 4870,
+   "text": "// M05A A5c D-A5c-10 (\u00a719.11): a planned service the journal has"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5002,
+   "text": "// M05A A5c D-A5c-13 (\u00a719.15): a reconcile in flight is now"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5015,
+   "text": "// M05A A5e (D-A5e-8, ADR-0021 \u00a75): a binding push that has been"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5077,
+   "text": "// M05A A5c \u00a719.4/D-A5c-5 (F7, the exit criterion's own test):"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5094,
+   "text": "// M05A A7 (D-A7-4/D-A7-6): read from the stored row only, never"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5144,
+   "text": "/// or claimed, not yet dead-lettered (M05B B1 review finding 13):"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5173,
+   "text": "/// Every dead letter belonging to this instance, oldest first (M05B B1,"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5225,
+   "text": "// (M05B B1 review finding 12). Neither names which other instance"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5694,
+   "text": "/// (M05A A7 review finding 4 -- an earlier version of this"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5696,
+   "text": "/// returning, which was true before that fix). M05A A7's handover"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5703,
+   "text": "/// against a fake clock set this explicitly (M05B B1)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5707,
+   "text": "/// explicitly, far above the tick (M05B B1)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5733,
+   "text": "// holds an open connection into it (M05A A7, found while"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5748,
+   "text": "// (M05A A7 review finding 4). Tying its lifetime to the"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5875,
+   "text": "// M05B B1, D-B1-6/D-B1-7, test 32: no new resource namespace --"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 6224,
+   "text": "/// M05A A5e \u00a733.22/test 82: the journal keys every completed action row"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 6293,
+   "text": "/// M05A A5c D-A5c-1 (\u00a719.1, matrix row 20's blast-radius neighbor): a"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 6470,
+   "text": "/// M05A A5c D-A5c-10 (\u00a719.11, matrix row 12): a planned service the"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 6576,
+   "text": "/// M05A A5c D-A5c-13 (\u00a719.15): a reconcile in flight is now"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 6600,
+   "text": "/// M05A A5c D-A5c-9 (\u00a719.9): the whole point of the fix is that an"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 6706,
+   "text": "// \u2500\u2500 M05A A5c: MQTT alert publication (D-A5-13/D-A5c-6) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 6909,
+   "text": "// \u2500\u2500 M05A A5c phase 5: the loop (\u00a719.7/\u00a719.8/\u00a719.12/\u00a719.16, D-A5c-7/8/11/14) \u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 7059,
+   "text": "/// M05A A5e \u00a733.6/D-A5e-6, test 59: `refuse_placement_change` used to"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 7447,
+   "text": "// \u2500\u2500 M05A A5c phase 6: remediation (\u00a714 step 3/6, \u00a721, D-A5c-15/17/20/21) \u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 7450,
+   "text": "/// other method is unreachable from a remediation test (M05A A5c"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 7544,
+   "text": "/// M05A A5e \u00a733.11, test 60: two members of one scaled service must"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 7901,
+   "text": "// \u2500\u2500 M05A A5c phase 7: the binding push and convergence (\u00a719.3/\u00a719.4/\u00a719.19,"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 7907,
+   "text": "/// push test (M05A A5c \u00a723, tests 42-47)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 8016,
+   "text": "/// M05A A5e review, second round: the clock starts at"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 8103,
+   "text": "/// M05B B1 review follow-up (2026-08-05): a write with zero bindings"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 8278,
+   "text": "// \u2500\u2500 M05A A5e phase 4: the push trigger (D-A5e-7/D-A5e-8) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 8492,
+   "text": "/// M05A A5e review (matrix row 11): a push candidate this pass could"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 8533,
+   "text": "/// M05A A5e review round 2, finding A -- the narrower loop-path shape:"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 8773,
+   "text": "/// M05A A5e \u00a733.21/S2: the raise site must write the substrate's real"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 8954,
+   "text": "/// M05B B1 review finding 1: `push_bindings` advances the binding"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 9075,
+   "text": "// \u2500\u2500 M05A A5d: unattended renewal, anchor refresh, revocation \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 10212,
+   "text": "/// M05A A5e \u00a733.5/D-A5e-5, test 63: `refresh_due_master_anchors` reads"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 10929,
+   "text": "// \u2500\u2500 M05A A7: the app-instance master identity \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 10991,
+   "text": "/// D-A7-7's \"and nowhere else\" (M05A A7 review finding 7a): `adopt` is"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 11027,
+   "text": "/// Named for what it actually asserts (M05A A7 review finding 9,"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 11470,
+   "text": "// ever stopped running before the claim (M05A A7 review finding"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 11507,
+   "text": "/// M05A A7 review finding 7c: `adopt`'s un-retire and its app-master"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 11538,
+   "text": "// \u2500\u2500 M05B B1: the durable outbox worker \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 11565,
+   "text": "/// in-flight when shutdown is asked for (M05B B1 review finding 5)."
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 11819,
+   "text": "/// M05B B1 review follow-on 4: a queued item whose instance was"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 11918,
+   "text": "/// M05B B1 review finding 10: a callee error that does *not* name this"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 11952,
+   "text": "/// `write-bindings` dispatch uses for that specific refusal, M05B B1"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 12027,
+   "text": "/// (M05B B1 review finding 5: an earlier version of this test left the"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 12159,
+   "text": "// \u2500\u2500 M05B B1: the DLQ surface \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 12276,
+   "text": "// replay` refuses a second pending row for one key (M05B B1 review"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 12301,
+   "text": "/// M05B B1 review finding 3: a *pruned* dead letter (the DLQ cap"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 12311,
+   "text": "// instance), so the cap applies across them (M05B B1 review"
+  },
+  {
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 12374,
+   "text": "/// M05B B1 review finding 14: row 12's outbox growth bound -- \"at most"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 3,
+   "text": "//! `AlertStore`, and (M05B B1, D-B1-5) the durable outbox queue: one SQLite"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 32,
+   "text": "/// The app instance's own master DID (M05A A7, D-A7-2/D-A7-4), empty"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 63,
+   "text": "/// and (M05B B1, D-B1-5) the durable outbox queue -- what A4 promised A5"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 114,
+   "text": "// `max_renewals_per_pass == 0` clamp (M05B B1 review finding 9)."
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 255,
+   "text": "// M05A A7 (D-A7-2): `desired_state` predates this column, so the"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 992,
+   "text": "/// write on a successful claim (M05A A7 review finding 6), which is"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 1000,
+   "text": "/// desired state. Test-only hook (M05A A7 review round 2, finding C):"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 1023,
+   "text": "/// together in one statement (M05A A7 review finding 6). Before this,"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 1079,
+   "text": "/// Test 26 (M05B B1, D-B1-5, failure-matrix row 13's supervisor half):"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 1174,
+   "text": "// M05A A7 review finding 6) un-retires as part of its combined"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 1183,
+   "text": "// \u2500\u2500 M05A A5c: binding epochs (D-A5c-4) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 1220,
+   "text": "// \u2500\u2500 M05A A5c: remediation bookkeeping (\u00a714 step 6, D-A5c-20) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 1267,
+   "text": "// \u2500\u2500 M05A A5d: anchor-refresh bookkeeping and revoked placements \u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 1334,
+   "text": "// \u2500\u2500 M05A A7: the app master column (D-A7-2/D-A7-11) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 1386,
+   "text": "/// M05A A7 review finding 6: `handle_adopt`'s combined write -- the"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 4,
+   "text": "//! (M05B Slice B1,"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 57,
+   "text": "/// The retry curve ([`RetryPolicy`], reused per M05B D-B1-13 -- its struct"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 78,
+   "text": "/// The supervisor's five `queue_*` fields, converted (M05B D-B1-13):"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 90,
+   "text": "// existing clamp (M05B B1 review finding 9)."
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 169,
+   "text": "/// the poison-pill gap the M05B B1 review found (finding 7)."
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 209,
+   "text": "/// silent (failure-matrix row 4a, M05B B1 review finding 3)."
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 398,
+   "text": "/// tracks (M05B B1 review finding 7). Reading it here rather than"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 409,
+   "text": "/// every payload (M05B B1 review finding 15 -- the caller-side"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 618,
+   "text": "/// can clear it (M05B B1 review finding 3: an unnotified prune left"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 686,
+   "text": "/// `queue_key` (M05B B1 review finding 2): inserting a second row would"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 828,
+   "text": "/// unjittered total the configured defaults promise (M05B B1 plan \u00a70.12)"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 943,
+   "text": "/// M05B B1 review finding 7: a delivery that never calls `fail` (a"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 1018,
+   "text": "/// Test 7: M05B B1 plan \u00a70.12's arithmetic, pinned against the actual"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 1085,
+   "text": "/// M05B B1 review finding 9: a configured `queue_max_attempts` of 0"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 1124,
+   "text": "/// M05B B1 review finding 4: the cap and its pruning are scoped per"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 1202,
+   "text": "/// M05B B1 review finding 15: the indexed dedup lookup a caller uses"
+  },
+  {
+   "file": "crates/async_queue/src/lib.rs",
+   "line": 1237,
+   "text": "/// M05B B1 review finding 2: replaying a dead letter whose key already"
+  },
+  {
+   "file": "crates/chunk_transfer/src/lib.rs",
+   "line": 2,
+   "text": "//! `blob-store`'s `UploadSession`/`DownloadSession` (M03-sss Slice 5) and"
+  },
+  {
+   "file": "crates/chunk_transfer/src/lib.rs",
+   "line": 3,
+   "text": "//! `syneroym:messaging`'s `stream-sink`/`stream-cursor` (M03B Slice 6B, see"
+  },
+  {
+   "file": "crates/control_plane/src/assets.rs",
+   "line": 2,
+   "text": "//! (M06A A1) and the deletion helper that keeps a redeploy/undeploy from"
+  },
+  {
+   "file": "crates/control_plane/src/assets.rs",
+   "line": 50,
+   "text": "/// only place that can compute what to keep (M06A D-A1-9, R3-B)."
+  },
+  {
+   "file": "crates/control_plane/src/dummy_sandbox.rs",
+   "line": 57,
+   "text": "/// `exports_authorize_rows`'s own reasoning above (M05A A4)."
+  },
+  {
+   "file": "crates/control_plane/src/dummy_sandbox.rs",
+   "line": 64,
+   "text": "/// mirroring `is_deployed`'s own reasoning above (M05A A5a)."
+  },
+  {
+   "file": "crates/control_plane/src/dummy_sandbox.rs",
+   "line": 80,
+   "text": "/// about a container it could never have started (M05A A4)."
+  },
+  {
+   "file": "crates/control_plane/src/dummy_sandbox.rs",
+   "line": 86,
+   "text": "/// never have created (M05A A5a), mirroring `readyz`'s own reasoning"
+  },
+  {
+   "file": "crates/control_plane/src/http_routes.rs",
+   "line": 1,
+   "text": "//! Parses a deployed service's declared HTTP routes (M3B Slice 7) out of the"
+  },
+  {
+   "file": "crates/control_plane/src/http_routes.rs",
+   "line": 15,
+   "text": "//! stream protocol, or (M06A A2) reaches the deployed component's own"
+  },
+  {
+   "file": "crates/control_plane/src/http_routes.rs",
+   "line": 123,
+   "text": "// M06A D-A2-7, A3, A4: `public` does nothing outside a guest or websocket"
+  },
+  {
+   "file": "crates/control_plane/src/service.rs",
+   "line": 72,
+   "text": "/// This node's own DID; `substrate:<node_did>` resources name it (M04A"
+  },
+  {
+   "file": "crates/control_plane/src/service.rs",
+   "line": 86,
+   "text": "/// service's `SynSvcNativeService` so it can sign Slice B3's"
+  },
+  {
+   "file": "crates/control_plane/src/service.rs",
+   "line": 98,
+   "text": "/// The Universal Proxy (M04A Slice A1), for Slice B3 Phase 4's"
+  },
+  {
+   "file": "crates/control_plane/src/service.rs",
+   "line": 164,
+   "text": "/// Static asset manifests, per service (M06A A1). Same `Arc`, same"
+  },
+  {
+   "file": "crates/control_plane/src/service.rs",
+   "line": 184,
+   "text": "/// Last probe result per service, `(checked_at_secs, ProbeStatus)` (M05A"
+  },
+  {
+   "file": "crates/control_plane/src/service.rs",
+   "line": 397,
+   "text": "/// (`ResourceUri::is_substrate_scope`, narrowed at M04A Slice B7b to"
+  },
+  {
+   "file": "crates/control_plane/src/service.rs",
+   "line": 904,
+   "text": "/// M04A Slice B7b: a caller holding node-wide orchestrator authority on"
+  },
+  {
+   "file": "crates/control_plane/src/service.rs",
+   "line": 1270,
+   "text": "/// Slice 5: deploy a service (TCP type -- no WASM component needed),"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 118,
+   "text": "/// Epoch-guarded binding write (M05A A5, ADR-0021 \u00a73). The only path"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 135,
+   "text": "/// Restart a deployed service in place, without reinstalling it (M05A"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 168,
+   "text": "/// `adopt`'s read half (M05A A5a, \u00a70.26): the management stamp an app"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 178,
+   "text": "/// Claim management of an app instance at `generation` (M05A A5a,"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 188,
+   "text": "/// Clear an app instance's management stamp (M05A A5a, \u00a70.24):"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 201,
+   "text": "/// Per-instance status for a supervisor's poll loop (M05A A4)."
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 224,
+   "text": "/// Wire `service-type` variant -> the app model's `ServiceType` (M05A A4)."
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 347,
+   "text": "/// TopologyEntry)`. Shared by the deploy path and `write_bindings` (M05A"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 490,
+   "text": "/// Resolves an `asset-bundle.archive` field (M06A A1) to raw bytes. `Binary`"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 629,
+   "text": "/// here (M05A A5a \u00a70.27) -- `deploy_with_context` persists it right"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 690,
+   "text": "/// (M05A A5a \u00a70.27) -- it records *who is writing*, not what was"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 766,
+   "text": "/// Rolls back an in-progress deploy's asset-bundle work (M06A D-A1-9,"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 872,
+   "text": "// M06A D-A2-10b: a declared `guest` route whose compiled component"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1096,
+   "text": "/// M04A Slice B7b (\u00a72.4.1): `readyz` has two forms, and only one is a"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1429,
+   "text": "// M04A Slice B7a / F7: a service_id already owned by someone else may"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1463,
+   "text": "// M04A Slice B7b (\u00a73.2): Tier-1 deploy admission. The caller must"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1560,
+   "text": "// ADR-0021 \u00a74's generation gate (M05A A5a \u00a70.18): persisted"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1587,
+   "text": "// M05A A5a \u00a74A / D-A5-18: deploy idempotency (failure-matrix row"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1596,
+   "text": "// M05A A5a \u00a70.23: every rollback below re-enters through"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1659,
+   "text": "// unconditionally for it (M04A B7a: \"authorized or not\") -- a"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1717,
+   "text": "// M3B Slice 7: `http_routes` is a reserved top-level key inside"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1779,
+   "text": "// M06A A1: an asset bundle is only reachable through a `Wasm`"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1903,
+   "text": "// M06A A1: static asset bundle unpack, before the wasm/tcp/container"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2019,
+   "text": "// M06A D-A2-7: a `public` guest route is reachable with no verified"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2226,
+   "text": "// M04A Slice B7a: record the owner last, after every other step"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2287,
+   "text": "// M05A A4: what this deploy said the service is, and its declared"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2370,
+   "text": "/// Epoch-guarded binding write (M05A A5a, ADR-0021 \u00a73): the only path"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2545,
+   "text": "/// M04A Slice B7a / F7: gates on ownership before tearing anything down"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2592,
+   "text": "// M04A Slice B7b (\u00a73.2): Tier-1 undeploy admission, the same shape"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2627,
+   "text": "// M05A A5a \u00a70.23: `undeploy` is a lifecycle action, gated the same"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2734,
+   "text": "// M06A A1: nothing survives an undeploy, so there is nothing to"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2792,
+   "text": "// M05A A5a \u00a75.6: the standing backlog row `app_instance_owners`"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2806,
+   "text": "/// Restart a deployed service in place (M05A A5a \u00a74, ADR-0021 \u00a74's"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2829,
+   "text": "// M05A A5c \u00a719.17: `deploy`/`undeploy`/`write-bindings` all refuse a"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 3173,
+   "text": "/// M05A A5a \u00a70.26/\u00a75.7: `adopt`'s read half. `Ok(None)` (not an error)"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 3196,
+   "text": "/// M05A A5a \u00a70.26/\u00a75.7: `adopt`'s write half. Subject to the same"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 3236,
+   "text": "/// M05A A5a \u00a70.24/\u00a75.6: clears an app instance's management stamp --"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 3319,
+   "text": "// M04A Slice B7a: node-wide orchestrator authority sees everything --"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 3343,
+   "text": "/// M05A A4: per-instance status for a supervisor's poll loop. An empty"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 3491,
+   "text": "// M05A A5a \u00a76: read from the per-dependent persisted row, not the"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 3533,
+   "text": "/// service type (M05A A4, D-A4-7). `readyz`'s `is_container` guess"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 3675,
+   "text": "// M05A A5c \u00a719.13/D-A5c-12: `execute_probe_json`, not"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 3705,
+   "text": "/// Service types this build can actually run (M05A A4). Container support is"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 3797,
+   "text": "/// M04A Slice B7b: a caller holding node-wide orchestrator authority on"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 3837,
+   "text": "/// M04A Slice B7b: a caller holding an app-scoped `orchestrator/deploy`"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 4320,
+   "text": "// Unmanaged (M05A A5a): every existing test here is an"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 4649,
+   "text": "// \u2500\u2500 M05A A5a: the generation stamp \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 5048,
+   "text": "// \u2500\u2500 M05A A5a: write-bindings \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 5485,
+   "text": "// \u2500\u2500 M05A A5a: deploy idempotency (matrix row 10) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 5833,
+   "text": "/// unconditionally on every successful deploy (M04A B7a) -- rather"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 5948,
+   "text": "// \u2500\u2500 M05A A5a: restart \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 6036,
+   "text": "/// M05A A5c \u00a719.17: `restart` was the one lifecycle write with no"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 8546,
+   "text": "/// M3B Slice 7: `deploy()` parses `http_routes` out of `custom_config`"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 8643,
+   "text": "/// M3B Slice 7: a service deployed with no `http_routes` key gets no"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 8764,
+   "text": "/// M06A A1: a deploy declaring `assets` unpacks them into blobs,"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 8873,
+   "text": "/// M06A A1/D-A1-9: a redeploy that changes only some files keeps every"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 8983,
+   "text": "/// M06A A1 (D-A1-9): the backward asset rollback, driven through a real"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 9145,
+   "text": "/// M06A A1: an asset bundle is only reachable through a `Wasm`"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 9342,
+   "text": "/// M06A D-A2-10a: same reasoning as"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 9514,
+   "text": "/// M06A D-A2-10b: a declared `guest` route whose compiled component"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 9740,
+   "text": "/// M04A Slice B7a (\u00a72.3, F11): `deploy` records `caller.caller_did` as"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 10134,
+   "text": "// \u2500\u2500 M05A A5d: renew-cert \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 10862,
+   "text": "// M05A A4: health-check declaration, deploy-facts recording, status"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 11512,
+   "text": "/// M05A A5a \u00a76: `status` reports the epoch this substrate currently"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 11565,
+   "text": "/// A4-10's rule, re-pinned (M05A A5a \u00a76 adds `binding-epochs` to the"
+  },
+  {
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 12237,
+   "text": "/// M05A A5c \u00a719.13 / D-A5c-12: the health-poll-cost budget, measured"
+  },
+  {
+   "file": "crates/control_plane/src/synsvc_native.rs",
+   "line": 73,
+   "text": "/// This *service's own* signing identity (Slice B3), derived from the"
+  },
+  {
+   "file": "crates/control_plane/src/synsvc_native.rs",
+   "line": 115,
+   "text": "/// The Universal Proxy (M04A Slice A1), needed for Slice B3 Phase 4's"
+  },
+  {
+   "file": "crates/control_plane/src/synsvc_native.rs",
+   "line": 326,
+   "text": "/// caller (in particular Slice 7's HTTP bridge, via"
+  },
+  {
+   "file": "crates/control_plane/src/synsvc_native.rs",
+   "line": 332,
+   "text": "/// `PermissionDenied` is not reachable through any of Slice 7's own bridged"
+  },
+  {
+   "file": "crates/control_plane/src/synsvc_native.rs",
+   "line": 336,
+   "text": "/// producers, and neither is bridged by any Slice 7 route."
+  },
+  {
+   "file": "crates/control_plane/src/synsvc_native.rs",
+   "line": 636,
+   "text": "/// Slice B3 Phase 4: runs `syneroym_fdae::plan_read` itself (rather than"
+  },
+  {
+   "file": "crates/control_plane/src/synsvc_native.rs",
+   "line": 711,
+   "text": "/// Slice B3 pipeline stage 2, the *receiving* (data-owning) side: \"which"
+  },
+  {
+   "file": "crates/control_plane/src/synsvc_native.rs",
+   "line": 1776,
+   "text": "/// through any of Slice 7's own bridged `get`/`query`/`put`/`patch`"
+  },
+  {
+   "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
+   "line": 182,
+   "text": "/// 1000-byte DNS packet limit (M04A Slice A1's cross-node proxy test needs"
+  },
+  {
+   "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
+   "line": 208,
+   "text": "/// Minimal `DeployManifest` for `AppSandboxEngine::deploy_wasm` (M04A Slice"
+  },
+  {
+   "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
+   "line": 235,
+   "text": "/// Polls `ep.addr()` until it carries at least one direct address (M04A"
+  },
+  {
+   "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
+   "line": 236,
+   "text": "/// Slice A1's cross-node proxy test, direct-connect-only, no relay)."
+  },
+  {
+   "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
+   "line": 437,
+   "text": "// *before* `RouteHandler::init` (M04A Slice A1, \u00a76): the Universal"
+  },
+  {
+   "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
+   "line": 586,
+   "text": "// *before* `RouteHandler::init` (M04A Slice A1, \u00a76) -- see the matching"
+  },
+  {
+   "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
+   "line": 638,
+   "text": "/// M04A Slice A1 (\u00a711.6, reference scenario step 20): a real cross-node"
+  },
+  {
+   "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
+   "line": 850,
+   "text": "/// M04A Slice A1 post-commit review finding F3: `test_cross_node_proxy_call`"
+  },
+  {
+   "file": "crates/core/src/asset_manifest.rs",
+   "line": 1,
+   "text": "//! The shared static-asset manifest and per-service registry (M06A A1):"
+  },
+  {
+   "file": "crates/core/src/asset_manifest.rs",
+   "line": 36,
+   "text": "/// The declared bundle's `visibility == public` (M06A D-A1-1). `internal`"
+  },
+  {
+   "file": "crates/core/src/asset_manifest.rs",
+   "line": 47,
+   "text": "/// (M06A D-A1-9)."
+  },
+  {
+   "file": "crates/core/src/asset_manifest.rs",
+   "line": 52,
+   "text": "/// persistence** (M06A D-A1-2): created empty each boot, populated by"
+  },
+  {
+   "file": "crates/core/src/config.rs",
+   "line": 76,
+   "text": "/// Identity/capability admission (M04A Slice B0, ADR-0015/0016)."
+  },
+  {
+   "file": "crates/core/src/config.rs",
+   "line": 222,
+   "text": "/// M3B blob object service configuration (Slice 5)."
+  },
+  {
+   "file": "crates/core/src/config.rs",
+   "line": 493,
+   "text": "/// (M06A `D-A2-11`). Bounded per-service queuing keeps that failure mode"
+  },
+  {
+   "file": "crates/core/src/config.rs",
+   "line": 892,
+   "text": "/// is convergence within one worker tick, not one poll interval (M05B"
+  },
+  {
+   "file": "crates/core/src/config.rs",
+   "line": 900,
+   "text": "/// 10-hour outage -- see the M05B B1 plan \u00a70.12 for the arithmetic. Must"
+  },
+  {
+   "file": "crates/core/src/config.rs",
+   "line": 995,
+   "text": "/// `poll_interval_secs` (M05B B1, D-B1-13). Recovery after a target"
+  },
+  {
+   "file": "crates/core/src/config.rs",
+   "line": 1443,
+   "text": "/// Identity/capability admission (M04A Slices B0 + B1). A caller whose"
+  },
+  {
+   "file": "crates/core/src/config.rs",
+   "line": 1480,
+   "text": "/// M06B B2) -- that declaration needs neither this grant nor a"
+  },
+  {
+   "file": "crates/core/src/config.rs",
+   "line": 1547,
+   "text": "/// M05A A5d: the anchor-refresh cadence has to sit comfortably inside"
+  },
+  {
+   "file": "crates/core/src/deploy_docs.rs",
+   "line": 145,
+   "text": "/// that is M06A A1's combined client-side check, because the 16 MiB RPC frame"
+  },
+  {
+   "file": "crates/core/src/dht_registry.rs",
+   "line": 275,
+   "text": "/// (M05A A4 -- lets a substrate report its own registry namespace rather"
+  },
+  {
+   "file": "crates/core/src/http_routes.rs",
+   "line": 1,
+   "text": "//! The shared per-service HTTP route vocabulary (M3B Slice 7): `HttpRoute`"
+  },
+  {
+   "file": "crates/core/src/http_routes.rs",
+   "line": 11,
+   "text": "//! guest code (M06A A2)."
+  },
+  {
+   "file": "crates/core/src/http_routes.rs",
+   "line": 36,
+   "text": "/// (M06A D-A2-7). Only meaningful for `target = \"guest\"` and `target ="
+  },
+  {
+   "file": "crates/core/src/http_routes.rs",
+   "line": 41,
+   "text": "/// `dispatch_native`, and `stream` predates this field (M06A \u00a79.5)."
+  },
+  {
+   "file": "crates/core/src/http_routes.rs",
+   "line": 78,
+   "text": "/// Lives in `core`, not `router` (M06A A1, R3-A): `syneroym-control-plane`'s"
+  },
+  {
+   "file": "crates/core/src/http_routes.rs",
+   "line": 102,
+   "text": "/// capture (M06A `D-A2-4`): with two `{...}` segments the two functions must"
+  },
+  {
+   "file": "crates/core/src/local_registry.rs",
+   "line": 26,
+   "text": "/// `deploy`). Shared here (M04A Slice A1) so `control_plane`'s registration"
+  },
+  {
+   "file": "crates/core/src/local_registry.rs",
+   "line": 39,
+   "text": "/// end to end during M3B Slice 7's own verification)."
+  },
+  {
+   "file": "crates/core/src/local_registry.rs",
+   "line": 84,
+   "text": "/// `service_id` -> `owner_did` (M04A Slice B7a). Separate from"
+  },
+  {
+   "file": "crates/core/src/local_registry.rs",
+   "line": 93,
+   "text": "/// deploy (M05A A4). Absent for a service deployed by a pre-A4 binary,"
+  },
+  {
+   "file": "crates/core/src/local_registry.rs",
+   "line": 101,
+   "text": "/// `app_instance_id` -> its management stamp (M05A A5a, replacing A2's"
+  },
+  {
+   "file": "crates/core/src/local_registry.rs",
+   "line": 303,
+   "text": "/// Record the owner of a deployed service (M04A Slice B7a). Overwrites"
+  },
+  {
+   "file": "crates/core/src/local_registry.rs",
+   "line": 363,
+   "text": "/// installed, and its declared visibility (M05A A4, `manifest_hash` added"
+  },
+  {
+   "file": "crates/core/src/local_registry.rs",
+   "line": 450,
+   "text": "/// declares no such dependency (M05A A5a). The epoch guard's read."
+  },
+  {
+   "file": "crates/core/src/local_registry.rs",
+   "line": 460,
+   "text": "/// `entry_json`) (M05A A5a). `status`'s per-dependent convergence"
+  },
+  {
+   "file": "crates/core/src/local_registry.rs",
+   "line": 467,
+   "text": "/// ever named it here (M05A A5a, replacing A2's `app_instance_owner_"
+  },
+  {
+   "file": "crates/core/src/local_registry.rs",
+   "line": 492,
+   "text": "/// when the last service of an instance is undeployed (M05A A5a) --"
+  },
+  {
+   "file": "crates/core/src/local_registry.rs",
+   "line": 502,
+   "text": "/// as its app context, if any (M05A A5a) -- used to decide when an app"
+  },
+  {
+   "file": "crates/core/src/local_registry.rs",
+   "line": 693,
+   "text": "/// M04A Slice B7a: `set_owner`/`owner_of`/`remove_owner` round-trip, and"
+  },
+  {
+   "file": "crates/core/src/storage.rs",
+   "line": 57,
+   "text": "/// (M04A Slice B7a)."
+  },
+  {
+   "file": "crates/core/src/storage.rs",
+   "line": 74,
+   "text": "/// `health_check_json`, `manifest_hash`, `visibility`) (M05A A4,"
+  },
+  {
+   "file": "crates/core/src/storage.rs",
+   "line": 127,
+   "text": "/// One persisted binding's `entry_json` (M05A A5a). The epoch guard"
+  },
+  {
+   "file": "crates/core/src/storage.rs",
+   "line": 135,
+   "text": "/// (M05A A5a)."
+  },
+  {
+   "file": "crates/core/src/storage.rs",
+   "line": 139,
+   "text": "/// (`app_instance_id`, `AppInstanceManagement`) (M05A A5a, replacing"
+  },
+  {
+   "file": "crates/core/src/test_constants.rs",
+   "line": 55,
+   "text": "/// The `test-driver` interface name for the M04A Slice A1 proxy-test"
+  },
+  {
+   "file": "crates/core/src/test_constants.rs",
+   "line": 74,
+   "text": "/// Slice B4-fdae's stage-4 ABAC fixture, ADR-0017 \u00a77. Behavior switches on"
+  },
+  {
+   "file": "crates/core/src/test_constants.rs",
+   "line": 117,
+   "text": "/// The `test-driver` interface name for the M06A A2 http-guest-test"
+  },
+  {
+   "file": "crates/core/src/test_constants.rs",
+   "line": 145,
+   "text": "/// WASM module (M06A A4)."
+  },
+  {
+   "file": "crates/data_blob/benches/blob_bench.rs",
+   "line": 2,
+   "text": "//! M03-sss (Slice 5) performance budgets: `put-blob`/`get-blob` against the"
+  },
+  {
+   "file": "crates/data_db/benches/fdae_bench.rs",
+   "line": 2,
+   "text": "//! FDAE pushdown query performance budget (M04B, task.md's Performance"
+  },
+  {
+   "file": "crates/data_db/benches/security_config_bench.rs",
+   "line": 2,
+   "text": "//! M03-sss performance budgets not covered by"
+  },
+  {
+   "file": "crates/data_db/benches/security_config_bench.rs",
+   "line": 171,
+   "text": "/// on every call (M04A Slice B6, `derive_instance_kek` in"
+  },
+  {
+   "file": "crates/data_db/benches/security_config_bench.rs",
+   "line": 191,
+   "text": "/// derivation (M04A Slice B6): HKDF-derive, AES-GCM DEK generate-or-load,"
+  },
+  {
+   "file": "crates/data_db/src/aggregate.rs",
+   "line": 2,
+   "text": "//! `SELECT ... GROUP BY ... HAVING ...` compiler (ADR-0007, Slice B4)."
+  },
+  {
+   "file": "crates/data_db/src/auth.rs",
+   "line": 2,
+   "text": "//! paths (ADR-0017, M04B Slice B2 Phase 2)."
+  },
+  {
+   "file": "crates/data_db/src/auth.rs",
+   "line": 18,
+   "text": "/// Pre-resolved by the caller (Slice B3 Phase 4), via"
+  },
+  {
+   "file": "crates/data_db/src/registry_store.rs",
+   "line": 74,
+   "text": "// M04A Slice B7a: service ownership. Separate table, not a"
+  },
+  {
+   "file": "crates/data_db/src/registry_store.rs",
+   "line": 130,
+   "text": "// `manifest_hash` (M05A A5a): the canonical content hash of what"
+  },
+  {
+   "file": "crates/data_db/src/registry_store.rs",
+   "line": 167,
+   "text": "// M05A A5a: who manages an app instance on this substrate"
+  },
+  {
+   "file": "crates/data_db/src/registry_store.rs",
+   "line": 936,
+   "text": "/// M04A Slice B7a: a freshly created `endpoints.db` gets both tables in"
+  },
+  {
+   "file": "crates/data_db/src/sqlite.rs",
+   "line": 896,
+   "text": "/// Runs an `aggregate` call (ADR-0007, Slice B4) on the reader pool. The"
+  },
+  {
+   "file": "crates/data_db/src/sqlite.rs",
+   "line": 2579,
+   "text": "/// M04A Slice B6 \u00a75 test 5: two distinct `service_id`s under one master"
+  },
+  {
+   "file": "crates/data_db/src/sqlite.rs",
+   "line": 2604,
+   "text": "/// M04A Slice B6 \u00a75 test 6 -- the failure row mirrored at the storage"
+  },
+  {
+   "file": "crates/data_db/src/sqlite.rs",
+   "line": 2883,
+   "text": "// -- FDAE watchdog matrix (ADR-0017 \u00a78, M04B Slice B2 Phase 2) ----------"
+  },
+  {
+   "file": "crates/data_db/src/sqlite.rs",
+   "line": 2953,
+   "text": "/// ADR-0017 \u00a79 decision trace, \"rows not reached\" (M04B Slice B2"
+  },
+  {
+   "file": "crates/data_db/src/tests_crud.rs",
+   "line": 364,
+   "text": "// -- query-raw (Slice B5, ADR-0011) --------------------------------------"
+  },
+  {
+   "file": "crates/data_db/src/tests_fdae.rs",
+   "line": 1,
+   "text": "//! FDAE pushdown-sieve integration tests (M04B Slice B2 Phase 2): real SQL"
+  },
+  {
+   "file": "crates/data_db/src/tests_fdae.rs",
+   "line": 344,
+   "text": "/// Slice B3 Phase 4: `QueryAuth.resolved_sieve`, when present, is used"
+  },
+  {
+   "file": "crates/data_db/src/tests_fdae.rs",
+   "line": 669,
+   "text": "/// extraction channel, not just a single guess. Surfaced during Slice B2"
+  },
+  {
+   "file": "crates/data_db/src/tests_fdae.rs",
+   "line": 1033,
+   "text": "/// **Known limitation, tracked as D-04-02-g** (surfaced during Slice B2"
+  },
+  {
+   "file": "crates/data_db/src/traits.rs",
+   "line": 222,
+   "text": "/// Runs an aggregation (ADR-0007, Slice B4) over a collection: compiles"
+  },
+  {
+   "file": "crates/data_db/src/traits.rs",
+   "line": 278,
+   "text": "/// **One narrow, deliberate exception**: Slice B3's `resolve-relation`"
+  },
+  {
+   "file": "crates/data_keystore/src/key_store.rs",
+   "line": 20,
+   "text": "/// [`derive_instance_kek`] (M04A Slice B6, \"Model A\": derived, not"
+  },
+  {
+   "file": "crates/data_keystore/src/key_store.rs",
+   "line": 195,
+   "text": "/// Strategy calls for (M04A Slice B6) \u2014 exercised end-to-end by"
+  },
+  {
+   "file": "crates/data_keystore/src/key_store.rs",
+   "line": 329,
+   "text": "/// M04A Slice B6 \u00a75 test 1: guards the derive path end-to-end."
+  },
+  {
+   "file": "crates/data_keystore/src/key_store.rs",
+   "line": 352,
+   "text": "/// M04A Slice B6 \u00a75 test 2 \u2014 the failure-table proof (task.md's"
+  },
+  {
+   "file": "crates/data_keystore/src/key_store.rs",
+   "line": 403,
+   "text": "/// M04A Slice B6 \u00a75 test 3 (extends the former `test_rotate_kek`) --"
+  },
+  {
+   "file": "crates/data_keystore/src/key_store.rs",
+   "line": 535,
+   "text": "/// M04A Slice B6 review (S2 gap): a DEK generated under one master must"
+  },
+  {
+   "file": "crates/data_keystore/src/key_store.rs",
+   "line": 566,
+   "text": "/// M04A Slice B6 review (T3 gap): rotation must succeed as a no-op when"
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
+   "line": 81,
+   "text": "/// `IN (...)` list's cardinality (Slice B3 plan \u00a75, fan-out containment). An"
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
+   "line": 94,
+   "text": "/// can be finalized (ADR-0017 \u00a76 / pipeline stage 2, Slice B3). The"
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
+   "line": 175,
+   "text": "/// (Slice B3 plan \u00a71.1). Opaque outside this module; the only thing a"
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
+   "line": 431,
+   "text": "/// The two-phase counterpart of [`compile_read`] (Slice B3 plan \u00a71.1): same"
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
+   "line": 740,
+   "text": "/// `resolve-relation`, Slice B3 Phase 3) uses this only when the requesting"
+  },
+  {
+   "file": "crates/fdae/src/compile.rs",
+   "line": 3792,
+   "text": "// -- ADR-0017 \u00a79 decision trace (M04B Slice B2 Phase 5) -----------------"
+  },
+  {
+   "file": "crates/fdae/src/policy.rs",
+   "line": 82,
+   "text": "/// Required alongside `service` (D-B3-8, Slice B3 Phase 4): the DID a"
+  },
+  {
+   "file": "crates/fdae/src/trace.rs",
+   "line": 9,
+   "text": "/// (Slice B3 pipeline stage 2, ADR-0017 \u00a76). Recorded regardless of caching"
+  },
+  {
+   "file": "crates/fdae/src/trace.rs",
+   "line": 80,
+   "text": "/// sieve depended on (Slice B3), populated by `finalize` from each"
+  },
+  {
+   "file": "crates/identity/src/keys.rs",
+   "line": 219,
+   "text": "/// service signs -- e.g. Slice B3's `RelationshipProof` (\"`hr-svc`"
+  },
+  {
+   "file": "crates/mqtt_broker/src/tests.rs",
+   "line": 215,
+   "text": "/// Found while building M05A A5c's alert publication: a real caller"
+  },
+  {
+   "file": "crates/router/benches/proxy.rs",
+   "line": 2,
+   "text": "//! Universal Proxy same-node latency (M04A Slice A1, F8): the `< 5ms p99`"
+  },
+  {
+   "file": "crates/router/src/connection_router.rs",
+   "line": 74,
+   "text": "// Built *before* `RouteHandler::init` (M04A Slice A1, fixes F7): the"
+  },
+  {
+   "file": "crates/router/src/net_iroh.rs",
+   "line": 126,
+   "text": "/// (M04A Slice A1, factored out of `route_handler/io.rs`'s registry-miss"
+  },
+  {
+   "file": "crates/router/src/preamble.rs",
+   "line": 79,
+   "text": "//! **Authentication status, as of M04A Slice B1 (supersedes the M3B/M3C"
+  },
+  {
+   "file": "crates/router/src/preamble.rs",
+   "line": 81,
+   "text": "//! *always* attempted (Slice B0 closed the former \"only when"
+  },
+  {
+   "file": "crates/router/src/preamble.rs",
+   "line": 87,
+   "text": "//! (`route_handler/io.rs`, Slice B1) -- see that module's doc comment for"
+  },
+  {
+   "file": "crates/router/src/preamble.rs",
+   "line": 191,
+   "text": "/// ingress (Slice B1). Mirrors `delegation` in transport shape."
+  },
+  {
+   "file": "crates/router/src/proxy.rs",
+   "line": 1,
+   "text": "//! Universal Proxy dispatch (M04A Slice A1): a transport-agnostic outbound"
+  },
+  {
+   "file": "crates/router/src/proxy.rs",
+   "line": 214,
+   "text": "/// The Universal Proxy's outbound router (M04A Slice A1). Holds `Weak`"
+  },
+  {
+   "file": "crates/router/src/proxy.rs",
+   "line": 573,
+   "text": "/// TODO(M04B/FDAE): this is an interim, coarse, fail-closed gate -- \"a"
+  },
+  {
+   "file": "crates/router/src/proxy.rs",
+   "line": 575,
+   "text": "/// through the proxy.\" M04B replaces it with real per-caller/per-row"
+  },
+  {
+   "file": "crates/router/src/proxy.rs",
+   "line": 583,
+   "text": "/// exactly what M04B's Slice B3 relationship-proof fetch is, so gating"
+  },
+  {
+   "file": "crates/router/src/proxy.rs",
+   "line": 587,
+   "text": "/// proof (`invoke_remote`) and, once M04B lands, runs the FDAE policy"
+  },
+  {
+   "file": "crates/router/src/proxy.rs",
+   "line": 769,
+   "text": "// it legitimately carries today (Slice B3.5-fdae forwards a"
+  },
+  {
+   "file": "crates/router/src/proxy.rs",
+   "line": 3316,
+   "text": "/// The M04B B3 relationship-proof-fetch shape -- a guard against a"
+  },
+  {
+   "file": "crates/router/src/proxy.rs",
+   "line": 3478,
+   "text": "/// Slice B3.5-fdae's self-proxy branch (`host_capabilities.rs`) forwards"
+  },
+  {
+   "file": "crates/router/src/route_handler.rs",
+   "line": 96,
+   "text": "/// `Arc`-wrapped (M04A Slice A1) so the `ProxyRouter`'s outbound remote"
+  },
+  {
+   "file": "crates/router/src/route_handler.rs",
+   "line": 101,
+   "text": "/// `Arc`-wrapped (M04A Slice A1) so the `ProxyRouter` can share this"
+  },
+  {
+   "file": "crates/router/src/route_handler.rs",
+   "line": 115,
+   "text": "/// Per-service HTTP route table (M3B Slice 7); the `HttpRoute`/"
+  },
+  {
+   "file": "crates/router/src/route_handler.rs",
+   "line": 130,
+   "text": "/// `GET` route (M3B Slice 7) to resolve a service's DEK the same way"
+  },
+  {
+   "file": "crates/router/src/route_handler.rs",
+   "line": 137,
+   "text": "/// Interim Admin-capability allowlist root (M04A Slice B0, ADR-0015/0016"
+  },
+  {
+   "file": "crates/router/src/route_handler.rs",
+   "line": 149,
+   "text": "/// This node's own DID -- `RouteHandler::init`'s `service_id` (M04A"
+  },
+  {
+   "file": "crates/router/src/route_handler.rs",
+   "line": 153,
+   "text": "/// The Universal Proxy (M04A Slice A1). `RouteHandlerInner` is its"
+  },
+  {
+   "file": "crates/router/src/route_handler.rs",
+   "line": 204,
+   "text": "/// Static asset manifests, per service (M06A A1). Same `Arc`, same"
+  },
+  {
+   "file": "crates/router/src/route_handler.rs",
+   "line": 219,
+   "text": "/// above for dispatch-registration behavior. Slice B3 Phase 4 uses this"
+  },
+  {
+   "file": "crates/router/src/route_handler.rs",
+   "line": 261,
+   "text": "// The Universal Proxy (M04A Slice A1). Built here, before `inner`,"
+  },
+  {
+   "file": "crates/router/src/route_handler.rs",
+   "line": 321,
+   "text": "// Slice B4-fdae: `SynSvcNativeService`'s stage-4 ABAC after-step"
+  },
+  {
+   "file": "crates/router/src/route_handler.rs",
+   "line": 336,
+   "text": "// Slice B3 Phase 4: `SynSvcNativeService`'s cross-service"
+  },
+  {
+   "file": "crates/router/src/route_handler/dispatch.rs",
+   "line": 122,
+   "text": "/// (D-04-02-h ingress (i), Slice B3.5-fdae) instead of rejecting or"
+  },
+  {
+   "file": "crates/router/src/route_handler/dispatch.rs",
+   "line": 200,
+   "text": "// FDAE/M04B policy question (ADR-0017 Open, design \u00a79.8; this"
+  },
+  {
+   "file": "crates/router/src/route_handler/dispatch.rs",
+   "line": 201,
+   "text": "// comment previously mis-addressed it to M04B). B7b"
+  },
+  {
+   "file": "crates/router/src/route_handler/dispatch.rs",
+   "line": 504,
+   "text": "/// (M05A A5c \u00a719.5c/\u00a719.5e, D-A5c-6). Every *deployed service*'s"
+  },
+  {
+   "file": "crates/router/src/route_handler/dispatch.rs",
+   "line": 639,
+   "text": "/// M05A A5c \u00a719.5e (D-A5c-6, review F10): a subscribe naming a topic"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 4,
+   "text": "//! (unchanged), plus M3B Slice 7's HTTP verb/path passthrough onto"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 5,
+   "text": "//! `data-layer`/`blob-store`/`messaging` -- see `task.md`'s \"Slice 7: HTTP"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 13,
+   "text": "//! 2. M06A A1's static assets: `GET`/`HEAD` only, exact path plus a"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 19,
+   "text": "//!    stream protocol, or (M06A A2) hands the request to the deployed"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 108,
+   "text": "/// Request-body ceiling for a `guest` route (M06A D-A2-8). Its own constant"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 124,
+   "text": "/// and never forwarded from a request (M06A D-A2-5)."
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 204,
+   "text": "/// `messaging`) the resolved HTTP route implies -- decision 2 of the Slice 7"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 255,
+   "text": "/// bridged native-capability request (M04A Slice B0) -- never emitted by a"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 261,
+   "text": "/// table, defined once and reused by every bridged route (task.md's Slice 7"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 296,
+   "text": "/// **Cache-Control is chosen by content type, not by path** (M06A A1"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 447,
+   "text": "/// Request headers a guest sees (M06A D-A2-5, D-A2-8): lowercased, with"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 479,
+   "text": "/// The router's view of `CallerContext` as a guest may see it (M06A"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 598,
+   "text": "/// matrix row 6 requires (M06A D-A2-5). `Content-Length` is always the"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 784,
+   "text": "// M06A A1: static assets, exact-path plus a trailing-slash"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 789,
+   "text": "// free check (D-06A-1) ahead of the route table lookup."
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 925,
+   "text": "/// Serves one static asset (M06A A1). `Ok(None)` means \"not an asset\""
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 989,
+   "text": "// `NativeService` arm (D-06A-1). Deliberately bypasses `self."
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 1599,
+   "text": "// -- guest HTTP route target (M06A A2) --------------------------------"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 2087,
+   "text": "// TODO(M04B/FDAE): the signed-URL HMAC is the B0 authorization for"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 2089,
+   "text": "// FDAE (M04B) against the resolved caller; `service_system` is an"
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 2145,
+   "text": "/// method), per decision 7 of the Slice 7 plan."
+  },
+  {
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 2381,
+   "text": "// -- guest HTTP route target (M06A A2) -------------------------------"
+  },
+  {
+   "file": "crates/router/src/route_handler/io.rs",
+   "line": 87,
+   "text": "/// M04A Slice B7b (ADR-0015 A6/F6): whether `res`'s named substrate node is"
+  },
+  {
+   "file": "crates/router/src/route_handler/io.rs",
+   "line": 101,
+   "text": "/// M04A Slice B7b (ADR-0015 A6): the `service_id` a resource names, for the"
+  },
+  {
+   "file": "crates/router/src/route_handler/io.rs",
+   "line": 125,
+   "text": "/// \u00a74.2, Slice B1). A caller whose master DID equals the configured"
+  },
+  {
+   "file": "crates/router/src/route_handler/io.rs",
+   "line": 130,
+   "text": "/// or at a resource's own recorded owner (ADR-0015 A6, M04A Slice B7b: a"
+  },
+  {
+   "file": "crates/router/src/route_handler/io.rs",
+   "line": 149,
+   "text": "/// grant-layer capability check, NOT an FDAE/M04B policy question (ADR-0017"
+  },
+  {
+   "file": "crates/router/src/route_handler/io.rs",
+   "line": 150,
+   "text": "/// Open, design \u00a79.8; this comment previously mis-addressed it to M04B)."
+  },
+  {
+   "file": "crates/router/src/route_handler/io.rs",
+   "line": 580,
+   "text": "// distinguish `Declined` from `Completed` (unlike Slice 7's HTTP"
+  },
+  {
+   "file": "crates/router/src/route_handler/io.rs",
+   "line": 916,
+   "text": "/// are Slice B7). `auth` must not upgrade to `Ucan` either: the chain"
+  },
+  {
+   "file": "crates/router/src/route_handler/io.rs",
+   "line": 1412,
+   "text": "// -- M04A Slice B7b (ADR-0015 A6/F6/A7): owner-rooted trust ----------"
+  },
+  {
+   "file": "crates/router/src/routing.rs",
+   "line": 78,
+   "text": "/// exists (M04A Slice A1, the minimal `[LFC-VER]` behavior kept from the"
+  },
+  {
+   "file": "crates/router/tests/deploy_grant.rs",
+   "line": 2,
+   "text": "//! M04A Slice B7b: the deploy grant itself (task.md item 1 + F3's"
+  },
+  {
+   "file": "crates/router/tests/deploy_grant.rs",
+   "line": 290,
+   "text": "/// (M04A Slice B7b/F2), so an app-scoped grantee does not gain the node-wide"
+  },
+  {
+   "file": "crates/router/tests/native_dispatch_identity.rs",
+   "line": 2,
+   "text": "//! Slice B0 (M04A): native-dispatch identity threading -- \"the single most"
+  },
+  {
+   "file": "crates/router/tests/native_dispatch_identity.rs",
+   "line": 471,
+   "text": "/// `query-raw` (Slice B5, ADR-0011) is gated on `data-layer/admin`, mirroring"
+  },
+  {
+   "file": "crates/router/tests/native_dispatch_identity.rs",
+   "line": 916,
+   "text": "/// `aggregate` (Slice B4, ADR-0007) is deliberately unprivileged, like"
+  },
+  {
+   "file": "crates/router/tests/native_dispatch_identity.rs",
+   "line": 1632,
+   "text": "// -- Slice B3 Phase 3: native `resolve-relation` (the cross-service"
+  },
+  {
+   "file": "crates/router/tests/native_dispatch_identity.rs",
+   "line": 2264,
+   "text": "// -- Slice B4-fdae: `resolve-relation` denies closed under a stage-4"
+  },
+  {
+   "file": "crates/router/tests/native_dispatch_identity.rs",
+   "line": 2352,
+   "text": "/// Slice B3 Phase 4: constructs hr-svc's `SynSvcNativeService` directly"
+  },
+  {
+   "file": "crates/router/tests/proxy_dispatch.rs",
+   "line": 2,
+   "text": "//! Slice A1 (M04A): Universal Proxy dispatch integration tests -- drives the"
+  },
+  {
+   "file": "crates/router/tests/proxy_dispatch.rs",
+   "line": 920,
+   "text": "/// is the one D-04-02-h case Slice B3.5-fdae does **not** change -- an"
+  },
+  {
+   "file": "crates/router/tests/proxy_dispatch.rs",
+   "line": 990,
+   "text": "/// Slice B3.5-fdae closure of D-04-02-h ingress (ii): a **real**,"
+  },
+  {
+   "file": "crates/router/tests/proxy_dispatch.rs",
+   "line": 1080,
+   "text": "// -- Slice B4-fdae: ingress (ii) applies the stage-4 after-step -----------"
+  },
+  {
+   "file": "crates/router/tests/service_ownership.rs",
+   "line": 2,
+   "text": "//! M04A Slice B7a: substrate & service ownership attribution. Drives"
+  },
+  {
+   "file": "crates/router/tests/service_ownership.rs",
+   "line": 55,
+   "text": "/// `undeploy` setup calls any more: M04A Slice B7b adds a Tier-1 admission"
+  },
+  {
+   "file": "crates/router/tests/service_ownership.rs",
+   "line": 69,
+   "text": "/// M04A Slice B7b: a caller holding an app-scoped `orchestrator/{deploy,"
+  },
+  {
+   "file": "crates/router/tests/ucan_context.rs",
+   "line": 2,
+   "text": "//! Slice B1 (M04A): UCAN context extraction and normalization -- reference"
+  },
+  {
+   "file": "crates/router/tests/unsupported_protocol.rs",
+   "line": 2,
+   "text": "//! Slice A1 (M04A): a caller declaring a protocol scheme this node does not"
+  },
+  {
+   "file": "crates/rpc/src/fdae_abac.rs",
+   "line": 1,
+   "text": "//! Slice B4-fdae: the after-step seam for ADR-0017 \u00a77's stage-4 WASM ABAC."
+  },
+  {
+   "file": "crates/rpc/src/fdae_fetch.rs",
+   "line": 1,
+   "text": "//! Slice B3 Phase 4: the orchestration seam that actually performs a"
+  },
+  {
+   "file": "crates/rpc/src/native.rs",
+   "line": 17,
+   "text": "/// proxy hop (M04A Slice A1) carries the caller's DID and its signed proofs"
+  },
+  {
+   "file": "crates/rpc/src/native.rs",
+   "line": 27,
+   "text": "/// selection: M04A Slice B6 derives each service's KEK from the bound"
+  },
+  {
+   "file": "crates/rpc/src/native.rs",
+   "line": 35,
+   "text": "/// Signed, forwardable proof of this caller's identity (M04A Slice A1,"
+  },
+  {
+   "file": "crates/rpc/src/proxy.rs",
+   "line": 1,
+   "text": "//! Transport-agnostic service-proxy contract (M04A Slice A1)."
+  },
+  {
+   "file": "crates/rpc/src/proxy.rs",
+   "line": 52,
+   "text": "/// (M04B B3), control-plane internals, tests. Not subject to the guest"
+  },
+  {
+   "file": "crates/rpc/src/proxy.rs",
+   "line": 54,
+   "text": "/// data-owning node (ADR-0016 \u00a76; M04B \"enforce at the data-owning"
+  },
+  {
+   "file": "crates/rpc/src/relationship_proof.rs",
+   "line": 2,
+   "text": "//! does `principal` reach via `relation`\" (Slice B3 pipeline stage 2,"
+  },
+  {
+   "file": "crates/rpc/src/relationship_proof.rs",
+   "line": 37,
+   "text": "/// via `relation`\" (Slice B3, ADR-0017 \u00a76): the wire response of"
+  },
+  {
+   "file": "crates/sandbox_podman/src/engine.rs",
+   "line": 433,
+   "text": "/// `podman start <name>` (M05A A5a). The other half of a restart --"
+  },
+  {
+   "file": "crates/sandbox_wasm/benches/abac_bench.rs",
+   "line": 2,
+   "text": "//! Slice B4-fdae performance budget (task.md Performance Budgets row 3):"
+  },
+  {
+   "file": "crates/sandbox_wasm/benches/abac_bench.rs",
+   "line": 17,
+   "text": "//! little) scales on top of it, mirroring Slice B3 Phase 5's own finding"
+  },
+  {
+   "file": "crates/sandbox_wasm/benches/data_layer_bench.rs",
+   "line": 2,
+   "text": "//! Slice 3A (M03-sss) performance budgets: CRUD/batch operation latency"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/conversions.rs",
+   "line": 2,
+   "text": "//! (Slice A0\u2032, requirement `[PLT-DAT]`)."
+  },
+  {
+   "file": "crates/sandbox_wasm/src/conversions.rs",
+   "line": 37,
+   "text": "//! around \u2014 see the M04A A0\u2032 task section):"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/conversions.rs",
+   "line": 412,
+   "text": "/// Typed counterpart of [`wasm_results_to_json_string`] (Slice A1): the"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/conversions.rs",
+   "line": 952,
+   "text": "// wasm_results_to_json (Slice A1 typed counterpart)."
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 90,
+   "text": "/// collapsed into the same `Ok(())` (M3B Slice 7). Callers that need to"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 109,
+   "text": "/// How a `handle-request` call ended (M06A A2). `Err` from the enclosing"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 137,
+   "text": "/// (`PoolConcurrencyLimitError`). M06A D-A2-11."
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 198,
+   "text": "/// the `ProxyRouter` (M04A Slice A1, `syneroym-router`) are both"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 268,
+   "text": "/// short-lived ordinary calls generally (M05A A5c \u00a719.13/D-A5c-12,"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 297,
+   "text": "/// lifetime (M06A A1, D-A1-7). Alongside the pre-existing"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 306,
+   "text": "/// concurrently, per service (M06A D-A2-11). Unlike an RPC client, one"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 363,
+   "text": "/// before the router answers 503 (M06A D-A2-11). Short on purpose: a"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 382,
+   "text": "/// one guest call. Hoisted to module scope (M06A A2, call site 12a) from"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 400,
+   "text": "/// How a `Func::call_async` failure should be read (M06A D-A2-6). One"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 903,
+   "text": "/// process-lifetime (M06A A1, D-A1-7). Tests assert on a **delta**"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 949,
+   "text": "/// handler (M06A A2). Cheap (static component type, no instantiation) --"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 974,
+   "text": "/// liveness a wasm service has, since nothing runs between calls (M05A"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 1061,
+   "text": "/// Typed entry point (M04A Slice A1): the guest's results as a real JSON"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 1106,
+   "text": "/// The `rpc` health-probe entry point (M05A A5c \u00a719.13/D-A5c-12):"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 1537,
+   "text": "/// Drops `service_id`'s guest HTTP admission semaphore (M06A A2)."
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 1973,
+   "text": "/// persisted to `blobs_dir` (M05A A5a). A5's remediation half of"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 2423,
+   "text": "// `classify_call_failure` (M06A D-A2-6) replaces this site's own"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 2520,
+   "text": "/// this service's own guest-HTTP admission permit (M06A D-A2-11)."
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 3136,
+   "text": "/// Before Slice B3.5-fdae, that fact was true but practically"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 3618,
+   "text": "/// Pins `classify_call_failure`'s taxonomy (M06A D-A2-6, review finding"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/host_capabilities.rs",
+   "line": 288,
+   "text": "/// Weak handle to the Universal Proxy (M04A Slice A1), letting a guest"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/host_capabilities.rs",
+   "line": 432,
+   "text": "/// unfiltered behavior). Slice B3 Phase 4: runs `syneroym_fdae::"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/host_capabilities.rs",
+   "line": 1402,
+   "text": "/// Originates a cross-service call through the Universal Proxy (M04A"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/host_capabilities.rs",
+   "line": 1403,
+   "text": "/// Slice A1). Always constructs `CallOrigin::Guest` -- this is the only"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/host_capabilities.rs",
+   "line": 3200,
+   "text": "// -- FDAE host wiring (M04B Slice B2 Phase 3) --------------------------"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/host_capabilities.rs",
+   "line": 3763,
+   "text": "// -- Slice B3 Phase 4: cross-service relationship-proof fetch, wired"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/http.rs",
+   "line": 1,
+   "text": "//! Dynamic `Val` marshalling for the guest HTTP handler (M06A A2,"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/http.rs",
+   "line": 18,
+   "text": "/// WIT-package-qualified name of the guest HTTP handler interface (M06A"
+  },
+  {
+   "file": "crates/sandbox_wasm/src/stream.rs",
+   "line": 121,
+   "text": "/// dynamic API uses to represent a WIT `list<u8>`. `pub(crate)` (M06A A2):"
+  },
+  {
+   "file": "crates/sandbox_wasm/tests/abac_integration.rs",
+   "line": 2,
+   "text": "//! Slice B4-fdae end-to-end integration tests: a real `AppSandboxEngine`"
+  },
+  {
+   "file": "crates/sandbox_wasm/tests/abac_integration.rs",
+   "line": 306,
+   "text": "/// these eight tests *are* Slice B4-fdae's security evidence"
+  },
+  {
+   "file": "crates/sandbox_wasm/tests/blob_store_integration.rs",
+   "line": 2,
+   "text": "//! Slice 5 integration test: exercises the real `Host`/`HostBlobWriter`/"
+  },
+  {
+   "file": "crates/sandbox_wasm/tests/data_layer_integration.rs",
+   "line": 275,
+   "text": "/// Slice B3.5-fdae closure of D-04-02-h ingress (i): a **real** caller"
+  },
+  {
+   "file": "crates/sandbox_wasm/tests/guest_http_integration.rs",
+   "line": 2,
+   "text": "//! M06A A2 integration tests: `syneroym:http/incoming-handler#handle-request`"
+  },
+  {
+   "file": "crates/sandbox_wasm/tests/lifecycle_hooks.rs",
+   "line": 225,
+   "text": "/// `query-raw` (Slice B5, ADR-0011) is gated identically to `execute-ddl`:"
+  },
+  {
+   "file": "crates/sdk/src/deploy.rs",
+   "line": 2,
+   "text": "//! (M05A Slice A3), and the per-substrate member-identity minting that A3's"
+  },
+  {
+   "file": "crates/sdk/src/deploy.rs",
+   "line": 3,
+   "text": "//! multi-substrate placement requires (M05A \u00a70.1)."
+  },
+  {
+   "file": "crates/sdk/src/deploy.rs",
+   "line": 81,
+   "text": "/// reinstall (M05A A5's unattended renewal). On the trait for the same"
+  },
+  {
+   "file": "crates/sdk/src/deploy.rs",
+   "line": 96,
+   "text": "/// ever recorded one (M05A A5c \u00a719.7/\u00a719.12) -- the supervisor's own"
+  },
+  {
+   "file": "crates/sdk/src/deploy.rs",
+   "line": 201,
+   "text": "/// expressions (M05B B1, D-B1-4). `roymctl` and the SDK's own e2e fixtures"
+  },
+  {
+   "file": "crates/sdk/src/deploy.rs",
+   "line": 264,
+   "text": "/// starting) that a later retry would have cleared (M05B B1 review finding"
+  },
+  {
+   "file": "crates/sdk/src/deploy.rs",
+   "line": 420,
+   "text": "/// The generation this apply writes at (ADR-0021 \u00a74, M05A A5a). `0`"
+  },
+  {
+   "file": "crates/sdk/src/deploy.rs",
+   "line": 425,
+   "text": "/// keyed by the dependent's `MemberRef` (M05A A5c \u00a719.3/D-A5c-4;"
+  },
+  {
+   "file": "crates/sdk/src/deploy.rs",
+   "line": 426,
+   "text": "/// re-keyed from `LogicalServiceRef` in M05A A5e, D-A5e-2, since each"
+  },
+  {
+   "file": "crates/sdk/src/deploy.rs",
+   "line": 500,
+   "text": "/// `member_ref` is a `MemberRef`'s display string (M05A A5e, D-A5e-2): the"
+  },
+  {
+   "file": "crates/sdk/src/deploy.rs",
+   "line": 1344,
+   "text": "// \u2500\u2500 M05B B1: the durable actor's try-then-queue decision \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  {
+   "file": "crates/sdk/src/health.rs",
+   "line": 2,
+   "text": "//! they are placed on (M05A Slice A4), read-only."
+  },
+  {
+   "file": "crates/sdk/src/health.rs",
+   "line": 54,
+   "text": "/// This member's ordinal within its logical service (M05A A5e,"
+  },
+  {
+   "file": "crates/sdk/src/health.rs",
+   "line": 105,
+   "text": "/// has no record of (M05A A5c \u00a719.4) -- rather than fabricating one."
+  },
+  {
+   "file": "crates/sdk/src/health.rs",
+   "line": 108,
+   "text": "/// `ExpectedService` the caller resolved (M05A A5e, D-A5e-17) -- the"
+  },
+  {
+   "file": "crates/sdk/src/health.rs",
+   "line": 116,
+   "text": "/// This member's identity as a managed unit (M05A A5e, D-A5e-2/D-A5e-17)"
+  },
+  {
+   "file": "crates/sdk/src/health.rs",
+   "line": 371,
+   "text": "/// `extra_live_pairs` (M05A A5c D-A5c-10): `(logical_ref, substrate_did)`"
+  },
+  {
+   "file": "crates/sdk/src/health.rs",
+   "line": 684,
+   "text": "/// M05A A5c \u00a719.4: `ServiceHealth.binding_epochs` must actually carry"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 105,
+   "text": "/// Whether the substrate believes a service's instance is running (M05A A4)."
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 135,
+   "text": "/// Outcome of one epoch-guarded binding write (ADR-0021 \u00a73, M05A A5a)."
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 158,
+   "text": "/// currently serves it (M05A A5a). `status`'s per-dependent binding"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 163,
+   "text": "/// What this node is, as opposed to what is running on it (M05A A4). Present"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 187,
+   "text": "/// M06A D-A1-5: the authoritative size check the asset-bundle deploy-time"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 230,
+   "text": "/// every outbound preamble (M04A Slice B0, ADR-0016 \u00a74.2/\u00a70.5). Without"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 235,
+   "text": "/// TODO(M04B/FDAE): a self-asserted pubkey is an assertion, not proof-"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 237,
+   "text": "/// it). B1/M04B tighten this to verified UCAN chains; B0 only needs"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 241,
+   "text": "/// preamble (M04A Slice B1), set via [`Self::with_ucan`]. `None` by"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 298,
+   "text": "/// call (M06A A2, `D-A2-9`). Replaces the growing positional tail"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 477,
+   "text": "/// Attaches a verified UCAN capability chain (M04A Slice B1) to present"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 683,
+   "text": "// connection is not anonymous (M04A Slice B0, ADR-0016 \u00a70.5)"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 806,
+   "text": "/// about a WASM deploy (M06A A2, `D-A2-9`): a static asset bundle"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 807,
+   "text": "/// (M06A A1) and a `custom_config` JSON blob, whose reserved"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 809,
+   "text": "/// Slice 7, M06A A2's `target = \"guest\"`). Replaces"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 969,
+   "text": "/// management stamp when the service has one (M05A A5a, ADR-0021 \u00a74);"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 981,
+   "text": "/// Epoch-guarded binding write (M05A A5a, ADR-0021 \u00a73) -- the only"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 990,
+   "text": "/// Restart a deployed service in place, without reinstalling it (M05A"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 1005,
+   "text": "/// service, without reinstalling it (M05A A5's unattended renewal)."
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 1023,
+   "text": "/// Clear an app instance's management stamp (M05A A5a \u00a70.24):"
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 1107,
+   "text": "/// every service this client may see when the list is empty (M05A A4)."
+  },
+  {
+   "file": "crates/sdk/src/lib.rs",
+   "line": 1226,
+   "text": "/// `shutdown_clients` (N2, M05A Slice A5b review round 2) -- by closing the"
+  },
+  {
+   "file": "crates/sdk/src/mapper.rs",
+   "line": 27,
+   "text": "/// rather than a URL or a local path (M05A A5b): a plan applied by the App"
+  },
+  {
+   "file": "crates/sdk/src/mapper.rs",
+   "line": 91,
+   "text": "/// Wasm component's `source` and M06A A1's asset bundle `archive` -- the two"
+  },
+  {
+   "file": "crates/sdk/src/mapper.rs",
+   "line": 115,
+   "text": "/// Maps the app model's `AssetBundle` (M06A A1) to the wire record. Absent"
+  },
+  {
+   "file": "crates/sdk/src/mapper.rs",
+   "line": 183,
+   "text": "/// `binding_epochs` is keyed by `MemberRef`, not `LogicalServiceRef` (M05A"
+  },
+  {
+   "file": "crates/sdk/src/mapper.rs",
+   "line": 369,
+   "text": "// M05A A5c \u00a719.3/D-A5c-4: the epoch belongs to the"
+  },
+  {
+   "file": "crates/sdk/src/mapper.rs",
+   "line": 383,
+   "text": "// ADR-0021 \u00a74 (M05A A5a): 0 for every caller through A5a --"
+  },
+  {
+   "file": "crates/sdk/src/mapper.rs",
+   "line": 472,
+   "text": "// Unmanaged (M05A A5a): none of these tests exercise the"
+  },
+  {
+   "file": "crates/sdk/src/mapper.rs",
+   "line": 877,
+   "text": "/// M05A A5c \u00a719.3/D-A5c-4: the epoch is keyed by the *dependent*"
+  },
+  {
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 183,
+   "text": "/// M05A A5c \u00a719.8/D-A5c-8: the supervisor's resident loop is spawned"
+  },
+  {
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 192,
+   "text": "/// The durable outbox worker's own task (M05B B1, D-B1-1), spawned and"
+  },
+  {
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 307,
+   "text": "// M05A A5c \u00a719.8/D-A5c-8: spawned here, at the top of this"
+  },
+  {
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 432,
+   "text": "// M05A A5c \u00a719.8/D-A5c-8: races the spawned loop's `JoinHandle`"
+  },
+  {
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 448,
+   "text": "// M05B B1: raced the same way `supervisor_fut` is -- a panic in the"
+  },
+  {
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 509,
+   "text": "// M05A A5c D-A5c-8: cancelling the token above unblocks `run`'s"
+  },
+  {
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 522,
+   "text": "// M05B B1, D-B1-8: `shutdown_supervisor_role` above already"
+  },
+  {
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 571,
+   "text": "/// Spawns the supervisor's resident loop (M05A A5c \u00a719.8/D-A5c-8) so it"
+  },
+  {
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 594,
+   "text": "/// Spawns the durable outbox worker (M05B B1, D-B1-1) beside the resident"
+  },
+  {
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 616,
+   "text": "/// pass in flight to finish closing its clients (M05A A5c D-A5c-8;"
+  },
+  {
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 739,
+   "text": "// M05A A5c \u00a719.5a/D-A5c-6: gives the supervisor's own alert"
+  },
+  {
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 872,
+   "text": "/// M05A A5c \u00a719.5a/D-A5c-6: the same broker `AppSandboxEngine` and"
+  },
+  {
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 1996,
+   "text": "// (`SynSvcNativeService`), which signs Slice B3's relationship-proof"
+  },
+  {
+   "file": "crates/substrate/tests/app_instance_identity_e2e.rs",
+   "line": 2,
+   "text": "//! The app-instance master identity end to end (M05A A7), across two"
+  },
+  {
+   "file": "crates/substrate/tests/app_instance_identity_e2e.rs",
+   "line": 68,
+   "text": "/// M05A A7: kept (unlike the file this struct is copied from) so the"
+  },
+  {
+   "file": "crates/substrate/tests/basic_lifecycle.rs",
+   "line": 359,
+   "text": "// `greet`'s reply also echoes this instance's own `component_id` (M05A"
+  },
+  {
+   "file": "crates/substrate/tests/binding_push_e2e.rs",
+   "line": 2,
+   "text": "//! The epoch-guarded binding write (M05A Slice A5a, ADR-0021 \u00a73), proven"
+  },
+  {
+   "file": "crates/substrate/tests/binding_push_e2e.rs",
+   "line": 523,
+   "text": "/// through `status`'s `binding-epochs` (M05A A5a \u00a76) -- the persisted,"
+  },
+  {
+   "file": "crates/substrate/tests/cert_renewal_e2e.rs",
+   "line": 2,
+   "text": "//! Unattended certificate renewal and instance-key revocation (M05A A5d),"
+  },
+  {
+   "file": "crates/substrate/tests/common/mod.rs",
+   "line": 146,
+   "text": "/// the substrate boots (M06A A2) -- e.g. setting `roles.app_sandbox` to"
+  },
+  {
+   "file": "crates/substrate/tests/durable_outbox_e2e.rs",
+   "line": 2,
+   "text": "//! M05B Slice B1's own reference scenario (task.md), end to end over two"
+  },
+  {
+   "file": "crates/substrate/tests/durable_outbox_e2e.rs",
+   "line": 7,
+   "text": "//! needs no WASM fixture (unlike M05A's own `reference_scenario_e2e.rs`)."
+  },
+  {
+   "file": "crates/substrate/tests/durable_outbox_e2e.rs",
+   "line": 215,
+   "text": "/// Fast, test-only queue knobs (M05B B1). The production defaults give a"
+  },
+  {
+   "file": "crates/substrate/tests/durable_outbox_e2e.rs",
+   "line": 430,
+   "text": "/// `substrate_did` -- M05B B1 review finding 13: the reference scenario's"
+  },
+  {
+   "file": "crates/substrate/tests/federated_fdae_e2e.rs",
+   "line": 2,
+   "text": "//! Slice B3 Phase 5: reference-scenario step 23 (\"A ReBAC check requiring a"
+  },
+  {
+   "file": "crates/substrate/tests/federated_fdae_e2e.rs",
+   "line": 692,
+   "text": "// silent allow -- Failure/Security matrix row 6 (Slice B3 Phase 4's own"
+  },
+  {
+   "file": "crates/substrate/tests/gateway_hostname_e2e.rs",
+   "line": 2,
+   "text": "//! Slice S3 of the logical discovery overlay (ADR-0022 \u00a77): the gateway"
+  },
+  {
+   "file": "crates/substrate/tests/guest_http_e2e.rs",
+   "line": 2,
+   "text": "//! M06A A2 end-to-end tests: the guest HTTP route target"
+  },
+  {
+   "file": "crates/substrate/tests/guest_http_e2e.rs",
+   "line": 5,
+   "text": "//! the same harness `static_assets_e2e.rs` (M06A A1) and"
+  },
+  {
+   "file": "crates/substrate/tests/guest_http_e2e.rs",
+   "line": 6,
+   "text": "//! `http_passthrough_e2e.rs` (M3B Slice 7) use. Helpers are duplicated"
+  },
+  {
+   "file": "crates/substrate/tests/guest_http_e2e.rs",
+   "line": 76,
+   "text": "/// Same construction `static_assets_e2e.rs` (M06A A1) uses for its own"
+  },
+  {
+   "file": "crates/substrate/tests/guest_http_e2e.rs",
+   "line": 216,
+   "text": "// the body finishes (e.g. an over-cap body, M06A D-A2-8) stops"
+  },
+  {
+   "file": "crates/substrate/tests/health_monitoring_e2e.rs",
+   "line": 2,
+   "text": "//! Health, read-only (M05A Slice A4), proven across two genuinely independent"
+  },
+  {
+   "file": "crates/substrate/tests/http_passthrough_e2e.rs",
+   "line": 2,
+   "text": "//! M3B Slice 7 end-to-end test: a real substrate instance, HTTP verb/path"
+  },
+  {
+   "file": "crates/substrate/tests/http_passthrough_e2e.rs",
+   "line": 108,
+   "text": "/// delegation) so this hand-built preamble is not anonymous (M04A Slice B0,"
+  },
+  {
+   "file": "crates/substrate/tests/http_passthrough_e2e.rs",
+   "line": 318,
+   "text": "// of the Slice 7 plan -- no new dependency for a base64/binary"
+  },
+  {
+   "file": "crates/substrate/tests/multi_substrate_placement_e2e.rs",
+   "line": 2,
+   "text": "//! Multi-substrate placement and the substrate inventory (M05A Slice A3),"
+  },
+  {
+   "file": "crates/substrate/tests/reference_scenario_e2e.rs",
+   "line": 2,
+   "text": "//! The milestone's own reference scenario (M05A Slice A5e, D-A5e-15), end to"
+  },
+  {
+   "file": "crates/substrate/tests/reference_scenario_e2e.rs",
+   "line": 28,
+   "text": "//!    **What this step does not prove** (M05A A5e review, second round):"
+  },
+  {
+   "file": "crates/substrate/tests/reference_scenario_e2e.rs",
+   "line": 644,
+   "text": "// distinguishable from these RPC-surface assertions alone (M05A A5e"
+  },
+  {
+   "file": "crates/substrate/tests/scheduled_task_e2e.rs",
+   "line": 281,
+   "text": "// resolve (ADR-0018 \u00a74, M06B B2, F10 group C)."
+  },
+  {
+   "file": "crates/substrate/tests/service_visibility_e2e.rs",
+   "line": 3,
+   "text": "//! `syneroym-substrate` instance (M06B B2). \u00a77 tests 33-36, 40 of the"
+  },
+  {
+   "file": "crates/substrate/tests/static_assets_e2e.rs",
+   "line": 2,
+   "text": "//! M06A A1 end-to-end test: blob-backed static asset serving, driven by"
+  },
+  {
+   "file": "crates/substrate/tests/static_assets_e2e.rs",
+   "line": 5,
+   "text": "//! Slice 7's HTTP passthrough (see that file's module doc for the pattern's"
+  },
+  {
+   "file": "crates/substrate/tests/static_assets_e2e.rs",
+   "line": 198,
+   "text": "/// per-engine, not process-global, counter -- see M06A D-A1-7) if that"
+  },
+  {
+   "file": "crates/substrate/tests/supervisor_alerts_e2e.rs",
+   "line": 2,
+   "text": "//! M05A A5c phase 4 (\u00a719.5, D-A5c-6), test 27: the `messaging` registration"
+  },
+  {
+   "file": "crates/substrate/tests/supervisor_interface_e2e.rs",
+   "line": 2,
+   "text": "//! The `supervisor` interface end to end (M05A A5b), across two genuinely"
+  },
+  {
+   "file": "crates/substrate/tests/supervisor_loop_e2e.rs",
+   "line": 2,
+   "text": "//! M05A A5c phase 7 (\u00a723), test 48, matrix row 12: a partial deploy across"
+  },
+  {
+   "file": "crates/ucan/benches/chain_verify.rs",
+   "line": 16,
+   "text": "/// attenuation hop), cache-cold -- the M04A performance budget's \"UCAN"
+  },
+  {
+   "file": "crates/ucan/src/capability.rs",
+   "line": 27,
+   "text": "/// <selector>` one (ADR-0015 A1, M04A Slice B7b/F2). A selector-bearing"
+  },
+  {
+   "file": "crates/ucan/src/capability.rs",
+   "line": 85,
+   "text": "/// matching whole segments only, never a partial string (M04A Slice"
+  },
+  {
+   "file": "crates/ucan/src/capability.rs",
+   "line": 122,
+   "text": "/// M04A Slice B7a/B7b: deploy/undeploy/status-check on the orchestrator"
+  },
+  {
+   "file": "crates/ucan/src/capability.rs",
+   "line": 173,
+   "text": "/// Rich caveat evaluation is FDAE/M04B; until it lands, do not rely on"
+  },
+  {
+   "file": "crates/ucan/src/capability.rs",
+   "line": 188,
+   "text": "/// `self.with` (ADR-0015 A1's segment-wise prefix cover, M04A Slice"
+  },
+  {
+   "file": "crates/ucan/src/capability.rs",
+   "line": 401,
+   "text": "/// `fields` caveat evaluation belongs to FDAE/M04B; this test exists so"
+  },
+  {
+   "file": "crates/ucan/src/capability.rs",
+   "line": 404,
+   "text": "/// **Narrowed at M04A Slice B7b (ADR-0015 A3):** `can_delegate` is no"
+  },
+  {
+   "file": "crates/ucan/src/capability.rs",
+   "line": 447,
+   "text": "/// **M04A Slice B7b (F6): still true here, on purpose.** The plan's"
+  },
+  {
+   "file": "crates/ucan/src/capability.rs",
+   "line": 473,
+   "text": "// -- M04A Slice B7b: ADR-0015 A1 selectors / F2 / F8 ---------------"
+  },
+  {
+   "file": "crates/ucan/src/session.rs",
+   "line": 36,
+   "text": "/// (ADR-0015 \u00a73, Slice B1). The leaf's `facts` become `claims` -- but"
+  },
+  {
+   "file": "crates/ucan/src/session.rs",
+   "line": 49,
+   "text": "/// co-design seam M04B binds as SQL `?` parameters, that would be a"
+  },
+  {
+   "file": "crates/ucan/src/session.rs",
+   "line": 55,
+   "text": "// M04A Slice B7b (ADR-0015 A6): resolved the former TODO(B7). Once"
+  },
+  {
+   "file": "crates/ucan/src/session.rs",
+   "line": 107,
+   "text": "// -- M04A Slice B7b (ADR-0015 A6): from_verified_chain's trusted-root"
+  },
+  {
+   "file": "crates/ucan/src/token.rs",
+   "line": 64,
+   "text": "/// #1: M04B binds these as SQL `?` params). Empty by default."
+  },
+  {
+   "file": "crates/ucan/src/token.rs",
+   "line": 192,
+   "text": "/// `capability` (its resource *and* the ability being claimed -- M04A"
+  },
+  {
+   "file": "test-components/greeter/src/lib.rs",
+   "line": 30,
+   "text": "// dependency-binding host capability (M05A Slice A5e reference"
+  },
+  {
+   "file": "test-components/http-guest-test/src/lib.rs",
+   "line": 2,
+   "text": "//! Guest HTTP handler test component (M06A A2)."
+  },
+  {
+   "file": "test-components/http-guest-test/src/lib.rs",
+   "line": 132,
+   "text": "/// (M06A D-A2-11) without needing a second near-duplicate test path."
+  },
+  {
+   "file": "test-components/proxy-test/src/lib.rs",
+   "line": 2,
+   "text": "//! Universal Proxy guest test component (M04A Slice A1)."
+  },
+  {
+   "file": "test-components/proxy-test/src/lib.rs",
+   "line": 8,
+   "text": "//! as the self-proxy target for Slice B4-fdae's router-side ingress-(ii)"
+  },
+  {
+   "file": "tests/perf/src/scenarios/wasm_latency.rs",
+   "line": 60,
+   "text": "// `greet`'s reply also echoes this instance's own `component_id` (M05A"
+  }
+ ],
+ "_note": "Full hit list; each is a comment citing a milestone/slice ID, banned by AGENTS.md"
+}

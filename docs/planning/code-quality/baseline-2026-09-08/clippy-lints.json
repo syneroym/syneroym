@@ -1,0 +1,850 @@
+{
+ "total": 3804,
+ "by_lint": {
+  "clippy::missing_errors_doc": 541,
+  "clippy::too_long_first_doc_paragraph": 253,
+  "clippy::large_futures": 245,
+  "clippy::significant_drop_tightening": 232,
+  "clippy::uninlined_format_args": 179,
+  "clippy::cast_possible_truncation": 159,
+  "clippy::missing_panics_doc": 138,
+  "clippy::cargo_common_metadata": 126,
+  "clippy::too_many_lines": 125,
+  "clippy::similar_names": 106,
+  "clippy::doc_markdown": 104,
+  "clippy::default_trait_access": 101,
+  "clippy::cast_sign_loss": 97,
+  "clippy::missing_const_for_fn": 96,
+  "clippy::cast_possible_wrap": 93,
+  "clippy::map_unwrap_or": 87,
+  "clippy::redundant_closure_for_method_calls": 80,
+  "clippy::must_use_candidate": 75,
+  "clippy::manual_let_else": 73,
+  "clippy::redundant_pub_crate": 66,
+  "clippy::cast_precision_loss": 59,
+  "clippy::redundant_clone": 55,
+  "clippy::items_after_statements": 50,
+  "clippy::option_if_let_else": 47,
+  "clippy::needless_pass_by_value": 46,
+  "clippy::unused_async": 44,
+  "clippy::multiple_crate_versions": 41,
+  "clippy::unused_async_trait_impl": 41,
+  "clippy::use_self": 40,
+  "clippy::single_match_else": 33,
+  "clippy::manual_string_new": 26,
+  "clippy::unnecessary_debug_formatting": 23,
+  "clippy::equatable_if_let": 20,
+  "clippy::or_fun_call": 18,
+  "clippy::future_not_send": 17,
+  "clippy::range_plus_one": 15,
+  "clippy::used_underscore_binding": 14,
+  "clippy::format_push_string": 14,
+  "clippy::ref_option": 13,
+  "clippy::same_length_and_capacity": 12,
+  "clippy::iter_on_single_items": 12,
+  "clippy::match_same_arms": 11,
+  "clippy::match_wildcard_for_single_variants": 10,
+  "clippy::useless_let_if_seq": 10,
+  "clippy::unreadable_literal": 9,
+  "clippy::missing_fields_in_debug": 9,
+  "clippy::assigning_clones": 8,
+  "clippy::ignored_unit_patterns": 7,
+  "clippy::cast_lossless": 7,
+  "clippy::needless_collect": 6,
+  "clippy::ptr_as_ptr": 5,
+  "clippy::unnested_or_patterns": 5,
+  "clippy::semicolon_if_nothing_returned": 5,
+  "clippy::suboptimal_flops": 5,
+  "clippy::significant_drop_in_scrutinee": 5,
+  "clippy::struct_excessive_bools": 4,
+  "clippy::borrow_as_ptr": 4,
+  "clippy::needless_continue": 4,
+  "clippy::unnecessary_wraps": 4,
+  "clippy::unsafe_derive_deserialize": 4,
+  "clippy::if_not_else": 4,
+  "clippy::explicit_iter_loop": 4,
+  "clippy::derive_partial_eq_without_eq": 4,
+  "clippy::tuple_array_conversions": 4,
+  "clippy::suspicious_operation_groupings": 3,
+  "clippy::trivially_copy_pass_by_ref": 3,
+  "clippy::return_self_not_must_use": 3,
+  "clippy::unused_self": 3,
+  "clippy::bool_to_int_with_if": 3,
+  "clippy::float_cmp": 3,
+  "clippy::literal_string_with_formatting_args": 3,
+  "clippy::struct_field_names": 3,
+  "clippy::manual_midpoint": 2,
+  "clippy::many_single_char_names": 2,
+  "clippy::single_option_map": 2,
+  "clippy::implicit_clone": 2,
+  "clippy::manual_assert": 2,
+  "clippy::manual_is_variant_and": 2,
+  "clippy::case_sensitive_file_extension_comparisons": 1,
+  "clippy::volatile_composites": 1,
+  "clippy::elidable_lifetime_names": 1,
+  "clippy::wildcard_imports": 1,
+  "clippy::stable_sort_primitive": 1,
+  "clippy::duration_suboptimal_units": 1,
+  "clippy::branches_sharing_code": 1,
+  "clippy::imprecise_flops": 1,
+  "clippy::search_is_some": 1,
+  "clippy::needless_raw_string_hashes": 1,
+  "clippy::needless_pass_by_ref_mut": 1,
+  "clippy::option_option": 1,
+  "clippy::unnecessary_semicolon": 1,
+  "clippy::large_stack_arrays": 1
+ },
+ "findings": [
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/app_orchestration/src/compiler.rs",
+   "line": 120,
+   "msg": "this function has too many lines (105/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/app_orchestration/src/models.rs",
+   "line": 718,
+   "msg": "this function has too many lines (125/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/fdae/src/compile.rs",
+   "line": 438,
+   "msg": "this function has too many lines (166/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/auth/src/service.rs",
+   "line": 562,
+   "msg": "this function has too many lines (181/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/sandbox_podman/src/engine.rs",
+   "line": 233,
+   "msg": "this function has too many lines (105/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "xtask/src/main.rs",
+   "line": 39,
+   "msg": "this function has too many lines (124/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "xtask/src/main.rs",
+   "line": 184,
+   "msg": "this function has too many lines (152/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/auth/tests/auth_service_tests.rs",
+   "line": 53,
+   "msg": "this function has too many lines (132/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/auth/tests/auth_service_tests.rs",
+   "line": 315,
+   "msg": "this function has too many lines (140/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/conversation/src/group.rs",
+   "line": 108,
+   "msg": "this function has too many lines (108/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/conversation/src/group.rs",
+   "line": 230,
+   "msg": "this function has too many lines (123/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/conversation/src/group.rs",
+   "line": 445,
+   "msg": "this function has too many lines (112/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/conversation/src/outbox.rs",
+   "line": 139,
+   "msg": "this function has too many lines (119/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/conversation/src/store.rs",
+   "line": 230,
+   "msg": "this function has too many lines (114/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/conversation/src/transport.rs",
+   "line": 180,
+   "msg": "this function has too many lines (190/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/sandbox_wasm/src/conversions.rs",
+   "line": 159,
+   "msg": "this function has too many lines (171/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 466,
+   "msg": "this function has too many lines (165/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/sandbox_wasm/src/engine.rs",
+   "line": 2343,
+   "msg": "this function has too many lines (139/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/sandbox_wasm/src/host_capabilities.rs",
+   "line": 119,
+   "msg": "this function has too many lines (125/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/sandbox_wasm/tests/data_layer_integration.rs",
+   "line": 291,
+   "msg": "this function has too many lines (106/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/sandbox_wasm/benches/wasm_engine.rs",
+   "line": 41,
+   "msg": "this function has too many lines (119/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_catalog/src/app.rs",
+   "line": 275,
+   "msg": "this function has too many lines (146/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_profile/src/app.rs",
+   "line": 194,
+   "msg": "this function has too many lines (993/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "test-components/dual-build-fixture/src/app.rs",
+   "line": 258,
+   "msg": "this function has too many lines (476/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_transaction/src/app.rs",
+   "line": 464,
+   "msg": "this function has too many lines (159/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_transaction/src/app.rs",
+   "line": 657,
+   "msg": "this function has too many lines (206/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_transaction/src/app.rs",
+   "line": 892,
+   "msg": "this function has too many lines (186/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_transaction/src/app.rs",
+   "line": 1196,
+   "msg": "this function has too many lines (112/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_transaction/src/app.rs",
+   "line": 1322,
+   "msg": "this function has too many lines (370/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_transaction/src/app.rs",
+   "line": 1927,
+   "msg": "this function has too many lines (117/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_transaction/src/app.rs",
+   "line": 2561,
+   "msg": "this function has too many lines (366/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_directory/src/app.rs",
+   "line": 580,
+   "msg": "this function has too many lines (169/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_directory/src/app.rs",
+   "line": 965,
+   "msg": "this function has too many lines (198/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_directory/src/app.rs",
+   "line": 1647,
+   "msg": "this function has too many lines (187/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_directory/src/app.rs",
+   "line": 1883,
+   "msg": "this function has too many lines (177/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_web/src/app.rs",
+   "line": 104,
+   "msg": "this function has too many lines (136/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/app_host_native/tests/dual_build_parity.rs",
+   "line": 2209,
+   "msg": "this function has too many lines (109/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 1391,
+   "msg": "this function has too many lines (588/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2374,
+   "msg": "this function has too many lines (102/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 2566,
+   "msg": "this function has too many lines (145/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/control_plane/src/service.rs",
+   "line": 408,
+   "msg": "this function has too many lines (405/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/control_plane/src/synsvc_native.rs",
+   "line": 161,
+   "msg": "this function has too many lines (125/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/control_plane/src/synsvc_native.rs",
+   "line": 918,
+   "msg": "this function has too many lines (373/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/control_plane/src/synsvc_native.rs",
+   "line": 1431,
+   "msg": "this function has too many lines (141/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 7360,
+   "msg": "this function has too many lines (108/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 7482,
+   "msg": "this function has too many lines (101/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 7728,
+   "msg": "this function has too many lines (138/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 7886,
+   "msg": "this function has too many lines (135/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/control_plane/src/service/orchestration.rs",
+   "line": 8998,
+   "msg": "this function has too many lines (126/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/control_plane/src/service.rs",
+   "line": 1275,
+   "msg": "this function has too many lines (239/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/control_plane/src/service.rs",
+   "line": 1546,
+   "msg": "this function has too many lines (124/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_web/tests/dual_build_parity.rs",
+   "line": 998,
+   "msg": "this function has too many lines (372/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/roym_web/tests/dual_build_parity.rs",
+   "line": 6877,
+   "msg": "this function has too many lines (104/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/router/src/connection_router.rs",
+   "line": 257,
+   "msg": "this function has too many lines (102/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/router/src/proxy.rs",
+   "line": 1662,
+   "msg": "this function has too many lines (120/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 1393,
+   "msg": "this function has too many lines (185/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 1608,
+   "msg": "this function has too many lines (138/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/router/src/route_handler/http.rs",
+   "line": 1794,
+   "msg": "this function has too many lines (220/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/router/src/route_handler/io.rs",
+   "line": 294,
+   "msg": "this function has too many lines (132/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/router/src/route_handler.rs",
+   "line": 236,
+   "msg": "this function has too many lines (111/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/router/src/proxy.rs",
+   "line": 2075,
+   "msg": "this function has too many lines (118/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/router/tests/proxy_dispatch.rs",
+   "line": 226,
+   "msg": "this function has too many lines (103/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/router/tests/proxy_dispatch.rs",
+   "line": 551,
+   "msg": "this function has too many lines (104/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/router/tests/proxy_dispatch.rs",
+   "line": 677,
+   "msg": "this function has too many lines (108/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/router/tests/native_dispatch_identity.rs",
+   "line": 2456,
+   "msg": "this function has too many lines (106/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/smoke-tests/src/main.rs",
+   "line": 43,
+   "msg": "this function has too many lines (289/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/sdk/src/health.rs",
+   "line": 182,
+   "msg": "this function has too many lines (136/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/sdk/src/health.rs",
+   "line": 380,
+   "msg": "this function has too many lines (112/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/sdk/src/mapper.rs",
+   "line": 186,
+   "msg": "this function has too many lines (176/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/client_gateway/src/gateway.rs",
+   "line": 254,
+   "msg": "this function has too many lines (207/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
+   "line": 343,
+   "msg": "this function has too many lines (118/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
+   "line": 492,
+   "msg": "this function has too many lines (117/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
+   "line": 651,
+   "msg": "this function has too many lines (138/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/coordinator_iroh/tests/multi_hop_relay.rs",
+   "line": 863,
+   "msg": "this function has too many lines (133/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "tests/perf/src/scenarios/concurrency.rs",
+   "line": 36,
+   "msg": "this function has too many lines (193/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "tests/perf/src/scenarios/concurrency.rs",
+   "line": 343,
+   "msg": "this function has too many lines (125/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "tests/perf/src/scenarios/soak.rs",
+   "line": 72,
+   "msg": "this function has too many lines (469/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "tests/perf/src/scenarios/wasm_latency.rs",
+   "line": 48,
+   "msg": "this function has too many lines (173/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 715,
+   "msg": "this function has too many lines (107/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 1002,
+   "msg": "this function has too many lines (265/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 1371,
+   "msg": "this function has too many lines (183/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 2507,
+   "msg": "this function has too many lines (131/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3403,
+   "msg": "this function has too many lines (119/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 3883,
+   "msg": "this function has too many lines (116/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 4752,
+   "msg": "this function has too many lines (218/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/app_supervisor/src/service.rs",
+   "line": 5313,
+   "msg": "this function has too many lines (186/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/app_supervisor/src/store.rs",
+   "line": 128,
+   "msg": "this function has too many lines (131/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 298,
+   "msg": "this function has too many lines (170/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 1018,
+   "msg": "this function has too many lines (263/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 1316,
+   "msg": "this function has too many lines (140/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 1534,
+   "msg": "this function has too many lines (374/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/src/runtime.rs",
+   "line": 1989,
+   "msg": "this function has too many lines (163/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "apps/roymctl/src/commands/app.rs",
+   "line": 376,
+   "msg": "this function has too many lines (599/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "apps/roymctl/src/commands/identity.rs",
+   "line": 152,
+   "msg": "this function has too many lines (201/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "apps/roymctl/src/commands/roym.rs",
+   "line": 416,
+   "msg": "this function has too many lines (125/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "apps/roymctl/src/commands/roym.rs",
+   "line": 597,
+   "msg": "this function has too many lines (262/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "apps/roymctl/src/commands/roym.rs",
+   "line": 1029,
+   "msg": "this function has too many lines (126/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "apps/roymctl/src/commands/session.rs",
+   "line": 190,
+   "msg": "this function has too many lines (290/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "apps/roymctl/src/commands/supervisor.rs",
+   "line": 193,
+   "msg": "this function has too many lines (230/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "apps/roymctl/src/commands/svc.rs",
+   "line": 199,
+   "msg": "this function has too many lines (339/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "apps/roymctl/src/commands.rs",
+   "line": 199,
+   "msg": "this function has too many lines (114/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/roym_identity_e2e.rs",
+   "line": 263,
+   "msg": "this function has too many lines (164/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/roym_conversation_e2e.rs",
+   "line": 681,
+   "msg": "this function has too many lines (240/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/instance_identity_e2e.rs",
+   "line": 225,
+   "msg": "this function has too many lines (111/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/proxy_outbox_e2e.rs",
+   "line": 425,
+   "msg": "this function has too many lines (180/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/conversation_e2e.rs",
+   "line": 325,
+   "msg": "this function has too many lines (154/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/master_endpoint_record_e2e.rs",
+   "line": 259,
+   "msg": "this function has too many lines (224/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/durable_outbox_e2e.rs",
+   "line": 467,
+   "msg": "this function has too many lines (175/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/durable_outbox_e2e.rs",
+   "line": 736,
+   "msg": "this function has too many lines (132/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/saga_e2e.rs",
+   "line": 582,
+   "msg": "this function has too many lines (105/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/cert_renewal_e2e.rs",
+   "line": 272,
+   "msg": "this function has too many lines (115/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/roym_app_e2e.rs",
+   "line": 158,
+   "msg": "this function has too many lines (118/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/roym_app_e2e.rs",
+   "line": 296,
+   "msg": "this function has too many lines (184/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/supervisor_loop_e2e.rs",
+   "line": 335,
+   "msg": "this function has too many lines (157/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/federated_fdae_e2e.rs",
+   "line": 340,
+   "msg": "this function has too many lines (389/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/basic_lifecycle.rs",
+   "line": 389,
+   "msg": "this function has too many lines (152/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/roym_transaction_e2e.rs",
+   "line": 614,
+   "msg": "this function has too many lines (228/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/messaging_client_e2e.rs",
+   "line": 24,
+   "msg": "this function has too many lines (104/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/roym_transaction_e2e.rs",
+   "line": 904,
+   "msg": "this function has too many lines (104/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/supervisor_alerts_e2e.rs",
+   "line": 286,
+   "msg": "this function has too many lines (104/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/group_conversation_e2e.rs",
+   "line": 275,
+   "msg": "this function has too many lines (296/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/roym_directory_e2e.rs",
+   "line": 707,
+   "msg": "this function has too many lines (322/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/reference_scenario_e2e.rs",
+   "line": 443,
+   "msg": "this function has too many lines (292/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/scheduled_task_e2e.rs",
+   "line": 431,
+   "msg": "this function has too many lines (108/100)"
+  },
+  {
+   "code": "clippy::too_many_lines",
+   "file": "crates/substrate/tests/scheduled_task_e2e.rs",
+   "line": 580,
+   "msg": "this function has too many lines (133/100)"
+  }
+ ],
+ "_note": "by_lint holds every count; findings are filtered to structural lints. Regenerate full data with the commands in ../README.md"
+}
