@@ -6431,7 +6431,7 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
     assert_eq!(tw["error"]["code"], -32602);
     assert!(tw["error"]["message"].as_str().unwrap().contains(&tampered_id));
 
-    // Tampered agreement half refuses the whole import naming the id (C7-2)
+    // Tampered agreement half refuses the whole import naming the id
     let mut tampered_bundle_agr: Bundle = serde_json::from_value(bundle_val).unwrap();
     let agr_rows = tampered_bundle_agr.sections.get_mut("agreements").unwrap();
     let tampered_agr_id = agr_rows[0].get("id").unwrap().as_str().unwrap().to_string();

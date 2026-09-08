@@ -1247,6 +1247,7 @@ async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
 
     let mut offset = start;
     let mut first_declined: Option<u64> = None;
+    let owner = signing::owner_did(host).await.unwrap_or_default();
 
     for m in messages {
         offset += 1;
@@ -1274,7 +1275,7 @@ async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
             continue;
         }
 
-        let file_res = match file_incoming_card(host, &m, &params.conversation, now).await {
+        let file_res = match file_incoming_card(host, &m, &params.conversation, now, &owner).await {
             Ok(res) => res,
             Err(e) => return Response::internal_error(e),
         };
@@ -1323,6 +1324,7 @@ async fn file_incoming_card<H: AppHost>(
     m: &Value,
     conversation: &str,
     now: u64,
+    owner: &str,
 ) -> Result<FileCardResult, String> {
     let msg_id = m.get("id").and_then(Value::as_str).unwrap_or("").to_string();
     let direction_str = m.get("direction").and_then(Value::as_str).unwrap_or("incoming");
@@ -1429,7 +1431,7 @@ async fn file_incoming_card<H: AppHost>(
                 });
             }
             let version_count =
-                match store_received_request(host, &card.envelope, &v, payload, now).await {
+                match store_received_request(host, &card.envelope, &v, payload, now, owner).await {
                     Ok(vc) => vc,
                     Err(e) => {
                         row.reason = Some(e);
@@ -1525,7 +1527,7 @@ async fn file_incoming_card<H: AppHost>(
                 });
             }
             let version_count =
-                match store_received_quote(host, &card.envelope, &v, payload, now).await {
+                match store_received_quote(host, &card.envelope, &v, payload, now, owner).await {
                     Ok(vc) => vc,
                     Err(e) => {
                         row.reason = Some(e);
@@ -1688,7 +1690,7 @@ async fn file_incoming_card<H: AppHost>(
             row.record_id = v.record_id;
             row.revocation_status = v.revocation_status;
             put_row(host, CARDS, &msg_id, &row).await?;
-            let countersigned = maybe_countersign(host, &mut row_agr, &qv, now).await?;
+            let countersigned = maybe_countersign(host, &mut row_agr, &qv, now, owner).await?;
             Ok(FileCardResult { filed: true, refused: false, unknown: false, countersigned })
         }
         _ => {
@@ -1705,6 +1707,7 @@ async fn store_received_request<H: AppHost>(
     v: &RecordVerdict<RequestPayload>,
     payload: &RequestPayload,
     now: u64,
+    owner: &str,
 ) -> Result<u64, String> {
     let record_id = v.record_id.as_deref().unwrap_or_default();
     let prior: Option<RecordPointerRow> = get_row(host, REQUESTS, &payload.request_id).await?;
@@ -1726,8 +1729,7 @@ async fn store_received_request<H: AppHost>(
     } else {
         1
     };
-    let owner = signing::owner_did(host).await.unwrap_or_default();
-    let mine = v.issuer.as_deref() == Some(&owner);
+    let mine = !owner.is_empty() && v.issuer.as_deref() == Some(owner);
     let pointer = RecordPointerRow {
         envelope: envelope.to_string(),
         record_id: record_id.to_string(),
@@ -1754,6 +1756,7 @@ async fn store_received_quote<H: AppHost>(
     v: &RecordVerdict<QuotePayload>,
     payload: &QuotePayload,
     now: u64,
+    owner: &str,
 ) -> Result<u64, String> {
     let record_id = v.record_id.as_deref().unwrap_or_default();
     let prior: Option<RecordPointerRow> = get_row(host, QUOTES, &payload.quote_id).await?;
@@ -1777,8 +1780,7 @@ async fn store_received_quote<H: AppHost>(
     } else {
         (1, None, None)
     };
-    let owner = signing::owner_did(host).await.unwrap_or_default();
-    let mine = v.issuer.as_deref() == Some(&owner);
+    let mine = !owner.is_empty() && v.issuer.as_deref() == Some(owner);
     let pointer = RecordPointerRow {
         envelope: envelope.to_string(),
         record_id: record_id.to_string(),
@@ -1804,6 +1806,7 @@ async fn maybe_countersign<H: AppHost>(
     row: &mut AgreementRow,
     qv: &RecordVerdict<QuotePayload>,
     now: u64,
+    owner: &str,
 ) -> Result<bool, String> {
     if row.provider.is_some() {
         return Ok(false);
@@ -1811,11 +1814,7 @@ async fn maybe_countersign<H: AppHost>(
     if row.consumer.is_none() {
         return Ok(false);
     }
-    let owner = match signing::owner_did(host).await {
-        Ok(o) => o,
-        Err(_) => return Ok(false),
-    };
-    if owner != row.provider_did {
+    if owner.is_empty() || owner != row.provider_did {
         return Ok(false);
     }
     let q_payload = match qv.payload.as_ref() {
@@ -1862,7 +1861,7 @@ async fn maybe_countersign<H: AppHost>(
     let half = ReceiptHalf {
         envelope: envelope_json.clone(),
         record_id: record_id.clone(),
-        issuer: owner.clone(),
+        issuer: owner.to_string(),
         issued_at_secs: envelope.issued_at_secs,
     };
     row.provider = Some(half);
