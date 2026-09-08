@@ -3,11 +3,11 @@
 //! computable name A0 uses for files (`member-<instance>-<service>-<index>`),
 //! so adoption is a read.
 //!
-//! **Also holds the app instance's own master** (M05A A7, ADR-0022 §1),
-//! minted at `adopt` under `app-<app_instance_id>` beside the member
-//! masters it names. It delegates nothing and signs nothing in this slice
-//! -- it exists so the app has a network identity that outlives the
-//! supervisor managing it, for a later slice's registry publication to use.
+//! **Also holds the app instance's own master** (ADR-0022 §1), minted at
+//! `adopt` under `app-<app_instance_id>` beside the member masters it
+//! names. It delegates nothing. It signs the app's Tier-1 registry record
+//! (`tier1::sign_tier1_record`), so the app has a network identity that
+//! outlives the supervisor managing it.
 //!
 //! **Local by construction.** The supervisor writes to *its own* node's
 //! service database through `StorageProvider::open_service_db`, an

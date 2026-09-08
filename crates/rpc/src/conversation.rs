@@ -39,8 +39,8 @@ pub enum ConversationDeliveryState {
     Failed,
 }
 
-/// `Group` is reserved for the group slice (B5) and is never returned by
-/// B4's own store.
+/// `Direct` is a fixed two-party pair. `Group` has its own membership DAG
+/// on top of the message log (`syneroym-conversation`'s `group` module).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConversationKind {
     Direct,

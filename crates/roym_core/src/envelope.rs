@@ -3,11 +3,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// One `invoke` request. Carries no caller field, deliberately: no sibling
-/// can verify who called it, so nothing here claims to know. Anything a
-/// sibling needs to know about who is asking has to come from a mechanism
-/// the receiving guest can itself verify, and no such mechanism exists yet
-/// for this interface shape.
+/// One `invoke` request. Carries no caller field, deliberately: a caller
+/// string in the envelope would be an unverifiable self-claim. The
+/// caller's origin instead comes from the host, out of band, through
+/// `AppInvocation::caller` (`CallerOrigin`), which the guest can trust
+/// because the router sets it. That origin still does not name which
+/// sibling made an internal call; it only separates internal, verified
+/// remote, and anonymous callers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub method: String,
