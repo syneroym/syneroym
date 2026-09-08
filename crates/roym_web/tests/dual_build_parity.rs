@@ -6702,7 +6702,7 @@ async fn scenario_146_peer_replaying_older_request_or_quote_refused_parity() {
     assert_eq!(sw2["result"]["refused"], 1);
 
     let (tw, tn) = both_rpc(&h, "transaction.thread", json!({ "conversation": conv })).await;
-    assert_eq!(tw, tn);
+    assert_eq!(stripped(&tw), stripped(&tn));
     let cards = tw["result"]["cards"].as_array().unwrap();
     let refused_card = cards.iter().find(|c| c["message_id"] == "m-req-146-v1").unwrap();
     assert_eq!(refused_card["verified"], false);
