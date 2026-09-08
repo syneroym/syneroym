@@ -14,14 +14,14 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use syneroym_signed_record::{EnvelopeError, content_digest};
+use syneroym_signed_record::{EnvelopeError, VerifyOptions, content_digest};
 use thiserror::Error;
 
+pub use crate::record::{RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RECORD_REQUEST};
 use crate::{
     area::{Area, AreaError},
     listing::{self, ServiceLocation},
-    money, person,
-    record::{self, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RECORD_REQUEST},
+    money, person, record,
 };
 
 pub const REQUEST_VERSION: u32 = 1;
@@ -615,7 +615,7 @@ impl<P> RecordVerdict<P> {
 }
 
 pub fn verify_request(envelope: &str, now_secs: u64) -> RecordVerdict<RequestPayload> {
-    let opts = record::VerifyOptions::new(now_secs).allowing_expired();
+    let opts = VerifyOptions::new(now_secs).allowing_expired();
     let verified = match record::verify_json(envelope, &opts) {
         Ok(v) => v,
         Err(e) => return RecordVerdict::refused(e.to_string()),
@@ -656,7 +656,7 @@ pub fn verify_request(envelope: &str, now_secs: u64) -> RecordVerdict<RequestPay
 }
 
 pub fn verify_quote(envelope: &str, now_secs: u64) -> RecordVerdict<QuotePayload> {
-    let opts = record::VerifyOptions::new(now_secs).allowing_expired();
+    let opts = VerifyOptions::new(now_secs).allowing_expired();
     let verified = match record::verify_json(envelope, &opts) {
         Ok(v) => v,
         Err(e) => return RecordVerdict::refused(e.to_string()),
@@ -706,7 +706,7 @@ pub fn verify_agreement_receipt(
     envelope: &str,
     now_secs: u64,
 ) -> RecordVerdict<AgreementReceiptPayload> {
-    let opts = record::VerifyOptions::new(now_secs).allowing_expired();
+    let opts = VerifyOptions::new(now_secs).allowing_expired();
     let verified = match record::verify_json(envelope, &opts) {
         Ok(v) => v,
         Err(e) => return RecordVerdict::refused(e.to_string()),

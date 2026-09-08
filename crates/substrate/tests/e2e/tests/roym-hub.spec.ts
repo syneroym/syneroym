@@ -200,14 +200,14 @@ test.describe('Roym Hub', () => {
     await expect(page.locator('.safety-screen')).toContainText(`Blocked: ${spammerDid}`);
   });
 
-  test('8. backup tab: shows the three service bundles separately and says so', async ({ page }) => {
+  test('8. backup tab: shows the five service bundles separately and says so', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
 
     await page.getByRole('button', { name: 'Backup' }).click();
-    await expect(page.locator('.backup-screen .bundle-row')).toHaveCount(3);
-    await expect(page.locator('.backup-separate-note')).toContainText('exported separately today');
+    await expect(page.locator('.backup-screen .bundle-row')).toHaveCount(5);
+    await expect(page.locator('.backup-separate-note')).toContainText('five bundles below are exported separately today');
 
     // Each bundle exports on its own.
     const downloadPromise = page.waitForEvent('download');
@@ -773,5 +773,401 @@ test.describe('Roym Hub', () => {
     });
     const loopback = sources.find((s) => s.did === process.env.ROYM_DIRECTORY_DID);
     expect(loopback?.last_error ?? null).toBeNull();
+  });
+
+  test('24. components tab: request, quote, and agreement-receipt samples render real fields as text', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await page.getByRole('button', { name: 'Components' }).click();
+
+    const requestCard = page.locator('.card-request');
+    await expect(requestCard).toContainText('Front brake cable replacement and tuning');
+    await expect(requestCard).toContainText('cycling, repair');
+
+    const quoteCard = page.locator('.card-quote');
+    await expect(quoteCard).toContainText('Scope: Replace brake cable and adjust pads');
+    await expect(quoteCard).toContainText('Total: 45.00 EUR');
+    await expect(quoteCard).toContainText('Payee, as agreed in this quote: Y Repairs');
+    await expect(quoteCard).toContainText('Expires:');
+    await expect(quoteCard).toContainText('Cancellation terms: 24 hours notice required for full refund');
+    await expect(quoteCard).toContainText('Dispute path: Small claims court or informal mediation');
+
+    const receiptCard = page.locator('.card-agreement-receipt');
+    await expect(receiptCard).toContainText('Scope: Replace brake cable and adjust pads');
+    await expect(receiptCard).toContainText('Total: 45.00 EUR');
+    await expect(receiptCard).toContainText('Payee, as agreed in this quote: Y Repairs');
+    await expect(receiptCard).toContainText('Both parties have signed these terms.');
+    await expect(receiptCard).toContainText('Cancellation terms: 24 hours notice required for full refund');
+    await expect(receiptCard).toContainText('Dispute path: Small claims court or informal mediation');
+    const receiptText = await receiptCard.innerText();
+    expect(receiptText.toLowerCase()).not.toContain('verified');
+  });
+
+  test('25. card safety on real templates: markup and javascript payee yield literal text, no element, no request', async ({ page }) => {
+    const externalRequests: string[] = [];
+    const hubOrigin = new URL(HUB_URL).origin;
+    const authOrigin = 'http://auth.localhost:7660';
+    page.on('request', (req) => {
+      const url = req.url();
+      if (!url.startsWith(hubOrigin) && !url.startsWith(authOrigin)) {
+        externalRequests.push(url);
+      }
+    });
+    const consoleErrors: string[] = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') {
+        const text = msg.text();
+        if (!text.includes('Failed to load resource')) consoleErrors.push(text);
+      }
+    });
+
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+
+    const maliciousPayload =
+      '<img src=x onerror=window.maliciousRan=true><script>window.maliciousScript=true</script>' +
+      '<a href="javascript:window.maliciousLink=true">Click</a>';
+
+    await page.evaluate((payload) => {
+      const win = window as any;
+      if (!win.RoymRegistry?.renderCard) {
+        throw new Error('window.RoymRegistry.renderCard is not exposed by main.ts');
+      }
+      const container = document.createElement('div');
+      container.id = 'real-template-safety-container';
+
+      const quoteEl = win.RoymRegistry.renderCard({
+        type: 'quote',
+        version: 1,
+        data: {
+          terms: {
+            scope: payload,
+            currency: 'USD',
+            amount_minor: 1000,
+            payee: 'javascript:window.maliciousPayee=true',
+            cancellation_terms: payload,
+            refund_terms: payload,
+            dispute_path: 'javascript:window.maliciousDispute=true',
+            location: {
+              where: 'at-customer',
+              address: payload,
+            },
+          },
+        },
+      });
+
+      const receiptEl = win.RoymRegistry.renderCard({
+        type: 'agreement-receipt',
+        version: 1,
+        data: {
+          terms: {
+            scope: payload,
+            currency: 'USD',
+            amount_minor: 1000,
+            payee: 'javascript:window.maliciousPayee=true',
+            cancellation_terms: payload,
+            refund_terms: payload,
+            dispute_path: 'javascript:window.maliciousDispute=true',
+          },
+        },
+      });
+
+      container.appendChild(quoteEl);
+      container.appendChild(receiptEl);
+      document.body.appendChild(container);
+    }, maliciousPayload);
+
+    await page.waitForTimeout(500);
+
+    const maliciousRan = await page.evaluate(
+      () =>
+        (window as any).maliciousRan ||
+        (window as any).maliciousScript ||
+        (window as any).maliciousLink ||
+        (window as any).maliciousPayee ||
+        (window as any).maliciousDispute,
+    );
+    expect(maliciousRan).toBeUndefined();
+    expect(externalRequests).toEqual([]);
+    expect(consoleErrors).toEqual([]);
+
+    const container = page.locator('#real-template-safety-container');
+    await expect(container.locator('img')).toHaveCount(0);
+    await expect(container.locator('script')).toHaveCount(0);
+    const anchors = container.locator('a');
+    const count = await anchors.count();
+    for (let i = 0; i < count; i++) {
+      const href = await anchors.nth(i).getAttribute('href');
+      expect(href?.toLowerCase().startsWith('javascript:')).toBe(false);
+    }
+
+    const text = await container.innerText();
+    expect(text).toContain('<img src=x');
+    expect(text).toContain('<script>');
+  });
+
+  test('26. messages tab: sending a request posts a card rendered as .card-request, never raw JSON', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await page.getByRole('button', { name: 'Messages' }).click();
+    const peerDid = 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000026';
+    await page.locator('.open-conversation input').fill(peerDid);
+    await page.getByRole('button', { name: 'Open conversation' }).click();
+
+    await expect(page.locator('.conversation-thread h3').first()).toBeVisible({ timeout: 15_000 });
+
+    await page.locator('.toggle-request-form').click();
+    await expect(page.locator('.request-form')).toBeVisible();
+
+    const descText = 'Emergency gutter and downpipe cleaning';
+    await page.locator('.request-desc-input').fill(descText);
+    await page.locator('.request-cats-input').fill('gutters, cleaning');
+    await page.locator('.send-request-button').click();
+
+    await expect(page.locator('.request-form')).not.toBeVisible({ timeout: 15_000 });
+
+    const requestCard = page.locator('.thread-messages .card-request').first();
+    await expect(requestCard).toBeVisible({ timeout: 15_000 });
+    await expect(requestCard.locator('.request-description')).toHaveText(descText);
+
+    const threadText = await page.locator('.thread-messages').innerText();
+    expect(threadText).not.toContain('"card_type"');
+    expect(threadText).not.toContain('"application/vnd.roym.card+json"');
+  });
+
+  test('27. messages tab: a refused card renders as .card-refused with data-verified="false" and no engage affordance', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await page.evaluate(() => {
+      const win = window as any;
+      if (!win.RoymRegistry?.renderRefusedCard) {
+        throw new Error('window.RoymRegistry.renderRefusedCard is not exposed');
+      }
+      const container = document.createElement('div');
+      container.id = 'refused-card-test-container';
+      const card = win.RoymRegistry.renderRefusedCard('quote', 1, 'envelope signature tampered');
+      container.appendChild(card);
+      document.body.appendChild(container);
+    });
+
+    const refused = page.locator('#refused-card-test-container .card-refused');
+    await expect(refused).toBeVisible();
+    await expect(refused).toHaveAttribute('data-verified', 'false');
+    await expect(refused).toContainText('Unverified quote card (v1)');
+    await expect(refused).toContainText('envelope signature tampered');
+    await expect(refused.locator('button')).toHaveCount(0);
+    await expect(refused.locator('input')).toHaveCount(0);
+    await expect(refused.locator('select')).toHaveCount(0);
+    await expect(refused.locator('a')).toHaveCount(0);
+  });
+
+  test('29. messages tab: request form and quote form show notices pinned character-for-character', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await page.getByRole('button', { name: 'Messages' }).click();
+    await page.locator('.open-conversation input').fill('did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000029');
+    await page.getByRole('button', { name: 'Open conversation' }).click();
+
+    await expect(page.locator('.conversation-thread h3').first()).toBeVisible({ timeout: 15_000 });
+
+    await page.locator('.toggle-request-form').click();
+    await expect(page.locator('.request-form')).toBeVisible();
+    const reqNotice = await page.locator('.request-form .data-use-notice').innerText();
+    expect(reqNotice).toBe(
+      'This request is signed by you and sent to the provider you chose. They ' +
+        'keep a copy. It carries the area you gave, not your exact address; an ' +
+        'address is disclosed only inside a quote you accept.',
+    );
+
+    await page.evaluate(() => {
+      const win = window as any;
+      const host = document.createElement('div');
+      host.id = 'quote-form-test-host';
+      document.body.appendChild(host);
+      const dummyReqCard = {
+        message_id: 'msg_req_test',
+        conversation: 'conv_test',
+        direction: 'incoming',
+        sender_timestamp_ms: 1000,
+        card_type: 'request',
+        version: 1,
+        known: true,
+        verified: true,
+        expired: false,
+        stored_at_secs: 1000,
+      };
+      win.RoymMessages.openQuoteForm(host, dummyReqCard, 'conv_test', async () => {});
+    });
+
+    const quoteNotice = await page.locator('#quote-form-test-host .address-disclosure-notice').innerText();
+    expect(quoteNotice).toBe(
+      'This address becomes part of a signed record that both parties keep ' +
+        'and can export. It cannot be removed from a record already signed.',
+    );
+  });
+
+  test('30. messages tab: an expired quote card renders full terms with no accept or decline button and names expiry date', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+
+    await page.evaluate(() => {
+      const win = window as any;
+      const container = document.createElement('div');
+      container.id = 'expired-quote-test-container';
+
+      const card = win.RoymRegistry.renderCard({
+        type: 'quote',
+        version: 1,
+        data: {
+          expired: true,
+          quote_expires_at_secs: 1600000000,
+          terms: {
+            scope: 'Rebuild wooden front fence',
+            currency: 'EUR',
+            amount_minor: 120000,
+            payee: 'Timber Crafts Ltd',
+            cancellation_terms: 'Strict 48h cancellation',
+            refund_terms: 'Materials non-refundable',
+            quote_expires_at_secs: 1600000000,
+          },
+        },
+      });
+      container.appendChild(card);
+      document.body.appendChild(container);
+    });
+
+    const quoteCard = page.locator('#expired-quote-test-container .card-quote');
+    await expect(quoteCard).toBeVisible();
+
+    await expect(quoteCard).toContainText('Scope: Rebuild wooden front fence');
+    await expect(quoteCard).toContainText('Total: 1200.00 EUR');
+    await expect(quoteCard).toContainText('Payee, as agreed in this quote: Timber Crafts Ltd');
+    await expect(quoteCard).toContainText('Cancellation terms: Strict 48h cancellation');
+
+    const expDate = new Date(1600000000 * 1000).toISOString();
+    await expect(quoteCard.locator('.quote-expiry')).toContainText(`Expires: ${expDate} (expired)`);
+    await expect(quoteCard.locator('.quote-expired-notice')).toContainText(
+      `This quote expired on ${expDate}. Ask for a new one.`,
+    );
+
+    await expect(quoteCard.locator('.accept-quote-button')).toHaveCount(0);
+    await expect(quoteCard.locator('.decline-quote-button')).toHaveCount(0);
+  });
+
+  test('31. declining a quote shows the "the other side is not told" sentence and hides accept', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+
+    await page.evaluate(() => {
+      const win = window as any;
+      const host = document.createElement('div');
+      host.id = 'decline-action-test-host';
+      document.body.appendChild(host);
+
+      const activeQuoteCard = {
+        message_id: 'msg_quote_active',
+        conversation: 'conv_test',
+        direction: 'incoming',
+        sender_timestamp_ms: 1000,
+        card_type: 'quote',
+        version: 1,
+        known: true,
+        verified: true,
+        expired: false,
+        declined: false,
+        record_id: 'rec_quote_active',
+        stored_at_secs: 1000,
+        data: {
+          consumer_did: 'did:key:testme',
+          terms: {
+            scope: 'Tree trimming',
+            currency: 'USD',
+            amount_minor: 5000,
+            payee: 'Gardener',
+          },
+        },
+      };
+
+      win.RoymMessages.renderCardActions(host, activeQuoteCard, 'conv_test', 'did:key:testme', async () => {});
+    });
+
+    const host = page.locator('#decline-action-test-host');
+    await expect(host.locator('.accept-quote-button')).toBeVisible();
+    await expect(host.locator('.decline-quote-button')).toBeVisible();
+
+    await host.locator('.decline-quote-button').click();
+    await expect(host.locator('.decline-dialog')).toBeVisible();
+
+    const declineNote = await host.locator('.decline-dialog .decline-note').innerText();
+    expect(declineNote).toBe(
+      'This only changes what you see. The other side is not told, and no ' +
+        'record is signed. Send them a message if you want them to know.',
+    );
+
+    await page.evaluate(() => {
+      const win = window as any;
+      const host = document.getElementById('decline-action-test-host')!;
+      host.replaceChildren();
+      const declinedQuoteCard = {
+        message_id: 'msg_quote_declined',
+        conversation: 'conv_test',
+        direction: 'incoming',
+        sender_timestamp_ms: 1000,
+        card_type: 'quote',
+        version: 1,
+        known: true,
+        verified: true,
+        expired: false,
+        declined: true,
+        record_id: 'rec_quote_declined',
+        stored_at_secs: 1000,
+        data: {
+          consumer_did: 'did:key:testme',
+        },
+      };
+      win.RoymMessages.renderCardActions(host, declinedQuoteCard, 'conv_test', 'did:key:testme', async () => {});
+    });
+
+    await expect(host.locator('.accept-quote-button')).toHaveCount(0);
+    await expect(host.locator('.decline-quote-button')).toHaveCount(0);
+  });
+
+  test('32. an installation with transaction unenrolled shows setup gate naming the missing service', async ({ page }) => {
+    await page.route('**/rpc', async (route) => {
+      const req = route.request();
+      const postData = req.postData();
+      if (postData && postData.includes('"transaction.signing-status"')) {
+        const id = JSON.parse(postData).id;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id,
+            result: { active: false },
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await expect(page.locator('.setup-screen')).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('.setup-screen h2')).toHaveText('Signing Certificate Required');
+    const pendingText = await page.locator('.pending-services-text').innerText();
+    expect(pendingText).toContain('transaction');
+
+    await expect(page.locator('.tab-nav')).toHaveCount(0);
   });
 });

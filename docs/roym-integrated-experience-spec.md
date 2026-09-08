@@ -213,7 +213,7 @@ tests before the next begins.
 >
 > | Release | Slices |
 > |---|---|
-> | R1 — a usable local guild | **C4** (identity, profile, contacts, safety), **C5** (catalog, conversation), **C6** (directory search), **C7** (request → quote → agreement, cards). R1's gate closes at the end of C7 |
+> | R1 — a usable local guild | **Passed (2026-09-08)**. **C4** (identity, profile, contacts, safety), **C5** (catalog, conversation), **C6** (directory search), **C7** (request → quote → agreement, cards). R1's gate closed at the end of C7 |
 > | R2 — the transaction vertical | **C8** |
 > | R3 — cross-installation trust | **C9** |
 > | R4 — private group chat | **C10** |
@@ -228,16 +228,16 @@ tests before the next begins.
 > That split is what keeps "the Directory is optional" enforceable rather
 > than aspirational.
 
-### R1 — A usable local guild
+### R1 — A usable local guild (**Passed 2026-09-08**)
 
 | Goal | Required contract | User scenario | Excluded | Acceptance test |
 |---|---|---|---|---|
-| A person can be a consumer without running a full install of their own | Device-bound consumer key with encrypted backup and import (`[FND-IDT]` Lightweight Consumer Identity) | A consumer sets up, backs up, then restores on a clean machine | Recovery by an operator; social recovery | Restore on a clean node reproduces identity and history; no operator can impersonate |
-| A provider can publish what they offer | Versioned listing schema covering booking, payment, product, service, location, relationship, and service-record dimensions | Provider publishes a listing and edits it | Media galleries; stock counting | Listing round-trips through export/import with schema version preserved |
-| Two people can talk | 1:1 text with X3DH + Double Ratchet; durable outbox with `pending`/`delivered`/`failed` visible to the user | Consumer messages an offline provider; provider comes online and sees it | Attachments; voice; video; group chat | Message survives a process restart on both sides and is never shown as delivered while pending |
-| A need becomes an offer | Versioned request → quote → agreement records, each signed | Consumer describes a need, provider quotes, consumer accepts | Negotiation history rendering; templates | Accepting a quote produces a signed agreement receipt containing every field listed in [Records](#records-and-what-each-one-proves) |
-| A person can find a provider through a group | Directory `search` by category, area, and filters, returning source and freshness | Consumer searches, sees results with trust evidence | Ranking; paid placement; free-text intent parsing | Results state their source and age; missing evidence shows as unknown, never as positive |
-| People are safe from unwanted contact | Block, report, per-sender contact rate limits, listing publication limits | Consumer blocks a provider and reports a listing | Automated moderation; appeals workflow | A blocked sender's messages never reach the recipient's inbox; the recipient keeps its transaction records |
+| A person can be a consumer without running a full install of their own | Device-bound consumer key with encrypted backup and import (`[FND-IDT]` Lightweight Consumer Identity) | A consumer sets up, backs up, then restores on a clean machine | Recovery by an operator; social recovery | **Passed (C4, C5).** Restore on a clean node reproduces identity and history; no operator can impersonate |
+| A provider can publish what they offer | Versioned listing schema covering booking, payment, product, service, location, relationship, and service-record dimensions | Provider publishes a listing and edits it | Media galleries; stock counting | **Passed (C5).** Listing round-trips through export/import with schema version preserved |
+| Two people can talk | 1:1 text with X3DH + Double Ratchet; durable outbox with `pending`/`delivered`/`failed` visible to the user | Consumer messages an offline provider; provider comes online and sees it | Attachments; voice; video; group chat | **Passed (C5).** Message survives a process restart on both sides and is never shown as delivered while pending |
+| A need becomes an offer | Versioned request → quote → agreement records, each signed | Consumer describes a need, provider quotes, consumer accepts | Negotiation history rendering; templates | **Passed (C7).** Accepting a quote produces a signed agreement receipt containing every field listed in [Records](#records-and-what-each-one-proves) |
+| A person can find a provider through a group | Directory `search` by category, area, and filters, returning source and freshness | Consumer searches, sees results with trust evidence | Ranking; paid placement; free-text intent parsing | **Passed (C6).** Results state their source and age; missing evidence shows as unknown, never as positive |
+| People are safe from unwanted contact | Block, report, per-sender contact rate limits, listing publication limits | Consumer blocks a provider and reports a listing | Automated moderation; appeals workflow | **Passed (C4, C5).** A blocked sender's messages never reach the recipient's inbox; the recipient keeps its transaction records |
 
 ### R2 — The transaction vertical
 

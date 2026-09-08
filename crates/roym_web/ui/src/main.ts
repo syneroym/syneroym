@@ -1,15 +1,24 @@
 import { renderCard } from "./cards/render";
+import { renderRefusedCard } from "./cards/refused";
 import { runSearch } from "./directory/search";
-import { call } from "./rpc";
 import { renderBackup } from "./screens/backup";
 import { renderContacts } from "./screens/contacts";
 import { renderDirectory } from "./screens/directory";
 import { renderListings } from "./screens/listings";
-import { renderMessages } from "./screens/messages";
+import {
+  ADDRESS_DISCLOSURE_NOTICE,
+  DECLINE_NOTE,
+  DEFAULT_DATA_USE_NOTICE,
+  openDeclineDialog,
+  openQuoteForm,
+  renderCardActions,
+  renderMessages,
+} from "./screens/messages";
 import { renderProfile } from "./screens/profile";
 import { renderSafety } from "./screens/safety";
 import { renderSetup } from "./screens/setup";
 import { renderSynOrg } from "./screens/synorg";
+import { pendingEnrolment } from "./session/enrolment";
 import {
   authHeaders,
   fetchMethods,
@@ -24,7 +33,10 @@ import {
 
 declare global {
   interface Window {
-    RoymRegistry?: { renderCard: typeof renderCard };
+    RoymRegistry?: {
+      renderCard: typeof renderCard;
+      renderRefusedCard: typeof renderRefusedCard;
+    };
     RoymSession?: {
       storedToken: typeof storedToken;
       authHeaders: typeof authHeaders;
@@ -33,17 +45,33 @@ declare global {
     RoymDirectory?: {
       runSearch: typeof runSearch;
     };
+    RoymMessages?: {
+      openQuoteForm: typeof openQuoteForm;
+      openDeclineDialog: typeof openDeclineDialog;
+      renderCardActions: typeof renderCardActions;
+      DEFAULT_DATA_USE_NOTICE: string;
+      ADDRESS_DISCLOSURE_NOTICE: string;
+      DECLINE_NOTE: string;
+    };
   }
 }
 
 // Test hook: lets the e2e suite call the real card renderer directly with a
 // crafted fixture, instead of only ever seeing the sample gallery below.
-window.RoymRegistry = { renderCard };
+window.RoymRegistry = { renderCard, renderRefusedCard };
 window.RoymSession = { storedToken, authHeaders, whoami };
 // Test hook: the `roym-hub.spec.ts` `NotStarted` case drives the real
 // client loop with `ignoreConcurrency` so it can oversubscribe this node's
 // admission limit on purpose.
 window.RoymDirectory = { runSearch };
+window.RoymMessages = {
+  openQuoteForm,
+  openDeclineDialog,
+  renderCardActions,
+  DEFAULT_DATA_USE_NOTICE,
+  ADDRESS_DISCLOSURE_NOTICE,
+  DECLINE_NOTE,
+};
 
 async function main() {
   const app = document.getElementById("app");
@@ -80,11 +108,11 @@ async function main() {
     };
     sessionBar.appendChild(logoutBtn);
 
-    const statusVal = await call<{ certificate: { state: string } }>("profile.signing-status").catch(() => null);
-    if (statusVal?.certificate?.state === "installed") {
+    const pending = await pendingEnrolment();
+    if (pending.length === 0) {
       renderTabs(contentArea, did);
     } else {
-      await renderSetup(contentArea, () => renderTabs(contentArea, did));
+      await renderSetup(contentArea, () => renderTabs(contentArea, did), pending);
     }
   } else {
     const anonSpan = document.createElement("span");
@@ -269,9 +297,73 @@ async function renderHome(container: HTMLElement, did: string) {
   gallerySection.appendChild(galleryH3);
 
   const samples = [
-    { type: "request", version: 1, data: { summary: "Car repair quote request" } },
-    { type: "quote", version: 1, data: { price: "$120" } },
-    { type: "agreement-receipt", version: 1, data: { agreement_id: "agr-123" } },
+    {
+      type: "request",
+      version: 1,
+      data: {
+        description: "Front brake cable replacement and tuning",
+        categories: ["cycling", "repair"],
+      },
+    },
+    {
+      type: "quote",
+      version: 1,
+      data: {
+        terms: {
+          scope: "Replace brake cable and adjust pads",
+          currency: "EUR",
+          amount_minor: 4500,
+          tax_minor: 500,
+          fees_minor: 0,
+          payee: "Y Repairs",
+          payment_timing: "after-work",
+          schedule: {
+            earliest_secs: 1800000000,
+            latest_secs: 1800003600,
+          },
+          location: {
+            where: "at-customer",
+            address: "123 High Street",
+          },
+          cancellation_terms: "24 hours notice required for full refund",
+          refund_terms: "Full refund if work not completed",
+          dispute_path: "Small claims court or informal mediation",
+          quote_expires_at_secs: 1900000000,
+        },
+      },
+    },
+    {
+      type: "agreement-receipt",
+      version: 1,
+      data: {
+        quote_record_id: "rec_quote12345",
+        consumer_did: "did:key:z6MkhaXgBZDvotDkL5257faiz4898Xnp213as98z",
+        provider_did: "did:key:z6MkmFaqYQ36Xk559C351gJ1jF8d7s86s511as88",
+        role: "consumer",
+        pair: { state: "complete" },
+        terms: {
+          scope: "Replace brake cable and adjust pads",
+          currency: "EUR",
+          amount_minor: 4500,
+          tax_minor: 500,
+          fees_minor: 0,
+          payee: "Y Repairs",
+          payment_timing: "after-work",
+          schedule: {
+            earliest_secs: 1800000000,
+            latest_secs: 1800003600,
+          },
+          location: {
+            where: "at-customer",
+            address: "123 High Street",
+          },
+          cancellation_terms: "24 hours notice required for full refund",
+          refund_terms: "Full refund if work not completed",
+          dispute_path: "Small claims court or informal mediation",
+          quote_expires_at_secs: 1900000000,
+        },
+      },
+    },
     { type: "booking-progress", version: 1, data: { progress: "In Progress" } },
     { type: "payment-request", version: 1, data: { amount: "$120", currency: "USD" } },
     { type: "payment-acknowledgement", version: 1, data: { receipt_id: "rcpt-456" } },

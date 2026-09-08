@@ -6035,6 +6035,7 @@ dependencies = [
  "syneroym-app-supervisor",
  "syneroym-core",
  "syneroym-identity",
+ "syneroym-roym-core",
  "syneroym-sdk",
  "syneroym-signed-record",
  "syneroym-ucan",
@@ -8076,10 +8077,12 @@ dependencies = [
  "syneroym-roym-transaction",
  "syneroym-rpc",
  "syneroym-sandbox-wasm",
+ "syneroym-signed-record",
  "syneroym-wit-interfaces",
  "tempfile",
  "tokio",
  "wit-bindgen",
+ "z32",
 ]
 
 [[package]]
