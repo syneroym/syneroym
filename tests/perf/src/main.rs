@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
             concurrency::run_scenario().await?;
         }
         Commands::Soak { duration } => {
-            println!("Running Phase 4: Soak / Endurance Tests (duration: {}s)", duration);
+            println!("Running Phase 4: Soak / Endurance Tests (duration: {duration}s)");
             soak::run_scenario(duration).await?;
         }
     }

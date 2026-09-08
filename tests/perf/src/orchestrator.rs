@@ -16,7 +16,7 @@ use tokio::{
 use tracing::info;
 
 fn get_cargo_bin(name: &str) -> PathBuf {
-    if let Some(path) = std::env::var_os(format!("CARGO_BIN_EXE_{}", name)) {
+    if let Some(path) = std::env::var_os(format!("CARGO_BIN_EXE_{name}")) {
         PathBuf::from(path)
     } else {
         // Fall back to target/debug or target/release based on current executable

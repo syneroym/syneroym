@@ -694,25 +694,25 @@ pub struct SynAppManifest {
 impl SynAppManifest {
     pub fn from_toml(s: &str) -> Result<Self> {
         let manifest: Self =
-            toml::from_str(s).map_err(|e| anyhow!("Failed to parse TOML manifest: {}", e))?;
+            toml::from_str(s).map_err(|e| anyhow!("Failed to parse TOML manifest: {e}"))?;
         manifest.validate()?;
         Ok(manifest)
     }
 
     pub fn from_json(s: &str) -> Result<Self> {
         let manifest: Self =
-            serde_json::from_str(s).map_err(|e| anyhow!("Failed to parse JSON manifest: {}", e))?;
+            serde_json::from_str(s).map_err(|e| anyhow!("Failed to parse JSON manifest: {e}"))?;
         manifest.validate()?;
         Ok(manifest)
     }
 
     pub fn to_toml(&self) -> Result<String> {
-        toml::to_string(self).map_err(|e| anyhow!("Failed to serialize to TOML manifest: {}", e))
+        toml::to_string(self).map_err(|e| anyhow!("Failed to serialize to TOML manifest: {e}"))
     }
 
     pub fn to_json(&self) -> Result<String> {
         serde_json::to_string_pretty(self)
-            .map_err(|e| anyhow!("Failed to serialize to JSON manifest: {}", e))
+            .map_err(|e| anyhow!("Failed to serialize to JSON manifest: {e}"))
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -720,11 +720,7 @@ impl SynAppManifest {
         for (name, spec) in &self.services {
             for dep in &spec.depends_on {
                 if !self.services.contains_key(dep) {
-                    return Err(anyhow!(
-                        "Service '{}' depends on undefined service '{}'",
-                        name,
-                        dep
-                    ));
+                    return Err(anyhow!("Service '{name}' depends on undefined service '{dep}'"));
                 }
             }
         }
@@ -776,7 +772,7 @@ impl SynAppManifest {
         // declared `schema`.
         for (name, spec) in &self.services {
             if spec.replicas < 1 {
-                return Err(anyhow!("Service '{}' declares replicas = 0; the minimum is 1", name));
+                return Err(anyhow!("Service '{name}' declares replicas = 0; the minimum is 1"));
             }
             if spec.replicas > MAX_REPLICAS {
                 return Err(anyhow!(
@@ -805,11 +801,10 @@ impl SynAppManifest {
             }
             if matches!(spec.sharding_strategy, Some(ShardingStrategy::RangeSharding(_))) {
                 return Err(anyhow!(
-                    "Service '{}' declares a range_sharding strategy; range sharding names \
+                    "Service '{name}' declares a range_sharding strategy; range sharding names \
                      concrete members by ServiceId, which a manifest cannot express before those \
                      members are minted -- it is reachable only once shard rebalancing assigns \
-                     them, not from a manifest",
-                    name
+                     them, not from a manifest"
                 ));
             }
         }
@@ -828,7 +823,7 @@ impl SynAppManifest {
             scheduled += 1;
             sched
                 .parsed()
-                .map_err(|e| anyhow!("Service '{}' declares an invalid schedule: {e}", name))?;
+                .map_err(|e| anyhow!("Service '{name}' declares an invalid schedule: {e}"))?;
             if !spec.config.interfaces.contains(&sched.interface) {
                 return Err(anyhow!(
                     "Service '{}' schedules '{}/{}' but does not declare interface '{}'",
@@ -839,7 +834,7 @@ impl SynAppManifest {
                 ));
             }
             if sched.method.trim().is_empty() {
-                return Err(anyhow!("Service '{}' declares a schedule with an empty method", name));
+                return Err(anyhow!("Service '{name}' declares a schedule with an empty method"));
             }
             // A zero budget is not "no limit": the supervisor's
             // `tokio::time::timeout` elapses before the call is even made,
@@ -858,7 +853,7 @@ impl SynAppManifest {
             }
             if let Some(params) = &sched.params {
                 serde_json::from_str::<Value>(params).map_err(|e| {
-                    anyhow!("Service '{}' declares a schedule whose params are not JSON: {e}", name)
+                    anyhow!("Service '{name}' declares a schedule whose params are not JSON: {e}")
                 })?;
             }
         }
@@ -953,21 +948,21 @@ pub struct DeploymentPlan {
 
 impl DeploymentPlan {
     pub fn from_toml(s: &str) -> Result<Self> {
-        toml::from_str(s).map_err(|e| anyhow!("Failed to parse TOML deployment plan: {}", e))
+        toml::from_str(s).map_err(|e| anyhow!("Failed to parse TOML deployment plan: {e}"))
     }
 
     pub fn from_json(s: &str) -> Result<Self> {
-        serde_json::from_str(s).map_err(|e| anyhow!("Failed to parse JSON deployment plan: {}", e))
+        serde_json::from_str(s).map_err(|e| anyhow!("Failed to parse JSON deployment plan: {e}"))
     }
 
     pub fn to_toml(&self) -> Result<String> {
         toml::to_string(self)
-            .map_err(|e| anyhow!("Failed to serialize to TOML deployment plan: {}", e))
+            .map_err(|e| anyhow!("Failed to serialize to TOML deployment plan: {e}"))
     }
 
     pub fn to_json(&self) -> Result<String> {
         serde_json::to_string_pretty(self)
-            .map_err(|e| anyhow!("Failed to serialize to JSON deployment plan: {}", e))
+            .map_err(|e| anyhow!("Failed to serialize to JSON deployment plan: {e}"))
     }
 }
 

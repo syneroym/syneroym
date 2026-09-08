@@ -37,7 +37,7 @@ impl fmt::Display for DeploymentState {
             Self::RollingBack => "ROLLING_BACK",
             Self::RolledBack => "ROLLED_BACK",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -52,7 +52,7 @@ impl FromStr for DeploymentState {
             "DEGRADED" => Ok(Self::Degraded),
             "ROLLING_BACK" => Ok(Self::RollingBack),
             "ROLLED_BACK" => Ok(Self::RolledBack),
-            _ => Err(anyhow!("Unknown deployment state: {}", s)),
+            _ => Err(anyhow!("Unknown deployment state: {s}")),
         }
     }
 }
@@ -96,7 +96,7 @@ impl fmt::Display for ActionState {
             Self::Completed => "COMPLETED",
             Self::Failed => "FAILED",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -108,7 +108,7 @@ impl FromStr for ActionState {
             "IN_PROGRESS" => Ok(Self::InProgress),
             "COMPLETED" => Ok(Self::Completed),
             "FAILED" => Ok(Self::Failed),
-            _ => Err(anyhow!("Unknown action state: {}", s)),
+            _ => Err(anyhow!("Unknown action state: {s}")),
         }
     }
 }
@@ -133,7 +133,7 @@ pub struct DeploymentJournal {
 impl DeploymentJournal {
     pub fn open<P: AsRef<Path>>(dir: P, db_name: &str) -> Result<Self> {
         if db_name.contains('/') || db_name.contains('\\') || db_name.contains("..") {
-            return Err(anyhow!("Invalid database name: {}", db_name));
+            return Err(anyhow!("Invalid database name: {db_name}"));
         }
         let path = dir.as_ref().join(db_name);
         let conn = Connection::open(path)?;

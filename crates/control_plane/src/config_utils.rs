@@ -7,13 +7,13 @@ pub fn flatten_json_config(json: &Value, prefix: &str, map: &mut BTreeMap<String
         Value::Object(obj) => {
             for (k, v) in obj {
                 let new_prefix =
-                    if prefix.is_empty() { k.clone() } else { format!("{}.{}", prefix, k) };
+                    if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
                 flatten_json_config(v, &new_prefix, map);
             }
         }
         Value::Array(arr) => {
             for (i, v) in arr.iter().enumerate() {
-                let new_prefix = format!("{}[{}]", prefix, i);
+                let new_prefix = format!("{prefix}[{i}]");
                 flatten_json_config(v, &new_prefix, map);
             }
         }

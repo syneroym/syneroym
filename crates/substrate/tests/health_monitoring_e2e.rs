@@ -340,7 +340,7 @@ async fn deploy_tcp(
     };
     let params = serde_json::to_value((service_id.to_string(), manifest)).unwrap();
     let res = client.request("orchestrator", "deploy", params).await.unwrap();
-    assert!(res.result.get("status").is_some(), "deploy of {service_id} failed: {:?}", res);
+    assert!(res.result.get("status").is_some(), "deploy of {service_id} failed: {res:?}");
 }
 
 fn tcp_connect_check() -> WitHealthCheck {

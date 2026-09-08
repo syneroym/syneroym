@@ -580,7 +580,7 @@ async fn three_members_converge_to_byte_identical_transcripts() {
         &json!({"op": "remove-member", "conversation": group_id, "member_address": did_c}),
     )
     .await;
-    assert!(remove_c["ok"].is_object(), "remove-member should succeed: {:?}", remove_c);
+    assert!(remove_c["ok"].is_object(), "remove-member should succeed: {remove_c:?}");
 
     // Bob syncs to learn of Charlie's removal and new epoch
     let _ =

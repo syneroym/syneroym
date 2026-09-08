@@ -11,7 +11,6 @@ workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 dashmap.workspace = true
-ed25519-dalek.workspace = true
 hex.workspace = true
 rand.workspace = true
 serde.workspace = true
@@ -21,9 +20,9 @@ syneroym-core.workspace = true
 syneroym-identity.workspace = true
 syneroym-rpc.workspace = true
 syneroym-ucan.workspace = true
-tokio.workspace = true
 tracing.workspace = true
-z32.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio.workspace = true
+z32.workspace = true

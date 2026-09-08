@@ -71,7 +71,7 @@ pub async fn handle_secret(
             let mut value = Vec::new();
             io::stdin().read_to_end(&mut value)?;
             client.set_secret(service_id.clone(), key.clone(), value).await?;
-            println!("Secret '{}' set successfully for service {}", key, service_id);
+            println!("Secret '{key}' set successfully for service {service_id}");
         }
     }
     Ok(())

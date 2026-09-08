@@ -124,7 +124,7 @@ mod tests {
         let mut samples = Vec::new();
         for _ in 0..1000 {
             let val = calculate_jittered_backoff(base_backoff);
-            assert!((900..=1100).contains(&val), "Jittered value {} out of range", val);
+            assert!((900..=1100).contains(&val), "Jittered value {val} out of range");
             samples.push(val);
         }
 
@@ -135,9 +135,7 @@ mod tests {
         let max = samples[samples.len() - 1];
         assert!(
             max - min > 150,
-            "Insufficient spread in jitter distribution (min: {}, max: {})",
-            min,
-            max
+            "Insufficient spread in jitter distribution (min: {min}, max: {max})"
         );
 
         // Check average is close to the base_backoff
@@ -145,8 +143,7 @@ mod tests {
         let avg = sum as f64 / samples.len() as f64;
         assert!(
             (avg - 1000.0).abs() < 10.0,
-            "Average jittered backoff {} is too far from base 1000",
-            avg
+            "Average jittered backoff {avg} is too far from base 1000"
         );
     }
 }

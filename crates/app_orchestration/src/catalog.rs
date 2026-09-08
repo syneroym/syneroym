@@ -104,15 +104,13 @@ impl ManifestCatalog for LocalFilesystemCatalog {
             let hint_path = Path::new(path_hint);
             if hint_path.is_absolute() {
                 return Err(anyhow!(
-                    "Absolute manifest path hint is rejected for security: {}",
-                    path_hint
+                    "Absolute manifest path hint is rejected for security: {path_hint}"
                 ));
             }
             for component in hint_path.components() {
                 if matches!(component, Component::ParentDir) {
                     return Err(anyhow!(
-                        "Directory traversal (../) in manifest path hint is rejected: {}",
-                        path_hint
+                        "Directory traversal (../) in manifest path hint is rejected: {path_hint}"
                     ));
                 }
             }
@@ -124,12 +122,12 @@ impl ManifestCatalog for LocalFilesystemCatalog {
         };
 
         if !path.exists() {
-            return Err(anyhow!("Manifest file not found at path: {:?}", path));
+            return Err(anyhow!("Manifest file not found at path: {path:?}"));
         }
 
-        let content = fs::read_to_string(&path).await.map_err(|e| {
-            anyhow!("Failed to read manifest for '{}' at {:?}: {}", blueprint, path, e)
-        })?;
+        let content = fs::read_to_string(&path)
+            .await
+            .map_err(|e| anyhow!("Failed to read manifest for '{blueprint}' at {path:?}: {e}"))?;
 
         if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
             SynAppManifest::from_json(&content)

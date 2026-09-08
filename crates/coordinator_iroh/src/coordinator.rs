@@ -506,7 +506,7 @@ async fn register_coordinator_in_registry(
 }
 
 async fn wait_for_relay_server(addr: SocketAddr) -> Result<()> {
-    let url = format!("http://{}", addr);
+    let url = format!("http://{addr}");
     let client = Client::new();
     let mut attempts = 0;
     loop {
@@ -517,7 +517,7 @@ async fn wait_for_relay_server(addr: SocketAddr) -> Result<()> {
         }
         attempts += 1;
         if attempts > 30 {
-            anyhow::bail!("Relay server failed to start accepting connections at {}", url);
+            anyhow::bail!("Relay server failed to start accepting connections at {url}");
         }
         time::sleep(Duration::from_millis(100)).await;
     }

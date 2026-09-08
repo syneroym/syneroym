@@ -114,8 +114,7 @@ pub async fn install<H: AppHost>(
     }
     if cert.expires_at_secs.saturating_sub(now_secs) > MAX_CERTIFICATE_LIFETIME_SECS {
         return Err(CertificateError::Rejected(format!(
-            "lifetime exceeds maximum allowed ({} seconds)",
-            MAX_CERTIFICATE_LIFETIME_SECS
+            "lifetime exceeds maximum allowed ({MAX_CERTIFICATE_LIFETIME_SECS} seconds)"
         )));
     }
 
@@ -629,7 +628,7 @@ pub(crate) mod tests {
             CertificateStatus::Installed { master_did: m, near_expiry: false, .. } => {
                 assert_eq!(m, master_did);
             }
-            other => panic!("expected Installed, got {:?}", other),
+            other => panic!("expected Installed, got {other:?}"),
         }
 
         // 5. Test Expired status
@@ -637,7 +636,7 @@ pub(crate) mod tests {
             CertificateStatus::Expired { expires_at_secs } => {
                 assert_eq!(expires_at_secs, cert.expires_at_secs);
             }
-            other => panic!("expected Expired, got {:?}", other),
+            other => panic!("expected Expired, got {other:?}"),
         }
 
         // 6. Test Stale status when service_did changes
@@ -651,7 +650,7 @@ pub(crate) mod tests {
                 assert_eq!(installed_for, service_did);
                 assert_eq!(current, "did:key:z6Mnewservicekey");
             }
-            other => panic!("expected Stale, got {:?}", other),
+            other => panic!("expected Stale, got {other:?}"),
         }
     }
 }

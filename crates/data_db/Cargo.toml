@@ -16,7 +16,6 @@ anyhow.workspace = true
 async-trait.workspace = true
 rusqlite.workspace = true
 deadpool-sqlite.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -26,7 +25,6 @@ regex.workspace = true
 chrono.workspace = true
 hex.workspace = true
 zeroize.workspace = true
-deadpool.workspace = true
 
 [features]
 default = ["syneroym-oltp"]

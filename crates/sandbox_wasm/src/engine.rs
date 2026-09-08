@@ -3383,7 +3383,7 @@ mod tests {
             app_engine.execute_wasm("test_service", "test-interface", &request_loop).await;
         assert!(res_loop.is_err());
         let err_msg = res_loop.unwrap_err().to_string();
-        assert!(err_msg.contains("QuotaExceeded"), "expected QuotaExceeded, got: {}", err_msg);
+        assert!(err_msg.contains("QuotaExceeded"), "expected QuotaExceeded, got: {err_msg}");
 
         // 2. Test memory allocation limit
         // 1 page is 64KB. We try to allocate 100 pages (6.4MB), which exceeds the 1MB
@@ -3400,8 +3400,7 @@ mod tests {
         let err_msg = res_mem.unwrap_err().to_string();
         assert!(
             err_msg.contains("MemoryFault") || err_msg.contains("failed to grow memory"),
-            "expected MemoryFault or failed to grow memory, got: {}",
-            err_msg
+            "expected MemoryFault or failed to grow memory, got: {err_msg}"
         );
     }
 

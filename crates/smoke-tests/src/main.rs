@@ -97,8 +97,8 @@ async fn main() -> Result<()> {
 
         let coord_info_addr =
             coordinator.info_addr().context("Coordinator HTTP address not set")?;
-        println!("In-process coordinator listening on info: {}", coord_info_addr);
-        info_url = format!("http://{}/v1/info", coord_info_addr);
+        println!("In-process coordinator listening on info: {coord_info_addr}");
+        info_url = format!("http://{coord_info_addr}/v1/info");
 
         let (tx, mut rx) = oneshot::channel::<()>();
         let mut coord_run = coordinator;
@@ -106,12 +106,12 @@ async fn main() -> Result<()> {
             tokio::select! {
                 res = coord_run.run() => {
                     if let Err(e) = res {
-                        eprintln!("In-process coordinator run loop error: {:?}", e);
+                        eprintln!("In-process coordinator run loop error: {e:?}");
                     }
                 }
                 _ = &mut rx => {
                     if let Err(e) = coord_run.shutdown().await {
-                        eprintln!("In-process coordinator shutdown error: {:?}", e);
+                        eprintln!("In-process coordinator shutdown error: {e:?}");
                     }
                 }
             }
@@ -152,7 +152,7 @@ async fn main() -> Result<()> {
     println!("\n[Test 2 & 3] Registry registration and master anchor publication...");
     let identity = Identity::generate().context("Failed to generate identity")?;
     let did = derive_did_key(&identity.public_key());
-    println!("Generated test identity: {}", did);
+    println!("Generated test identity: {did}");
 
     let endpoint_info = EndpointInfo {
         service_id: did.clone(),
@@ -226,27 +226,27 @@ async fn main() -> Result<()> {
                 .map_err(|_| anyhow::anyhow!("QUIC connection timed out"))??;
                 Ok(())
             } else {
-                println!("  Attempt {}: Reconnecting to valid Iroh endpoint", attempt);
+                println!("  Attempt {attempt}: Reconnecting to valid Iroh endpoint");
                 match test_endpoint.connect(good_addr, SYNEROYM_ALPN).await {
                     Ok(conn) => match conn.open_bi().await {
                         Ok((mut send, _recv)) => {
                             if let Err(e) = send.write_all(b"PING\n").await {
-                                println!("    Write error: {:?}", e);
+                                println!("    Write error: {e:?}");
                                 return Err(e.into());
                             }
                             if let Err(e) = send.flush().await {
-                                println!("    Flush error: {:?}", e);
+                                println!("    Flush error: {e:?}");
                                 return Err(e.into());
                             }
                             Ok::<(), anyhow::Error>(())
                         }
                         Err(e) => {
-                            println!("    Open bi stream error: {:?}", e);
+                            println!("    Open bi stream error: {e:?}");
                             Err(e.into())
                         }
                     },
                     Err(e) => {
-                        println!("    Connect error: {:?}", e);
+                        println!("    Connect error: {e:?}");
                         Err(e.into())
                     }
                 }
@@ -335,7 +335,7 @@ async fn main() -> Result<()> {
         anyhow::bail!("Loop forever should fail");
     };
     let err_msg = err.to_string();
-    assert!(err_msg.contains("QuotaExceeded"), "Expected QuotaExceeded error, got: {}", err_msg);
+    assert!(err_msg.contains("QuotaExceeded"), "Expected QuotaExceeded error, got: {err_msg}");
     println!("Fuel quota trapping works! (QuotaExceeded detected)");
 
     let request_mem = JsonRpcRequest {
@@ -352,8 +352,7 @@ async fn main() -> Result<()> {
     let err_msg = err.to_string();
     assert!(
         err_msg.contains("MemoryFault") || err_msg.contains("failed to grow memory"),
-        "Expected MemoryFault error, got: {}",
-        err_msg
+        "Expected MemoryFault error, got: {err_msg}"
     );
     println!("Memory quota trapping works! (MemoryFault/failed to grow detected)");
 

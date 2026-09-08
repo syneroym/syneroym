@@ -318,7 +318,7 @@ async fn register_master_endpoint(
     Json(payload): Json<SignedMasterAnchor>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     if let Err(e) = payload.verify() {
-        return Err((StatusCode::UNAUTHORIZED, format!("Signature verification failed: {}", e)));
+        return Err((StatusCode::UNAUTHORIZED, format!("Signature verification failed: {e}")));
     }
 
     // Same last-writer-wins discipline as `admit_endpoint`, applied to the

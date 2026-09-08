@@ -98,7 +98,7 @@ async fn test_tls_rotation_sigusr1() -> Result<()> {
     // Spawn coordinator run loop
     let coord_handle = tokio::spawn(async move {
         if let Err(e) = coord.run().await {
-            eprintln!("Coordinator error: {:?}", e);
+            eprintln!("Coordinator error: {e:?}");
         }
     });
 
@@ -106,7 +106,7 @@ async fn test_tls_rotation_sigusr1() -> Result<()> {
     let reqwest_cert_a = Certificate::from_pem(&cert_a_bytes)?;
     let client_a = Client::builder().add_root_certificate(reqwest_cert_a.clone()).build()?;
 
-    let url = format!("https://{}/v1/info", info_addr);
+    let url = format!("https://{info_addr}/v1/info");
 
     // Initial connection should succeed with Client A
     let resp = client_a.get(&url).send().await?;

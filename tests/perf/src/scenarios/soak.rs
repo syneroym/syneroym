@@ -125,7 +125,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     let signed_info = info_reg.sign(&app_identity).unwrap();
 
     let res =
-        http_client.post(format!("{}/register", registry_url)).json(&signed_info).send().await?;
+        http_client.post(format!("{registry_url}/register")).json(&signed_info).send().await?;
     assert!(res.status().is_success());
 
     // Connect Primary Client to the service
@@ -315,7 +315,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                         service_id: unique_service_id.clone(),
                         substrate_id: substrate_did_clone.clone(),
                         endpoint_type: EndpointType::Service,
-                        nickname: Some(format!("soak-deploy-{}", cycle)),
+                        nickname: Some(format!("soak-deploy-{cycle}")),
                         mechanisms: mechanisms_clone.clone(),
                         is_private: false,
                         ttl: None,
@@ -325,7 +325,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                     let signed_info = info_reg.sign(&churn_identity).unwrap();
 
                     let reg_res = http_client
-                        .post(format!("{}/register", registry_url_clone))
+                        .post(format!("{registry_url_clone}/register"))
                         .json(&signed_info)
                         .send()
                         .await;
@@ -370,7 +370,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
 
                     // Clean up registry entry
                     let _ = http_client
-                        .post(format!("{}/deregister", registry_url_clone))
+                        .post(format!("{registry_url_clone}/deregister"))
                         .json(&json!({ "service_id": unique_service_id }))
                         .send()
                         .await;
@@ -464,7 +464,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
 
     // Clean up registry registration
     let _ = http_client
-        .post(format!("{}/deregister", registry_url))
+        .post(format!("{registry_url}/deregister"))
         .json(&json!({ "service_id": app_service_id }))
         .send()
         .await;
@@ -533,8 +533,8 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
         if final_median > first_median * 1.15 && slope > 0.001 {
             rss_stable = false;
             rss_reason = format!(
-                "Monotonic Memory (RSS) growth detected (Median {}MB -> {}MB, Slope = {:.4})",
-                first_median, final_median, slope
+                "Monotonic Memory (RSS) growth detected (Median {first_median}MB -> \
+                 {final_median}MB, Slope = {slope:.4})"
             );
         }
     }
@@ -567,26 +567,25 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     } else if !fd_stable {
         overall_pass = false;
         leak_reason = Some(format!(
-            "Open FDs leak detected (Baseline = {}, Ending = {})",
-            baseline_fds, ending_fds
+            "Open FDs leak detected (Baseline = {baseline_fds}, Ending = {ending_fds})"
         ));
     } else if !task_stable {
         overall_pass = false;
         leak_reason = Some(format!(
-            "Tokio active tasks leak detected (Baseline = {}, Ending = {})",
-            baseline_tasks, ending_tasks
+            "Tokio active tasks leak detected (Baseline = {baseline_tasks}, Ending = \
+             {ending_tasks})"
         ));
     } else if !conn_stable {
         overall_pass = false;
         leak_reason = Some(format!(
-            "Active connections leak detected (Baseline = {}, Ending = {})",
-            baseline_conns, ending_conns
+            "Active connections leak detected (Baseline = {baseline_conns}, Ending = \
+             {ending_conns})"
         ));
     } else if !cache_clean {
         overall_pass = false;
         leak_reason = Some(format!(
-            "WASM component cache size mismatch (Expected <= {}, Ending = {})",
-            cache_expected, ending_cache
+            "WASM component cache size mismatch (Expected <= {cache_expected}, Ending = \
+             {ending_cache})"
         ));
     }
 

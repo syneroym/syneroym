@@ -138,7 +138,7 @@ impl fmt::Display for AlertKind {
             Self::ScheduledRunFailed => "SCHEDULED_RUN_FAILED",
             Self::AppIdentityMismatch => "APP_IDENTITY_MISMATCH",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -163,7 +163,7 @@ impl FromStr for AlertKind {
             "DELIVERY_EXHAUSTED" => Ok(Self::DeliveryExhausted),
             "SCHEDULED_RUN_FAILED" => Ok(Self::ScheduledRunFailed),
             "APP_IDENTITY_MISMATCH" => Ok(Self::AppIdentityMismatch),
-            _ => Err(anyhow!("Unknown alert kind: {}", s)),
+            _ => Err(anyhow!("Unknown alert kind: {s}")),
         }
     }
 }
@@ -198,7 +198,7 @@ pub struct AlertStore {
 impl AlertStore {
     pub fn open<P: AsRef<Path>>(dir: P, db_name: &str) -> Result<Self> {
         if db_name.contains('/') || db_name.contains('\\') || db_name.contains("..") {
-            return Err(anyhow!("Invalid database name: {}", db_name));
+            return Err(anyhow!("Invalid database name: {db_name}"));
         }
         let path = dir.as_ref().join(db_name);
         let conn = Connection::open(path)?;

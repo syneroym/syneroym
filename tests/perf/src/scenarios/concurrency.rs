@@ -85,7 +85,7 @@ pub async fn run_scenario() -> Result<()> {
     let signed_info = info.sign(&app_identity).unwrap();
 
     let res =
-        http_client.post(format!("{}/register", registry_url)).json(&signed_info).send().await?;
+        http_client.post(format!("{registry_url}/register")).json(&signed_info).send().await?;
     assert!(res.status().is_success());
 
     // Connect Client to the service

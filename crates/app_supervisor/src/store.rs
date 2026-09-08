@@ -97,7 +97,7 @@ impl SupervisorStore {
         role: &SupervisorRole,
     ) -> Result<Self> {
         if db_name.contains('/') || db_name.contains('\\') || db_name.contains("..") {
-            return Err(anyhow!("Invalid database name: {}", db_name));
+            return Err(anyhow!("Invalid database name: {db_name}"));
         }
         let path = dir.as_ref().join(db_name);
         let conn = Connection::open(path)?;

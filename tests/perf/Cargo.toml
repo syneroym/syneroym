@@ -16,10 +16,6 @@ serde_json.workspace = true
 
 # Async
 tokio.workspace = true
-futures.workspace = true
-
-# System & Utilities
-sysinfo.workspace = true
 chrono.workspace = true
 
 # HTTP & Metrics
@@ -31,19 +27,11 @@ syneroym-app-orchestration.workspace = true
 syneroym-sandbox-wasm.workspace = true
 syneroym-rpc.workspace = true
 syneroym-core.workspace = true
-syneroym-wit-interfaces.workspace = true
 syneroym-identity.workspace = true
 syneroym-data-keystore.workspace = true
 syneroym-data-db.workspace = true
 syneroym-data-blob.workspace = true
 syneroym-mqtt-broker.workspace = true
 wasmtime.workspace = true
-z32.workspace = true
-
-
-# Testing & Execution
-assert_cmd.workspace = true
 tempfile.workspace = true
-
-[dev-dependencies]
 # none for now

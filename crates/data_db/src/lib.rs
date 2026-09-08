@@ -49,7 +49,7 @@ mod tests {
     fn test_data_layer_service_instantiation() {
         let service = DataLayerService::new();
         let _default = DataLayerService::default();
-        assert!(format!("{:?}", service).contains("DataLayerService"));
+        assert!(format!("{service:?}").contains("DataLayerService"));
     }
 
     #[test]

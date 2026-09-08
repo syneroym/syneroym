@@ -810,7 +810,7 @@ fn open_connection<P: AsRef<Path>>(
     dek: Option<&[u8; 32]>,
 ) -> Result<Connection> {
     if db_name.contains('/') || db_name.contains('\\') || db_name.contains("..") {
-        return Err(anyhow!("Invalid database name: {}", db_name));
+        return Err(anyhow!("Invalid database name: {db_name}"));
     }
     let conn = Connection::open(dir.as_ref().join(db_name))?;
     if let Some(dek) = dek {

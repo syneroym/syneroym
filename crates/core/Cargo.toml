@@ -20,9 +20,7 @@ z32.workspace = true
 httparse.workspace = true
 tls-parser.workspace = true
 reqwest.workspace = true
-url.workspace = true
 tracing.workspace = true
-ed25519-dalek.workspace = true
 syneroym-identity.workspace = true
 syneroym-signed-record.workspace = true
 thiserror.workspace = true
@@ -35,7 +33,6 @@ axum-server.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-libc.workspace = true
 
 [features]
 test-utils = []
