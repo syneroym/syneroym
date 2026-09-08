@@ -20,6 +20,7 @@ syneroym-identity = { workspace = true, features = ["backup"] }
 syneroym-signed-record.workspace = true
 syneroym-sdk.workspace = true
 syneroym-core.workspace = true
+syneroym-roym-core.workspace = true
 syneroym-ucan.workspace = true
 syneroym-app-orchestration.workspace = true
 syneroym-app-supervisor.workspace = true

@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use syneroym_signed_record::{EnvelopeError, content_digest};
 
-use crate::area::{self, Area, AreaError};
+use crate::{
+    area::{self, Area, AreaError},
+    money,
+};
 
 pub const LISTING_VERSION: u32 = 1;
 pub const MAX_TITLE_LEN: usize = 160;
@@ -222,8 +225,8 @@ pub enum ListingError {
     ConversationAddressEmpty,
     #[error("listing_id is empty")]
     ListingIdEmpty,
-    #[error("currency '{0}' is not three uppercase letters")]
-    CurrencyShape(String),
+    #[error("currency '{0}' is not a currency code this build knows")]
+    CurrencyUnknown(String),
     #[error("payment terms are required unless booking.mode is enquiry")]
     PaymentRequired,
     #[error("amount_minor is required for a non-quote-only payment model")]
@@ -258,7 +261,7 @@ fn is_slug_char(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
 }
 
-fn valid_token(s: &str, max: usize) -> bool {
+pub(crate) fn valid_token(s: &str, max: usize) -> bool {
     !s.is_empty() && s.len() <= max && s.chars().all(is_slug_char)
 }
 
@@ -297,8 +300,8 @@ impl ListingPayload {
             None if !booking_is_enquiry => return Err(ListingError::PaymentRequired),
             None => {}
             Some(p) => {
-                if p.currency.len() != 3 || !p.currency.chars().all(|c| c.is_ascii_uppercase()) {
-                    return Err(ListingError::CurrencyShape(p.currency.clone()));
+                if money::currency_minor_exponent(&p.currency).is_none() {
+                    return Err(ListingError::CurrencyUnknown(p.currency.clone()));
                 }
                 match p.model {
                     PaymentModel::QuoteOnly if p.amount_minor.is_some() => {
@@ -754,12 +757,14 @@ mod tests {
     }
 
     #[test]
-    fn currency_shape() {
+    fn currency_unknown() {
         let mut p = core();
         p.payment.as_mut().unwrap().currency = "eur".to_string();
-        assert!(matches!(p.validate(), Err(ListingError::CurrencyShape(_))));
+        assert!(matches!(p.validate(), Err(ListingError::CurrencyUnknown(_))));
         p.payment.as_mut().unwrap().currency = "EURO".to_string();
-        assert!(matches!(p.validate(), Err(ListingError::CurrencyShape(_))));
+        assert!(matches!(p.validate(), Err(ListingError::CurrencyUnknown(_))));
+        p.payment.as_mut().unwrap().currency = "XYZ".to_string();
+        assert!(matches!(p.validate(), Err(ListingError::CurrencyUnknown(_))));
     }
 
     #[test]

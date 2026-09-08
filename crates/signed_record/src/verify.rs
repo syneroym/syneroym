@@ -58,6 +58,13 @@ pub struct VerifyOptions<'a> {
     pub accepted_scopes: &'a [&'a str],
     pub revoked: &'a dyn RevocationSource,
     pub max_clock_skew_secs: u64,
+    /// When true, an envelope past its own `expires-at-secs` still
+    /// verifies. The signature, the issuer, the delegation window and
+    /// the revocation check are unchanged -- only the expiry stops being
+    /// fatal, and `VerifiedRecord.expires_at_secs` (already present) is
+    /// how the caller sees that it passed. For a reader that must show
+    /// what a lapsed offer said, rather than decide whether to act on it.
+    pub allow_expired: bool,
 }
 
 impl<'a> std::fmt::Debug for VerifyOptions<'a> {
@@ -67,6 +74,7 @@ impl<'a> std::fmt::Debug for VerifyOptions<'a> {
             .field("expected_issuer", &self.expected_issuer)
             .field("accepted_scopes", &self.accepted_scopes)
             .field("max_clock_skew_secs", &self.max_clock_skew_secs)
+            .field("allow_expired", &self.allow_expired)
             .finish_non_exhaustive()
     }
 }
@@ -81,6 +89,7 @@ impl<'a> VerifyOptions<'a> {
             accepted_scopes: DEFAULT_ACCEPTED_SCOPES,
             revoked: &EMPTY_REVOCATIONS,
             max_clock_skew_secs: 300,
+            allow_expired: false,
         }
     }
 
@@ -91,6 +100,14 @@ impl<'a> VerifyOptions<'a> {
 
     pub fn with_revocations(mut self, src: &'a dyn RevocationSource) -> Self {
         self.revoked = src;
+        self
+    }
+
+    /// Off in `new()`. A caller opts in, so no existing verifier changes
+    /// behaviour.
+    #[must_use]
+    pub fn allowing_expired(mut self) -> Self {
+        self.allow_expired = true;
         self
     }
 }
@@ -172,6 +189,7 @@ pub fn verify(e: &Envelope, o: &VerifyOptions<'_>) -> Result<VerifiedRecord, Ver
     }
 
     if let Some(exp) = e.expires_at_secs
+        && !o.allow_expired
         && o.now_secs >= exp
     {
         return Err(VerifyError::Expired { now_secs: o.now_secs, expires_at_secs: exp });
@@ -616,5 +634,34 @@ mod tests {
         let opts = VerifyOptions::new(1000).with_revocations(&src);
         let res = verify(&env, &opts).unwrap();
         assert_eq!(res.revocation_status, RevocationStatus::Good);
+    }
+
+    #[test]
+    fn an_expired_envelope_is_refused_by_default() {
+        let key = Identity::generate().unwrap();
+        let issuer = substrate::derive_did_key(&key.public_key());
+        let mut d = sample_draft();
+        d.expires_at_secs = Some(1500);
+        let env_exp = sign_env(&key, d, issuer, None, 1000);
+
+        let opts = VerifyOptions::new(1500);
+        assert!(matches!(
+            verify(&env_exp, &opts),
+            Err(VerifyError::Expired { now_secs: 1500, expires_at_secs: 1500 })
+        ));
+    }
+
+    #[test]
+    fn an_expired_envelope_verifies_under_allowing_expired_with_expires_at_secs_reported() {
+        let key = Identity::generate().unwrap();
+        let issuer = substrate::derive_did_key(&key.public_key());
+        let mut d = sample_draft();
+        d.expires_at_secs = Some(1500);
+        let env_exp = sign_env(&key, d, issuer.clone(), None, 1000);
+
+        let opts = VerifyOptions::new(2000).allowing_expired();
+        let res = verify(&env_exp, &opts).expect("should verify when allowing expired");
+        assert_eq!(res.issuer, issuer);
+        assert_eq!(res.expires_at_secs, Some(1500));
     }
 }

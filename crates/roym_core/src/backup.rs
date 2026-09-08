@@ -18,6 +18,10 @@ pub const SECTION_MEMBERS: &str = "members";
 pub const SECTION_PUBLICATIONS: &str = "publications";
 pub const SECTION_PUBLICATION_LOG: &str = "publication_log";
 pub const SECTION_SOURCES: &str = "sources";
+pub const SECTION_REQUESTS: &str = "requests";
+pub const SECTION_QUOTES: &str = "quotes";
+pub const SECTION_AGREEMENTS: &str = "agreements";
+pub const SECTION_CARDS: &str = "cards";
 /// The digest prefix, so a section digest can never be mistaken for a
 /// record id or a report id.
 pub const SECTION_DIGEST_PREFIX: &str = "sec_";
@@ -247,6 +251,10 @@ mod tests {
             SECTION_PUBLICATIONS,
             SECTION_PUBLICATION_LOG,
             SECTION_SOURCES,
+            SECTION_REQUESTS,
+            SECTION_QUOTES,
+            SECTION_AGREEMENTS,
+            SECTION_CARDS,
         ] {
             assert!(
                 single_section_bundle(section).check_integrity().is_ok(),

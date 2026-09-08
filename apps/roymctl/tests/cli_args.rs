@@ -421,3 +421,61 @@ fn identity_certify_signing_help() -> Result<(), Box<dyn Error>> {
         .stdout(contains("--expires-hours"));
     Ok(())
 }
+
+#[test]
+fn roym_transaction_subcommands_help() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("roym")
+        .arg("transaction")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("request"))
+        .stdout(contains("quote"))
+        .stdout(contains("accept"))
+        .stdout(contains("decline"))
+        .stdout(contains("sync"))
+        .stdout(contains("thread"))
+        .stdout(contains("agreement"));
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("roym")
+        .arg("transaction")
+        .arg("request")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--conversation"))
+        .stdout(contains("--description"))
+        .stdout(contains("--category"))
+        .stdout(contains("--listing"))
+        .stdout(contains("--near"))
+        .stdout(contains("--window"))
+        .stdout(contains("--notice"));
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("roym")
+        .arg("transaction")
+        .arg("quote")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--request"))
+        .stdout(contains("--scope"))
+        .stdout(contains("--currency"))
+        .stdout(contains("--amount"))
+        .stdout(contains("--payee"))
+        .stdout(contains("--tax"))
+        .stdout(contains("--fees"))
+        .stdout(contains("--method"))
+        .stdout(contains("--timing"))
+        .stdout(contains("--schedule"))
+        .stdout(contains("--where"))
+        .stdout(contains("--address"))
+        .stdout(contains("--cancellation-file"))
+        .stdout(contains("--refund-file"))
+        .stdout(contains("--dispute"))
+        .stdout(contains("--expires-hours"));
+
+    Ok(())
+}

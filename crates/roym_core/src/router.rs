@@ -35,6 +35,11 @@ const ROUTES: &[(&str, Service, MethodAuth)] = &[
     ("quote.", TRANSACTION, MethodAuth::Owner),
     ("agreement.", TRANSACTION, MethodAuth::Owner),
     ("receipt.", TRANSACTION, MethodAuth::Owner),
+    // The certificate verbs (`transaction.signing-status` /
+    // `transaction.install-signing-certificate`) reach the transaction
+    // service through its own name, and `transaction.sync` / `.thread` /
+    // `.export` / `.import` ride the same prefix.
+    ("transaction.", TRANSACTION, MethodAuth::Owner),
     ("directory.", DIRECTORY, MethodAuth::Owner),
     ("member.", DIRECTORY, MethodAuth::Owner),
 ];
@@ -57,7 +62,7 @@ pub fn method_auth(method: &str) -> Option<MethodAuth> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::{collections::HashSet, fs, path::PathBuf};
 
     use super::*;
     use crate::services::SIBLINGS;
@@ -116,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn every_declared_dependency_names_a_sibling_and_the_three_edges_are_present() {
+    fn every_declared_dependency_names_a_sibling_and_the_named_edges_are_present() {
         let manifest_str = include_str!("../app/roym.toml");
         let manifest: toml::Value = toml::from_str(manifest_str).expect("parse roym.toml");
         let services = manifest["services"].as_table().expect("services table");
@@ -148,6 +153,16 @@ mod tests {
         assert!(
             directory_deps.contains(&"catalog"),
             "'directory' must declare a dependency on 'catalog'"
+        );
+        let transaction_deps: Vec<&str> = services["transaction"]["depends_on"]
+            .as_array()
+            .unwrap_or_else(|| panic!("'transaction' must declare depends_on"))
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(
+            transaction_deps.contains(&"conversation"),
+            "'transaction' must declare a dependency on 'conversation'"
         );
     }
 
@@ -208,13 +223,40 @@ mod tests {
 
     #[test]
     fn every_certificate_mounted_service_routes_under_its_own_name() {
-        // `handle_certificate_verb` is mounted on these three; each must
+        // `handle_certificate_verb` is mounted on these four; each must
         // have a routable `<name>.signing-status`, or `roym enrol-signing`
         // cannot reach it.
-        for name in ["profile", "catalog", "conversation"] {
+        let expected = ["profile", "catalog", "conversation", "transaction"];
+        for name in expected {
             let method = format!("{name}.signing-status");
             let service = route(&method).unwrap_or_else(|| panic!("{method} is not routable"));
             assert_eq!(service.name, name, "{method} must route to the '{name}' service");
         }
+
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let enrolment_path = manifest_dir.join("../roym_web/ui/src/session/enrolment.ts");
+        assert!(enrolment_path.exists(), "missing ../roym_web/ui/src/session/enrolment.ts");
+
+        let content = fs::read_to_string(&enrolment_path)
+            .expect("Failed to read ../roym_web/ui/src/session/enrolment.ts");
+
+        let start_idx = content
+            .find("SIGNING_SERVICES")
+            .and_then(|idx| content[idx..].find('['))
+            .map(|offset| content.find("SIGNING_SERVICES").unwrap() + offset)
+            .expect("SIGNING_SERVICES array opening bracket not found");
+        let slice = &content[start_idx..];
+        let end_idx = slice.find(']').unwrap_or(slice.len());
+        let array_str = &slice[1..end_idx];
+        let ui_services: Vec<String> = array_str
+            .split(',')
+            .map(|item| item.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let expected_vec: Vec<String> = expected.into_iter().map(String::from).collect();
+        assert_eq!(
+            ui_services, expected_vec,
+            "UI SIGNING_SERVICES must match Rust certificate-mounted services"
+        );
     }
 }
