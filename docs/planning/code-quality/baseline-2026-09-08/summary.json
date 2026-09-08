@@ -1,0 +1,75 @@
+{
+ "commit": "8d0444a690c4ee6e89a4ac87013b7ae016c13a2d",
+ "date": "2026-09-08",
+ "rust": {
+  "tracked_files": 358,
+  "total_lines": 208418,
+  "code": 155994,
+  "comment_lines": 29589
+ },
+ "duplication": {
+  "exact_pct": 10.856924810117382,
+  "near_pct": 2.297670530944507,
+  "exact_groups": 396,
+  "subfunction_groups": 1023
+ },
+ "long_functions": {
+  "over_100": 125,
+  "tiers": {
+   "500": 3,
+   "400": 6,
+   "300": 14,
+   "250": 21,
+   "200": 31,
+   "150": 58,
+   "100": 125
+  },
+  "longest": [
+   993,
+   "crates/roym_profile/src/app.rs",
+   194
+  ]
+ },
+ "files": {
+  "over_300_prod_lines": 90,
+  "largest_source_file": "crates/app_supervisor/src/service.rs",
+  "largest_source_lines": 5631,
+  "largest_test_file": "crates/roym_web/tests/dual_build_parity.rs",
+  "largest_test_lines": 7056,
+  "size_distribution": {
+   "1500+": 13,
+   "1000-1499": 9,
+   "700-999": 14,
+   "500-699": 19,
+   "300-499": 35
+  }
+ },
+ "planning_refs": {
+  "total_comment_lines": 1596,
+  "by_kind": {
+   "milestone": 587,
+   "design id": 499,
+   "slice/task id": 490,
+   "bare section ref": 304,
+   "review finding": 97,
+   "planning doc": 94
+  },
+  "top_crates": {
+   "crates/app_supervisor": 354,
+   "crates/control_plane": 200,
+   "crates/router": 181,
+   "crates/substrate": 151,
+   "crates/sdk": 126,
+   "crates/sandbox_wasm": 114
+  }
+ },
+ "clippy_pedantic_nursery_findings": 3804,
+ "unused_dependencies": 78,
+ "allow_attributes": 220,
+ "todo_markers": 18,
+ "e2e_harness": {
+  "substrate_test_files": 41,
+  "with_own_node_struct": 25,
+  "using_tests_common": 16
+ }
+}
