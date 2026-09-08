@@ -62,7 +62,7 @@ propagates. Mapping (1) changes only on a **membership change**: scale out or in
 *replacing* one member with a different one, or a topology-mode change. Note the
 distinction between *replacing a member* (a different master joins the set, a
 push) and *reinstantiating a member* (same master, no push) — it is the
-load-bearing one for this whole ADR.
+essential one for this whole ADR.
 
 Membership changes are rare and operator-initiated. A live directory would
 therefore be a hot-path dependency built to serve a cold event.
@@ -344,7 +344,7 @@ contradicted the milestone's own exit criteria. Recorded in
   control-plane/data-plane isolation guarantee is satisfied structurally rather
   than by cache-staleness rules, and the "registry is down, serve stale or fail?"
   question does not arise.
-- Topology knowledge is least-privilege by construction: a service learns its own
+- Topology knowledge is least-privilege by design: a service learns its own
   declared dependencies and nothing else, where a directory would have been able
   to answer questions about the whole app.
 - No bootstrap discovery problem: nothing needs to find the supervisor, so the
@@ -365,7 +365,7 @@ contradicted the milestone's own exit criteria. Recorded in
 - Authenticated multi-substrate deploy remains blocked on the
   `ControllerAgreement` creation tool
   ([M04A B7 plan](../planning/milestones/M04A-proxy-and-auth-foundation/plans/B7.md)
-  §6.1), which is unchanged by this ADR but becomes load-bearing for it: the
+  §6.1), which is unchanged by this ADR but becomes essential for it: the
   supervisor cannot hold a deploy capability on a substrate it does not own until
   ownership is establishable.
 

@@ -164,7 +164,7 @@ does not need. The record holder is whoever deployed it; let them share it.
 
 ### 3. Resolution consults a local record store before the registry
 
-This is the load-bearing part: without it "private" silently means "same-node
+This is the essential part: without it "private" silently means "same-node
 only".
 
 Add a **known-records store** — privately imported `SignedEndpointInfo`s,
@@ -197,7 +197,7 @@ construction. The store is therefore needed for genuinely **cross-node**
 private targets (federated apps, cross-app calls), not for the common intra-app
 case.
 
-### 4. `is_private` composes; it is not subsumed
+### 4. `is_private` composes; it is not replaced
 
 `is_private` today means *"do not propagate to the parent registry"*
 ([registry.rs:226](../../crates/community_registry/src/registry.rs#L226)) —

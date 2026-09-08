@@ -280,7 +280,7 @@ vs. row reachability* — both answered by the same `permissions:` block.
 - **Costs**: grants that name app permissions bind late, so a policy edit changes
   outstanding grants' meaning (argued for in ADR-0015 A2 — pinning would be worse,
   since tightening must be immediate). Stage 2 introduces a network dependency
-  mid-evaluation; §6's batching and TTL'd caching are load-bearing, not
+  mid-evaluation; §6's batching and TTL'd caching are essential, not
   optimizations.
 - **Defers**: full MongoDB aggregation-operator compatibility; policy/relationship
   state replication (M7); the in-memory filter backend (§5).
