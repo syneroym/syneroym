@@ -432,7 +432,7 @@ Slice C7 implements R1 row 4: signed request, quote, and agreement receipts, the
 | Item | Reason | Target | Source of record |
 |---|---|---|---|
 | Code-quality analysis tools are not in `mise.toml` | The 2026-09-08 quality baseline was measured with `cargo-dupes`, `tokei` and `cargo-shear`, installed by hand. They are deliberately left out of `mise.toml` until the cleanup round shows which ones earn a permanent place in the build pipeline. Add the survivors, and drop the rest. | End of the current code-quality round | [code-quality/README.md](./code-quality/README.md) |
-| No CI guard against long functions, duplication, or planning refs regrowing | The baseline records 125 functions over 100 lines, 10.9% exact duplication, and 683 comments citing milestone IDs. None of these is enforced yet, so all three can grow back while the cleanup is in progress. Add a `clippy.toml` threshold, `cargo dupes check --max-exact-percent`, and a grep gate, ratcheting each one down as batches land. | End of the current code-quality round | [code-quality/README.md](./code-quality/README.md) ("Guarding the gains") |
+| No CI guard against long functions, duplication, or planning refs regrowing | The baseline records 125 functions over 100 lines, 10.9% exact duplication, and 1,410 comment lines citing planning documents. None of these is enforced yet, so all three can grow back while the cleanup is in progress. Add a `clippy.toml` threshold, `cargo dupes check --max-exact-percent`, and a grep gate, ratcheting each one down as batches land. | End of the current code-quality round | [code-quality/README.md](./code-quality/README.md) ("Guarding the gains") |
 
 ## 14. Open in-code markers
 

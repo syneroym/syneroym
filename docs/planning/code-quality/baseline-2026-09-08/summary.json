@@ -44,7 +44,24 @@
    "300-499": 35
   }
  },
- "planning_refs": 683,
+ "planning_refs": {
+  "total_comment_lines": 1410,
+  "by_kind": {
+   "design id": 499,
+   "milestone": 587,
+   "slice/task id": 490,
+   "planning doc": 94,
+   "review finding": 97
+  },
+  "top_crates": {
+   "crates/app_supervisor": 301,
+   "crates/control_plane": 164,
+   "crates/router": 150,
+   "crates/substrate": 141,
+   "crates/sdk": 122,
+   "crates/sandbox_wasm": 109
+  }
+ },
  "clippy_pedantic_nursery_findings": 3804,
  "unused_dependencies": 78,
  "allow_attributes": 220,

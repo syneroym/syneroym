@@ -16,7 +16,7 @@ on commit `8d0444a` (main, right after slice C7 merged).
 | `long-functions.json` | Every function over 100 lines, longest first, as `[lines, file, line_number]`. |
 | `duplication.json` | Duplicate code groups, ranked by wasted lines. Top 120 whole functions and top 60 sub-function blocks. |
 | `clippy-lints.json` | Count of every clippy lint. Full findings kept only for structural lints. |
-| `planning-refs.json` | Every code comment that cites a milestone or slice ID. `AGENTS.md` forbids these. |
+| `planning-refs.json` | Every code comment that cites a planning document. `AGENTS.md` forbids these. See "Finding planning references" below. |
 | `docs-readability.json` | Average sentence length, share of long sentences, and jargon count per markdown file. |
 
 ## Tools
@@ -89,6 +89,33 @@ groups. A normal JSON parser stops after the first one. Read them in a loop with
 
 The clippy run needs the sandbox off, because `cargo install` and the registry
 write to `~/.cargo`.
+
+## Finding planning references
+
+`AGENTS.md` bans code comments that cite milestone, slice, or task IDs, or
+planning-doc section numbers, because those docs get archived and renumbered
+and the comment then lies. ADR references are fine; ADRs are permanent.
+
+There are five separate families, and it is easy to search for only the first
+one and think the job is nearly done. Match all of these, on comment lines only:
+
+| Family | Pattern | Example in the code |
+|---|---|---|
+| Milestone | `\bM0[0-9][A-Z]?\b` | `M04A Slice B7a` |
+| Slice / task id | `\bSlice [A-Z]?[0-9]` and `\b[A-Z][0-9][a-z]?\b` before `review`, `slice`, or `'s` | `A5e's resident loop` |
+| Design id | `\bD-[0-9A-Z]{1,4}-[0-9]+\b` | `D-B1-9`, `D-06C-3` |
+| Review finding | `\breview finding` / `\breview round [0-9]` | `M05B B1 review finding 4` |
+| Planning doc | `\b(status\|task)\.md\b`, `implementation-plan` | `` see `status.md`'s Slice 6A `` |
+
+Searching only for milestone IDs finds 683 lines. Matching all five families
+finds **1,410**. The design-id family alone is 499 lines and shares no
+characters with the milestone pattern.
+
+Some of these comments are not merely stale references — they make claims that
+are now false. `app_supervisor/src/lib.rs` described the crate as having "no
+autonomy: the resident reconcile loop is a later slice", while
+`service.rs` has run that loop for some time. Rewriting is therefore a
+correctness fix, not only tidying.
 
 ## Guarding the gains
 
