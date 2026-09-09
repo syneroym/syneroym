@@ -12,9 +12,9 @@ peer (another WASM service, a `SyneroymClient`, or `roymctl`) opens a direct
 QUIC stream against it, either pulling from the guest (`stream-cursor`,
 guest-as-source) or pushing into it (`stream-sink`, guest-as-sink).
 `docs/planning/milestones/M03B-messaging/task.md`'s Dependency Gate 4 requires
-this design note to exist, covering direction disambiguation, guest-implemented
-resource mechanics, instance lifetime/quota handling, peer-kind symmetry, and
-where the routing lives, before any Slice 6B code lands.
+this design note to exist before any Slice 6B code lands. It must cover
+direction disambiguation, guest-implemented resource mechanics, instance
+lifetime and quota handling, peer-kind symmetry, and where the routing lives.
 
 A day-0 spike (throwaway, scratchpad-only, not committed) confirmed the one
 genuine unknown before this design was finalized: whether dynamic
@@ -55,12 +55,12 @@ reverse of `blob-writer`/`blob-reader` (`crates/data_blob`), which are
 applies to resources the *host* implements; it has no equivalent for a
 guest-exported resource the host calls into.
 
-**WIT direction is the load-bearing detail here.** In the component model,
+**WIT direction is the key detail here.** In the component model,
 whichever side *exports* an interface implements it. Since `stream-cursor`/
 `stream-sink` must be guest-implemented, `stream-types` (the interface housing
-them) is **exported** by `messaging-guest`, exactly mirroring how `guest-api`
-is already exported there — not imported, the way `blob-store` is imported by
-`blob-store-guest` (the host-implemented shape). Concretely:
+them) is **exported** by `messaging-guest`. This mirrors how `guest-api` is
+already exported there. It is not imported, the way `blob-store` is imported
+by `blob-store-guest` (the host-implemented shape). Concretely:
 
 ```wit
 world messaging-guest {
@@ -113,11 +113,11 @@ resource the host only ever touches dynamically.
 
 Every existing invocation (`build_store_and_instantiate`) creates a **fresh**
 `Store`/`Instance` per call — fine for stateless calls like `handle-message`,
-but wrong for a stream: the guest returns a resource from
-`handle-stream-request`/`accept-stream-upload`, and every subsequent
+but wrong for a stream. The guest returns a resource from
+`handle-stream-request`/`accept-stream-upload`. Every later
 `next-chunk()`/`push-chunk()` call must run against the *same*
-`Store`/`Instance` that resource lives in, or the `ResourceAny` is meaningless
-(referencing a `Store` that error longer exists).
+`Store`/`Instance` that resource lives in. Otherwise the `ResourceAny` is
+meaningless, because it references a `Store` that no longer exists.
 
 - **One dedicated Tokio task per open stream** owns a single long-lived
   `Store<HostState>` + `Instance`, obtained via a new
@@ -136,10 +136,10 @@ but wrong for a stream: the guest returns a resource from
 - **A per-service cap on concurrent open stream instances** bounds memory,
   since each holds a live `Store` plus the guest's in-memory state:
   `StreamingConfig { max_concurrent_streams_per_service: u32 }` (default `8`)
-  is added to `crates/core/src/config.rs`, threaded into `SubstrateConfig` as a
-  new `[streaming]` section — mirroring `MessagingConfig`/`[mqtt]`'s existing
-  precedent. Opening a new stream instance past the cap is rejected with a
-  clean error, not a panic or unbounded queue.
+  is added to `crates/core/src/config.rs`. It is threaded into `SubstrateConfig`
+  as a new `[streaming]` section, mirroring `MessagingConfig`/`[mqtt]`'s
+  existing precedent. Opening a new stream instance past the cap is rejected
+  with a clean error, not a panic or unbounded queue.
 - **Task tracking survives more than the `undeploy` path.** A bare
   `tokio::task::AbortHandle` does nothing on `Drop` — unlike Slice 6A's
   `SubscriptionHandle`, which actively unsubscribes on drop. The per-service
@@ -166,9 +166,9 @@ the identical preamble → registry lookup → `plan_pipeline` →
 service, `SyneroymClient::connection()` (already returns
 `Option<TransportConnection>` today, so no new client-side plumbing is
 needed), or `roymctl`. This symmetry is only true once the new `plan_pipeline`
-match arm below exists; before it, every `raw://` request against a
-`WasmChannel` endpoint falls through to `ServiceStage::Unsupported`
-regardless of initiator, so it is not "free" — it depends on item 5.
+match arm below exists. Before it, every `raw://` request against a
+`WasmChannel` endpoint falls through to `ServiceStage::Unsupported`,
+regardless of initiator. So it is not "free"; it depends on item 5.
 
 ### 5. Where the Routing Lives
 
@@ -236,7 +236,7 @@ at construction time, which happens in `setup_router`
 accepting connections — restart-replay is therefore already correct with no
 new persistence code. `ControlPlaneService::undeploy` already iterates
 `lookup_by_service` and removes every interface a service owns, so undeploy
-cleanup also falls out with no new code.
+cleanup also happens with no new code.
 
 **Caveat**: `SubstrateEndpoint::WasmChannel` carries no interface-kind tag, so
 registry resolution alone cannot distinguish a stream-protocol registration

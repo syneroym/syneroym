@@ -1,8 +1,8 @@
 # Background
 
-The [thesis](../THESIS.md) states the core bet: a truly peer-to-peer foundation for group communication and trust, on which independent mini-apps — chat, marketplace, social, AI — plug in and work together as one experience, with no central server in the middle. No blockchains or cryptocurrency. This document builds on that and describes what we will actually pursue and build.
+The [thesis](../THESIS.md) states the core bet. We build a truly peer-to-peer foundation for group communication and trust. Independent mini-apps — chat, marketplace, social, AI — plug into this foundation. They work together as one experience. No central server sits in the middle. We use no blockchains and no cryptocurrency. This document builds on the thesis. It describes what we will actually pursue and build.
 
-The rest of this section looks at what today's platforms get right and wrong, because a credible alternative must keep their benefits while shedding their drawbacks.
+The rest of this section looks at what today's platforms get right and wrong. A credible alternative must keep their benefits and drop their drawbacks.
 
 - Popular online consumer platforms like Swiggy, Urban Company, AirBnb, Uber, Upwork, Amazon, Upgrad, Practo:
     - have benefited consumers as well as providers big time
@@ -40,11 +40,11 @@ The rest of this section looks at what today's platforms get right and wrong, be
     - Not friendly to buildup of deep provider-client relationships, mostly transactional
 
 # Our objective
-Realize the thesis in a way that keeps the above-mentioned benefits of centrally controlled systems, minus their drawbacks. We will take a shot at this with `Autonomous Cooperating Mini-Apps over a common technology substrate`. Specifically we will build:
+Realize the thesis in a way that keeps the benefits of centrally controlled systems, without their drawbacks. Our approach is `Autonomous Cooperating Mini-Apps over a common technology substrate`. We will build:
 
-- A technology substrate — the truly peer-to-peer foundation — that catalyzes building value generation ecosystems by providing useful technology primitives (identity, contacts, groups, trust, discovery) to Mini-apps (SynApps) running on top of it.
+- A technology substrate: the truly peer-to-peer foundation. It gives useful technology primitives to mini-apps (SynApps) running on top of it. These primitives are identity, contacts, groups, trust, and discovery. They help ecosystem participants build value generation ecosystems.
 
-- **Roym** — our flagship combined experience: mini-apps sharing one identity, one contact list, one set of groups, one trust model. We will start with two business verticals inside it.
+- **Roym** — our flagship combined experience. Mini-apps share one identity, one contact list, one set of groups, and one trust model. We will start with two business verticals inside it.
     1. Professional Services Guild (Home services first)
     - E.g. Local equivalent of Urban Company or TaskRabbit
     - This will be built as a deep, real vertical
@@ -54,10 +54,10 @@ Realize the thesis in a way that keeps the above-mentioned benefits of centrally
 
 # Common Mini-app characteristics
 Mini-apps have the following characteristics
-- Independent Providers / provider groups can build/buy, host, manage mini-apps themselves at sufficiently low cost, with limited technical expertise
-- Typically they operate at smaller scales, managing a smaller group of providers, even a single provider
-- They can work on low end hardware infrastructure (PCs, RPI, Mobiles), often with power and network connectivity constraints
-- They can scale out by federating lower-end hardware units. These hardware units can be made available by other ecosystem participants having spare infrastructure with needed capabilities
+- Independent providers or provider groups can build, buy, host, and manage mini-apps themselves. The cost is low enough. They need only limited technical expertise.
+- They usually operate at smaller scales. They manage a smaller group of providers, sometimes a single provider.
+- They can run on low-end hardware (PCs, RPI, mobiles). Such hardware often has power and network limits.
+- They can scale out by federating lower-end hardware units. Other ecosystem participants can provide these units from spare infrastructure that has the needed capabilities.
 - They provide benefits of large platforms as described above, but also avoid drawbacks discussed
 - They work autonomously within the group owning it
 - They also help providers using different mini-apps to coordinate and cooperate via rich primitives in the underlying technology substrate

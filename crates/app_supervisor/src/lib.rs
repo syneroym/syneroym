@@ -1,9 +1,10 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! The App Supervisor (ADR-0021 §8): a resident substrate role holding
 //! desired state for the app instances it manages, exposed over the
-//! `supervisor` WIT interface. This slice (M05A A5b) is the role, the
-//! store, the interface, and master custody -- no autonomy: `status` sweeps
-//! on demand, and the resident reconcile loop is a later slice.
+//! `supervisor` WIT interface. It holds custody of each managed instance's
+//! master key, and runs a resident loop (`service::SupervisorService::run`)
+//! that reconciles those instances against their desired state. `status`
+//! also sweeps on demand.
 
 pub mod anchors;
 pub mod inventory;

@@ -6,7 +6,7 @@
 Requirement `[FND-SEC]` requires Wasmtime fuel metering for `max_instructions` derived from the SynApp manifest. The `SynAppManifest` and `ServiceManifest` types in `crates/app_orchestration` currently lack resource quota fields.
 
 **Decision**: 
-We will define a `ResourceQuota` struct with `max_instructions: Option<u64>` and `max_memory_bytes: Option<u64>`. These quotas will apply strictly per-invocation to natively leverage `wasmtime`'s `store.set_fuel()` mechanism. If unset in the manifest, the system will fall back to conservative substrate-global defaults (e.g., 10B instructions, 256MB memory) defined in `SubstrateConfig`.
+We will define a `ResourceQuota` struct with `max_instructions: Option<u64>` and `max_memory_bytes: Option<u64>`. These quotas will apply strictly per-invocation. This maps directly onto `wasmtime`'s native `store.set_fuel()` mechanism. If unset in the manifest, the system will fall back to conservative substrate-global defaults (e.g., 10B instructions, 256MB memory) defined in `SubstrateConfig`.
 
 **Consequences**: 
 - **Enables**: Immediate protection against infinite loops and excessive memory allocation from a single WASM invocation without requiring complex state-tracking across time windows.

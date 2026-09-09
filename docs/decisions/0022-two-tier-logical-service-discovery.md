@@ -98,7 +98,7 @@ than changing the decision itself — see the
   name below (which joins two variable-length segments and needed the `#`
   boundary), the app master's name has exactly one variable segment that is
   the whole remainder of the string — the map from instance id to name is
-  injective by construction — and its fixed `app-` prefix is disjoint from
+  injective by design — and its fixed `app-` prefix is disjoint from
   `member-` at position 0, so no member name can ever equal an app name.
   Neither argument depends on what `AppInstanceId`'s validator permits.
 - **The handover this section calls "a key move" needs an ordering rule,
