@@ -18,6 +18,7 @@ git diff before-quality-round-2026-09-08 main
 | G1 | Unused dependencies (`cargo shear --fix`) + machine-fixable lints | done | [#168](https://github.com/syneroym/syneroym/pull/168) |
 | G2 | False-comment sweep: comments whose claims are no longer true | done | [#170](https://github.com/syneroym/syneroym/pull/170) |
 | G3 | CI gate on planning refs **added in a diff** | done | [#169](https://github.com/syneroym/syneroym/pull/169) |
+| G3b | Align the three ref-pattern sources; add the test-or-matrix-row family (gate union 1,564 → 1,713, +149 lines) | done | `chore/quality-align-ref-patterns` |
 | G4 | e2e harness: move 25 files onto `tests/common` | done | [#176](https://github.com/syneroym/syneroym/pull/176) |
 | G5 | Document rewrite (VISION, developer-guide, backlog, traceability, ADRs) | done | readability pass on `docs/quality-readability` worktree |
 | G6 | `clippy.toml` threshold ratchet + `cargo dupes check` + full-tree ref gate | not started | |

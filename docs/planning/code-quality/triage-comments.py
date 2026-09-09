@@ -1,6 +1,6 @@
 import re,subprocess,json,collections,sys
 
-# One citation token, in any of the six families.
+# One citation token, in any of the seven families.
 CIT = re.compile(r"""(?x)
     \b M0\d[A-Z]? (?:\s+(?:Slice\s+)?[A-Z]?\d+[a-z]?)*      # M05A A5a / M04A Slice B7a
   | \b Slice\s+[A-Z]?\d+[a-z]?                              # Slice B7a
@@ -10,6 +10,9 @@ CIT = re.compile(r"""(?x)
   | \b review\s+(?:finding|round)\s+[A-Z]?-?\d+
   | \b (?:status|task)\.md
   | \b implementation-plan
+  | \b [Tt]est\s+\d{1,3}\b                                  # Test 97
+  | \b matrix\s+row\s+\d                                    # failure-matrix row 13
+  | \b exit\s+criteri(?:on|a)\b
 """)
 ADRSEC = re.compile(r'ADR-\d{4}[^.]{0,12}§')
 PREFIX = re.compile(r'^(\s*)(///?!?|//|\*/?|/\*+!?)\s?')
