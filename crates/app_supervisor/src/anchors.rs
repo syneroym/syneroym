@@ -1,6 +1,6 @@
-//! The master-anchor writes the supervisor makes on its own schedule
-//! (M05A A5d): the periodic republication that keeps every managed master's
-//! anchor verifiable, and the revocation an operator asks for.
+//! The master-anchor writes the supervisor makes on its own schedule: the
+//! periodic republication that keeps every managed master's anchor
+//! verifiable, and the revocation an operator asks for.
 //!
 //! Behind a trait rather than a bare `RegistryClient` for the same reason
 //! `SubstrateActor` is: both writes are on the resident loop's own path and
