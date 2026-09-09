@@ -35,27 +35,18 @@
 //! certificate`, which signs a relationship proof and checks it verifies
 //! against the new certificate.
 //!
-//! Uses its own `Node`, not `tests/common`'s `SubstrateTestContext`: that
-//! harness holds its setup-serialization lock for the whole struct's
-//! lifetime, which deadlocks a test needing two nodes alive at once. Every
-//! multi-node fixture in this directory keeps its own near-verbatim copy for
-//! the same reason.
+//! Both nodes come from `common::SubstrateNode`. Node B publishes into and
+//! resolves through node A's registry (`shared_registry`), so a cross-node
+//! anchor lookup resolves against a real record. `common::serial_guard`
+//! keeps the two tests here from running substrate stacks at once.
 
-#[allow(dead_code)]
 mod common;
 
-use std::time::Duration;
-
+use common::SubstrateNode;
 use ed25519_dalek::VerifyingKey;
 use rustls::crypto::ring;
 use serde_json::json;
-use syneroym_core::{
-    config::{
-        ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig, LogTarget,
-        ServiceRegistryRole, SubstrateConfig,
-    },
-    dht_registry::RegistryClient,
-};
+use syneroym_core::dht_registry::RegistryClient;
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
 };
@@ -63,127 +54,6 @@ use syneroym_router::{RoutePreamble, handshake::HandshakeVerifier};
 use syneroym_sdk::{
     DeployManifest, NetworkEndpoint, ServiceConfig, ServiceType, SyneroymClient, TcpManifest,
 };
-use syneroym_substrate::identity;
-use tempfile::TempDir;
-use tokio::{
-    sync::{Mutex, mpsc, mpsc::Sender},
-    task::JoinHandle,
-};
-
-/// Not sharing a port block keeps the tests here from colliding, but they
-/// still each boot full substrate instances (real iroh QUIC socket,
-/// self-hosted relay, mainline DHT, wasmtime), and running that many
-/// concurrently starves the CI runner's CPU badly enough that iroh's QUIC
-/// path validation times out with "no viable network path exists" even
-/// though nothing is actually broken. Serializing full-substrate-instance
-/// lifetimes within this binary (same fix as `tests/common/mod.rs`'s
-/// `SUBSTRATE_TEST_LOCK`) avoids it.
-static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
-
-struct Node {
-    registry_url: String,
-    substrate_client: SyneroymClient,
-    shutdown_tx: Sender<()>,
-    substrate_handle: JoinHandle<()>,
-    _temp_dir: TempDir,
-}
-
-impl Node {
-    /// `owner`'s DID becomes this node's `[iam].admin_ucan_root` -- an
-    /// unowned substrate fails closed, so the fixture owns its own nodes.
-    /// `shared_registry_url` lets node B publish into and resolve through
-    /// node A's registry, which is what makes a cross-node anchor lookup
-    /// resolve against something real.
-    async fn boot(
-        iroh_port: u16,
-        registry_port: u16,
-        gateway_port: u16,
-        shared_registry_url: Option<String>,
-        owner: &Identity,
-    ) -> Self {
-        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-        let base_path = temp_dir.path();
-        let mut config = SubstrateConfig {
-            app_local_data_dir: base_path.join("data"),
-            app_data_dir: base_path.join("user_data"),
-            app_cache_dir: base_path.join("cache"),
-            app_log_dir: base_path.join("logs"),
-            profile: "full".to_string(),
-            ..SubstrateConfig::default()
-        };
-        config.resolve_paths();
-        config.logging.target = LogTarget::Stdout;
-
-        config.roles.coordinator = Some(CoordinatorRole {
-            iroh: Some(CoordinatorIrohConfig {
-                enable_relay: true,
-                http_bind_address: format!("127.0.0.1:{iroh_port}"),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("127.0.0.1:{registry_port}"),
-            ..Default::default()
-        });
-        let effective_registry_url =
-            shared_registry_url.unwrap_or_else(|| format!("http://127.0.0.1:{registry_port}"));
-        config.substrate.registry_url = Some(effective_registry_url.clone());
-        config.substrate.enable_bep0044_dht = false;
-        config.parent_coordinator.iroh =
-            Some(IrohParentConfig { url: format!("http://127.0.0.1:{iroh_port}") });
-        config.roles.client_gateway =
-            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
-        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
-
-        let substrate_identity_state =
-            identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
-                .expect("failed to setup identity");
-        let substrate_service_id = substrate_identity_state.did.clone();
-
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let runtime =
-            syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
-
-        let config_clone = config.clone();
-        let substrate_handle = tokio::spawn(async move {
-            syneroym_substrate::run_with_signal(config_clone, runtime, async {
-                let _ = shutdown_rx.recv().await;
-            })
-            .await
-            .expect("substrate failed to run");
-        });
-
-        let mut substrate_client = SyneroymClient::new_with_identity(
-            substrate_service_id,
-            effective_registry_url.clone(),
-            Identity::from_bytes(&owner.to_bytes()),
-        )
-        .with_registry_dht(false);
-        substrate_client
-            .wait_for_ready(Duration::from_secs(30))
-            .await
-            .expect("substrate did not become available in time");
-
-        Self {
-            registry_url: effective_registry_url,
-            substrate_client,
-            shutdown_tx,
-            substrate_handle,
-            _temp_dir: temp_dir,
-        }
-    }
-
-    fn did(&self) -> &str {
-        self.substrate_client.service_id()
-    }
-
-    async fn teardown(mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = self.substrate_handle.await;
-    }
-}
 
 /// A minimal TCP service, never actually dialed -- this fixture exercises
 /// only the orchestrator's certificate surface. One real endpoint is
@@ -229,11 +99,6 @@ async fn deploy(
     }
 }
 
-fn orchestrator_client(node: &Node, caller: Identity) -> SyneroymClient {
-    SyneroymClient::new_with_identity(node.did().to_string(), node.registry_url.clone(), caller)
-        .with_registry_dht(false)
-}
-
 fn pubkey_from_hex(hex_str: &str) -> VerifyingKey {
     VerifyingKey::from_bytes(&hex::decode(hex_str).unwrap().try_into().unwrap()).unwrap()
 }
@@ -271,29 +136,26 @@ fn delegated_preamble(
 #[tokio::test]
 async fn renew_cert_installs_over_the_real_wire_and_refuses_a_certificate_for_the_wrong_derived_key()
  {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
 
-    let [node_a_iroh, node_a_reg, node_a_gw] = common::alloc_ports::<3>();
-    let [node_b_iroh, node_b_reg, node_b_gw] = common::alloc_ports::<3>();
-
     let operator = Identity::generate().unwrap();
-    let mut node_a = Node::boot(node_a_iroh, node_a_reg, node_a_gw, None, &operator).await;
-    let shared_registry = node_a.registry_url.clone();
-    let node_b =
-        Node::boot(node_b_iroh, node_b_reg, node_b_gw, Some(shared_registry.clone()), &operator)
-            .await;
+    let mut node_a = SubstrateNode::builder().owner(&operator).boot().await;
+    let node_b = SubstrateNode::builder()
+        .owner(&operator)
+        .shared_registry(node_a.registry_url())
+        .boot()
+        .await;
 
     // Default `storage.encryption = true` needs a KEK before any deployed
     // service's native-capability endpoints can be set up -- the same
     // precedent every e2e fixture in this crate follows.
     // `node_a`'s connection was dialed and proven live by its own
-    // `wait_for_ready` during `Node::boot`, then sat idle for the entire
-    // `node_b` boot that followed -- long enough under CI's scheduling
-    // pressure for the peer to abandon that idle path ("no viable network
-    // path exists: last path abandoned by peer"; same root cause fixed in
-    // `binding_push_e2e.rs`). Recover by explicit shutdown→reconnect before
-    // one retry.
+    // `wait_for_ready` during boot, then sat idle for the entire `node_b`
+    // boot that followed -- long enough under CI's scheduling pressure for
+    // the peer to abandon that idle path ("no viable network path exists:
+    // last path abandoned by peer"). Recover by explicit shutdown→reconnect
+    // before one retry.
     if node_a.substrate_client.inject_kek("aa".repeat(32)).await.is_err() {
         node_a
             .substrate_client
@@ -312,9 +174,9 @@ async fn renew_cert_installs_over_the_real_wire_and_refuses_a_certificate_for_th
     let member_master = Identity::generate().unwrap();
     let member_master_did = substrate::derive_did_key(&member_master.public_key());
 
-    let mut operator_a = orchestrator_client(&node_a, Identity::from_bytes(&operator.to_bytes()));
+    let mut operator_a = node_a.client_as(Identity::from_bytes(&operator.to_bytes()));
     operator_a.connect().await.expect("failed to connect to node A");
-    let mut operator_b = orchestrator_client(&node_b, Identity::from_bytes(&operator.to_bytes()));
+    let mut operator_b = node_b.client_as(Identity::from_bytes(&operator.to_bytes()));
     operator_b.connect().await.expect("failed to connect to node B");
 
     let identity_b = operator_b
@@ -422,21 +284,18 @@ async fn renew_cert_installs_over_the_real_wire_and_refuses_a_certificate_for_th
 /// against a real registry.
 #[tokio::test]
 async fn a_revoked_instance_key_handshake_fails_while_a_fresh_one_verifies() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
-
-    let [rev_iroh, rev_reg, rev_gw] = common::alloc_ports::<3>();
 
     let operator = Identity::generate().unwrap();
     // One node is enough here: what is under test is the registry
     // round trip between the revocation writer and the ingress check, and
     // the substrate's role in it is to host the registry.
-    let node = Node::boot(rev_iroh, rev_reg, rev_gw, None, &operator).await;
-    node.substrate_client.inject_kek("cc".repeat(32)).await.expect("inject_kek failed");
+    let node = SubstrateNode::builder().owner(&operator).inject_kek_bytes([0xcc; 32]).boot().await;
 
     let member_master = Identity::generate().unwrap();
     let member_master_did = substrate::derive_did_key(&member_master.public_key());
-    let registry = RegistryClient::new(false, Some(node.registry_url.clone()));
+    let registry = RegistryClient::new(false, Some(node.registry_url().to_string()));
     registry
         .publish_master_anchor(&member_master_did, vec![], None, &member_master, false)
         .await

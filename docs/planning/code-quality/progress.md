@@ -18,13 +18,30 @@ git diff before-quality-round-2026-09-08 main
 | G1 | Unused dependencies (`cargo shear --fix`) + machine-fixable lints | done | [#168](https://github.com/syneroym/syneroym/pull/168) |
 | G2 | False-comment sweep: comments whose claims are no longer true | done | [#170](https://github.com/syneroym/syneroym/pull/170) |
 | G3 | CI gate on planning refs **added in a diff** | done | [#169](https://github.com/syneroym/syneroym/pull/169) |
-| G4 | e2e harness: move 25 files onto `tests/common` | not started | |
+| G4 | e2e harness: move 25 files onto `tests/common` | in progress | |
 | G5 | Document rewrite (VISION, developer-guide, backlog, traceability, ADRs) | done | readability pass on `docs/quality-readability` worktree |
 | G6 | `clippy.toml` threshold ratchet + `cargo dupes check` + full-tree ref gate | not started | |
 | G7 | Closing measurement: re-run the pass, commit `baseline-<date>/`, compare | not started | |
 
 G5 depends on nothing and can run at any time, in parallel with everything else.
 G6 and G7 come last.
+
+### G4 breakdown
+
+`crates/substrate/tests/common` grew a `SubstrateNode` builder (multi-node,
+restart, role knobs) plus `serial_guard`. The 25 files that carried their own
+`struct Node` / `fn boot` move onto it, in these pull requests:
+
+| PR | Files | Status |
+| --- | --- | --- |
+| 1 | harness (`common/node.rs`, `serial_guard`) + `cert_renewal_e2e`, `supervisor_alerts_e2e`, `topology_document_e2e` | in progress |
+| 2 | supervisor family: `supervisor_loop_e2e`, `supervisor_interface_e2e`, `scheduled_task_e2e`, `health_monitoring_e2e`, `tier1_endpoint_record_e2e`, `app_instance_identity_e2e`, `instance_identity_e2e` | not started |
+| 3 | outbox / restart family: `durable_outbox_e2e`, `proxy_outbox_e2e`, `saga_e2e`, `reference_scenario_e2e`, `multi_substrate_placement_e2e`, `master_endpoint_record_e2e` | not started |
+| 4 | conversation / roym family: `conversation_e2e`, `group_conversation_e2e`, `roym_conversation_e2e`, `roym_directory_e2e`, `roym_transaction_e2e`, `binding_push_e2e`, `federated_fdae_e2e` | not started |
+| 5 | `gateway_hostname_e2e`, `substrate_ownership_e2e`; widen `no_ephemeral_port_literals.rs`; move the deferred-backlog port-ledger row to "Recently resolved"; tick G4 | not started |
+
+PR 1 must merge before 2-5, which are then independent (disjoint file sets) and
+merge in any order; PR 5 last, since it ticks G4.
 
 ## Per-crate work
 

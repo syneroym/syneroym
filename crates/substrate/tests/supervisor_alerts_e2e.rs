@@ -6,13 +6,13 @@
 //! actually lines up with the supervisor's own publish-side namespacing
 //! (`SupervisorService::publish_opened_alerts`) end to end.
 //!
-//! `Node` is copied from `supervisor_interface_e2e.rs` (itself copied from
-//! `multi_substrate_placement_e2e.rs`), not `tests/common`'s harness -- that
-//! module's own doc says two live nodes at once deadlock on its
-//! setup-serialization lock.
+//! Both nodes come from `common::SubstrateNode`: a supervisor node hosting
+//! the registry and a managed node publishing into it. `common::serial_guard`
+//! keeps this binary's tests from running substrate stacks at once.
 
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
+use common::SubstrateNode;
 use rustls::crypto::ring;
 use semver::Version;
 use serde_json::{Map, json};
@@ -25,154 +25,15 @@ use syneroym_app_orchestration::{
 };
 use syneroym_app_supervisor::inventory::SupervisorInventoryEntry;
 use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
-use syneroym_core::config::{
-    ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig, LogTarget,
-    ServiceRegistryRole, SubstrateConfig, SupervisorRole,
-};
-use syneroym_identity::{Identity, substrate};
+use syneroym_core::config::SupervisorRole;
+use syneroym_identity::Identity;
 use syneroym_mqtt_broker::namespace_topic_for_publish;
 use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
-use syneroym_sdk::SyneroymClient;
-use syneroym_substrate::identity;
-use tempfile::TempDir;
-use tokio::{
-    sync::{mpsc, mpsc::Sender},
-    task::JoinHandle,
-    time,
-};
+use tokio::time;
 
-#[derive(Clone, Copy)]
-struct PortBlock {
-    supervisor_iroh: u16,
-    supervisor_registry: u16,
-    supervisor_gateway: u16,
-    managed_iroh: u16,
-    managed_registry: u16,
-    managed_gateway: u16,
-}
-
-// New e2e port blocks start at 12_200 -- 8800-12_100 are taken
-// (`multi_substrate_placement_e2e.rs`, `health_monitoring_e2e.rs`,
-// `binding_push_e2e.rs`, `supervisor_interface_e2e.rs`; see that last file's
-// own comment for the running total). Phase 7's `supervisor_loop_e2e.rs`
-// continues the sequence from 12_400.
-const PORTS_ALERT_PUBLISH: PortBlock = PortBlock {
-    supervisor_iroh: 12_200,
-    supervisor_registry: 12_201,
-    supervisor_gateway: 12_202,
-    managed_iroh: 12_300,
-    managed_registry: 12_301,
-    managed_gateway: 12_302,
-};
+mod common;
 
 const MANAGED_ALIAS: &str = "managed";
-
-/// A full, independently-identified `syneroym-substrate` instance.
-struct Node {
-    registry_url: String,
-    substrate_client: SyneroymClient,
-    shutdown_tx: Sender<()>,
-    substrate_handle: JoinHandle<()>,
-    _temp_dir: TempDir,
-}
-
-impl Node {
-    #[allow(clippy::too_many_arguments)]
-    async fn boot(
-        iroh_port: u16,
-        registry_port: u16,
-        gateway_port: u16,
-        shared_registry_url: Option<String>,
-        shared_relay_url: Option<String>,
-        owner: &Identity,
-        supervisor: Option<SupervisorRole>,
-    ) -> Self {
-        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-        let base_path = temp_dir.path().to_path_buf();
-
-        let mut config = SubstrateConfig {
-            app_local_data_dir: base_path.join("data"),
-            app_data_dir: base_path.join("user_data"),
-            app_cache_dir: base_path.join("cache"),
-            app_log_dir: base_path.join("logs"),
-            profile: "full".to_string(),
-            ..SubstrateConfig::default()
-        };
-        config.resolve_paths();
-        config.logging.target = LogTarget::Stdout;
-
-        config.roles.coordinator = Some(CoordinatorRole {
-            iroh: Some(CoordinatorIrohConfig {
-                enable_relay: true,
-                http_bind_address: format!("0.0.0.0:{iroh_port}"),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("0.0.0.0:{registry_port}"),
-            ..Default::default()
-        });
-        let own_registry_url = format!("http://localhost:{registry_port}");
-        let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
-        config.substrate.registry_url = Some(effective_registry_url.clone());
-        config.substrate.enable_bep0044_dht = false;
-        let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
-        config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway =
-            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
-        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
-        config.roles.supervisor = supervisor;
-
-        let substrate_identity_state =
-            identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
-                .expect("failed to setup identity");
-        let substrate_service_id = substrate_identity_state.did.clone();
-
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let runtime =
-            syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
-
-        let config_clone = config.clone();
-        let substrate_handle = tokio::spawn(async move {
-            syneroym_substrate::run_with_signal(config_clone, runtime, async {
-                let _ = shutdown_rx.recv().await;
-            })
-            .await
-            .expect("substrate failed to run");
-        });
-
-        let mut substrate_client = SyneroymClient::new_with_identity(
-            substrate_service_id.clone(),
-            effective_registry_url.clone(),
-            Identity::from_bytes(&owner.to_bytes()),
-        )
-        .with_registry_dht(false);
-        substrate_client
-            .wait_for_ready(Duration::from_secs(30))
-            .await
-            .expect("substrate did not become available in time");
-        substrate_client.inject_kek(hex::encode([0xabu8; 32])).await.expect("inject_kek failed");
-
-        Self {
-            registry_url: effective_registry_url,
-            substrate_client,
-            shutdown_tx,
-            substrate_handle,
-            _temp_dir: temp_dir,
-        }
-    }
-
-    fn did(&self) -> &str {
-        self.substrate_client.service_id()
-    }
-
-    async fn teardown(mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = self.substrate_handle.await;
-    }
-}
 
 fn supervisor_role() -> SupervisorRole {
     SupervisorRole {
@@ -284,33 +145,25 @@ fn submission(
 /// with a real broker and a real wire round trip on both ends.
 #[tokio::test]
 async fn an_operator_subscribed_to_the_alert_topic_receives_an_opened_alert() {
+    let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
 
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
 
-    let mut supervisor_node = Node::boot(
-        PORTS_ALERT_PUBLISH.supervisor_iroh,
-        PORTS_ALERT_PUBLISH.supervisor_registry,
-        PORTS_ALERT_PUBLISH.supervisor_gateway,
-        None,
-        None,
-        &supervisor_owner,
-        Some(supervisor_role()),
-    )
-    .await;
-    let shared_registry = supervisor_node.registry_url.clone();
-    let shared_relay = format!("http://localhost:{}", PORTS_ALERT_PUBLISH.supervisor_iroh);
-    let managed_node = Node::boot(
-        PORTS_ALERT_PUBLISH.managed_iroh,
-        PORTS_ALERT_PUBLISH.managed_registry,
-        PORTS_ALERT_PUBLISH.managed_gateway,
-        Some(shared_registry),
-        Some(shared_relay),
-        &managed_owner,
-        None,
-    )
-    .await;
+    let mut supervisor_node = SubstrateNode::builder()
+        .owner(&supervisor_owner)
+        .supervisor(supervisor_role())
+        .inject_kek()
+        .boot()
+        .await;
+    let managed_node = SubstrateNode::builder()
+        .owner(&managed_owner)
+        .shared_registry(supervisor_node.registry_url())
+        .shared_relay(supervisor_node.relay_url())
+        .inject_kek()
+        .boot()
+        .await;
     let managed_did = managed_node.did().to_string();
 
     let grant =
@@ -319,7 +172,7 @@ async fn an_operator_subscribed_to_the_alert_topic_receives_an_opened_alert() {
         MANAGED_ALIAS.to_string(),
         SupervisorInventoryEntry {
             did: managed_did.clone(),
-            api_url: Some(managed_node.registry_url.clone()),
+            api_url: Some(managed_node.registry_url().to_string()),
             ucan: Some(grant),
         },
     )]))
@@ -331,11 +184,11 @@ async fn an_operator_subscribed_to_the_alert_topic_receives_an_opened_alert() {
     let submit_params = submission(instance_id, plan_json, inventory_json, 0);
 
     // `supervisor_node`'s connection was dialed and proven live by its own
-    // `wait_for_ready` during `Node::boot`, then sat idle for the entire
+    // `wait_for_ready` during boot, then sat idle for the entire
     // `managed_node` boot that followed (a second full substrate start) --
     // long enough under CI's scheduling pressure for the peer to abandon
     // that idle path ("no viable network path exists: last path abandoned
-    // by peer"; same root cause fixed in `app_instance_identity_e2e.rs`).
+    // by peer").
     // `SyneroymClient::connect` no-ops on an already-`Some` connection, so
     // recovering means an explicit `shutdown`-then-`connect` (redial)
     // before one retry, not just retrying the same request on the same
@@ -374,12 +227,7 @@ async fn an_operator_subscribed_to_the_alert_topic_receives_an_opened_alert() {
     // supervisor's own `publish_opened_alerts` independently namespace to
     // the same final string.
     let operator_identity = Identity::generate().unwrap();
-    let mut operator = SyneroymClient::new_with_identity(
-        supervisor_node.did().to_string(),
-        supervisor_node.registry_url.clone(),
-        operator_identity,
-    )
-    .with_registry_dht(false);
+    let mut operator = supervisor_node.client_as(operator_identity);
     operator.connect().await.expect("operator failed to connect to the supervisor node");
     let mut alert_stream = time::timeout(
         Duration::from_secs(10),
