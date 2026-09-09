@@ -1,274 +1,36 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! The `supervisor` interface end to end (M05A A5b), across two genuinely
 //! independent `syneroym-substrate` instances: one running the supervisor
-//! role, one plain managed substrate. `Node` is copied from
-//! `multi_substrate_placement_e2e.rs`, not `tests/common`'s harness -- that
-//! module's own doc says two live nodes at once deadlock on its
-//! setup-serialization lock.
+//! role, one plain managed substrate. The pair and the submit helpers come
+//! from `common`; the manifests are local.
 //!
-//! The supervisor's own grant on a managed substrate is hand-issued here
-//! (§13's fixture note): `submit` cannot bootstrap its own authority, and
-//! nothing in this milestone issues a supervisor a grant automatically.
+//! The supervisor's own grant on a managed substrate is hand-issued
+//! (`common::node_wide_supervisor_grant`): `submit` cannot bootstrap its own
+//! authority, and nothing issues a supervisor a grant automatically.
 
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use anyhow::Result;
-use rustls::crypto::ring;
+use common::{SubstrateNode, compiled_plan_json, submission, supervisor_and_managed};
 use semver::Version;
-use serde_json::{Map, json};
-use syneroym_app_orchestration::{
-    LocalFilesystemCatalog, compile,
-    models::{
-        AppBlueprintId, AppInstanceId, LogicalServiceName, PlacementSelector, ServiceConfig,
-        ServiceSpec, ServiceType, SubstrateAlias, SynAppManifest,
-    },
+use serde_json::json;
+use syneroym_app_orchestration::models::{
+    AppBlueprintId, LogicalServiceName, PlacementSelector, ServiceConfig, ServiceSpec, ServiceType,
+    SubstrateAlias, SynAppManifest,
 };
-use syneroym_app_supervisor::inventory::SupervisorInventoryEntry;
-use syneroym_core::config::{
-    ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig, LogTarget,
-    ServiceRegistryRole, SubstrateConfig, SupervisorRole,
-};
-use syneroym_identity::{Identity, substrate};
-use syneroym_rpc::{Ability, Capability, CapabilityToken, JsonRpcResponse, ResourceUri};
-use syneroym_sdk::SyneroymClient;
-use syneroym_substrate::identity;
-use tempfile::TempDir;
-use tokio::{
-    sync::{Mutex, mpsc, mpsc::Sender},
-    task::JoinHandle,
-};
+use syneroym_identity::Identity;
+use syneroym_rpc::JsonRpcResponse;
 
-/// Every test in this binary boots one or more full substrate
-/// instances (real iroh QUIC socket, self-hosted relay, wasmtime).
-/// Running every test's own full stack concurrently (Rust's default
-/// test harness) means many simultaneous substrate processes' worth
-/// of sockets/fds at once -- CPU starvation and, on a low
-/// `ulimit -n`, real fd exhaustion. Same fix as `tests/common/mod.rs`'s
-/// `SUBSTRATE_TEST_LOCK`.
-static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
+mod common;
 
 #[path = "common/retry.rs"]
 mod retry;
 
-#[derive(Clone, Copy)]
-struct PortBlock {
-    supervisor_iroh: u16,
-    supervisor_registry: u16,
-    supervisor_gateway: u16,
-    managed_iroh: u16,
-    managed_registry: u16,
-    managed_gateway: u16,
-}
-
-// Ports 8800-10900 are already claimed, in that same six-per-block shape,
-// by `multi_substrate_placement_e2e.rs` (8800-9700),
-// `health_monitoring_e2e.rs` (9800-10500), and `binding_push_e2e.rs`
-// (10600-10900) -- cargo runs integration-test binaries concurrently, so
-// reusing any of those crashes whichever binary binds second with "Address
-// already in use" (B2, Slice A5b review). This file continues the same
-// global sequence from 11_000.
-const PORTS_SUBMIT_AND_STATUS: PortBlock = PortBlock {
-    supervisor_iroh: 11_000,
-    supervisor_registry: 11_001,
-    supervisor_gateway: 11_002,
-    managed_iroh: 11_100,
-    managed_registry: 11_101,
-    managed_gateway: 11_102,
-};
-const PORTS_SECOND_SUPERVISOR_LOSES: PortBlock = PortBlock {
-    supervisor_iroh: 11_220,
-    supervisor_registry: 11_221,
-    supervisor_gateway: 11_222,
-    managed_iroh: 11_320,
-    managed_registry: 11_321,
-    managed_gateway: 11_322,
-};
-const PORTS_DEPLOYS_A_BOUND_APP: PortBlock = PortBlock {
-    supervisor_iroh: 11_400,
-    supervisor_registry: 11_401,
-    supervisor_gateway: 11_402,
-    managed_iroh: 11_500,
-    managed_registry: 11_501,
-    managed_gateway: 11_502,
-};
-const PORTS_ADOPT_CLAIMS_THE_NEXT: PortBlock = PortBlock {
-    supervisor_iroh: 11_600,
-    supervisor_registry: 11_601,
-    supervisor_gateway: 11_602,
-    managed_iroh: 11_700,
-    managed_registry: 11_701,
-    managed_gateway: 11_702,
-};
-const PORTS_PUSHED_BINDING: PortBlock = PortBlock {
-    supervisor_iroh: 11_800,
-    supervisor_registry: 11_801,
-    supervisor_gateway: 11_802,
-    managed_iroh: 11_900,
-    managed_registry: 11_901,
-    managed_gateway: 11_902,
-};
-const PORTS_SUPERSEDED: PortBlock = PortBlock {
-    supervisor_iroh: 12_000,
-    supervisor_registry: 12_001,
-    supervisor_gateway: 12_002,
-    managed_iroh: 12_100,
-    managed_registry: 12_101,
-    managed_gateway: 12_102,
-};
-
 const MANAGED_ALIAS: &str = "managed";
 
-/// A full, independently-identified `syneroym-substrate` instance.
-struct Node {
-    registry_url: String,
-    substrate_client: SyneroymClient,
-    shutdown_tx: Sender<()>,
-    substrate_handle: JoinHandle<()>,
-    _temp_dir: TempDir,
-}
-
-impl Node {
-    #[allow(clippy::too_many_arguments)]
-    async fn boot(
-        iroh_port: u16,
-        registry_port: u16,
-        gateway_port: u16,
-        shared_registry_url: Option<String>,
-        shared_relay_url: Option<String>,
-        owner: &Identity,
-        supervisor: Option<SupervisorRole>,
-    ) -> Self {
-        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-        let base_path = temp_dir.path().to_path_buf();
-
-        let mut config = SubstrateConfig {
-            app_local_data_dir: base_path.join("data"),
-            app_data_dir: base_path.join("user_data"),
-            app_cache_dir: base_path.join("cache"),
-            app_log_dir: base_path.join("logs"),
-            profile: "full".to_string(),
-            ..SubstrateConfig::default()
-        };
-        config.resolve_paths();
-        config.logging.target = LogTarget::Stdout;
-
-        config.roles.coordinator = Some(CoordinatorRole {
-            iroh: Some(CoordinatorIrohConfig {
-                enable_relay: true,
-                http_bind_address: format!("0.0.0.0:{iroh_port}"),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("0.0.0.0:{registry_port}"),
-            ..Default::default()
-        });
-        let own_registry_url = format!("http://127.0.0.1:{registry_port}");
-        let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
-        config.substrate.registry_url = Some(effective_registry_url.clone());
-        config.substrate.enable_bep0044_dht = false;
-        let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://127.0.0.1:{iroh_port}"));
-        config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway =
-            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
-        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
-        config.roles.supervisor = supervisor;
-
-        let substrate_identity_state =
-            identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
-                .expect("failed to setup identity");
-        let substrate_service_id = substrate_identity_state.did.clone();
-
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let runtime =
-            syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
-
-        let config_clone = config.clone();
-        let substrate_handle = tokio::spawn(async move {
-            syneroym_substrate::run_with_signal(config_clone, runtime, async {
-                let _ = shutdown_rx.recv().await;
-            })
-            .await
-            .expect("substrate failed to run");
-        });
-
-        let mut substrate_client = SyneroymClient::new_with_identity(
-            substrate_service_id.clone(),
-            effective_registry_url.clone(),
-            Identity::from_bytes(&owner.to_bytes()),
-        )
-        .with_registry_dht(false);
-        substrate_client
-            .wait_for_ready(Duration::from_secs(30))
-            .await
-            .expect("substrate did not become available in time");
-        substrate_client.inject_kek(hex::encode([0xabu8; 32])).await.expect("inject_kek failed");
-
-        Self {
-            registry_url: effective_registry_url,
-            substrate_client,
-            shutdown_tx,
-            substrate_handle,
-            _temp_dir: temp_dir,
-        }
-    }
-
-    fn did(&self) -> &str {
-        self.substrate_client.service_id()
-    }
-
-    async fn teardown(mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = self.substrate_handle.await;
-    }
-}
-
-fn supervisor_role() -> SupervisorRole {
-    SupervisorRole {
-        poll_interval_secs: 30,
-        db_name: "supervisor.db".to_string(),
-        max_restart_attempts: 3,
-        restart_backoff_secs: 30,
-        alert_topic: "supervisor/alerts".to_string(),
-        master_backup_dir: "master-backups".to_string(),
-        ..SupervisorRole::default()
-    }
-}
-
-/// Node-wide `orchestrator/deploy` **and** `orchestrator/status` for
-/// `grantee_did` on `node_did`, issued by `node_owner` -- what a supervisor
-/// needs on every substrate it manages, not an app-scoped selector.
-/// `deploy` alone (§0.28/D-A5-24's own focus, `claim`/`release`'s gate) is
-/// not enough: `resolve-instance-identity` (certification) and
-/// `app-instance-management-of` (`adopt`'s read half, before any claim
-/// exists to match ownership against) both gate on `orchestrator/status`
-/// instead, and the two abilities are deliberately flat -- neither entails
-/// the other.
-fn node_wide_supervisor_grant(
-    node_owner: &Identity,
-    grantee_did: &str,
-    node_did: &str,
-) -> CapabilityToken {
-    let resource = ResourceUri::substrate(node_did);
-    CapabilityToken::issue(
-        node_owner,
-        grantee_did,
-        [Ability::ORCHESTRATOR_DEPLOY, Ability::ORCHESTRATOR_STATUS]
-            .into_iter()
-            .map(|a| Capability {
-                with: resource.clone(),
-                can: Ability(a.to_string()),
-                caveats: None,
-            })
-            .collect(),
-        Map::new(),
-        3600,
-        vec![],
-    )
-    .expect("issue node-wide supervisor grant")
-}
+/// No test here waits on the resident loop, so the poll interval stays near
+/// the production default.
+const POLL_INTERVAL_SECS: u64 = 30;
 
 /// A single-service manifest, `backend` placed on `MANAGED_ALIAS`.
 fn one_service_manifest() -> SynAppManifest {
@@ -379,88 +141,18 @@ fn bound_app_manifest() -> SynAppManifest {
     }
 }
 
-async fn compiled_plan_json(manifest: &SynAppManifest, instance_id: &str) -> String {
-    let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
-    let compiled = compile(AppInstanceId::new(instance_id), manifest, &catalog).await.unwrap();
-    compiled.plans.last().unwrap().to_json().unwrap()
-}
-
-/// Boots a supervisor node and a managed node (B sharing A's
-/// registry/relay), grants the supervisor's own node-wide `orchestrator/
-/// deploy` on the managed node, and returns everything a test needs to
-/// call `submit`.
-async fn boot_pair(
-    supervisor_owner: &Identity,
-    managed_owner: &Identity,
-    ports: PortBlock,
-) -> (Node, Node, String) {
-    let _ = ring::default_provider().install_default();
-
-    let supervisor_node = Node::boot(
-        ports.supervisor_iroh,
-        ports.supervisor_registry,
-        ports.supervisor_gateway,
-        None,
-        None,
-        supervisor_owner,
-        Some(supervisor_role()),
-    )
-    .await;
-    let shared_registry = supervisor_node.registry_url.clone();
-    let shared_relay = format!("http://127.0.0.1:{}", ports.supervisor_iroh);
-    let managed_node = Node::boot(
-        ports.managed_iroh,
-        ports.managed_registry,
-        ports.managed_gateway,
-        Some(shared_registry),
-        Some(shared_relay),
-        managed_owner,
-        None,
-    )
-    .await;
-
-    let grant =
-        node_wide_supervisor_grant(managed_owner, supervisor_node.did(), managed_node.did());
-    let inventory_json = serde_json::to_string(&BTreeMap::from([(
-        MANAGED_ALIAS.to_string(),
-        SupervisorInventoryEntry {
-            did: managed_node.did().to_string(),
-            api_url: Some(managed_node.registry_url.clone()),
-            ucan: Some(grant),
-        },
-    )]))
-    .unwrap();
-
-    (supervisor_node, managed_node, inventory_json)
-}
-
-fn submission(
-    instance_id: &str,
-    plan_json: String,
-    inventory_json: String,
-    generation: u64,
-) -> serde_json::Value {
-    json!([{
-        "app_instance_id": instance_id,
-        "plan_json": plan_json,
-        "inventory_json": inventory_json,
-        "generation": generation,
-    }])
-}
-
-/// Every test in this file reaches `boot_pair`'s `supervisor_node` here as
-/// its first call. That connection was dialed and proven live by its own
-/// `wait_for_ready` during `Node::boot`, then sat idle through the managed
-/// node's own full boot inside `boot_pair` -- long enough under CI's
+/// Every test in this file reaches the supervisor node here as its first
+/// call. That connection was dialed and proven live by its own
+/// `wait_for_ready` during boot, then sat idle through the managed node's
+/// own full boot inside `supervisor_and_managed` -- long enough under CI's
 /// scheduling pressure for the peer to abandon that idle path ("no viable
-/// network path exists: last path abandoned by peer"; same root cause
-/// fixed throughout this crate's e2e tests, e.g. `binding_push_e2e.rs`).
+/// network path exists: last path abandoned by peer").
 /// `SyneroymClient::connect` no-ops on an already-`Some` connection, so
 /// recovering means an explicit `shutdown`-then-`connect` (redial) before
 /// one retry, not just retrying the same request on the same dead
 /// connection.
 async fn submit_after_boot(
-    supervisor_node: &mut Node,
+    supervisor_node: &mut SubstrateNode,
     params: serde_json::Value,
 ) -> Result<JsonRpcResponse> {
     if let Ok(resp) =
@@ -475,11 +167,16 @@ async fn submit_after_boot(
 
 #[tokio::test]
 async fn an_operator_submits_and_reads_back_status_over_the_supervisor_interface() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner, PORTS_SUBMIT_AND_STATUS).await;
+    let (mut supervisor_node, managed_node, inventory_json) = supervisor_and_managed(
+        &supervisor_owner,
+        &managed_owner,
+        POLL_INTERVAL_SECS,
+        MANAGED_ALIAS,
+    )
+    .await;
 
     let manifest = one_service_manifest();
     let plan_json = compiled_plan_json(&manifest, "a5b-submit-inst").await;
@@ -513,11 +210,16 @@ async fn an_operator_submits_and_reads_back_status_over_the_supervisor_interface
 
 #[tokio::test]
 async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner, PORTS_SECOND_SUPERVISOR_LOSES).await;
+    let (mut supervisor_node, managed_node, inventory_json) = supervisor_and_managed(
+        &supervisor_owner,
+        &managed_owner,
+        POLL_INTERVAL_SECS,
+        MANAGED_ALIAS,
+    )
+    .await;
 
     let manifest = one_service_manifest();
     let plan_json = compiled_plan_json(&manifest, "a5b-second-inst").await;
@@ -560,12 +262,7 @@ async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
     // second client, the same shape B4's row-9 test uses to simulate a
     // second writer, reaches the managed node's own generation gate
     // directly instead.
-    let mut second_writer = SyneroymClient::new_with_identity(
-        managed_node.did().to_string(),
-        managed_node.registry_url.clone(),
-        Identity::from_bytes(&managed_owner.to_bytes()),
-    )
-    .with_registry_dht(false);
+    let mut second_writer = managed_node.client_as(Identity::from_bytes(&managed_owner.to_bytes()));
     second_writer
         .wait_for_ready(Duration::from_secs(30))
         .await
@@ -590,11 +287,16 @@ async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
 
 #[tokio::test]
 async fn a_supervisor_deploys_a_bound_app_using_masters_it_minted() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner, PORTS_DEPLOYS_A_BOUND_APP).await;
+    let (mut supervisor_node, managed_node, inventory_json) = supervisor_and_managed(
+        &supervisor_owner,
+        &managed_owner,
+        POLL_INTERVAL_SECS,
+        MANAGED_ALIAS,
+    )
+    .await;
 
     let manifest = bound_app_manifest();
     let plan_json = compiled_plan_json(&manifest, "a5b-bound-inst").await;
@@ -630,11 +332,16 @@ async fn a_supervisor_deploys_a_bound_app_using_masters_it_minted() {
 
 #[tokio::test]
 async fn adopt_reads_the_held_generation_from_the_managed_node_and_claims_the_next() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner, PORTS_ADOPT_CLAIMS_THE_NEXT).await;
+    let (mut supervisor_node, managed_node, inventory_json) = supervisor_and_managed(
+        &supervisor_owner,
+        &managed_owner,
+        POLL_INTERVAL_SECS,
+        MANAGED_ALIAS,
+    )
+    .await;
 
     let manifest = one_service_manifest();
     let plan_json = compiled_plan_json(&manifest, "a5b-adopt-inst").await;
@@ -670,11 +377,16 @@ async fn adopt_reads_the_held_generation_from_the_managed_node_and_claims_the_ne
 
 #[tokio::test]
 async fn a_pushed_binding_reaches_a_dependent_the_supervisor_deployed() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (mut supervisor_node, mut managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner, PORTS_PUSHED_BINDING).await;
+    let (mut supervisor_node, mut managed_node, inventory_json) = supervisor_and_managed(
+        &supervisor_owner,
+        &managed_owner,
+        POLL_INTERVAL_SECS,
+        MANAGED_ALIAS,
+    )
+    .await;
 
     let manifest = bound_app_manifest();
     let plan_json = compiled_plan_json(&manifest, "a5b-binding-inst").await;
@@ -710,7 +422,7 @@ async fn a_pushed_binding_reaches_a_dependent_the_supervisor_deployed() {
     //
     // This is the first call this test makes directly on `managed_node`'s
     // own client -- its connection was dialed and proven live by its own
-    // `wait_for_ready` inside `boot_pair`, then sat idle through the
+    // `wait_for_ready` inside `supervisor_and_managed`, then sat idle through the
     // `submit`/`status` calls above, long enough under CI's scheduling
     // pressure for the peer to abandon that idle path. Recover by explicit
     // shutdown→reconnect before one retry.
@@ -745,11 +457,16 @@ async fn a_pushed_binding_reaches_a_dependent_the_supervisor_deployed() {
 /// every_write` stands in for one with a stale-generation `submit`.
 #[tokio::test]
 async fn a_supervisor_that_reads_a_higher_generation_marks_the_instance_superseded_and_alerts() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner, PORTS_SUPERSEDED).await;
+    let (mut supervisor_node, managed_node, inventory_json) = supervisor_and_managed(
+        &supervisor_owner,
+        &managed_owner,
+        POLL_INTERVAL_SECS,
+        MANAGED_ALIAS,
+    )
+    .await;
 
     let manifest = one_service_manifest();
     let plan_json = compiled_plan_json(&manifest, "a5b-superseded-inst").await;
@@ -768,12 +485,7 @@ async fn a_supervisor_that_reads_a_higher_generation_marks_the_instance_supersed
 
     // A second writer claims generation 2 directly against the managed
     // substrate. The first supervisor's own store still holds generation 1.
-    let mut second_writer = SyneroymClient::new_with_identity(
-        managed_node.did().to_string(),
-        managed_node.registry_url.clone(),
-        Identity::from_bytes(&managed_owner.to_bytes()),
-    )
-    .with_registry_dht(false);
+    let mut second_writer = managed_node.client_as(Identity::from_bytes(&managed_owner.to_bytes()));
     second_writer
         .wait_for_ready(Duration::from_secs(30))
         .await

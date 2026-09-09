@@ -310,6 +310,7 @@ impl NodeBuilder {
         SubstrateNode {
             builder: self,
             base_path,
+            app_data_dir: config.app_data_dir,
             temp_dir,
             registry_url,
             relay_url,
@@ -327,6 +328,7 @@ impl NodeBuilder {
 pub struct SubstrateNode {
     builder: NodeBuilder,
     base_path: PathBuf,
+    app_data_dir: PathBuf,
     temp_dir: Option<TempDir>,
     registry_url: String,
     relay_url: String,
@@ -360,6 +362,12 @@ impl SubstrateNode {
     /// [`NodeBuilder::shared_relay`].
     pub fn relay_url(&self) -> &str {
         &self.relay_url
+    }
+
+    /// This node's resolved `app_data_dir` -- where its identity key, vault,
+    /// and supervisor master backups live on disk.
+    pub fn app_data_dir(&self) -> &std::path::Path {
+        &self.app_data_dir
     }
 
     /// The owner identity, when the node is owned.

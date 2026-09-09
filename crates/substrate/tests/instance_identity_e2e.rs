@@ -16,14 +16,11 @@
 //! master *itself* persists across reinstantiation is proven at unit scale
 //! instead, in `crates/router/src/handshake.rs`.
 //!
-//! Uses its own `Node`, not `tests/common`'s `SubstrateTestContext`:
-//! `SubstrateTestContext` holds its setup-serialization lock for the whole
-//! struct's lifetime (released on `Drop`), which is correct for the one-
-//! node-per-test-function shape every other consumer of that module uses,
-//! but deadlocks a test that needs two nodes alive at once in the same
-//! function -- the second `setup()` call blocks forever on a lock the
-//! first, still-live node never releases. `federated_fdae_e2e.rs`'s own
-//! `Node` sidesteps this the same way, independently, for the same reason.
+//! Both nodes come from `common::SubstrateNode`, owned by one `operator`
+//! identity and self-hosting their own registries -- `instance-identity` is
+//! a direct RPC to each node, so no shared registry or relay is needed.
+//! `common::serial_guard` keeps this binary's tests from running stacks at
+//! once.
 //!
 //! **Deliberately not covered here:** a live, wire-level proof that a guest-
 //! origin `ProxyRouter` call presents its certified instance key across a
@@ -38,130 +35,18 @@
 //! services_member_master_not_the_node_identity` and neighboring tests).
 //! Tracked in `docs/planning/deferred-backlog.md`.
 
-use std::time::Duration;
-
+use common::SubstrateNode;
 use ed25519_dalek::VerifyingKey;
 use rustls::crypto::ring;
 use serde_json::json;
-use syneroym_core::config::{
-    ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig, LogTarget,
-    ServiceRegistryRole, SubstrateConfig,
-};
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
 };
 use syneroym_sdk::{
     DeployManifest, NetworkEndpoint, ServiceConfig, ServiceType, SyneroymClient, TcpManifest,
 };
-use syneroym_substrate::identity;
-use tempfile::TempDir;
-use tokio::{
-    sync::{mpsc, mpsc::Sender},
-    task::JoinHandle,
-};
 
-const NODE_A_IROH_PORT: u16 = 8200;
-const NODE_A_REGISTRY_PORT: u16 = 8201;
-const NODE_A_GATEWAY_PORT: u16 = 8202;
-const NODE_B_IROH_PORT: u16 = 8300;
-const NODE_B_REGISTRY_PORT: u16 = 8301;
-const NODE_B_GATEWAY_PORT: u16 = 8302;
-
-/// A full, independently-identified `syneroym-substrate` instance -- mirrors
-/// `federated_fdae_e2e.rs`'s own `Node` (each multi-node fixture in this
-/// directory keeps its own near-verbatim copy rather than sharing
-/// `tests/common`'s single-node-shaped harness).
-struct Node {
-    registry_url: String,
-    substrate_client: SyneroymClient,
-    shutdown_tx: Sender<()>,
-    substrate_handle: JoinHandle<()>,
-    _temp_dir: TempDir,
-}
-
-impl Node {
-    /// `owner`'s DID becomes this node's `[iam].admin_ucan_root` (an
-    /// unowned substrate now fails closed, so the fixture must
-    /// own its own nodes) -- both nodes are owned by the same `operator`
-    /// identity below, which is also what every `orchestrator_client` call
-    /// presents, so no separate grant is needed.
-    async fn boot(iroh_port: u16, registry_port: u16, gateway_port: u16, owner: &Identity) -> Self {
-        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-        let base_path = temp_dir.path();
-        let mut config = SubstrateConfig {
-            app_local_data_dir: base_path.join("data"),
-            app_data_dir: base_path.join("user_data"),
-            app_cache_dir: base_path.join("cache"),
-            app_log_dir: base_path.join("logs"),
-            profile: "full".to_string(),
-            ..SubstrateConfig::default()
-        };
-        config.resolve_paths();
-        config.logging.target = LogTarget::Stdout;
-
-        config.roles.coordinator = Some(CoordinatorRole {
-            iroh: Some(CoordinatorIrohConfig {
-                enable_relay: true,
-                http_bind_address: format!("0.0.0.0:{iroh_port}"),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("0.0.0.0:{registry_port}"),
-            ..Default::default()
-        });
-        let registry_url = format!("http://localhost:{registry_port}");
-        config.substrate.registry_url = Some(registry_url.clone());
-        config.substrate.enable_bep0044_dht = false;
-        config.parent_coordinator.iroh =
-            Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
-        config.roles.client_gateway =
-            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
-        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
-
-        let substrate_identity_state =
-            identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
-                .expect("failed to setup identity");
-        let substrate_service_id = substrate_identity_state.did.clone();
-
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let runtime =
-            syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
-
-        let config_clone = config.clone();
-        let substrate_handle = tokio::spawn(async move {
-            syneroym_substrate::run_with_signal(config_clone, runtime, async {
-                let _ = shutdown_rx.recv().await;
-            })
-            .await
-            .expect("substrate failed to run");
-        });
-
-        let mut substrate_client = SyneroymClient::new_with_identity(
-            substrate_service_id.clone(),
-            registry_url.clone(),
-            Identity::from_bytes(&owner.to_bytes()),
-        )
-        .with_registry_dht(false);
-        substrate_client
-            .wait_for_ready(Duration::from_secs(30))
-            .await
-            .expect("substrate did not become available in time");
-
-        Self { registry_url, substrate_client, shutdown_tx, substrate_handle, _temp_dir: temp_dir }
-    }
-
-    fn did(&self) -> &str {
-        self.substrate_client.service_id()
-    }
-
-    async fn teardown(mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = self.substrate_handle.await;
-    }
-}
+mod common;
 
 /// A minimal TCP service carrying an optional instance certificate -- this
 /// fixture cares only about the orchestrator's own deploy/list/instance-
@@ -212,17 +97,9 @@ async fn deploy(
     }
 }
 
-/// A client that dispatches `orchestrator/*` against `node`'s own root DID
-/// (deploy/undeploy/list/instance-identity are all keyed there, never at the
-/// deployed service's own `service_id` -- mirrors `federated_fdae_e2e.rs`'s
-/// `hr_deployer`/`alice_deployer` pattern), presenting `caller`.
-fn orchestrator_client(node: &Node, caller: Identity) -> SyneroymClient {
-    SyneroymClient::new_with_identity(node.did().to_string(), node.registry_url.clone(), caller)
-        .with_registry_dht(false)
-}
-
 #[tokio::test]
 async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it_deploys_to() {
+    let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
 
     // One operator identity, reused against both nodes as both their owner
@@ -233,43 +110,17 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
     // comparison below.
     let operator = Identity::generate().unwrap();
 
-    let mut node_a =
-        Node::boot(NODE_A_IROH_PORT, NODE_A_REGISTRY_PORT, NODE_A_GATEWAY_PORT, &operator).await;
-    let node_b =
-        Node::boot(NODE_B_IROH_PORT, NODE_B_REGISTRY_PORT, NODE_B_GATEWAY_PORT, &operator).await;
-
-    // Default `storage.encryption = true` requires a KEK before any deployed
-    // service's native-capability endpoints (registered regardless of
-    // service type) can be set up -- same precedent as this crate's other
-    // e2e fixtures.
-    // `node_a`'s connection was dialed and proven live by its own
-    // `wait_for_ready` during `Node::boot`, then sat idle for the entire
-    // `node_b` boot that followed -- long enough under CI's scheduling
-    // pressure for the peer to abandon that idle path ("no viable network
-    // path exists: last path abandoned by peer"; same root cause fixed in
-    // `binding_push_e2e.rs`). Recover by explicit shutdown→reconnect before
-    // one retry.
-    if node_a.substrate_client.inject_kek("55".repeat(32)).await.is_err() {
-        node_a
-            .substrate_client
-            .shutdown()
-            .await
-            .expect("failed to reset node A's stale connection");
-        node_a.substrate_client.connect().await.expect("failed to reconnect node A");
-        node_a
-            .substrate_client
-            .inject_kek("55".repeat(32))
-            .await
-            .expect("node A inject_kek failed");
-    }
-    node_b.substrate_client.inject_kek("66".repeat(32)).await.expect("node B inject_kek failed");
+    // Each node injects its KEK during its own boot, before the other node's
+    // boot can leave its connection idle -- so no post-boot redial is needed.
+    let node_a = SubstrateNode::builder().owner(&operator).inject_kek().boot().await;
+    let node_b = SubstrateNode::builder().owner(&operator).inject_kek().boot().await;
 
     let member_master = Identity::generate().unwrap();
     let member_master_did = substrate::derive_did_key(&member_master.public_key());
 
-    let mut operator_a = orchestrator_client(&node_a, Identity::from_bytes(&operator.to_bytes()));
+    let mut operator_a = node_a.client_as(Identity::from_bytes(&operator.to_bytes()));
     operator_a.connect().await.expect("failed to connect to node A");
-    let mut operator_b = orchestrator_client(&node_b, Identity::from_bytes(&operator.to_bytes()));
+    let mut operator_b = node_b.client_as(Identity::from_bytes(&operator.to_bytes()));
     operator_b.connect().await.expect("failed to connect to node B");
 
     let instance_identity_a = operator_a

@@ -18,12 +18,21 @@
 
 mod node;
 
+/// Supervisor-family test fixtures. Gated on the `supervisor` feature (in the
+/// default set) because it pulls the inventory type from the optional
+/// `syneroym-app-supervisor` crate.
+#[cfg(feature = "supervisor")]
+mod fixtures;
+
 use std::{
     net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
     sync::atomic::{AtomicU16, Ordering},
     time::Duration,
 };
 
+#[cfg(feature = "supervisor")]
+#[allow(unused_imports)]
+pub use fixtures::*;
 #[allow(unused_imports)]
 pub use node::*;
 use syneroym_core::{
