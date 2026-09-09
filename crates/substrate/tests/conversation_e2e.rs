@@ -1,19 +1,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Durable 1:1 messaging, end to end across two real
-//! `syneroym-substrate` instances -- the reference scenario's steps 6-8
-//! (task.md): A messages B while B is offline, the message stays `pending`
+//! Durable 1:1 messaging, end to end across two real `syneroym-substrate`
+//! instances: A messages B while B is offline, the message stays `pending`
 //! in A's own outbox; A restarts and the same item is still there, not
 //! duplicated and not lost; B comes up and the message is delivered,
 //! verified, and readable through the host interface; and no durable
-//! content ever crosses `syneroym:messaging` (ADR-0013 §6, failure-matrix
-//! row 6).
+//! content ever crosses `syneroym:messaging` (ADR-0013 §6).
 //!
-//! `Node`/`publish_endpoint`/the certified-instance deploy pattern are
-//! copied from `proxy_outbox_e2e.rs`, the closest existing precedent for
-//! "a guest's own durable delivery, proven across a real restart" -- not
-//! `multi_substrate_placement_e2e.rs`'s `Node` (F13): conversation
-//! delivery only needs one certified WASM service per node, not the full
-//! `DeploymentPlan`/`compile`/`apply_plan` app-placement machinery.
+//! Both nodes come from `common::SubstrateNode`. Node A hosts the shared
+//! registry and restarts mid-test, so its builder is captured and reused to
+//! reboot on the same ports; Node B resolves through that registry.
 //!
 //! Skips when the dual-build-fixture wasm artifact is absent
 //! (`mise run build:test-components`, or `cargo component build --release
@@ -21,19 +16,16 @@
 
 use std::{
     fs,
-    path::PathBuf,
     time::{Duration, Instant},
 };
 
+use common::SubstrateNode;
 use ed25519_dalek::VerifyingKey;
 use reqwest::Client;
 use rustls::crypto::ring;
 use serde_json::{Value, json};
 use syneroym_core::{
-    config::{
-        AppSandboxRole, ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole,
-        IrohParentConfig, LogTarget, ServiceRegistryRole, SubstrateConfig,
-    },
+    config::AppSandboxRole,
     dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
     test_constants,
 };
@@ -41,20 +33,12 @@ use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
 };
 use syneroym_sdk::SyneroymClient;
-use syneroym_substrate::identity;
-use tokio::{
-    sync::{Mutex, mpsc, mpsc::Sender},
-    task::JoinHandle,
-    time,
-};
+use tokio::time;
+
+mod common;
 
 #[path = "common/retry.rs"]
 mod retry;
-
-/// Not sharing a port block with any other e2e file in this directory --
-/// the highest claimed before this file is `proxy_outbox_e2e.rs`'s
-/// 13_500-13_902.
-const PORTS: (u16, u16, u16, u16, u16, u16) = (14_000, 14_001, 14_002, 14_100, 14_101, 14_102);
 
 /// Mirrors `syneroym_test_dual_build_fixture::native::FIXTURE_INTERFACE`
 /// (`wit/world.wit`'s `test-driver` export) without pulling in that crate
@@ -63,12 +47,6 @@ const PORTS: (u16, u16, u16, u16, u16, u16) = (14_000, 14_001, 14_002, 14_100, 1
 /// guest export, and never links the native shim.
 const FIXTURE_INTERFACE: &str = "syneroym-test:dual-build-fixture/test-driver@0.1.0";
 
-/// Two full substrate instances (real iroh QUIC, self-hosted relay,
-/// wasmtime) starve a CI runner's CPU badly enough to make iroh's QUIC
-/// path validation time out if run concurrently with another file's own
-/// pair -- same fix as every other multi-node e2e file in this directory.
-static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
-
 /// A conversation delivery attempt must not wait out the production
 /// ~10-hour attempt budget for this test to see it stay `pending`; the
 /// default `conversation_max_pending_age_secs` (30 days) is left alone --
@@ -76,106 +54,6 @@ static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 /// `pending` while the peer does not yet exist.
 fn fast_conversation_role() -> AppSandboxRole {
     AppSandboxRole { conversation_tick_secs: 1, ..AppSandboxRole::default() }
-}
-
-/// Copied in shape from `proxy_outbox_e2e.rs`'s own `Node`.
-struct Node {
-    substrate_client: SyneroymClient,
-    registry_url: String,
-    shutdown_tx: Sender<()>,
-    substrate_handle: JoinHandle<()>,
-}
-
-impl Node {
-    async fn boot(
-        base_path: PathBuf,
-        iroh_port: u16,
-        registry_port: u16,
-        gateway_port: u16,
-        shared_registry_url: Option<String>,
-        owner: &Identity,
-        app_sandbox: Option<AppSandboxRole>,
-    ) -> Self {
-        let mut config = SubstrateConfig {
-            app_local_data_dir: base_path.join("data"),
-            app_data_dir: base_path.join("user_data"),
-            app_cache_dir: base_path.join("cache"),
-            app_log_dir: base_path.join("logs"),
-            profile: "full".to_string(),
-            ..SubstrateConfig::default()
-        };
-        config.resolve_paths();
-        config.logging.target = LogTarget::Stdout;
-        config.roles.coordinator = Some(CoordinatorRole {
-            iroh: Some(CoordinatorIrohConfig {
-                enable_relay: true,
-                http_bind_address: format!("0.0.0.0:{iroh_port}"),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("0.0.0.0:{registry_port}"),
-            ..Default::default()
-        });
-        let own_registry_url = format!("http://localhost:{registry_port}");
-        let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
-        config.substrate.registry_url = Some(effective_registry_url.clone());
-        config.substrate.enable_bep0044_dht = false;
-        config.parent_coordinator.iroh =
-            Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
-        config.roles.client_gateway =
-            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
-        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
-        if let Some(role) = app_sandbox {
-            config.roles.app_sandbox = Some(role);
-        }
-
-        let state = identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
-            .expect("failed to setup identity");
-        let substrate_service_id = state.did.clone();
-
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let runtime =
-            syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
-        let config_clone = config.clone();
-        let substrate_handle = tokio::spawn(async move {
-            syneroym_substrate::run_with_signal(config_clone, runtime, async {
-                let _ = shutdown_rx.recv().await;
-            })
-            .await
-            .expect("substrate failed to run");
-        });
-
-        let mut substrate_client = SyneroymClient::new_with_identity(
-            substrate_service_id,
-            effective_registry_url.clone(),
-            Identity::from_bytes(&owner.to_bytes()),
-        )
-        .with_registry_dht(false);
-        substrate_client
-            .wait_for_ready(Duration::from_secs(30))
-            .await
-            .expect("substrate did not become available in time");
-        substrate_client.inject_kek(hex::encode([0xcdu8; 32])).await.expect("inject_kek failed");
-
-        Self {
-            substrate_client,
-            registry_url: effective_registry_url,
-            shutdown_tx,
-            substrate_handle,
-        }
-    }
-
-    fn did(&self) -> &str {
-        self.substrate_client.service_id()
-    }
-
-    async fn teardown(mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = self.substrate_handle.await;
-    }
 }
 
 /// Publishes `service_id`'s endpoint record so the other node's proxy can
@@ -225,7 +103,7 @@ async fn publish_endpoint(
 /// installed instance certificate — uncertified services are refused
 /// on every send/deliver attempt. Mirrors `proxy_outbox_e2e.rs`'s
 /// `deploy_guest`.
-async fn deploy_fixture(node: &mut Node, master: &Identity, wasm: Vec<u8>) -> String {
+async fn deploy_fixture(node: &mut SubstrateNode, master: &Identity, wasm: Vec<u8>) -> String {
     let service_id = substrate::derive_did_key(&master.public_key());
     let identity = crate::call_with_reconnect!(
         node.substrate_client,
@@ -255,14 +133,14 @@ async fn deploy_fixture(node: &mut Node, master: &Identity, wasm: Vec<u8>) -> St
         .await
         .expect("fixture deploy failed");
 
-    publish_master_anchor(&service_id, master, &node.registry_url).await;
+    publish_master_anchor(&service_id, master, node.registry_url()).await;
 
     // Published as well as deployed: every test call in this file reaches
     // the fixture through an ordinary client, which resolves it through
     // the registry like any other caller would.
     let mechanisms =
         node.substrate_client.lookup().await.expect("node lookup failed").info.mechanisms;
-    publish_endpoint(&service_id, node.did(), mechanisms, master, &node.registry_url).await;
+    publish_endpoint(&service_id, node.did(), mechanisms, master, node.registry_url()).await;
     service_id
 }
 
@@ -279,10 +157,10 @@ async fn publish_master_anchor(service_id: &str, master: &Identity, registry_url
 
 /// Drives the fixture's own `test-driver::run` export -- real guest code
 /// calling `syneroym:conversation`, not a Rust-level fake.
-async fn fixture_run(node: &Node, service_id: &str, request: &Value) -> Value {
+async fn fixture_run(node: &SubstrateNode, service_id: &str, request: &Value) -> Value {
     let mut client = SyneroymClient::new_with_identity(
         service_id.to_string(),
-        node.registry_url.clone(),
+        node.registry_url().to_string(),
         Identity::generate().unwrap(),
     )
     .with_registry_dht(false);
@@ -323,28 +201,23 @@ fn fixture_wasm() -> Option<Vec<u8>> {
 /// arrival, and no durable content ever reached the pub/sub broker.
 #[tokio::test]
 async fn a_message_survives_a_restart_and_delivers_once_the_peer_exists() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
     let wasm = fixture_wasm().expect("dual-build-fixture wasm artifact not built");
-    let (a_iroh, a_reg, a_gw, b_iroh, b_reg, b_gw) = PORTS;
-
-    let a_dir = tempfile::tempdir().unwrap();
-    let b_dir = tempfile::tempdir().unwrap();
-    let owner = Identity::generate().unwrap();
 
     // Node A hosts the shared registry, so its own restart wipes it --
-    // deliberately part of what this test proves survives.
-    let mut node_a = Node::boot(
-        a_dir.path().to_path_buf(),
-        a_iroh,
-        a_reg,
-        a_gw,
-        None,
-        &owner,
-        Some(fast_conversation_role()),
-    )
-    .await;
-    let shared_registry = node_a.registry_url.clone();
+    // deliberately part of what this test proves survives. Its builder is
+    // captured and reused for the reboot so the rebooted node keeps the
+    // same ports, which node B still resolves the registry through.
+    let a_dir = tempfile::tempdir().unwrap();
+    let owner = Identity::generate().unwrap();
+    let node_a_builder = SubstrateNode::builder()
+        .owner(&owner)
+        .base_path(a_dir.path())
+        .inject_kek_bytes([0xcd; 32])
+        .configure(|c| c.roles.app_sandbox = Some(fast_conversation_role()));
+    let mut node_a = node_a_builder.clone().boot().await;
+    let shared_registry = node_a.registry_url().to_string();
 
     let sender_master = Identity::generate().unwrap();
     let sender_did = deploy_fixture(&mut node_a, &sender_master, wasm.clone()).await;
@@ -399,16 +272,7 @@ async fn a_message_survives_a_restart_and_delivers_once_the_peer_exists() {
 
     // Row 4: restart the sending substrate with the message still pending.
     node_a.teardown().await;
-    node_a = Node::boot(
-        a_dir.path().to_path_buf(),
-        a_iroh,
-        a_reg,
-        a_gw,
-        None,
-        &owner,
-        Some(fast_conversation_role()),
-    )
-    .await;
+    node_a = node_a_builder.boot().await;
     // A substrate does not bring its own deployed services back up by
     // itself (`proxy_outbox_e2e.rs`'s own precedent) -- redeploy under the
     // same identity, which also republishes the master anchor and the
@@ -433,16 +297,12 @@ async fn a_message_survives_a_restart_and_delivers_once_the_peer_exists() {
     );
 
     // The peer now comes up.
-    let mut node_b = Node::boot(
-        b_dir.path().to_path_buf(),
-        b_iroh,
-        b_reg,
-        b_gw,
-        Some(shared_registry.clone()),
-        &owner,
-        None,
-    )
-    .await;
+    let mut node_b = SubstrateNode::builder()
+        .owner(&owner)
+        .shared_registry(&shared_registry)
+        .inject_kek_bytes([0xcd; 32])
+        .boot()
+        .await;
     let receiver_did = deploy_fixture(&mut node_b, &peer_master, wasm).await;
     assert_eq!(
         receiver_did, peer_did,
