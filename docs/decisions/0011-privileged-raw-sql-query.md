@@ -15,7 +15,7 @@ whitelist doesn't anticipate.
 
 Rather than continuously widening the JSON filter grammar to chase full SQL
 expressivity (which would eventually require a general-purpose SQL-in-JSON
-grammar and erode the "safe by construction, no SQL parsing required" property
+grammar and erode the "safe by design, no SQL parsing required" property
 that makes the default path low-risk), trusted services should instead have an
 explicit, separately-gated path to full raw SQL. This mirrors the existing
 `execute-ddl` design (ADR-0007): plain SQL is acceptable there because it is

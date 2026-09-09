@@ -13,8 +13,8 @@ crate names also don't group by domain in the IDE explorer (`app_sandbox`
 and `podman_sandbox` don't sort next to each other; `bindings` doesn't read
 as "the WIT interface crate").
 
-M03B (messaging) had just closed and M4 had not yet started, making this a
-low-risk window to do a mechanical, workspace-wide rename before new code
+M03B (messaging) had just closed and M4 had not yet started. That made this
+a low-risk window for a mechanical, workspace-wide rename, before new code
 lands on top of the old names.
 
 Full execution detail lives in
@@ -40,10 +40,10 @@ follow-up batches:
 orchestration, not sandboxing.
 
 **Revised during PR review, before merge:** the sandbox crate landed first
-as `sandbox_app`/`syneroym-sandbox-app`, then was renamed again to
-`sandbox_wasm`/`syneroym-sandbox-wasm` — "app" didn't distinguish the WASM
-backend from the Podman backend and collided with `syneroym-rpc`'s
-`NativeService` terminology; `sandbox_wasm` matches the WASM/Podman split
+as `sandbox_app`/`syneroym-sandbox-app`. It was then renamed again to
+`sandbox_wasm`/`syneroym-sandbox-wasm`. "app" did not distinguish the WASM
+backend from the Podman backend, and it collided with `syneroym-rpc`'s
+`NativeService` terminology. `sandbox_wasm` matches the WASM/Podman split
 `system-architecture.md` already uses. This table reflects the final state;
 the "Historical documents are not retroactively renamed" rule below applies
 from this ADR's acceptance onward, not to revisions made while it was still
@@ -58,15 +58,15 @@ WIT package identifiers (`syneroym:data-layer/store@0.1.0`,
 They are a versioned component-ABI contract consumed by `test-components/*`,
 which sit outside the Cargo workspace (`Cargo.toml` `exclude`) and are easy
 to miss with an in-workspace search/replace. The crate directory holding a
-`.wit` file is no longer required to match that file's WIT package name —
-those are two independent namespaces going forward, and future crate
+`.wit` file is no longer required to match that file's WIT package name.
+Those are two independent namespaces going forward. Future crate
 reorganizations should not assume they need to move together.
 
 ### Historical documents are not retroactively renamed
 
 `docs/decisions/*.md` (this file included, and ADR-0007/0009 above) and any
 `status.md`/`task.md` for a closed milestone keep the old names verbatim.
-They are records of what was decided/built at the time; rewriting their
+They are records of what was decided or built at the time. Rewriting their
 subject to match current naming would falsify the record. Only *current*
 docs (architecture, requirements, the active meta-plan, `AGENTS.md`,
 `GEMINI.md`) get the rename applied.

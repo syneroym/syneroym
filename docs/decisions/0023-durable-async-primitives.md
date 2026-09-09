@@ -82,7 +82,7 @@ fenced by a mechanism ADR-0021 or its slices installed for a different reason:
 | `restart` | **Not idempotent** — §3 |
 | `instance_identity`, `held_generation` | Reads |
 
-This is the load-bearing observation of the whole milestone: **the supervisor
+This is the key observation of the whole milestone: **the supervisor
 needs no idempotency key**, because the generation stamp, the binding epoch, and
 the content hash are already exactly the dedup mechanism an at-least-once queue
 requires. The queue inherits a correctness argument rather than making one.
@@ -261,7 +261,7 @@ distributed lock:
 
 The only case that would genuinely need a distributed lock is two live
 supervisors sharing one imported master — a deployment shape this project does
-not support, and which is already recorded as unreachable by construction
+not support, and which is already recorded as structurally unreachable
 because mint-in-place means one `MasterVault` ever holds a given master and
 `export-master`/`import-master` move a *file*, not concurrent live access
 ([deferred-backlog.md](../planning/deferred-backlog.md) §8; `refresh_master_anchor`'s
