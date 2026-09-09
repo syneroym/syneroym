@@ -33,7 +33,7 @@ cargo build
 
 ### Formatting the Project
 
-To ensure all files adhere to the project's strict idiomatic guidelines—including grouping and separating imports by module, crate, and external libraries—use the nightly formatting command. Note that standard stable `cargo fmt` will ignore these unstable features, which can lead to disjointed newlines.
+The project has strict import rules. Imports are grouped and separated by module, crate, and external library. Use the nightly formatting command to apply them. Standard stable `cargo fmt` ignores these unstable features. Using it can lead to disjointed newlines.
 
 ```bash
 # Aggressively format all Rust code, merging and strictly grouping imports
@@ -68,7 +68,7 @@ cargo run --bin roymctl -- --help
 Syneroym has a tiered testing and benchmarking strategy across three different suites:
 
 ### Automated Performance Summary
-You can run all benchmarking suites (Criterion, Latency, Concurrency, and Soak) sequentially and automatically append a summarized report—including your machine hardware specifications—to `PERF_SUMMARY.md` via a single xtask command:
+One xtask command runs all benchmarking suites in sequence: Criterion, Latency, Concurrency, and Soak. It then appends a summary report to `PERF_SUMMARY.md`. The report includes your machine hardware specifications.
 
 * **Run via Cargo:**
   ```bash
@@ -692,8 +692,8 @@ actually broken. A substrate that does not answer at all
 fix a substrate the loop cannot reach. After `max_restart_attempts`, a
 service goes **terminal**: the loop stops restarting it, an alert
 (`RemediationExhausted`) names the way out, and only `supervisor
-force-reconcile` or `supervisor adopt` clears the terminal flag (both are a
-fresh start by construction) — an out-of-band recovery (an operator
+force-reconcile` or `supervisor adopt` clears the terminal flag (both start
+fresh) — an out-of-band recovery (an operator
 restarting the container themselves) still clears it the ordinary way too,
 through the next healthy sweep.
 
@@ -734,11 +734,11 @@ whether the member is due for renewal again) until the restart actually
 succeeds.
 
 At most `max_renewals_per_pass` members are renewed in one pass. Renewal is
-the one thing the loop does whose work arrives all at once by construction:
-every member of an instance is minted in the same call at the same lifetime,
-so they all reach their near-expiry window in the same pass, every cycle.
-The remainder simply rolls to the next pass — the near-expiry window is
-hours wide against a 30-second tick, so there is a lot of room.
+the one loop task whose work always arrives all at once. Every member of an
+instance is minted in the same call, at the same lifetime. So they all reach
+their near-expiry window in the same pass, every cycle. The remainder rolls
+to the next pass. The near-expiry window is hours wide against a 30-second
+tick, so there is a lot of room.
 
 **Two different certificate lifetimes, for two different purposes.**
 `renewed_cert_expires_hours` (4 hours) is what the *supervisor* mints, for
@@ -899,8 +899,8 @@ neither verb changed shape for this: they already took a bare name, and
 
 **Handover order: `import-master` before `adopt`.** Moving an app instance
 to a new supervisor follows the same sequence as any other handover
-(`submit`, `import-master`, `adopt`), but for the app master the order is
-load-bearing. Running `adopt` *before* `import-master` mints a **second**
+(`submit`, `import-master`, `adopt`), but for the app master the order
+matters. Running `adopt` *before* `import-master` mints a **second**
 app identity under the same name — the generation fence does not catch
 this, since it fences two writers over *one* record, and a wrong-order
 adopt produces two records that never meet. Re-running `adopt` after the
@@ -956,7 +956,7 @@ instance is a node-scoped act, because the instance spans services.
 > very next unattended renewal. The previous owner's key is not revoked by
 > this; it simply stops being current, silently. Grant node-wide
 > `orchestrator/deploy` only to the supervisor that actually owns — or
-> will immediately redeploy and thereby take ownership of — every member
+> will immediately redeploy, and so take ownership of — every member
 > on that substrate.
 
 ##### Resolving an app's logical service from outside it (ADR-0022 §3)
@@ -1274,7 +1274,8 @@ may be called for an operation that never happened** -- if the substrate
 died between the call leaving and its answer arriving, the step is still
 compensated, because the host cannot tell "never ran" from "ran but the
 answer never came back". Write every undo as "ensure this is not in
-effect" rather than "reverse this", and it handles both cases for free.
+effect" rather than "reverse this". Then it handles both cases with no
+extra work.
 
 `compensate` returns as soon as the saga is marked -- **not** once the walk
 finishes. A workflow of N steps is N remote undos, comfortably longer than
@@ -1319,9 +1320,8 @@ intact on disk and resumes exactly where it left off once an operator
 injects the KEK.
 
 **A queued (`enqueue`d) call can never be a saga step.** `enqueue` returns
-"accepted for delivery", never "delivered" -- its own outcome is unknown to
-the caller by construction, so it cannot be recorded as a completed or
-failed step. A saga step is always a synchronous `saga::step` call.
+"accepted for delivery", never "delivered". The caller can never know its
+own outcome, so it cannot be recorded as a completed or failed step. A saga step is always a synchronous `saga::step` call.
 
 ##### Alerts over MQTT
 
@@ -1605,7 +1605,7 @@ To act as a verified person identity, a client opens a session with the gateway:
 
 ##### Auth Service Endpoints (`/_syneroym/session/*`)
 
-The node auth service is addressed by `Host: auth.<domain>` (or `Host: auth-<auth-did-hash>.<domain>`), or via the canonical path prefix `/_syneroym/session/*` on the client gateway port (7960):
+The node auth service is addressed by `Host: auth.<domain>` (or `Host: auth-<auth-did-hash>.<domain>`), or via the standard path prefix `/_syneroym/session/*` on the client gateway port (7960):
 - `POST /_syneroym/session/challenge`: Returns a cryptographic nonce, the node DID, and challenge expiry.
 - `POST /_syneroym/session/login`: Validates the signed challenge assertion and delegation certificate (`delegated-key`) or local identity (`local`), returning a signed UCAN session token and setting `Set-Cookie: syneroym_session=...; HttpOnly; SameSite=Lax; Path=/`.
 - `GET /_syneroym/session/methods`: Returns the list of enabled login methods on this node.

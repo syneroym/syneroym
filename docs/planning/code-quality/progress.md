@@ -19,7 +19,7 @@ git diff before-quality-round-2026-09-08 main
 | G2 | False-comment sweep: comments whose claims are no longer true | done | [#170](https://github.com/syneroym/syneroym/pull/170) |
 | G3 | CI gate on planning refs **added in a diff** | done | [#169](https://github.com/syneroym/syneroym/pull/169) |
 | G4 | e2e harness: move 25 files onto `tests/common` | not started | |
-| G5 | Document rewrite (VISION, developer-guide, backlog, traceability, ADRs) | not started | |
+| G5 | Document rewrite (VISION, developer-guide, backlog, traceability, ADRs) | done | readability pass on `docs/quality-readability` worktree |
 | G6 | `clippy.toml` threshold ratchet + `cargo dupes check` + full-tree ref gate | not started | |
 | G7 | Closing measurement: re-run the pass, commit `baseline-<date>/`, compare | not started | |
 

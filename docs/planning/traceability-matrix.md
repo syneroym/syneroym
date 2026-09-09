@@ -1,6 +1,6 @@
 # Traceability Matrix
 
-This document maps the requirements from the System Requirements Specification (`system-requirements-spec.md`) and related documents to their target milestones, current implementation status, and acceptance evidence.
+This document maps requirements to their target milestones, current implementation status, and acceptance evidence. The requirements come from the System Requirements Specification (`system-requirements-spec.md`) and related documents.
 
 ## Core Requirements
 

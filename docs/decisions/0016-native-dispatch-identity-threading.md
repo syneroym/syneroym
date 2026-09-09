@@ -158,7 +158,7 @@ Landing slice: **M06C C1.1** —
   (thread `invocation.caller`; replace `creator_id`; Admin gate at :309-316),
   `crates/sandbox_wasm/src/host_capabilities.rs:452-463` (Admin gate replaces
   `is_init_context`), and the `is_init_context` field/compute in
-  `crates/sandbox_wasm/src/engine.rs:547,594,630` (removed or subsumed by
+  `crates/sandbox_wasm/src/engine.rs:547,594,630` (removed or replaced by
   `LocalElevated`).
 - The single most important new test: an unauthenticated peer's
   `data-layer`/`messaging`/`blob-store`/`vault`/`app-config` call and

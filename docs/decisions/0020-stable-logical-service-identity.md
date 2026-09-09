@@ -81,7 +81,7 @@ returns `VerifiedIdentity { master_did, temporary_did }`
   with a different one — adds or removes a master, and therefore changes what
   dependents must know.
 
-**Per member, not per logical service**, and that distinction is load-bearing in
+**Per member, not per logical service**, and that distinction is essential in
 both directions. Selection operates over `TopologyEntry.members`: round-robin
 needs distinct entries to rotate through, and rendezvous or entity-tag sharding
 needs each member individually addressable and attributable, because a shard
@@ -313,7 +313,7 @@ simpler trust model than either B7's sketch or this ADR's own first draft.
 B7 also set a gate on doing this at all — F9 found the original motivation
 unsound ("non-discoverability is a posture, not a gap") and concluded it "needs
 a real consumer before it is worth doing." The paired milestone's endpoint-record
-work is that consumer, and a load-bearing one: without it a relocated member
+work is that consumer, and an essential one: without it a relocated member
 cannot be resolved at all. The gate is met.
 
 ## 7. Rejected: make the logical name the authorization subject
@@ -516,7 +516,7 @@ edited into §6's prose. Full reasoning is in
     by anything that relays the record; the latter compared just
     `timestamp`, leaving `revoked_keys` and `revoke_list_registry`
     rewritable by a hostile or compromised registry. Both predate this
-    slice, but Slice A1 is what makes them load-bearing: D-A1-7 gives every
+    slice, but Slice A1 is what makes them essential: D-A1-7 gives every
     certified member master an anchor for the first time, and its
     read-modify-write would re-sign a tampered revocation list with the
     real master key, turning an unauthenticated tamper into a permanent
@@ -622,7 +622,7 @@ holds the keys. Recorded here for the same reason as the amendments above.
     substrate never receives a master private key -- holds for the
     supervisor's vault by the identical construction: nothing outside the
     process that generated the key ever sees it.
-21. **§1's "bound to this client, not just this master" is a load-bearing
+21. **§1's "bound to this client, not just this master" is an essential
     constraint on *when* custody must exist, which neither this ADR nor
     ADR-0021 stated.** The instance key a target substrate derives depends
     on both the node's own identity and the calling DID

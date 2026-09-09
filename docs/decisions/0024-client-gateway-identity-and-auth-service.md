@@ -482,7 +482,7 @@ as written.
 every request arrives carrying the gateway's node key, so a `public: false`
 route is reachable by any browser and is protected only by each service
 choosing to check the cookie. That makes open question 2 (the connection auth
-gate) **load-bearing rather than defence in depth**, and it needs a negative
+gate) **essential rather than defence in depth**, and it needs a negative
 test either way.
 
 **G. How a WASM guest reaches the "shared verification helper" is

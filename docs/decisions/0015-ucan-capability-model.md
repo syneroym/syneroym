@@ -219,7 +219,7 @@ duplicate in a second engine what the policy already expresses. Three forms:
 checked at all** — the verifier **conjoins** every caveat along the chain.
 
 Proving one arbitrary filter is a subset of another is intractable; conjoining is
-monotonically narrowing *by construction*, so a child cannot escalate and there
+monotonically narrowing *by design*, so a child cannot escalate and there
 is nothing to verify. (Parent `{dept: 5}` + child `{}` → `dept=5`; + child
 `{dept: {$in: [5,6]}}` → `dept=5`. The attempted widening is inert.) This is why
 the caveat language must stay closed-form: conjunction is sound only because
