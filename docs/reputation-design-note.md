@@ -635,7 +635,121 @@ No single layer needs to solve every problem.
 
 ---
 
-## 20. Design Principles
+## 20. Reputation-Based Provider Recommendations
+
+Provider discovery can be based on **personalized reputation propagation** rather than a single global reputation score. A user should preferentially discover providers through people and providers already connected to the user's trust network.
+
+A recommendation can be:
+
+* **Direct** — the user has previously interacted with the provider.
+* **One-hop indirect** — a trusted contact has interacted with and recommends the provider.
+* **Multi-hop indirect** — the provider is connected through several trusted contacts or providers.
+
+The strength of an indirect recommendation should decrease with graph distance and should depend on the reputation and reliability of the intermediate nodes. Thus, a recommendation from a highly trusted contact should carry considerably more weight than hundreds of recommendations from unknown identities.
+
+```text
+                         Provider P
+                        /          \
+                    Alice          Bob
+                      |              |
+                     You          Carol
+```
+
+If Alice and Bob are trusted by the user, P can acquire meaningful recommendation weight even when the user has never interacted with P directly. Conversely, thousands of mutually endorsing unknown identities should not overwhelm a small number of well-established independent recommendations.
+
+### Personalized Graph Reputation
+
+The reputation system can model interactions and recommendations as a directed weighted graph. For a particular user `U`, reputation is computed relative to `U`'s trusted starting set rather than globally. PageRank-like, EigenTrust-like, or other graph-ranking algorithms can be used to propagate trust through the graph.
+
+Conceptually:
+
+```text
+R_U(P) = Σᵢ Trust_U(i) × EdgeQuality(i,P) × Decay(distance)
+```
+
+where `EdgeQuality` may incorporate the quality, recency and context of the underlying relationship.
+
+The actual algorithm need not be fixed at the protocol level. Syneroym can define and preserve the graph evidence and signed attestations while allowing different reputation algorithms to be used for different applications and contexts.
+
+### Sybil Resistance
+
+This approach also provides a natural defense against Sybil attacks. A Sybil attacker can create arbitrarily many keypairs, but identities within a Sybil cluster cannot create substantial reputation merely by endorsing or transacting with one another.
+
+```text
+                    Honest network
+                  A ─── B ─── C
+                       │
+                       │
+                       S1
+                    /  |  \
+                  S2  S3  S4
+                   \  |  /
+                  S5 ... S10000
+                    Sybil cluster
+```
+
+The attacker may create 10,000 identities and millions of internal interactions, but these interactions originate from a small number of connections to the established network. Reputation propagation therefore depends primarily on the **trust entering the Sybil cluster**, rather than on the number of identities or internal edges it contains.
+
+An important design principle is:
+
+> **Creating identities should be cheap; creating independent trust should not be.**
+
+Consequently, the system should not treat the following as strong evidence by themselves:
+
+* number of identities;
+* number of endorsements;
+* number of transactions;
+* number of reviews;
+* internal activity within a tightly connected cluster.
+
+Instead, reputation should give greater weight to **independent, established paths into the network**, particularly relationships involving providers whose ability to provide the relevant goods or services is independently established.
+
+The system should also account for correlated recommendations. Ten identities controlled by one entity should not have the same influence as ten genuinely independent participants. Graph structure, common provenance, relationship history, temporal patterns and other available evidence can be used to detect or discount such clusters.
+
+This does not make Sybil attacks impossible. Without some source of trust or scarce resource, it is fundamentally impossible to distinguish an arbitrary collection of pseudonyms from independent participants. The objective is instead to ensure that **the attacker's influence is bounded by the amount of genuine trust or scarce resource the attacker can introduce into the network**.
+
+This approach has precedent in P2P reputation research. EigenTrust introduced trust propagation from trusted peers, while subsequent work identified vulnerabilities of naïve EigenTrust to Sybil attacks and proposed approaches such as Relative Rank and RAW. Other work has explored personalized hitting-time methods as alternatives to PageRank-based approaches for Sybil-resistant ranking.
+
+### Reputation Evidence vs. Reputation Algorithm
+
+Syneroym should **separate the collection and verification of reputation evidence from the algorithm used to derive reputation**.
+
+The protocol can provide standardized, cryptographically verifiable primitives such as:
+
+* identities and signatures;
+* attestations and endorsements;
+* interaction and transaction records;
+* provider capabilities and credentials;
+* evidence of successful or unsuccessful fulfillment;
+* dispute and resolution outcomes;
+* timestamps and relationship history.
+
+Applications can then decide how to interpret this evidence.
+
+For example:
+
+```text
+                    Syneroym substrate
+                           │
+             Signed reputation evidence
+                           │
+             ┌─────────────┼─────────────┐
+             ↓             ↓             ↓
+       Marketplace      Social app    Professional
+       reputation       reputation     reputation
+             │             │             │
+       provider-first   web-of-trust   expertise graph
+```
+
+A local-services marketplace might give substantial weight to provider-rooted transaction history and successful fulfillment. A social application might instead use a web-of-trust model. A professional marketplace might emphasize expertise, endorsements and long-term relationships.
+
+Thus, **Syneroym need not define a universal "reputation score."** It provides a decentralized, verifiable evidence layer from which applications can derive context-specific reputation and recommendations.
+
+This preserves neutrality at the substrate level while allowing sophisticated reputation and Sybil-resistance algorithms to evolve independently of the underlying P2P protocol.
+
+--
+
+## 21. Design Principles
 
 The resulting Syneroym reputation system can be summarized by these principles:
 
@@ -657,7 +771,7 @@ The resulting Syneroym reputation system can be summarized by these principles:
 16. **Reputation should be portable across applications and communities.**
 17. **Reputation should be capable of improving through subsequent behavior.**
 
-## 21. Core Philosophy
+## 22. Core Philosophy
 
 The objective is not to construct a system that knows whether every person is "good" or "bad."
 
@@ -674,3 +788,4 @@ and another participant can ask:
 The system then gives participants the tools to answer those questions themselves.
 
 > **Syneroym provides evidence and verifiability; communities and individuals provide judgment.**
+
