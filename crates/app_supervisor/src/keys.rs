@@ -12,9 +12,9 @@
 //! **Local by construction.** The supervisor writes to *its own* node's
 //! service database through `StorageProvider::open_service_db`, an
 //! in-process call -- it never issues a remote `security/set-secret` and so
-//! never needs `substrate/admin` on a managed substrate. That is what keeps
-//! failure-matrix row 14's blast-radius claim intact and what resolves the
-//! standing P0 backlog row on this exact question.
+//! never needs `substrate/admin` on a managed substrate. That bounds the
+//! blast radius of a compromised supervisor: it cannot reach a managed
+//! substrate's admin surface at all.
 //!
 //! **No master ever crosses the wire.** `export_master`/`import_master` move
 //! a *file* on the supervisor's own host, into and out of the operator-
@@ -108,7 +108,7 @@ fn ensure_backup_dir(dir: &Path) -> Result<(), VaultError> {
 }
 
 /// Which kind of master `get_or_mint` is minting -- read only to pick the
-/// mint-warning's wording (M05A A7, D-A7-9). A member master's loss story
+/// mint-warning's wording. A member master's loss story
 /// ("orphans every row this member has written") is the wrong noun and the
 /// wrong consequence for an app master, which owns no rows and instead
 /// loses the app instance's own network identity.
@@ -126,10 +126,9 @@ pub struct MintedMaster {
     pub master_did: String,
     /// The name `export_master`/`import_master` actually key on
     /// (`member_master_name`'s output) -- distinct from `service_name`,
-    /// the bare logical name, which is not a valid vault key (S1, Slice
-    /// A5b review).
+    /// the bare logical name, which is not a valid vault key.
     pub vault_name: String,
-    /// This member's ordinal (M05A A5e, D-A5e-2/§33.17): `submit` returns
+    /// This member's ordinal: `submit` returns
     /// N rows per scaled service that are otherwise identical --
     /// `service_name` alone cannot distinguish them, only `vault_name`
     /// can, and an operator reading the printed line should not have to
@@ -148,14 +147,14 @@ pub struct MasterVault {
     /// caller-supplied.
     backup_dir: PathBuf,
     /// Serializes every write to a vault name -- `get_or_mint`'s own
-    /// read-then-write, and `import`'s (M05A A7 review round 2, finding
-    /// 2), across concurrent callers. `SupervisorService::dispatch` takes
+    /// read-then-write, and `import`'s, across concurrent callers.
+    /// `SupervisorService::dispatch` takes
     /// `&self`, so two `submit`s for the same instance can otherwise
     /// interleave: both see no existing master, both mint one, and the
     /// later `write_secret` wins -- the earlier call has already
     /// certified and deployed a member under a master no longer in the
-    /// vault, which ADR-0020 §4 calls unrecoverable (S3, Slice A5b
-    /// review). `import` taking this same lock closes the sibling case:
+    /// vault, which ADR-0020 §4 calls unrecoverable. `import` taking this
+    /// same lock closes the sibling case:
     /// without it, a concurrent `import-master` could land between
     /// `get_or_mint`'s read and its write and be silently clobbered, or
     /// itself clobber a fresh mint with no warning, since its own
@@ -231,7 +230,7 @@ impl MasterVault {
 
     /// Mints and stores if absent -- the ordinary path. Reuses an existing
     /// master rather than minting a second one for the same name. `kind`
-    /// (M05A A7, D-A7-9) picks only the mint-warning's wording below.
+    /// picks only the mint-warning's wording below.
     pub async fn get_or_mint(&self, name: &str, kind: MasterKind) -> Result<Identity, VaultError> {
         // Held across the whole read-then-write below (`mint_lock`'s own
         // doc): without it, two concurrent callers for the same `name`
@@ -263,14 +262,14 @@ impl MasterVault {
     }
 
     /// Imports raw key bytes directly -- used by `import_master` once it has
-    /// read them from the backup directory. Takes `mint_lock` (M05A A7
-    /// review finding 2), the same lock `get_or_mint` holds across its own
-    /// read-then-write: without it, a concurrent `adopt` can see an empty
-    /// slot, mint, and store, and then have this import's write land
-    /// after -- the row would then name a DID the vault no longer holds.
+    /// read them from the backup directory. Takes `mint_lock`, the same
+    /// lock `get_or_mint` holds across its own read-then-write: without it,
+    /// a concurrent `adopt` can see an empty slot, mint, and store, and
+    /// then have this import's write land after -- the row would then name
+    /// a DID the vault no longer holds.
     /// Warns, rather than refuses, when this replaces an existing,
-    /// different key (finding 1): D-A7-11's standing rule is that a
-    /// master is never forgotten, and the handover A7 makes routine
+    /// different key: the standing rule is that a master is never
+    /// forgotten, and the handover this makes routine
     /// (`import-master` before every `adopt`) can otherwise silently
     /// destroy a live identity on a typo'd instance id or a stale backup
     /// file, with nothing to notice. Not a refusal -- a deliberate
@@ -323,12 +322,12 @@ impl MasterVault {
 }
 
 /// `member-<app_instance_id>#<service_name>-<index>` -- the same computable
-/// name A0's `member_master_name` uses, so an operator adopting an
-/// existing deployment's masters finds the same file stem under
+/// name `roymctl`'s member-identity command uses, so an operator adopting
+/// an existing deployment's masters finds the same file stem under
 /// `import_master`.
 ///
-/// The `app_instance_id`/`service_name` boundary is `#`, not `-` (M05A A5e,
-/// D-A5e-12): both id types forbid `/` and `#` at construction, but neither
+/// The `app_instance_id`/`service_name` boundary is `#`, not `-`: both id
+/// types forbid `/` and `#` at construction, but neither
 /// forbids `-`, so with a `-` boundary instance `a` + service `b-c` and
 /// instance `a-b` + service `c` collided on the identical name -- one vault
 /// master handed to two different app instances. `#` is forbidden in both,
@@ -342,8 +341,7 @@ impl MasterVault {
 /// Validated against the same rule `export_master`/`import_master` enforce
 /// on the name they are handed, so a name they will later refuse is
 /// refused here instead, at mint time, rather than minting a key that is
-/// permanently un-backup-able and only discovered when the operator tries
-/// (S5, Slice A5b review).
+/// permanently un-backup-able and only discovered when the operator tries.
 fn member_master_name(
     app_instance_id: &str,
     service_name: &str,
@@ -354,9 +352,9 @@ fn member_master_name(
     Ok(name)
 }
 
-/// `app-<app_instance_id>` -- the app instance's own master (M05A A7,
-/// D-A7-3). Collision-safe by construction on two independent grounds,
-/// neither of which depends on what `AppInstanceId`'s validator permits
+/// `app-<app_instance_id>` -- the app instance's own master. Collision-safe
+/// by construction on two independent grounds, neither of which depends on
+/// what `AppInstanceId`'s validator permits
 /// (unlike `member_master_name`'s `#` boundary above):
 ///
 /// - **Injective by construction.** There is exactly one variable-length
@@ -369,11 +367,10 @@ fn member_master_name(
 ///
 /// Still validated through `validate_backup_name`, the same rule
 /// `export_master`/`import_master` enforce on the name they are handed.
-/// `AppInstanceId::try_new` itself now also refuses `..` and `\` (a fix
-/// made after review found the gap this comment used to describe --
-/// M05A A7 review round 2, finding 5), so a caller that only ever
-/// constructs a name from an already-validated `AppInstanceId` cannot
-/// trip this. This function takes a bare `&str`, not an `AppInstanceId`,
+/// `AppInstanceId::try_new` itself now also refuses `..` and `\`, so a
+/// caller that only ever constructs a name from an already-validated
+/// `AppInstanceId` cannot trip this. This function takes a bare `&str`,
+/// not an `AppInstanceId`,
 /// so the check stays as defense-in-depth against a caller that skipped
 /// that construction -- refused here, at mint time, rather than minted
 /// and only discovered unbackuppable later. Do not remove it on the
@@ -381,8 +378,9 @@ fn member_master_name(
 ///
 /// Deliberately **no** duplicated copy of this in `roymctl`, unlike
 /// `member_master_name`'s copy in `apps/roymctl/src/commands/
-/// member_identity.rs`: that copy exists because A0's operator-side flow
-/// mints member masters into files on the operator's own machine, and
+/// member_identity.rs`: that copy exists because the operator-side
+/// deployment flow mints member masters into files on the operator's own
+/// machine, and
 /// nothing client-side ever mints an app master -- there is nothing to
 /// keep in sync.
 fn app_master_name(app_instance_id: &str) -> Result<String, VaultError> {
@@ -393,12 +391,11 @@ fn app_master_name(app_instance_id: &str) -> Result<String, VaultError> {
 
 /// The app instance's own master: resolve-or-mint under `app-<id>`,
 /// returning both the DID `adopt` records on the instance row and the
-/// vault name `export-master`/`import-master` accept (M05A A7,
-/// D-A7-1/D-A7-3/D-A7-4/D-A7-8). Called on *every* successful `adopt`, not
-/// only the first -- resolving rather than minting-once is what makes a
-/// handover through `import-master` self-correcting: an `adopt` run after
-/// `import-master` resolves the imported key instead of minting a second
-/// identity for the same instance (D-A7-5).
+/// vault name `export-master`/`import-master` accept. Called on *every*
+/// successful `adopt`, not only the first -- resolving rather than
+/// minting-once is what makes a handover through `import-master`
+/// self-correcting: an `adopt` run after `import-master` resolves the
+/// imported key instead of minting a second identity for the same instance.
 pub async fn app_master(
     vault: &MasterVault,
     app_instance_id: &str,
@@ -410,8 +407,8 @@ pub async fn app_master(
 }
 
 /// The app instance's own master, read-only: `Ok(None)` if this instance
-/// has never had one minted (D-A7-7: it gains one at its next `adopt`, and
-/// nowhere else). Deliberately not `get_or_mint`, for the reason
+/// has never had one minted: it gains one at its next `adopt`, and
+/// nowhere else. Deliberately not `get_or_mint`, for the reason
 /// `master_for_member` below gives for members -- minting here would
 /// create an app identity outside `adopt`, the one place that owns it.
 pub async fn existing_app_master(
@@ -428,8 +425,8 @@ pub async fn existing_app_master(
 /// is a custody failure, and minting a fresh one there would silently give
 /// the member a new identity rather than renewing its old one.
 ///
-/// `index` is the member's own ordinal (M05A A5e, D-A5e-5) -- reading it
-/// from the caller rather than hardcoding `0` is what keeps member N's
+/// `index` is the member's own ordinal -- reading it from the caller
+/// rather than hardcoding `0` is what keeps member N's
 /// anchor refresh and renewal from silently operating on member 0's master.
 pub async fn master_for_member(
     vault: &MasterVault,
@@ -447,8 +444,8 @@ pub async fn master_for_member(
     })
 }
 
-/// The `submit` path's own custody step (§0.30/D-A5-26): resolve-or-mint one
-/// master per placed member, then substitute the compiler's fabricated
+/// The `submit` path's own custody step: resolve-or-mint one master per
+/// placed member, then substitute the compiler's fabricated
 /// `service_id`s (and every `resolved_dependencies` entry naming one) for
 /// the resolved master DIDs -- `member_identity::substitute_and_certify_
 /// members`'s substitution half, moved here where the masters actually
@@ -595,8 +592,8 @@ mod tests {
         assert_eq!(minted.public_key(), read_back.public_key());
     }
 
-    /// S3 (Slice A5b review): before `mint_lock`, two concurrent calls for
-    /// the same name both saw `get` return `None` and both minted --
+    /// Before `mint_lock`, two concurrent calls for the same name both saw
+    /// `get` return `None` and both minted --
     /// whichever `write_secret` landed last silently orphaned the other's
     /// master. Runs the two calls truly concurrently (both `tokio::spawn`ed
     /// before either is awaited) rather than sequentially, so a regression
@@ -702,8 +699,8 @@ mod tests {
         assert_eq!(p.services[1].service_id, p2.services[1].service_id);
     }
 
-    /// D-A5e-5/D-A5e-11: two members of one logical service must resolve
-    /// two distinct masters, keyed on each member's own index -- the
+    /// Two members of one logical service must resolve two distinct
+    /// masters, keyed on each member's own index -- the
     /// consequence of `mint_and_substitute` reading `svc.member_index`
     /// instead of the literal `0` it used to.
     #[tokio::test]
@@ -731,9 +728,9 @@ mod tests {
         assert_eq!(p.services[1].service_id, p2.services[1].service_id);
     }
 
-    /// D-A5e-5: `master_for_member` reads the caller-supplied index, not a
-    /// hardcoded `0` -- member 1's renewal must sign with member 1's own
-    /// master, never member 0's.
+    /// `master_for_member` reads the caller-supplied index, not a hardcoded
+    /// `0` -- member 1's renewal must sign with member 1's own master,
+    /// never member 0's.
     #[tokio::test]
     async fn master_for_member_reads_the_members_own_index_rather_than_zero() {
         let dir = tempfile::tempdir().unwrap();
@@ -749,10 +746,10 @@ mod tests {
         assert_ne!(resolved0.public_key(), resolved1.public_key());
     }
 
-    /// S5 (Slice A5b review): `AppInstanceId` used to only check non-empty,
-    /// so an id containing a path separator minted fine and only failed
-    /// later, at `export_master`, once the operator tried to back it up.
-    /// M05A A5e's `AppInstanceId` validator now closes that one layer up --
+    /// `AppInstanceId` used to only check non-empty, so an id containing a
+    /// path separator minted fine and only failed later, at
+    /// `export_master`, once the operator tried to back it up. The
+    /// `AppInstanceId` validator now closes that one layer up --
     /// `AppInstanceId::try_new` itself refuses `/` -- but `LogicalServiceName`
     /// still permits `..` (it forbids only `/` and `#`), so the same
     /// defense-in-depth still matters one field over: a service name of
@@ -774,7 +771,7 @@ mod tests {
     }
 
     /// `AppInstanceId` forbids `/` (a `validate_backup_name` concern) and
-    /// `#` (`MemberRef`'s own index separator, D-A5e-2), but not `-` -- a
+    /// `#` (`MemberRef`'s own index separator), but not `-` -- a
     /// hyphen in an instance id is ordinary and must keep working.
     #[test]
     fn an_app_instance_id_containing_a_path_separator_is_refused_at_construction() {
@@ -782,8 +779,8 @@ mod tests {
         assert!(AppInstanceId::try_new("a/b").is_err());
     }
 
-    /// M05A A5e (D-A5e-12): the collision `member_master_name`'s `#`
-    /// boundary closes -- instance `a` + service `b-c` and instance `a-b` +
+    /// The collision `member_master_name`'s `#` boundary closes -- instance
+    /// `a` + service `b-c` and instance `a-b` +
     /// service `c` used to both mint the identical vault key
     /// `member-a-b-c-0` under the old `-`-only boundary, handing one master
     /// DID to two different (instance, service) pairs. Neither id type can
@@ -856,9 +853,9 @@ mod tests {
         assert!(matches!(err, VaultError::Locked), "{err:?}");
     }
 
-    // ── M05A A7: the app-instance master (D-A7-3/D-A7-5) ────────────────
+    // ── The app-instance master ────────────────────────────────────────
 
-    /// D-A7-3: the two prefixes are disjoint at position 0, so no member
+    /// The two prefixes are disjoint at position 0, so no member
     /// name can ever equal an app name -- checked over instance ids chosen
     /// to look like a member name's own tail, the shape most likely to
     /// collide under a careless boundary. The companion to
@@ -875,9 +872,8 @@ mod tests {
         }
     }
 
-    /// D-A7-3, §0.3 as corrected in review. `AppInstanceId::try_new`
-    /// itself now also refuses `..` and `\` (M05A A7 review round 2,
-    /// finding 5) -- but `app_master`/`app_master_name` take a bare
+    /// `AppInstanceId::try_new` itself now also refuses `..` and `\` -- but
+    /// `app_master`/`app_master_name` take a bare
     /// `&str`, not an `AppInstanceId`, so this pins the defense-in-depth
     /// layer directly: a caller that reaches this function with a raw
     /// string that never went through `AppInstanceId::try_new` must still
@@ -898,7 +894,7 @@ mod tests {
         assert!(v.get("app-back\\slash").await.unwrap().is_none());
     }
 
-    /// D-A7-5: `adopt` calls `app_master` on every call, not only the
+    /// `adopt` calls `app_master` on every call, not only the
     /// first -- resolving the same key it already minted is what makes a
     /// re-`adopt` (and, across two vaults, a handover) safe rather than
     /// minting a second identity.
@@ -930,11 +926,10 @@ mod tests {
         assert_eq!(substrate::derive_did_key(&found.public_key()), did);
     }
 
-    /// `task.md`'s own exit criterion: the app master "moves through
-    /// `export-master` / `import-master`" exactly as a member master does
-    /// -- exported under `app-<id>`, landing inside the configured backup
-    /// directory at mode `0o600`, and re-importable to restore the same
-    /// key.
+    /// The app master moves through `export-master` / `import-master`
+    /// exactly as a member master does -- exported under `app-<id>`,
+    /// landing inside the configured backup directory at mode `0o600`, and
+    /// re-importable to restore the same key.
     #[tokio::test]
     async fn an_app_master_round_trips_through_export_master_and_import_master() {
         let dir = tempfile::tempdir().unwrap();
@@ -966,12 +961,11 @@ mod tests {
         assert_eq!(substrate::derive_did_key(&imported.public_key()), did);
     }
 
-    // ── M05A A7 code review (2026-08-04): findings 1, 2, 7b, 10 ─────────
+    // ── `import` / mint-lock ordering and the mint warning ─────────────
 
-    /// D-A7-9, review finding 10: `get_or_mint`'s warning names the right
-    /// noun and the right loss for each `MasterKind` -- the whole payload
-    /// of a decision that otherwise touched twelve call sites for no
-    /// externally visible effect.
+    /// `get_or_mint`'s warning names the right noun and the right loss for
+    /// each `MasterKind`: a member master orphans rows, an app master
+    /// loses the instance's network identity.
     #[test]
     fn get_or_mint_warns_with_the_wording_matching_its_kind() {
         // Declared before `dir`/`v`: dropped last, after the vault (and
@@ -993,10 +987,10 @@ mod tests {
         assert!(app_logs.contains("network identity"), "{app_logs}");
     }
 
-    /// Review finding 7b (the ordering `import` taking `mint_lock` makes
-    /// safe, §0.5's own handover sequence): if `import-master` lands
-    /// *before* anything has minted under this name, `get_or_mint`
-    /// resolves the imported key rather than minting a second identity --
+    /// The ordering `import` taking `mint_lock` makes safe: if
+    /// `import-master` lands *before* anything has minted under this name,
+    /// `get_or_mint` resolves the imported key rather than minting a second
+    /// identity --
     /// the exact "`import-master` before `adopt`" order the developer
     /// guide recommends.
     #[tokio::test]
@@ -1011,12 +1005,12 @@ mod tests {
         assert_eq!(resolved.public_key(), imported.public_key());
     }
 
-    /// Review findings 1 and 2 together: if a mint already landed under
-    /// this name before `import` runs, `import` still wins (a deliberate
-    /// handover replacement must succeed), but it must never do so
-    /// silently -- the exact "reverse interleaving" finding 2 called
-    /// worse than the base case, because nothing before this fix warned
-    /// at all. Sequential, not raced: the two lock-acquisition orderings
+    /// If a mint already landed under this name before `import` runs,
+    /// `import` still wins (a deliberate handover replacement must
+    /// succeed), but it must never do so silently -- this reverse
+    /// interleaving is worse than the base case, because nothing before
+    /// this fix warned at all. Sequential, not raced: the two
+    /// lock-acquisition orderings
     /// this fix distinguishes are each individually deterministic, and
     /// this is the one where `import` runs second. Not `#[tokio::test]`:
     /// `run_capturing_logs` drives its own runtime, and nesting one

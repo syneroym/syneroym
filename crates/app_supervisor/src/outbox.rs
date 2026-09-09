@@ -1,9 +1,9 @@
 //! The supervisor's own binding-write outbox: a
 //! [`syneroym_sdk::deploy::WriteBindingsOutbox`] backed by
-//! `syneroym_async_queue::Queue` (M05B Slice B1, D-B1-1/D-B1-5). The queue
-//! itself stores an opaque key and payload; this module is where those
-//! become the supervisor's `(instance, logical_ref, substrate)` grouping
-//! (D-B1-6) and a serialized `BindingWrite`.
+//! `syneroym_async_queue::Queue`. The queue itself stores an opaque key and
+//! payload; this module is where those become the supervisor's
+//! `(instance, logical_ref, substrate)` grouping and a serialized
+//! `BindingWrite`.
 
 use std::{
     fmt,
@@ -22,9 +22,9 @@ use syneroym_sdk::{BindingWrite, deploy::WriteBindingsOutbox};
 const FIELD_SEPARATOR: char = '\u{1}';
 
 /// The supervisor's grouping key for one queued binding write --
-/// `(instance, logical_ref, substrate)`, the same triple the DLQ's standing
-/// alert groups by (D-B1-6). Opaque to `syneroym-async-queue`, which only
-/// stores and compares its `Display` form as a string.
+/// `(instance, logical_ref, substrate)`, the same triple the DLQ groups its
+/// standing alert by. Opaque to `syneroym-async-queue`, which only stores
+/// and compares its `Display` form as a string.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct QueueKey {
     pub app_instance_id: String,
@@ -97,7 +97,7 @@ impl SupervisorOutbox {
 #[async_trait::async_trait]
 impl WriteBindingsOutbox for SupervisorOutbox {
     async fn enqueue(&self, queue_key: &str, substrate_did: &str, write: &BindingWrite) {
-        // A5e's resident loop reclassifies a member as a push candidate on
+        // The resident loop reclassifies a member as a push candidate on
         // every pass until its push actually lands (the downgrade-to-
         // Degraded comment on the loop's own write phase explains why:
         // `compute_diff` deliberately falls back to the previous baseline
@@ -127,12 +127,12 @@ impl WriteBindingsOutbox for SupervisorOutbox {
             }
         };
         // `group_key` scopes the DLQ cap this item's eventual failure
-        // would count against (D-B1-9) -- the app instance, parsed back
-        // out of `queue_key` rather than threaded through this trait's own
+        // would count against -- the app instance, parsed back out of
+        // `queue_key` rather than threaded through this trait's own
         // signature, so one noisy instance cannot evict another's dead
-        // letters (M05B B1 review finding 4). A queue key this crate wrote
-        // always parses; an unparseable one is a caller bug elsewhere, not
-        // something to guess a group for.
+        // letters. A queue key this crate wrote always parses; an
+        // unparseable one is a caller bug elsewhere, not something to guess
+        // a group for.
         let group_key = queue_key.parse::<QueueKey>().map(|k| k.app_instance_id);
         let group_key = match &group_key {
             Ok(g) => g.as_str(),
@@ -151,14 +151,13 @@ impl SupervisorOutbox {
     /// Whether `queue_key` already has a row in the outbox -- pending or
     /// claimed, either way already durable and already on its own retry
     /// schedule. Backed by `Queue::has_pending`'s indexed lookup, not a
-    /// scan of every payload (M05B B1 review finding 15).
+    /// scan of every payload.
     ///
     /// Fails **closed**: a read that cannot be answered (`Err`) reports
     /// `true` (already pending), so the caller skips this enqueue and the
     /// next pass tries again -- the opposite of `is_ok_and`'s old fail-open
     /// behavior, which reported a broken read as "not pending" and wrote
-    /// the duplicate row the guard exists to prevent (M05B B1 review
-    /// finding 11).
+    /// the duplicate row the guard exists to prevent.
     #[must_use]
     pub fn already_pending(&self, queue_key: &str) -> bool {
         self.queue.has_pending(queue_key).unwrap_or(true)
@@ -210,8 +209,8 @@ mod tests {
         assert_eq!(payload.write.generation, 3);
     }
 
-    /// M05B B1 review: A5e's resident loop reclassifies an unlanded push as
-    /// a candidate every pass until it lands, so `enqueue_unreachable_push`
+    /// The resident loop reclassifies an unlanded push as a candidate every
+    /// pass until it lands, so `enqueue_unreachable_push`
     /// (`service.rs`) calls this repeatedly for the identical key while a
     /// substrate stays offline. Left unguarded that floods the outbox with
     /// duplicates, each starting its own attempt budget at zero -- so an
