@@ -1,24 +1,23 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! The epoch-guarded binding write (M05A Slice A5a, ADR-0021 §3), proven
-//! across two genuinely independent `syneroym-substrate` instances -- the
-//! same `frontend`-on-A/`backend`-on-B topology `multi_substrate_placement_
-//! e2e.rs` uses, deployed once, then pushed to without a second deploy.
+//! The epoch-guarded binding write (ADR-0021), proven across two genuinely
+//! independent `syneroym-substrate` instances -- a `frontend`-on-A /
+//! `backend`-on-B topology, deployed once, then pushed to without a second
+//! deploy.
 //!
-//! `Node` and the deploy scaffolding are copied from `multi_substrate_
-//! placement_e2e.rs`, which itself copies them from `master_endpoint_record_
-//! e2e.rs` -- this crate has no shared test-support module for a harness
-//! this size, so every e2e file duplicates the one it needs (see that
-//! file's own module doc). `shutdown_clients` alone is small and identical
-//! everywhere it's used, so it comes from `common/client_shutdown.rs`
-//! instead of a third local copy.
+//! Both nodes come from `common::SubstrateNode`, sharing one registry and
+//! one relay. `common::serial_guard` keeps this binary's tests from running
+//! substrate stacks at once. `shutdown_clients` comes from
+//! `common/client_shutdown.rs` because this file holds a batch of
+//! `Arc<SyneroymClient>` keyed by alias rather than one client per node.
 
 use std::{
     collections::BTreeMap,
     path::PathBuf,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
+use common::SubstrateNode;
 use rustls::crypto::ring;
 use semver::Version;
 use serde_json::Map;
@@ -30,182 +29,26 @@ use syneroym_app_orchestration::{
         ServiceId, ServiceSpec, ServiceType, SubstrateAlias, SynAppManifest,
     },
 };
-use syneroym_core::{
-    config::{
-        ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig, LogTarget,
-        ServiceRegistryRole, SubstrateConfig,
-    },
-    dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType},
-};
+use syneroym_core::dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType};
 use syneroym_identity::{Identity, substrate};
 use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
 use syneroym_sdk::{
     BindingWrite, BindingWriteOutcome, DependencyBinding, SyneroymClient, TopologyMode,
     deploy::{self, ApplyRequest, DeployTarget, apply_plan, certify_instance},
 };
-use syneroym_substrate::identity;
-use tempfile::TempDir;
-use tokio::{
-    sync::{Mutex, mpsc, mpsc::Sender},
-    task::JoinHandle,
-};
+
+mod common;
 
 #[path = "common/client_shutdown.rs"]
 mod client_shutdown;
 use client_shutdown::shutdown_clients;
 
-/// Each `#[tokio::test]` in this file runs concurrently, so each of the two
-/// tests needs its own, non-overlapping port block -- the same convention
-/// `multi_substrate_placement_e2e.rs` follows. They also each take
-/// `SUBSTRATE_TEST_LOCK` below for their whole duration: not sharing a port
-/// block avoids collisions, but two full substrate pairs (real iroh QUIC
-/// socket, self-hosted relay, mainline DHT, wasmtime) running at once still
-/// starves the CI runner's CPU badly enough that iroh's QUIC path
-/// validation times out with "no viable network path exists" even though
-/// nothing is actually broken.
-#[derive(Clone, Copy)]
-struct PortBlock {
-    node_a_iroh: u16,
-    node_a_registry: u16,
-    node_a_gateway: u16,
-    node_b_iroh: u16,
-    node_b_registry: u16,
-    node_b_gateway: u16,
-}
-
-const PORTS_MEMBERSHIP_CHANGE_TAKES_EFFECT: PortBlock = PortBlock {
-    node_a_iroh: 10600,
-    node_a_registry: 10601,
-    node_a_gateway: 10602,
-    node_b_iroh: 10700,
-    node_b_registry: 10701,
-    node_b_gateway: 10702,
-};
-const PORTS_STALE_PUSH_DOES_NOT_REGRESS: PortBlock = PortBlock {
-    node_a_iroh: 10800,
-    node_a_registry: 10801,
-    node_a_gateway: 10802,
-    node_b_iroh: 10900,
-    node_b_registry: 10901,
-    node_b_gateway: 10902,
-};
-
-/// See the doc comment on `PortBlock` above (same fix as
-/// `tests/common/mod.rs`'s `SUBSTRATE_TEST_LOCK`).
-static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
-
 const FRONTEND_ALIAS: &str = "edge-a";
 const BACKEND_ALIAS: &str = "edge-b";
 
-/// A full, independently-identified `syneroym-substrate` instance. Copied
-/// from `multi_substrate_placement_e2e.rs`'s own `Node`.
-struct Node {
-    registry_url: String,
-    substrate_client: SyneroymClient,
-    shutdown_tx: Sender<()>,
-    substrate_handle: JoinHandle<()>,
-    _temp_dir: TempDir,
-}
-
-impl Node {
-    /// `owner`'s DID becomes this node's `[iam].admin_ucan_root` (an unowned
-    /// substrate now fails closed).
-    async fn boot_fresh(
-        iroh_port: u16,
-        registry_port: u16,
-        gateway_port: u16,
-        shared_registry_url: Option<String>,
-        shared_relay_url: Option<String>,
-        owner: &Identity,
-    ) -> Self {
-        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-        let base_path = temp_dir.path().to_path_buf();
-
-        let mut config = SubstrateConfig {
-            app_local_data_dir: base_path.join("data"),
-            app_data_dir: base_path.join("user_data"),
-            app_cache_dir: base_path.join("cache"),
-            app_log_dir: base_path.join("logs"),
-            profile: "full".to_string(),
-            ..SubstrateConfig::default()
-        };
-        config.resolve_paths();
-        config.logging.target = LogTarget::Stdout;
-
-        config.roles.coordinator = Some(CoordinatorRole {
-            iroh: Some(CoordinatorIrohConfig {
-                enable_relay: true,
-                http_bind_address: format!("0.0.0.0:{iroh_port}"),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("0.0.0.0:{registry_port}"),
-            ..Default::default()
-        });
-        let own_registry_url = format!("http://localhost:{registry_port}");
-        let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
-        config.substrate.registry_url = Some(effective_registry_url.clone());
-        config.substrate.enable_bep0044_dht = false;
-        let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
-        config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway =
-            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
-        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
-
-        let substrate_identity_state =
-            identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
-                .expect("failed to setup identity");
-        let substrate_service_id = substrate_identity_state.did.clone();
-
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let runtime =
-            syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
-
-        let config_clone = config.clone();
-        let substrate_handle = tokio::spawn(async move {
-            syneroym_substrate::run_with_signal(config_clone, runtime, async {
-                let _ = shutdown_rx.recv().await;
-            })
-            .await
-            .expect("substrate failed to run");
-        });
-
-        let mut substrate_client = SyneroymClient::new_with_identity(
-            substrate_service_id.clone(),
-            effective_registry_url.clone(),
-            Identity::from_bytes(&owner.to_bytes()),
-        )
-        .with_registry_dht(false);
-        substrate_client
-            .wait_for_ready(Duration::from_secs(30))
-            .await
-            .expect("substrate did not become available in time");
-
-        Self {
-            registry_url: effective_registry_url,
-            substrate_client,
-            shutdown_tx,
-            substrate_handle,
-            _temp_dir: temp_dir,
-        }
-    }
-
-    fn did(&self) -> &str {
-        self.substrate_client.service_id()
-    }
-
-    async fn teardown(mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = self.substrate_handle.await;
-    }
-}
-
 /// An app-scoped `orchestrator/{deploy,undeploy,status}` grant, issued by
 /// `node_owner`, letting `grantee_did` deploy/undeploy/list any app on
-/// `node_did`. Copied from `multi_substrate_placement_e2e.rs`.
+/// `node_did`.
 fn app_deploy_grant(node_owner: &Identity, grantee_did: &str, node_did: &str) -> CapabilityToken {
     let resource = ResourceUri(format!("substrate:{node_did}/app/*"));
     CapabilityToken::issue(
@@ -334,77 +177,38 @@ fn mint_and_substitute_masters(
 }
 
 async fn client_for(
-    node: &Node,
+    node: &SubstrateNode,
     operator: &Identity,
     grant: CapabilityToken,
 ) -> Arc<SyneroymClient> {
-    let mut client = SyneroymClient::new_with_identity(
-        node.did().to_string(),
-        node.registry_url.clone(),
-        Identity::from_bytes(&operator.to_bytes()),
-    )
-    .with_registry_dht(false)
-    .with_ucan(grant);
+    let mut client = node.client_as(Identity::from_bytes(&operator.to_bytes())).with_ucan(grant);
     client.connect().await.expect("failed to connect client");
     Arc::new(client)
 }
 
-/// Boots both nodes (B sharing A's registry/relay), grants `operator` an
-/// app-scoped deploy grant on each, and injects a KEK on each. Copied from
-/// `multi_substrate_placement_e2e.rs`'s own `boot_pair`.
+/// Boots both nodes (B sharing A's registry and relay), injects a KEK on
+/// each during its own boot (native-capability endpoints need one), and
+/// grants `operator` an app-scoped deploy grant on each.
+///
+/// `owner` and `operator` must be **distinct** identities: `owner` becomes
+/// each node's `admin_ucan_root`, so if `operator` were the same identity
+/// its app-scoped grant would be moot.
 async fn boot_pair(
     owner: &Identity,
     operator: &Identity,
-    ports: PortBlock,
-) -> (Node, Node, BTreeMap<SubstrateAlias, Arc<SyneroymClient>>) {
+) -> (SubstrateNode, SubstrateNode, BTreeMap<SubstrateAlias, Arc<SyneroymClient>>) {
     let _ = ring::default_provider().install_default();
 
-    let mut node_a = Node::boot_fresh(
-        ports.node_a_iroh,
-        ports.node_a_registry,
-        ports.node_a_gateway,
-        None,
-        None,
-        owner,
-    )
-    .await;
-    let node_a_registry_url = node_a.registry_url.clone();
-    let node_a_relay_url = format!("http://localhost:{}", ports.node_a_iroh);
-    let node_b = Node::boot_fresh(
-        ports.node_b_iroh,
-        ports.node_b_registry,
-        ports.node_b_gateway,
-        Some(node_a_registry_url.clone()),
-        Some(node_a_relay_url),
-        owner,
-    )
-    .await;
-
-    // `node_a`'s connection was dialed and proven live by its own
-    // `wait_for_ready` during `Node::boot_fresh`, then sat idle for the
-    // entire `node_b` boot that followed (a second full substrate start)
-    // -- long enough under CI's scheduling pressure for the peer to
-    // abandon that idle path ("no viable network path exists: last path
-    // abandoned by peer"; same root cause fixed in
-    // `app_instance_identity_e2e.rs` and `supervisor_alerts_e2e.rs`).
-    // `SyneroymClient::connect` no-ops on an already-`Some` connection, so
-    // recovering means an explicit `shutdown`-then-`connect` (redial)
-    // before one retry, not just retrying the same request on the same
-    // dead connection.
-    if node_a.substrate_client.inject_kek("aa".repeat(32)).await.is_err() {
-        node_a
-            .substrate_client
-            .shutdown()
-            .await
-            .expect("failed to reset node A's stale connection");
-        node_a.substrate_client.connect().await.expect("failed to reconnect node A");
-        node_a
-            .substrate_client
-            .inject_kek("aa".repeat(32))
-            .await
-            .expect("node A inject_kek failed");
-    }
-    node_b.substrate_client.inject_kek("bb".repeat(32)).await.expect("node B inject_kek failed");
+    // Each node injects its own KEK during its own boot, before the sibling's
+    // boot can leave its connection idle -- so no post-boot redial is needed.
+    let node_a = SubstrateNode::builder().owner(owner).inject_kek_bytes([0xaa; 32]).boot().await;
+    let node_b = SubstrateNode::builder()
+        .owner(owner)
+        .shared_registry(node_a.registry_url())
+        .shared_relay(node_a.relay_url())
+        .inject_kek_bytes([0xbb; 32])
+        .boot()
+        .await;
 
     let operator_did = substrate::derive_did_key(&operator.public_key());
     let client_a =
@@ -529,11 +333,10 @@ async fn deploy_two_service_app(
 /// never a second deploy.
 #[tokio::test]
 async fn a_membership_change_pushed_to_a_dependent_takes_effect_without_a_redeploy() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
-    let (node_a, node_b, clients) =
-        boot_pair(&owner, &operator, PORTS_MEMBERSHIP_CHANGE_TAKES_EFFECT).await;
+    let (node_a, node_b, clients) = boot_pair(&owner, &operator).await;
 
     let plan = deploy_two_service_app(&clients).await;
     let client_a = &clients[&SubstrateAlias::new(FRONTEND_ALIAS)];
@@ -584,11 +387,10 @@ async fn a_membership_change_pushed_to_a_dependent_takes_effect_without_a_redepl
 /// substrate rather than the pure `classify_binding_write` unit test.
 #[tokio::test]
 async fn a_stale_epoch_push_does_not_regress_the_mapping() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
-    let (node_a, node_b, clients) =
-        boot_pair(&owner, &operator, PORTS_STALE_PUSH_DOES_NOT_REGRESS).await;
+    let (node_a, node_b, clients) = boot_pair(&owner, &operator).await;
 
     let plan = deploy_two_service_app(&clients).await;
     let client_a = &clients[&SubstrateAlias::new(FRONTEND_ALIAS)];
