@@ -5,19 +5,16 @@
 
 use std::{
     fs,
-    path::PathBuf,
     time::{Duration, Instant},
 };
 
+use common::SubstrateNode;
 use ed25519_dalek::VerifyingKey;
 use reqwest::Client;
 use rustls::crypto::ring;
 use serde_json::{Value, json};
 use syneroym_core::{
-    config::{
-        AppSandboxRole, ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole,
-        IrohParentConfig, LogTarget, ServiceRegistryRole, SubstrateConfig,
-    },
+    config::AppSandboxRole,
     dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
     test_constants,
 };
@@ -25,24 +22,14 @@ use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
 };
 use syneroym_sdk::SyneroymClient;
-use syneroym_substrate::identity;
-use tokio::{
-    sync::{Mutex, mpsc, mpsc::Sender},
-    task::JoinHandle,
-    time,
-};
+use tokio::time;
+
+mod common;
 
 #[path = "common/retry.rs"]
 mod retry;
 
-/// Port block 14_200-14_402
-const PORTS_A: (u16, u16, u16) = (14_200, 14_201, 14_202);
-const PORTS_B: (u16, u16, u16) = (14_300, 14_301, 14_302);
-const PORTS_C: (u16, u16, u16) = (14_400, 14_401, 14_402);
-
 const FIXTURE_INTERFACE: &str = "syneroym-test:dual-build-fixture/test-driver@0.1.0";
-
-static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 fn fast_conversation_role() -> AppSandboxRole {
     AppSandboxRole {
@@ -50,107 +37,6 @@ fn fast_conversation_role() -> AppSandboxRole {
         conversation_group_sync_secs: 1,
         conversation_group_rekey_secs: 10,
         ..AppSandboxRole::default()
-    }
-}
-
-struct Node {
-    substrate_client: SyneroymClient,
-    registry_url: String,
-    shutdown_tx: Sender<()>,
-    substrate_handle: JoinHandle<()>,
-}
-
-impl Node {
-    #[allow(clippy::too_many_arguments)]
-    async fn boot(
-        base_path: PathBuf,
-        iroh_port: u16,
-        registry_port: u16,
-        gateway_port: u16,
-        shared_registry_url: Option<String>,
-        shared_relay_url: Option<String>,
-        owner: &Identity,
-        app_sandbox: Option<AppSandboxRole>,
-    ) -> Self {
-        let mut config = SubstrateConfig {
-            app_local_data_dir: base_path.join("data"),
-            app_data_dir: base_path.join("user_data"),
-            app_cache_dir: base_path.join("cache"),
-            app_log_dir: base_path.join("logs"),
-            profile: "full".to_string(),
-            ..SubstrateConfig::default()
-        };
-        config.resolve_paths();
-        config.logging.target = LogTarget::Stdout;
-        config.roles.coordinator = Some(CoordinatorRole {
-            iroh: Some(CoordinatorIrohConfig {
-                enable_relay: true,
-                http_bind_address: format!("0.0.0.0:{iroh_port}"),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("0.0.0.0:{registry_port}"),
-            ..Default::default()
-        });
-        let own_registry_url = format!("http://localhost:{registry_port}");
-        let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
-        config.substrate.registry_url = Some(effective_registry_url.clone());
-        config.substrate.enable_bep0044_dht = false;
-        let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
-        config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway =
-            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
-        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
-        if let Some(role) = app_sandbox {
-            config.roles.app_sandbox = Some(role);
-        }
-
-        let state = identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
-            .expect("failed to setup identity");
-        let substrate_service_id = state.did.clone();
-
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let runtime =
-            syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
-        let config_clone = config.clone();
-        let substrate_handle = tokio::spawn(async move {
-            syneroym_substrate::run_with_signal(config_clone, runtime, async {
-                let _ = shutdown_rx.recv().await;
-            })
-            .await
-            .expect("substrate failed to run");
-        });
-
-        let mut substrate_client = SyneroymClient::new_with_identity(
-            substrate_service_id,
-            effective_registry_url.clone(),
-            Identity::from_bytes(&owner.to_bytes()),
-        )
-        .with_registry_dht(false);
-        substrate_client
-            .wait_for_ready(Duration::from_secs(30))
-            .await
-            .expect("substrate did not become available in time");
-        substrate_client.inject_kek(hex::encode([0xcdu8; 32])).await.expect("inject_kek failed");
-
-        Self {
-            substrate_client,
-            registry_url: effective_registry_url,
-            shutdown_tx,
-            substrate_handle,
-        }
-    }
-
-    fn did(&self) -> &str {
-        self.substrate_client.service_id()
-    }
-
-    async fn teardown(mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = self.substrate_handle.await;
     }
 }
 
@@ -189,7 +75,7 @@ async fn publish_endpoint(
     assert!(readback, "the registry never served back the record for {service_id}");
 }
 
-async fn deploy_fixture(node: &mut Node, master: &Identity, wasm: Vec<u8>) -> String {
+async fn deploy_fixture(node: &mut SubstrateNode, master: &Identity, wasm: Vec<u8>) -> String {
     let service_id = substrate::derive_did_key(&master.public_key());
     let identity = crate::call_with_reconnect!(
         node.substrate_client,
@@ -219,11 +105,11 @@ async fn deploy_fixture(node: &mut Node, master: &Identity, wasm: Vec<u8>) -> St
         .await
         .expect("fixture deploy failed");
 
-    publish_master_anchor(&service_id, master, &node.registry_url).await;
+    publish_master_anchor(&service_id, master, node.registry_url()).await;
 
     let mechanisms =
         node.substrate_client.lookup().await.expect("node lookup failed").info.mechanisms;
-    publish_endpoint(&service_id, node.did(), mechanisms, master, &node.registry_url).await;
+    publish_endpoint(&service_id, node.did(), mechanisms, master, node.registry_url()).await;
     service_id
 }
 
@@ -234,10 +120,10 @@ async fn publish_master_anchor(service_id: &str, master: &Identity, registry_url
         .expect("failed to publish the master anchor");
 }
 
-async fn fixture_run(node: &Node, service_id: &str, request: &Value) -> Value {
+async fn fixture_run(node: &SubstrateNode, service_id: &str, request: &Value) -> Value {
     let mut client = SyneroymClient::new_with_identity(
         service_id.to_string(),
-        node.registry_url.clone(),
+        node.registry_url().to_string(),
         Identity::generate().unwrap(),
     )
     .with_registry_dht(false);
@@ -273,52 +159,38 @@ fn fixture_wasm() -> Option<Vec<u8>> {
 
 #[tokio::test]
 async fn three_members_converge_to_byte_identical_transcripts() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
     let wasm = fixture_wasm().expect("dual-build-fixture wasm artifact not built");
 
-    let a_dir = tempfile::tempdir().unwrap();
-    let b_dir = tempfile::tempdir().unwrap();
-    let c_dir = tempfile::tempdir().unwrap();
     let owner = Identity::generate().unwrap();
 
-    let mut node_a = Node::boot(
-        a_dir.path().to_path_buf(),
-        PORTS_A.0,
-        PORTS_A.1,
-        PORTS_A.2,
-        None,
-        None,
-        &owner,
-        Some(fast_conversation_role()),
-    )
-    .await;
-    let shared_registry = node_a.registry_url.clone();
-    let shared_relay = format!("http://localhost:{}", PORTS_A.0);
+    let mut node_a = SubstrateNode::builder()
+        .owner(&owner)
+        .inject_kek_bytes([0xcd; 32])
+        .configure(|c| c.roles.app_sandbox = Some(fast_conversation_role()))
+        .boot()
+        .await;
+    let shared_registry = node_a.registry_url().to_string();
+    let shared_relay = node_a.relay_url().to_string();
 
-    let mut node_b = Node::boot(
-        b_dir.path().to_path_buf(),
-        PORTS_B.0,
-        PORTS_B.1,
-        PORTS_B.2,
-        Some(shared_registry.clone()),
-        Some(shared_relay.clone()),
-        &owner,
-        Some(fast_conversation_role()),
-    )
-    .await;
+    let mut node_b = SubstrateNode::builder()
+        .owner(&owner)
+        .shared_registry(&shared_registry)
+        .shared_relay(&shared_relay)
+        .inject_kek_bytes([0xcd; 32])
+        .configure(|c| c.roles.app_sandbox = Some(fast_conversation_role()))
+        .boot()
+        .await;
 
-    let mut node_c = Node::boot(
-        c_dir.path().to_path_buf(),
-        PORTS_C.0,
-        PORTS_C.1,
-        PORTS_C.2,
-        Some(shared_registry.clone()),
-        Some(shared_relay.clone()),
-        &owner,
-        Some(fast_conversation_role()),
-    )
-    .await;
+    let mut node_c = SubstrateNode::builder()
+        .owner(&owner)
+        .shared_registry(&shared_registry)
+        .shared_relay(&shared_relay)
+        .inject_kek_bytes([0xcd; 32])
+        .configure(|c| c.roles.app_sandbox = Some(fast_conversation_role()))
+        .boot()
+        .await;
 
     let master_a = Identity::generate().unwrap();
     let master_b = Identity::generate().unwrap();
