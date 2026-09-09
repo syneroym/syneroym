@@ -1,34 +1,34 @@
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Slice B3 Phase 5: reference-scenario step 23 ("A ReBAC check requiring a
-//! remote relationship proof triggers a cross-service fetch via the
-//! Universal Proxy mid-query") proven across two genuinely independent
-//! `syneroym-substrate` instances -- distinct identities, distinct Iroh
-//! listen ports, distinct on-disk storage -- rather than the in-process
-//! `ProxyRouter` Phase 4's own tests already cover
-//! (`crates/router/tests/native_dispatch_identity.rs`, where the "remote"
-//! service is an in-process `NativeHostChannel` in the same test binary).
+//! A ReBAC check requiring a remote relationship proof triggers a cross-service
+//! fetch via the Universal Proxy mid-query, proven across two genuinely
+//! independent `syneroym-substrate` instances -- distinct identities, distinct
+//! Iroh listen ports, distinct on-disk storage -- rather than the in-process
+//! `ProxyRouter` tests (`crates/router/tests/native_dispatch_identity.rs`,
+//! where the "remote" service is an in-process `NativeHostChannel` in the same
+//! test binary).
 //!
-//! Node A hosts the data-owning `employee` relation (`resolvable_without_
-//! capability`, the A2 receiving-side mode -- no cross-node capability
-//! delegation needed). Node B hosts a `documents` collection whose FDAE
-//! policy names Node A's service as a remote relation, trusting Node A's
-//! real per-service `expected_asserter_did` (D-B3-8), computed the same way
-//! a real policy author would: independently, from `(owner_did,
-//! service_id)`, never read back off a proof. Querying Node B for real, over
-//! a real Iroh QUIC connection, drives `plan_read` -> `resolve_fetches` (a
-//! second real Iroh QUIC hop, Node B -> Node A) -> `finalize`, and only
-//! alice's own document comes back.
+//! Node A hosts the data-owning `employee` relation
+//! (`resolvable_without_capability`, the receiving-side mode -- no cross-node
+//! capability delegation needed). Node B hosts a `documents` collection whose
+//! FDAE policy names Node A's service as a remote relation, trusting Node A's
+//! real per-service `expected_asserter_did`, computed the same way a real
+//! policy author would: independently, from `(owner_did, service_id)`, never
+//! read back off a proof. Querying Node B for real, over a real Iroh QUIC
+//! connection, drives `plan_read` -> `resolve_fetches` (a second real Iroh QUIC
+//! hop, Node B -> Node A) -> `finalize`, and only alice's own document comes
+//! back.
+//!
+//! Both nodes come from `common::SubstrateNode`, Node B sharing Node A's
+//! registry and relay.
 
 use std::time::{Duration, Instant};
 
+use common::SubstrateNode;
 use reqwest::Client as HttpClient;
 use rustls::crypto::ring;
 use serde_json::{Map, json};
 use syneroym_core::{
-    config::{
-        ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig, LogTarget,
-        ServiceRegistryRole, SubstrateConfig,
-    },
+    config::IdentityConfig,
     dht_registry::{EndpointInfo, EndpointMechanism, EndpointType},
 };
 use syneroym_identity::{Identity, substrate};
@@ -36,22 +36,8 @@ use syneroym_rpc::{Ability, Capability, CapabilityToken, JsonRpcError, ResourceU
 use syneroym_sdk::{DeployManifest, ServiceConfig, ServiceType, SyneroymClient, TcpManifest};
 use syneroym_substrate::identity;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::DocumentSource;
-use tempfile::TempDir;
-use tokio::{
-    sync::{mpsc, mpsc::Sender},
-    task::JoinHandle,
-};
 
-// `coordinator_iroh`'s "/v1/info" server always binds `http_bind_address`'s
-// port + 10 (`spawn_http_info_server`), so Node B's own `http_bind_address`
-// must stay well clear of Node A's `+10` (and vice versa) -- hence the
-// hundred-port gap rather than adjacent blocks.
-const NODE_A_IROH_PORT: u16 = 8000;
-const NODE_A_REGISTRY_PORT: u16 = 8001;
-const NODE_A_GATEWAY_PORT: u16 = 8002;
-const NODE_B_IROH_PORT: u16 = 8100;
-const NODE_B_REGISTRY_PORT: u16 = 8101;
-const NODE_B_GATEWAY_PORT: u16 = 8102;
+mod common;
 
 const FETCH_LATENCY_ITERATIONS: usize = 5;
 // The < 50 ms p99 budget in task.md's Performance Budgets table names the
@@ -69,168 +55,16 @@ const FETCH_LATENCY_ITERATIONS: usize = 5;
 // regression backstop, not the task.md budget itself.
 const FETCH_LATENCY_SANITY_CEILING: Duration = Duration::from_secs(30);
 
-/// A full, independently-identified `syneroym-substrate` instance. Mirrors
-/// every other `crates/substrate/tests/*.rs` file's own `SubstrateTestContext`
-/// (each keeps its own near-verbatim copy -- see `tests/common/mod.rs`'s doc
-/// comment), with one addition: `shared_registry_url` lets a second node
-/// point itself at the *first* node's registry instead of its own, so a
-/// cross-node community-registry lookup (`ProxyRouter::invoke_remote`) has
-/// something real to resolve against. The node still starts its own
-/// `community_registry` role either way (unused when sharing) -- the
-/// smallest possible delta from the proven self-referential single-node
-/// shape every sibling test file already relies on.
-struct Node {
-    config: SubstrateConfig,
-    substrate_client: SyneroymClient,
-    registry_url: String,
-    substrate_mechanisms: Vec<EndpointMechanism>,
-    shutdown_tx: Sender<()>,
-    substrate_handle: JoinHandle<()>,
-    _temp_dir: TempDir,
-}
-
-impl Node {
-    /// `owner` becomes this node's `[iam].admin_ucan_root` and the identity
-    /// its own `substrate_client` presents (an unowned
-    /// substrate now fails closed, so `inject_kek` -- a `security` call --
-    /// needs an owning identity behind it too, not just a config value).
-    /// `None` used to mean "unowned"; that posture is no longer usable for
-    /// anything this fixture drives, so every caller now passes `Some`.
-    async fn boot(
-        iroh_port: u16,
-        registry_port: u16,
-        gateway_port: u16,
-        shared_registry_url: Option<String>,
-        owner: Option<Identity>,
-        shared_relay_url: Option<String>,
-    ) -> Self {
-        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-        let base_path = temp_dir.path();
-        let mut config = SubstrateConfig {
-            app_local_data_dir: base_path.join("data"),
-            app_data_dir: base_path.join("user_data"),
-            app_cache_dir: base_path.join("cache"),
-            app_log_dir: base_path.join("logs"),
-            profile: "full".to_string(),
-            ..SubstrateConfig::default()
-        };
-        config.resolve_paths();
-        config.logging.target = LogTarget::Stdout;
-
-        config.roles.coordinator = Some(CoordinatorRole {
-            iroh: Some(CoordinatorIrohConfig {
-                enable_relay: true,
-                http_bind_address: format!("0.0.0.0:{iroh_port}"),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("0.0.0.0:{registry_port}"),
-            ..Default::default()
-        });
-        let own_registry_url = format!("http://localhost:{registry_port}");
-        let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
-        config.substrate.registry_url = Some(effective_registry_url.clone());
-        config.substrate.enable_bep0044_dht = false;
-        // Sharing one node's relay (rather than each node self-relaying
-        // through its own, distinct home relay) avoids cross-relay direct-
-        // path/hole-punch negotiation between two localhost peers that
-        // otherwise adds seconds of connection-establishment latency to
-        // every fresh `IrohHop` dial -- purely an artifact of two
-        // independently-relayed loopback endpoints, not a real network
-        // condition the 50 ms federated-hop budget is meant to capture.
-        let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
-        config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway =
-            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
-        // An owned node so an unrelated caller (e.g. Node A's own forwarded
-        // `resolve-relation` invocation, proxying for a Node B principal who
-        // never delegated anything on Node A) does not fall back to a
-        // free, bare `substrate:<node_did>`-scoped `orchestrator/*`
-        // capability -- `resolve_relation`'s A1/A2 fork (B3-07) treats *any*
-        // substrate-scoped capability as "holds a capability scoped to this
-        // resource," regardless of its ability, which would force A1 and
-        // defeat `resolvable_without_capability`'s A2 path entirely. Now
-        // this reasoning applies unconditionally -- an
-        // unowned substrate no longer issues that free grant at all, but it
-        // also grants nothing else, so every caller here still needs a
-        // real owner (or, for a non-owner deployer, an app-scoped grant
-        // from one; see the `app_deploy_grant` call sites below).
-        let owner_did = owner.as_ref().map(|id| substrate::derive_did_key(&id.public_key()));
-        config.iam.admin_ucan_root = owner_did;
-
-        let substrate_identity_state =
-            identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
-                .expect("failed to setup identity");
-        let substrate_service_id = substrate_identity_state.did.clone();
-
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let runtime =
-            syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
-
-        let config_clone = config.clone();
-        let substrate_handle = tokio::spawn(async move {
-            syneroym_substrate::run_with_signal(config_clone, runtime, async {
-                let _ = shutdown_rx.recv().await;
-            })
-            .await
-            .expect("substrate failed to run");
-        });
-
-        let mut substrate_client = match owner {
-            Some(id) => SyneroymClient::new_with_identity(
-                substrate_service_id.clone(),
-                effective_registry_url.clone(),
-                id,
-            )
-            .with_registry_dht(false),
-            None => {
-                SyneroymClient::new(substrate_service_id.clone(), effective_registry_url.clone())
-                    .with_registry_dht(false)
-            }
-        };
-        substrate_client
-            .wait_for_ready(Duration::from_secs(30))
-            .await
-            .expect("substrate did not become available in time");
-
-        let substrate_info =
-            substrate_client.lookup().await.expect("failed to lookup substrate info from registry");
-        let substrate_mechanisms = substrate_info.info.mechanisms;
-
-        Self {
-            config,
-            substrate_client,
-            registry_url: effective_registry_url,
-            substrate_mechanisms,
-            shutdown_tx,
-            substrate_handle,
-            _temp_dir: temp_dir,
-        }
-    }
-
-    fn did(&self) -> &str {
-        self.substrate_client.service_id()
-    }
-
-    /// Reads this node's own raw node identity back off disk -- "node-
-    /// private" by design (`crates/identity/src/keys.rs`'s
-    /// `derive_service_identity` doc comment), but this test constructed
-    /// the node itself, so reading its own key file is legitimate (the same
-    /// access a real node operator would have), not a bypass of the
-    /// property that no *other* party can compute it.
-    fn node_identity(&self) -> Identity {
-        let secret = identity::get_secret(&self.config.identity, &self.config.app_data_dir)
-            .expect("failed to read node identity secret");
-        Identity::from_bytes(&secret)
-    }
-
-    async fn teardown(mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = self.substrate_handle.await;
-    }
+/// Reads a node's own raw node identity back off disk -- "node-private" by
+/// design (`crates/identity/src/keys.rs`'s `derive_service_identity` doc
+/// comment), but this test constructed the node itself, so reading its own
+/// key file is legitimate (the same access a real node operator would
+/// have), not a bypass of the property that no *other* party can compute
+/// it.
+fn node_identity(node: &SubstrateNode) -> Identity {
+    let secret = identity::get_secret(&IdentityConfig::default(), node.app_data_dir())
+        .expect("failed to read node identity secret");
+    Identity::from_bytes(&secret)
 }
 
 /// A bare TCP service (no endpoints, no HTTP routes -- this test only cares
@@ -338,6 +172,7 @@ async fn register_service(
 
 #[tokio::test]
 async fn federated_fdae_fetch_across_two_real_substrates() {
+    let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
 
     let alice_identity = Identity::generate().unwrap();
@@ -349,19 +184,18 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     // (including alice's forwarded `resolve-relation` identity, who never
     // delegated anything on Node A) would fall back to a free, bare
     // `substrate:<node_did>`-scoped `orchestrator/*` capability, which
-    // `resolve_relation`'s A1/A2 fork (B3-07) treats as "holds a capability
-    // scoped to this resource" regardless of ability -- forcing A1 and
-    // defeating `resolvable_without_capability`'s A2 path for every caller.
-    let mut node_a = Node::boot(
-        NODE_A_IROH_PORT,
-        NODE_A_REGISTRY_PORT,
-        NODE_A_GATEWAY_PORT,
-        None,
-        Some(Identity::from_bytes(&hr_owner_identity.to_bytes())),
-        None,
-    )
-    .await;
-    let node_a_relay_url = format!("http://localhost:{NODE_A_IROH_PORT}");
+    // `resolve_relation`'s A1/A2 fork treats as "holds a capability scoped to
+    // this resource" regardless of ability -- forcing A1 and defeating
+    // `resolvable_without_capability`'s A2 path for every caller.
+    //
+    // Each node injects its own KEK during its own boot (default
+    // `storage.encryption = true` needs one before any service database can
+    // be opened), before the sibling's boot can leave its connection idle.
+    let node_a = SubstrateNode::builder()
+        .owner(&hr_owner_identity)
+        .inject_kek_bytes([0x11; 32])
+        .boot()
+        .await;
 
     // Node B gets its own, *distinct* owner -- deliberately not
     // `hr_owner_did` and not alice: giving Node B an
@@ -374,40 +208,18 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     // file exists to prove is that alice holds no broader capability at
     // all without one.
     let node_b_owner = Identity::generate().unwrap();
-    let node_b = Node::boot(
-        NODE_B_IROH_PORT,
-        NODE_B_REGISTRY_PORT,
-        NODE_B_GATEWAY_PORT,
-        Some(node_a.registry_url.clone()),
-        Some(Identity::from_bytes(&node_b_owner.to_bytes())),
-        Some(node_a_relay_url),
-    )
-    .await;
+    let node_b = SubstrateNode::builder()
+        .owner(&node_b_owner)
+        .shared_registry(node_a.registry_url())
+        .shared_relay(node_a.relay_url())
+        .inject_kek_bytes([0x22; 32])
+        .boot()
+        .await;
 
-    // Default `storage.encryption = true` requires a KEK before any
-    // service's database can be opened (`crates/substrate/tests/
-    // http_passthrough_e2e.rs`'s own precedent for this exact step).
-    // `node_a`'s connection was dialed and proven live by its own
-    // `wait_for_ready` during `Node::boot`, then sat idle for the entire
-    // `node_b` boot that followed -- long enough under CI's scheduling
-    // pressure for the peer to abandon that idle path ("no viable network
-    // path exists: last path abandoned by peer"; same root cause fixed in
-    // `binding_push_e2e.rs`). Recover by explicit shutdown→reconnect before
-    // one retry.
-    if node_a.substrate_client.inject_kek("11".repeat(32)).await.is_err() {
-        node_a
-            .substrate_client
-            .shutdown()
-            .await
-            .expect("failed to reset node A's stale connection");
-        node_a.substrate_client.connect().await.expect("failed to reconnect node A");
-        node_a
-            .substrate_client
-            .inject_kek("11".repeat(32))
-            .await
-            .expect("node A inject_kek failed");
-    }
-    node_b.substrate_client.inject_kek("22".repeat(32)).await.expect("node B inject_kek failed");
+    let node_a_mechanisms =
+        node_a.substrate_client.lookup().await.expect("node A lookup failed").info.mechanisms;
+    let node_b_mechanisms =
+        node_b.substrate_client.lookup().await.expect("node B lookup failed").info.mechanisms;
 
     // --- Node A: the data-owning "hr" service. A2 (`resolvable_without_
     // capability`) means the resolving fetch needs no capability delegated
@@ -417,7 +229,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
 
     let mut hr_deployer = SyneroymClient::new_with_identity(
         node_a.did().to_string(),
-        node_a.registry_url.clone(),
+        node_a.registry_url().to_string(),
         Identity::from_bytes(&hr_owner_identity.to_bytes()),
     )
     .with_registry_dht(false);
@@ -454,9 +266,9 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     register_service(
         &hr_service_id,
         node_a.did(),
-        node_a.substrate_mechanisms.clone(),
+        node_a_mechanisms.clone(),
         &hr_service_identity,
-        &node_a.registry_url,
+        node_a.registry_url(),
     )
     .await;
 
@@ -469,7 +281,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     // ourself is not supported").
     let mut hr_data_client = SyneroymClient::new_with_identity(
         hr_service_id.clone(),
-        node_a.registry_url.clone(),
+        node_a.registry_url().to_string(),
         Identity::from_bytes(&hr_owner_identity.to_bytes()),
     )
     .with_registry_dht(false);
@@ -495,7 +307,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
 
     // The DID a policy author would independently compute and declare as
     // `expected_asserter_did` -- never read back off a proof (D-B3-8).
-    let node_a_identity = node_a.node_identity();
+    let node_a_identity = node_identity(&node_a);
     let expected_asserter_did = substrate::derive_did_key(
         &node_a_identity.derive_service_identity(&hr_owner_did, &hr_service_id).public_key(),
     );
@@ -512,7 +324,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
 
     let mut alice_deployer = SyneroymClient::new_with_identity(
         node_b.did().to_string(),
-        node_b.registry_url.clone(),
+        node_b.registry_url().to_string(),
         Identity::from_bytes(&alice_identity.to_bytes()),
     )
     .with_registry_dht(false)
@@ -541,9 +353,9 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     register_service(
         &app_service_id,
         node_b.did(),
-        node_b.substrate_mechanisms.clone(),
+        node_b_mechanisms.clone(),
         &app_service_identity,
-        &node_b.registry_url,
+        node_b.registry_url(),
     )
     .await;
 
@@ -578,7 +390,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     .expect("failed to self-issue the seeding capability token");
     let mut alice_data_client = SyneroymClient::new_with_identity(
         app_service_id.clone(),
-        node_b.registry_url.clone(),
+        node_b.registry_url().to_string(),
         Identity::from_bytes(&alice_identity.to_bytes()),
     )
     .with_registry_dht(false)
@@ -626,7 +438,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
 
     let mut alice_query_client = SyneroymClient::new_with_identity(
         app_service_id.clone(),
-        node_b.registry_url.clone(),
+        node_b.registry_url().to_string(),
         alice_identity,
     )
     .with_registry_dht(false)
@@ -752,7 +564,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     // that root.
     let mut bad_app_deployer = SyneroymClient::new_with_identity(
         node_b.did().to_string(),
-        node_b.registry_url.clone(),
+        node_b.registry_url().to_string(),
         Identity::from_bytes(&alice_identity_2.to_bytes()),
     )
     .with_registry_dht(false)
@@ -767,9 +579,9 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     register_service(
         &bad_app_service_id,
         node_b.did(),
-        node_b.substrate_mechanisms.clone(),
+        node_b_mechanisms.clone(),
         &bad_app_service_identity,
-        &node_b.registry_url,
+        node_b.registry_url(),
     )
     .await;
 
@@ -796,7 +608,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     .expect("failed to self-issue the mismatch seeding capability token");
     let mut bad_app_data_client = SyneroymClient::new_with_identity(
         bad_app_service_id.clone(),
-        node_b.registry_url.clone(),
+        node_b.registry_url().to_string(),
         Identity::from_bytes(&alice_identity_2.to_bytes()),
     )
     .with_registry_dht(false)
@@ -843,7 +655,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     .expect("failed to self-issue the mismatch capability token");
     let mut bad_query_client = SyneroymClient::new_with_identity(
         bad_app_service_id,
-        node_b.registry_url.clone(),
+        node_b.registry_url().to_string(),
         alice_identity_2,
     )
     .with_registry_dht(false)
