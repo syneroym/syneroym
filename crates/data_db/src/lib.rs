@@ -16,24 +16,6 @@ pub use syneroym_wit_interfaces::host::syneroym::data_layer::store as host_store
 pub use syneroym_wit_interfaces::vault::syneroym::vault::vault as wit_vault;
 pub use traits::{ServiceStore, StorageProvider};
 
-/// Unused. The data layer is implemented by `SqliteStorageProvider` and the
-/// `traits`/`host_store` types re-exported above; this empty struct predates
-/// them and is referenced only by its own test.
-#[derive(Debug, Clone)]
-pub struct DataLayerService {}
-
-impl DataLayerService {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl Default for DataLayerService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests_crud;
 #[cfg(test)]
@@ -43,13 +25,6 @@ mod tests_fdae;
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_data_layer_service_instantiation() {
-        let service = DataLayerService::new();
-        let _default = DataLayerService::default();
-        assert!(format!("{service:?}").contains("DataLayerService"));
-    }
 
     #[test]
     fn test_serde_derives_on_host_store_types() {
