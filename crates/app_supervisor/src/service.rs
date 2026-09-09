@@ -5644,9 +5644,8 @@ mod tests {
     #[derive(Default)]
     struct Fixture {
         /// Encryption on with no KEK injected, so the vault genuinely
-        /// refuses reads. §0.31's whole point is that a
-        /// disabled-encryption fixture proves nothing about the locked
-        /// case.
+        /// refuses reads. A disabled-encryption fixture proves nothing
+        /// about the locked case.
         locked_vault: bool,
         /// Injects a KEK even when `locked_vault` turned encryption on --
         /// an encrypted vault that is currently *open*. Only the vault-race
@@ -5670,21 +5669,18 @@ mod tests {
         master_anchor_refresh_interval_secs: Option<u64>,
         /// `None` leaves the default -- a private `dir.path().join(
         /// "backups")` on the `TempDir` the built service now keeps alive
-        /// on its own `_fixture_tempdir` field, for its own lifetime
-        /// (M05A A7 review finding 4 -- an earlier version of this
-        /// comment described a `TempDir` the builder dropped before
-        /// returning, which was true before that fix). M05A A7's handover
-        /// test needs two fixture-built services to share one backup
-        /// directory (a stand-in for two supervisors handed the same
-        /// operator-carried file), which the default cannot do -- so the
-        /// test owns and passes one in, held for the whole test (§0.5).
+        /// on its own `_fixture_tempdir` field, for its own lifetime. The
+        /// handover test needs two fixture-built services to share one
+        /// backup directory (a stand-in for two supervisors handed the
+        /// same operator-carried file), which the default cannot do -- so
+        /// the test owns and passes one in, held for the whole test.
         backup_dir: Option<PathBuf>,
         /// `None` leaves the default (5s). Tests driving the queue worker
-        /// against a fake clock set this explicitly (M05B B1).
+        /// against a fake clock set this explicitly.
         queue_tick_secs: Option<u64>,
         /// `None` leaves the default (30s). Tests proving recovery happens
         /// within one worker tick rather than one poll interval set this
-        /// explicitly, far above the tick (M05B B1).
+        /// explicitly, far above the tick.
         poll_interval_secs: Option<u64>,
         /// `None` leaves the default (3600s). Tests proving a document
         /// re-signs once less than half its validity remains set this low.
@@ -5700,9 +5696,8 @@ mod tests {
 
         /// Hands back the `KeyStore` alongside the service, so a test can
         /// change the vault's locked state *after* construction -- the only
-        /// way to reach the race D-A5d-17 carves out, where
-        /// `kek_is_loaded()` answers "unlocked" and the vault read that
-        /// follows still fails.
+        /// way to reach the race where `kek_is_loaded()` answers
+        /// "unlocked" and the vault read that follows still fails.
         fn build_with_key_store(
             self,
         ) -> (SupervisorService, Arc<syneroym_data_keystore::KeyStore>) {
@@ -5710,7 +5705,7 @@ mod tests {
             // (`_fixture_tempdir`), not left to drop here: a dropped
             // `TempDir` deletes the directory tree from disk the instant
             // this function returns, while `SqliteStorageProvider` already
-            // holds an open connection into it (M05A A7, found while
+            // holds an open connection into it (found while
             // adding the first fixture-built test that performs a real
             // *encrypted* write -- every earlier fixture's writes went
             // through `open_service_db`'s own on-demand directory
@@ -5724,11 +5719,11 @@ mod tests {
             // directory that no longer exists. An earlier fix instead
             // called `.keep()` on the `TempDir`, which stopped it from
             // dropping *ever* -- fixing the encrypted path at the cost of
-            // leaking every fixture-built test's directory permanently
-            // (M05A A7 review finding 4). Tying its lifetime to the
-            // service's own restores ordinary cleanup on every ordinary
-            // test's `Drop`, ~150 of them, while keeping the fix for the
-            // handful that mint under encryption.
+            // leaking every fixture-built test's directory permanently.
+            // Tying its lifetime to the service's own restores ordinary
+            // cleanup on every ordinary test's `Drop`, ~150 of them,
+            // while keeping the fix for the handful that mint under
+            // encryption.
             let dir = tempfile::tempdir().unwrap();
             let store = SupervisorStore::open_in_memory().unwrap();
             let storage_provider: Arc<dyn syneroym_data_db::traits::StorageProvider> = Arc::new(
@@ -5852,8 +5847,8 @@ mod tests {
             ("import-master", serde_json::json!(["m"])),
             ("status", serde_json::json!(["i"])),
             ("alerts", serde_json::json!(["i", false])),
-            // M05B B1, D-B1-6/D-B1-7, test 32: no new resource namespace --
-            // gated exactly like the neighbouring verbs above.
+            // No new resource namespace -- gated exactly like the
+            // neighbouring verbs above.
             ("outbox", serde_json::json!(["i"])),
             ("dead-letters", serde_json::json!(["i"])),
             ("replay", serde_json::json!(["i", 1])),
@@ -5871,11 +5866,11 @@ mod tests {
         }
     }
 
-    /// S4 (Slice A5b review): the plan's own `app_instance_id` and the
-    /// submission's outer `app_instance_id` are both caller-supplied and,
-    /// before this check, never compared. A mismatch would key the journal
-    /// and vault under one instance while `status`/`adopt`/`retire` key on
-    /// the other, splitting the instance in two.
+    /// The plan's own `app_instance_id` and the submission's outer
+    /// `app_instance_id` are both caller-supplied and, before this check,
+    /// never compared. A mismatch would key the journal and vault under
+    /// one instance while `status`/`adopt`/`retire` key on the other,
+    /// splitting the instance in two.
     #[tokio::test]
     async fn submit_is_refused_when_the_outer_instance_id_does_not_match_the_plans_own() {
         let s = service();
@@ -5900,11 +5895,11 @@ mod tests {
         assert!(s.store.get("plan-says-inst-1").unwrap().is_none());
     }
 
-    /// Test 20: `submit` is the backstop entry point for `D-B2-14`'s
-    /// contradiction check -- a plan reaching the supervisor was never
-    /// necessarily compiled through `compile()` (a hand-built plan, or a
-    /// client other than `roymctl`), so the same refusal must fire here
-    /// too, not only inside the compiler.
+    /// `submit` is the backstop entry point for the open-topology /
+    /// private-service contradiction check -- a plan reaching the
+    /// supervisor was never necessarily compiled through `compile()` (a
+    /// hand-built plan, or a client other than `roymctl`), so the same
+    /// refusal must fire here too, not only inside the compiler.
     #[tokio::test]
     async fn submit_is_refused_when_the_plan_declares_open_topology_over_a_private_service() {
         let s = service();
@@ -5969,8 +5964,8 @@ mod tests {
         assert!(err.to_string().contains("no credential"), "{err}");
     }
 
-    /// B3 (Slice A5b review): `deploy_submission` used to run the whole
-    /// mint/certify/apply pipeline *before* `store.submit`'s retired guard
+    /// `deploy_submission` used to run the whole mint/certify/apply
+    /// pipeline *before* `store.submit`'s retired guard
     /// ever ran, so a submit against a retired instance redeployed every
     /// service and only then reported the rejection. The inventory here
     /// carries no credential for the placed alias -- exactly
@@ -6005,8 +6000,8 @@ mod tests {
         assert!(!err.to_string().contains("credential"), "{err}");
     }
 
-    /// N1 (Slice A5b review round 2): H3's generation check lived only at
-    /// `store.submit`, which still ran *after* `deploy_submission` --
+    /// The generation check lived only at `store.submit`, which still ran
+    /// *after* `deploy_submission` --
     /// including after that pipeline presented `s.generation` to the
     /// substrate's own `check_generation`, which *accepts* a higher
     /// generation and advances its stamp. So a wrong upward
@@ -6071,8 +6066,8 @@ mod tests {
         assert!(!err.to_string().contains("credential"), "{err}");
     }
 
-    /// S7 (Slice A5b review): before `connect_best_effort`,
-    /// `release_on_every_substrate` used `build_clients`, whose contract
+    /// Before `connect_best_effort`, `release_on_every_substrate` used
+    /// `build_clients`, whose contract
     /// fails the whole call the moment one placed alias cannot be
     /// reached -- so retiring an instance placed on even one unreachable
     /// substrate was permanently impossible. `ucan: null` fails fast at
@@ -6201,16 +6196,15 @@ mod tests {
         assert_eq!(status.revoked_placements, vec!["inst-1/backend#0".to_string()]);
     }
 
-    /// M05A A5e §33.22/test 82: the journal keys every completed action row
-    /// on a `MemberRef`, not a bare `LogicalServiceRef` -- if `handle_status`'s
-    /// own expected-service builder (one of three, alongside the loop's
-    /// sweep and `roymctl`'s two) ever went back to reading it by the old
-    /// key, member 1's placement would silently stop matching and this
-    /// service would report `substrate_did` empty and land in
-    /// `missing_placement` even though it is fully landed. Scaled (index 1,
-    /// not 0) on purpose: an unscaled member's `MemberRef` string is
-    /// unchanged from before A5e and would not catch a regression to the
-    /// old key.
+    /// The journal keys every completed action row on a `MemberRef`, not a
+    /// bare `LogicalServiceRef` -- if `handle_status`'s own
+    /// expected-service builder (one of three, alongside the loop's sweep
+    /// and `roymctl`'s two) ever went back to reading it by the old key,
+    /// member 1's placement would silently stop matching and this service
+    /// would report `substrate_did` empty and land in `missing_placement`
+    /// even though it is fully landed. Scaled (index 1, not 0) on purpose:
+    /// an unscaled member's `MemberRef` string is unchanged from the
+    /// bare-ref era and would not catch a regression to the old key.
     #[tokio::test]
     async fn a_members_placement_is_found_after_the_journal_is_re_keyed() {
         let s = service();
@@ -6270,11 +6264,10 @@ mod tests {
         );
     }
 
-    /// M05A A5c D-A5c-1 (§19.1, matrix row 20's blast-radius neighbor): a
-    /// re-submit that moves a landed service to a different substrate must
-    /// be refused before anything is deployed -- A5b shipped `submit` with
-    /// no such check, so this silently ran a second live copy of the same
-    /// member.
+    /// A re-submit that moves a landed service to a different substrate
+    /// must be refused before anything is deployed -- an early version
+    /// shipped `submit` with no such check, so this silently ran a second
+    /// live copy of the same member.
     #[tokio::test]
     async fn submit_is_refused_when_the_plan_moves_a_service_to_another_substrate() {
         let s = service();
@@ -6363,8 +6356,8 @@ mod tests {
         assert!(!err.contains("credential"), "{err}");
     }
 
-    /// N3's lesson applied here too: `force-reconcile` never calls
-    /// `store.submit`, so it needs its own placement check -- without one
+    /// `force-reconcile` never calls `store.submit`, so it needs its own
+    /// placement check -- without one
     /// it would just keep redeploying the moved service indefinitely.
     #[tokio::test]
     async fn force_reconcile_is_refused_when_the_stored_plan_moves_a_service() {
@@ -6447,10 +6440,9 @@ mod tests {
         assert!(err.to_string().contains("no credential"), "{}", err);
     }
 
-    /// M05A A5c D-A5c-10 (§19.11, matrix row 12): a planned service the
-    /// journal has never recorded landed must report the instance
-    /// `Degraded`, not `Active` -- today's (A5b) gap, since
-    /// `Signal::NotDeployed` is deliberately not a fault (D-A4-19).
+    /// A planned service the journal has never recorded landed must report
+    /// the instance `Degraded`, not `Active` -- an earlier gap, since
+    /// `Signal::NotDeployed` is deliberately not a fault.
     #[tokio::test]
     async fn an_instance_with_a_planned_service_that_never_landed_reports_degraded() {
         let s = service();
@@ -6553,8 +6545,8 @@ mod tests {
         assert!(matches!(status.state, ManagedState::Degraded), "{:?}", status.state);
     }
 
-    /// M05A A5c D-A5c-13 (§19.15): a reconcile in flight is now
-    /// observable -- `apply_with_clients` writes `Applying` before it
+    /// A reconcile in flight is now observable -- `apply_with_clients`
+    /// writes `Applying` before it
     /// writes `Active`/`Degraded`, and `status` landing mid-pass must
     /// read it rather than guessing from a half-applied plan's health.
     #[tokio::test]
@@ -6577,8 +6569,8 @@ mod tests {
         assert!(matches!(status.state, ManagedState::Applying), "{:?}", status.state);
     }
 
-    /// M05A A5c D-A5c-9 (§19.9): the whole point of the fix is that an
-    /// alias serving double duty -- both a landed placement's alias and
+    /// The whole point of the fix is that an alias serving double duty --
+    /// both a landed placement's alias and
     /// the plan's own declared placement -- is connected to once, not
     /// twice. Tested at the dedup itself, which is directly and
     /// deterministically testable with no live substrate; the RPC-level
@@ -6683,7 +6675,7 @@ mod tests {
         assert!(record_plan.services.is_empty(), "an unreachable needs_work service must not land");
     }
 
-    // ── M05A A5c: MQTT alert publication (D-A5-13/D-A5c-6) ──────────────
+    // ── MQTT alert publication ─────────────────────────────────────────
 
     fn expected_alert_topic(app_instance_id: &str) -> String {
         namespace_topic_for_publish(
@@ -6692,8 +6684,8 @@ mod tests {
         )
     }
 
-    /// D-A5-13/D-A5c-6: a sweep that opens a new alert publishes it under
-    /// the supervisor's own topic -- `<alert_topic>/<app_instance_id>`,
+    /// A sweep that opens a new alert publishes it under the supervisor's
+    /// own topic -- `<alert_topic>/<app_instance_id>`,
     /// namespaced with the publish-side rule under
     /// `SUPERVISOR_RESERVED_SERVICE_ID`, the exact string the router's own
     /// subscribe-side fix (`dispatch.rs::subscribe_namespaced_topic`)
@@ -6702,8 +6694,8 @@ mod tests {
     async fn a_newly_opened_alert_is_published_under_the_supervisors_own_topic() {
         let s = service();
         // No substrate placement: the sweep reports `not-deployed`, which
-        // D-A5c-10 turns into a raised `InstanceNotRunning` alert -- the
-        // cheapest fixture that opens a real alert with no live substrate.
+        // becomes a raised `InstanceNotRunning` alert -- the cheapest
+        // fixture that opens a real alert with no live substrate.
         let plan_json = plan_json_one_service("inst-1", "backend", None);
         s.store.submit("inst-1", &plan_json, "{}", "did:key:owner", 0).unwrap();
 
@@ -6730,8 +6722,8 @@ mod tests {
         assert_eq!(value["kind"], AlertKind::InstanceNotRunning.to_string());
     }
 
-    /// §19.5f: `publish_opened_alerts` returns `()`, not a `Result` --
-    /// there is no `?` for a publish failure to propagate through, by
+    /// `publish_opened_alerts` returns `()`, not a `Result` -- there is no
+    /// `?` for a publish failure to propagate through, by
     /// construction. This is the observable half of that guarantee: the
     /// `status` call succeeds and the alert is stored and readable
     /// through `alerts`, regardless of what publication itself did.
@@ -6854,9 +6846,9 @@ mod tests {
         }
     }
 
-    /// §0.29's by-construction property, pinned so a later slice cannot
-    /// quietly reintroduce a key-bearing verb: walks the WIT interface and
-    /// asserts no function or record field is named like key material.
+    /// A by-construction property, pinned so a later change cannot quietly
+    /// reintroduce a key-bearing verb: walks the WIT interface and asserts
+    /// no function or record field is named like key material.
     #[test]
     fn no_supervisor_verb_accepts_or_returns_key_material() {
         let (resolve, iface_id) = supervisor_interface();
@@ -6886,10 +6878,10 @@ mod tests {
         }
     }
 
-    // ── M05A A5c phase 5: the loop (§19.7/§19.8/§19.12/§19.16, D-A5c-7/8/11/14) ──
+    // ── The resident loop ──────────────────────────────────────────────
 
-    /// §19.16/D-A5c-14: `all_active` already excludes both flags from the
-    /// loop's own work list, so a pass over either instance never runs at
+    /// `all_active` already excludes both flags from the loop's own work
+    /// list, so a pass over either instance never runs at
     /// all -- proven from the outside by the alert `reconcile_instance_
     /// pass` would otherwise raise: `plan_json_one_service(..., None)` has
     /// no placement, which every other alert test in this file uses as
@@ -6933,13 +6925,13 @@ mod tests {
         assert!(!s.last_reconciled.contains_key("paused-inst"));
     }
 
-    /// §19.16/F6/D-A5c-14: `apply_write_phase` is the write phase
-    /// `reconcile_instance_pass` calls after its health sweep -- this
-    /// tests its own re-read directly, standing in for a `pause` that
-    /// lands during the sweep (which does not hold the per-instance lock
-    /// a pass otherwise holds for its whole duration, D-A5c-7). If the
-    /// write phase used the state the pass started with instead of
-    /// re-reading, this would append a journal record; it must not.
+    /// `apply_write_phase` is the write phase `reconcile_instance_pass`
+    /// calls after its health sweep -- this tests its own re-read
+    /// directly, standing in for a `pause` that lands during the sweep
+    /// (which does not hold the per-instance lock a pass otherwise holds
+    /// for its whole duration). If the write phase used the state the pass
+    /// started with instead of re-reading, this would append a journal
+    /// record; it must not.
     #[tokio::test]
     async fn a_pause_landing_mid_pass_stops_that_passs_writes() {
         let s = service();
@@ -6994,10 +6986,10 @@ mod tests {
         assert_eq!(latest.state, DeploymentState::Degraded);
     }
 
-    /// Review finding A-4: a placement change was already refused
-    /// (D-A5c-1), but nothing raised the alert §21 q9 specifies for it --
-    /// only `Display`/`FromStr` ever touched the variant. A refusal must
-    /// now be visible on `alerts`, not only as this call's own `Err`.
+    /// A placement change was already refused, but nothing raised an alert
+    /// for it -- only `Display`/`FromStr` ever touched the variant. A
+    /// refusal must now be visible on `alerts`, not only as this call's
+    /// own `Err`.
     #[tokio::test]
     async fn refuse_placement_change_raises_and_stores_placement_change_refused() {
         let s = service();
@@ -7036,13 +7028,13 @@ mod tests {
         assert!(alerts.iter().any(|a| a.kind == AlertKind::PlacementChangeRefused), "{alerts:?}");
     }
 
-    /// M05A A5e §33.6/D-A5e-6, test 59: `refuse_placement_change` used to
-    /// compare a member's plan entry against `current_placement(&landed,
-    /// &l_ref)` keyed on the bare logical ref, so with two members placed
-    /// on different substrates, member 1's entry was compared against
-    /// member 0's landed row -- different DIDs, refused as a relocation
-    /// though nothing moved. Keying on `member_ref()` (§33.2) is what
-    /// makes cross-substrate `replicas` even expressible.
+    /// `refuse_placement_change` used to compare a member's plan entry
+    /// against `current_placement(&landed, &l_ref)` keyed on the bare
+    /// logical ref, so with two members placed on different substrates,
+    /// member 1's entry was compared against member 0's landed row --
+    /// different DIDs, refused as a relocation though nothing moved.
+    /// Keying on `member_ref()` is what makes cross-substrate `replicas`
+    /// even expressible.
     #[tokio::test]
     async fn a_second_member_placed_on_a_different_substrate_is_not_refused_as_a_relocation() {
         let s = service();
@@ -7173,7 +7165,7 @@ mod tests {
         assert!(SupervisorService::refuse_replicas_above_cap(&plan).is_ok());
     }
 
-    /// D-A5c-11 (§19.12): `update_superseded_alert` is the exact decision
+    /// `update_superseded_alert` is the exact decision
     /// `reconcile_instance_pass` gates its write phase on (`if superseded
     /// { return }`, before `apply_write_phase` is ever reached) -- tested
     /// directly, since driving a real higher `held_max` through a full
@@ -7253,13 +7245,12 @@ mod tests {
         assert_eq!(*actor.held_generation_calls.lock().unwrap(), 3);
     }
 
-    /// D-A5c-7 (§19.7): `instance_lock` itself, which two concurrently
-    /// driven holders for the *same* instance id must never both be
-    /// inside at once. `instance_lock` for two *different* ids would
-    /// return two different mutexes and is not what this proves. Review
-    /// finding C-4: this pins the lock's own mutual exclusion, not that
-    /// `submit` and a loop pass actually reach for it -- the two tests
-    /// below drive the real methods.
+    /// `instance_lock` itself, which two concurrently driven holders for
+    /// the *same* instance id must never both be inside at once.
+    /// `instance_lock` for two *different* ids would return two different
+    /// mutexes and is not what this proves. This pins the lock's own
+    /// mutual exclusion, not that `submit` and a loop pass actually reach
+    /// for it -- the two tests below drive the real methods.
     #[tokio::test]
     async fn a_submit_and_a_loop_pass_for_one_instance_do_not_interleave() {
         let s = service();
@@ -7369,8 +7360,8 @@ mod tests {
         assert!(done.load(std::sync::atomic::Ordering::SeqCst));
     }
 
-    /// D-A5c-8 (§19.8/F1): the loop is spawned, not pinned in a `select!`
-    /// that would drop it mid-pass -- `shutdown` only cancels the token
+    /// The loop is spawned, not pinned in a `select!` that would drop it
+    /// mid-pass -- `shutdown` only cancels the token
     /// (production's own `RuntimeServices` is what holds the
     /// `JoinHandle`), so this test spawns and joins it the same way that
     /// caller does, and asserts the join resolves promptly rather than
@@ -7394,8 +7385,8 @@ mod tests {
             .unwrap();
     }
 
-    /// D-A5c-7/§19.7: pins `run`'s interval configuration directly, under
-    /// a paused clock rather than a real slow pass -- `Skip` must let a
+    /// Pins `run`'s interval configuration directly, under a paused clock
+    /// rather than a real slow pass -- `Skip` must let a
     /// tick that arrives long after a missed period fire once,
     /// immediately, rather than the default `Burst` behavior firing once
     /// per period that elapsed.
@@ -7424,11 +7415,10 @@ mod tests {
         );
     }
 
-    // ── M05A A5c phase 6: remediation (§14 step 3/6, §21, D-A5c-15/17/20/21) ──
+    // ── Remediation ────────────────────────────────────────────────────
 
     /// A fake `SubstrateActor` that only counts `restart` calls -- every
-    /// other method is unreachable from a remediation test (M05A A5c
-    /// §23, tests 35-38).
+    /// other method is unreachable from a remediation test.
     #[derive(Debug, Default)]
     struct CountingActor {
         restart_calls: Mutex<u32>,
@@ -7493,8 +7483,8 @@ mod tests {
         }
     }
 
-    /// §14 step 3: a landed service the sweep finds `InstanceNotRunning`
-    /// gets one bounded restart attempt.
+    /// A landed service the sweep finds `InstanceNotRunning` gets one
+    /// bounded restart attempt.
     #[tokio::test]
     async fn instance_not_running_triggers_a_restart_on_the_next_pass() {
         let s = service();
@@ -7521,11 +7511,11 @@ mod tests {
         assert!(opened.is_empty(), "one attempt must not exhaust a 3-attempt budget");
     }
 
-    /// M05A A5e §33.11, test 60: two members of one scaled service must
-    /// each spend their own `max_restart_attempts` budget --
-    /// `restart_candidates` keys on `ServiceHealth::member_ref()` (member
-    /// 0 and member 1 are two distinct candidates, per D-A5e-2), and
-    /// `attempt_restart`'s remediation row is keyed on that same string.
+    /// Two members of one scaled service must each spend their own
+    /// `max_restart_attempts` budget -- `restart_candidates` keys on
+    /// `ServiceHealth::member_ref()` (member 0 and member 1 are two
+    /// distinct candidates), and `attempt_restart`'s remediation row is
+    /// keyed on that same string.
     /// A regression back to a bare logical ref would collapse the two
     /// into one shared counter -- member 1's failures exhausting member
     /// 0's budget, and vice versa.
@@ -7777,10 +7767,10 @@ mod tests {
         );
     }
 
-    /// §21/D-A5c-17: a declared readiness probe failing is an author
-    /// assertion this supervisor cannot verify, not a substrate-verified
-    /// fact -- alert only, pinned so a later slice cannot silently widen
-    /// remediation onto it.
+    /// A declared readiness probe failing is an author assertion this
+    /// supervisor cannot verify, not a substrate-verified fact -- alert
+    /// only, pinned so a later change cannot silently widen remediation
+    /// onto it.
     #[test]
     fn probe_failing_never_triggers_a_restart() {
         let report = health::HealthReport {
@@ -7794,9 +7784,8 @@ mod tests {
         assert!(SupervisorService::restart_candidates(&report).is_empty());
     }
 
-    /// D-A4-13, re-pinned for the loop: a substrate that did not answer
-    /// is never inferred to mean its services are down, so restarting
-    /// cannot be the fix for it either.
+    /// A substrate that did not answer is never inferred to mean its
+    /// services are down, so restarting cannot be the fix for it either.
     #[test]
     fn substrate_unreachable_never_triggers_a_restart() {
         let report = health::HealthReport {
@@ -7839,8 +7828,8 @@ mod tests {
         .to_string()
     }
 
-    /// D-A5c-3/D-A5c-21 (§19.2a/§19.21): a service the resubmitted plan no
-    /// longer names, but that this supervisor's own journal still shows
+    /// A service the resubmitted plan no longer names, but that this
+    /// supervisor's own journal still shows
     /// landed, is reported -- not undeployed. Undeploying a stateful
     /// service because a manifest was edited is destructive, and
     /// `retire` is deliberately not a teardown.
@@ -7878,13 +7867,12 @@ mod tests {
         assert_eq!(orphan.substrate_did, "did:key:zEdge1");
     }
 
-    // ── M05A A5c phase 7: the binding push and convergence (§19.3/§19.4/§19.19,
-    // D-A5c-4/5/16/19) ──
+    // ── The binding push and convergence ───────────────────────────────
 
     /// A fake `SubstrateActor` that only answers `write_bindings`, from a
     /// caller-queued sequence of responses (defaulting to `Applied` once
     /// the queue empties) -- every other method is unreachable from a
-    /// push test (M05A A5c §23, tests 42-47).
+    /// push test.
     #[derive(Debug, Default)]
     struct BindingActor {
         responses: Mutex<Vec<Result<Vec<BindingWriteOutcome>, String>>>,
@@ -7984,8 +7972,8 @@ mod tests {
         }
     }
 
-    /// D-A5e-9: the convergence budget is measured from the membership
-    /// change to the last applied write returning `Applied`/`NoOp` --
+    /// The convergence budget is measured from the membership change to
+    /// the last applied write returning `Applied`/`NoOp` --
     /// *not* off `binding-epochs`, whose own refresh is bounded by
     /// `poll_interval_secs` (default 30s, six times the 5s budget). This
     /// harness proves the two are not the same clock: a push against a
@@ -7993,8 +7981,7 @@ mod tests {
     /// near a poll interval, so a measurement taken this way is the
     /// write's own latency, never silently the read surface's lag.
     ///
-    /// M05A A5e review, second round: the clock starts at
-    /// `Reconciler::compute_diff` and runs through
+    /// The clock starts at `Reconciler::compute_diff` and runs through
     /// `classify_update_actions`, the same classifier
     /// `apply_with_membership_pushes`/`apply_write_phase` call -- not just
     /// the `push_bindings` call after it has already decided -- so a
@@ -8080,8 +8067,8 @@ mod tests {
         assert!(opened.is_empty());
     }
 
-    /// M05B B1 review follow-up (2026-08-05): a write with zero bindings
-    /// is a real, converged success -- not the same value `push_bindings`
+    /// A write with zero bindings is a real, converged success -- not the
+    /// same value `push_bindings`
     /// used to signal "deferred to an already-pending queue item" before
     /// `PushOutcome` existed. Reachable in the ordinary course of a
     /// deploy: removing a service's last `depends_on` leaves
@@ -8119,14 +8106,13 @@ mod tests {
         );
     }
 
-    /// D-A5e-4: `map_deployment_plan_to_wit` reads a binding's `mode` off
-    /// the *dependency's own* `PlannedService.topology_mode` in the plan
-    /// -- not off `resolved_dependencies`' member count -- so `backend`
-    /// must be present in `plan.services` with `Redundant` already
-    /// compiled onto it (D-A5e-4: `replicas > 1` ⇒ `Redundant`) for the
-    /// push to carry it correctly. The unit-level half of test 70's
-    /// amended step 5 (R5): proves the flip at the binding-write layer
-    /// itself, without needing a live substrate to observe cross-member
+    /// `map_deployment_plan_to_wit` reads a binding's `mode` off the
+    /// *dependency's own* `PlannedService.topology_mode` in the plan --
+    /// not off `resolved_dependencies`' member count -- so `backend` must
+    /// be present in `plan.services` with `Redundant` already compiled
+    /// onto it (`replicas > 1` implies `Redundant`) for the push to carry
+    /// it correctly. Proves the flip at the binding-write layer itself,
+    /// without needing a live substrate to observe cross-member
     /// resolution.
     #[tokio::test]
     async fn a_scale_out_push_carries_the_redundant_mode_to_the_dependent() {
@@ -8220,8 +8206,8 @@ mod tests {
         );
     }
 
-    /// F7 -- the exit criterion's own test: an operator reads a converged
-    /// binding once the written and observed epochs agree. Read directly
+    /// An operator reads a converged binding once the written and observed
+    /// epochs agree. Read directly
     /// off `binding_convergence_rows` (what `status` calls), since
     /// driving a real observed epoch through `handle_status` needs a
     /// live substrate to report one.
@@ -8255,11 +8241,11 @@ mod tests {
         assert!(rows[0].converged);
     }
 
-    // ── M05A A5e phase 4: the push trigger (D-A5e-7/D-A5e-8) ────────────
+    // ── The push trigger ───────────────────────────────────────────────
 
-    /// D-A5e-7: the classifier's whole point. A resubmit whose only change
-    /// to a dependent member is which DIDs a dependency resolves to must
-    /// be routed to a push, not a redeploy.
+    /// The classifier's whole point. A resubmit whose only change to a
+    /// dependent member is which DIDs a dependency resolves to must be
+    /// routed to a push, not a redeploy.
     #[test]
     fn only_resolved_dependencies_changed_is_true_when_only_the_dependency_map_differs() {
         let old = dependent_service("frontend", "backend");
@@ -8428,8 +8414,8 @@ mod tests {
         );
     }
 
-    /// D-A5e-7/§33.7: `Reconciler::compute_diff` produces one `Update`
-    /// action per member of the scaled dependency's dependent -- each is
+    /// `Reconciler::compute_diff` produces one `Update` action per member
+    /// of the scaled dependency's dependent -- each is
     /// independently a push-only change, so a two-member dependent
     /// pushes on both, not just the first.
     #[test]
@@ -8469,12 +8455,12 @@ mod tests {
         }
     }
 
-    /// M05A A5e review (matrix row 11): a push candidate this pass could
-    /// not even connect to used to be dropped with a bare `continue` --
-    /// no alert, no `Degraded`. Drives `apply_write_phase` directly (the
-    /// same seam `a_pause_landing_mid_pass_stops_that_passs_writes` uses)
-    /// with `did_to_alias` empty, standing in for a dependent whose
-    /// substrate this pass's own connect step never reached.
+    /// A push candidate this pass could not even connect to used to be
+    /// dropped with a bare `continue` -- no alert, no `Degraded`. Drives
+    /// `apply_write_phase` directly (the same entry point
+    /// `a_pause_landing_mid_pass_stops_that_passs_writes` uses) with
+    /// `did_to_alias` empty, standing in for a dependent whose substrate
+    /// this pass's own connect step never reached.
     #[tokio::test]
     async fn an_unreachable_push_candidate_raises_binding_conflict_instead_of_being_dropped_silently()
      {
@@ -8510,7 +8496,7 @@ mod tests {
         assert_eq!(conflict.substrate_did, "did:key:zEdge1");
     }
 
-    /// M05A A5e review round 2, finding A -- the narrower loop-path shape:
+    /// The narrower loop-path shape:
     /// `record_plan_for_pass` keeps a push candidate's *new*
     /// `resolved_dependencies` unconditionally, so a `needs_work` redeploy
     /// landing in the *same* pass as a *failing* push journals that push
@@ -8659,9 +8645,9 @@ mod tests {
         );
     }
 
-    /// D-A5e-8/§33.19: `push_bindings` clears `BindingConflict` for that
-    /// member once a later push lands cleanly -- the clear site this
-    /// alert kind never had before A5e.
+    /// `push_bindings` clears `BindingConflict` for that member once a
+    /// later push lands cleanly -- the clear site this alert kind never
+    /// had before.
     #[tokio::test]
     async fn a_binding_conflict_clears_once_a_later_push_for_that_member_lands_cleanly() {
         let s = service();
@@ -8750,8 +8736,8 @@ mod tests {
         );
     }
 
-    /// M05A A5e §33.21/S2: the raise site must write the substrate's real
-    /// DID into the alert's `substrate_did` column, not `svc.substrate`
+    /// The raise site must write the substrate's real DID into the
+    /// alert's `substrate_did` column, not `svc.substrate`
     /// (an operator-chosen alias, empty on fallback placement) -- a clear
     /// keyed on the real DID would otherwise never match a row keyed on
     /// the alias, and `Degraded` would be permanent.
@@ -8829,11 +8815,10 @@ mod tests {
         assert_eq!(s.store.binding_epoch("inst-1", "inst-1/frontend#1").unwrap(), 1);
     }
 
-    /// Review finding C-1: §23 test 45 (above) calls
-    /// `binding_convergence_rows` directly, by its own doc comment --
-    /// never through a real `status` response, so nothing pins the wire
-    /// shape (`InstanceStatus.bindings` field name, its serialization) a
-    /// caller actually reads. This drives the exact same declared
+    /// The test above calls `binding_convergence_rows` directly -- never
+    /// through a real `status` response, so nothing pins the wire shape
+    /// (`InstanceStatus.bindings` field name, its serialization) a caller
+    /// actually reads. This drives the exact same declared
     /// dependency through `dispatch("status", …)` instead: no live
     /// substrate exists in this test, so `observed_epoch` is `None`
     /// rather than `Some(1)` (the exact case
@@ -8867,7 +8852,7 @@ mod tests {
         assert!(!status.bindings[0].converged);
     }
 
-    /// F7's negative half: a dependent absent from the sweep (unreachable,
+    /// The negative half: a dependent absent from the sweep (unreachable,
     /// or never landed) must still produce a row -- `observed_epoch:
     /// None`, `converged: false` -- not silently vanish from the list, or
     /// an operator reading an empty table cannot tell "nothing declared"
@@ -8888,17 +8873,15 @@ mod tests {
         assert!(!rows[0].converged);
     }
 
-    /// Matrix row 11: a push against a dependent that cannot be reached
-    /// fails (the epoch has still advanced, D-A5c-4's own invariant --
-    /// the next attempt must never retry at an epoch already spent), is
-    /// visible on the operator read surface (review finding A-5: the
-    /// original version of this test asserted only the epoch and a
-    /// successful retry -- the state-visible half of the row's own
-    /// wording -- and never checked `opened`/`alerts` at all), and
-    /// succeeds cleanly once that dependent answers again. A unit test
-    /// against a fake actor, deliberately (§23's own note: the wire path
-    /// is already proven live by A5a's `binding_push_e2e.rs`, so this is
-    /// entirely the supervisor's own control flow).
+    /// A push against a dependent that cannot be reached fails (the epoch
+    /// has still advanced -- the invariant that the next attempt must
+    /// never retry at an epoch already spent), is visible on the operator
+    /// read surface (an earlier version of this test asserted only the
+    /// epoch and a successful retry, and never checked `opened`/`alerts`
+    /// at all), and succeeds cleanly once that dependent answers again. A
+    /// unit test against a fake actor, deliberately: the wire path is
+    /// already proven live by `binding_push_e2e.rs`, so this is entirely
+    /// the supervisor's own control flow.
     #[tokio::test]
     async fn a_dependent_unreachable_during_a_push_leaves_the_instance_degraded_and_is_retried_when_it_next_answers()
      {
@@ -8931,8 +8914,8 @@ mod tests {
         );
     }
 
-    /// M05B B1 review finding 1: `push_bindings` advances the binding
-    /// epoch before every attempt, but a *durable* actor only enqueues
+    /// `push_bindings` advances the binding epoch before every attempt,
+    /// but a *durable* actor only enqueues
     /// once per key (`already_pending`) -- so a second transport failure
     /// for the same key while the first attempt's item is still queued
     /// must not advance the epoch again, or `written_epoch` races ahead of
@@ -9052,7 +9035,7 @@ mod tests {
         );
     }
 
-    // ── M05A A5d: unattended renewal, anchor refresh, revocation ─────────
+    // ── Unattended renewal, anchor refresh, revocation ─────────────────
 
     /// A fake substrate for the renewal path: answers `instance_identity`
     /// with a fixed, real ed25519 key (so a certificate minted over it is
@@ -9864,10 +9847,9 @@ mod tests {
         assert!(s.store.alerts.active(&instance_id).unwrap().is_empty());
     }
 
-    /// D-A5d-9's clearing rule: raised alerts with no path back to cleared
-    /// are exactly the bug §19.20 exists to prevent. Recomputed from the
-    /// substrate's own answer, not tracked as a flag -- so a renewal that
-    /// succeeded out of band clears these too.
+    /// The clearing rule: a raised alert with no path back to cleared is a
+    /// bug. Recomputed from the substrate's own answer, not tracked as a
+    /// flag -- so a renewal that succeeded out of band clears these too.
     #[tokio::test]
     async fn certificate_near_expiry_clears_on_the_next_passs_healthy_read() {
         let s = service();
@@ -10189,13 +10171,11 @@ mod tests {
         assert_eq!(*writer.refreshed.lock().unwrap(), vec![master_did]);
     }
 
-    /// M05A A5e §33.5/D-A5e-5, test 63: `refresh_due_master_anchors` reads
-    /// `svc.member_index` to resolve which master to sign with
-    /// (`keys::master_for_member`) -- a regression to a hardcoded `0`
-    /// would silently sign member 1's anchor with member 0's key instead
-    /// of failing loudly, the fail-closed outage the plan calls this
-    /// slice's single most consequential fix. Asserts the *key the writer
-    /// actually received*, not merely that a call happened.
+    /// `refresh_due_master_anchors` reads `svc.member_index` to resolve
+    /// which master to sign with (`keys::master_for_member`) -- a
+    /// regression to a hardcoded `0` would silently sign member 1's anchor
+    /// with member 0's key instead of failing loudly. Asserts the *key
+    /// the writer actually received*, not merely that a call happened.
     #[tokio::test]
     async fn master_anchor_refresh_republishes_each_members_own_anchor_and_stamps_its_own_row() {
         let writer = Arc::new(RecordingAnchorWriter::default());
@@ -10312,9 +10292,9 @@ mod tests {
         }
     }
 
-    /// D-S1-6, both halves: a row with no app master DID yet (D-A7-7,
-    /// before this instance's first `adopt` under A7) is skipped without
-    /// even opening the vault, and nothing gets minted to fill the gap.
+    /// A row with no app master DID yet (before this instance's first
+    /// `adopt`) is skipped without even opening the vault, and nothing
+    /// gets minted to fill the gap.
     #[tokio::test]
     async fn an_instance_with_no_app_master_did_is_skipped_and_nothing_is_minted() {
         let writer = Arc::new(RecordingTier1Writer::default());
@@ -10336,13 +10316,13 @@ mod tests {
         assert!(opened.is_empty());
     }
 
-    /// D-S1-8: a supervisor with no registry configured holds no writer at
-    /// all (mirroring `RegistryAnchorWriter::from_registry_client`), and a
+    /// A supervisor with no registry configured holds no writer at all
+    /// (mirroring `RegistryAnchorWriter::from_registry_client`), and a
     /// pass with none configured is a quiet no-op, never a panic. The
-    /// `RegistryTier1Writer::from_registry_client` half of D-S1-8's own
-    /// warning is asserted directly here; the log line itself is written
-    /// once at supervisor init (`runtime.rs`), outside what a
-    /// `SupervisorService` unit test can reach.
+    /// `RegistryTier1Writer::from_registry_client` half is asserted
+    /// directly here; the warning log line itself is written once at
+    /// supervisor init (`runtime.rs`), outside what a `SupervisorService`
+    /// unit test can reach.
     #[tokio::test]
     async fn no_configured_registry_holds_no_writer_and_the_supervisor_keeps_running() {
         assert!(
@@ -10365,12 +10345,12 @@ mod tests {
         );
     }
 
-    /// D-S1-5's real property is not the interval, it is that a failure
-    /// never gives up: every pass this many seconds after the last
-    /// success retries again, with nothing here counting attempts toward
-    /// a cap. `tier1_refresh_survives_sixty_consecutive_failures_against_
-    /// the_default_interval` (`syneroym-core`) pins the number this
-    /// buys against `EndpointInfo`'s 30-day `not_after`.
+    /// The real property is not the interval, it is that a failure never
+    /// gives up: every pass this many seconds after the last success
+    /// retries again, with nothing here counting attempts toward a cap.
+    /// `tier1_refresh_survives_sixty_consecutive_failures_against_the_default_interval`
+    /// (`syneroym-core`) pins the number this buys against `EndpointInfo`'s
+    /// 30-day `not_after`.
     #[tokio::test]
     async fn a_failed_tier1_publish_is_retried_every_interval_with_no_internal_cap() {
         let failing =
@@ -10444,8 +10424,8 @@ mod tests {
     /// otherwise nothing to do still reaches it purely because a
     /// `tier1_writer` is configured (the same gate `anchor_writer` uses).
     /// The published record also carries this pass's real generation, not
-    /// a hardcoded one -- `generation` is the entire mechanism behind
-    /// failure-matrix row 2 (two supervisors, one app DID).
+    /// a hardcoded one -- `generation` is the entire mechanism that keeps
+    /// two supervisors publishing one app DID from colliding.
     #[tokio::test]
     async fn a_refresh_runs_on_the_ordinary_pass_tick_and_carries_the_instances_generation() {
         let writer = Arc::new(RecordingTier1Writer::default());
@@ -10504,11 +10484,11 @@ mod tests {
     /// `storage.encryption = false`, every vault read succeeds, but
     /// `kek_is_loaded()` -- a `KeyStore`-only check -- still answers
     /// `false`, since no KEK is ever injected on such a node. A pre-check
-    /// on that answer (A5d's shape, which this refresh briefly copied)
-    /// would skip this instance's Tier-1 publish forever and raise a
-    /// `VaultLocked` alert that is never true. Reading the real attempt's
-    /// own `VaultError::Locked` instead (A7's D-A7-1 shape) must reach the
-    /// writer here, where the vault is merely unencrypted, not locked.
+    /// on that answer (which this refresh briefly copied) would skip this
+    /// instance's Tier-1 publish forever and raise a `VaultLocked` alert
+    /// that is never true. Reading the real attempt's own
+    /// `VaultError::Locked` instead must reach the writer here, where the
+    /// vault is merely unencrypted, not locked.
     #[tokio::test]
     async fn an_unencrypted_vault_with_no_kek_still_reaches_the_tier1_writer() {
         let writer = Arc::new(RecordingTier1Writer::default());
@@ -10533,10 +10513,10 @@ mod tests {
         assert!(opened.is_empty(), "a genuinely reachable vault must raise no VaultLocked alert");
     }
 
-    /// S1-3: the vault's own key must match the DID the row recorded at
-    /// the last `adopt` -- a mismatch (an `import-master` not yet
-    /// followed by an `adopt`, A7 §0.5) must refuse and raise, never
-    /// publish under whichever key the vault happens to hold.
+    /// The vault's own key must match the DID the row recorded at the last
+    /// `adopt` -- a mismatch (an `import-master` not yet followed by an
+    /// `adopt`) must refuse and raise, never publish under whichever key
+    /// the vault happens to hold.
     #[tokio::test]
     async fn a_mismatched_vault_key_raises_an_alert_and_never_publishes() {
         let writer = Arc::new(RecordingTier1Writer::default());
@@ -10557,9 +10537,9 @@ mod tests {
         assert_eq!(opened, vec![(AlertKind::AppIdentityMismatch, "inst-1".to_string())]);
     }
 
-    /// Companion to A5c's own two paused-instance tests: `pause` excludes
+    /// Companion to the two loop paused-instance tests: `pause` excludes
     /// an instance from the write phase entirely, and the Tier-1 refresh
-    /// is no exception (D-S1-4 keeps that skip rather than reopening it).
+    /// is no exception.
     #[tokio::test]
     async fn a_paused_instance_gets_no_tier1_refresh() {
         let writer = Arc::new(RecordingTier1Writer::default());
@@ -10906,15 +10886,15 @@ mod tests {
         assert!(s.store.revoked_placements("inst-1").unwrap().is_empty());
     }
 
-    // ── M05A A7: the app-instance master identity ───────────────────────
+    // ── The app-instance master identity ──────────────────────────────
 
     fn adopt_field<'a>(res: &'a NativeResponse, field: &str) -> Option<&'a Value> {
         res.payload.get(field)
     }
 
-    /// D-A7-1/D-A7-4/D-A7-8: the ordinary path, over a services-less plan
-    /// so no substrate is involved (§0.12) -- `adopt` mints an app master
-    /// and both the vault and the instance row carry it afterwards.
+    /// The ordinary path, over a services-less plan so no substrate is
+    /// involved -- `adopt` mints an app master and both the vault and the
+    /// instance row carry it afterwards.
     #[tokio::test]
     async fn adopt_mints_an_app_master_and_records_it_on_the_instance_row() {
         let s = service();
@@ -10942,8 +10922,8 @@ mod tests {
         assert_eq!(substrate::derive_did_key(&vault_entry.public_key()), did);
     }
 
-    /// D-A7-1: a locked vault refuses the whole call, before a generation
-    /// is claimed and before any key is minted -- not through a
+    /// A locked vault refuses the whole call, before a generation is
+    /// claimed and before any key is minted -- not through a
     /// `kek_is_loaded` pre-check. The locked fixture (encryption on, no
     /// KEK) is the only shape that proves anything about locking.
     #[tokio::test]
@@ -10968,13 +10948,12 @@ mod tests {
         assert_eq!(row.app_master_did, "", "a refused adopt must not record a DID");
     }
 
-    /// D-A7-7's "and nowhere else" (M05A A7 review finding 7a): `adopt` is
-    /// the only mint point, stated as a decision rather than merely true
-    /// of the paths tested so far. Test 94 shows the field absent right
-    /// after `submit`; this covers the two paths most likely to grow a
-    /// mint by accident later, since both re-run the same apply pipeline
-    /// `adopt` does over the identical plan -- `force-reconcile` and one
-    /// resident-loop pass.
+    /// `adopt` is the only mint point, stated as a decision rather than
+    /// merely true of the paths tested so far. Another test shows the
+    /// field absent right after `submit`; this covers the two paths most
+    /// likely to grow a mint by accident later, since both re-run the
+    /// same apply pipeline `adopt` does over the identical plan --
+    /// `force-reconcile` and one resident-loop pass.
     #[tokio::test]
     async fn app_master_did_stays_empty_through_force_reconcile_and_a_loop_pass_without_adopt() {
         let s = service();
@@ -10996,17 +10975,15 @@ mod tests {
         assert_eq!(s.store.get("inst-1").unwrap().unwrap().app_master_did, "");
     }
 
-    /// D-A7-5: the DID stays stable across two `adopt`s -- resolving, not
-    /// minting, on the second call. Over a services-less plan (§0.12), the
-    /// generation itself stays `1` on both calls too: `claim_next_
-    /// generation` reads the held maximum only from the substrates the
-    /// plan places services on, and an empty plan has none to remember a
-    /// prior claim, so this in-process shape cannot demonstrate the
-    /// generation actually advancing -- that needs a real substrate, which
-    /// is what the e2e (test 98, step d) proves alongside DID stability.
-    /// Named for what it actually asserts (M05A A7 review finding 9,
-    /// renamed from `…_at_the_next_generation`, which promised an
-    /// increment this test cannot produce).
+    /// The DID stays stable across two `adopt`s -- resolving, not minting,
+    /// on the second call. Over a services-less plan, the generation
+    /// itself stays `1` on both calls too: `claim_next_generation` reads
+    /// the held maximum only from the substrates the plan places services
+    /// on, and an empty plan has none to remember a prior claim, so this
+    /// in-process shape cannot demonstrate the generation actually
+    /// advancing -- that needs a real substrate, which the e2e proves
+    /// alongside DID stability. Named for what it actually asserts, not
+    /// for an increment this test cannot produce.
     #[tokio::test]
     async fn a_second_adopt_reports_the_same_app_master_did() {
         let s = service();
@@ -11039,7 +11016,7 @@ mod tests {
         assert_eq!(adopt_field(&second, "generation").and_then(Value::as_u64), Some(1));
     }
 
-    /// D-A7-6: `status` reports the same DID `adopt` minted.
+    /// `status` reports the same DID `adopt` minted.
     #[tokio::test]
     async fn status_reports_the_app_master_did_of_an_adopted_instance() {
         let s = service();
@@ -11067,9 +11044,8 @@ mod tests {
         assert_eq!(status.payload.get("app_master_did").and_then(Value::as_str), Some(minted_did));
     }
 
-    /// D-A7-6/§0.7: absent, not an empty string -- an instance that has
-    /// never been adopted under A7 must not read as though it holds a DID
-    /// of `""`.
+    /// Absent, not an empty string -- an instance that has never been
+    /// adopted must not read as though it holds a DID of `""`.
     #[tokio::test]
     async fn status_reports_no_app_master_for_an_instance_that_was_never_adopted() {
         let s = service();
@@ -11092,8 +11068,8 @@ mod tests {
         );
     }
 
-    /// D-C-2: `status` reports the currently-published Tier-1 record's
-    /// expiry, derived from the last successful refresh this supervisor
+    /// `status` reports the currently-published Tier-1 record's expiry,
+    /// derived from the last successful refresh this supervisor
     /// stamped -- not from a fresh registry lookup.
     #[tokio::test]
     async fn status_reports_the_tier_one_record_expiry() {
@@ -11141,7 +11117,7 @@ mod tests {
         assert!(status.payload.get("app_record_expires_at").is_none_or(Value::is_null));
     }
 
-    /// D-S1-4: `pause`'s response reports the date its own write-phase skip
+    /// `pause`'s response reports the date its own write-phase skip
     /// (`a_paused_instance_gets_no_tier1_refresh`, above) will let the
     /// currently-published record decay to. Named for the response field
     /// this actually asserts, not the `tracing::warn!` alongside it --
@@ -11194,8 +11170,8 @@ mod tests {
         assert!(res.payload.get("app_record_expires_at").is_none());
     }
 
-    /// D-A7-5/§0.5: the handover-order repair inside one vault -- mint by
-    /// adopting, import a different key under the same name (simulating an
+    /// The handover-order repair inside one vault -- mint by adopting,
+    /// import a different key under the same name (simulating an
     /// operator-carried backup replacing this vault's own key), adopt
     /// again, and the row follows the vault rather than keeping the
     /// replaced DID.
@@ -11236,10 +11212,10 @@ mod tests {
         assert_eq!(s.store.get("inst-1").unwrap().unwrap().app_master_did, replacement_did);
     }
 
-    /// D-A7-7: an instance whose row predates A7 -- generation already
-    /// claimed, `app_master_did` empty -- gains one at its *next* `adopt`,
-    /// never anywhere else. Simulated by writing the pre-A7 state directly
-    /// rather than going through `adopt` to reach it.
+    /// An instance whose row predates the app-master column -- generation
+    /// already claimed, `app_master_did` empty -- gains one at its *next*
+    /// `adopt`, never anywhere else. Simulated by writing that older state
+    /// directly rather than going through `adopt` to reach it.
     #[tokio::test]
     async fn an_instance_row_with_no_app_master_gains_one_on_its_next_adopt() {
         let s = service();
@@ -11257,9 +11233,9 @@ mod tests {
         )
         .await
         .unwrap();
-        // The generation bump itself is D-A7-7's named cost -- not
-        // asserted at a specific number here, since a services-less plan
-        // (§0.12) has no substrate to remember `2` was already claimed and
+        // The generation bump itself is the named cost -- not asserted at
+        // a specific number here, since a services-less plan has no
+        // substrate to remember `2` was already claimed and
         // `claim_next_generation` always computes fresh from what the plan
         // places, which is nothing.
         let did = adopt_field(&res, "app_master_did").and_then(Value::as_str).unwrap();
@@ -11267,9 +11243,8 @@ mod tests {
         assert_eq!(s.store.get("inst-1").unwrap().unwrap().app_master_did, did);
     }
 
-    /// D-A7-8/§0.8: the A5b S1 failure, asserted directly -- the returned
-    /// name must be one `export-master` actually accepts, not the bare
-    /// logical name.
+    /// An earlier failure, asserted directly -- the returned name must be
+    /// one `export-master` actually accepts, not the bare logical name.
     #[tokio::test]
     async fn adopt_returns_the_vault_name_export_master_accepts() {
         let s = service();
@@ -11298,13 +11273,12 @@ mod tests {
         assert!(export.payload.as_str().unwrap().contains("app-inst-1"));
     }
 
-    /// D-A7-4, added in review (§0.4/test 99): `status` must stay readable
-    /// through a genuinely locked vault -- the column exists precisely so
-    /// the app's identity is visible while the vault is shut, and this is
-    /// the only test in this file that reaches that state over one held
-    /// service rather than a fresh, empty rebuild. Locked *in place*
-    /// (A5d's own recipe): unlocked at construction so `adopt` can mint,
-    /// then the KEK is cleared afterward.
+    /// `status` must stay readable through a genuinely locked vault -- the
+    /// column exists precisely so the app's identity is visible while the
+    /// vault is shut, and this is the only test in this file that reaches
+    /// that state over one held service rather than a fresh, empty
+    /// rebuild. Locked *in place*: unlocked at construction so `adopt` can
+    /// mint, then the KEK is cleared afterward.
     #[tokio::test]
     async fn status_reports_the_app_master_did_while_the_vault_is_locked() {
         let (s, key_store) =
@@ -11344,8 +11318,7 @@ mod tests {
         );
     }
 
-    /// D-A7-5, the slice's most important new case (§0.5/test 100): a
-    /// *second* supervisor, which has never adopted this instance,
+    /// A *second* supervisor, which has never adopted this instance,
     /// imports the app master another supervisor already exported, and
     /// its first `adopt` reports the imported DID rather than minting a
     /// fresh one. Two independent fixture-built services sharing one
@@ -11418,8 +11391,8 @@ mod tests {
         assert_eq!(supervisor_b.store.get("inst-1").unwrap().unwrap().app_master_did, a_did);
     }
 
-    /// D-A7-1/D-A7-5, optional (§0.12/test 101): the mint-before-claim,
-    /// record-after-claim asymmetry's failing direction -- a claim that
+    /// The mint-before-claim, record-after-claim asymmetry's failing
+    /// direction -- a claim that
     /// fails after the mint already landed must not mint a *second* key on
     /// the retry, since a vault key with no row is meant to be
     /// recoverable. Needs a placed service on an unreachable substrate, so
@@ -11447,9 +11420,9 @@ mod tests {
         // vault must already hold a key, since the mint runs first.
         // `.expect` here, not `.map`: a plain `Option` comparison at the
         // bottom of this test would pass on `None == None` if the mint
-        // ever stopped running before the claim (M05A A7 review finding
-        // 3) -- the exact regression this test exists to catch -- since
-        // both reads would then find nothing rather than the same key.
+        // ever stopped running before the claim -- the exact regression
+        // this test exists to catch -- since both reads would then find
+        // nothing rather than the same key.
         assert_eq!(s.store.get("inst-1").unwrap().unwrap().generation, 0, "{err}");
         let minted = s
             .vault
@@ -11484,13 +11457,14 @@ mod tests {
         );
     }
 
-    /// M05A A7 review finding 7c: `adopt`'s un-retire and its app-master
-    /// write now land in the same `record_adopt` call (finding 6), but
-    /// nothing at the service level had exercised them running back to
-    /// back on a genuinely retired instance -- store-level coverage
-    /// (`store.rs`'s `record_adopt_writes_generation_retired_and_
-    /// app_master_did_together`) proves the store method alone, not that
-    /// `handle_adopt` actually reaches it starting from `retired`.
+    /// `adopt`'s un-retire and its app-master write now land in the same
+    /// `record_adopt` call, but nothing at the service level had exercised
+    /// them running back to back on a genuinely retired instance --
+    /// store-level coverage
+    /// (`store.rs`'s
+    /// `record_adopt_writes_generation_retired_and_app_master_did_together`)
+    /// proves the store method alone, not that `handle_adopt` actually
+    /// reaches it starting from `retired`.
     #[tokio::test]
     async fn adopt_on_a_retired_instance_un_retires_and_records_the_app_master_together() {
         let s = service();
@@ -11515,7 +11489,7 @@ mod tests {
         assert_eq!(row.app_master_did, did);
     }
 
-    // ── M05B B1: the durable outbox worker ──────────────────────────────
+    // ── The durable outbox worker ─────────────────────────────────────
 
     /// A fake standing in for a connected substrate on the queue worker's
     /// replay path: one scripted delivery per DID, consumed in FIFO order.
@@ -11542,7 +11516,7 @@ mod tests {
         CalleeError(String),
         /// The reconnect never resolves -- stands in for a substrate that
         /// never answers, so a test can prove something is genuinely
-        /// in-flight when shutdown is asked for (M05B B1 review finding 5).
+        /// in-flight when shutdown is asked for.
         /// Distinct from an absent scripted entry (`None` below), which
         /// returns an error immediately and proves nothing about
         /// abandoning in-flight work.
@@ -11598,7 +11572,7 @@ mod tests {
     /// Every real fake in this crate implements the full `SubstrateActor`
     /// trait, not just `WriteBindingsAttempt` -- `deploy::build_durable_actor`
     /// requires both, since a durable actor still answers every other
-    /// action synchronously (D-B1-3).
+    /// action synchronously.
     #[derive(Debug, Default)]
     struct FakeSubstrateClient {
         write_bindings_outcome: Mutex<Option<Result<Vec<BindingWriteOutcome>, String>>>,
@@ -11713,8 +11687,8 @@ mod tests {
             .unwrap()
     }
 
-    /// Test 13: the load-bearing budget. A reachable substrate's
-    /// `write_bindings` call must never touch the real, wired-up
+    /// A reachable substrate's `write_bindings` call must never touch the
+    /// real, wired-up
     /// supervisor outbox -- asserted as "the queue is untouched", not as a
     /// timing, so it cannot pass by being fast.
     #[tokio::test]
@@ -11739,8 +11713,8 @@ mod tests {
         assert!(s.store.queue.dead_letters().unwrap().is_empty());
     }
 
-    /// Test 19: failure-matrix row 2. The worker's replay of an
-    /// already-applied write must be a no-op from the substrate's own
+    /// The worker's replay of an already-applied write must be a no-op
+    /// from the substrate's own
     /// epoch guard's perspective -- scripted here as the fake simply
     /// reporting `NoOp` on delivery, which the worker must complete
     /// exactly like `Applied`.
@@ -11768,8 +11742,8 @@ mod tests {
         assert!(s.store.queue.dead_letters().unwrap().is_empty());
     }
 
-    /// Test 20: D-B1-15. A `stale` delivery means a newer epoch already
-    /// landed -- convergence, not loss -- so it must complete and must not
+    /// A `stale` delivery means a newer epoch already landed --
+    /// convergence, not loss -- so it must complete and must not
     /// dead-letter.
     #[tokio::test]
     async fn a_queued_write_delivered_stale_completes_and_does_not_dead_letter() {
@@ -11796,8 +11770,8 @@ mod tests {
         );
     }
 
-    /// M05B B1 review follow-on 4: a queued item whose instance was
-    /// retired between enqueue and delivery must be quietly completed --
+    /// A queued item whose instance was retired between enqueue and
+    /// delivery must be quietly completed --
     /// no delivery attempt (it would resurrect a binding the operator just
     /// released) and no `DeliveryExhausted` alert (noise against an
     /// instance nobody is going to act on). Unscripted `FakeQueueConnector`
@@ -11837,9 +11811,9 @@ mod tests {
         );
     }
 
-    /// Test 21: D-B1-15's `conflict` row -- the case test 14's synchronous
-    /// coverage misses. Completes **and** raises the same `BindingConflict`
-    /// alert the synchronous path does.
+    /// The `conflict` row -- the case the synchronous coverage misses.
+    /// Completes **and** raises the same `BindingConflict` alert the
+    /// synchronous path does.
     #[tokio::test]
     async fn a_queued_write_delivered_conflicting_raises_the_same_alert_as_the_synchronous_path() {
         let mut s = service();
@@ -11895,8 +11869,8 @@ mod tests {
         assert!(s.store.queue.dead_letters().unwrap().is_empty());
     }
 
-    /// M05B B1 review finding 10: a callee error that does *not* name this
-    /// write's own target as gone -- a transient, reached-and-answered
+    /// A callee error that does *not* name this write's own target as gone
+    /// -- a transient, reached-and-answered
     /// refusal the wire protocol cannot currently distinguish from "gone"
     /// by error code -- must stay retryable on the queued path, not
     /// dead-letter on its first delivery. Otherwise a queued item that
@@ -11927,10 +11901,10 @@ mod tests {
         assert!(s.store.queue.dead_letters().unwrap().is_empty());
     }
 
-    /// Failure-matrix row 9: a callee error on replay naming this write's
-    /// own target as gone (the exact wording `control_plane`'s
-    /// `write-bindings` dispatch uses for that specific refusal, M05B B1
-    /// review finding 10) is terminal -- straight to the DLQ, not retried.
+    /// A callee error on replay naming this write's own target as gone
+    /// (the exact wording `control_plane`'s `write-bindings` dispatch uses
+    /// for that specific refusal) is terminal -- straight to the DLQ, not
+    /// retried.
     #[tokio::test]
     async fn a_callee_error_on_replay_dead_letters_immediately() {
         let mut s = service();
@@ -11959,8 +11933,8 @@ mod tests {
         assert_eq!(dead[0].attempts, 1, "a terminal failure dead-letters on its first attempt");
     }
 
-    /// Test 22: D-B1-14. Without taking `instance_lock`, the worker could
-    /// interleave with a live pass write for the same instance and race
+    /// Without taking `instance_lock`, the worker could interleave with a
+    /// live pass write for the same instance and race
     /// this supervisor into a spurious `BindingConflict`. Proven by
     /// holding the lock externally (as a live pass would) and asserting
     /// the worker's own attempt to take it blocks until released.
@@ -12000,16 +11974,12 @@ mod tests {
         );
     }
 
-    /// Test 23: D-B1-8. Cancelling the token must not wait for a delivery
-    /// *genuinely in flight* -- `FakeDelivery::Blocks` makes `connect`
-    /// never resolve, so if `shutdown` returned promptly here it is
-    /// because cancellation actually interrupted a real, ongoing delivery
-    /// (M05B B1 review finding 5: an earlier version of this test left the
-    /// substrate unscripted, which fails `connect` immediately and
-    /// proves nothing about abandoning work in flight -- its own comment
-    /// also claimed `queue_tick_secs` was 1s here when it was actually set
-    /// to 3600, so the tick this test depended on never fired at all
-    /// inside its own real-clock sleep).
+    /// Cancelling the token must not wait for a delivery *genuinely in
+    /// flight* -- `FakeDelivery::Blocks` makes `connect` never resolve, so
+    /// if `shutdown` returned promptly here it is because cancellation
+    /// actually interrupted a real, ongoing delivery. An earlier version
+    /// of this test left the substrate unscripted, which fails `connect`
+    /// immediately and proves nothing about abandoning work in flight.
     #[tokio::test]
     async fn shutdown_abandons_in_flight_work_rather_than_draining() {
         let mut s = Fixture { queue_tick_secs: Some(1), ..Fixture::default() }.build();
@@ -12055,7 +12025,7 @@ mod tests {
         );
     }
 
-    /// Test 24: the in-process analogue of e2e step 5 -- a queued item
+    /// The in-process analogue of the e2e restart step -- a queued item
     /// survives a supervisor restart (a fresh `SupervisorStore` opened
     /// against the same database file) and the new process's worker
     /// resumes it.
@@ -12090,7 +12060,6 @@ mod tests {
         );
     }
 
-    /// Test 25: the budget the plan's first draft asserted nowhere.
     /// Recovery must complete within one `queue_tick_secs`, not one
     /// `poll_interval_secs` -- driven against a paused clock with
     /// `poll_interval_secs` set far above the worker tick, so passing by
@@ -12136,10 +12105,10 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(1), run_handle).await;
     }
 
-    // ── M05B B1: the DLQ surface ─────────────────────────────────────────
+    // ── The DLQ surface ───────────────────────────────────────────────
 
-    /// Test 27: D-B1-6. `AlertStore`'s unique index cannot express one row
-    /// per dead letter, and an operator wants the standing fact anyway --
+    /// `AlertStore`'s unique index cannot express one row per dead letter,
+    /// and an operator wants the standing fact anyway --
     /// a second dead letter for the same key must refresh the existing
     /// alert's count, not open a second row.
     #[tokio::test]
@@ -12185,10 +12154,9 @@ mod tests {
         );
     }
 
-    /// Test 28: D-B1-6's clear path -- the thing `RemediationExhausted`
-    /// already documents and the draft omitted. Replaying every dead
-    /// letter for a key clears its alert; an earlier replay leaving one
-    /// behind must not.
+    /// The clear path -- the same one `RemediationExhausted` already
+    /// documents. Replaying every dead letter for a key clears its alert;
+    /// an earlier replay leaving one behind must not.
     #[tokio::test]
     async fn the_alert_clears_when_the_last_dead_letter_for_that_key_is_gone() {
         let mut s = service();
@@ -12253,9 +12221,9 @@ mod tests {
 
         // The first replay's own row must resolve before the second dead
         // letter for the identical key can be replayed too -- `Queue::
-        // replay` refuses a second pending row for one key (M05B B1 review
-        // finding 2), so this drives the worker to deliver (and complete)
-        // the first replay's item before trying the second.
+        // replay` refuses a second pending row for one key, so this drives
+        // the worker to deliver (and complete) the first replay's item
+        // before trying the second.
         s.queue_worker_tick().await;
         assert!(s.store.queue.all().unwrap().is_empty(), "the first replay must have landed");
 
@@ -12278,18 +12246,17 @@ mod tests {
         );
     }
 
-    /// M05B B1 review finding 3: a *pruned* dead letter (the DLQ cap
-    /// evicting the oldest row on write, D-B1-9) must clear its own
-    /// standing alert exactly the same way an explicit `replay` does --
-    /// not just when a human happens to replay it. Distinct from the test
-    /// above, which only exercises the replay path.
+    /// A *pruned* dead letter (the DLQ cap evicting the oldest row on
+    /// write) must clear its own standing alert exactly the same way an
+    /// explicit `replay` does -- not just when a human happens to replay
+    /// it. Distinct from the test above, which only exercises the replay
+    /// path.
     #[tokio::test]
     async fn a_pruned_dead_letter_clears_its_own_alert_too() {
         let mut s = service();
         // A cap of 1 so the second key's own dead letter immediately
         // evicts the first key's -- both keys share one group (the app
-        // instance), so the cap applies across them (M05B B1 review
-        // finding 4).
+        // instance), so the cap applies across them.
         s.store.queue = Queue::open_in_memory(QueueConfig {
             dlq_max_rows: 1,
             ..QueueConfig::from(&SupervisorRole::default())
@@ -12351,8 +12318,8 @@ mod tests {
         );
     }
 
-    /// M05B B1 review finding 14: row 12's outbox growth bound -- "at most
-    /// one row per `(instance, logical_ref, substrate)`" -- is enforced by
+    /// The outbox growth bound -- "at most one row per `(instance,
+    /// logical_ref, substrate)`" -- is enforced by
     /// `SupervisorOutbox::already_pending`, but nothing asserted it as the
     /// bound directly.
     #[tokio::test]
@@ -12383,8 +12350,8 @@ mod tests {
         );
     }
 
-    /// Test 29: `dead-letters` lists exactly what the store holds, mapped
-    /// onto the WIT shape (logical ref and substrate DID pulled back out
+    /// `dead-letters` lists exactly what the store holds, mapped onto the
+    /// WIT shape (logical ref and substrate DID pulled back out
     /// of the opaque queue key).
     #[tokio::test]
     async fn dead_letters_lists_what_the_store_holds() {
@@ -12432,8 +12399,8 @@ mod tests {
         assert!(other_rows.is_empty());
     }
 
-    /// Test 30: D-B1-7. `replay` re-enqueues through the ordinary worker
-    /// path and does not execute inline -- proven by scripting no delivery
+    /// `replay` re-enqueues through the ordinary worker path and does not
+    /// execute inline -- proven by scripting no delivery
     /// at all for the target DID and asserting the RPC call still
     /// succeeds, since replay itself never calls the connector.
     #[tokio::test]
@@ -12474,9 +12441,9 @@ mod tests {
         assert_eq!(requeued.len(), 1);
     }
 
-    /// Test 31: failure-matrix row 5, over the RPC surface -- a replayed
-    /// item that fails again returns to the DLQ with its attempt history
-    /// intact, listable the same way the first one was.
+    /// Over the RPC surface -- a replayed item that fails again returns to
+    /// the DLQ with its attempt history intact, listable the same way the
+    /// first one was.
     #[tokio::test]
     async fn a_replayed_item_that_fails_again_returns_to_the_dlq_with_its_history() {
         let mut s = service();
@@ -13695,11 +13662,10 @@ mod tests {
         assert!(signed.verify(&AppDid::new(app_did)).is_ok());
     }
 
-    /// Test 78: the property phase 3's D-S3-5 check depends on -- the
-    /// signed document never echoes the hash back, always the real name,
-    /// even when the caller supplied the hash. Also pins matrix row 10
-    /// (S3's second named test): the epoch is still carried and preserved
-    /// on a hashed request.
+    /// The property the gateway's own check depends on -- the signed
+    /// document never echoes the hash back, always the real name, even
+    /// when the caller supplied the hash. Also pins that the epoch is
+    /// still carried and preserved on a hashed request.
     #[tokio::test]
     async fn resolve_answers_a_hashed_service_name_with_a_document_naming_the_real_name() {
         let s = service();
@@ -13749,8 +13715,8 @@ mod tests {
         assert_eq!(err.code(), PERMISSION_DENIED_CODE);
     }
 
-    /// Test 24: An ungranted caller resolving an `open` service receives the
-    /// signed document.
+    /// An ungranted caller resolving an `open` service receives the signed
+    /// document.
     #[tokio::test]
     async fn resolve_open_service_answers_ungranted_caller() {
         let s = service();
@@ -13778,7 +13744,7 @@ mod tests {
         assert!(signed.verify(&AppDid::new(app_did)).is_ok());
     }
 
-    /// Test 26: An ungranted caller naming a non-existent service gets the same
+    /// An ungranted caller naming a non-existent service gets the same
     /// refusal as an unauthorized call.
     #[tokio::test]
     async fn resolve_open_service_nonexistent_service_refuses_identically_for_ungranted_caller() {
@@ -13804,7 +13770,7 @@ mod tests {
         assert_eq!(err.code(), PERMISSION_DENIED_CODE);
     }
 
-    /// Test 27: An ungranted caller resolving an `open` service on a retired
+    /// An ungranted caller resolving an `open` service on a retired
     /// instance is refused.
     #[tokio::test]
     async fn resolve_open_service_on_retired_instance_is_refused() {
@@ -13831,8 +13797,8 @@ mod tests {
         assert_eq!(err.code(), PERMISSION_DENIED_CODE);
     }
 
-    /// Test 28: A granted caller naming a non-existent service gets
-    /// InvalidParams, not denied.
+    /// A granted caller naming a non-existent service gets InvalidParams,
+    /// not denied.
     #[tokio::test]
     async fn resolve_granted_caller_naming_nonexistent_service_returns_invalid_params() {
         let s = service();
@@ -13857,8 +13823,8 @@ mod tests {
         assert!(matches!(err, RpcError::InvalidParams(_)), "expected InvalidParams, got {err:?}");
     }
 
-    /// Test 29: The document served to an ungranted `open` caller is
-    /// byte-identical to the one served to a granted caller.
+    /// The document served to an ungranted `open` caller is byte-identical
+    /// to the one served to a granted caller.
     #[tokio::test]
     async fn resolve_open_service_served_to_ungranted_caller_is_identical_to_granted_caller() {
         let s = service();
@@ -13896,29 +13862,28 @@ mod tests {
         assert_eq!(granted_signed.signature, ungranted_signed.signature);
     }
 
-    /// Plan test 44 (F13): `topology_visibility = open` and `visibility =
-    /// private` are not redundant, and neither alone proves the other is
-    /// unnecessary. `D-B2-14`(b) refuses this combination at both of its
-    /// entry points (`compile()` and `handle_submit`) precisely because,
-    /// left to reach a supervisor, `open` alone is sufficient for
-    /// `handle_resolve` to hand out the document -- the visibility read at
+    /// `topology_visibility = open` and `visibility = private` are not
+    /// redundant, and neither alone proves the other is unnecessary. The
+    /// compiler refuses this combination at both of its entry points
+    /// (`compile()` and `handle_submit`) precisely because, left to reach
+    /// a supervisor, `open` alone is sufficient for `handle_resolve` to
+    /// hand out the document -- the visibility read at
     /// [`SupervisorService::handle_resolve`]'s top does not consult
     /// `config.visibility` at all, only `topology_visibility`. This test
     /// goes around both refusal points the way `adopted_instance` always
     /// does (`s.store.submit` directly, not the RPC `submit` that calls
-    /// `handle_submit`) to prove that half of F13's claim as an actual
+    /// `handle_submit`) to prove that half of the claim as an actual
     /// runtime behaviour, not just an absence of a compile-time refusal.
     ///
-    /// The other half of F13's claim -- that the member named in this
-    /// document is then unreachable -- is proven separately, structurally:
+    /// The other half -- that the member named in this document is then
+    /// unreachable -- is proven separately, structurally:
     /// `member_registry_record_mints_nothing_for_a_private_member`
     /// (`crates/sdk/src/deploy.rs`) shows a `private` member gets no
     /// registry record at all, so nothing a caller could look up ever
     /// exists to dial. Reproducing that failure here as well would need a
     /// live registry and a live gateway dial, which is
-    /// `gateway_hostname_e2e.rs`'s job for the `(open, internal)` pair
-    /// (test 43); F13's own row already states the two halves come from
-    /// two different mechanisms.
+    /// `gateway_hostname_e2e.rs`'s job for the `(open, internal)` pair.
+    /// The two halves come from two different mechanisms.
     #[tokio::test]
     async fn resolve_open_service_over_a_private_member_still_serves_the_document() {
         let s = service();
@@ -14069,8 +14034,8 @@ mod tests {
         assert_eq!(first.document.issued_at, second.document.issued_at);
     }
 
-    /// D-S2-6: a cached document is re-signed once less than half its
-    /// validity remains, so a served copy always outlives a caller's own
+    /// A cached document is re-signed once less than half its validity
+    /// remains, so a served copy always outlives a caller's own
     /// cache TTL rather than being served right up to the moment it
     /// expires.
     #[tokio::test]
