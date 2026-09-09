@@ -17,19 +17,16 @@
 
 use std::{
     fs,
-    path::PathBuf,
     time::{Duration, Instant},
 };
 
+use common::SubstrateNode;
 use ed25519_dalek::VerifyingKey;
 use reqwest::Client;
 use rustls::crypto::ring;
 use serde_json::{Value, json};
 use syneroym_core::{
-    config::{
-        AppSandboxRole, ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole,
-        IrohParentConfig, LogTarget, ServiceRegistryRole, SubstrateConfig,
-    },
+    config::AppSandboxRole,
     dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
     test_constants,
 };
@@ -38,33 +35,12 @@ use syneroym_identity::{
 };
 use syneroym_rpc::SagaState;
 use syneroym_sdk::SyneroymClient;
-use syneroym_substrate::identity;
-use tokio::{
-    sync::{Mutex, mpsc, mpsc::Sender},
-    task::JoinHandle,
-    time,
-};
+use tokio::time;
+
+mod common;
 
 #[path = "common/retry.rs"]
 mod retry;
-
-/// This file's own hundred-port blocks, distinct from every other file in
-/// this directory (the highest claimed elsewhere at the time this was
-/// written is `proxy_outbox_e2e.rs`'s 13_900-13_902).
-const REVERSE_WALK_PORTS: (u16, u16, u16, u16, u16, u16) =
-    (14_000, 14_001, 14_002, 14_100, 14_101, 14_102);
-const DEADLINE_PORTS: (u16, u16, u16, u16, u16, u16) =
-    (14_200, 14_201, 14_202, 14_300, 14_301, 14_302);
-
-/// Each test in this binary boots two full substrate instances (real iroh
-/// QUIC socket, self-hosted relay, mainline DHT, wasmtime). The default
-/// test harness runs `#[tokio::test]` functions in one binary concurrently,
-/// and enough full substrates competing for the CI runner's CPU at once
-/// starves it badly enough that iroh's QUIC path validation times out with
-/// "no viable network path exists" even though nothing is actually broken.
-/// Serializing full-substrate-instance lifetimes within this binary (same
-/// fix as `tests/common/mod.rs`'s `SUBSTRATE_TEST_LOCK`) avoids it.
-static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// A saga must not have to wait out the production retry window for a test
 /// to see its undos land, and the sweep tick must be fast enough that a
@@ -77,148 +53,30 @@ fn fast_saga_role() -> AppSandboxRole {
     }
 }
 
-/// A full substrate booted from a caller-owned directory, so the same
-/// identity can be torn down and rebooted later in the same test. Copied in
-/// shape from `proxy_outbox_e2e.rs`'s own `Node`, split into
-/// `boot_locked`/`unlock` (this file's own addition): a restart must be
-/// observable *before* the KEK is injected, which `boot`'s own
-/// unconditional injection never let a test see.
-struct Node {
-    substrate_client: SyneroymClient,
-    registry_url: String,
-    shutdown_tx: Sender<()>,
-    substrate_handle: JoinHandle<()>,
+/// The `.configure` hook every node in this file boots with: the fast saga
+/// role plus `retry.max_attempts = 1` (a saga call must not be retried
+/// before its compensation walk runs).
+fn configure_saga_node(config: &mut syneroym_core::config::SubstrateConfig) {
+    config.roles.app_sandbox = Some(fast_saga_role());
+    config.retry.max_attempts = 1;
 }
 
-impl Node {
-    async fn boot_locked(
-        base_path: PathBuf,
-        iroh_port: u16,
-        registry_port: u16,
-        gateway_port: u16,
-        shared_registry_url: Option<String>,
-        owner: &Identity,
-        app_sandbox: Option<AppSandboxRole>,
-    ) -> Self {
-        let mut config = SubstrateConfig {
-            app_local_data_dir: base_path.join("data"),
-            app_data_dir: base_path.join("user_data"),
-            app_cache_dir: base_path.join("cache"),
-            app_log_dir: base_path.join("logs"),
-            profile: "full".to_string(),
-            ..SubstrateConfig::default()
-        };
-        config.resolve_paths();
-        config.logging.target = LogTarget::Stdout;
-        config.roles.coordinator = Some(CoordinatorRole {
-            iroh: Some(CoordinatorIrohConfig {
-                enable_relay: true,
-                http_bind_address: format!("0.0.0.0:{iroh_port}"),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("0.0.0.0:{registry_port}"),
-            ..Default::default()
-        });
-        let own_registry_url = format!("http://localhost:{registry_port}");
-        let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
-        config.substrate.registry_url = Some(effective_registry_url.clone());
-        config.substrate.enable_bep0044_dht = false;
-        config.parent_coordinator.iroh =
-            Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
-        config.roles.client_gateway =
-            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
-        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
-        if let Some(role) = app_sandbox {
-            config.roles.app_sandbox = Some(role);
-            config.retry.max_attempts = 1;
-        }
-
-        let state = identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
-            .expect("failed to setup identity");
-        let substrate_service_id = state.did.clone();
-
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let runtime =
-            syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
-        let config_clone = config.clone();
-        let substrate_handle = tokio::spawn(async move {
-            syneroym_substrate::run_with_signal(config_clone, runtime, async {
-                let _ = shutdown_rx.recv().await;
-            })
-            .await
-            .expect("substrate failed to run");
-        });
-
-        let mut substrate_client = SyneroymClient::new_with_identity(
-            substrate_service_id,
-            effective_registry_url.clone(),
-            Identity::from_bytes(&owner.to_bytes()),
-        )
-        .with_registry_dht(false);
-        substrate_client
-            .wait_for_ready(Duration::from_secs(30))
-            .await
-            .expect("substrate did not become available in time");
-
-        Self {
-            substrate_client,
-            registry_url: effective_registry_url,
-            shutdown_tx,
-            substrate_handle,
-        }
-    }
-
-    async fn unlock(&mut self) {
-        // Some callers reach this right after `boot_locked` (no idle gap,
-        // never fails), others reach it after the connection sat idle
-        // through a teardown/reboot cycle plus a real wall-clock sleep
-        // ("no viable network path exists: last path abandoned by peer";
-        // same root cause fixed throughout this crate's e2e tests, e.g.
-        // `binding_push_e2e.rs`). `SyneroymClient::connect` no-ops on an
-        // already-`Some` connection, so recovering means an explicit
-        // `shutdown`-then-`connect` (redial) before one retry, not just
-        // retrying the same request on the same dead connection.
-        crate::call_with_reconnect!(
-            self.substrate_client,
-            self.substrate_client.inject_kek(hex::encode([0xcdu8; 32])).await
-        );
-    }
-
-    async fn boot(
-        base_path: PathBuf,
-        iroh_port: u16,
-        registry_port: u16,
-        gateway_port: u16,
-        shared_registry_url: Option<String>,
-        owner: &Identity,
-        app_sandbox: Option<AppSandboxRole>,
-    ) -> Self {
-        let mut node = Self::boot_locked(
-            base_path,
-            iroh_port,
-            registry_port,
-            gateway_port,
-            shared_registry_url,
-            owner,
-            app_sandbox,
-        )
-        .await;
-        node.unlock().await;
-        node
-    }
-
-    fn did(&self) -> &str {
-        self.substrate_client.service_id()
-    }
-
-    async fn teardown(mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = self.substrate_handle.await;
-    }
+/// Injects the KEK into a node booted locked (no KEK at boot). A restart
+/// must be observable *before* the KEK is injected, which is why the
+/// reboot in test 2 boots locked and calls this only once the test has
+/// checked the locked-vault behaviour.
+async fn unlock(node: &mut SubstrateNode) {
+    // Some callers reach this right after a locked boot (no idle gap, never
+    // fails), others reach it after the connection sat idle through a
+    // teardown/reboot cycle plus a real wall-clock sleep ("no viable
+    // network path exists: last path abandoned by peer"; same root cause
+    // fixed throughout this crate's e2e tests). `SyneroymClient::connect`
+    // no-ops on an already-`Some` connection, so recovering means an
+    // explicit `shutdown`-then-`connect` (redial) before one retry.
+    crate::call_with_reconnect!(
+        node.substrate_client,
+        node.substrate_client.inject_kek(hex::encode([0xcdu8; 32])).await
+    );
 }
 
 /// Publishes `service_id`'s endpoint record so another node's proxy can
@@ -269,7 +127,7 @@ async fn publish_endpoint(
 /// `begin` refuses a caller with no unexpired one; the participant needs
 /// none, as it never originates a saga call itself.
 async fn deploy_guest(
-    node: &mut Node,
+    node: &mut SubstrateNode,
     master: &Identity,
     wasm: Vec<u8>,
     with_cert: bool,
@@ -277,7 +135,7 @@ async fn deploy_guest(
     let service_id = substrate::derive_did_key(&master.public_key());
     let instance_certificate = if with_cert {
         // `node`'s connection was dialed and proven live by its own
-        // `wait_for_ready` during `Node::boot`, then may have sat idle
+        // `wait_for_ready` during its own boot, then may have sat idle
         // through a second full substrate boot (and that node's own
         // `deploy_guest`, when this is the driver) before this, the
         // first real call on it, reuses it -- long enough under CI's
@@ -338,7 +196,7 @@ async fn deploy_guest(
     if with_cert {
         // The receiving node re-verifies the driver's instance certificate
         // on every undo, and cannot do that without the master's anchor.
-        RegistryClient::new(false, Some(node.registry_url.clone()))
+        RegistryClient::new(false, Some(node.registry_url().to_string()))
             .publish_master_anchor(&service_id, vec![], None, master, true)
             .await
             .expect("failed to publish the caller master's anchor");
@@ -351,7 +209,7 @@ async fn deploy_guest(
         node.did(),
         mechanisms.clone(),
         master,
-        &node.registry_url,
+        node.registry_url(),
         EndpointType::Service,
     )
     .await;
@@ -360,10 +218,10 @@ async fn deploy_guest(
 
 /// Drives the driver's own `begin-workflow` export -- real guest code
 /// calling `syneroym:proxy/saga::begin`, not a Rust-level fake.
-async fn begin_workflow(node: &Node, driver_did: &str, deadline_secs: u64) -> String {
+async fn begin_workflow(node: &SubstrateNode, driver_did: &str, deadline_secs: u64) -> String {
     let mut client = SyneroymClient::new_with_identity(
         driver_did.to_string(),
-        node.registry_url.clone(),
+        node.registry_url().to_string(),
         Identity::generate().unwrap(),
     )
     .with_registry_dht(false);
@@ -381,10 +239,16 @@ async fn begin_workflow(node: &Node, driver_did: &str, deadline_secs: u64) -> St
     res.as_str().expect("begin-workflow must return a saga id string").to_string()
 }
 
-async fn add_step(node: &Node, driver_did: &str, saga_id: &str, peer_did: &str, item: &str) {
+async fn add_step(
+    node: &SubstrateNode,
+    driver_did: &str,
+    saga_id: &str,
+    peer_did: &str,
+    item: &str,
+) {
     let mut client = SyneroymClient::new_with_identity(
         driver_did.to_string(),
-        node.registry_url.clone(),
+        node.registry_url().to_string(),
         Identity::generate().unwrap(),
     )
     .with_registry_dht(false);
@@ -400,10 +264,10 @@ async fn add_step(node: &Node, driver_did: &str, saga_id: &str, peer_did: &str, 
     client.shutdown().await.ok();
 }
 
-async fn finish_workflow(node: &Node, driver_did: &str, saga_id: &str, outcome: &str) {
+async fn finish_workflow(node: &SubstrateNode, driver_did: &str, saga_id: &str, outcome: &str) {
     let mut client = SyneroymClient::new_with_identity(
         driver_did.to_string(),
-        node.registry_url.clone(),
+        node.registry_url().to_string(),
         Identity::generate().unwrap(),
     )
     .with_registry_dht(false);
@@ -422,10 +286,10 @@ async fn finish_workflow(node: &Node, driver_did: &str, saga_id: &str, outcome: 
 /// Reads the participant's own audit log through an ordinary guest call --
 /// deliberately not through the operator surface, so this witnesses the
 /// participant's own state rather than the saga log's.
-async fn read_ledger(node: &Node, participant_did: &str) -> String {
+async fn read_ledger(node: &SubstrateNode, participant_did: &str) -> String {
     let mut client = SyneroymClient::new_with_identity(
         participant_did.to_string(),
-        node.registry_url.clone(),
+        node.registry_url().to_string(),
         Identity::generate().unwrap(),
     )
     .with_registry_dht(false);
@@ -476,38 +340,30 @@ fn artifact() -> Vec<u8> {
 /// in-process test proves.
 #[tokio::test]
 async fn a_failed_workflow_is_undone_in_reverse_order() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     fail_if_fixture_missing();
     let _ = ring::default_provider().install_default();
     let wasm = artifact();
-    let (a_iroh, a_reg, a_gw, b_iroh, b_reg, b_gw) = REVERSE_WALK_PORTS;
 
-    let driver_dir = tempfile::tempdir().unwrap();
-    let participant_dir = tempfile::tempdir().unwrap();
     let owner = Identity::generate().unwrap();
 
-    let mut node_a = Node::boot(
-        driver_dir.path().to_path_buf(),
-        a_iroh,
-        a_reg,
-        a_gw,
-        None,
-        &owner,
-        Some(fast_saga_role()),
-    )
-    .await;
-    let shared_registry = node_a.registry_url.clone();
+    // Both nodes boot unlocked -- the KEK injected during their own boot,
+    // before the sibling's boot can leave a connection idle. Each self-
+    // relays through its own iroh coordinator; only the registry is shared.
+    let mut node_a = SubstrateNode::builder()
+        .owner(&owner)
+        .configure(configure_saga_node)
+        .inject_kek_bytes([0xcd; 32])
+        .boot()
+        .await;
+    let shared_registry = node_a.registry_url().to_string();
 
-    let mut node_b = Node::boot(
-        participant_dir.path().to_path_buf(),
-        b_iroh,
-        b_reg,
-        b_gw,
-        Some(shared_registry.clone()),
-        &owner,
-        None,
-    )
-    .await;
+    let mut node_b = SubstrateNode::builder()
+        .owner(&owner)
+        .shared_registry(&shared_registry)
+        .inject_kek_bytes([0xcd; 32])
+        .boot()
+        .await;
 
     let participant_master = Identity::generate().unwrap();
     let (participant_did, _participant_mechanisms) =
@@ -580,38 +436,30 @@ async fn a_failed_workflow_is_undone_in_reverse_order() {
 /// than silently skipping.
 #[tokio::test]
 async fn a_workflow_abandoned_across_a_restart_is_compensated_by_its_deadline() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     fail_if_fixture_missing();
     let _ = ring::default_provider().install_default();
     let wasm = artifact();
-    let (a_iroh, a_reg, a_gw, b_iroh, b_reg, b_gw) = DEADLINE_PORTS;
 
-    let driver_dir = tempfile::tempdir().unwrap();
-    let participant_dir = tempfile::tempdir().unwrap();
     let owner = Identity::generate().unwrap();
 
-    let mut node_a = Node::boot(
-        driver_dir.path().to_path_buf(),
-        a_iroh,
-        a_reg,
-        a_gw,
-        None,
-        &owner,
-        Some(fast_saga_role()),
-    )
-    .await;
-    let shared_registry = node_a.registry_url.clone();
+    // Node A hosts the registry and restarts below, so it must come back on
+    // the same ports and under the same on-disk identity. Reuse one captured
+    // builder for both boots; `node_a_dir` outlives node A's own teardown.
+    let node_a_dir = tempfile::tempdir().unwrap();
+    let node_a_builder = SubstrateNode::builder()
+        .owner(&owner)
+        .base_path(node_a_dir.path())
+        .configure(configure_saga_node);
+    let mut node_a = node_a_builder.clone().inject_kek_bytes([0xcd; 32]).boot().await;
+    let shared_registry = node_a.registry_url().to_string();
 
-    let mut node_b = Node::boot(
-        participant_dir.path().to_path_buf(),
-        b_iroh,
-        b_reg,
-        b_gw,
-        Some(shared_registry.clone()),
-        &owner,
-        None,
-    )
-    .await;
+    let mut node_b = SubstrateNode::builder()
+        .owner(&owner)
+        .shared_registry(&shared_registry)
+        .inject_kek_bytes([0xcd; 32])
+        .boot()
+        .await;
     let participant_master = Identity::generate().unwrap();
     let (participant_did, participant_mechanisms) =
         deploy_guest(&mut node_b, &participant_master, wasm.clone(), false).await;
@@ -638,29 +486,15 @@ async fn a_workflow_abandoned_across_a_restart_is_compensated_by_its_deadline() 
     // Tear down node A and restart it locked -- the step no in-process test
     // can express, and the reason the log is durable at all.
     node_a.teardown().await;
-    // Same ports, not a fresh block: node A hosts the registry itself (like
-    // `proxy_outbox_e2e.rs`'s own node A), and `None` here means it brings
-    // its own back up at the same address rather than depending on some
-    // other node's. The community registry keeps its records **in
-    // memory**, so this restart empties it regardless of the address being
-    // unchanged -- node B's record and the driver's master anchor are
-    // republished below, the same requirement `proxy_outbox_e2e.rs`
-    // records for its own node A restart.
-    let mut node_a = Node::boot_locked(
-        driver_dir.path().to_path_buf(),
-        a_iroh,
-        a_reg,
-        a_gw,
-        None,
-        &owner,
-        Some(fast_saga_role()),
-    )
-    .await;
+    // Node A hosts the registry itself, so its reboot must come back at the
+    // same address -- the reused builder keeps its ports and on-disk
+    // identity. It boots locked (no KEK) so the test can check the
+    // locked-vault behaviour before `unlock`.
+    let mut node_a = node_a_builder.boot().await;
 
     // The community registry node A hosts keeps its records in memory, so
-    // its own restart empties it -- republished here for the same reason
-    // `proxy_outbox_e2e.rs`'s restart case does. Neither call needs the
-    // KEK, so this happens before `unlock()`.
+    // its own restart empties it -- republished here. Neither call needs the
+    // KEK, so this happens before `unlock`.
     //
     // Two republishes, not one: `participant_did`'s own guest-level record
     // (reusing `participant_mechanisms` from `deploy_guest`'s earlier
@@ -706,7 +540,7 @@ async fn a_workflow_abandoned_across_a_restart_is_compensated_by_its_deadline() 
     // Unlocked: the sagas verb answers again, and the abandoned saga is
     // compensated on its own, with no guest involved at any point after the
     // restart.
-    node_a.unlock().await;
+    unlock(&mut node_a).await;
     assert!(
         wait_until(Duration::from_secs(60), || async {
             read_ledger(&node_b, &participant_did).await == "reserve:a, undo:a"

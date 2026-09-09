@@ -22,258 +22,71 @@
 //!    budget: the item lands in the DLQ, an alert is raised, `dead-letters`
 //!    lists it, and `replay` re-queues it rather than executing it inline.
 //!
-//! `Node`/the reboot-the-same-identity pattern is copied from
-//! `supervisor_loop_e2e.rs`. `queue_*` are configured far below their
-//! production defaults (§0.12's ~10-hour attempt budget) so step 8
-//! completes in seconds rather than hours -- that arithmetic is pinned by
-//! `syneroym-async-queue`'s own unit tests, not re-proven here; this file
-//! proves the *sequence*.
+//! All three nodes come from `common::SubstrateNode`; the supervisor and
+//! `managed-b` boot from caller-owned directories so they can be rebooted
+//! under the same identity. `queue_*` are configured far below their
+//! production ~10-hour attempt budget so step 8 completes in seconds rather
+//! than hours -- that arithmetic is pinned by `syneroym-async-queue`'s own
+//! unit tests, not re-proven here; this file proves the *sequence*.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
     time::{Duration, Instant},
 };
 
+use common::SubstrateNode;
 use rustls::crypto::ring;
 use semver::Version;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use syneroym_app_orchestration::{
-    LocalFilesystemCatalog, Visibility, compile,
+    Visibility,
     models::{
-        AppBlueprintId, AppInstanceId, LogicalServiceName, PlacementSelector, ServiceConfig,
-        ServiceSpec, ServiceType, SubstrateAlias, SynAppManifest,
+        AppBlueprintId, LogicalServiceName, PlacementSelector, ServiceConfig, ServiceSpec,
+        ServiceType, SubstrateAlias, SynAppManifest,
     },
 };
 use syneroym_app_supervisor::inventory::SupervisorInventoryEntry;
-use syneroym_core::config::{
-    ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig, LogTarget,
-    ServiceRegistryRole, SubstrateConfig, SupervisorRole,
-};
-use syneroym_identity::{Identity, substrate};
-use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
-use syneroym_sdk::SyneroymClient;
-use syneroym_substrate::identity;
-use tokio::{
-    sync::{Mutex, mpsc, mpsc::Sender},
-    task::JoinHandle,
-    time,
-};
+use syneroym_core::config::SupervisorRole;
+use syneroym_identity::Identity;
+use tokio::time;
+
+mod common;
 
 #[path = "common/retry.rs"]
 mod retry;
-
-#[derive(Clone, Copy)]
-struct PortBlock {
-    supervisor_iroh: u16,
-    supervisor_registry: u16,
-    supervisor_gateway: u16,
-    managed_a_iroh: u16,
-    managed_a_registry: u16,
-    managed_a_gateway: u16,
-    managed_b_iroh: u16,
-    managed_b_registry: u16,
-    managed_b_gateway: u16,
-}
-
-// The highest block claimed in this directory before this file is
-// `app_instance_identity_e2e.rs`'s single-node 13_000-13_102. Continuing
-// one hundred-port block past that; the second test offsets by 500 more so
-// the two tests in this file never collide with each other.
-const PORTS: PortBlock = PortBlock {
-    supervisor_iroh: 13_200,
-    supervisor_registry: 13_201,
-    supervisor_gateway: 13_202,
-    managed_a_iroh: 13_300,
-    managed_a_registry: 13_301,
-    managed_a_gateway: 13_302,
-    managed_b_iroh: 13_400,
-    managed_b_registry: 13_401,
-    managed_b_gateway: 13_402,
-};
-
-/// Not sharing a port block keeps the two tests here from colliding, but
-/// they still each boot three full substrate instances (real iroh QUIC
-/// socket, self-hosted relay, mainline DHT, wasmtime), and running that
-/// many concurrently starves the CI runner's CPU badly enough that iroh's
-/// QUIC path validation times out with "no viable network path exists"
-/// even though nothing is actually broken. Serializing full-substrate-
-/// instance lifetimes within this binary (same fix as `tests/common/mod.rs`'s
-/// `SUBSTRATE_TEST_LOCK`) avoids it.
-static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 const MANAGED_A_ALIAS: &str = "managed-a";
 const MANAGED_B_ALIAS: &str = "managed-b";
 const INSTANCE_ID: &str = "b1-ref-scenario-inst";
 
-/// Copied from `supervisor_loop_e2e.rs`: a full, independently-identified
-/// `syneroym-substrate` instance booted from a caller-owned directory, so
-/// the same identity (supervisor or managed) can be torn down and rebooted
-/// later in the same test.
-struct Node {
-    registry_url: String,
-    substrate_client: SyneroymClient,
-    shutdown_tx: Sender<()>,
-    substrate_handle: JoinHandle<()>,
-}
-
-impl Node {
-    #[allow(clippy::too_many_arguments)]
-    async fn boot(
-        base_path: PathBuf,
-        iroh_port: u16,
-        registry_port: u16,
-        gateway_port: u16,
-        shared_registry_url: Option<String>,
-        shared_relay_url: Option<String>,
-        owner: &Identity,
-        supervisor: Option<SupervisorRole>,
-    ) -> Self {
-        let mut config = SubstrateConfig {
-            app_local_data_dir: base_path.join("data"),
-            app_data_dir: base_path.join("user_data"),
-            app_cache_dir: base_path.join("cache"),
-            app_log_dir: base_path.join("logs"),
-            profile: "full".to_string(),
-            ..SubstrateConfig::default()
-        };
-        config.resolve_paths();
-        config.logging.target = LogTarget::Stdout;
-
-        config.roles.coordinator = Some(CoordinatorRole {
-            iroh: Some(CoordinatorIrohConfig {
-                enable_relay: true,
-                http_bind_address: format!("0.0.0.0:{iroh_port}"),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("0.0.0.0:{registry_port}"),
-            ..Default::default()
-        });
-        let own_registry_url = format!("http://localhost:{registry_port}");
-        let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
-        config.substrate.registry_url = Some(effective_registry_url.clone());
-        config.substrate.enable_bep0044_dht = false;
-        let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
-        config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway =
-            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
-        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
-        config.roles.supervisor = supervisor;
-
-        let substrate_identity_state =
-            identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
-                .expect("failed to setup identity");
-        let substrate_service_id = substrate_identity_state.did.clone();
-
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let runtime =
-            syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
-
-        let config_clone = config.clone();
-        let substrate_handle = tokio::spawn(async move {
-            syneroym_substrate::run_with_signal(config_clone, runtime, async {
-                let _ = shutdown_rx.recv().await;
-            })
-            .await
-            .expect("substrate failed to run");
-        });
-
-        let mut substrate_client = SyneroymClient::new_with_identity(
-            substrate_service_id.clone(),
-            effective_registry_url.clone(),
-            Identity::from_bytes(&owner.to_bytes()),
-        )
-        .with_registry_dht(false);
-        substrate_client
-            .wait_for_ready(Duration::from_secs(30))
-            .await
-            .expect("substrate did not become available in time");
-        substrate_client.inject_kek(hex::encode([0xabu8; 32])).await.expect("inject_kek failed");
-
-        Self {
-            registry_url: effective_registry_url,
-            substrate_client,
-            shutdown_tx,
-            substrate_handle,
-        }
-    }
-
-    fn did(&self) -> &str {
-        self.substrate_client.service_id()
-    }
-
-    async fn teardown(mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = self.substrate_handle.await;
-    }
-}
-
-/// Fast, test-only queue knobs (M05B B1). The production defaults give a
-/// ~10-hour attempt budget (`slice-b1-implementation-plan.md` §0.12) --
-/// deliberately not reproduced here; this scenario needs the *sequence* to
-/// happen, not the real window.
-/// `poll_interval_secs` is a caller-chosen parameter, not a fixed constant:
-/// the resident loop's own pass is what makes the *initial* scale-out push
-/// due in the first place (`submit`/`force-reconcile` are both all-or-
-/// nothing across every placed alias via `build_clients`, so neither can
-/// land backend's redeploy while managed-b is down -- only the loop's own
-/// best-effort `connect_best_effort` can). Discovery needs a short poll
-/// interval; task.md's own recovery budget ("within one worker tick, not
-/// one poll interval") needs a long one for the *second* boot, after the
-/// item is already queued, so a passing convergence cannot be a coincidence
-/// of the loop also happening to retry in time.
+/// Fast, test-only queue knobs. The production defaults give a ~10-hour
+/// attempt budget -- deliberately not reproduced here; this scenario needs
+/// the *sequence* to happen, not the real window.
 ///
-/// `queue_max_attempts` is a caller-chosen parameter too, for the same
-/// reason: the queue worker ticks every second the whole time a substrate
-/// this test deliberately keeps offline stays unreachable, each attempt
-/// paying up to `MANAGED_SUBSTRATE_CONNECT_TIMEOUT` (10s). A low budget is
-/// the point for the DLQ test (it wants delivery to actually exhaust and
-/// dead-letter); a caller asserting the item is *still pending* across a
-/// restart needs enough headroom that a slow CI runner's extra wall-clock
-/// time can't dead-letter it out from under that assertion first.
+/// `poll_interval_secs` is a caller-chosen parameter: the resident loop's
+/// own pass is what makes the *initial* scale-out push due
+/// (`submit`/`force-reconcile` are both all-or-nothing across every placed
+/// alias, so neither can land backend's redeploy while managed-b is down --
+/// only the loop's own best-effort connect can). Discovery needs a short
+/// interval; the recovery budget ("within one worker tick, not one poll
+/// interval") needs a long one for the *second* boot, so a passing
+/// convergence cannot be a coincidence of the loop also happening to retry
+/// in time.
+///
+/// `queue_max_attempts` is caller-chosen too: a low budget is the point for
+/// the DLQ test (it wants delivery to exhaust and dead-letter); a caller
+/// asserting the item is *still pending* across a restart needs enough
+/// headroom that a slow CI runner's extra wall-clock time can't dead-letter
+/// it out from under that assertion first.
 fn supervisor_role(poll_interval_secs: u64, queue_max_attempts: u8) -> SupervisorRole {
     SupervisorRole {
-        poll_interval_secs,
-        db_name: "supervisor.db".to_string(),
-        max_restart_attempts: 3,
-        restart_backoff_secs: 30,
-        alert_topic: "supervisor/alerts".to_string(),
-        master_backup_dir: "master-backups".to_string(),
         queue_tick_secs: 1,
         queue_max_attempts,
         queue_max_backoff_secs: 1,
         queue_visibility_timeout_secs: 5,
         queue_dlq_max_rows: 10,
-        ..SupervisorRole::default()
+        ..common::supervisor_role(poll_interval_secs)
     }
-}
-
-fn node_wide_supervisor_grant(
-    node_owner: &Identity,
-    grantee_did: &str,
-    node_did: &str,
-) -> CapabilityToken {
-    let resource = ResourceUri::substrate(node_did);
-    CapabilityToken::issue(
-        node_owner,
-        grantee_did,
-        [Ability::ORCHESTRATOR_DEPLOY, Ability::ORCHESTRATOR_STATUS]
-            .into_iter()
-            .map(|a| Capability {
-                with: resource.clone(),
-                can: Ability(a.to_string()),
-                caveats: None,
-            })
-            .collect(),
-        Map::new(),
-        3600,
-        vec![],
-    )
-    .expect("issue node-wide supervisor grant")
 }
 
 /// `backend` (the dependency) on `managed-a`, scaled to `backend_replicas`;
@@ -347,20 +160,11 @@ fn manifest(backend_replicas: u32) -> SynAppManifest {
 }
 
 async fn compiled_plan_json(backend_replicas: u32) -> String {
-    let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
-    let compiled = compile(AppInstanceId::new(INSTANCE_ID), &manifest(backend_replicas), &catalog)
-        .await
-        .unwrap();
-    compiled.plans.last().unwrap().to_json().unwrap()
+    common::compiled_plan_json(&manifest(backend_replicas), INSTANCE_ID).await
 }
 
 fn submission(plan_json: String, inventory_json: String, generation: u64) -> Value {
-    json!([{
-        "app_instance_id": INSTANCE_ID,
-        "plan_json": plan_json,
-        "inventory_json": inventory_json,
-        "generation": generation,
-    }])
+    common::submission(INSTANCE_ID, plan_json, inventory_json, generation)
 }
 
 fn str_field<'a>(v: &'a Value, field: &str) -> Option<&'a str> {
@@ -377,7 +181,7 @@ fn str_field<'a>(v: &'a Value, field: &str) -> Option<&'a str> {
 ///
 /// `supervisor_node`'s own connection can independently be the thing at
 /// fault here too: it was dialed and proven live by its own
-/// `wait_for_ready` during `Node::boot`, then sat idle through both managed
+/// `wait_for_ready` during its own boot, then sat idle through both managed
 /// nodes' full boots -- long enough under CI's scheduling pressure for the
 /// peer to abandon that idle path ("no viable network path exists: last
 /// path abandoned by peer"; same root cause fixed throughout this crate's
@@ -386,7 +190,7 @@ fn str_field<'a>(v: &'a Value, field: &str) -> Option<&'a str> {
 /// `shutdown`-then-`connect` redial is folded into the loop below whenever
 /// a retriable attempt fails -- cheap insurance on top of the DHT-wait loop
 /// this helper already had.
-async fn submit_with_retry(supervisor_node: &mut Node, params: Value) {
+async fn submit_with_retry(supervisor_node: &mut SubstrateNode, params: Value) {
     let deadline = Instant::now() + Duration::from_secs(180);
     loop {
         match supervisor_node.substrate_client.request("supervisor", "submit", params.clone()).await
@@ -404,7 +208,7 @@ async fn submit_with_retry(supervisor_node: &mut Node, params: Value) {
     }
 }
 
-async fn supervisor_status(supervisor_node: &Node) -> Value {
+async fn supervisor_status(supervisor_node: &SubstrateNode) -> Value {
     supervisor_node
         .substrate_client
         .request("supervisor", "status", json!([INSTANCE_ID]))
@@ -431,7 +235,7 @@ fn is_converged(status: &Value) -> bool {
 /// own steps 4/5/7 ask to assert the item is "in the outbox"/"still
 /// queued"/"the outbox is empty", which only this verb (not `alerts` or
 /// `is_converged`) can answer directly.
-async fn outbox_item_ids(supervisor_node: &Node, substrate_did: &str) -> Vec<u64> {
+async fn outbox_item_ids(supervisor_node: &SubstrateNode, substrate_did: &str) -> Vec<u64> {
     let items = supervisor_node
         .substrate_client
         .request("supervisor", "outbox", json!([INSTANCE_ID]))
@@ -447,7 +251,10 @@ async fn outbox_item_ids(supervisor_node: &Node, substrate_did: &str) -> Vec<u64
         .collect()
 }
 
-async fn active_alert_kinds(supervisor_node: &Node, substrate_did: &str) -> BTreeSet<String> {
+async fn active_alert_kinds(
+    supervisor_node: &SubstrateNode,
+    substrate_did: &str,
+) -> BTreeSet<String> {
     let alerts = supervisor_node
         .substrate_client
         .request("supervisor", "alerts", json!([INSTANCE_ID, false]))
@@ -465,72 +272,60 @@ async fn active_alert_kinds(supervisor_node: &Node, substrate_did: &str) -> BTre
 
 #[tokio::test]
 async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
 
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
 
+    // The supervisor hosts the registry and restarts at step 5, so it must
+    // come back on the same ports and identity -- reuse one captured
+    // builder. Short poll interval on the first boot so the resident loop's
+    // own pass discovers step 3's scale-out and enqueues the failed push
+    // while managed-b is down; high queue_max_attempts so a slow CI runner
+    // can't dead-letter that item before step 5 asserts it is still pending.
     let supervisor_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let mut supervisor_node = Node::boot(
-        supervisor_dir.path().to_path_buf(),
-        PORTS.supervisor_iroh,
-        PORTS.supervisor_registry,
-        PORTS.supervisor_gateway,
-        None,
-        None,
-        &supervisor_owner,
-        // Short for this first boot: the resident loop's own pass is what
-        // discovers step 3's scale-out diff and attempts (and fails, and
-        // enqueues) the push to frontend while managed-b is down. A high
-        // queue_max_attempts: managed-b stays offline for this entire
-        // boot, so every queue-worker tick in that window is expected to
-        // fail -- a low budget would race a slow CI runner's extra
-        // wall-clock time into dead-lettering the item before step 5 gets
-        // to assert it is still pending.
-        Some(supervisor_role(3, 100)),
-    )
-    .await;
-    let shared_registry = supervisor_node.registry_url.clone();
-    let shared_relay = format!("http://localhost:{}", PORTS.supervisor_iroh);
+    let supervisor_builder = SubstrateNode::builder()
+        .owner(&supervisor_owner)
+        .base_path(supervisor_dir.path())
+        .inject_kek();
+    let mut supervisor_node =
+        supervisor_builder.clone().supervisor(supervisor_role(3, 100)).boot().await;
+    let shared_registry = supervisor_node.registry_url().to_string();
+    let shared_relay = supervisor_node.relay_url().to_string();
 
-    let managed_a_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let mut managed_a = Node::boot(
-        managed_a_dir.path().to_path_buf(),
-        PORTS.managed_a_iroh,
-        PORTS.managed_a_registry,
-        PORTS.managed_a_gateway,
-        Some(shared_registry.clone()),
-        Some(shared_relay.clone()),
-        &managed_owner,
-        None,
-    )
-    .await;
+    let mut managed_a = SubstrateNode::builder()
+        .owner(&managed_owner)
+        .shared_registry(&shared_registry)
+        .shared_relay(&shared_relay)
+        .inject_kek()
+        .boot()
+        .await;
 
+    // `managed_b_dir` outlives managed-b's own teardown in step 2 so step 6
+    // can reboot the *same* identity.
     let managed_b_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let mut managed_b = Node::boot(
-        managed_b_dir.path().to_path_buf(),
-        PORTS.managed_b_iroh,
-        PORTS.managed_b_registry,
-        PORTS.managed_b_gateway,
-        Some(shared_registry.clone()),
-        Some(shared_relay.clone()),
-        &managed_owner,
-        None,
-    )
-    .await;
+    let managed_b = SubstrateNode::builder()
+        .owner(&managed_owner)
+        .base_path(managed_b_dir.path())
+        .shared_registry(&shared_registry)
+        .shared_relay(&shared_relay)
+        .inject_kek()
+        .boot()
+        .await;
     let managed_b_did = managed_b.did().to_string();
-    let managed_b_registry_url = managed_b.registry_url.clone();
+    let managed_b_registry_url = managed_b.registry_url().to_string();
 
     let grant_a =
-        node_wide_supervisor_grant(&managed_owner, supervisor_node.did(), managed_a.did());
-    let grant_b = node_wide_supervisor_grant(&managed_owner, supervisor_node.did(), &managed_b_did);
+        common::node_wide_supervisor_grant(&managed_owner, supervisor_node.did(), managed_a.did());
+    let grant_b =
+        common::node_wide_supervisor_grant(&managed_owner, supervisor_node.did(), &managed_b_did);
     let inventory_json = serde_json::to_string(&BTreeMap::from([
         (
             MANAGED_A_ALIAS.to_string(),
             SupervisorInventoryEntry {
                 did: managed_a.did().to_string(),
-                api_url: Some(managed_a.registry_url.clone()),
+                api_url: Some(managed_a.registry_url().to_string()),
                 ucan: Some(grant_a),
             },
         ),
@@ -619,26 +414,15 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
 
     // Step 5: restart the supervisor process. The queued item survives --
     // this is the step no in-process retry can.
+    //
+    // Long poll interval on this second boot so the resident loop's own
+    // next pass is nowhere near step 7's window, and the convergence it
+    // asserts there can only have come from the queue worker. High
+    // queue_max_attempts for the same reason as the first boot: managed-b
+    // is still rebooting when this worker's first ticks fire.
     supervisor_node.teardown().await;
-    supervisor_node = Node::boot(
-        supervisor_dir.path().to_path_buf(),
-        PORTS.supervisor_iroh,
-        PORTS.supervisor_registry,
-        PORTS.supervisor_gateway,
-        None,
-        None,
-        &supervisor_owner,
-        // Long for this second boot: task.md's own recovery budget is
-        // "within one worker tick, not one poll interval" -- set far above
-        // `queue_tick_secs` (1s) so the loop's own next pass is nowhere
-        // near step 7's window, and the convergence it asserts there can
-        // only have come from the queue worker. High queue_max_attempts
-        // for the same reason as the first boot: managed-b is still
-        // rebooting when this worker's first ticks fire, and a slow CI
-        // runner could stretch that reboot past a low attempt budget.
-        Some(supervisor_role(3600, 100)),
-    )
-    .await;
+    let mut supervisor_node =
+        supervisor_builder.supervisor(supervisor_role(3600, 100)).boot().await;
 
     // The community registry supervisor_node hosts keeps its records in
     // memory, so its own restart empties it -- including managed-a's own
@@ -664,18 +448,17 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
          different or duplicated one"
     );
 
-    // Step 6: bring managed-b back, same identity.
-    managed_b = Node::boot(
-        managed_b_dir.path().to_path_buf(),
-        PORTS.managed_b_iroh,
-        PORTS.managed_b_registry,
-        PORTS.managed_b_gateway,
-        Some(shared_registry),
-        Some(shared_relay),
-        &managed_owner,
-        None,
-    )
-    .await;
+    // Step 6: bring managed-b back, same identity (same `base_path`). Fresh
+    // ports are fine -- it re-publishes its new address to the supervisor's
+    // registry, which the supervisor resolves it through.
+    let managed_b = SubstrateNode::builder()
+        .owner(&managed_owner)
+        .base_path(managed_b_dir.path())
+        .shared_registry(&shared_registry)
+        .shared_relay(&shared_relay)
+        .inject_kek()
+        .boot()
+        .await;
     assert_eq!(managed_b.did(), managed_b_did, "the rebooted node must keep its identity");
 
     // `supervisor_node`'s own connection sat idle through managed-b's full
@@ -734,71 +517,54 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
 /// silently lost.
 #[tokio::test]
 async fn a_permanently_unreachable_substrate_lands_in_the_dlq_and_replays() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
 
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
 
-    let supervisor_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let mut supervisor_node = Node::boot(
-        supervisor_dir.path().to_path_buf(),
-        PORTS.supervisor_iroh + 500,
-        PORTS.supervisor_registry + 500,
-        PORTS.supervisor_gateway + 500,
-        None,
-        None,
-        &supervisor_owner,
-        // Short throughout, the same reason test 1's first boot is: the
-        // resident loop's pass is what discovers the scale-out diff and
-        // attempts (and fails, and enqueues) the push while managed-b is
-        // down. DLQ exhaustion itself is driven by the queue worker's own
-        // tick, not by this interval. Unlike test 1, this test *wants*
-        // the low default queue_max_attempts -- it asserts the item does
-        // dead-letter.
-        Some(supervisor_role(3, 3)),
-    )
-    .await;
-    let shared_registry = supervisor_node.registry_url.clone();
-    let shared_relay = format!("http://localhost:{}", PORTS.supervisor_iroh + 500);
+    // Short poll interval, the same reason test 1's first boot has one: the
+    // resident loop's pass discovers the scale-out diff and enqueues the
+    // failed push. Unlike test 1, this test *wants* the low
+    // queue_max_attempts -- it asserts the item does dead-letter. The
+    // supervisor never restarts here.
+    let mut supervisor_node = SubstrateNode::builder()
+        .owner(&supervisor_owner)
+        .supervisor(supervisor_role(3, 3))
+        .inject_kek()
+        .boot()
+        .await;
+    let shared_registry = supervisor_node.registry_url().to_string();
+    let shared_relay = supervisor_node.relay_url().to_string();
 
-    let managed_a_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let managed_a = Node::boot(
-        managed_a_dir.path().to_path_buf(),
-        PORTS.managed_a_iroh + 500,
-        PORTS.managed_a_registry + 500,
-        PORTS.managed_a_gateway + 500,
-        Some(shared_registry.clone()),
-        Some(shared_relay.clone()),
-        &managed_owner,
-        None,
-    )
-    .await;
+    let managed_a = SubstrateNode::builder()
+        .owner(&managed_owner)
+        .shared_registry(&shared_registry)
+        .shared_relay(&shared_relay)
+        .inject_kek()
+        .boot()
+        .await;
 
-    let managed_b_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let managed_b = Node::boot(
-        managed_b_dir.path().to_path_buf(),
-        PORTS.managed_b_iroh + 500,
-        PORTS.managed_b_registry + 500,
-        PORTS.managed_b_gateway + 500,
-        Some(shared_registry.clone()),
-        Some(shared_relay.clone()),
-        &managed_owner,
-        None,
-    )
-    .await;
+    let managed_b = SubstrateNode::builder()
+        .owner(&managed_owner)
+        .shared_registry(&shared_registry)
+        .shared_relay(&shared_relay)
+        .inject_kek()
+        .boot()
+        .await;
     let managed_b_did = managed_b.did().to_string();
-    let managed_b_registry_url = managed_b.registry_url.clone();
+    let managed_b_registry_url = managed_b.registry_url().to_string();
 
     let grant_a =
-        node_wide_supervisor_grant(&managed_owner, supervisor_node.did(), managed_a.did());
-    let grant_b = node_wide_supervisor_grant(&managed_owner, supervisor_node.did(), &managed_b_did);
+        common::node_wide_supervisor_grant(&managed_owner, supervisor_node.did(), managed_a.did());
+    let grant_b =
+        common::node_wide_supervisor_grant(&managed_owner, supervisor_node.did(), &managed_b_did);
     let inventory_json = serde_json::to_string(&BTreeMap::from([
         (
             MANAGED_A_ALIAS.to_string(),
             SupervisorInventoryEntry {
                 did: managed_a.did().to_string(),
-                api_url: Some(managed_a.registry_url.clone()),
+                api_url: Some(managed_a.registry_url().to_string()),
                 ucan: Some(grant_a),
             },
         ),
