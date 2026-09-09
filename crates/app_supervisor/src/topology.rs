@@ -333,7 +333,8 @@ mod tests {
         assert!(matches!(err, TopologyBuildError::NoSuchService(_)));
     }
 
-    /// Test 73: the exact-match path is unchanged.
+    /// An exact service name resolves to itself, without touching the hash
+    /// fallback.
     #[test]
     fn a_service_name_resolves_to_itself() {
         let p = plan(vec![member("backend", 0, TopologyMode::Singleton, None)]);
@@ -341,7 +342,8 @@ mod tests {
         assert_eq!(resolved, svc_name("backend"));
     }
 
-    /// Test 74.
+    /// A caller may name a service by the short hash of its name, and it
+    /// resolves back to the full name.
     #[test]
     fn a_short_hash_of_a_service_name_resolves_to_that_name() {
         let p = plan(vec![member("backend", 0, TopologyMode::Singleton, None)]);
@@ -350,8 +352,8 @@ mod tests {
         assert_eq!(resolved, svc_name("backend"));
     }
 
-    /// Test 75: construct a plan with a service literally named
-    /// `short_hash("other")`.
+    /// An exact name match wins even when that name is literally the short
+    /// hash of a different service's name.
     #[test]
     fn an_exact_name_wins_over_a_hash_that_matches_a_different_name() {
         let hash_of_other = util::short_hash("other");
@@ -366,11 +368,11 @@ mod tests {
         assert_eq!(resolved, svc_name(&hash_of_other), "the exact name must win over the hash");
     }
 
-    /// Test 76: `AmbiguousHash`, with both names in the message. A real
-    /// five-byte SHA-256 collision is impractical to search for at
-    /// fixture-construction time, so the collision is constructed by
-    /// stubbing the hash function -- asserted as "the branch exists and
-    /// refuses", which is what it is.
+    /// Two names sharing a short hash are refused with `AmbiguousHash`, and
+    /// both names appear in the message. A real five-byte SHA-256 collision
+    /// is impractical to search for at fixture-construction time, so the
+    /// collision is constructed by stubbing the hash function -- asserted as
+    /// "the branch exists and refuses", which is what it is.
     #[test]
     fn two_service_names_sharing_a_short_hash_are_refused() {
         let p = plan(vec![
@@ -386,8 +388,8 @@ mod tests {
         assert!(msg.contains("beta"), "{msg}");
     }
 
-    /// Test 77: the mapping S2's post-merge finding 12 established for
-    /// `NoSuchService`, extended to `AmbiguousHash`.
+    /// An unknown service hash is a caller mistake, so it maps to
+    /// `NoSuchService` (invalid params) rather than an internal error.
     #[test]
     fn an_unknown_hash_is_invalid_params_not_internal_error() {
         let p = plan(vec![member("backend", 0, TopologyMode::Singleton, None)]);

@@ -1,7 +1,7 @@
 //! Desired state for every app instance this supervisor manages, over the
 //! same `Arc<Mutex<Connection>>` that backs `DeploymentJournal`,
-//! `AlertStore`, and (M05B B1, D-B1-5) the durable outbox queue: one SQLite
-//! file, four concerns.
+//! `AlertStore`, and the durable outbox queue: one SQLite file, four
+//! concerns.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -29,14 +29,14 @@ pub struct DesiredState {
     pub retired: bool,
     pub submitted_at: i64,
     pub updated_at: i64,
-    /// The app instance's own master DID (M05A A7, D-A7-2/D-A7-4), empty
+    /// The app instance's own master DID, empty
     /// until the instance's next `adopt` mints or resolves one -- the vault
     /// cannot be enumerated and this instance appears in no plan, so this
     /// column is the only index, not a cache of something else readable.
     pub app_master_did: String,
 }
 
-/// One service's bounded-restart bookkeeping (§14 step 6, D-A5c-20).
+/// One service's bounded-restart bookkeeping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemediationState {
     pub attempts: u32,
@@ -60,9 +60,8 @@ pub struct ScheduleState {
 }
 
 /// One SQLite file holding desired state, the deployment journal, alerts,
-/// and (M05B B1, D-B1-5) the durable outbox queue -- what A4 promised A5
-/// "the schema, the types, and the folding logic, not the file", cashed in,
-/// now a fourth time.
+/// and the durable outbox queue -- one file, four concerns, sharing the one
+/// connection.
 #[derive(Debug, Clone)]
 pub struct SupervisorStore {
     conn: Arc<Mutex<Connection>>,
@@ -87,7 +86,7 @@ impl SupervisorStore {
 
     /// The construction path `runtime.rs` actually uses: `role`'s five
     /// `queue_*` fields size the outbox's attempt budget, backoff ceiling,
-    /// visibility timeout, and DLQ cap (D-B1-13). Every other caller --
+    /// visibility timeout, and DLQ cap. Every other caller --
     /// tests overwhelmingly among them -- goes through `open`/
     /// `open_in_memory` and gets the same defaults `SupervisorRole::default`
     /// does.
@@ -111,7 +110,7 @@ impl SupervisorStore {
         // no `tracing` dependency of its own to log through. This is the
         // one caller that constructs it from operator config, so it is the
         // one that warns, mirroring `SupervisorService::new`'s existing
-        // `max_renewals_per_pass == 0` clamp (M05B B1 review finding 9).
+        // `max_renewals_per_pass == 0` clamp.
         if role.queue_max_attempts == 0 {
             tracing::warn!(
                 "supervisor.queue_max_attempts was configured to 0, which would dead-letter every \
@@ -252,7 +251,7 @@ impl SupervisorStore {
                 PRIMARY KEY (app_instance_id, logical_ref)
              );",
         )?;
-        // M05A A7 (D-A7-2): `desired_state` predates this column, so the
+        // `desired_state` predates this column, so the
         // `CREATE TABLE IF NOT EXISTS` above is a no-op on any database that
         // already exists -- it never adds a column to a table already
         // there. This `ALTER TABLE` is the one idempotent way to get the
@@ -313,7 +312,7 @@ impl SupervisorStore {
 
     /// Sets this dependent service's binding epoch to `epoch` if that is
     /// higher than what is currently held, otherwise leaves it unchanged
-    /// -- the retry half of D-A5c-19 (§19.19/F4): a `Stale(held)` push
+    /// -- the retry half of epoch-conflict handling: a `Stale(held)` push
     /// outcome retries at `held + 1`, which the caller computes and
     /// passes here directly (no re-read: `Stale` already carries the
     /// number), so the supervisor's own table agrees with the substrate
@@ -362,7 +361,7 @@ impl SupervisorStore {
 
     /// Records one restart attempt, incrementing the counter and stamping
     /// `now`. Returns the new attempt count -- the loop's own remediation
-    /// policy (§14 step 3, Phase 6) compares this against
+    /// policy compares this against
     /// `max_restart_attempts` to decide whether this is the attempt that
     /// goes terminal.
     pub fn record_restart_attempt(
@@ -389,9 +388,9 @@ impl SupervisorStore {
         .map_err(Into::into)
     }
 
-    /// Marks this service's remediation terminal -- matrix row 13:
-    /// exceeding `max_restart_attempts` stops the restart loop for this
-    /// service until `force-reconcile` or `adopt` clears it (D-A5c-20).
+    /// Marks this service's remediation terminal: exceeding
+    /// `max_restart_attempts` stops the restart loop for this service
+    /// until `force-reconcile` or `adopt` clears it.
     pub fn mark_remediation_terminal(
         &self,
         app_instance_id: &str,
@@ -407,7 +406,7 @@ impl SupervisorStore {
     }
 
     /// Clears one service's remediation row entirely -- a healthy sweep's
-    /// own clearing path (§14 step 6): the service recovered on its own
+    /// own clearing path: the service recovered on its own
     /// (an out-of-band restart, a container restart policy) or the bounded
     /// restart itself succeeded, so the next fault starts counting from
     /// zero rather than compounding a stale attempt count.
@@ -849,18 +848,17 @@ impl SupervisorStore {
     /// flag on a successful claim (`record_adopt`, below); plain `release`
     /// does not, since it only clears the substrate-side stamp and says
     /// nothing about whether *this* supervisor should resume managing the
-    /// instance (N3, Slice A5b review round 2 -- the message here used to
-    /// name `release` as an alternative, which changed nothing relevant
-    /// and left the caller stuck with no error to explain why).
+    /// instance. The refusal message names only `adopt`: naming `release`
+    /// as an alternative changed nothing relevant and left the caller
+    /// stuck with no error to explain why.
     ///
     /// Also refused when `generation` does not match the generation
     /// already on record for an existing instance: ADR-0021 §4 says the
     /// generation is minted by `adopt` and never otherwise, but nothing
     /// stopped a caller from presenting any value here, upward or
     /// downward, with no relation to the current one -- `adopt` was not
-    /// really the only minter (H3, Slice A5b review). A brand-new
-    /// instance (no existing row) is unaffected: it has no generation to
-    /// contradict yet.
+    /// really the only minter. A brand-new instance (no existing row) is
+    /// unaffected: it has no generation to contradict yet.
     pub fn submit(
         &self,
         app_instance_id: &str,
@@ -985,19 +983,18 @@ impl SupervisorStore {
         self.set_flag(app_instance_id, "paused", false)
     }
 
-    /// A later `submit` is refused until the instance is re-adopted
-    /// (D-A5-20's substrate-side release is the caller's counterpart --
-    /// clearing the substrate's own stamp, not this row). Not terminal:
-    /// `handle_adopt` un-retires as part of `record_adopt`'s combined
-    /// write on a successful claim (M05A A7 review finding 6), which is
-    /// the "re-adopted" this doc comment and every refusal message
-    /// promise (N3, Slice A5b review round 2).
+    /// A later `submit` is refused until the instance is re-adopted (the
+    /// substrate-side release is the caller's counterpart -- clearing the
+    /// substrate's own stamp, not this row). Not terminal: `handle_adopt`
+    /// un-retires as part of `record_adopt`'s combined write on a
+    /// successful claim, which is the "re-adopted" this doc comment and
+    /// every refusal message promise.
     pub fn retire(&self, app_instance_id: &str) -> Result<()> {
         self.set_flag(app_instance_id, "retired", true)
     }
 
     /// Updates the held generation in place, without touching the rest of
-    /// desired state. Test-only hook (M05A A7 review round 2, finding C):
+    /// desired state. Test-only hook:
     /// `record_adopt`, below, is what `handle_adopt` actually calls in
     /// production, and it writes the generation together with the
     /// un-retired flag and the app master DID in one statement -- this
@@ -1020,12 +1017,11 @@ impl SupervisorStore {
 
     /// `adopt`'s own combined write, once the claim has succeeded: the
     /// generation, the un-retired flag, and the resolved app master DID,
-    /// together in one statement (M05A A7 review finding 6). Before this,
-    /// `handle_adopt` called `set_generation`/`un_retire`/
-    /// `set_app_master_did` as three separate writes, so a crash between
-    /// them could leave a claimed generation with no recorded app
-    /// master -- exactly the state D-A7-4's "the row always agrees with
-    /// the vault" claim rests on not happening.
+    /// together in one statement. Before this, `handle_adopt` called
+    /// `set_generation`/`un_retire`/`set_app_master_did` as three separate
+    /// writes, so a crash between them could leave a claimed generation
+    /// with no recorded app master -- breaking the invariant that the row
+    /// always agrees with the vault.
     ///
     /// `clear_remediation_for_instance` stays a separate call at the
     /// caller: unlike these three fields, its own failure has never
@@ -1076,8 +1072,7 @@ mod tests {
         assert_eq!(count, 1);
     }
 
-    /// Test 26 (M05B B1, D-B1-5, failure-matrix row 13's supervisor half):
-    /// the queue's tables live in the same database file `desired_state`
+    /// The queue's tables live in the same database file `desired_state`
     /// does, not one of their own, so they inherit its protection posture
     /// rather than becoming a second unencrypted store beside it.
     #[test]
@@ -1106,11 +1101,11 @@ mod tests {
         );
     }
 
-    /// H3 (Slice A5b review): before the generation check, `submit` wrote
-    /// whatever generation it was given straight over the stored one, so
-    /// a caller could take an instance by submitting a large number
-    /// rather than adopting -- `adopt` was not really the only minter
-    /// (ADR-0021 §4). A resubmit at the *current* generation must still
+    /// Before the generation check, `submit` wrote whatever generation it
+    /// was given straight over the stored one, so a caller could take an
+    /// instance by submitting a large number rather than adopting --
+    /// `adopt` was not really the only minter (ADR-0021 §4). A resubmit at
+    /// the *current* generation must still
     /// work (`submitting_twice_replaces_desired_state_and_keeps_one_row`
     /// above pins that at generation 0).
     #[test]
@@ -1141,10 +1136,10 @@ mod tests {
         assert!(!store.get("inst-1").unwrap().unwrap().paused);
     }
 
-    /// H2 (Slice A5b review): the doc comment on `all_active` promises
-    /// "every non-retired, non-paused instance", but the query used to
-    /// filter `retired` only -- free to fix before anything calls it, and
-    /// a live bug the moment A5c's loop uses this as its work list.
+    /// The doc comment on `all_active` promises "every non-retired,
+    /// non-paused instance", but the query used to filter `retired` only
+    /// -- a live bug the moment the resident loop uses this as its work
+    /// list.
     #[test]
     fn all_active_excludes_both_retired_and_paused_instances() {
         let store = SupervisorStore::open_in_memory().unwrap();
@@ -1169,21 +1164,20 @@ mod tests {
         let err = store.submit("inst-1", "{}", "{}", "did:key:owner", 1).unwrap_err();
         assert!(err.to_string().contains("retired"), "{err}");
 
-        // N3 (Slice A5b review round 2): `retire` is not a dead end --
-        // `record_adopt` (called by `handle_adopt` on a successful claim,
-        // M05A A7 review finding 6) un-retires as part of its combined
-        // write, which is the "run `supervisor adopt`" the refusal above
-        // names.
+        // `retire` is not a dead end -- `record_adopt` (called by
+        // `handle_adopt` on a successful claim) un-retires as part of its
+        // combined write, which is the "run `supervisor adopt`" the
+        // refusal above names.
         store.record_adopt("inst-1", 0, "did:key:zAppMaster").unwrap();
         assert!(!store.get("inst-1").unwrap().unwrap().retired);
         store.submit("inst-1", "{\"v\":2}", "{}", "did:key:owner", 0).unwrap();
         assert_eq!(store.get("inst-1").unwrap().unwrap().plan_json, "{\"v\":2}");
     }
 
-    // ── M05A A5c: binding epochs (D-A5c-4) ──────────────────────────────
+    // ── Binding epochs ─────────────────────────────────────────────────
 
-    /// The epoch is held **per dependent service**, not per dependency
-    /// (§19.3, revised after review F2): there is only one row for
+    /// The epoch is held **per dependent service**, not per dependency:
+    /// there is only one row for
     /// "frontend", so every dependency it declares reads the identical
     /// value -- there is no per-dependency key to diverge in the first
     /// place.
@@ -1195,10 +1189,10 @@ mod tests {
         assert_eq!(store.binding_epoch("inst-1", "inst-1/frontend").unwrap(), 1);
     }
 
-    /// F2's failure, pinned: the first draft's scalar `ApplyRequest.epoch`
-    /// let a redeploy write a *lower* epoch over a higher one a push had
-    /// already reached, so the next push then conflicted at an epoch the
-    /// substrate had already served. The counter must only ever advance.
+    /// The first draft's scalar `ApplyRequest.epoch` let a redeploy write a
+    /// *lower* epoch over a higher one a push had already reached, so the
+    /// next push then conflicted at an epoch the substrate had already
+    /// served. The counter must only ever advance.
     #[test]
     fn a_redeploy_after_a_push_carries_an_epoch_above_what_was_pushed() {
         let store = SupervisorStore::open_in_memory().unwrap();
@@ -1207,7 +1201,7 @@ mod tests {
         assert!(redeployed > pushed, "redeploy epoch {redeployed} must exceed push epoch {pushed}");
     }
 
-    /// F3's false negative, pinned: an instance this supervisor has never
+    /// An instance this supervisor has never
     /// written a binding for must read epoch 0, which is also what a
     /// hand-deployed substrate reports (`roymctl app deploy` emits every
     /// binding at epoch 0) -- so the pair reads converged, not stale.
@@ -1217,11 +1211,11 @@ mod tests {
         assert_eq!(store.binding_epoch("inst-1", "inst-1/frontend").unwrap(), 0);
     }
 
-    // ── M05A A5c: remediation bookkeeping (§14 step 6, D-A5c-20) ────────
+    // ── Remediation bookkeeping ────────────────────────────────────────
 
-    /// §14 step 6's durability claim: a supervisor restart must resume
-    /// remediation state, not reset every service's attempt count back to
-    /// zero and re-earn the same restart budget again.
+    /// A supervisor restart must resume remediation state, not reset every
+    /// service's attempt count back to zero and re-earn the same restart
+    /// budget again.
     #[test]
     fn remediation_attempts_survive_a_store_reopen() {
         let dir = tempfile::tempdir().unwrap();
@@ -1247,7 +1241,7 @@ mod tests {
         assert!(store.remediation_state("inst-1", "inst-1/backend").unwrap().is_none());
     }
 
-    /// F5 / D-A5c-20: `force-reconcile` is the escape hatch from a
+    /// `force-reconcile` is the escape hatch from a
     /// terminal remediation row -- a service nothing will restart again
     /// cannot become healthy on its own, so the healthy-sweep clearing
     /// path above never fires for it.
@@ -1264,7 +1258,7 @@ mod tests {
         assert!(store.remediation_state("inst-1", "inst-1/backend").unwrap().is_none());
     }
 
-    // ── M05A A5d: anchor-refresh bookkeeping and revoked placements ─────
+    // ── Anchor-refresh bookkeeping and revoked placements ──────────────
 
     /// The refresh cadence is evaluated against this persisted fact on the
     /// ordinary pass tick rather than by a timer of its own, so the fact
@@ -1331,14 +1325,14 @@ mod tests {
         assert!(store.remediation_state("inst-1", "inst-1/backend").unwrap().is_none());
     }
 
-    // ── M05A A7: the app master column (D-A7-2/D-A7-11) ─────────────────
+    // ── The app master column ──────────────────────────────────────────
 
-    /// D-A7-2: `CREATE TABLE IF NOT EXISTS` is a no-op on a database that
-    /// already has `desired_state`, so a column added only there never
-    /// reaches a pre-existing file -- every `desired_state` read then fails
-    /// at runtime with "no such column". Opens a store, drops the column
-    /// back out (simulating a pre-A7 database), reopens, and confirms the
-    /// idempotent `ALTER TABLE` puts it back.
+    /// `CREATE TABLE IF NOT EXISTS` is a no-op on a database that already
+    /// has `desired_state`, so a column added only there never reaches a
+    /// pre-existing file -- every `desired_state` read then fails at
+    /// runtime with "no such column". Opens a store, drops the column back
+    /// out (simulating a database that predates the column), reopens, and
+    /// confirms the idempotent `ALTER TABLE` puts it back.
     #[test]
     fn a_database_that_predates_the_app_master_column_gains_it_on_open() {
         let dir = tempfile::tempdir().unwrap();
@@ -1356,9 +1350,9 @@ mod tests {
         assert_eq!(state.app_master_did, "");
     }
 
-    /// D-A7-11: an `app-<instance>` vault key must never be forgotten --
-    /// the same standing constraint the milestone already carries for
-    /// member masters. Covers the two store-level paths that could
+    /// An `app-<instance>` vault key must never be forgotten -- the same
+    /// standing constraint that already holds for member masters. Covers
+    /// the two store-level paths that could
     /// plausibly clear it: a later `submit` (whose `ON CONFLICT` update
     /// list must leave `app_master_did` out) and `retire` (a `set_flag`
     /// call touching only its own column). `release` needs no case here --
@@ -1383,7 +1377,7 @@ mod tests {
         assert_eq!(store.get("inst-1").unwrap().unwrap().app_master_did, "did:key:zAppMaster");
     }
 
-    /// M05A A7 review finding 6: `handle_adopt`'s combined write -- the
+    /// `handle_adopt`'s combined write -- the
     /// generation, the un-retired flag, and the app master DID all land
     /// in one statement, so there is no window where a crash could leave
     /// a claimed generation with no recorded DID.
@@ -1547,7 +1541,7 @@ mod tests {
 
     // ── topology_epochs ────────────────────────────────────────
 
-    /// Test 34: a first submit starts every service's topology epoch at 1.
+    /// A first submit starts every service's topology epoch at 1.
     #[test]
     fn a_first_submit_starts_every_services_topology_epoch_at_one() {
         let store = SupervisorStore::open_in_memory().unwrap();
@@ -1557,8 +1551,7 @@ mod tests {
         assert_eq!(store.topology_epoch("inst-1", "backend").unwrap(), 1);
     }
 
-    /// Test 35: a resubmit whose fingerprint is unchanged leaves the epoch
-    /// alone.
+    /// A resubmit whose fingerprint is unchanged leaves the epoch alone.
     #[test]
     fn a_resubmit_that_does_not_change_membership_leaves_the_epoch_alone() {
         let store = SupervisorStore::open_in_memory().unwrap();
@@ -1567,8 +1560,8 @@ mod tests {
         assert_eq!(epoch, 1, "an unchanged fingerprint must not advance the epoch");
     }
 
-    /// Test 36: a resubmit that scales one service out advances only that
-    /// service's epoch.
+    /// A resubmit that scales one service out advances only that service's
+    /// epoch.
     #[test]
     fn a_resubmit_that_scales_a_service_out_increments_only_that_services_epoch() {
         let store = SupervisorStore::open_in_memory().unwrap();

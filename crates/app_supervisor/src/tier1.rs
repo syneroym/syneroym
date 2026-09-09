@@ -42,10 +42,10 @@ impl RegistryTier1Writer {
     }
 
     /// `None` when this node has no `substrate.registry_url` configured
-    /// (ADR-0022 §2, matrix row 11): a single-node deployment does not use
-    /// cross-app discovery and must not be broken to enable a feature it
-    /// does not use, so the supervisor holds no writer rather than one
-    /// that quietly does nothing.
+    /// (ADR-0022 §2): a single-node deployment does not use cross-app
+    /// discovery and must not be broken to enable a feature it does not use,
+    /// so the supervisor holds no writer rather than one that quietly does
+    /// nothing.
     #[must_use]
     pub fn from_registry_client(
         client: Option<Arc<RegistryClient>>,
@@ -75,10 +75,10 @@ pub enum Tier1SignError {
     Vault(VaultError),
     /// The vault's `app-<id>` key does not derive the DID
     /// `desired_state.app_master_did` recorded at the last `adopt` --
-    /// reachable when an `import-master` lands without a following `adopt`
-    /// (A7 §0.5, task.md's own S1 note). Publishing here would name a DID
-    /// nobody looks up while `status` reports a different one; this must
-    /// refuse rather than silently pick one.
+    /// reachable when an `import-master` lands without a following `adopt`.
+    /// Publishing here would name a DID nobody looks up while `status`
+    /// reports a different one; this must refuse rather than silently pick
+    /// one.
     IdentityMismatch {
         expected: String,
         actual: String,
@@ -128,8 +128,8 @@ impl From<VaultError> for Tier1SignError {
 /// influences), so on an `enable_bep0044_dht` deployment the record still
 /// lapses from the DHT between refreshes at this cadence -- exactly the
 /// same property master anchors already have and already accept, on the
-/// same reasoning (D-A1-2: resolution requires a configured HTTP registry,
-/// the DHT copy is best-effort backup, checked second by `lookup`). Bites
+/// same reasoning: resolution requires a configured HTTP registry, and the
+/// DHT copy is best-effort backup, checked second by `lookup`. Bites
 /// only a resolver with no HTTP registry of its own reachable; recorded as
 /// a backlog row rather than fixed here, since `PKARR_TTL` is shared
 /// system-wide and changing it is a larger question than this record.
@@ -205,9 +205,9 @@ mod tests {
         MasterVault::new(storage_provider, key_store, "supervisor".to_string(), dir.join("backups"))
     }
 
-    /// D-S1-6's other half, exercised directly against the signer rather
-    /// than through the pass-tick wrapper: no app master in the vault
-    /// means no record, and nothing gets minted to fill the gap.
+    /// Exercised directly against the signer rather than through the
+    /// pass-tick wrapper: no app master in the vault means no record, and
+    /// nothing gets minted to fill the gap.
     #[tokio::test]
     async fn no_app_master_in_the_vault_fails_without_minting_one() {
         let dir = tempfile::tempdir().unwrap();
@@ -257,9 +257,9 @@ mod tests {
         assert!(signed.verify().is_ok());
     }
 
-    /// D-C-2's own local pin: a locked vault stops the signer before any
-    /// writer would be reached -- there is no writer parameter here at
-    /// all, so a failure at this layer can never touch the registry.
+    /// A locked vault stops the signer before any writer would be reached --
+    /// there is no writer parameter here at all, so a failure at this layer
+    /// can never touch the registry.
     #[tokio::test]
     async fn a_locked_vault_fails_the_refresh_without_touching_the_registry() {
         let dir = tempfile::tempdir().unwrap();
