@@ -16,12 +16,11 @@ pub use syneroym_wit_interfaces::host::syneroym::data_layer::store as host_store
 pub use syneroym_wit_interfaces::vault::syneroym::vault::vault as wit_vault;
 pub use traits::{ServiceStore, StorageProvider};
 
-/// Placeholder service for the data layer, to be implemented in subsequent
-/// slices.
+/// Unused. The data layer is implemented by `SqliteStorageProvider` and the
+/// `traits`/`host_store` types re-exported above; this empty struct predates
+/// them and is referenced only by its own test.
 #[derive(Debug, Clone)]
-pub struct DataLayerService {
-    // DB logic to be added in Slice 2A and 3A
-}
+pub struct DataLayerService {}
 
 impl DataLayerService {
     pub fn new() -> Self {

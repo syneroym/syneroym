@@ -911,9 +911,10 @@ mod tests {
         );
     }
 
-    /// A chain rooted at an issuer that is not the node's admin root grants
-    /// nothing -- B1 has no other trust root (owner-rooted service chains
-    /// are Slice B7). `auth` must not upgrade to `Ucan` either: the chain
+    /// A chain rooted at an issuer that is neither the node's admin root nor
+    /// the target service's recorded owner grants nothing (the registry
+    /// here is empty, so there is no owner to match). `auth` must not
+    /// upgrade to `Ucan` either: the chain
     /// verified structurally but admitted zero capabilities, so it holds no
     /// more privilege than the pre-UCAN `Delegated` level.
     #[tokio::test]
