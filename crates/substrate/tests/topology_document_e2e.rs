@@ -5,10 +5,11 @@
 //! fetches the signed topology document, verifies it, routes from it, and
 //! keeps routing after the supervisor that signed it goes away.
 //!
-//! `Node`, `boot_pair`, `supervisor_role`, `compiled_plan_json`,
-//! `node_wide_supervisor_grant`, and `submission` are copied from
-//! `tier1_endpoint_record_e2e.rs`, which itself copied them from
-//! `app_instance_identity_e2e.rs`.
+//! Both nodes come from `common::SubstrateNode`: a supervisor node hosting
+//! the registry and a managed node publishing into it through a shared relay.
+//! `common::serial_guard` keeps this binary's tests from running substrate
+//! stacks at once. `supervisor_role`, `boot_pair`, and the manifest helpers
+//! are still local -- the other supervisor suites carry their own copies.
 
 use std::{
     collections::BTreeMap,
@@ -17,6 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use common::SubstrateNode;
 use rustls::crypto::ring;
 use semver::Version;
 use serde_json::{Map, json};
@@ -30,222 +32,18 @@ use syneroym_app_orchestration::{
     register_verified,
 };
 use syneroym_app_supervisor::inventory::SupervisorInventoryEntry;
-use syneroym_core::{
-    config::{
-        ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig, LogTarget,
-        ServiceRegistryRole, SubstrateConfig, SupervisorRole,
-    },
-    dht_registry::RegistryClient,
-};
+use syneroym_core::{config::SupervisorRole, dht_registry::RegistryClient};
 use syneroym_identity::{Identity, substrate};
 use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
-use syneroym_sdk::{RegistryTopologyFetcher, SyneroymClient, fetch_and_register};
-use syneroym_substrate::identity;
-use tempfile::TempDir;
-use tokio::{
-    sync::{Mutex, mpsc, mpsc::Sender},
-    task::JoinHandle,
-    time,
-};
+use syneroym_sdk::{RegistryTopologyFetcher, fetch_and_register};
+use tokio::time;
 
-/// Every test in this binary boots one or more full substrate
-/// instances (real iroh QUIC socket, self-hosted relay, wasmtime).
-/// Running every test's own full stack concurrently (Rust's default
-/// test harness) means many simultaneous substrate processes' worth
-/// of sockets/fds at once -- CPU starvation and, on a low
-/// `ulimit -n`, real fd exhaustion. Same fix as `tests/common/mod.rs`'s
-/// `SUBSTRATE_TEST_LOCK`.
-static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
+mod common;
 
 #[path = "common/retry.rs"]
 mod retry;
 
-#[derive(Clone, Copy)]
-struct PortBlock {
-    supervisor_iroh: u16,
-    supervisor_registry: u16,
-    supervisor_gateway: u16,
-    managed_iroh: u16,
-    managed_registry: u16,
-    managed_gateway: u16,
-}
-
-// The next free block after `tier1_endpoint_record_e2e.rs`'s 15_000-15_302,
-// the highest claimed at the time this file was written -- one block of six
-// per test, since cargo runs every test in this binary concurrently.
-const PORTS_OUTSIDE_CALLER_RESOLVES: PortBlock = PortBlock {
-    supervisor_iroh: 15_400,
-    supervisor_registry: 15_401,
-    supervisor_gateway: 15_402,
-    managed_iroh: 15_500,
-    managed_registry: 15_501,
-    managed_gateway: 15_502,
-};
-const PORTS_RELAYED_DOCUMENT_VERIFIES: PortBlock = PortBlock {
-    supervisor_iroh: 15_600,
-    supervisor_registry: 15_601,
-    supervisor_gateway: 15_602,
-    managed_iroh: 15_700,
-    managed_registry: 15_701,
-    managed_gateway: 15_702,
-};
-const PORTS_SCALE_OUT_SUPERSEDES: PortBlock = PortBlock {
-    supervisor_iroh: 15_800,
-    supervisor_registry: 15_801,
-    supervisor_gateway: 15_802,
-    managed_iroh: 15_900,
-    managed_registry: 15_901,
-    managed_gateway: 15_902,
-};
-const PORTS_CACHED_DOCUMENT_SURVIVES_SUPERVISOR_DOWN: PortBlock = PortBlock {
-    supervisor_iroh: 16_000,
-    supervisor_registry: 16_001,
-    supervisor_gateway: 16_002,
-    managed_iroh: 16_100,
-    managed_registry: 16_101,
-    managed_gateway: 16_102,
-};
-const PORTS_NO_CACHE_FAILS_CLEANLY: PortBlock = PortBlock {
-    supervisor_iroh: 16_200,
-    supervisor_registry: 16_201,
-    supervisor_gateway: 16_202,
-    managed_iroh: 16_300,
-    managed_registry: 16_301,
-    managed_gateway: 16_302,
-};
-const PORTS_FORGED_DOCUMENT_REJECTED: PortBlock = PortBlock {
-    supervisor_iroh: 16_400,
-    supervisor_registry: 16_401,
-    supervisor_gateway: 16_402,
-    managed_iroh: 16_500,
-    managed_registry: 16_501,
-    managed_gateway: 16_502,
-};
-const PORTS_UNGRANTED_CALLER_RESOLVES_OPEN: PortBlock = PortBlock {
-    supervisor_iroh: 16_600,
-    supervisor_registry: 16_601,
-    supervisor_gateway: 16_602,
-    managed_iroh: 16_700,
-    managed_registry: 16_701,
-    managed_gateway: 16_702,
-};
-const PORTS_UNGRANTED_CALLER_REFUSED_RESTRICTED: PortBlock = PortBlock {
-    supervisor_iroh: 16_800,
-    supervisor_registry: 16_801,
-    supervisor_gateway: 16_802,
-    managed_iroh: 16_900,
-    managed_registry: 16_901,
-    managed_gateway: 16_902,
-};
-
 const MANAGED_ALIAS: &str = "managed";
-
-/// A full, independently-identified `syneroym-substrate` instance.
-struct Node {
-    registry_url: String,
-    substrate_client: SyneroymClient,
-    shutdown_tx: Sender<()>,
-    substrate_handle: JoinHandle<()>,
-    _temp_dir: TempDir,
-}
-
-impl Node {
-    #[allow(clippy::too_many_arguments)]
-    async fn boot(
-        iroh_port: u16,
-        registry_port: u16,
-        gateway_port: u16,
-        shared_registry_url: Option<String>,
-        shared_relay_url: Option<String>,
-        owner: &Identity,
-        supervisor: Option<SupervisorRole>,
-    ) -> Self {
-        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-        let base_path = temp_dir.path().to_path_buf();
-
-        let mut config = SubstrateConfig {
-            app_local_data_dir: base_path.join("data"),
-            app_data_dir: base_path.join("user_data"),
-            app_cache_dir: base_path.join("cache"),
-            app_log_dir: base_path.join("logs"),
-            profile: "full".to_string(),
-            ..SubstrateConfig::default()
-        };
-        config.resolve_paths();
-        config.logging.target = LogTarget::Stdout;
-
-        config.roles.coordinator = Some(CoordinatorRole {
-            iroh: Some(CoordinatorIrohConfig {
-                enable_relay: true,
-                http_bind_address: format!("0.0.0.0:{iroh_port}"),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("0.0.0.0:{registry_port}"),
-            ..Default::default()
-        });
-        let own_registry_url = format!("http://localhost:{registry_port}");
-        let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
-        config.substrate.registry_url = Some(effective_registry_url.clone());
-        config.substrate.enable_bep0044_dht = false;
-        let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
-        config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway =
-            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
-        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
-        config.roles.supervisor = supervisor;
-
-        let substrate_identity_state =
-            identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
-                .expect("failed to setup identity");
-        let substrate_service_id = substrate_identity_state.did.clone();
-
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let runtime =
-            syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
-
-        let config_clone = config.clone();
-        let substrate_handle = tokio::spawn(async move {
-            syneroym_substrate::run_with_signal(config_clone, runtime, async {
-                let _ = shutdown_rx.recv().await;
-            })
-            .await
-            .expect("substrate failed to run");
-        });
-
-        let mut substrate_client = SyneroymClient::new_with_identity(
-            substrate_service_id.clone(),
-            effective_registry_url.clone(),
-            Identity::from_bytes(&owner.to_bytes()),
-        )
-        .with_registry_dht(false);
-        substrate_client
-            .wait_for_ready(Duration::from_secs(30))
-            .await
-            .expect("substrate did not become available in time");
-        substrate_client.inject_kek(hex::encode([0xabu8; 32])).await.expect("inject_kek failed");
-
-        Self {
-            registry_url: effective_registry_url,
-            substrate_client,
-            shutdown_tx,
-            substrate_handle,
-            _temp_dir: temp_dir,
-        }
-    }
-
-    fn did(&self) -> &str {
-        self.substrate_client.service_id()
-    }
-
-    async fn teardown(mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = self.substrate_handle.await;
-    }
-}
 
 /// `poll_interval_secs` is lowered from the 30s default so this file's
 /// tests do not have to wait a full poll cycle for anything that depends
@@ -292,7 +90,7 @@ fn node_wide_supervisor_grant(
 }
 
 /// `supervisor/resolve` on `synapp:<app_did>` (ADR-0022 §5), issued from
-/// the supervisor node's own owner -- which `Node::boot` installs as
+/// the supervisor node's own owner -- which the node installs as
 /// `config.iam.admin_ucan_root` -- to a caller identity that holds no
 /// `substrate/admin` and is not part of the app instance. This is what
 /// makes the reference scenario's step 3 an honest test: the outside
@@ -418,39 +216,29 @@ async fn compiled_plan_json(manifest: &SynAppManifest, instance_id: &str) -> Str
     compiled.plans.last().unwrap().to_json().unwrap()
 }
 
-/// Boots a supervisor node and a managed node (B sharing A's
-/// registry/relay), grants the supervisor's own node-wide `orchestrator/
-/// deploy` on the managed node, and returns everything a test needs to call
-/// `submit`. Copied from `tier1_endpoint_record_e2e.rs`.
+/// Boots a supervisor node and a managed node (the managed one sharing the
+/// supervisor's registry and relay), grants the supervisor's own node-wide
+/// `orchestrator/deploy` on the managed node, and returns everything a test
+/// needs to call `submit`.
 async fn boot_pair(
     supervisor_owner: &Identity,
     managed_owner: &Identity,
-    ports: PortBlock,
-) -> (Node, Node, String) {
+) -> (SubstrateNode, SubstrateNode, String) {
     let _ = ring::default_provider().install_default();
 
-    let supervisor_node = Node::boot(
-        ports.supervisor_iroh,
-        ports.supervisor_registry,
-        ports.supervisor_gateway,
-        None,
-        None,
-        supervisor_owner,
-        Some(supervisor_role()),
-    )
-    .await;
-    let shared_registry = supervisor_node.registry_url.clone();
-    let shared_relay = format!("http://localhost:{}", ports.supervisor_iroh);
-    let managed_node = Node::boot(
-        ports.managed_iroh,
-        ports.managed_registry,
-        ports.managed_gateway,
-        Some(shared_registry),
-        Some(shared_relay),
-        managed_owner,
-        None,
-    )
-    .await;
+    let supervisor_node = SubstrateNode::builder()
+        .owner(supervisor_owner)
+        .supervisor(supervisor_role())
+        .inject_kek()
+        .boot()
+        .await;
+    let managed_node = SubstrateNode::builder()
+        .owner(managed_owner)
+        .shared_registry(supervisor_node.registry_url())
+        .shared_relay(supervisor_node.relay_url())
+        .inject_kek()
+        .boot()
+        .await;
 
     let grant =
         node_wide_supervisor_grant(managed_owner, supervisor_node.did(), managed_node.did());
@@ -458,7 +246,7 @@ async fn boot_pair(
         MANAGED_ALIAS.to_string(),
         SupervisorInventoryEntry {
             did: managed_node.did().to_string(),
-            api_url: Some(managed_node.registry_url.clone()),
+            api_url: Some(managed_node.registry_url().to_string()),
             ucan: Some(grant),
         },
     )]))
@@ -482,7 +270,7 @@ fn submission(
 }
 
 async fn submit_and_adopt_with_manifest(
-    supervisor_node: &mut Node,
+    supervisor_node: &mut SubstrateNode,
     instance_id: &str,
     inventory_json: String,
     manifest: &SynAppManifest,
@@ -507,7 +295,8 @@ async fn submit_and_adopt_with_manifest(
         .expect("adopt-result carries app_master_did")
         .to_string();
 
-    let registry_client = RegistryClient::new(false, Some(supervisor_node.registry_url.clone()));
+    let registry_client =
+        RegistryClient::new(false, Some(supervisor_node.registry_url().to_string()));
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         if registry_client.lookup(&app_did, false).await.is_ok() {
@@ -526,7 +315,7 @@ async fn submit_and_adopt_with_manifest(
 /// Submits and adopts a `replicas`-member instance, returning the app
 /// master DID -- the reference scenario's step 1.
 async fn submit_and_adopt(
-    supervisor_node: &mut Node,
+    supervisor_node: &mut SubstrateNode,
     instance_id: &str,
     inventory_json: String,
     replicas: u32,
@@ -562,11 +351,11 @@ fn anonymous_outside_caller_fetcher(
 /// document and routes to one of its members.
 #[tokio::test]
 async fn an_outside_caller_resolves_an_apps_members_and_calls_one() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner, PORTS_OUTSIDE_CALLER_RESOLVES).await;
+        boot_pair(&supervisor_owner, &managed_owner).await;
 
     let app_did =
         submit_and_adopt(&mut supervisor_node, "resolve-outside-inst", inventory_json, 2).await;
@@ -574,7 +363,7 @@ async fn an_outside_caller_resolves_an_apps_members_and_calls_one() {
     let outside_caller = Identity::generate().unwrap();
     let outside_caller_did = substrate::derive_did_key(&outside_caller.public_key());
     let grant = resolve_grant(&supervisor_owner, &outside_caller_did, &app_did);
-    let fetcher = outside_caller_fetcher(&supervisor_node.registry_url, &outside_caller, grant);
+    let fetcher = outside_caller_fetcher(supervisor_node.registry_url(), &outside_caller, grant);
 
     let app_did_typed = AppDid::new(app_did.clone());
     let resolver = LogicalResolver::new(Arc::new(StaticInventory::new()));
@@ -605,11 +394,11 @@ async fn an_outside_caller_resolves_an_apps_members_and_calls_one() {
 /// alone.
 #[tokio::test]
 async fn a_relayed_document_verifies_for_a_party_that_never_contacted_the_supervisor() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner, PORTS_RELAYED_DOCUMENT_VERIFIES).await;
+        boot_pair(&supervisor_owner, &managed_owner).await;
 
     let app_did =
         submit_and_adopt(&mut supervisor_node, "relayed-doc-inst", inventory_json, 1).await;
@@ -617,7 +406,7 @@ async fn a_relayed_document_verifies_for_a_party_that_never_contacted_the_superv
     let outside_caller = Identity::generate().unwrap();
     let outside_caller_did = substrate::derive_did_key(&outside_caller.public_key());
     let grant = resolve_grant(&supervisor_owner, &outside_caller_did, &app_did);
-    let fetcher = outside_caller_fetcher(&supervisor_node.registry_url, &outside_caller, grant);
+    let fetcher = outside_caller_fetcher(supervisor_node.registry_url(), &outside_caller, grant);
 
     let app_did_typed = AppDid::new(app_did.clone());
     let signed = fetcher
@@ -643,11 +432,11 @@ async fn a_relayed_document_verifies_for_a_party_that_never_contacted_the_superv
 /// the new set.
 #[tokio::test]
 async fn a_scaled_out_service_supersedes_the_cached_document_at_a_new_epoch() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner, PORTS_SCALE_OUT_SUPERSEDES).await;
+        boot_pair(&supervisor_owner, &managed_owner).await;
 
     let app_did =
         submit_and_adopt(&mut supervisor_node, "scale-out-inst", inventory_json.clone(), 1).await;
@@ -655,7 +444,7 @@ async fn a_scaled_out_service_supersedes_the_cached_document_at_a_new_epoch() {
     let outside_caller = Identity::generate().unwrap();
     let outside_caller_did = substrate::derive_did_key(&outside_caller.public_key());
     let grant = resolve_grant(&supervisor_owner, &outside_caller_did, &app_did);
-    let fetcher = outside_caller_fetcher(&supervisor_node.registry_url, &outside_caller, grant);
+    let fetcher = outside_caller_fetcher(supervisor_node.registry_url(), &outside_caller, grant);
     let app_did_typed = AppDid::new(app_did.clone());
     let service_name = LogicalServiceName::new("backend");
 
@@ -710,15 +499,11 @@ async fn a_scaled_out_service_supersedes_the_cached_document_at_a_new_epoch() {
 /// after the first fetch.
 #[tokio::test]
 async fn a_cached_document_still_routes_after_the_supervisor_is_down() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
-    let (mut supervisor_node, managed_node, inventory_json) = boot_pair(
-        &supervisor_owner,
-        &managed_owner,
-        PORTS_CACHED_DOCUMENT_SURVIVES_SUPERVISOR_DOWN,
-    )
-    .await;
+    let (mut supervisor_node, managed_node, inventory_json) =
+        boot_pair(&supervisor_owner, &managed_owner).await;
 
     let app_did =
         submit_and_adopt(&mut supervisor_node, "cached-survives-inst", inventory_json, 1).await;
@@ -726,7 +511,7 @@ async fn a_cached_document_still_routes_after_the_supervisor_is_down() {
     let outside_caller = Identity::generate().unwrap();
     let outside_caller_did = substrate::derive_did_key(&outside_caller.public_key());
     let grant = resolve_grant(&supervisor_owner, &outside_caller_did, &app_did);
-    let fetcher = outside_caller_fetcher(&supervisor_node.registry_url, &outside_caller, grant);
+    let fetcher = outside_caller_fetcher(supervisor_node.registry_url(), &outside_caller, grant);
     let app_did_typed = AppDid::new(app_did.clone());
 
     let resolver = LogicalResolver::new(Arc::new(StaticInventory::new()));
@@ -753,18 +538,18 @@ async fn a_cached_document_still_routes_after_the_supervisor_is_down() {
 /// supervisor it would fetch from is down.
 #[tokio::test]
 async fn a_caller_with_no_cached_document_fails_cleanly_when_the_supervisor_is_down() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner, PORTS_NO_CACHE_FAILS_CLEANLY).await;
+        boot_pair(&supervisor_owner, &managed_owner).await;
 
     let app_did = submit_and_adopt(&mut supervisor_node, "no-cache-inst", inventory_json, 1).await;
 
     let outside_caller = Identity::generate().unwrap();
     let outside_caller_did = substrate::derive_did_key(&outside_caller.public_key());
     let grant = resolve_grant(&supervisor_owner, &outside_caller_did, &app_did);
-    let fetcher = outside_caller_fetcher(&supervisor_node.registry_url, &outside_caller, grant)
+    let fetcher = outside_caller_fetcher(supervisor_node.registry_url(), &outside_caller, grant)
         .with_connect_timeout(Duration::from_secs(5));
     let app_did_typed = AppDid::new(app_did.clone());
 
@@ -785,11 +570,11 @@ async fn a_caller_with_no_cached_document_fails_cleanly_when_the_supervisor_is_d
 /// rejected.
 #[tokio::test]
 async fn a_document_forged_under_a_different_key_is_rejected() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner, PORTS_FORGED_DOCUMENT_REJECTED).await;
+        boot_pair(&supervisor_owner, &managed_owner).await;
 
     let app_did =
         submit_and_adopt(&mut supervisor_node, "forged-doc-inst", inventory_json, 1).await;
@@ -798,7 +583,7 @@ async fn a_document_forged_under_a_different_key_is_rejected() {
     let outside_caller = Identity::generate().unwrap();
     let outside_caller_did = substrate::derive_did_key(&outside_caller.public_key());
     let grant = resolve_grant(&supervisor_owner, &outside_caller_did, &app_did);
-    let fetcher = outside_caller_fetcher(&supervisor_node.registry_url, &outside_caller, grant);
+    let fetcher = outside_caller_fetcher(supervisor_node.registry_url(), &outside_caller, grant);
     let genuine = fetcher
         .fetch(&app_did_typed, &LogicalServiceName::new("backend"))
         .await
@@ -822,11 +607,11 @@ async fn a_document_forged_under_a_different_key_is_rejected() {
 /// resolves its members.
 #[tokio::test]
 async fn an_outside_caller_resolves_an_open_apps_members_with_no_ucan_grant() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner, PORTS_UNGRANTED_CALLER_RESOLVES_OPEN).await;
+        boot_pair(&supervisor_owner, &managed_owner).await;
 
     let manifest = service_manifest_with_vis(2, Visibility::Internal, TopologyVisibility::Open);
     let app_did = submit_and_adopt_with_manifest(
@@ -838,7 +623,7 @@ async fn an_outside_caller_resolves_an_open_apps_members_with_no_ucan_grant() {
     .await;
 
     let outside_caller = Identity::generate().unwrap();
-    let fetcher = anonymous_outside_caller_fetcher(&supervisor_node.registry_url, &outside_caller);
+    let fetcher = anonymous_outside_caller_fetcher(supervisor_node.registry_url(), &outside_caller);
 
     let app_did_typed = AppDid::new(app_did.clone());
     let resolver = LogicalResolver::new(Arc::new(StaticInventory::new()));
@@ -872,12 +657,11 @@ async fn an_outside_caller_resolves_an_open_apps_members_with_no_ucan_grant() {
 /// negative case one test up.)
 #[tokio::test]
 async fn an_outside_caller_gets_a_different_answer_per_logical_service_in_one_instance() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner, PORTS_UNGRANTED_CALLER_REFUSED_RESTRICTED)
-            .await;
+        boot_pair(&supervisor_owner, &managed_owner).await;
 
     let manifest = two_service_manifest_with_topology_vis(
         TopologyVisibility::Open,
@@ -892,7 +676,7 @@ async fn an_outside_caller_gets_a_different_answer_per_logical_service_in_one_in
     .await;
 
     let outside_caller = Identity::generate().unwrap();
-    let fetcher = anonymous_outside_caller_fetcher(&supervisor_node.registry_url, &outside_caller);
+    let fetcher = anonymous_outside_caller_fetcher(supervisor_node.registry_url(), &outside_caller);
     let app_did_typed = AppDid::new(app_did.clone());
 
     fetcher

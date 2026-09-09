@@ -60,10 +60,8 @@ use tokio::{
 
 // This file only uses `common::alloc_ports`, not the rest of the shared
 // full-substrate-instance harness `common` also provides (it predates
-// `common` and boots its own two-node topology directly) -- silences the
-// resulting dead-code warnings on the unused parts rather than pulling in
-// machinery this file doesn't need.
-#[allow(dead_code)]
+// `common` and boots its own two-node topology directly). `common` allows
+// its own dead code internally.
 mod common;
 
 /// Every test in this binary boots 2+ full substrate instances (real iroh

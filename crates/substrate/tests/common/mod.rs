@@ -8,6 +8,15 @@
 //! Extracted from three near-verbatim ~90-line copies that had already
 //! started drifting (`http_passthrough_e2e.rs`'s copy added the DHT-port
 //! lock guard below; the other two didn't have it).
+//!
+//! [`SubstrateNode`] (in [`node`]) is the multi-node counterpart: a builder
+//! for one node at a time, with the serial guarantee left to the caller via
+//! [`serial_guard`]. A test that needs two live nodes uses that; a
+//! single-node test can use either.
+
+#![allow(dead_code)]
+
+mod node;
 
 use std::{
     net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
@@ -15,6 +24,8 @@ use std::{
     time::Duration,
 };
 
+#[allow(unused_imports)]
+pub use node::*;
 use syneroym_core::{
     config::{ClientGatewayRole, IrohParentConfig, LogTarget, SubstrateConfig},
     dht_registry::EndpointMechanism,
@@ -50,6 +61,15 @@ use tokio::{
 /// read a process-global metrics counter safely -- narrowing this lock back
 /// to just the setup race would silently reopen that.
 static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
+
+/// Hold this for a whole test body to keep any other test in the same binary
+/// from running a substrate stack at the same time. [`SubstrateNode`] does
+/// not take it on its own -- a multi-node test needs several nodes live at
+/// once, so the serialisation boundary is the test, not the node.
+/// [`SubstrateTestContext`] takes the same lock internally instead.
+pub async fn serial_guard() -> MutexGuard<'static, ()> {
+    SUBSTRATE_TEST_LOCK.lock().await
+}
 
 /// Ports below 32_768 sit outside the OS's ephemeral range on Linux and
 /// macOS (`net.ipv4.ip_local_port_range` defaults to roughly 32768-60999 on
