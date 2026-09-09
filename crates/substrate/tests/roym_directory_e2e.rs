@@ -33,14 +33,13 @@
 //! `directory.unpublish` removes a listing from future search without
 //! touching a copy a consumer already holds.
 //!
-//! `Node::boot` / `deploy` / `teardown` and the serial lock are copied in
-//! shape from `roym_conversation_e2e.rs` (which itself copied them from
-//! `conversation_e2e.rs` / `roym_identity_e2e.rs`); the repo tolerates this
-//! e2e-harness duplication rather than a shared module. Only the first node
-//! hosts the shared community registry -- three registry servers plus three
-//! iroh relays in one process starve the first node's own registry out of
-//! its 30-attempt (15 s) registration window on a loaded machine, and the
-//! next heartbeat is an hour away.
+//! Each node's substrate comes from `common::SubstrateNode` (with the Roym
+//! config layered on through `.configure`); the domain `Node` here keeps the
+//! deploy / login machinery on top. Only the first node hosts the community
+//! registry -- three registry servers plus three iroh relays in one process
+//! starve the first node's own registry out of its registration window on a
+//! loaded machine, and the next heartbeat is an hour away -- so a node that
+//! shares a registry drops its own `community_registry` role.
 //!
 //! No step here restarts a substrate, so there is no redeploy-after-restart
 //! path to get wrong; the certificate-dependency sub-step uses a fresh
@@ -67,10 +66,7 @@ use syneroym_app_orchestration::{
     models::{ServiceId, SubstrateAlias, SynAppManifest, Visibility},
 };
 use syneroym_core::{
-    config::{
-        AppSandboxRole, AuthRole, ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole,
-        IdentityMode, IrohParentConfig, LogTarget, ServiceRegistryRole, SubstrateConfig,
-    },
+    config::{AppSandboxRole, AuthRole, ClientGatewayRole, IdentityMode},
     dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, RegistryClient},
     util::short_hash,
 };
@@ -83,30 +79,12 @@ use syneroym_sdk::{
     },
 };
 use syneroym_signed_record::SCOPE_RECORD_SIGNING;
-use syneroym_substrate::identity;
-use tokio::{
-    sync::{Mutex, mpsc, mpsc::Sender},
-    task::JoinHandle,
-    time,
-};
+use tokio::time;
+
+mod common;
 
 const SESSION_COOKIE_NAME: &str = "syneroym_session";
 const DIRECTORY_INTERFACE: &str = "syneroym-roym:directory/api@0.1.0";
-
-/// Not sharing a port block with any other e2e file here --
-/// `conversation_e2e.rs` claims 14_000-14_102, `roym_conversation_e2e.rs`
-/// claims 14_200-14_302.
-const PORTS_X: (u16, u16, u16) = (14_400, 14_401, 14_402);
-const PORTS_Y: (u16, u16, u16) = (14_500, 14_501, 14_502);
-const PORTS_Z: (u16, u16, u16) = (14_600, 14_601, 14_602);
-/// A transient fourth node, alive only for the certificate-dependency
-/// sub-step, after X and Y have been torn down.
-const PORTS_W: (u16, u16, u16) = (14_700, 14_701, 14_702);
-
-/// Three full substrate instances plus wasmtime starve a CI runner badly
-/// enough to time iroh's QUIC path validation out if two files' groups run
-/// at once -- same fix as every other multi-node e2e file here.
-static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// The Roym services that sign a record and so need a record-signing
 /// certificate. `directory` signs nothing and is deliberately
@@ -246,20 +224,16 @@ async fn certify_and_publish(
 struct Node {
     label: &'static str,
     base_path: PathBuf,
-    ports: (u16, u16, u16),
-    shared_registry_url: Option<String>,
     owner: Identity,
-    kek_hex: String,
     /// Stable across restarts, keyed by service name.
     masters: BTreeMap<String, Identity>,
     role: AppSandboxRole,
     cert_overrides: CertOverrides,
 
-    substrate_client: SyneroymClient,
+    node: common::SubstrateNode,
     registry_url: String,
     gateway_url: String,
-    shutdown_tx: Sender<()>,
-    substrate_handle: JoinHandle<()>,
+    substrate_did: String,
     /// Minted DID per service name, set by `deploy`.
     dids: BTreeMap<String, String>,
     session_token: Option<String>,
@@ -269,125 +243,70 @@ impl Node {
     async fn boot(
         label: &'static str,
         base_path: PathBuf,
-        ports: (u16, u16, u16),
         shared_registry_url: Option<String>,
         owner: Identity,
     ) -> Self {
         let ids_dir = base_path.join("identities");
         fs::create_dir_all(&ids_dir).unwrap();
         owner.save_to_path(ids_dir.join("owner.key")).unwrap();
-        Self::spawn_substrate(label, base_path, ports, shared_registry_url, &owner).await
+        Self::spawn_substrate(label, base_path, shared_registry_url, &owner).await
     }
 
     async fn spawn_substrate(
         label: &'static str,
         base_path: PathBuf,
-        ports: (u16, u16, u16),
         shared_registry_url: Option<String>,
         owner: &Identity,
     ) -> Self {
-        let (iroh_port, registry_port, gateway_port) = ports;
-        let kek_hex = hex::encode([0xcdu8; 32]);
         let ids_dir = base_path.join("identities");
         let role = fast_conversation_role();
 
-        let mut config = SubstrateConfig {
-            app_local_data_dir: base_path.join("data"),
-            app_data_dir: base_path.join("user_data"),
-            app_cache_dir: base_path.join("cache"),
-            app_log_dir: base_path.join("logs"),
-            profile: "full".to_string(),
-            ..SubstrateConfig::default()
-        };
-        config.resolve_paths();
-        config.logging.target = LogTarget::Stdout;
-        config.roles.coordinator = Some(CoordinatorRole {
-            iroh: Some(CoordinatorIrohConfig {
-                enable_relay: true,
-                http_bind_address: format!("127.0.0.1:{iroh_port}"),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        // Only the first node hosts the shared community registry; the
-        // others point at it. Three registry servers plus three iroh relays
-        // in one process is enough contention on a loaded machine to keep
-        // the first node's own registry from binding inside its
-        // registration-retry window.
-        let own_registry_url = format!("http://127.0.0.1:{registry_port}");
-        let effective_registry_url = match &shared_registry_url {
-            Some(url) => url.clone(),
-            None => {
-                config.roles.community_registry = Some(ServiceRegistryRole {
-                    http_bind_address: format!("127.0.0.1:{registry_port}"),
+        // A node that shares another's registry drops its own
+        // `community_registry` role -- three registry servers in one process
+        // keep the hosting node's own registry from binding inside its
+        // registration-retry window on a loaded machine.
+        let shares_registry = shared_registry_url.is_some();
+        let role_for_hook = role.clone();
+        let mut builder = common::SubstrateNode::builder()
+            .owner(owner)
+            .base_path(base_path.clone())
+            .inject_kek_bytes([0xcd; 32])
+            .configure(move |c| {
+                let gateway = c.roles.client_gateway.take().unwrap_or_default();
+                c.roles.client_gateway =
+                    Some(ClientGatewayRole { identity_mode: IdentityMode::Login, ..gateway });
+                c.roles.auth = Some(AuthRole {
+                    person_identities_dir: Some(ids_dir.clone()),
                     ..Default::default()
                 });
-                own_registry_url
-            }
-        };
-        config.substrate.registry_url = Some(effective_registry_url.clone());
-        config.substrate.enable_bep0044_dht = false;
-        config.parent_coordinator.iroh =
-            Some(IrohParentConfig { url: format!("http://127.0.0.1:{iroh_port}") });
-        config.roles.client_gateway = Some(ClientGatewayRole {
-            http_port: gateway_port,
-            identity_mode: IdentityMode::Login,
-            ..Default::default()
-        });
-        config.roles.auth =
-            Some(AuthRole { person_identities_dir: Some(ids_dir.clone()), ..Default::default() });
-        config.roles.app_sandbox = Some(role.clone());
-        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
-
-        let state = identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
-            .expect("failed to setup identity");
-        let substrate_service_id = state.did.clone();
-
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let runtime =
-            syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
-        let config_clone = config.clone();
-        let substrate_handle = tokio::spawn(async move {
-            syneroym_substrate::run_with_signal(config_clone, runtime, async {
-                let _ = shutdown_rx.recv().await;
-            })
-            .await
-            .expect("substrate failed to run");
-        });
-
-        let mut substrate_client = SyneroymClient::new_with_identity(
-            substrate_service_id,
-            effective_registry_url.clone(),
-            Identity::from_bytes(&owner.to_bytes()),
-        )
-        .with_registry_dht(false);
-        substrate_client.wait_for_ready(Duration::from_secs(90)).await.unwrap_or_else(|e| {
-            panic!("{label} substrate not ready via {effective_registry_url}: {e}")
-        });
-        substrate_client.inject_kek(kek_hex.clone()).await.expect("inject_kek failed");
+                c.roles.app_sandbox = Some(role_for_hook.clone());
+                if shares_registry {
+                    c.roles.community_registry = None;
+                }
+            });
+        if let Some(url) = &shared_registry_url {
+            builder = builder.shared_registry(url.clone());
+        }
+        let node = builder.boot().await;
 
         Self {
             label,
             base_path,
-            ports,
-            shared_registry_url,
             owner: Identity::from_bytes(&owner.to_bytes()),
-            kek_hex,
             masters: BTreeMap::new(),
             role,
             cert_overrides: CertOverrides::default(),
-            substrate_client,
-            registry_url: effective_registry_url.clone(),
-            gateway_url: format!("http://127.0.0.1:{gateway_port}"),
-            shutdown_tx,
-            substrate_handle,
+            registry_url: node.registry_url().to_string(),
+            gateway_url: node.gateway_url(),
+            substrate_did: node.did().to_string(),
+            node,
             dids: BTreeMap::new(),
             session_token: None,
         }
     }
 
     fn substrate_did(&self) -> String {
-        self.substrate_client.service_id().to_string()
+        self.substrate_did.clone()
     }
 
     /// Compile, mint (or reuse) masters, certify, publish, apply. Publishes
@@ -581,10 +500,8 @@ impl Node {
         self.enrol_signing().await;
     }
 
-    async fn teardown(mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = self.substrate_handle.await;
+    async fn teardown(self) {
+        self.node.teardown().await;
     }
 }
 
@@ -705,7 +622,7 @@ async fn deliver_one_message(from: &Node, to_label: &str, address: &str, body: &
 
 #[tokio::test]
 async fn roym_directory_search_half_across_three_substrates() {
-    let _guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
     if !roym_artifacts_present() {
         eprintln!("skipping: Roym wasm/UI artifacts not built (`mise run build:roym`)");
@@ -723,7 +640,6 @@ async fn roym_directory_search_half_across_three_substrates() {
     let mut node_x = Node::boot(
         "node-x",
         dir_x.path().to_path_buf(),
-        PORTS_X,
         None,
         Identity::from_bytes(&owner_x.to_bytes()),
     )
@@ -734,7 +650,6 @@ async fn roym_directory_search_half_across_three_substrates() {
     let mut node_y = Node::boot(
         "node-y",
         dir_y.path().to_path_buf(),
-        PORTS_Y,
         Some(shared_registry.clone()),
         Identity::from_bytes(&owner_y.to_bytes()),
     )
@@ -744,7 +659,6 @@ async fn roym_directory_search_half_across_three_substrates() {
     let mut node_z = Node::boot(
         "node-z",
         dir_z.path().to_path_buf(),
-        PORTS_Z,
         Some(shared_registry.clone()),
         Identity::from_bytes(&owner_z.to_bytes()),
     )
@@ -1065,7 +979,6 @@ async fn roym_directory_search_half_across_three_substrates() {
     let mut node_w = Node::boot(
         "node-w",
         dir_w.path().to_path_buf(),
-        PORTS_W,
         Some(shared_registry.clone()),
         Identity::from_bytes(&owner_w.to_bytes()),
     )
