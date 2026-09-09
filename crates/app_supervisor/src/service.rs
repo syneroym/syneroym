@@ -2,8 +2,8 @@
 //! `supervisor.wit` (submit / adopt / release / pause / resume / retire /
 //! force-reconcile / export-master / import-master / status / alerts).
 //!
-//! Every verb gates on `substrate/admin` on this supervisor's own node
-//! (§11.2): submitting desired state hands the supervisor deploy authority
+//! Every verb gates on `substrate/admin` on this supervisor's own node:
+//! submitting desired state hands the supervisor deploy authority
 //! on N remote substrates and master keys, and there is no resource
 //! narrower than the node that means anything here. `status`/`alerts` are a
 //! coarse stand-in for a future monitoring-only credential -- recorded in
@@ -127,7 +127,7 @@ struct WritePhase<'a> {
     renewal_candidates: &'a [RenewalCandidate],
     pending_rotation_restarts: &'a BTreeSet<String>,
     /// Dependent members whose diff against the last active plan changed
-    /// only `resolved_dependencies` (M05A A5e, D-A5e-7): a membership
+    /// only `resolved_dependencies`: a membership
     /// change in one of their dependencies, routed to `push_bindings`
     /// instead of a full redeploy. `(member's own planned service, the
     /// substrate DID it is already landed on)`.
@@ -165,8 +165,8 @@ enum ScheduleDecision {
 /// the pass's own health report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RenewalCandidate {
-    /// This member's own `MemberRef` display string (M05A A5e, D-A5e-2) --
-    /// what every store/alert call this candidate feeds keys on.
+    /// This member's own `MemberRef` display string -- what every
+    /// store/alert call this candidate feeds keys on.
     member_ref: String,
     service_name: String,
     /// The member master DID -- what the certificate names and what the
@@ -176,9 +176,9 @@ struct RenewalCandidate {
     /// Carried so a failed renewal can tell "not yet expired" from "already
     /// expired" without re-reading the report.
     expires_at: u64,
-    /// This member's ordinal (M05A A5e, D-A5e-5) -- what
-    /// `keys::master_for_member` reads instead of hardcoding `0`, so
-    /// member N's renewal signs with member N's own master.
+    /// This member's ordinal -- what `keys::master_for_member` reads
+    /// instead of hardcoding `0`, so member N's renewal signs with member
+    /// N's own master.
     member_index: u32,
 }
 
@@ -205,8 +205,8 @@ enum RenewalFailure {
     },
 }
 
-/// How the queue worker reconnects to a claimed item's target substrate
-/// (M05B B1, D-B1-1). A trait rather than a direct call to
+/// How the queue worker reconnects to a claimed item's target substrate.
+/// A trait rather than a direct call to
 /// `SupervisorService::connected_client`, so `deliver_queued_item` is
 /// testable against a fake instead of a live substrate -- the same
 /// tradeoff `push_bindings`/`attempt_restart` already made by taking an
@@ -264,11 +264,10 @@ impl QueueConnector for LiveQueueConnector {
 /// service declared was just removed from its manifest -- an ordinary
 /// deploy, not an edge case), and an earlier version of this code used
 /// exactly `Vec::new()` as its own sentinel for "not attempted, deferred
-/// to an already-pending queue item" (M05B B1 review, two review passes
-/// deep: the first found the epoch-skew this sentinel was meant to fix; a
-/// second found the sentinel itself was ambiguous with a real, empty
-/// success, permanently downgrading a service that had simply lost its
-/// last dependency).
+/// to an already-pending queue item". Two review passes deep: the first
+/// found the epoch-skew this sentinel was meant to fix; a second found the
+/// sentinel itself was ambiguous with a real, empty success, permanently
+/// downgrading a service that had simply lost its last dependency.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PushOutcome {
     /// The write was actually attempted -- successfully or not, and
@@ -307,22 +306,22 @@ pub struct SupervisorService {
     /// and `LiveQueueConnector` alike -- so a node with DHT disabled
     /// doesn't spin one up on the client side instead.
     enable_registry_dht: bool,
-    /// D-A5c-6 (§19.5): this node's shared broker, registered under
+    /// This node's shared broker, registered under
     /// `SUPERVISOR_DISPATCH_ID` (`runtime.rs`) so `record_report`'s caller
     /// can publish a newly-opened alert without a deployed service in the
     /// way.
     messaging_broker: Arc<MqttBroker>,
-    /// `SupervisorRole.alert_topic` (default `supervisor/alerts`) --
-    /// D-A5-13's prefix, joined with the app instance id at publish time.
+    /// `SupervisorRole.alert_topic` (default `supervisor/alerts`) -- the
+    /// topic prefix, joined with the app instance id at publish time.
     alert_topic: String,
     /// `SupervisorRole.poll_interval_secs` (default 30) -- the resident
-    /// loop's `tokio::interval` period (M05A A5c §19.7/§19.14, D-A5c-7).
+    /// loop's `tokio::interval` period.
     poll_interval_secs: u64,
     /// `SupervisorRole.max_restart_attempts` (default 3) -- the bounded
-    /// restart-in-place ceiling (§19.14, phase 6).
+    /// restart-in-place ceiling.
     max_restart_attempts: u32,
     /// `SupervisorRole.restart_backoff_secs` (default 30) -- minimum wait
-    /// between two restart attempts for one service (§19.14, phase 6).
+    /// between two restart attempts for one service.
     restart_backoff_secs: u64,
     /// `SupervisorRole.renewed_cert_expires_hours` (default 4) -- the
     /// lifetime *every* instance certificate this supervisor mints carries,
@@ -339,13 +338,13 @@ pub struct SupervisorService {
     max_renewals_per_pass: u32,
     /// `SupervisorRole.master_anchor_refresh_interval_secs` (default 12h).
     master_anchor_refresh_interval_secs: u64,
-    /// `SupervisorRole.queue_tick_secs` (default 5s, M05B B1) -- the
-    /// durable outbox worker's own `tokio::interval` period, independent of
-    /// `poll_interval_secs` (task.md's recovery budget: within one worker
-    /// tick, not one poll interval).
+    /// `SupervisorRole.queue_tick_secs` (default 5s) -- the durable outbox
+    /// worker's own `tokio::interval` period, independent of
+    /// `poll_interval_secs`: the recovery budget is one worker tick, not
+    /// one poll interval.
     queue_tick_secs: u64,
     /// How the queue worker reconnects to a claimed item's target
-    /// substrate (M05B B1). `LiveQueueConnector` in production; a test
+    /// substrate. `LiveQueueConnector` in production; a test
     /// substitutes a fake, the same reason `push_bindings`/`attempt_restart`
     /// take an already-connected `&Arc<dyn SubstrateActor>` rather than
     /// connecting themselves.
@@ -380,16 +379,16 @@ pub struct SupervisorService {
     /// A per-app-instance async mutex, held for the whole duration of a
     /// loop pass and for the whole duration of `submit`/`force-reconcile`/
     /// `adopt`/`release`/`retire` -- not `pause`/`resume` (single-column
-    /// writes) or `status`/`alerts` (reads) (M05A A5c §19.7, D-A5c-7).
+    /// writes) or `status`/`alerts` (reads).
     /// Per-instance rather than global so one unreachable substrate cannot
     /// stall every other instance's loop pass.
     instance_locks: DashMap<String, Arc<AsyncMutex<()>>>,
     /// Unix-seconds timestamp of the last time the *resident loop*
     /// finished a reconcile pass for this instance, keyed by
     /// `app_instance_id` -- distinct from `status`'s own on-demand health
-    /// sweep, which does not write here (review finding A-8: this field
-    /// used to be hardcoded `None` under a comment claiming no loop
-    /// existed yet to fill it). In-memory only, not persisted: a
+    /// sweep, which does not write here (this field used to be hardcoded
+    /// `None` under a comment claiming no loop existed yet to fill it).
+    /// In-memory only, not persisted: a
     /// supervisor restart correctly reports "no pass since restart"
     /// rather than replaying a stale wall-clock time.
     last_reconciled: DashMap<String, i64>,
@@ -410,19 +409,19 @@ pub struct SupervisorService {
     /// Cancelled by `shutdown` -- the resident loop (`run`, spawned by
     /// `RuntimeServices::run_until_shutdown`, not pinned in its own
     /// `select!`) watches this to stop between passes rather than being
-    /// dropped mid-pass (M05A A5c §19.8, D-A5c-8). The `JoinHandle`
+    /// dropped mid-pass. The `JoinHandle`
     /// itself is held by `RuntimeServices`, which awaits it after calling
     /// `shutdown` -- cancelling alone does not wait for the pass in
     /// flight to actually finish closing its clients.
     cancellation_token: CancellationToken,
     /// Test-only: keeps a fixture-built service's backing directory alive
-    /// for exactly this service's own lifetime (M05A A7 review finding
-    /// 4). `Fixture::build_with_key_store` needs the directory to survive
-    /// past its own return for the vault's encrypted-mint path to work at
-    /// all (an earlier fix that instead called `.keep()` on the
-    /// `TempDir`, unconditionally leaking it, is what finding 4 caught);
-    /// tying its lifetime to the service it backs, rather than never
-    /// dropping it, restores ordinary cleanup while keeping that fix.
+    /// for exactly this service's own lifetime.
+    /// `Fixture::build_with_key_store` needs the directory to survive past
+    /// its own return for the vault's encrypted-mint path to work at all
+    /// (an earlier fix that instead called `.keep()` on the `TempDir`,
+    /// unconditionally leaking it, is the bug this replaced); tying its
+    /// lifetime to the service it backs, rather than never dropping it,
+    /// restores ordinary cleanup while keeping that fix.
     #[cfg(test)]
     _fixture_tempdir: Option<tempfile::TempDir>,
 }
@@ -475,9 +474,8 @@ impl SupervisorService {
         // A `0` here makes every signed topology document born expired
         // (`verify` rejects it on issue) while the supervisor keeps
         // signing and serving one afresh per request -- exactly the
-        // per-request latency surface D-S2-6's re-sign-at-half-validity
-        // cache exists to remove. Same clamp shape as
-        // `max_renewals_per_pass` above.
+        // per-request latency the re-sign-at-half-validity cache exists to
+        // remove. Same clamp shape as `max_renewals_per_pass` above.
         let topology_document_not_after_secs = if topology_document_not_after_secs == 0 {
             tracing::warn!(
                 "supervisor.topology_document_not_after_secs was configured to 0, which would \
@@ -488,10 +486,10 @@ impl SupervisorService {
         } else {
             topology_document_not_after_secs
         };
-        // A `cache_ttl` at or above half of `not_after` breaks D-S2-6's "a
-        // served copy always outlives the caller's own cache TTL" -- a
-        // reader that re-asks exactly on the advised TTL could then read a
-        // document that already expired.
+        // A `cache_ttl` at or above half of `not_after` breaks the property
+        // that a served copy always outlives the caller's own cache TTL --
+        // a reader that re-asks exactly on the advised TTL could then read
+        // a document that already expired.
         let topology_document_cache_ttl_secs = if topology_document_cache_ttl_secs.saturating_mul(2)
             >= topology_document_not_after_secs
         {
@@ -548,8 +546,8 @@ impl SupervisorService {
     }
 
     /// This app instance's own async mutex, created on first use and
-    /// shared by every later caller that names the same instance (M05A
-    /// A5c D-A5c-7). `DashMap::entry` takes its own internal shard lock
+    /// shared by every later caller that names the same instance.
+    /// `DashMap::entry` takes its own internal shard lock
     /// only for the duration of the lookup/insert, not for the mutex's
     /// own hold time -- what the caller does with the returned `Arc`
     /// afterward is independent of it.
@@ -560,7 +558,7 @@ impl SupervisorService {
             .clone()
     }
 
-    /// The resident reconcile loop (M05A A5c §19.7/§19.8, D-A5c-7/D-A5c-8).
+    /// The resident reconcile loop.
     /// Spawned by `RuntimeServices::run_until_shutdown`, not pinned in its
     /// own `select!` -- see `cancellation_token`'s doc for why a bare
     /// token is not enough on its own and `shutdown` must also be awaited
@@ -577,12 +575,11 @@ impl SupervisorService {
         }
     }
 
-    /// `MissedTickBehavior::Skip` (M05A A5c §19.7, D-A5c-7): a pass that
-    /// outruns `poll_interval_secs` against a slow substrate drops the
-    /// tick it overran instead of firing a queued burst once it finally
-    /// returns. Its own function so this one configuration decision is
-    /// directly testable under a paused clock, with no pass or network
-    /// involved (§23 test 34).
+    /// `MissedTickBehavior::Skip`: a pass that outruns `poll_interval_secs`
+    /// against a slow substrate drops the tick it overran instead of
+    /// firing a queued burst once it finally returns. Its own function so
+    /// this one configuration decision is directly testable under a paused
+    /// clock, with no pass or network involved.
     fn build_pass_interval(poll_interval_secs: u64) -> tokio::time::Interval {
         let mut interval = tokio::time::interval(Duration::from_secs(poll_interval_secs.max(1)));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -595,14 +592,14 @@ impl SupervisorService {
     /// later one if the backlog is somehow larger.
     const QUEUE_WORKER_CLAIM_LIMIT: u32 = 100;
 
-    /// The durable outbox worker (M05B B1, D-B1-1): claims items due from
-    /// this supervisor's own queue and replays each `write_bindings`
-    /// against its target substrate. Spawned beside the resident loop
+    /// The durable outbox worker: claims items due from this supervisor's
+    /// own queue and replays each `write_bindings` against its target
+    /// substrate. Spawned beside the resident loop
     /// (`RuntimeServices::run_until_shutdown`), on the same
     /// `queue_tick_secs` cadence and the same cancellation token -- and,
-    /// like the resident loop, **not** drained on shutdown (D-B1-8): work
-    /// in flight is abandoned, and the visibility timeout returns it to
-    /// `Pending` on the next start.
+    /// like the resident loop, **not** drained on shutdown: work in flight
+    /// is abandoned, and the visibility timeout returns it to `Pending` on
+    /// the next start.
     pub async fn run_queue_worker(&self) -> anyhow::Result<()> {
         let mut interval = Self::build_pass_interval(self.queue_tick_secs);
         loop {
@@ -624,22 +621,22 @@ impl SupervisorService {
         };
         let max_attempts = self.store.queue.max_attempts();
         for item in items {
-            // D-B1-8/§0.7: shutdown abandons work in flight rather than
-            // draining it -- checked between every item, not only between
+            // Shutdown abandons work in flight rather than draining it --
+            // checked between every item, not only between
             // ticks, and raced into the delivery itself below, so
             // cancelling mid-tick does not wait out the rest of a claim
             // batch (up to `QUEUE_WORKER_CLAIM_LIMIT` items, each up to
             // `MANAGED_SUBSTRATE_CONNECT_TIMEOUT`) against exactly the
-            // unreachable substrates this is meant never to wait on (M05B
-            // B1 review finding 5). An item not yet started this tick is
-            // left claimed; its own visibility timeout returns it to
-            // `Pending` on the next start, same as a crashed worker.
+            // unreachable substrates this is meant never to wait on. An
+            // item not yet started this tick is left claimed; its own
+            // visibility timeout returns it to `Pending` on the next
+            // start, same as a crashed worker.
             if self.cancellation_token.is_cancelled() {
                 return;
             }
-            // M05B B1 review finding 7: an item claimed `max_attempts`
-            // times without ever reaching `fail`/`complete` (a worker
-            // panic or crash on every delivery) would otherwise be handed
+            // An item claimed `max_attempts` times without ever reaching
+            // `fail`/`complete` (a worker panic or crash on every delivery)
+            // would otherwise be handed
             // out forever -- `attempts` alone cannot bound it, since only
             // `fail` advances that counter. Dead-letter it through the
             // ordinary terminal path instead of attempting delivery again.
@@ -680,8 +677,8 @@ impl SupervisorService {
     }
 
     /// An item whose claim count alone exhausted the attempt budget,
-    /// without `fail` ever being called for it (M05B B1 review finding 7)
-    /// -- dead-lettered through the same terminal path and alerting
+    /// without `fail` ever being called for it -- dead-lettered through
+    /// the same terminal path and alerting
     /// `fail_queued_item` already gives every other terminal reason.
     async fn dead_letter_poison_pill(&self, item: QueueItem) {
         let now = outbox::now_ms();
@@ -699,16 +696,15 @@ impl SupervisorService {
     }
 
     /// Replays one claimed item: reconnects to its target substrate,
-    /// attempts the write again, and applies the outcome mapping D-B1-15
-    /// specifies -- `applied`/`no-op`/`stale` complete and clear any
-    /// `BindingConflict` the original transport failure raised; `conflict`
-    /// completes **and** raises that same alert, exactly as the
-    /// synchronous path does; a transport error retries; a callee error
-    /// (the substrate reached and refused -- e.g. its target no longer
-    /// exists, failure-matrix row 9) is terminal.
+    /// attempts the write again, and applies the outcome mapping:
+    /// `applied`/`no-op`/`stale` complete and clear any `BindingConflict`
+    /// the original transport failure raised; `conflict` completes **and**
+    /// raises that same alert, exactly as the synchronous path does; a
+    /// transport error retries; a callee error (the substrate reached and
+    /// refused -- e.g. its target no longer exists) is terminal.
     ///
     /// Takes the same `instance_lock` the resident loop's own pass holds
-    /// (D-B1-14) for the whole delivery -- without it, a queued write and a
+    /// for the whole delivery -- without it, a queued write and a
     /// live pass write for the same instance could interleave and race
     /// this supervisor into a spurious `BindingConflict`, indistinguishable
     /// from real split-brain.
@@ -737,8 +733,7 @@ impl SupervisorService {
             // binding the operator just released) nor dead-lettering it
             // with a `DeliveryExhausted` alert (noise against an instance
             // nobody is going to act on) is right -- the item's own intent
-            // is simply moot now, the same as `applied`/`no-op`/`stale`
-            // (M05B B1 review finding 16).
+            // is simply moot now, the same as `applied`/`no-op`/`stale`.
             let _ = self.store.queue.complete(item.id);
             return;
         }
@@ -772,8 +767,7 @@ impl SupervisorService {
                 // `MANAGED_SUBSTRATE_CONNECT_TIMEOUT` (10s), and the early
                 // backoff waits this feeds are sub-second -- a stale `now`
                 // can put `next_attempt_at` in the past, governing the wait
-                // by `queue_tick_secs` instead of the configured curve
-                // (M05B B1 review finding 8).
+                // by `queue_tick_secs` instead of the configured curve.
                 let failed_at = outbox::now_ms();
                 self.fail_queued_item(
                     &instance_id,
@@ -828,13 +822,12 @@ impl SupervisorService {
             Err(err) => {
                 let failed_at = outbox::now_ms();
                 // Only the narrower "the substrate answered that this
-                // write's own target is gone" case is terminal here
-                // (failure-matrix row 9) -- `deploy::is_callee_error`
-                // alone would also dead-letter a transient,
-                // reached-and-answered error (a locked database, a service
-                // still starting) that the wire protocol cannot currently
-                // distinguish from "gone" by error code, only by message
-                // text (M05B B1 review finding 10). Treating every callee
+                // write's own target is gone" case is terminal here --
+                // `deploy::is_callee_error` alone would also dead-letter a
+                // transient, reached-and-answered error (a locked database,
+                // a service still starting) that the wire protocol cannot
+                // currently distinguish from "gone" by error code, only by
+                // message text. Treating every callee
                 // error as terminal on this path -- the only path that can
                 // reach an *already-durable* item, unlike the synchronous
                 // path's "decline to enqueue" -- would prematurely give up
@@ -856,8 +849,8 @@ impl SupervisorService {
 
     /// Records a failed delivery attempt and, when the item's own budget is
     /// now exhausted, raises or refreshes the standing `DeliveryExhausted`
-    /// alert with the current dead-letter count for this key (D-B1-6) --
-    /// the DLQ's whole stated purpose fails unless something surfaces it.
+    /// alert with the current dead-letter count for this key -- the DLQ's
+    /// whole stated purpose fails unless something surfaces it.
     async fn fail_queued_item(
         &self,
         instance_id: &AppInstanceId,
@@ -893,11 +886,10 @@ impl SupervisorService {
             .await;
         }
 
-        // The DLQ cap just pruned these other keys' oldest dead letters
-        // (D-B1-9) -- if that was their *last* one, their own standing
-        // alert must clear too, or a prune leaves a permanent red mark
-        // nothing can ever clear (failure-matrix row 4a, M05B B1 review
-        // finding 3). A pruned key's group is always this same instance
+        // The DLQ cap just pruned these other keys' oldest dead letters --
+        // if that was their *last* one, their own standing alert must
+        // clear too, or a prune leaves a permanent red mark nothing can
+        // ever clear. A pruned key's group is always this same instance
         // (group_key == app_instance_id, `outbox.rs`), but parsed
         // generically here rather than assumed, since this crate does not
         // enforce that pairing.
@@ -911,7 +903,7 @@ impl SupervisorService {
     }
 
     /// Clears the standing `DeliveryExhausted` alert for `key` once none of
-    /// its dead letters remain -- `replay`'s own clearing path (D-B1-6).
+    /// its dead letters remain -- `replay`'s own clearing path.
     fn clear_delivery_exhausted_if_empty(&self, instance_id: &AppInstanceId, key: &QueueKey) {
         let remaining = self
             .store
@@ -931,7 +923,7 @@ impl SupervisorService {
 
     /// Cancels the loop's token -- the spawn site (`RuntimeServices`) is
     /// the one that awaits the `JoinHandle` this unblocks, since that is
-    /// the only place that holds it (M05A A5c D-A5c-8).
+    /// the only place that holds it.
     pub async fn shutdown(&self) -> anyhow::Result<()> {
         self.cancellation_token.cancel();
         Ok(())
@@ -941,8 +933,7 @@ impl SupervisorService {
     /// instance, in `all_active`'s order, sequentially -- a slow instance
     /// delays later ones in this same pass, accepted for A5c since the
     /// per-instance lock (not a global one) is what keeps that a latency
-    /// property rather than a correctness one (§19.14's `all_active`
-    /// entry).
+    /// property rather than a correctness one.
     async fn run_pass(&self) {
         let started =
             SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -990,18 +981,17 @@ impl SupervisorService {
         }
     }
 
-    /// One instance's share of a loop pass (M05A A5c §19.2/§19.9/§19.11,
-    /// D-A5c-2/D-A5c-9/D-A5c-11): a health sweep (shared by the alert
-    /// pass and, unless superseded, the reconcile below), then -- for a
-    /// non-superseded instance -- a **filtered** redeploy of only the
-    /// services `Reconciler::compute_diff` says changed since the last
-    /// fully-landed plan, plus any service the current sweep finds with
-    /// no completed placement at all (D-A5c-10's `missing_placement`,
-    /// which a content-unchanged diff cannot see on its own). One client
-    /// set for the whole pass (D-A5c-9), closed once at the end.
+    /// One instance's share of a loop pass: a health sweep (shared by the
+    /// alert pass and, unless superseded, the reconcile below), then --
+    /// for a non-superseded instance -- a **filtered** redeploy of only
+    /// the services `Reconciler::compute_diff` says changed since the last
+    /// fully-landed plan, plus any service the current sweep finds with no
+    /// completed placement at all (the `missing_placement` case, which a
+    /// content-unchanged diff cannot see on its own). One client set for
+    /// the whole pass, closed once at the end.
     async fn reconcile_instance_pass(&self, app_instance_id: &str) {
-        // Review finding A-6: each of these four reads used to fail
-        // silently -- no log, no alert -- which drops the instance out
+        // Each of these four reads used to fail silently -- no log, no
+        // alert -- which drops the instance out
         // of every future pass with nothing anywhere to say why. None of
         // the four can raise a *stored* alert (the failure is in reading
         // the store, or in parsing what it just returned, so there is no
@@ -1049,12 +1039,12 @@ impl SupervisorService {
         // record out of `Applying` -- `apply_with_clients` only ever
         // updates one to `Active`/`Degraded` itself, from inside the same
         // call that appended it. The per-instance lock this pass holds
-        // (D-A5c-7) proves that call is gone: a second apply for this
-        // instance cannot be in flight while we hold the lock, so a
-        // record still reading `Applying` here was abandoned by a process
-        // that exited between appending it and updating it. `Degraded` is
-        // the correct resting state for "we do not know whether this
-        // landed" (D-A3-18) -- `handle_status` would otherwise report
+        // proves that call is gone: a second apply for this instance
+        // cannot be in flight while we hold the lock, so a record still
+        // reading `Applying` here was abandoned by a process that exited
+        // between appending it and updating it. `Degraded` is the correct
+        // resting state for "we do not know whether this landed" --
+        // `handle_status` would otherwise report
         // `Applying` forever, past the point this pass's own diff (which
         // reads completed action rows, not this record's state) has
         // already re-derived and retried whatever was actually missing.
@@ -1104,8 +1094,8 @@ impl SupervisorService {
             Self::placed_aliases(&plan).unwrap_or_default().into_iter().collect();
         let connect_aliases = Self::connect_aliases_for_pass(&plan_aliases, &did_to_alias);
         let (clients, failed) = self.connect_best_effort(&connect_aliases, &inventory).await;
-        // Review finding A-6: these used to be discarded entirely. An
-        // unreachable substrate is already visible another way (the
+        // These used to be discarded entirely. An unreachable substrate
+        // is already visible another way (the
         // health sweep reports it as a fault for a service placed
         // there), but an alias with no inventory entry or no credential
         // is a configuration problem the health sweep cannot see at
@@ -1189,8 +1179,8 @@ impl SupervisorService {
             }
         }
         let diff = Reconciler::new(&self.store.journal).compute_diff(&plan);
-        // M05A A5e (D-A5e-7): a dependent member whose diff against the
-        // last active plan changed *only* `resolved_dependencies` is a
+        // A dependent member whose diff against the last active plan
+        // changed *only* `resolved_dependencies` is a
         // membership change in one of its dependencies -- pushed via
         // `push_bindings`, not redeployed. Every other kind of change
         // (config, placement, ...) still takes the redeploy path.
@@ -1243,8 +1233,8 @@ impl SupervisorService {
             }
         }
 
-        // M05A A5c phase 6 (§14 step 3, matrix row 13): landed services
-        // the sweep just found `InstanceNotRunning` are restart
+        // Landed services the sweep just found `InstanceNotRunning` are
+        // restart
         // candidates -- distinct from `needs_work` above, which never-
         // landed or content-changed services feed into instead. A
         // healthy service's own remediation bookkeeping resets here too,
@@ -1254,8 +1244,8 @@ impl SupervisorService {
             let _ = self.store.clear_remediation(app_instance_id, &svc.member_ref().to_string());
         }
 
-        // M05A A5d: the fourth work-list. Its input is this pass's own
-        // health poll -- `ServiceHealth` already carries the certificate's
+        // The fourth work-list. Its input is this pass's own health poll
+        // -- `ServiceHealth` already carries the certificate's
         // issued/expires pair -- so renewal needs no poll and no cadence of
         // its own. Deduped against `needs_work` (a service about to go
         // through `apply_plan` gets a fresh certificate there, so renewing
@@ -1356,18 +1346,17 @@ impl SupervisorService {
         Self::shutdown_clients(clients.into_values()).await;
     }
 
-    /// The write half of a loop pass (M05A A5c D-A5c-14/F6): mints,
-    /// certifies, and applies only `needs_work`'s services, then attempts
-    /// one bounded restart per `restart_candidates` entry. Extracted from
-    /// `reconcile_instance_pass` so the re-read this opens with is
-    /// directly testable against a `pause`/`retire` that lands between
-    /// the health sweep and here -- neither takes the per-instance lock
-    /// a pass otherwise holds for its whole duration, so this is the one
-    /// window that flag can still land in, and this fresh read is what
-    /// closes it (D-A5c-14 says a pause "takes effect at the next write
-    /// phase", not mid-write; this is that write phase's own boundary).
-    /// Also picks up a generation `adopt` may have bumped since the
-    /// pass's own early read.
+    /// The write half of a loop pass: mints, certifies, and applies only
+    /// `needs_work`'s services, then attempts one bounded restart per
+    /// `restart_candidates` entry. Extracted from `reconcile_instance_pass`
+    /// so the re-read this opens with is directly testable against a
+    /// `pause`/`retire` that lands between the health sweep and here --
+    /// neither takes the per-instance lock a pass otherwise holds for its
+    /// whole duration, so this is the one window that flag can still land
+    /// in, and this fresh read is what closes it (a pause takes effect at
+    /// the next write phase, not mid-write; this is that write phase's own
+    /// boundary). Also picks up a generation `adopt` may have bumped since
+    /// the pass's own early read.
     async fn apply_write_phase(&self, phase: WritePhase<'_>) {
         let WritePhase {
             instance_id,
@@ -1402,7 +1391,7 @@ impl SupervisorService {
             // no built target -- correct for `roymctl app deploy`'s own
             // all-or-nothing call, wrong here: a plan spanning two
             // substrates where only one is reachable this pass must not
-            // block the service that *could* land (matrix row 12). Only
+            // block the service that *could* land. Only
             // services whose alias this pass actually connected to are
             // included; an unreachable one stays in `needs_work` (nothing
             // landed for it) and is picked up again next pass.
@@ -1411,8 +1400,8 @@ impl SupervisorService {
                     && s.substrate.as_ref().is_some_and(|a| clients.contains_key(a))
             });
             if !filtered_plan.services.is_empty() {
-                // Review finding A-1: what gets *applied* this pass is
-                // deliberately narrowed to `filtered_plan`, but what gets
+                // What gets *applied* this pass is deliberately narrowed
+                // to `filtered_plan`, but what gets
                 // *journaled* as the new baseline must not be -- diffing
                 // future passes against a snapshot that only ever holds
                 // this pass's touched subset drops every untouched,
@@ -1468,23 +1457,23 @@ impl SupervisorService {
 
         let mut opened = Vec::new();
 
-        // M05A A5e (D-A5e-7): every member whose only change is which DIDs
-        // a dependency resolves to gets a binding push instead of the
+        // Every member whose only change is which DIDs a dependency
+        // resolves to gets a binding push instead of the
         // redeploy above -- an unreachable member this pass simply retries
         // next pass, since `resolved_dependencies` still disagrees with
         // what was last pushed.
         let mut any_push_failed = false;
         for (svc, substrate_did) in push_candidates {
-            // M05A A5e review (matrix row 11): a dependent this pass could
-            // not even connect to used to be dropped here with no alert
-            // and no `opened` entry, so `BindingConflict` was never set and
-            // `Degraded` never derived from it -- indistinguishable from
-            // "nothing to push". Raised through the same alert
-            // `write_bindings_at_epoch` itself failing would raise, so the
-            // operator sees the same row either way.
+            // A dependent this pass could not even connect to used to be
+            // dropped here with no alert and no `opened` entry, so
+            // `BindingConflict` was never set and `Degraded` never derived
+            // from it -- indistinguishable from "nothing to push". Raised
+            // through the same alert `write_bindings_at_epoch` itself
+            // failing would raise, so the operator sees the same row
+            // either way.
             //
-            // M05B B1 review: raising the alert and moving on used to be
-            // the whole story here, which left a substrate this pass could
+            // Raising the alert and moving on used to be the whole story
+            // here, which left a substrate this pass could
             // not even reach with nothing durable behind it -- the DLQ's
             // try-then-queue only fires *inside* an attempted call
             // (`DurableActor::write_bindings`), and neither branch below
@@ -1529,15 +1518,14 @@ impl SupervisorService {
                 substrate_did,
             );
             // `Deferred` means the push did not land this pass -- it must
-            // count the same as an error here (M05B B1 review follow-on
-            // 1), or a redeploy landing in the same pass would journal
-            // this member's new baseline as converged while the queue
-            // still holds stale content for it. Distinct from `Landed`
-            // with zero outcomes (every dependency was just removed from
-            // this member's manifest), which is a real, converged
-            // success, not deferred (M05B B1 review follow-up: an earlier
-            // version of this match used an empty `Vec` as the deferred
-            // sentinel, which that case collided with).
+            // count the same as an error here, or a redeploy landing in
+            // the same pass would journal this member's new baseline as
+            // converged while the queue still holds stale content for it.
+            // Distinct from `Landed` with zero outcomes (every dependency
+            // was just removed from this member's manifest), which is a
+            // real, converged success, not deferred -- an earlier version
+            // of this match used an empty `Vec` as the deferred sentinel,
+            // which that case collided with.
             match self
                 .push_bindings(
                     instance_id,
@@ -2177,8 +2165,8 @@ impl SupervisorService {
         {
             Ok(s) => s,
             // Reached by attempting the read, not by pre-checking
-            // `kek_is_loaded()` first (A7's D-A7-1 shape, not A5d's): that
-            // check reads the `KeyStore`, not whether the storage
+            // `kek_is_loaded()` first: that check reads the `KeyStore`,
+            // not whether the storage
             // provider's own encryption is even on, so on a node with
             // `storage.encryption = false` it always answers `false` even
             // though every vault read succeeds -- a pre-check here would
@@ -2266,8 +2254,8 @@ impl SupervisorService {
 
     /// The plan to journal as this pass's new baseline, as distinct from
     /// `filtered_plan`, the (possibly smaller) plan this pass actually
-    /// deploys (M05A A5c review finding A-1). Recording only the touched
-    /// subset as `Active` made `Reconciler::compute_diff` -- which reads
+    /// deploys. Recording only the touched subset as `Active` made
+    /// `Reconciler::compute_diff` -- which reads
     /// the *last* `Active` record wholesale -- forget every already-
     /// landed service the current pass did not happen to touch, so the
     /// next pass read it as missing and redeployed it, dropping today's
@@ -2293,7 +2281,7 @@ impl SupervisorService {
     /// Whether `old` and `new` (the same member, before and after a
     /// resubmit) differ only in which member DIDs a dependency resolves to
     /// -- a membership change in one of `new`'s dependencies, and nothing
-    /// else about this member itself (M05A A5e, D-A5e-7). `logical_ref` is
+    /// else about this member itself. `logical_ref` is
     /// already guaranteed equal: `Reconciler::diff_plans` matches `old` and
     /// `new` by `MemberRef`, which includes it. Also requires `schedule` to
     /// be unchanged: a simultaneous schedule edit must not
@@ -2341,8 +2329,8 @@ impl SupervisorService {
     /// operator-triggered apply (`apply_with_membership_pushes`, under
     /// `handle_submit`/`deploy_submission`) so both make the identical
     /// redeploy-vs-push-vs-exclude call for the identical diff -- fixing
-    /// findings §33.7/D-A5e-7 for one path and not the other is exactly the
-    /// gap the M05A review round found.
+    /// this classification for one path and not the other is exactly the
+    /// gap an earlier review round found.
     fn classify_update_actions(
         landed: &[ActionRecord],
         actions: &[ReconcileAction],
@@ -2470,7 +2458,7 @@ impl SupervisorService {
                 .collect();
             healthy.sort_by_key(|h| h.member_index);
             if healthy.is_empty() {
-                // A skipped tick, not a late one -- failure-matrix row 11.
+                // A skipped tick, not a late one.
                 decisions.push(ScheduleDecision::Watermark { logical_ref: l_ref });
                 continue;
             }
@@ -2540,8 +2528,8 @@ impl SupervisorService {
                     // The two early `continue` branches deliberately
                     // advance the watermark rather than leaving it: the
                     // tick's window has passed and the target was not
-                    // reachable, which is failure-matrix row 11's
-                    // documented cost, not a delivery to retry.
+                    // reachable, which is a documented cost, not a
+                    // delivery to retry.
                     let Some(alias) = did_to_alias.get(substrate_did) else {
                         let _ = self.store.record_schedule_evaluated(
                             app_instance_id,
@@ -2598,7 +2586,8 @@ impl SupervisorService {
                                 logical_ref,
                                 None,
                             );
-                            // The sentinel, never `substrate_did` -- §0.9.
+                            // The sentinel, never `substrate_did` -- see
+                            // `SCHEDULE_SUBSTRATE_DID`'s own doc.
                             let _ = self.store.alerts.clear(
                                 instance_id,
                                 Some(logical_ref),
@@ -2659,16 +2648,15 @@ impl SupervisorService {
     }
 
     /// One bounded restart attempt for a landed-but-`InstanceNotRunning`
-    /// service (M05A A5c phase 6, §14 step 3, matrix row 13): refuses if
-    /// this service's remediation is already terminal, or if it is still
-    /// inside `restart_backoff_secs` of the last attempt; otherwise calls
-    /// `SubstrateActor::restart`, records the attempt regardless of the
-    /// call's own outcome (an attempt is an attempt -- the next sweep is
-    /// what determines whether it worked), and raises
-    /// `RemediationExhausted`, naming `force-reconcile` as the escape
-    /// hatch (D-A5c-20), the moment `max_restart_attempts` is reached.
+    /// service: refuses if this service's remediation is already terminal,
+    /// or if it is still inside `restart_backoff_secs` of the last
+    /// attempt; otherwise calls `SubstrateActor::restart`, records the
+    /// attempt regardless of the call's own outcome (an attempt is an
+    /// attempt -- the next sweep is what determines whether it worked),
+    /// and raises `RemediationExhausted`, naming `force-reconcile` as the
+    /// escape hatch, the moment `max_restart_attempts` is reached.
     /// Takes `Arc<dyn SubstrateActor>` so this is directly testable
-    /// against a fake actor with no live substrate (§23 tests 35-38).
+    /// against a fake actor with no live substrate.
     #[allow(clippy::too_many_arguments)]
     async fn attempt_restart(
         &self,
@@ -2736,7 +2724,7 @@ impl SupervisorService {
         }
     }
 
-    /// Publishes every alert this pass newly opened (D-A5-13, D-A5c-6):
+    /// Publishes every alert this pass newly opened:
     /// topic `<alert_topic>/<app_instance_id>`, namespaced under this
     /// node's `SUPERVISOR_RESERVED_SERVICE_ID` with the **publish-side**
     /// rule (`namespace_topic_for_publish`) -- the same rule the router's
@@ -2808,8 +2796,8 @@ impl SupervisorService {
         Ok(client)
     }
 
-    /// Every alias `handle_status` must connect to this pass, deduplicated
-    /// (M05A A5c D-A5c-9/§19.9): the union of every alias the plan
+    /// Every alias `handle_status` must connect to this pass, deduplicated:
+    /// the union of every alias the plan
     /// declares (needed for the generation read, which must reach a
     /// substrate even before anything has landed there) and every alias a
     /// landed placement names (needed for the health sweep). Pulled out
@@ -2851,14 +2839,14 @@ impl SupervisorService {
         Ok(aliases.into_iter().collect())
     }
 
-    /// M05A A5c D-A5c-1 (§19.1): refuses a submission whose plan would move
-    /// an already-landed service to a different substrate than the journal
-    /// shows it running on. A5b shipped `submit` with no such refusal at
+    /// Refuses a submission whose plan would move an already-landed
+    /// service to a different substrate than the journal shows it running
+    /// on. An early version of `submit` shipped with no such refusal at
     /// all -- `roymctl`'s own `check_no_placement_change` is private to
     /// that binary and reads a local identity file the supervisor cannot
     /// see, so this is the supervisor's own check, not a reuse. Without
     /// it, a re-submit that changes an alias silently deploys a second
-    /// live copy of the same member: the two-publisher state D-A3-12's
+    /// live copy of the same member: the two-publisher state another
     /// refusal exists to prevent, reachable here because nothing on this
     /// path called it.
     ///
@@ -2866,15 +2854,14 @@ impl SupervisorService {
     /// -- never `roymctl`'s `--dir` -- so it is safe to call from both
     /// `submit` and `force-reconcile`.
     ///
-    /// Review finding A-4: §21 q9 specifies that a refusal here raises
-    /// `AlertKind::PlacementChangeRefused` -- the variant existed, tested
-    /// only in its own `Display`/`FromStr` round trip, with nothing in
-    /// either caller ever raising it. Raised (and published, same as
-    /// every other alert this file opens) before the refusal is returned,
-    /// so a refused submission is visible on `alerts` even though it is
-    /// otherwise indistinguishable from a plain RPC error to whatever
-    /// received it.
-    /// D-A5e-14: `SynAppManifest::validate()` enforces `MAX_REPLICAS` at
+    /// A refusal here raises `AlertKind::PlacementChangeRefused` -- the
+    /// variant existed, tested only in its own `Display`/`FromStr` round
+    /// trip, with nothing in either caller ever raising it. Raised (and
+    /// published, same as every other alert this file opens) before the
+    /// refusal is returned, so a refused submission is visible on `alerts`
+    /// even though it is otherwise indistinguishable from a plain RPC
+    /// error to whatever received it.
+    /// `SynAppManifest::validate()` enforces `MAX_REPLICAS` at
     /// compile time, but `submit`/`force-reconcile` take an already-
     /// compiled `DeploymentPlan` straight as JSON -- nothing between the
     /// compiler and here re-checks it, so a submitted plan can carry an
@@ -3025,7 +3012,7 @@ impl SupervisorService {
     }
 
     /// Connects one client per placed alias, refusing an alias absent from
-    /// the inventory or carrying no credential (§11.2).
+    /// the inventory or carrying no credential.
     async fn build_clients(
         &self,
         aliases: &[String],
@@ -3060,7 +3047,7 @@ impl SupervisorService {
     /// journal-derived set is empty until *this* supervisor has itself
     /// landed a placement, which would make a competing supervisor's
     /// `adopt` on an instance that never finished its first deploy here
-    /// undetectable (B4, Slice A5b review).
+    /// undetectable.
     ///
     /// Returns `None`, not `Some(0)`, when not one placed substrate could
     /// be reached and queried -- every failure (no inventory entry,
@@ -3069,13 +3056,13 @@ impl SupervisorService {
     /// a supervisor that had lost its own `orchestrator/status` grant
     /// reported "not superseded" indefinitely instead of "cannot tell".
     ///
-    /// M05A A5c D-A5c-9: takes already-connected clients, keyed by alias,
-    /// rather than connecting itself -- `handle_status` used to connect to
-    /// every substrate twice per call (once for the health sweep, once
-    /// here), and this is now the same client set the sweep used.
+    /// Takes already-connected clients, keyed by alias, rather than
+    /// connecting itself -- `handle_status` used to connect to every
+    /// substrate twice per call (once for the health sweep, once here),
+    /// and this is now the same client set the sweep used.
     ///
     /// Takes `Arc<dyn SubstrateActor>` rather than a concrete
-    /// `SyneroymClient` (M05A A5c §23) -- callers upcast their real,
+    /// `SyneroymClient` -- callers upcast their real,
     /// connected clients into this shape, and a test substitutes a fake
     /// one instead, so the superseded/skip decision this drives is
     /// testable with no live substrate.
@@ -3097,7 +3084,7 @@ impl SupervisorService {
 
     /// Upcasts a connected client set into the trait-object shape
     /// `max_held_generation_from_clients` takes. Deliberately the plain,
-    /// undurable constructor (M05B B1): every actor this builds is used for
+    /// undurable constructor: every actor this builds is used for
     /// exactly one read, `held_generation`, and never for `write_bindings`
     /// -- durability would add a queue key with nothing meaningful to bind
     /// it to and no call that could ever use it.
@@ -3108,13 +3095,12 @@ impl SupervisorService {
     }
 
     /// The durable constructor every other app-supervisor call site with a
-    /// real client builds through (M05B B1, D-B1-4/D-B1-5): `write_bindings`
-    /// on the returned actor attempts synchronously first and enqueues onto
-    /// this supervisor's own outbox only on a transport failure (D-B1-1).
-    /// Every other action stays exactly as undurable as `build_actor` would
-    /// make it (D-B1-3/D-B1-12) -- that declaration lives inside
-    /// `DurableActor` itself, not in which call sites choose this over
-    /// `build_actor`.
+    /// real client builds through: `write_bindings` on the returned actor
+    /// attempts synchronously first and enqueues onto this supervisor's
+    /// own outbox only on a transport failure. Every other action stays
+    /// exactly as undurable as `build_actor` would make it -- that
+    /// declaration lives inside `DurableActor` itself, not in which call
+    /// sites choose this over `build_actor`.
     fn durable_actor(
         &self,
         client: Arc<SyneroymClient>,
@@ -3138,9 +3124,9 @@ impl SupervisorService {
 
     /// Raises or clears `AlertKind::SupervisorSuperseded` from a
     /// `max_held_generation_from_clients` read, and returns whether this
-    /// instance is currently superseded (ADR-0021 §4 / matrix row 9).
-    /// Shared by `handle_status` and the loop's own pass (M05A A5c
-    /// D-A5c-11) so the two cannot read "superseded" two different ways.
+    /// instance is currently superseded (ADR-0021 §4).
+    /// Shared by `handle_status` and the loop's own pass so the two cannot
+    /// read "superseded" two different ways.
     /// `held_max == None` (nothing reachable) leaves whatever alert state
     /// already exists untouched and reports "not superseded" -- clearing
     /// here would silently un-alert a real supersession just because the
@@ -3191,7 +3177,7 @@ impl SupervisorService {
     /// iroh logs as "Endpoint dropped without calling `Endpoint::close`.
     /// Aborting ungracefully", and every RPC verb that connects to a
     /// managed substrate used to leave every client it opened for iroh to
-    /// clean up on drop (S6, Slice A5b review). Only closes a client this
+    /// clean up on drop. Only closes a client this
     /// call holds the sole `Arc` to -- if something else still references
     /// it, leaving it open is correct, not a leak.
     async fn shutdown_clients(clients: impl IntoIterator<Item = Arc<SyneroymClient>>) {
@@ -3206,9 +3192,9 @@ impl SupervisorService {
     /// `force-reconcile`. Returns the plan with masters substituted in,
     /// not just the minted list -- `handle_submit` used to re-run
     /// `mint_and_substitute` a second time on its own copy to get this
-    /// same plan for storing as desired state (H5, Slice A5b review): one
-    /// vault open and one `reveal_secret` per service for a value this
-    /// call had already computed.
+    /// same plan for storing as desired state: one vault open and one
+    /// `reveal_secret` per service for a value this call had already
+    /// computed.
     async fn deploy_submission(
         &self,
         mut plan: DeploymentPlan,
@@ -3226,7 +3212,7 @@ impl SupervisorService {
         let clients = self.build_clients(&aliases, inventory).await?;
 
         // However this returns, every client this call opened must be
-        // closed -- not just on the success path (S6).
+        // closed -- not just on the success path.
         let result =
             self.apply_with_membership_pushes(&plan, &masters, &clients, generation, minted).await;
         Self::shutdown_clients(clients.into_values()).await;
@@ -3237,8 +3223,8 @@ impl SupervisorService {
     /// same classifier `reconcile_instance_pass` uses
     /// (`classify_update_actions`) would route to a binding push or
     /// exclude outright -- those get `push_bindings` after the redeploy of
-    /// the rest, rather than a full `deploy_with_context` reinstall (M05A
-    /// A5e, D-A5e-7). Shared by `deploy_submission` (`force-reconcile`) and
+    /// the rest, rather than a full `deploy_with_context` reinstall.
+    /// Shared by `deploy_submission` (`force-reconcile`) and
     /// `handle_submit`, which each used to call `apply_with_clients`
     /// directly over the whole plan: an operator resubmit that only scales
     /// a dependency now takes the exact same push path the loop's own write
@@ -3279,13 +3265,13 @@ impl SupervisorService {
         let mut push_errors = Vec::new();
         for (svc, substrate_did) in &push_candidates {
             let Some(client) = svc.substrate.as_ref().and_then(|a| clients.get(a)) else {
-                // M05A A5e review (matrix row 11): visible on `alerts`, the
-                // same as any other push failure, not just returned to
-                // this call's own caller -- the resident loop's next pass
-                // does not re-raise a fresh alert for the same cause until
-                // this one clears. M05B B1: also queued, the same reason
-                // the resident loop's own analogous branch is
-                // (`enqueue_unreachable_push`'s doc comment) -- a fallback-
+                // Visible on `alerts`, the same as any other push failure,
+                // not just returned to this call's own caller -- the
+                // resident loop's next pass does not re-raise a fresh
+                // alert for the same cause until this one clears. Also
+                // queued, the same reason the resident loop's own
+                // analogous branch is (`enqueue_unreachable_push`'s doc
+                // comment) -- a fallback-
                 // placed member with no client this call is exactly as
                 // unreachable as one the resident loop could not connect
                 // to, and needs the same durability.
@@ -3313,11 +3299,11 @@ impl SupervisorService {
                 substrate_did,
             );
             // `Deferred` means the push did not land this call -- must
-            // count the same as an error here too (M05B B1 review
-            // follow-on 1), so `submit`/`force-reconcile` reports it and
-            // the downgrade below fires, same as the resident loop's own
-            // call site. `Landed` with zero outcomes (every dependency
-            // just removed) is a real success, not deferred.
+            // count the same as an error here too, so
+            // `submit`/`force-reconcile` reports it and the downgrade
+            // below fires, same as the resident loop's own call site.
+            // `Landed` with zero outcomes (every dependency just removed)
+            // is a real success, not deferred.
             match self
                 .push_bindings(
                     &plan.app_instance_id,
@@ -3397,9 +3383,9 @@ impl SupervisorService {
     /// `record_plan` is what gets journaled as the new baseline for
     /// `Reconciler::compute_diff` to read next time -- equal to `plan`
     /// for every full apply (`deploy_submission`, `handle_submit`), but
-    /// deliberately wider than it for the loop's filtered pass (M05A
-    /// A5c review finding A-1): see `record_plan_for_pass`'s own doc for
-    /// why the two must not be conflated.
+    /// deliberately wider than it for the loop's filtered pass: see
+    /// `record_plan_for_pass`'s own doc for why the two must not be
+    /// conflated.
     async fn apply_with_clients(
         &self,
         plan: &DeploymentPlan,
@@ -3409,8 +3395,8 @@ impl SupervisorService {
         generation: u64,
         minted: Vec<MintedMaster>,
     ) -> Result<Vec<MintedMaster>, String> {
-        // M05A A5d / D-A5d-15: the one place every certificate-minting
-        // caller passes through -- the resident loop, `submit`, and
+        // The one place every certificate-minting caller passes through --
+        // the resident loop, `submit`, and
         // `force-reconcile` alike. Filtering here rather than only in the
         // renewal work-list is what makes revocation stick: `submit` and
         // `force-reconcile` both call this with the full stored plan, so
@@ -3497,10 +3483,10 @@ impl SupervisorService {
             .journal
             .append(record_plan, DeploymentState::Applying)
             .map_err(|e| e.to_string())?;
-        // Deliberately the plain, undurable constructor (M05B B1): `deploy::
+        // Deliberately the plain, undurable constructor: `deploy::
         // apply_plan` only ever calls `actor.apply_plan(..)` on these
         // targets, never `write_bindings`, and `apply_plan` is never queued
-        // regardless (D-B1-12) -- there is no per-service logical ref to
+        // regardless -- there is no per-service logical ref to
         // bind a queue key to here anyway, since one alias's actor covers
         // every service placed on it.
         let targets: BTreeMap<SubstrateAlias, DeployTarget> = clients
@@ -3517,8 +3503,8 @@ impl SupervisorService {
             })
             .collect();
 
-        // M05A A5c §19.3/D-A5c-4: the counter always advances before a
-        // write -- a deploy is an authoritative write like any other, so
+        // The counter always advances before a write -- a deploy is an
+        // authoritative write like any other, so
         // every dependent service this apply touches gets a fresh epoch
         // here, not just the standalone push (phase 7). A service with no
         // declared dependencies emits no bindings at all, so its epoch is
@@ -3545,7 +3531,7 @@ impl SupervisorService {
                 fallback: None,
                 instance_certificates: &instance_certs,
                 registry_certificates: &registry_certs,
-                // Always true on the supervisor's apply path (§12): the
+                // Always true on the supervisor's apply path: the
                 // supervisor holds masters by construction, so the
                 // condition `roymctl app deploy` ties this flag to is
                 // always met here.
@@ -3581,27 +3567,25 @@ impl SupervisorService {
     }
 
     /// One dependent member's bindings, at its next epoch, without a
-    /// redeploy (M05A A5c phase 7, D-A5c-16): reuses `map_deployment_
-    /// plan_to_wit`'s own binding-construction logic (called the same
-    /// way `apply_plan` calls it internally, over `&[svc]`) rather than
-    /// duplicating it, so the two paths cannot drift apart on what a
-    /// binding looks like on the wire. Its production caller is the
-    /// membership-change classifier in `reconcile_instance_pass`/
-    /// `apply_write_phase` (M05A A5e, D-A5e-7).
+    /// redeploy: reuses `map_deployment_plan_to_wit`'s own
+    /// binding-construction logic (called the same way `apply_plan` calls
+    /// it internally, over `&[svc]`) rather than duplicating it, so the
+    /// two paths cannot drift apart on what a binding looks like on the
+    /// wire. Its production caller is the membership-change classifier in
+    /// `reconcile_instance_pass`/`apply_write_phase`.
     ///
-    /// `Stale(held)` is retried exactly once, at `held + 1` (D-A5c-19 /
-    /// F4): no re-read, since `Stale` already carries the number a
-    /// second round trip would only relearn. `Conflict` is not retried --
-    /// a second writer exists, and retrying would only race it again.
-    /// Either failure raises `BindingConflict`, folded into `opened` so
-    /// the caller can publish it the same way every other alert this
-    /// pass raised gets published. A push that lands cleanly clears it
-    /// instead (M05A A5e, D-A5e-8/§33.19) -- the clear site this alert
-    /// kind never had, without which `Degraded` derived from it would be
-    /// permanent.
+    /// `Stale(held)` is retried exactly once, at `held + 1`: no re-read,
+    /// since `Stale` already carries the number a second round trip would
+    /// only relearn. `Conflict` is not retried -- a second writer exists,
+    /// and retrying would only race it again. Either failure raises
+    /// `BindingConflict`, folded into `opened` so the caller can publish
+    /// it the same way every other alert this pass raised gets published.
+    /// A push that lands cleanly clears it instead -- the clear site this
+    /// alert kind never had, without which `Degraded` derived from it
+    /// would be permanent.
     ///
     /// `substrate_did` is the member's real, already-landed substrate DID
-    /// (M05A A5e, §33.21) -- not `svc.substrate`, an operator-chosen
+    /// -- not `svc.substrate`, an operator-chosen
     /// alias (empty when placement falls back), which used to be written
     /// into the alert's `substrate_did` column and could then never match
     /// a clear keyed on the real DID every other alert kind uses.
@@ -3619,8 +3603,8 @@ impl SupervisorService {
         let app_instance_id = plan.app_instance_id.to_string();
         let l_ref = svc.member_ref().to_string();
 
-        // M05B B1 review finding 1: this call advances the binding epoch
-        // unconditionally, before every attempt. `DurableActor::write_
+        // This call advances the binding epoch unconditionally, before
+        // every attempt. `DurableActor::write_
         // bindings` only enqueues on a transport failure, and its own
         // dedup guard (`already_pending`) discards a second enqueue for a
         // key that already has a pending row -- so a *second* transport
@@ -3647,10 +3631,10 @@ impl SupervisorService {
         // writing a duplicate row should err toward not writing. Here it
         // would mean the opposite: an unreadable queue silently skips the
         // live attempt and returns `Ok`, reporting success for a push that
-        // never happened and was never durably queued either (M05B B1
-        // review follow-on 1). Failing *open* instead is safe specifically
-        // because the queue and every other supervisor table share one
-        // connection (D-B1-5) -- a genuinely broken connection surfaces a
+        // never happened and was never durably queued either. Failing
+        // *open* instead is safe specifically because the queue and every
+        // other supervisor table share one connection -- a genuinely
+        // broken connection surfaces a
         // proper `Err` on the very next line's `advance_binding_epoch`
         // instead of a silent no-op.
         if self.store.queue.has_pending(&queue_key.to_string()).unwrap_or(false) {
@@ -3661,9 +3645,9 @@ impl SupervisorService {
             .store
             .advance_binding_epoch(&app_instance_id, &l_ref)
             .map_err(|e| e.to_string())?;
-        // Review finding A-5: a `write_bindings` call that fails outright
-        // (the dependent unreachable, matrix row 11) used to propagate
-        // with `?`, before the alert-raising code below was ever reached
+        // A `write_bindings` call that fails outright (the dependent
+        // unreachable) used to propagate with `?`, before the
+        // alert-raising code below was ever reached
         // -- the alert only fired for a `Stale`/`Conflict` *outcome*, a
         // clean round trip reporting a problem, never for the round trip
         // itself failing.
@@ -3724,8 +3708,9 @@ impl SupervisorService {
         Ok(PushOutcome::Landed(outcomes))
     }
 
-    /// The alert half of matrix row 11: a push that fails to reach the
-    /// dependent at all (not a clean `Stale`/`Conflict` outcome) still
+    /// The alert half of an unreachable dependent: a push that fails to
+    /// reach the dependent at all (not a clean `Stale`/`Conflict` outcome)
+    /// still
     /// needs to be visible on `alerts`, the same `AlertKind` a bad
     /// outcome raises -- an operator reading `alerts` should not have to
     /// know which of the two shapes a failed push took.
@@ -3806,7 +3791,7 @@ impl SupervisorService {
     /// an actor for -- no known alias for its landed DID, or a connect
     /// that timed out before a client existed to wrap in a `DurableActor`
     /// at all. `DurableActor::write_bindings` is what normally enqueues on
-    /// a transport failure (D-B1-1), but that only fires *inside* an
+    /// a transport failure, but that only fires *inside* an
     /// attempted call; a substrate this pass never managed to dial has no
     /// call to attempt. Left at "raise an alert and move on" (the shape
     /// this had before), a substrate that is durably offline -- the exact
@@ -3839,8 +3824,9 @@ impl SupervisorService {
             substrate_did: substrate_did.to_string(),
         };
         let outbox = SupervisorOutbox::new(self.store.queue.clone());
-        // A5e's own retry (falling `compute_diff` back to the previous
-        // baseline on Degraded) reclassifies this member as a push
+        // The resident loop's own retry (falling `compute_diff` back to
+        // the previous baseline on Degraded) reclassifies this member as
+        // a push
         // candidate every pass until its push lands, so this branch runs
         // repeatedly while the substrate stays offline. A pending row
         // already covers the intent; advancing the epoch again for a
@@ -3888,9 +3874,9 @@ impl SupervisorService {
         self.require_admin(caller)?;
         let (s,): (Submission,) = serde_json::from_value(params)
             .map_err(|e| RpcError::InvalidParams(format!("failed to parse submit params: {e}")))?;
-        // M05A A5c D-A5c-7: held for the whole call, so a loop pass or
-        // another operator write for this same instance cannot interleave
-        // with it (§19.7's read-then-write races).
+        // Held for the whole call, so a loop pass or another operator
+        // write for this same instance cannot interleave with it -- a
+        // read-then-write race otherwise.
         let lock = self.instance_lock(&s.app_instance_id);
         let _guard = lock.lock().await;
 
@@ -3905,8 +3891,7 @@ impl SupervisorService {
         // instead. A mismatch (both fields are caller-supplied) would
         // split the instance in two -- `status` querying the journal under
         // a key nothing wrote, `adopt` stamping a generation the substrate
-        // never associates with the deployed services (S4, Slice A5b
-        // review).
+        // never associates with the deployed services.
         if plan.app_instance_id.as_str() != s.app_instance_id {
             return Err(RpcError::InvalidParams(format!(
                 "submission names app instance '{}' but its plan-json is compiled for '{}'",
@@ -3914,11 +3899,11 @@ impl SupervisorService {
             )));
         }
 
-        // Checked before any deploy work runs, not only after (B3, Slice
-        // A5b review): `store.submit`'s own guards, below, live past the
-        // whole mint/certify/apply pipeline. For `retired` that used to
-        // mean only a late rejection. For `generation` it is worse (N1,
-        // Slice A5b review round 2): `deploy_submission` already presents
+        // Checked before any deploy work runs, not only after:
+        // `store.submit`'s own guards, below, live past the whole
+        // mint/certify/apply pipeline. For `retired` that used to mean
+        // only a late rejection. For `generation` it is worse:
+        // `deploy_submission` already presents
         // `s.generation` to the substrate's own `check_generation` on the
         // way there, and an `Ordering::Greater` presentation is *accepted*
         // there and advances the substrate's own stamp -- so a wrong
@@ -3949,11 +3934,11 @@ impl SupervisorService {
             }
         }
 
-        // M05A A5c D-A5c-1: checked in the same pre-flight as `retired`/
-        // `generation` above, before any deploy work runs -- a changed
-        // placement must be refused, not silently applied.
+        // Checked in the same pre-flight as `retired`/`generation` above,
+        // before any deploy work runs -- a changed placement must be
+        // refused, not silently applied.
         self.refuse_placement_change(&plan, &inventory).await.map_err(RpcError::InternalError)?;
-        // D-A5e-14: the manifest-time cap re-checked at the interface that
+        // The manifest-time replica cap, re-checked at the interface that
         // actually accepts a compiled plan.
         Self::refuse_replicas_above_cap(&plan).map_err(RpcError::InternalError)?;
         Self::refuse_unrunnable_schedules(&plan).map_err(RpcError::InternalError)?;
@@ -3965,7 +3950,7 @@ impl SupervisorService {
         // spent (unchanged ordering from before this change). The
         // substituted plan is what the stored desired state carries, so
         // the loop and `force-reconcile` see real master DIDs, not the
-        // compiler's fabricated ones (H5, Slice A5b review).
+        // compiler's fabricated ones.
         let aliases = Self::placed_aliases(&plan).map_err(RpcError::InternalError)?;
         let mut plan = plan;
         let (minted, masters) = keys::mint_and_substitute(&mut plan, &self.vault)
@@ -3994,8 +3979,8 @@ impl SupervisorService {
             topology_fingerprints.push((service_name, fingerprint));
         }
 
-        // M05A A5c (matrix row 12): persisted here, before the deploy
-        // attempt below -- so a substrate that is down or slow at this
+        // Persisted here, before the deploy attempt below -- so a
+        // substrate that is down or slow at this
         // exact moment does not stop the desired state itself from
         // becoming durable. Every check above (retired/generation/
         // placement) has already refused a configuration problem before
@@ -4085,8 +4070,8 @@ impl SupervisorService {
     /// Reads the held generation across every given client and claims
     /// `held + 1` on each. Split out of `handle_adopt` so that function
     /// can close every client it opened however this returns, success or
-    /// failure (N2, Slice A5b review round 2) -- `?` inside either loop
-    /// here used to return straight out of `handle_adopt` itself, leaking
+    /// failure -- `?` inside either loop here used to return straight out
+    /// of `handle_adopt` itself, leaking
     /// every client already connected and every one still left to try.
     async fn claim_next_generation(
         app_instance_id: &str,
@@ -4143,8 +4128,8 @@ impl SupervisorService {
         let inventory: SupervisorInventory = serde_json::from_str(&state.inventory_json)
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
 
-        // M05A A7 (D-A7-1): resolved or minted before any substrate
-        // connection is opened -- same ordering `submit`'s own mint uses
+        // Resolved or minted before any substrate connection is opened --
+        // same ordering `submit`'s own mint uses
         // ("a locked vault or a bad plan must fail before anything is
         // persisted or a network round trip spent"). A locked vault fails
         // the whole call here, before `claim_next_generation` burns a
@@ -4166,15 +4151,14 @@ impl SupervisorService {
         let next_generation = result?;
 
         // `adopt` is the way back in from `retired` -- the message every
-        // refusal on a retired instance points to (N3, Slice A5b review
-        // round 2). Idempotent when the instance was never retired.
+        // refusal on a retired instance points to. Idempotent when the
+        // instance was never retired.
         //
-        // M05A A7 (D-A7-5, review finding 6): the generation, the
-        // un-retired flag, and the resolved app master DID land in one
-        // combined store write rather than three separate ones -- a crash
-        // between them used to be able to leave a claimed generation with
-        // no recorded app master, which is exactly the state D-A7-4's "the
-        // row always agrees with the vault" claim rests on not happening.
+        // The generation, the un-retired flag, and the resolved app
+        // master DID land in one combined store write rather than three
+        // separate ones -- a crash between them used to be able to leave a
+        // claimed generation with no recorded app master, breaking the
+        // invariant that the row always agrees with the vault.
         // The DID is written *after* the claim succeeds, deliberately
         // asymmetric with the mint above, which runs before it: a vault
         // key with no row is recoverable (the next `adopt` resolves the
@@ -4186,8 +4170,8 @@ impl SupervisorService {
         self.store
             .record_adopt(&app_instance_id, next_generation, &app_master_did)
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
-        // D-A5c-20 (§19.20/F5): a fresh generation is a fresh start, so a
-        // terminal `InstanceNotRunning` service -- one nothing will ever
+        // A fresh generation is a fresh start, so a terminal
+        // `InstanceNotRunning` service -- one nothing will ever
         // restart again on its own -- becomes escapable here. Stays a
         // separate, best-effort call (unlike the combined write above):
         // its own failure has never blocked `adopt` from succeeding.
@@ -4209,7 +4193,7 @@ impl SupervisorService {
     /// `build_clients`' own contract is all-or-nothing (a deploy correctly
     /// wants that), which is wrong for release: an unreachable substrate
     /// must not stop this call from releasing every *other* substrate the
-    /// instance is placed on (S7, Slice A5b review). Connects what it can
+    /// instance is placed on. Connects what it can
     /// and reports the rest as `(alias, reason)` instead of failing the
     /// whole batch on the first one that cannot be reached.
     async fn connect_best_effort(
@@ -4222,8 +4206,8 @@ impl SupervisorService {
         for alias in aliases {
             // Shutdown must not wait out every remaining alias's own
             // `MANAGED_SUBSTRATE_CONNECT_TIMEOUT` -- unlike
-            // `queue_worker_tick`'s per-item check (M05B B1 review finding
-            // 5), `run()`'s outer `select!` only races cancellation against
+            // `queue_worker_tick`'s per-item check, `run()`'s outer
+            // `select!` only races cancellation against
             // *waiting for the next tick*, not against a pass already in
             // flight, so without a check here a pass stuck connecting to
             // one unreachable alias silently drags the whole shutdown out
@@ -4262,7 +4246,7 @@ impl SupervisorService {
     /// every substrate the instance is placed on that can actually be
     /// reached, and returns the `(alias, reason)` of every one that
     /// could not be -- reachable or not, `release`/`retire` still act on
-    /// what they can (S7, Slice A5b review).
+    /// what they can.
     async fn release_on_every_substrate(
         &self,
         app_instance_id: &str,
@@ -4429,7 +4413,7 @@ impl SupervisorService {
             })?;
         // Unlike `submit`, this path never calls `store.submit`, so nothing
         // else on it would ever refuse a retired instance -- it would just
-        // redeploy every service indefinitely (B3, Slice A5b review).
+        // redeploy every service indefinitely.
         if state.retired {
             return Err(RpcError::InternalError(format!(
                 "app instance '{app_instance_id}' is retired; run `supervisor adopt` to resume \
@@ -4440,17 +4424,18 @@ impl SupervisorService {
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
         let inventory: SupervisorInventory = serde_json::from_str(&state.inventory_json)
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
-        // M05A A5c D-A5c-1: `force-reconcile` never calls `store.submit`,
-        // so nothing else on this path checks placement either -- the
-        // identical fixture-trick reasoning as the `retired` check above.
+        // `force-reconcile` never calls `store.submit`, so nothing else on
+        // this path checks placement either -- the identical reasoning as
+        // the `retired` check above.
         self.refuse_placement_change(&plan, &inventory).await.map_err(RpcError::InternalError)?;
-        // D-A5e-14: the same re-check `submit` runs -- a desired-state row
-        // written before this check existed must not get a permanent pass.
+        // The same replica-cap re-check `submit` runs -- a desired-state
+        // row written before this check existed must not get a permanent
+        // pass.
         Self::refuse_replicas_above_cap(&plan).map_err(RpcError::InternalError)?;
         Self::refuse_unrunnable_schedules(&plan).map_err(RpcError::InternalError)?;
         Self::refuse_unshardable_plan(&plan).map_err(RpcError::InternalError)?;
-        // D-A5c-20 (§19.20/F5): a directed reconcile is a fresh start,
-        // regardless of what this call's own outcome turns out to be --
+        // A directed reconcile is a fresh start, regardless of what this
+        // call's own outcome turns out to be --
         // a terminal `InstanceNotRunning` service is otherwise never
         // restarted again, so the loop's own healthy-sweep clearing path
         // never fires for it.
@@ -4661,8 +4646,8 @@ impl SupervisorService {
             .map_err(|e| e.to_string())
     }
 
-    /// The read half of D-A5c-4/D-A5c-5 (§19.4): per declared dependency
-    /// of every dependent in the plan, what this supervisor last wrote
+    /// The read half of binding convergence: per declared dependency of
+    /// every dependent in the plan, what this supervisor last wrote
     /// (`SupervisorStore::binding_epoch`) versus what the sweep's
     /// `HealthReport` observed the hosting substrate serving *for that
     /// dependent* (`ServiceHealth.binding_epochs`, keyed by dependency
@@ -4706,14 +4691,12 @@ impl SupervisorService {
     }
 
     /// Services this pass's sweep reported `InstanceNotRunning` **and**
-    /// landed (a real `substrate_did`) -- restart candidates (M05A A5c
-    /// phase 6, §21/D-A5c-17). Deliberately excludes `ProbeFailing` (an
-    /// author-declared assertion, not a substrate-verified fact -- alert
-    /// only, per §21's own three reasons) and `SubstrateUnreachable`
-    /// (D-A4-13: restarting cannot fix a substrate that did not answer).
-    /// Its own function so this filter is directly testable against a
-    /// synthetic `HealthReport`, with no live substrate (§23 tests
-    /// 39-40).
+    /// landed (a real `substrate_did`) -- restart candidates. Deliberately
+    /// excludes `ProbeFailing` (an author-declared assertion, not a
+    /// substrate-verified fact -- alert only) and `SubstrateUnreachable`
+    /// (restarting cannot fix a substrate that did not answer). Its own
+    /// function so this filter is directly testable against a synthetic
+    /// `HealthReport`, with no live substrate.
     fn restart_candidates(report: &health::HealthReport) -> Vec<(String, String, String)> {
         report
             .services
@@ -4746,9 +4729,9 @@ impl SupervisorService {
         }
     }
 
-    /// D-A5-21: runs a fresh health sweep inside the RPC rather than
-    /// reading rows nothing writes -- A5b's read surface is not idle, it
-    /// just isn't on a resident timer yet.
+    /// Runs a fresh health sweep inside the RPC rather than reading rows
+    /// nothing writes -- this read surface is not idle, it just isn't on a
+    /// resident timer.
     async fn handle_status(
         &self,
         caller: &CallerContext,
@@ -4808,8 +4791,8 @@ impl SupervisorService {
             }
         }
 
-        // M05A A5c D-A5c-9: one client set for the whole call, shared by
-        // the health sweep and the generation read below -- `handle_status`
+        // One client set for the whole call, shared by the health sweep
+        // and the generation read below -- `handle_status`
         // used to connect to every substrate twice. The connected set is
         // the union of every alias the plan declares (needed for the
         // generation read, which must reach a substrate even before
@@ -4819,8 +4802,8 @@ impl SupervisorService {
             Self::placed_aliases(&plan).unwrap_or_default().into_iter().collect();
         let connect_aliases = Self::connect_aliases_for_pass(&plan_aliases, &did_to_alias);
         let (clients, failed) = self.connect_best_effort(&connect_aliases, &inventory).await;
-        // Review finding A-6: these used to be discarded entirely. An
-        // unreachable substrate is already visible another way (the
+        // These used to be discarded entirely. An unreachable substrate
+        // is already visible another way (the
         // health sweep reports it as a fault for a service placed
         // there), but an alias with no inventory entry or no credential
         // is a configuration problem the health sweep cannot see at
@@ -4867,10 +4850,10 @@ impl SupervisorService {
         drop(targets);
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
 
-        // M05A A5c D-A5c-10 (§19.11): a planned service the journal has
-        // never recorded landed is a deploy failure the sweep cannot see
-        // (it has no `service_id`/`substrate_did` to probe at all,
-        // reported as `NotDeployed`, deliberately not a fault, D-A4-19).
+        // A planned service the journal has never recorded landed is a
+        // deploy failure the sweep cannot see (it has no
+        // `service_id`/`substrate_did` to probe at all, reported as
+        // `NotDeployed`, deliberately not a fault).
         // The supervisor holds the plan, so it knows the difference
         // between "not in the plan" and "in the plan and missing" --
         // reuses `InstanceNotRunning` rather than a fifth `AlertKind`,
@@ -4887,14 +4870,14 @@ impl SupervisorService {
         // time. A distinct sentinel dodges that loop, but is then itself
         // invisible to `record_report`'s *other* pass -- the "this
         // (logical_ref, substrate_did) pair left the sweep entirely, so
-        // clear it" cleanup (A4-03) -- which would otherwise clear this
-        // alert every single call, for the identical reason in reverse.
+        // clear it" cleanup -- which would otherwise clear this alert
+        // every single call, for the identical reason in reverse.
         // `extra_live_pairs` is exactly the exemption that cleanup needs.
         let extra_live_pairs: Vec<(String, String)> = missing_placement
             .iter()
             .map(|l_ref| (l_ref.clone(), NEVER_LANDED_SUBSTRATE_DID.to_string()))
             .collect();
-        // Same call, same constant, as the resident loop's own (D-A5d-9).
+        // Same call, same constant, as the resident loop's own.
         let mut opened = health::record_report(
             &self.store.alerts,
             &instance_id,
@@ -4940,16 +4923,16 @@ impl SupervisorService {
             }
         }
 
-        // D-A5-13/D-A5c-6: publication happens here, in `record_report`'s
-        // caller, over the newly-opened list above -- every store write
+        // Publication happens here, in `record_report`'s caller, over the
+        // newly-opened list above -- every store write
         // that could add to it has already committed, so a publish
         // failure below can never lose an alert by construction. Never
         // propagated with `?`: an unreachable/slow MQTT broker must not
         // fail the whole `status` call.
         self.publish_opened_alerts(&app_instance_id, &opened).await;
 
-        // ADR-0021 §4 / matrix row 9: a substrate reporting a higher
-        // generation than this supervisor holds means a second supervisor
+        // ADR-0021 §4: a substrate reporting a higher generation than this
+        // supervisor holds means a second supervisor
         // has adopted the instance. Checked against every substrate the
         // *plan* places a service on, not `did_to_alias` above (which only
         // covers substrates this supervisor's own journal already shows a
@@ -4965,8 +4948,8 @@ impl SupervisorService {
             .update_superseded_alert(&instance_id, &app_instance_id, held_max, state.generation)
             .map_err(RpcError::InternalError)?;
 
-        // D-A5c-9: closed once, at the end, now that both the health
-        // sweep and the generation read above are done with them.
+        // Closed once, at the end, now that both the health sweep and the
+        // generation read above are done with them.
         Self::shutdown_clients(clients.into_values()).await;
 
         let services: Vec<ManagedService> = report
@@ -4999,8 +4982,8 @@ impl SupervisorService {
             })
             .collect();
 
-        // M05A A5c D-A5c-13 (§19.15): a reconcile in flight is now
-        // observable -- `apply_with_clients` writes `Applying` and this is
+        // A reconcile in flight is now observable -- `apply_with_clients`
+        // writes `Applying` and this is
         // the first caller able to read it mid-pass. Ranked after `paused`
         // (a paused instance's own state matters more than "busy") and
         // before the health-derived branch (a health verdict computed
@@ -5012,10 +4995,10 @@ impl SupervisorService {
             .map_err(|e| RpcError::InternalError(e.to_string()))?
             .is_some_and(|r| r.state == DeploymentState::Applying);
 
-        // M05A A5e (D-A5e-8, ADR-0021 §5): a binding push that has been
-        // attempted and did not land leaves the instance `Degraded` --
-        // reachable now that D-A5e-7 gives `push_bindings` a production
-        // caller. Read off the *active* alert set rather than "any
+        // A binding push that has been attempted and did not land leaves
+        // the instance `Degraded` -- reachable now that `push_bindings`
+        // has a production caller. Read off the *active* alert set rather
+        // than "any
         // unconverged row": a push that just landed cleanly reads as
         // unconverged on `binding-epochs` for up to one poll interval
         // simply because the observed epoch has not been re-polled yet,
@@ -5036,11 +5019,10 @@ impl SupervisorService {
             ManagedState::Paused
         } else if is_applying {
             ManagedState::Applying
-        // D-A5c-10 (§19.11): a service the plan names but the journal has
-        // never recorded landed is a deploy failure the sweep alone
-        // cannot see (D-A4-19's `NotDeployed` is deliberately not a
-        // fault) -- the supervisor adds the plan knowledge the poll
-        // does not have.
+        // A service the plan names but the journal has never recorded
+        // landed is a deploy failure the sweep alone cannot see (a
+        // `NotDeployed` signal is deliberately not a fault) -- the
+        // supervisor adds the plan knowledge the poll does not have.
         } else if report.faults().is_empty()
             && missing_placement.is_empty()
             && !has_binding_conflict
@@ -5064,18 +5046,16 @@ impl SupervisorService {
             state: overall_state,
             generation: state.generation,
             supervisor_did: self.node_did.clone(),
-            // A5b ran no reconcile loop, so this used to be permanently
-            // `None` (D-A5-21; H1, Slice A5b review, on why it is not
-            // `Some(now)` either -- that reported every instance as
-            // having just reconciled, even one that never has). A5c's
-            // loop now stamps `last_reconciled` at the end of every pass
-            // it actually runs for this instance (review finding A-8);
+            // An earlier version ran no reconcile loop, so this used to be
+            // permanently `None`. It is not `Some(now)` either -- that
+            // reported every instance as having just reconciled, even one
+            // that never has. The loop now stamps `last_reconciled` at
+            // the end of every pass it actually runs for this instance;
             // `status`'s own on-demand sweep, right here, deliberately
             // does not count as one.
             last_reconciled_at: self.last_reconciled.get(&app_instance_id).map(|v| *v as u64),
             services,
-            // M05A A5c §19.4/D-A5c-5 (F7, the exit criterion's own test):
-            // read off the store's own written epoch and this pass's
+            // Read off the store's own written epoch and this pass's
             // observed one, per declared dependency.
             bindings: self.binding_convergence_rows(&app_instance_id, &plan, &report),
             delivery_note: "delivery is best-effort synchronous; a converged status is not a \
@@ -5091,15 +5071,15 @@ impl SupervisorService {
                 .unwrap_or_default()
                 .into_iter()
                 .collect(),
-            // M05A A7 (D-A7-4/D-A7-6): read from the stored row only, never
-            // the vault -- a locked vault is the ordinary state of a
+            // Read from the stored row only, never the vault -- a locked
+            // vault is the ordinary state of a
             // freshly-booted supervisor, and this field must stay readable
             // through it. Empty means "never adopted under A7", mapped to
             // `None` here so a caller does not have to know `""` is a
             // sentinel.
             app_master_did: (!state.app_master_did.is_empty()).then_some(state.app_master_did),
-            // ADR-0022 §2, D-C-2: derived from the last successful
-            // refresh this supervisor stamped, not read back from the
+            // ADR-0022 §2: derived from the last successful refresh this
+            // supervisor stamped, not read back from the
             // registry -- the deadline an operator has before a locked
             // vault (or a pause) costs this instance's cross-app
             // discoverability, made visible here alongside `VaultLocked`.
@@ -5141,10 +5121,10 @@ impl SupervisorService {
     }
 
     /// Every item belonging to this instance still in the outbox -- pending
-    /// or claimed, not yet dead-lettered (M05B B1 review finding 13):
-    /// `roymctl supervisor outbox`'s own listing, and what the reference
-    /// scenario's own steps 4/5/7 need to assert the item is actually
-    /// queued rather than only inferring it from alerts or `is_converged`.
+    /// or claimed, not yet dead-lettered: `roymctl supervisor outbox`'s
+    /// own listing, and what an end-to-end test needs to assert the item
+    /// is actually queued rather than only inferring it from alerts or
+    /// `is_converged`.
     async fn handle_outbox(
         &self,
         caller: &CallerContext,
@@ -5170,8 +5150,8 @@ impl SupervisorService {
         Ok(NativeResponse { payload: serde_json::to_value(items).unwrap_or(Value::Null) })
     }
 
-    /// Every dead letter belonging to this instance, oldest first (M05B B1,
-    /// D-B1-6) -- `roymctl supervisor dead-letters`'s own listing.
+    /// Every dead letter belonging to this instance, oldest first --
+    /// `roymctl supervisor dead-letters`'s own listing.
     async fn handle_dead_letters(
         &self,
         caller: &CallerContext,
@@ -5201,7 +5181,7 @@ impl SupervisorService {
         Ok(NativeResponse { payload: serde_json::to_value(dead_letters).unwrap_or(Value::Null) })
     }
 
-    /// Re-enqueues a dead letter -- it never executes inline (D-B1-7).
+    /// Re-enqueues a dead letter -- it never executes inline.
     /// Refuses a dead letter belonging to a different app instance, rather
     /// than silently replaying it: the caller named one instance, and a
     /// wrong id must not act on someone else's queued work.
@@ -5221,8 +5201,8 @@ impl SupervisorService {
         // Both branches below are the caller naming a dead letter that is
         // not theirs to replay -- an unknown id and one that belongs to a
         // different instance are the same class of mistake as a malformed
-        // parameter, not a server problem, so both answer `InvalidParams`
-        // (M05B B1 review finding 12). Neither names which other instance
+        // parameter, not a server problem, so both answer `InvalidParams`.
+        // Neither names which other instance
         // (if any) actually owns the id: that would confirm to a caller
         // that an id exists under someone else's instance, which an
         // instance-scoped admin grant should not leak.
@@ -5386,15 +5366,15 @@ impl SupervisorService {
             }
             TopologyBuildError::InconsistentPlan(_) => RpcError::InternalError(e.to_string()),
         };
-        // The supplied name is canonicalised (S3, D-S3-3: `resolve` accepts
-        // a logical service name *or* its `short_hash`) **inside** the
+        // The supplied name is canonicalised (`resolve` accepts a logical
+        // service name *or* its `short_hash`) **inside** the
         // two-attempt loop, since each attempt re-reads `state.plan_json`
         // and a `submit` landing between attempts can change the declared
         // names. `resolved_name` then replaces `service_name` at every
         // later use in this function -- the epoch key, the cache key, and
         // `TopologyDocument.service_name` -- so the document always names
         // the real service name, never the hash a caller sent. That
-        // property is what lets the gateway's D-S3-5 check
+        // property is what lets the gateway's own check
         // (`short_hash(doc.service_name) == s_hash`) be meaningful rather
         // than tautological.
         let mut topo = None;
