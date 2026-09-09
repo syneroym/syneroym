@@ -70,6 +70,7 @@ impl NodePorts {
 }
 
 type ConfigHook = Arc<dyn Fn(&mut SubstrateConfig) + Send + Sync>;
+type IdentityHook = Arc<dyn Fn(&substrate::SubstrateIdentityState) + Send + Sync>;
 
 /// Builder for [`SubstrateNode`]. Defaults: a freshly generated owner
 /// identity (its DID becomes `[iam].admin_ucan_root`, so the node boots
@@ -88,6 +89,7 @@ pub struct NodeBuilder {
     supervisor: Option<SupervisorRole>,
     inject_kek: Option<[u8; 32]>,
     configure: ConfigHook,
+    inspect_identity: Option<IdentityHook>,
 }
 
 impl NodeBuilder {
@@ -103,6 +105,7 @@ impl NodeBuilder {
             supervisor: None,
             inject_kek: None,
             configure: Arc::new(|_| {}),
+            inspect_identity: None,
         }
     }
 
@@ -191,6 +194,19 @@ impl NodeBuilder {
         self
     }
 
+    /// Inspect the substrate identity state the moment it is materialised,
+    /// before the runtime starts routing. For a test that needs to assert on
+    /// the discovered ownership status (`Verified` / `None` / ...) at exactly
+    /// that point -- the assertion a hand-rolled harness would put between its
+    /// own `setup_substrate_identity` call and its `run` spawn.
+    pub fn inspect_identity(
+        mut self,
+        f: impl Fn(&substrate::SubstrateIdentityState) + Send + Sync + 'static,
+    ) -> Self {
+        self.inspect_identity = Some(Arc::new(f));
+        self
+    }
+
     /// The ports this node will bind. Read them before [`Self::boot`] when a
     /// test needs a port value up front.
     pub fn ports(&self) -> NodePorts {
@@ -275,6 +291,9 @@ impl NodeBuilder {
         let identity_state =
             identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
                 .expect("failed to setup substrate identity");
+        if let Some(inspect) = &self.inspect_identity {
+            inspect(&identity_state);
+        }
         let service_id = identity_state.did.clone();
 
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);

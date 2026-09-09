@@ -1,13 +1,19 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Guards the fix for the intermittent `AddrInUse` CI failure in
-//! `gateway_hostname_e2e.rs`: a hardcoded backend port (`42_600u16`) fell
+//! Guards the fix for the intermittent `AddrInUse` CI failure that started
+//! in `gateway_hostname_e2e.rs`: a hardcoded backend port (`42_600u16`) fell
 //! inside the OS's ephemeral port range (roughly 32768-60999 on Linux),
 //! where the kernel can hand the same number to an unrelated outbound
 //! socket at any moment. `common::alloc_ports` fixes that by allocating
-//! below 32_768 and verifying with a real bind, but nothing stopped a
-//! future test from going back to a hand-picked literal in the danger
-//! zone -- this scans every sibling `tests/*.rs` file for exactly that
-//! pattern and fails before it ships another flaky test.
+//! below 32_768 and verifying with a real bind.
+//!
+//! Every `crates/substrate/tests/*_e2e.rs` file now boots through
+//! `common::SubstrateNode`, which allocates every listener via
+//! `alloc_ports`, so no test constructs a substrate bind address, gateway
+//! port, or `PortBlock` from a numeric literal any more. This scan keeps it
+//! that way: it fails on ANY numeric literal assigned to a `*port*`-suffixed
+//! identifier in a sibling `tests/*.rs` file, not just one in the ephemeral
+//! danger zone -- a hand-picked port anywhere is a latent cross-binary
+//! collision, and the only safe source is `common::alloc_ports`.
 //!
 //! Deliberately dependency-free (no `regex`): a per-line heuristic textual
 //! scan, not a real Rust parser, so it can both false-negative (a literal
@@ -16,18 +22,18 @@
 
 use std::{fs, path::Path};
 
-const EPHEMERAL_RANGE_START: u32 = 32_768;
-const EPHEMERAL_RANGE_END: u32 = 60_999;
-
 /// `ident: <number>` or `ident = <number>`, where `ident`'s last word
 /// (case-insensitive) contains "port" as part of a longer name --
 /// `backend_port`, `supervisor_iroh_port` -- the shape this crate's own
-/// port-carrying `let` bindings and config-struct fields use. Deliberately
-/// excludes the bare identifier `port` on its own: that name is also used
-/// for manifest fields (e.g. `NetworkEndpoint { port: 41303, .. }`) that
-/// name a service's *declared* address without necessarily binding it as a
-/// real OS listener in the test process, so a literal there isn't the same
-/// risk this lint exists to catch.
+/// port-carrying `let` bindings and config-struct fields use.
+///
+/// Two identifiers are deliberately excluded:
+/// * the bare identifier `port` on its own: also used for manifest fields (e.g.
+///   `NetworkEndpoint { port: 41303, .. }`) that name a service's *declared*
+///   address without binding it as a real OS listener in the test process.
+/// * `container_port`: the port *inside* an OCI image in a podman port mapping
+///   (`ContainerPortMapping { container_port: 80, .. }`), with the host side
+///   left to `host_port: None` -- again never a bind in the test process.
 fn port_literals_on_line(line: &str) -> Vec<u32> {
     let mut found = Vec::new();
     for sep in [':', '='] {
@@ -41,7 +47,7 @@ fn port_literals_on_line(line: &str) -> Vec<u32> {
             .next()
             .is_some_and(|word| {
                 let lower = word.to_ascii_lowercase();
-                lower.contains("port") && lower != "port"
+                lower.contains("port") && lower != "port" && lower != "container_port"
             });
         if !ident_is_port_like {
             continue;
@@ -60,7 +66,7 @@ fn port_literals_on_line(line: &str) -> Vec<u32> {
 }
 
 #[test]
-fn no_test_hardcodes_a_port_inside_the_os_ephemeral_range() {
+fn no_test_hardcodes_a_port_literal() {
     let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let mut violations = Vec::new();
 
@@ -81,15 +87,17 @@ fn no_test_hardcodes_a_port_inside_the_os_ephemeral_range() {
                 continue; // doc comments, e.g. this file's own
             }
             for value in port_literals_on_line(line) {
-                if (EPHEMERAL_RANGE_START..=EPHEMERAL_RANGE_END).contains(&value) {
-                    violations.push(format!(
-                        "{}:{}: port literal {value} falls inside the OS ephemeral range \
-                         ({EPHEMERAL_RANGE_START}-{EPHEMERAL_RANGE_END}) -- use \
-                         `common::alloc_ports` instead of a hardcoded literal",
-                        path.display(),
-                        line_no + 1,
-                    ));
+                // `0` is the universal "let the OS assign a free port"
+                // sentinel (`http_port = 0`), never a fixed bind.
+                if value == 0 {
+                    continue;
                 }
+                violations.push(format!(
+                    "{}:{}: hardcoded port literal {value} -- allocate ports with \
+                     `common::alloc_ports` (via `common::SubstrateNode`) instead",
+                    path.display(),
+                    line_no + 1,
+                ));
             }
         }
     }

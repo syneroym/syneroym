@@ -326,9 +326,8 @@ async fn test_through_the_gateway_a_non_public_route_is_reached_and_reports_self
 {
     let wasm_bytes = skip_if_missing!("test_through_the_gateway_reports_self_asserted_node_did");
     let _ = ring::default_provider().install_default();
-    let registry_port = 9207u16;
-    let gateway_port = 9208u16;
-    let ctx = SubstrateTestContext::setup(9206, registry_port, gateway_port).await;
+    let [iroh_port, registry_port, gateway_port] = common::alloc_ports();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("32".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
