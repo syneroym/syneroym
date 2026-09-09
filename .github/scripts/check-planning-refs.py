@@ -2,13 +2,13 @@
 """Fail when a diff ADDS a code comment that cites a planning document.
 
 `AGENTS.md` bans code comments that name a milestone, slice, task, design
-id, review finding, or planning-doc section. Those documents get archived
-and renumbered, so the comment then lies. ADR references are permanent and
-stay allowed.
+id, review finding, planning-doc section, or a numbered test / failure-matrix
+row / exit criterion. Those documents get archived and renumbered, so the
+comment then lies. ADR references are permanent and stay allowed.
 
-The repository still carries about 1,200 known violations that a separate
-round is cleaning, so this gate looks ONLY at the lines a pull request
-adds. A full-tree scan is a later step (progress.md row G6).
+The repository still carries about 1,700 offending comment lines that a
+separate round is cleaning, so this gate looks ONLY at the lines a pull
+request adds. A full-tree scan is a later step (progress.md row G6).
 
 Usage:
     check-planning-refs.py <base-ref>
@@ -24,7 +24,7 @@ import re
 import subprocess
 import sys
 
-# The seven patterns from docs/planning/code-quality/README.md, section
+# The eight patterns from docs/planning/code-quality/README.md, section
 # "Finding planning references". Each entry is (label, compiled regex).
 # The bare `§` family has an ADR carve-out applied in `citations()`.
 PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -35,6 +35,14 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("bare section ref", re.compile(r"§\s?[0-9]")),
     ("review finding", re.compile(r"\breview finding\b|\breview round [0-9]")),
     ("planning doc", re.compile(r"\b(?:status|task)\.md\b|\bimplementation-plan\b")),
+    # A numbered test, failure-matrix row, or exit criterion -- each points at
+    # a numbered table in a milestone doc and rots the same way. `test` needs a
+    # 1-3 digit number so ordinary prose ("test the sequence") does not match;
+    # a bare "test" with no number is fine.
+    (
+        "test or matrix row",
+        re.compile(r"\b[Tt]est [0-9]{1,3}\b|\bmatrix row [0-9]|\bexit criteri(?:on|a)\b"),
+    ),
 ]
 
 # A `§` within short reach of `ADR-1234` points at a permanent record and is

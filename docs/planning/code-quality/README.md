@@ -103,11 +103,12 @@ write to `~/.cargo`.
 
 ## Finding planning references
 
-`AGENTS.md` bans code comments that cite milestone, slice, or task IDs, or
-planning-doc section numbers, because those docs get archived and renumbered
-and the comment then lies. ADR references are fine; ADRs are permanent.
+`AGENTS.md` bans code comments that cite milestone, slice, or task IDs,
+planning-doc section numbers, or numbered tests, failure-matrix rows, and exit
+criteria, because those docs get archived and renumbered and the comment then
+lies. ADR references are fine; ADRs are permanent.
 
-There are six separate families, and it is easy to search for only the first
+There are seven separate families, and it is easy to search for only the first
 one and think the job is nearly done. Match all of these, on comment lines only:
 
 | Family | Pattern | Count | Example in the code |
@@ -118,16 +119,27 @@ one and think the job is nearly done. Match all of these, on comment lines only:
 | Bare section ref | `§\s?[0-9]` **not** preceded by `ADR-nnnn` | 304 | `(§11.2)`, `A7 §0.5` |
 | Review finding | `\breview finding`, `\breview round [0-9]` | 97 | `M05B B1 review finding 4` |
 | Planning doc | `\b(status\|task)\.md\b`, `implementation-plan` | 94 | `` see `status.md`'s Slice 6A `` |
+| Test or matrix row | `\b[Tt]est \d{1,3}\b`, `matrix row \d`, `exit criteri(on\|a)` | 149 | `Test 97`, `failure-matrix row 13` |
+
+The counts are gross per-family hits, except **Test or matrix row**: its 149 is
+the count of comment lines that *only* that family matches. The other ~80 lines
+it also hits were already inside the union through another family.
 
 A section reference anchored to an ADR (`ADR-0022 §7`) is allowed and must not
 be stripped — 325 comment lines carry one. Only a bare `§` pointing at a
 planning document is banned.
 
-Searching only for milestone IDs finds 683 comment lines. Matching all six
-families finds **1,596** — the union, since many lines carry two or three
-families at once. The design-id family alone is 499 lines and shares no
-characters with the milestone pattern, so a milestone-only search misses it
-completely.
+The test-number pattern needs a 1-3 digit number on purpose: `\btest\b` with no
+number matches ordinary prose ("test the derive path", "a unit test"). A bare
+`test` is fine; `Test 42` is not.
+
+Searching only for milestone IDs finds 683 comment lines. Before the
+test-or-matrix-row family was added, the gate's patterns found **1,564** across
+the first six families — the union, since many lines carry two or three families
+at once. Adding the seventh family brings the true union to **1,713**: 149 more
+comment lines that no earlier pattern matched. The design-id family alone is 499
+lines and shares no characters with the milestone pattern, so a milestone-only
+search misses it completely.
 
 Some of these comments are not merely stale references — they make claims that
 are now false. `app_supervisor/src/lib.rs` described the crate as having "no
