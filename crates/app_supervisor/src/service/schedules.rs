@@ -123,125 +123,144 @@ impl SupervisorService {
                     member_index,
                     schedule,
                 } => {
-                    // The two early `continue` branches deliberately
-                    // advance the watermark rather than leaving it: the
-                    // tick's window has passed and the target was not
-                    // reachable, which is a documented cost, not a
-                    // delivery to retry.
-                    let Some(alias) = did_to_alias.get(substrate_did) else {
-                        let _ = self.store.record_schedule_evaluated(
-                            app_instance_id,
-                            logical_ref,
-                            now_i64,
-                        );
-                        continue;
-                    };
-                    let Some(actor) = actors.get(&SubstrateAlias::new(alias.clone())) else {
-                        let _ = self.store.record_schedule_evaluated(
-                            app_instance_id,
-                            logical_ref,
-                            now_i64,
-                        );
-                        continue;
-                    };
-
-                    // Before the call, not after: a supervisor that dies
-                    // inside the call must skip this tick on restart, not
-                    // repeat it.
-                    if let Err(e) = self.store.record_schedule_started(
+                    self.run_one_schedule(
+                        instance_id,
                         app_instance_id,
                         logical_ref,
-                        now_i64,
+                        service_id,
+                        substrate_did,
                         *member_index,
-                    ) {
-                        tracing::warn!(
-                            app_instance_id,
-                            logical_ref,
-                            error = %e,
-                            "failed to record a scheduled run's start; skipping this tick"
-                        );
-                        continue;
-                    }
-
-                    let budget = Duration::from_millis(u64::from(schedule.timeout_ms))
-                        .min(SCHEDULED_RUN_CEILING);
-                    let outcome = tokio::time::timeout(
-                        budget,
-                        actor.run_scheduled(
-                            service_id.clone(),
-                            generation,
-                            schedule.interface.to_string(),
-                            schedule.method.clone(),
-                            schedule.params.clone(),
-                        ),
+                        schedule,
+                        did_to_alias,
+                        actors,
+                        generation,
+                        now_i64,
+                        opened,
                     )
                     .await;
-
-                    match outcome {
-                        Ok(Ok(())) => {
-                            let _ = self.store.record_schedule_outcome(
-                                app_instance_id,
-                                logical_ref,
-                                None,
-                            );
-                            // The sentinel, never `substrate_did` -- see
-                            // `SCHEDULE_SUBSTRATE_DID`'s own doc.
-                            let _ = self.store.alerts.clear(
-                                instance_id,
-                                Some(logical_ref),
-                                SCHEDULE_SUBSTRATE_DID,
-                                AlertKind::ScheduledRunFailed,
-                            );
-                        }
-                        Ok(Err(e)) => {
-                            let detail = format!(
-                                "scheduled run of '{}/{}' failed on substrate '{substrate_did}': \
-                                 {e}",
-                                schedule.interface, schedule.method
-                            );
-                            let _ = self.store.record_schedule_outcome(
-                                app_instance_id,
-                                logical_ref,
-                                Some(&detail),
-                            );
-                            if let Ok(true) = self.store.alerts.raise(
-                                instance_id,
-                                Some(logical_ref),
-                                None,
-                                SCHEDULE_SUBSTRATE_DID,
-                                AlertKind::ScheduledRunFailed,
-                                &detail,
-                            ) {
-                                opened.push((AlertKind::ScheduledRunFailed, logical_ref.clone()));
-                            }
-                        }
-                        Err(_elapsed) => {
-                            let detail = format!(
-                                "scheduled run of '{}/{}' on substrate '{substrate_did}' timed \
-                                 out after {}ms",
-                                schedule.interface,
-                                schedule.method,
-                                budget.as_millis()
-                            );
-                            let _ = self.store.record_schedule_outcome(
-                                app_instance_id,
-                                logical_ref,
-                                Some(&detail),
-                            );
-                            if let Ok(true) = self.store.alerts.raise(
-                                instance_id,
-                                Some(logical_ref),
-                                None,
-                                SCHEDULE_SUBSTRATE_DID,
-                                AlertKind::ScheduledRunFailed,
-                                &detail,
-                            ) {
-                                opened.push((AlertKind::ScheduledRunFailed, logical_ref.clone()));
-                            }
-                        }
-                    }
                 }
             }
+        }
+    }
+
+    /// One due schedule's tick: resolves the picked member's actor, records
+    /// the run's start *before* the call (a supervisor that dies inside the
+    /// call must skip this tick on restart, not repeat it), then runs it
+    /// under the manifest's own timeout budget and records the outcome. The
+    /// two "target not reachable" early returns advance the watermark
+    /// rather than leaving it -- the tick's window has passed, which is a
+    /// documented cost, not a delivery to retry.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_one_schedule(
+        &self,
+        instance_id: &AppInstanceId,
+        app_instance_id: &str,
+        logical_ref: &str,
+        service_id: &str,
+        substrate_did: &str,
+        member_index: u32,
+        schedule: &ScheduleSpec,
+        did_to_alias: &BTreeMap<String, String>,
+        actors: &BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>>,
+        generation: u64,
+        now_i64: i64,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) {
+        let Some(alias) = did_to_alias.get(substrate_did) else {
+            let _ = self.store.record_schedule_evaluated(app_instance_id, logical_ref, now_i64);
+            return;
+        };
+        let Some(actor) = actors.get(&SubstrateAlias::new(alias.clone())) else {
+            let _ = self.store.record_schedule_evaluated(app_instance_id, logical_ref, now_i64);
+            return;
+        };
+
+        if let Err(e) =
+            self.store.record_schedule_started(app_instance_id, logical_ref, now_i64, member_index)
+        {
+            tracing::warn!(
+                app_instance_id,
+                logical_ref,
+                error = %e,
+                "failed to record a scheduled run's start; skipping this tick"
+            );
+            return;
+        }
+
+        let budget =
+            Duration::from_millis(u64::from(schedule.timeout_ms)).min(SCHEDULED_RUN_CEILING);
+        let outcome = tokio::time::timeout(
+            budget,
+            actor.run_scheduled(
+                service_id.to_string(),
+                generation,
+                schedule.interface.to_string(),
+                schedule.method.clone(),
+                schedule.params.clone(),
+            ),
+        )
+        .await;
+        self.record_scheduled_run_outcome(
+            instance_id,
+            app_instance_id,
+            logical_ref,
+            substrate_did,
+            schedule,
+            budget,
+            outcome,
+            opened,
+        );
+    }
+
+    /// Records a scheduled run's result and syncs its `ScheduledRunFailed`
+    /// alert: a clean run clears it, a failure or a timeout raises it with
+    /// a detail naming the substrate that ran the tick. The alert is keyed
+    /// on `SCHEDULE_SUBSTRATE_DID`, never the real DID -- see that
+    /// constant's own doc.
+    #[allow(clippy::too_many_arguments)]
+    fn record_scheduled_run_outcome(
+        &self,
+        instance_id: &AppInstanceId,
+        app_instance_id: &str,
+        logical_ref: &str,
+        substrate_did: &str,
+        schedule: &ScheduleSpec,
+        budget: Duration,
+        outcome: Result<Result<(), String>, tokio::time::error::Elapsed>,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) {
+        let detail = match outcome {
+            Ok(Ok(())) => {
+                let _ = self.store.record_schedule_outcome(app_instance_id, logical_ref, None);
+                let _ = self.store.alerts.clear(
+                    instance_id,
+                    Some(logical_ref),
+                    SCHEDULE_SUBSTRATE_DID,
+                    AlertKind::ScheduledRunFailed,
+                );
+                return;
+            }
+            Ok(Err(e)) => format!(
+                "scheduled run of '{}/{}' failed on substrate '{substrate_did}': {e}",
+                schedule.interface, schedule.method
+            ),
+            Err(_elapsed) => format!(
+                "scheduled run of '{}/{}' on substrate '{substrate_did}' timed out after {}ms",
+                schedule.interface,
+                schedule.method,
+                budget.as_millis()
+            ),
+        };
+        let _ = self.store.record_schedule_outcome(app_instance_id, logical_ref, Some(&detail));
+        if let Ok(true) = self.store.alerts.raise(
+            instance_id,
+            Some(logical_ref),
+            None,
+            SCHEDULE_SUBSTRATE_DID,
+            AlertKind::ScheduledRunFailed,
+            &detail,
+        ) {
+            opened.push((AlertKind::ScheduledRunFailed, logical_ref.to_string()));
         }
     }
 }

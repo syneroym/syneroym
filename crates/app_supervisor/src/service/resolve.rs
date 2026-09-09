@@ -31,16 +31,7 @@ impl SupervisorService {
         // same way: the lookup is a local read that tells the caller
         // nothing, and returning a distinguishable "no such app" would let
         // an ungranted caller enumerate this node's apps.
-        let denied = || {
-            RpcError::Custom(
-                PERMISSION_DENIED_CODE,
-                format!(
-                    "no app instance '{app_did}' is resolvable by caller {} on this supervisor",
-                    caller.caller_did
-                ),
-                None,
-            )
-        };
+        let denied = || Self::resolve_denied(&app_did, &caller.caller_did);
         let mut state = self
             .store
             .instance_by_app_master_did(app_did.as_str())
@@ -78,103 +69,9 @@ impl SupervisorService {
             return Err(denied());
         }
 
-        // The plan read, the epoch, and the signature must describe one
-        // plan. This call holds no instance lock, so a `submit` can land
-        // between the read and the sign -- retry once on the lock-free
-        // insert-only path, then fall back to a locked repair below rather
-        // than sign a mismatched pair. `NoSuchService` is caller input (an
-        // authorized caller asking for a service this app does not have),
-        // unlike `InconsistentPlan`, which is a compiler defect.
-        let map_topology_err = |e: TopologyBuildError| match e {
-            TopologyBuildError::NoSuchService(_) | TopologyBuildError::AmbiguousHash(_) => {
-                RpcError::InvalidParams(e.to_string())
-            }
-            TopologyBuildError::InconsistentPlan(_) => RpcError::InternalError(e.to_string()),
-        };
-        // The supplied name is canonicalised (`resolve` accepts a logical
-        // service name *or* its `short_hash`) **inside** the
-        // two-attempt loop, since each attempt re-reads `state.plan_json`
-        // and a `submit` landing between attempts can change the declared
-        // names. `resolved_name` then replaces `service_name` at every
-        // later use in this function -- the epoch key, the cache key, and
-        // `TopologyDocument.service_name` -- so the document always names
-        // the real service name, never the hash a caller sent. That
-        // property is what lets the gateway's own check
-        // (`short_hash(doc.service_name) == s_hash`) be meaningful rather
-        // than tautological.
-        let mut topo = None;
-        let mut resolved_name = None;
-        let mut epoch = 0u64;
-        for _attempt in 0..2 {
-            let plan = DeploymentPlan::from_json(&state.plan_json)
-                .map_err(|e| RpcError::InternalError(e.to_string()))?;
-            let name =
-                topology::resolve_service_name(&plan, &service_name).map_err(map_topology_err)?;
-            let t = topology::service_topology(&plan, &name).map_err(map_topology_err)?;
-            let fp = topology_fingerprint(t.mode, &t.members, t.sharding_strategy.as_ref());
-            let (e, stored_fp) = self
-                .store
-                .initialise_topology_epoch(&state.app_instance_id, name.as_str(), &fp)
-                .map_err(|e| RpcError::InternalError(e.to_string()))?;
-            if stored_fp == fp {
-                topo = Some(t);
-                resolved_name = Some(name);
-                epoch = e;
-                break;
-            }
-            // A submit landed under us. Re-read and try once more.
-            state = self
-                .store
-                .instance_by_app_master_did(app_did.as_str())
-                .map_err(|e| RpcError::InternalError(e.to_string()))?
-                .ok_or_else(denied)?;
-        }
-        let (resolved_name, topo, epoch) = match topo {
-            Some(t) => (resolved_name.unwrap_or_else(|| service_name.clone()), t, epoch),
-            None => {
-                // Two lock-free attempts still disagreed with the stored
-                // fingerprint: either a `submit` is genuinely still in
-                // flight, or an earlier `submit`'s fingerprint write never
-                // landed (that write is best-effort against a durable
-                // write already made, so a failure there only ever
-                // surfaces as a `tracing::warn!` in `handle_submit`),
-                // leaving a permanently stale row the insert-only form can
-                // never correct on its own. The instance lock is an async
-                // per-instance mutex never held across the store's own
-                // (synchronous, short) critical section, so taking it here
-                // can only ever wait behind an in-flight submit/adopt/
-                // retire/force-reconcile finishing -- not deadlock one --
-                // and the advancing form is safe once this call is the
-                // sole writer for the instance.
-                let lock = self.instance_lock(&state.app_instance_id);
-                let _guard = lock.lock().await;
-                state = self
-                    .store
-                    .instance_by_app_master_did(app_did.as_str())
-                    .map_err(|e| RpcError::InternalError(e.to_string()))?
-                    .ok_or_else(denied)?;
-                // The lock hand-off makes this the expected ordering, not
-                // a narrow race: a `retire` holding the same instance lock
-                // can finish while this call waits for it, and the
-                // pre-lock `retired` check above read a state from before
-                // that happened.
-                if state.retired {
-                    return Err(denied());
-                }
-                let plan = DeploymentPlan::from_json(&state.plan_json)
-                    .map_err(|e| RpcError::InternalError(e.to_string()))?;
-                let name = topology::resolve_service_name(&plan, &service_name)
-                    .map_err(map_topology_err)?;
-                let t = topology::service_topology(&plan, &name).map_err(map_topology_err)?;
-                let fp = topology_fingerprint(t.mode, &t.members, t.sharding_strategy.as_ref());
-                let e = self
-                    .store
-                    .record_topology_fingerprint(&state.app_instance_id, name.as_str(), &fp)
-                    .map_err(|e| RpcError::InternalError(e.to_string()))?;
-                (name, t, e)
-            }
-        };
-        let service_name = resolved_name;
+        let (service_name, topo, epoch) = self
+            .resolve_topology_for_signing(&app_did, &service_name, &mut state, &caller.caller_did)
+            .await?;
 
         // One signature per (service, epoch), re-signed when less than
         // half the document's own validity remains. Keyed only by
@@ -202,6 +99,141 @@ impl SupervisorService {
 
         let instance_id = AppInstanceId::try_new(state.app_instance_id.clone())
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
+        let master = self.app_master_for_signing(&state, &instance_id, &app_did).await?;
+
+        let document = TopologyDocument {
+            app_instance_id: instance_id,
+            app_did: app_did.clone(),
+            service_name,
+            mode: topo.mode,
+            members: topo.members,
+            sharding_strategy: topo.sharding_strategy,
+            epoch: TopologyEpoch(epoch),
+            generation: state.generation,
+            issued_at: now,
+            not_after: now.saturating_add(self.topology_document_not_after_secs),
+            cache_ttl_ms: self.topology_document_cache_ttl_secs.saturating_mul(1_000),
+        };
+        let signed = document.sign(&master).map_err(|e| RpcError::InternalError(e.to_string()))?;
+        self.signed_documents.insert(cache_key, CachedDocument { signed: signed.clone(), epoch });
+
+        Ok(NativeResponse { payload: serde_json::to_value(&signed).unwrap_or(Value::Null) })
+    }
+
+    /// The one refusal `resolve` returns for both an unknown app and an
+    /// unauthorized caller -- a distinguishable "no such app" would let an
+    /// ungranted caller enumerate this node's apps.
+    fn resolve_denied(app_did: &AppDid, caller_did: &str) -> RpcError {
+        RpcError::Custom(
+            PERMISSION_DENIED_CODE,
+            format!(
+                "no app instance '{app_did}' is resolvable by caller {caller_did} on this \
+                 supervisor"
+            ),
+            None,
+        )
+    }
+
+    /// `NoSuchService`/`AmbiguousHash` is caller input (an authorized
+    /// caller asking for a service this app does not have); only
+    /// `InconsistentPlan` is a compiler defect and an internal error.
+    fn map_topology_build_err(e: TopologyBuildError) -> RpcError {
+        match e {
+            TopologyBuildError::NoSuchService(_) | TopologyBuildError::AmbiguousHash(_) => {
+                RpcError::InvalidParams(e.to_string())
+            }
+            TopologyBuildError::InconsistentPlan(_) => RpcError::InternalError(e.to_string()),
+        }
+    }
+
+    /// Resolves the caller's service name against the stored plan and
+    /// returns `(real service name, topology, epoch)` for one plan that the
+    /// read, the epoch, and the signature all describe. This call holds no
+    /// instance lock, so a `submit` can land between the read and the sign:
+    /// two lock-free insert-only attempts first (re-reading `state` each
+    /// time, since a `submit` can rename services), then a locked repair
+    /// that advances the fingerprint row -- safe once this call is the sole
+    /// writer -- rather than signing a mismatched pair.
+    ///
+    /// The returned name is the canonical one, never the `short_hash` a
+    /// caller may have sent, so the gateway's `short_hash(doc.service_name)
+    /// == s_hash` check is meaningful rather than tautological.
+    async fn resolve_topology_for_signing(
+        &self,
+        app_did: &AppDid,
+        service_name: &LogicalServiceName,
+        state: &mut DesiredState,
+        caller_did: &str,
+    ) -> RpcResult<(LogicalServiceName, topology::ServiceTopology, u64)> {
+        let denied = || Self::resolve_denied(app_did, caller_did);
+        for _attempt in 0..2 {
+            let plan = DeploymentPlan::from_json(&state.plan_json)
+                .map_err(|e| RpcError::InternalError(e.to_string()))?;
+            let name = topology::resolve_service_name(&plan, service_name)
+                .map_err(Self::map_topology_build_err)?;
+            let t =
+                topology::service_topology(&plan, &name).map_err(Self::map_topology_build_err)?;
+            let fp = topology_fingerprint(t.mode, &t.members, t.sharding_strategy.as_ref());
+            let (epoch, stored_fp) = self
+                .store
+                .initialise_topology_epoch(&state.app_instance_id, name.as_str(), &fp)
+                .map_err(|e| RpcError::InternalError(e.to_string()))?;
+            if stored_fp == fp {
+                return Ok((name, t, epoch));
+            }
+            // A submit landed under us. Re-read and try once more.
+            *state = self
+                .store
+                .instance_by_app_master_did(app_did.as_str())
+                .map_err(|e| RpcError::InternalError(e.to_string()))?
+                .ok_or_else(denied)?;
+        }
+
+        // Two lock-free attempts still disagreed with the stored
+        // fingerprint: either a `submit` is genuinely still in flight, or
+        // an earlier `submit`'s best-effort fingerprint write never landed,
+        // leaving a permanently stale row the insert-only form can never
+        // correct. The instance lock is never held across the store's own
+        // short synchronous critical section, so taking it here can only
+        // wait behind an in-flight submit/adopt/retire/force-reconcile, not
+        // deadlock one.
+        let lock = self.instance_lock(&state.app_instance_id);
+        let _guard = lock.lock().await;
+        *state = self
+            .store
+            .instance_by_app_master_did(app_did.as_str())
+            .map_err(|e| RpcError::InternalError(e.to_string()))?
+            .ok_or_else(denied)?;
+        // The lock hand-off makes this the expected ordering: a `retire`
+        // holding the same lock can finish while this call waits for it,
+        // and the pre-lock `retired` check read a state from before that.
+        if state.retired {
+            return Err(denied());
+        }
+        let plan = DeploymentPlan::from_json(&state.plan_json)
+            .map_err(|e| RpcError::InternalError(e.to_string()))?;
+        let name = topology::resolve_service_name(&plan, service_name)
+            .map_err(Self::map_topology_build_err)?;
+        let t = topology::service_topology(&plan, &name).map_err(Self::map_topology_build_err)?;
+        let fp = topology_fingerprint(t.mode, &t.members, t.sharding_strategy.as_ref());
+        let epoch = self
+            .store
+            .record_topology_fingerprint(&state.app_instance_id, name.as_str(), &fp)
+            .map_err(|e| RpcError::InternalError(e.to_string()))?;
+        Ok((name, t, epoch))
+    }
+
+    /// Reads this instance's app master from the vault and checks it
+    /// derives the DID being resolved. A locked vault and a key/DID
+    /// mismatch each raise their own standing alert (`VaultLocked`,
+    /// `AppIdentityMismatch`) and return an internal error; a clean read
+    /// clears both.
+    async fn app_master_for_signing(
+        &self,
+        state: &DesiredState,
+        instance_id: &AppInstanceId,
+        app_did: &AppDid,
+    ) -> RpcResult<Identity> {
         let master = match keys::existing_app_master(&self.vault, &state.app_instance_id).await {
             Ok(Some(m)) => m,
             Ok(None) => {
@@ -212,7 +244,7 @@ impl SupervisorService {
             }
             Err(keys::VaultError::Locked) => {
                 let _ = self.store.alerts.raise(
-                    &instance_id,
+                    instance_id,
                     None,
                     None,
                     &self.node_did,
@@ -234,7 +266,7 @@ impl SupervisorService {
         let actual_did = syneroym_identity::substrate::derive_did_key(&master.public_key());
         if actual_did != app_did.as_str() {
             let _ = self.store.alerts.raise(
-                &instance_id,
+                instance_id,
                 None,
                 None,
                 &self.node_did,
@@ -249,30 +281,13 @@ impl SupervisorService {
                 "this instance's vault key does not match its recorded app master DID".to_string(),
             ));
         }
-        let _ = self.store.alerts.clear(&instance_id, None, &self.node_did, AlertKind::VaultLocked);
+        let _ = self.store.alerts.clear(instance_id, None, &self.node_did, AlertKind::VaultLocked);
         let _ = self.store.alerts.clear(
-            &instance_id,
+            instance_id,
             None,
             &self.node_did,
             AlertKind::AppIdentityMismatch,
         );
-
-        let document = TopologyDocument {
-            app_instance_id: instance_id,
-            app_did: app_did.clone(),
-            service_name,
-            mode: topo.mode,
-            members: topo.members,
-            sharding_strategy: topo.sharding_strategy,
-            epoch: TopologyEpoch(epoch),
-            generation: state.generation,
-            issued_at: now,
-            not_after: now.saturating_add(self.topology_document_not_after_secs),
-            cache_ttl_ms: self.topology_document_cache_ttl_secs.saturating_mul(1_000),
-        };
-        let signed = document.sign(&master).map_err(|e| RpcError::InternalError(e.to_string()))?;
-        self.signed_documents.insert(cache_key, CachedDocument { signed: signed.clone(), epoch });
-
-        Ok(NativeResponse { payload: serde_json::to_value(&signed).unwrap_or(Value::Null) })
+        Ok(master)
     }
 }

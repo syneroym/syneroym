@@ -56,33 +56,8 @@ impl SupervisorService {
             .get_completed_actions_for_instance(&instance_id)
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
 
-        let mut expected = Vec::new();
-        let mut missing_placement: BTreeSet<String> = BTreeSet::new();
-        let mut did_to_alias: BTreeMap<String, String> = BTreeMap::new();
-        for svc in &plan.services {
-            match deploy::current_placement(&landed, &svc.member_ref().to_string()) {
-                None => {
-                    expected.push(ExpectedService {
-                        logical_ref: svc.logical_ref.clone(),
-                        service_id: String::new(),
-                        substrate_did: String::new(),
-                        member_index: svc.member_index,
-                    });
-                    missing_placement.insert(svc.member_ref().to_string());
-                }
-                Some(row) => {
-                    expected.push(ExpectedService {
-                        logical_ref: svc.logical_ref.clone(),
-                        service_id: svc.service_id.to_string(),
-                        substrate_did: row.substrate_did.clone(),
-                        member_index: svc.member_index,
-                    });
-                    if let Some(alias) = &row.substrate_alias {
-                        did_to_alias.insert(row.substrate_did.clone(), alias.clone());
-                    }
-                }
-            }
-        }
+        let PassPlacements { expected, missing_placement, did_to_alias } =
+            Self::resolve_pass_placements(&landed, &plan);
 
         // One client set for the whole call, shared by the health sweep
         // and the generation read below -- `handle_status`
@@ -110,31 +85,7 @@ impl SupervisorService {
             );
         }
 
-        let mut targets: BTreeMap<String, HealthTarget> = BTreeMap::new();
-        for (did, alias) in &did_to_alias {
-            // No inventory entry at all is a caller-side configuration gap,
-            // not a live outage -- no target is built, and `poll_once`
-            // reports `NoTargetBuilt`/`Unknown` for it, unchanged from
-            // before this fix.
-            if !inventory.contains_key(alias) {
-                continue;
-            }
-            let query: Arc<dyn StatusQuery> = match clients.get(&SubstrateAlias::new(alias.clone()))
-            {
-                Some(c) => c.clone() as Arc<dyn StatusQuery>,
-                None => Arc::new(UnreachableQuery(format!(
-                    "failed to connect to substrate alias '{alias}'"
-                ))),
-            };
-            targets.insert(
-                did.clone(),
-                HealthTarget {
-                    alias: Some(SubstrateAlias::new(alias.clone())),
-                    substrate_did: did.clone(),
-                    query,
-                },
-            );
-        }
+        let targets = Self::health_targets(&did_to_alias, &inventory, &clients);
 
         let report = health::poll_once(&targets, &expected).await;
         // Drops `targets`' `Arc<dyn StatusQuery>` clones so `clients`
@@ -184,37 +135,7 @@ impl SupervisorService {
         // Folded into `opened` (not published separately) so the publish
         // call below sees every alert this pass newly raised, not only
         // the ones `record_report` itself knows about.
-        for svc in &plan.services {
-            let l_ref = svc.member_ref().to_string();
-            if missing_placement.contains(&l_ref) {
-                if self
-                    .store
-                    .alerts
-                    .raise(
-                        &instance_id,
-                        Some(&l_ref),
-                        None,
-                        NEVER_LANDED_SUBSTRATE_DID,
-                        AlertKind::InstanceNotRunning,
-                        "planned but never deployed; the supervisor holds no completed placement \
-                         for this service",
-                    )
-                    .map_err(|e| RpcError::InternalError(e.to_string()))?
-                {
-                    opened.push((AlertKind::InstanceNotRunning, l_ref));
-                }
-            } else {
-                self.store
-                    .alerts
-                    .clear(
-                        &instance_id,
-                        Some(&l_ref),
-                        NEVER_LANDED_SUBSTRATE_DID,
-                        AlertKind::InstanceNotRunning,
-                    )
-                    .map_err(|e| RpcError::InternalError(e.to_string()))?;
-            }
-        }
+        self.sync_never_landed_alerts(&instance_id, &plan, &missing_placement, &mut opened)?;
 
         // Publication happens here, in `record_report`'s caller, over the
         // newly-opened list above -- every store write
@@ -245,85 +166,15 @@ impl SupervisorService {
         // generation read above are done with them.
         Self::shutdown_clients(clients.into_values()).await;
 
-        let services: Vec<ManagedService> = report
-            .services
-            .iter()
-            .map(|s| ManagedService {
-                logical_ref: s.member_ref().to_string(),
-                service_id: s.service_id.clone(),
-                substrate_alias: s
-                    .alias
-                    .as_ref()
-                    .map(SubstrateAlias::to_string)
-                    .unwrap_or_default(),
-                substrate_did: s.substrate_did.clone(),
-                signal: Self::signal_str(&s.signal).to_string(),
-                detail: Self::signal_detail(&s.signal),
-                // Review finding A-3: Phase 6's stated deliverable was
-                // this field leaving 0 -- the `remediation` table has
-                // recorded every attempt since phase 6, this was simply
-                // never read back. `Ok(None)` (no restart ever attempted)
-                // and a read failure both fall back to 0, which is the
-                // correct value for "no attempts recorded", not a
-                // reported error.
-                restart_attempts: self
-                    .store
-                    .remediation_state(&app_instance_id, &s.member_ref().to_string())
-                    .ok()
-                    .flatten()
-                    .map_or(0, |r| r.attempts),
-            })
-            .collect();
-
-        // A reconcile in flight is now observable -- `apply_with_clients`
-        // writes `Applying` and this is
-        // the first caller able to read it mid-pass. Ranked after `paused`
-        // (a paused instance's own state matters more than "busy") and
-        // before the health-derived branch (a health verdict computed
-        // from a half-applied plan is less useful than "ask again").
-        let is_applying = self
-            .store
-            .journal
-            .get_latest(&instance_id)
-            .map_err(|e| RpcError::InternalError(e.to_string()))?
-            .is_some_and(|r| r.state == DeploymentState::Applying);
-
-        // A binding push that has been attempted and did not land leaves
-        // the instance `Degraded` -- reachable now that `push_bindings`
-        // has a production caller. Read off the *active* alert set rather
-        // than "any
-        // unconverged row": a push that just landed cleanly reads as
-        // unconverged on `binding-epochs` for up to one poll interval
-        // simply because the observed epoch has not been re-polled yet,
-        // and that must not flap the instance `Degraded` on every
-        // ordinary change.
-        let has_binding_conflict = self
-            .store
-            .alerts
-            .active(&instance_id)
-            .map(|active| active.iter().any(|a| a.kind == AlertKind::BindingConflict))
-            .unwrap_or(false);
-
-        let overall_state = if state.retired {
-            ManagedState::Retired
-        } else if superseded {
-            ManagedState::Superseded
-        } else if state.paused {
-            ManagedState::Paused
-        } else if is_applying {
-            ManagedState::Applying
-        // A service the plan names but the journal has never recorded
-        // landed is a deploy failure the sweep alone cannot see (a
-        // `NotDeployed` signal is deliberately not a fault) -- the
-        // supervisor adds the plan knowledge the poll does not have.
-        } else if report.faults().is_empty()
-            && missing_placement.is_empty()
-            && !has_binding_conflict
-        {
-            ManagedState::Active
-        } else {
-            ManagedState::Degraded
-        };
+        let services = self.managed_services_from_report(&app_instance_id, &report);
+        let overall_state = self.overall_managed_state(
+            &instance_id,
+            state.retired,
+            state.paused,
+            superseded,
+            &report,
+            &missing_placement,
+        )?;
 
         // Computed before `state.app_master_did` is moved into the
         // literal below -- keyed by the app master DID, not the instance
@@ -379,6 +230,138 @@ impl SupervisorService {
             app_record_expires_at,
         };
         Ok(NativeResponse { payload: serde_json::to_value(status).unwrap_or(Value::Null) })
+    }
+
+    /// Raises `InstanceNotRunning` for every planned service the journal
+    /// has never recorded landed, and clears it for every one that now
+    /// has a placement. Keyed on `NEVER_LANDED_SUBSTRATE_DID`, folded into
+    /// `opened` so the caller publishes it with every other alert this
+    /// pass raised. `?`-propagating: unlike the resident loop's own
+    /// analogous sync, a store error here fails the whole `status` call.
+    fn sync_never_landed_alerts(
+        &self,
+        instance_id: &AppInstanceId,
+        plan: &DeploymentPlan,
+        missing_placement: &BTreeSet<String>,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) -> RpcResult<()> {
+        for svc in &plan.services {
+            let l_ref = svc.member_ref().to_string();
+            if missing_placement.contains(&l_ref) {
+                if self
+                    .store
+                    .alerts
+                    .raise(
+                        instance_id,
+                        Some(&l_ref),
+                        None,
+                        NEVER_LANDED_SUBSTRATE_DID,
+                        AlertKind::InstanceNotRunning,
+                        "planned but never deployed; the supervisor holds no completed placement \
+                         for this service",
+                    )
+                    .map_err(|e| RpcError::InternalError(e.to_string()))?
+                {
+                    opened.push((AlertKind::InstanceNotRunning, l_ref));
+                }
+            } else {
+                self.store
+                    .alerts
+                    .clear(
+                        instance_id,
+                        Some(&l_ref),
+                        NEVER_LANDED_SUBSTRATE_DID,
+                        AlertKind::InstanceNotRunning,
+                    )
+                    .map_err(|e| RpcError::InternalError(e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// One `ManagedService` row per service the sweep reported, carrying
+    /// its signal and the restart-attempt count from the `remediation`
+    /// table. `Ok(None)` (no restart ever attempted) and a read failure
+    /// both fall back to 0, the correct value for "no attempts recorded".
+    fn managed_services_from_report(
+        &self,
+        app_instance_id: &str,
+        report: &health::HealthReport,
+    ) -> Vec<ManagedService> {
+        report
+            .services
+            .iter()
+            .map(|s| ManagedService {
+                logical_ref: s.member_ref().to_string(),
+                service_id: s.service_id.clone(),
+                substrate_alias: s
+                    .alias
+                    .as_ref()
+                    .map(SubstrateAlias::to_string)
+                    .unwrap_or_default(),
+                substrate_did: s.substrate_did.clone(),
+                signal: Self::signal_str(&s.signal).to_string(),
+                detail: Self::signal_detail(&s.signal),
+                restart_attempts: self
+                    .store
+                    .remediation_state(app_instance_id, &s.member_ref().to_string())
+                    .ok()
+                    .flatten()
+                    .map_or(0, |r| r.attempts),
+            })
+            .collect()
+    }
+
+    /// The instance's single reported state, in precedence order:
+    /// `retired`/`superseded`/`paused` are stored facts; `Applying` is a
+    /// reconcile in flight (ranked before the health verdict, since a
+    /// verdict computed from a half-applied plan is less useful than "ask
+    /// again"); then `Active` only when the sweep found no fault, every
+    /// planned service has a placement, and no `BindingConflict` alert
+    /// stands; otherwise `Degraded`.
+    fn overall_managed_state(
+        &self,
+        instance_id: &AppInstanceId,
+        retired: bool,
+        paused: bool,
+        superseded: bool,
+        report: &health::HealthReport,
+        missing_placement: &BTreeSet<String>,
+    ) -> RpcResult<ManagedState> {
+        let is_applying = self
+            .store
+            .journal
+            .get_latest(instance_id)
+            .map_err(|e| RpcError::InternalError(e.to_string()))?
+            .is_some_and(|r| r.state == DeploymentState::Applying);
+        // Read off the *active* alert set rather than "any unconverged
+        // row": a push that just landed cleanly reads as unconverged on
+        // `binding-epochs` for up to one poll interval simply because the
+        // observed epoch has not been re-polled yet, and that must not
+        // flap the instance `Degraded` on every ordinary change.
+        let has_binding_conflict = self
+            .store
+            .alerts
+            .active(instance_id)
+            .map(|active| active.iter().any(|a| a.kind == AlertKind::BindingConflict))
+            .unwrap_or(false);
+
+        Ok(if retired {
+            ManagedState::Retired
+        } else if superseded {
+            ManagedState::Superseded
+        } else if paused {
+            ManagedState::Paused
+        } else if is_applying {
+            ManagedState::Applying
+        } else if report.faults().is_empty()
+            && missing_placement.is_empty()
+            && !has_binding_conflict
+        {
+            ManagedState::Active
+        } else {
+            ManagedState::Degraded
+        })
     }
 
     pub(super) async fn handle_alerts(
