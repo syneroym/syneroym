@@ -364,6 +364,20 @@ impl SubstrateNode {
         &self.relay_url
     }
 
+    /// This node's client-gateway base URL (`http://127.0.0.1:<gateway port>`).
+    /// For tests that drive the gateway's HTTP surface directly rather than
+    /// through a `SyneroymClient`.
+    pub fn gateway_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.builder.ports().gateway)
+    }
+
+    /// The directory this node boots from -- its `base_path`, holding `data/`,
+    /// `user_data/`, `cache/`, and `logs/`. For a test that reaches into the
+    /// on-disk service state between a teardown and a reboot.
+    pub fn base_path(&self) -> &std::path::Path {
+        &self.base_path
+    }
+
     /// This node's resolved `app_data_dir` -- where its identity key, vault,
     /// and supervisor master backups live on disk.
     pub fn app_data_dir(&self) -> &std::path::Path {

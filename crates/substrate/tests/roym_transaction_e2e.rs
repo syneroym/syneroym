@@ -29,10 +29,7 @@ use syneroym_app_orchestration::{
     models::{ServiceId, SubstrateAlias, SynAppManifest, Visibility},
 };
 use syneroym_core::{
-    config::{
-        AppSandboxRole, AuthRole, ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole,
-        IdentityMode, IrohParentConfig, LogTarget, ServiceRegistryRole, SubstrateConfig,
-    },
+    config::{AppSandboxRole, AuthRole, ClientGatewayRole, IdentityMode},
     dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, RegistryClient},
     util::short_hash,
 };
@@ -50,19 +47,11 @@ use syneroym_sdk::{
     },
 };
 use syneroym_signed_record::{Envelope, SCOPE_RECORD_SIGNING};
-use syneroym_substrate::identity;
-use tokio::{
-    sync::{Mutex, mpsc, mpsc::Sender},
-    task::JoinHandle,
-    time,
-};
+use tokio::time;
 
 mod common;
-use common::alloc_ports;
 
 const SESSION_COOKIE_NAME: &str = "syneroym_session";
-
-static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 const SIGNING_SERVICES: &[&str] = &["profile", "catalog", "conversation", "transaction"];
 
@@ -182,18 +171,19 @@ async fn certify_and_publish(
 struct Node {
     label: &'static str,
     base_path: PathBuf,
-    ports: (u16, u16, u16, u16),
     shared_registry_url: Option<String>,
     owner: Identity,
-    kek_hex: String,
     masters: BTreeMap<String, Identity>,
     role: AppSandboxRole,
 
-    substrate_client: SyneroymClient,
+    /// The captured builder, reused on `resume` so a reboot keeps the same
+    /// ports -- a sibling node still resolves this one's registry through them.
+    builder: common::NodeBuilder,
+    /// `None` only between `stop` and `resume`.
+    node: Option<common::SubstrateNode>,
     registry_url: String,
     gateway_url: String,
-    shutdown_tx: Sender<()>,
-    substrate_handle: JoinHandle<()>,
+    substrate_did: String,
     dids: BTreeMap<String, String>,
     session_token: Option<String>,
 }
@@ -202,7 +192,6 @@ impl Node {
     async fn boot(
         label: &'static str,
         base_path: PathBuf,
-        ports: (u16, u16, u16, u16),
         shared_registry_url: Option<String>,
         owner: Identity,
         role: AppSandboxRole,
@@ -211,109 +200,69 @@ impl Node {
         fs::create_dir_all(&ids_dir).unwrap();
         owner.save_to_path(ids_dir.join("owner.key")).unwrap();
 
-        Self::spawn_substrate(label, base_path, ports, shared_registry_url, &owner, role).await
+        Self::spawn_substrate(label, base_path, shared_registry_url, owner, role).await
+    }
+
+    /// A `SubstrateNode` builder carrying the Roym-specific config: a
+    /// login-mode client gateway, the `auth` role pointed at the on-disk
+    /// person identities, and the app-sandbox role.
+    fn make_builder(
+        base_path: &std::path::Path,
+        shared_registry_url: Option<&str>,
+        owner: &Identity,
+        role: &AppSandboxRole,
+    ) -> common::NodeBuilder {
+        let ids_dir = base_path.join("identities");
+        let role = role.clone();
+        let mut builder = common::SubstrateNode::builder()
+            .owner(owner)
+            .base_path(base_path.to_path_buf())
+            .inject_kek_bytes([0xcd; 32])
+            .configure(move |c| {
+                let gateway = c.roles.client_gateway.take().unwrap_or_default();
+                c.roles.client_gateway =
+                    Some(ClientGatewayRole { identity_mode: IdentityMode::Login, ..gateway });
+                c.roles.auth = Some(AuthRole {
+                    person_identities_dir: Some(ids_dir.clone()),
+                    ..Default::default()
+                });
+                c.roles.app_sandbox = Some(role.clone());
+            });
+        if let Some(url) = shared_registry_url {
+            builder = builder.shared_registry(url.to_string());
+        }
+        builder
     }
 
     async fn spawn_substrate(
         label: &'static str,
         base_path: PathBuf,
-        ports: (u16, u16, u16, u16),
         shared_registry_url: Option<String>,
-        owner: &Identity,
+        owner: Identity,
         role: AppSandboxRole,
     ) -> Self {
-        let (iroh_port, registry_port, gateway_port, quic_port) = ports;
-        let kek_hex = hex::encode([0xcdu8; 32]);
-        let ids_dir = base_path.join("identities");
-
-        let mut config = SubstrateConfig {
-            app_local_data_dir: base_path.join("data"),
-            app_data_dir: base_path.join("user_data"),
-            app_cache_dir: base_path.join("cache"),
-            app_log_dir: base_path.join("logs"),
-            profile: "full".to_string(),
-            ..SubstrateConfig::default()
-        };
-        config.resolve_paths();
-        config.logging.target = LogTarget::Stdout;
-        config.roles.coordinator = Some(CoordinatorRole {
-            iroh: Some(CoordinatorIrohConfig {
-                enable_relay: true,
-                http_bind_address: format!("127.0.0.1:{iroh_port}"),
-                quic_bind_address: format!("127.0.0.1:{quic_port}"),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("127.0.0.1:{registry_port}"),
-            ..Default::default()
-        });
-        let own_registry_url = format!("http://127.0.0.1:{registry_port}");
-        let effective_registry_url = shared_registry_url.clone().unwrap_or(own_registry_url);
-        config.substrate.registry_url = Some(effective_registry_url.clone());
-        config.substrate.enable_bep0044_dht = false;
-        config.parent_coordinator.iroh =
-            Some(IrohParentConfig { url: format!("http://127.0.0.1:{iroh_port}") });
-        config.roles.client_gateway = Some(ClientGatewayRole {
-            http_port: gateway_port,
-            identity_mode: IdentityMode::Login,
-            ..Default::default()
-        });
-        config.roles.auth =
-            Some(AuthRole { person_identities_dir: Some(ids_dir.clone()), ..Default::default() });
-        config.roles.app_sandbox = Some(role.clone());
-        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
-
-        let state = identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
-            .expect("failed to setup identity");
-        let substrate_service_id = state.did.clone();
-
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let runtime =
-            syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
-        let config_clone = config.clone();
-        let substrate_handle = tokio::spawn(async move {
-            syneroym_substrate::run_with_signal(config_clone, runtime, async {
-                let _ = shutdown_rx.recv().await;
-            })
-            .await
-            .expect("substrate failed to run");
-        });
-
-        let mut substrate_client = SyneroymClient::new_with_identity(
-            substrate_service_id,
-            effective_registry_url.clone(),
-            Identity::from_bytes(&owner.to_bytes()),
-        )
-        .with_registry_dht(false);
-        substrate_client
-            .wait_for_ready(Duration::from_secs(30))
-            .await
-            .expect("substrate did not become available in time");
-        substrate_client.inject_kek(kek_hex.clone()).await.expect("inject_kek failed");
+        let builder = Self::make_builder(&base_path, shared_registry_url.as_deref(), &owner, &role);
+        let node = builder.clone().boot().await;
 
         Self {
             label,
             base_path,
-            ports,
             shared_registry_url,
             owner: Identity::from_bytes(&owner.to_bytes()),
-            kek_hex,
             masters: BTreeMap::new(),
             role,
-            substrate_client,
-            registry_url: effective_registry_url.clone(),
-            gateway_url: format!("http://127.0.0.1:{gateway_port}"),
-            shutdown_tx,
-            substrate_handle,
+            registry_url: node.registry_url().to_string(),
+            gateway_url: node.gateway_url(),
+            substrate_did: node.did().to_string(),
+            builder,
+            node: Some(node),
             dids: BTreeMap::new(),
             session_token: None,
         }
     }
 
     fn substrate_did(&self) -> String {
-        self.substrate_client.service_id().to_string()
+        self.substrate_did.clone()
     }
 
     async fn deploy(&mut self, redeploy: bool) {
@@ -494,10 +443,9 @@ impl Node {
     }
 
     async fn stop(&mut self, wipe_service_state: Option<&str>) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let handle = mem::replace(&mut self.substrate_handle, tokio::spawn(async {}));
-        let _ = handle.await;
+        if let Some(node) = self.node.take() {
+            node.teardown().await;
+        }
         time::sleep(Duration::from_secs(3)).await;
 
         if let Some(name) = wipe_service_state
@@ -514,23 +462,18 @@ impl Node {
     async fn resume(&mut self, new_role: Option<AppSandboxRole>) {
         if let Some(role) = new_role {
             self.role = role;
+            self.builder = Self::make_builder(
+                &self.base_path,
+                self.shared_registry_url.as_deref(),
+                &self.owner,
+                &self.role,
+            );
         }
         let masters = mem::take(&mut self.masters);
-        let owner = Identity::from_bytes(&self.owner.to_bytes());
-        let fresh = Self::spawn_substrate(
-            self.label,
-            self.base_path.clone(),
-            self.ports,
-            self.shared_registry_url.clone(),
-            &owner,
-            self.role.clone(),
-        )
-        .await;
-        self.substrate_client = fresh.substrate_client;
-        self.registry_url = fresh.registry_url;
-        self.gateway_url = fresh.gateway_url;
-        self.shutdown_tx = fresh.shutdown_tx;
-        self.substrate_handle = fresh.substrate_handle;
+        let node = self.builder.clone().boot().await;
+        self.registry_url = node.registry_url().to_string();
+        self.gateway_url = node.gateway_url();
+        self.node = Some(node);
         self.masters = masters;
         self.session_token = None;
 
@@ -574,9 +517,9 @@ impl Node {
     }
 
     async fn teardown(mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = self.substrate_handle.await;
+        if let Some(node) = self.node.take() {
+            node.teardown().await;
+        }
     }
 }
 
@@ -612,7 +555,7 @@ async fn wait_delivered(node: &Node, message_id: &str) -> bool {
 
 #[tokio::test]
 async fn an_offer_is_agreed_across_two_installations() {
-    let _guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
     if !roym_artifacts_present() {
         eprintln!("skipping: Roym wasm/UI artifacts not built (`mise run build:roym`)");
@@ -626,17 +569,11 @@ async fn an_offer_is_agreed_across_two_installations() {
     let owner_x_did = substrate::derive_did_key(&owner_x.public_key());
     let owner_y_did = substrate::derive_did_key(&owner_y.public_key());
 
-    let [a_iroh, a_reg, a_gw, a_quic] = alloc_ports();
-    let [b_iroh, b_reg, b_gw, b_quic] = alloc_ports();
-    let ports_a = (a_iroh, a_reg, a_gw, a_quic);
-    let ports_b = (b_iroh, b_reg, b_gw, b_quic);
-
     // Step 1: Boot X and Y; deploy Roym on both; enrol signing on all 4 services on
     // each.
     let mut node_x = Node::boot(
         "node-x",
         dir_x.path().to_path_buf(),
-        ports_a,
         None,
         Identity::from_bytes(&owner_x.to_bytes()),
         fast_conversation_role(3600),
@@ -648,7 +585,6 @@ async fn an_offer_is_agreed_across_two_installations() {
     let mut node_y = Node::boot(
         "node-y",
         dir_y.path().to_path_buf(),
-        ports_b,
         Some(shared_registry.clone()),
         Identity::from_bytes(&owner_y.to_bytes()),
         fast_conversation_role(3600),
@@ -902,7 +838,7 @@ async fn an_offer_is_agreed_across_two_installations() {
 
 #[tokio::test]
 async fn a_tampered_card_is_filed_refused_and_never_verified() {
-    let _guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
     if !roym_artifacts_present() {
         eprintln!("skipping: Roym wasm/UI artifacts not built (`mise run build:roym`)");
@@ -914,15 +850,9 @@ async fn a_tampered_card_is_filed_refused_and_never_verified() {
     let owner_x = Identity::generate().unwrap();
     let owner_y = Identity::generate().unwrap();
 
-    let [c_iroh, c_reg, c_gw, c_quic] = alloc_ports();
-    let [d_iroh, d_reg, d_gw, d_quic] = alloc_ports();
-    let ports_c = (c_iroh, c_reg, c_gw, c_quic);
-    let ports_d = (d_iroh, d_reg, d_gw, d_quic);
-
     let mut node_x = Node::boot(
         "node-x",
         dir_x.path().to_path_buf(),
-        ports_c,
         None,
         Identity::from_bytes(&owner_x.to_bytes()),
         fast_conversation_role(3600),
@@ -934,7 +864,6 @@ async fn a_tampered_card_is_filed_refused_and_never_verified() {
     let mut node_y = Node::boot(
         "node-y",
         dir_y.path().to_path_buf(),
-        ports_d,
         Some(shared_registry.clone()),
         Identity::from_bytes(&owner_y.to_bytes()),
         fast_conversation_role(3600),
