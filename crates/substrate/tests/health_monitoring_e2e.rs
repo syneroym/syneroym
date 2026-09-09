@@ -3,23 +3,17 @@
 //! `syneroym-substrate` instances -- the reference scenario's own two-node
 //! topology, this time polled rather than deployed.
 //!
-//! `Node`/`boot_pair` are copied from `multi_substrate_placement_e2e.rs`,
-//! trimmed: A4's status query needs no member master, no instance
-//! certificate, and no app context, so this file skips A3's minting/
-//! certifying machinery entirely and deploys each service with a single raw
-//! `orchestrator/deploy` call, the same shape
-//! `an_endpoint_cert_bound_to_one_node_is_rejected_by_another` already uses
-//! in that file.
+//! Both nodes come from `common::SubstrateNode`, sharing one registry and
+//! relay. The status query here needs no member master, no instance
+//! certificate, and no app context, so this file deploys each service with a
+//! single raw `orchestrator/deploy` call.
 
 use std::{net::TcpListener, sync::Arc, time::Duration};
 
+use common::SubstrateNode;
 use rustls::crypto::ring;
 use serde_json::Map;
 use syneroym_app_orchestration::{AlertStore, models::AppInstanceId};
-use syneroym_core::config::{
-    ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig, LogTarget,
-    ServiceRegistryRole, SubstrateConfig,
-};
 use syneroym_identity::{Identity, substrate};
 use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
 use syneroym_sdk::{
@@ -28,177 +22,10 @@ use syneroym_sdk::{
     SyneroymClient, TcpManifest, TcpProbe as WitTcpProbe,
     health::{self, ExpectedService, HealthTarget},
 };
-use syneroym_substrate::identity;
-use tempfile::TempDir;
-use tokio::{
-    sync::{Mutex, mpsc, mpsc::Sender},
-    task::JoinHandle,
-};
 
-/// Every `#[tokio::test]` in this file runs concurrently, so each of the
-/// four tests needs its own, non-overlapping port block (see
-/// `multi_substrate_placement_e2e.rs`'s own note on the same convention --
-/// blocks spaced by 100, above the highest block any other e2e file in this
-/// crate already uses).
-#[derive(Clone, Copy)]
-struct PortBlock {
-    node_a_iroh: u16,
-    node_a_registry: u16,
-    node_a_gateway: u16,
-    node_b_iroh: u16,
-    node_b_registry: u16,
-    node_b_gateway: u16,
-}
+mod common;
 
-const PORTS_BOTH_HEALTHY: PortBlock = PortBlock {
-    node_a_iroh: 9800,
-    node_a_registry: 9801,
-    node_a_gateway: 9802,
-    node_b_iroh: 9900,
-    node_b_registry: 9901,
-    node_b_gateway: 9902,
-};
-const PORTS_UNREACHABLE_SUBSTRATE: PortBlock = PortBlock {
-    node_a_iroh: 10000,
-    node_a_registry: 10001,
-    node_a_gateway: 10002,
-    node_b_iroh: 10100,
-    node_b_registry: 10101,
-    node_b_gateway: 10102,
-};
-const PORTS_FAILING_PROBE: PortBlock = PortBlock {
-    node_a_iroh: 10200,
-    node_a_registry: 10201,
-    node_a_gateway: 10202,
-    node_b_iroh: 10300,
-    node_b_registry: 10301,
-    node_b_gateway: 10302,
-};
-const PORTS_ALERT_LIFECYCLE: PortBlock = PortBlock {
-    node_a_iroh: 10400,
-    node_a_registry: 10401,
-    node_a_gateway: 10402,
-    node_b_iroh: 10500,
-    node_b_registry: 10501,
-    node_b_gateway: 10502,
-};
-
-/// Not sharing a port block keeps the tests here from colliding, but they
-/// still each boot full substrate instances (real iroh QUIC socket,
-/// self-hosted relay, mainline DHT, wasmtime), and running that many
-/// concurrently starves the CI runner's CPU badly enough that iroh's QUIC
-/// path validation times out with "no viable network path exists" even
-/// though nothing is actually broken. Serializing full-substrate-instance
-/// lifetimes within this binary (same fix as `tests/common/mod.rs`'s
-/// `SUBSTRATE_TEST_LOCK`) avoids it.
-static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
-
-/// A full, independently-identified `syneroym-substrate` instance. Mirrors
-/// `multi_substrate_placement_e2e.rs`'s own `Node`.
-struct Node {
-    registry_url: String,
-    substrate_client: SyneroymClient,
-    shutdown_tx: Sender<()>,
-    substrate_handle: JoinHandle<()>,
-    _temp_dir: TempDir,
-}
-
-impl Node {
-    async fn boot(
-        iroh_port: u16,
-        registry_port: u16,
-        gateway_port: u16,
-        shared_registry_url: Option<String>,
-        shared_relay_url: Option<String>,
-        owner: &Identity,
-    ) -> Self {
-        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-        let base_path = temp_dir.path().to_path_buf();
-
-        let mut config = SubstrateConfig {
-            app_local_data_dir: base_path.join("data"),
-            app_data_dir: base_path.join("user_data"),
-            app_cache_dir: base_path.join("cache"),
-            app_log_dir: base_path.join("logs"),
-            profile: "full".to_string(),
-            ..SubstrateConfig::default()
-        };
-        config.resolve_paths();
-        config.logging.target = LogTarget::Stdout;
-
-        config.roles.coordinator = Some(CoordinatorRole {
-            iroh: Some(CoordinatorIrohConfig {
-                enable_relay: true,
-                http_bind_address: format!("0.0.0.0:{iroh_port}"),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-        config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("0.0.0.0:{registry_port}"),
-            ..Default::default()
-        });
-        let own_registry_url = format!("http://localhost:{registry_port}");
-        let effective_registry_url = shared_registry_url.unwrap_or(own_registry_url);
-        config.substrate.registry_url = Some(effective_registry_url.clone());
-        config.substrate.enable_bep0044_dht = false;
-        let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
-        config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
-        config.roles.client_gateway =
-            Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
-        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
-
-        let substrate_identity_state =
-            identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
-                .expect("failed to setup identity");
-        let substrate_service_id = substrate_identity_state.did.clone();
-
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        let runtime =
-            syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
-
-        let config_clone = config.clone();
-        let substrate_handle = tokio::spawn(async move {
-            syneroym_substrate::run_with_signal(config_clone, runtime, async {
-                let _ = shutdown_rx.recv().await;
-            })
-            .await
-            .expect("substrate failed to run");
-        });
-
-        let mut substrate_client = SyneroymClient::new_with_identity(
-            substrate_service_id.clone(),
-            effective_registry_url.clone(),
-            Identity::from_bytes(&owner.to_bytes()),
-        )
-        .with_registry_dht(false);
-        substrate_client
-            .wait_for_ready(Duration::from_secs(30))
-            .await
-            .expect("substrate did not become available in time");
-
-        Self {
-            registry_url: effective_registry_url,
-            substrate_client,
-            shutdown_tx,
-            substrate_handle,
-            _temp_dir: temp_dir,
-        }
-    }
-
-    fn did(&self) -> &str {
-        self.substrate_client.service_id()
-    }
-
-    async fn teardown(mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = self.substrate_handle.await;
-    }
-}
-
-/// An app-scoped `orchestrator/{deploy,undeploy,status}` grant, mirroring
-/// `multi_substrate_placement_e2e.rs`'s own `app_deploy_grant`.
+/// An app-scoped `orchestrator/{deploy,undeploy,status}` grant.
 fn app_deploy_grant(node_owner: &Identity, grantee_did: &str, node_did: &str) -> CapabilityToken {
     let resource = ResourceUri(format!("substrate:{node_did}/app/*"));
     CapabilityToken::issue(
@@ -219,14 +46,12 @@ fn app_deploy_grant(node_owner: &Identity, grantee_did: &str, node_did: &str) ->
     .expect("issue app deploy grant")
 }
 
-async fn client_for(node: &Node, operator: &Identity, grant: CapabilityToken) -> SyneroymClient {
-    let mut client = SyneroymClient::new_with_identity(
-        node.did().to_string(),
-        node.registry_url.clone(),
-        Identity::from_bytes(&operator.to_bytes()),
-    )
-    .with_registry_dht(false)
-    .with_ucan(grant);
+async fn client_for(
+    node: &SubstrateNode,
+    operator: &Identity,
+    grant: CapabilityToken,
+) -> SyneroymClient {
+    let mut client = node.client_as(Identity::from_bytes(&operator.to_bytes())).with_ucan(grant);
     client.connect().await.expect("failed to connect client");
     client
 }
@@ -234,73 +59,33 @@ async fn client_for(node: &Node, operator: &Identity, grant: CapabilityToken) ->
 /// The owner's own client, node-wide by construction (`admin_ucan_root`) --
 /// no grant needed. This is what a caller reading `node-facts` (D-A4-18)
 /// must be.
-async fn owner_client_for(node: &Node, owner: &Identity) -> SyneroymClient {
-    let mut client = SyneroymClient::new_with_identity(
-        node.did().to_string(),
-        node.registry_url.clone(),
-        Identity::from_bytes(&owner.to_bytes()),
-    )
-    .with_registry_dht(false);
+async fn owner_client_for(node: &SubstrateNode, owner: &Identity) -> SyneroymClient {
+    let mut client = node.client_as(Identity::from_bytes(&owner.to_bytes()));
     client.connect().await.expect("failed to connect owner client");
     client
 }
 
 /// A single node, self-hosting its own registry and relay -- for a test that
-/// only needs one substrate and must not leak a second, idle one (a `Node`
-/// has no `Drop` impl; an unused pair's second node would otherwise keep
-/// running, bound to its ports, for the rest of the process).
-async fn boot_single(owner: &Identity, ports: PortBlock) -> Node {
+/// only needs one substrate.
+async fn boot_single(owner: &Identity) -> SubstrateNode {
     let _ = ring::default_provider().install_default();
-    Node::boot(ports.node_a_iroh, ports.node_a_registry, ports.node_a_gateway, None, None, owner)
-        .await
+    SubstrateNode::builder().owner(owner).boot().await
 }
 
-async fn boot_pair(owner: &Identity, ports: PortBlock) -> (Node, Node) {
+/// Two nodes, the second sharing the first's registry and relay. Each
+/// injects a KEK during its own boot -- before the other node's boot can
+/// leave its connection idle -- so no post-boot redial is needed.
+async fn boot_pair(owner: &Identity) -> (SubstrateNode, SubstrateNode) {
     let _ = ring::default_provider().install_default();
 
-    let mut node_a = Node::boot(
-        ports.node_a_iroh,
-        ports.node_a_registry,
-        ports.node_a_gateway,
-        None,
-        None,
-        owner,
-    )
-    .await;
-    let node_a_registry_url = node_a.registry_url.clone();
-    let node_a_relay_url = format!("http://localhost:{}", ports.node_a_iroh);
-    let node_b = Node::boot(
-        ports.node_b_iroh,
-        ports.node_b_registry,
-        ports.node_b_gateway,
-        Some(node_a_registry_url),
-        Some(node_a_relay_url),
-        owner,
-    )
-    .await;
-
-    // `node_a`'s connection was dialed and proven live by its own
-    // `wait_for_ready` during `Node::boot`, then sat idle for the entire
-    // `node_b` boot that followed -- long enough under CI's scheduling
-    // pressure for the peer to abandon that idle path ("no viable network
-    // path exists: last path abandoned by peer"; same root cause fixed in
-    // `binding_push_e2e.rs`). Recover by explicit shutdown→reconnect before
-    // one retry.
-    if node_a.substrate_client.inject_kek("aa".repeat(32)).await.is_err() {
-        node_a
-            .substrate_client
-            .shutdown()
-            .await
-            .expect("failed to reset node A's stale connection");
-        node_a.substrate_client.connect().await.expect("failed to reconnect node A");
-        node_a
-            .substrate_client
-            .inject_kek("aa".repeat(32))
-            .await
-            .expect("node A inject_kek failed");
-    }
-    node_b.substrate_client.inject_kek("bb".repeat(32)).await.expect("node B inject_kek failed");
-
+    let node_a = SubstrateNode::builder().owner(owner).inject_kek().boot().await;
+    let node_b = SubstrateNode::builder()
+        .owner(owner)
+        .shared_registry(node_a.registry_url())
+        .shared_relay(node_a.relay_url())
+        .inject_kek()
+        .boot()
+        .await;
     (node_a, node_b)
 }
 
@@ -378,10 +163,10 @@ fn expected(name: &str, service_id: &str, did: &str) -> ExpectedService {
 
 #[tokio::test]
 async fn both_services_report_healthy_and_each_node_reports_its_own_registry() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
-    let (node_a, node_b) = boot_pair(&owner, PORTS_BOTH_HEALTHY).await;
+    let (node_a, node_b) = boot_pair(&owner).await;
 
     let (port_a, _listener_a) = bind_and_accept();
     let (port_b, _listener_b) = bind_and_accept();
@@ -430,11 +215,11 @@ async fn both_services_report_healthy_and_each_node_reports_its_own_registry() {
     for sub in &report.substrates {
         let facts = sub.node.as_ref().expect("owner client must see node facts");
         let expected_url = if sub.substrate_did == node_a.did() {
-            &node_a.registry_url
+            node_a.registry_url()
         } else {
-            &node_b.registry_url
+            node_b.registry_url()
         };
-        assert_eq!(facts.registry_url.as_deref(), Some(expected_url.as_str()));
+        assert_eq!(facts.registry_url.as_deref(), Some(expected_url));
     }
 
     node_a.teardown().await;
@@ -443,10 +228,10 @@ async fn both_services_report_healthy_and_each_node_reports_its_own_registry() {
 
 #[tokio::test]
 async fn a_stopped_substrate_is_reported_unreachable_while_the_other_stays_healthy() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
-    let (node_a, node_b) = boot_pair(&owner, PORTS_UNREACHABLE_SUBSTRATE).await;
+    let (node_a, node_b) = boot_pair(&owner).await;
 
     let (port_a, _listener_a) = bind_and_accept();
     let (port_b, _listener_b) = bind_and_accept();
@@ -516,10 +301,10 @@ impl health::StatusQuery for UnreachableQuery {
 
 #[tokio::test]
 async fn a_failing_readiness_probe_is_distinct_from_a_stopped_instance() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
-    let node_a = boot_single(&owner, PORTS_FAILING_PROBE).await;
+    let node_a = boot_single(&owner).await;
 
     let closed = closed_port();
 
@@ -552,10 +337,10 @@ async fn a_failing_readiness_probe_is_distinct_from_a_stopped_instance() {
 
 #[tokio::test]
 async fn alerts_are_recorded_deduplicated_and_cleared_across_three_sweeps() {
-    let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
+    let _serial_guard = common::serial_guard().await;
     let owner = Identity::generate().unwrap();
     let operator = Identity::generate().unwrap();
-    let node_a = boot_single(&owner, PORTS_ALERT_LIFECYCLE).await;
+    let node_a = boot_single(&owner).await;
 
     // Nothing listens here yet -- the probe fails.
     let target_port = closed_port();
