@@ -1,6 +1,6 @@
 //! The live WebSocket connection table, shared by every build.
 //!
-//! Lived inside `AppSandboxEngine` until C1. Moved out because a natively
+//! Once lived inside `AppSandboxEngine`. Moved out because a natively
 //! linked app must push frames onto the same connections the router
 //! registered, and reaching them through `Weak<AppSandboxEngine>` gave a
 //! native app a table it could never see into -- `send` failed as

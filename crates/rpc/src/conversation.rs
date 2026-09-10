@@ -7,7 +7,7 @@
 //! `data-layer`'s `Host` impl already draws.
 //!
 //! [`ConversationHost`] is held `Weak` by `HostState`/`AppSandboxEngine`
-//! (the Slice-6B `Arc`-cycle reason: the only implementation,
+//! (the `Arc`-cycle reason: the only implementation,
 //! `syneroym-conversation`'s `ConversationService`, is itself reached
 //! through the engine it is wired into). [`ConversationNotifier`] is the
 //! reverse direction, held `Weak` by `ConversationService`.
@@ -92,8 +92,8 @@ pub struct ConversationHistoryPage {
 ///
 /// Every method is keyed by `service_id` (`HostState.component_id` /
 /// `SynSvcNativeService.service_id`) -- never by anything a caller passes --
-/// so one service can never reach another's conversation store (§5.3: "no
-/// cross-service conversation access exists and no interface for one").
+/// so one service can never reach another's conversation store: no
+/// cross-service conversation access exists, and no interface for one.
 #[async_trait::async_trait]
 pub trait ConversationHost: Send + Sync + Debug {
     async fn open_direct(
@@ -209,7 +209,7 @@ pub trait ConversationHost: Send + Sync + Debug {
 }
 
 /// The host -> app direction (`syneroym:conversation/guest-api`), mirroring
-/// `MessageSink`'s shape (B3 §13 item 3): the half with no automatic parity,
+/// `MessageSink`'s shape: the half with no automatic parity,
 /// so both builds implement it explicitly.
 #[async_trait::async_trait]
 pub trait ConversationNotifier: Send + Sync + Debug {
