@@ -1,7 +1,7 @@
-//! Unpacks a deployed service's static asset bundle into per-file blobs
-//! (M06A A1) and the deletion helper that keeps a redeploy/undeploy from
-//! either leaking the previous generation's blobs or destroying the still-
-//! live one (`D-A1-9`).
+//! Unpacks a deployed service's static asset bundle into per-file blobs,
+//! plus the deletion helper that keeps a redeploy/undeploy from either
+//! leaking the previous generation's blobs or destroying the still-live
+//! one.
 //!
 //! `unpack_asset_bundle` is deliberately the only place that reads the
 //! archive; everything downstream (the router's serving path, the deploy
@@ -47,17 +47,17 @@ const RESERVED_BLOBS_PREFIX: &str = "/blobs/";
 /// the error path.** This function performs no deletion of its own: the
 /// caller owns `written` and the scope guard around it, which is also the
 /// only place that can see the still-live previous manifest and so the
-/// only place that can compute what to keep (M06A D-A1-9, R3-B).
+/// only place that can compute what to keep.
 ///
 /// `declared_routes` are the service's own `http_routes` *patterns*, not
 /// literal paths, filtered to `GET`/`HEAD` by the caller's own declared
 /// method -- checked with `match_path` so a parameterised route (`GET
 /// /docs/{slug}`) correctly collides with a literal asset path
-/// (`/docs/intro.html`) despite neither string equalling the other
-/// (D-A1-4). Every `.../index.html` entry is also checked against its
-/// D-A1-11 directory form (`/docs/`, or `/` at the root), since that path
-/// is answerable from the bundle too and a route pattern that only matches
-/// the directory form would otherwise deploy clean.
+/// (`/docs/intro.html`) despite neither string equalling the other.
+/// Every `.../index.html` entry is also checked against its directory
+/// form (`/docs/`, or `/` at the root), since that path is answerable
+/// from the bundle too and a route pattern that only matches the
+/// directory form would otherwise deploy clean.
 pub async fn unpack_asset_bundle(
     service_id: &str,
     archive: &[u8],
@@ -186,7 +186,7 @@ fn parse_and_validate_entries(
                      prefix, which the client gateway answers itself and never proxies"
                 ));
             }
-            // D-A1-11's directory-index rewrite makes an `.../index.html`
+            // The directory-index rewrite makes an `.../index.html`
             // entry also answerable at the directory path itself
             // (`/docs/index.html` for `GET /docs/`, `/index.html` for
             // `GET /`) -- a route pattern that only collides with that
@@ -302,7 +302,7 @@ pub fn hashes_of(manifest: &AssetManifest, manifest_hash: Option<&str>) -> BTree
     set
 }
 
-/// The one deletion helper, used in both directions (D-A1-9). Deletes
+/// The one deletion helper, used in both directions. Deletes
 /// `remove - keep`, never a hash `keep` contains. **Forward** (successful
 /// redeploy): remove the old manifest's hashes, keep the new manifest's.
 /// **Backward** (any failure between unpack and registry insert): remove
@@ -507,10 +507,10 @@ mod tests {
 
     #[tokio::test]
     async fn directory_index_form_colliding_with_a_declared_get_route_is_rejected() {
-        // `docs/index.html` doesn't literally equal `/docs`, but D-A1-11
-        // makes it answerable at `GET /docs/` too -- the collision check
-        // must catch that even though `match_path` alone (segment-count
-        // equality) would not.
+        // `docs/index.html` doesn't literally equal `/docs`, but the
+        // directory-index rewrite makes it answerable at `GET /docs/` too --
+        // the collision check must catch that even though `match_path` alone
+        // (segment-count equality) would not.
         let archive = make_archive(&[("docs/index.html", b"hi")]);
         let routes = [HttpRoute {
             method: "GET".to_string(),

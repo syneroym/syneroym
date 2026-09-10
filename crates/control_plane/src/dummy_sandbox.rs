@@ -54,14 +54,14 @@ impl AppSandboxEngine {
     }
 
     /// A sandbox-less build never has a loaded component, mirroring
-    /// `exports_authorize_rows`'s own reasoning above (M05A A4).
+    /// `exports_authorize_rows`'s own reasoning above.
     #[must_use]
     pub fn is_deployed(&self, _service_id: &str) -> bool {
         false
     }
 
     /// A sandbox-less build never has a component artifact to reload,
-    /// mirroring `is_deployed`'s own reasoning above (M05A A5a).
+    /// mirroring `is_deployed`'s own reasoning above.
     pub async fn reload_wasm(&self, service_id: &str) -> anyhow::Result<()> {
         anyhow::bail!("wasm support is not compiled into this substrate ({service_id})")
     }
@@ -77,14 +77,13 @@ pub struct ContainerEngine;
 #[cfg(not(feature = "podman_sandbox"))]
 impl ContainerEngine {
     /// A build with no container engine cannot answer a readiness question
-    /// about a container it could never have started (M05A A4).
+    /// about a container it could never have started.
     pub async fn readyz(&self, service_id: &str) -> anyhow::Result<()> {
         anyhow::bail!("container support is not compiled into this substrate ({service_id})")
     }
 
     /// A build with no container engine cannot start a container it could
-    /// never have created (M05A A5a), mirroring `readyz`'s own reasoning
-    /// above.
+    /// never have created, mirroring `readyz`'s own reasoning above.
     pub async fn start(&self, service_id: &str) -> anyhow::Result<()> {
         anyhow::bail!("container support is not compiled into this substrate ({service_id})")
     }

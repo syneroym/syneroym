@@ -115,7 +115,7 @@ pub trait OrchestratorInterface {
         manifest: DeployManifest,
         caller: &CallerContext,
     ) -> Result<(), String>;
-    /// Epoch-guarded binding write (M05A A5, ADR-0021 §3). The only path
+    /// Epoch-guarded binding write (ADR-0021 §3). The only path
     /// that changes a dependent's resolution without redeploying it.
     async fn write_bindings(
         &self,
@@ -132,8 +132,8 @@ pub trait OrchestratorInterface {
         generation: u64,
         caller: &CallerContext,
     ) -> Result<(), String>;
-    /// Restart a deployed service in place, without reinstalling it (M05A
-    /// A5's bounded remediation). `generation` follows `undeploy`'s rule.
+    /// Restart a deployed service in place, without reinstalling it, as
+    /// bounded remediation. `generation` follows `undeploy`'s rule.
     async fn restart(
         &self,
         service_id: String,
@@ -165,27 +165,26 @@ pub trait OrchestratorInterface {
         instance_certificate: String,
         caller: &CallerContext,
     ) -> Result<(), String>;
-    /// `adopt`'s read half (M05A A5a, §0.26): the management stamp an app
+    /// `adopt`'s read half: the management stamp an app
     /// instance carries, or `None` if no deploy has ever named it here.
     /// `Ok(None)` (not an error) for a caller with no visibility into the
     /// instance, so a caller with no grant cannot use this to probe for its
-    /// existence (A4-10's rule, applied here too).
+    /// existence.
     async fn app_instance_management_of(
         &self,
         app_instance_id: String,
         caller: &CallerContext,
     ) -> Result<Option<AppInstanceManagementWire>, String>;
-    /// Claim management of an app instance at `generation` (M05A A5a,
-    /// §0.26) -- ADR-0021 §4's operator-minted adopt, made durable at the
-    /// moment of the claim. Subject to the same four-case rule as every
-    /// other write.
+    /// Claim management of an app instance at `generation` -- the
+    /// operator-minted adopt of ADR-0021 §4, made durable at the moment of
+    /// the claim. Subject to the same four-case rule as every other write.
     async fn claim_app_instance(
         &self,
         app_instance_id: String,
         generation: u64,
         caller: &CallerContext,
     ) -> Result<(), String>;
-    /// Clear an app instance's management stamp (M05A A5a, §0.24):
+    /// Clear an app instance's management stamp:
     /// `supervisor_did` back to `None` and `generation` back to 0, keeping
     /// `owner_did`. Without this, an adopted instance can never be
     /// hand-deployed again.
@@ -198,21 +197,21 @@ pub trait OrchestratorInterface {
     async fn list(&self, caller: &CallerContext) -> Result<Vec<DeployedService>, String>;
     async fn deploy_plan(&self, plan: DeploymentPlan, caller: &CallerContext)
     -> Result<(), String>;
-    /// Per-instance status for a supervisor's poll loop (M05A A4).
+    /// Per-instance status for a supervisor's poll loop.
     async fn status(
         &self,
         service_ids: Vec<String>,
         caller: &CallerContext,
     ) -> Result<SubstrateStatus, String>;
-    /// Node facts only (A4-06) -- what `status`'s `node` field alone would
+    /// Node facts only -- what `status`'s `node` field alone would
     /// answer, with none of `status`'s per-service work. `None` for a caller
-    /// without node-wide `orchestrator/status` (D-A4-18), the same as
+    /// without node-wide `orchestrator/status`, the same as
     /// `status`'s own `node` field.
     async fn node_facts(&self, caller: &CallerContext) -> Option<NodeFacts>;
 }
 
 /// Maps the wire `topology-mode` variant to the app model's `TopologyMode`
-/// (A2) -- the inverse of `syneroym_sdk::mapper`'s `map_mode`.
+/// -- the inverse of `syneroym_sdk::mapper`'s `map_mode`.
 fn map_topology_mode(mode: WitTopologyMode) -> AppTopologyMode {
     match mode {
         WitTopologyMode::Singleton => AppTopologyMode::Singleton,
@@ -221,7 +220,7 @@ fn map_topology_mode(mode: WitTopologyMode) -> AppTopologyMode {
     }
 }
 
-/// Wire `service-type` variant -> the app model's `ServiceType` (M05A A4).
+/// Wire `service-type` variant -> the app model's `ServiceType`.
 /// Only the discriminant matters here; the payload is what the deploy already
 /// used. The wire variant has no `native-host` case -- only the three types a
 /// deploy can actually produce reach here.
@@ -235,7 +234,7 @@ const fn app_service_type(t: &WitServiceType) -> AppServiceType {
 
 /// The content of a `registry_certificate` blob that actually describes the
 /// deployed service, as distinct from the parts that change on every mint
-/// regardless of whether anything else did (review finding E-1):
+/// regardless of whether anything else did:
 /// `SignedEndpointInfo.info.not_after` (`SystemTime::now()` plus a fixed
 /// window) and `pkarr_packet_hex` (its own embedded signing timestamp) both
 /// churn on every `certify_placed_members` call. Every other `EndpointInfo`
@@ -344,15 +343,15 @@ const fn service_type_str(t: AppServiceType) -> &'static str {
 }
 
 /// Validates one wire `dependency-binding` into `(LogicalServiceName,
-/// TopologyEntry)`. Shared by the deploy path and `write_bindings` (M05A
-/// A5a) so the two cannot validate differently -- every field is
-/// caller-supplied (D-A2-15), and `LogicalServiceName::new` *panics* on an
-/// empty name or one containing '/'.
+/// TopologyEntry)`. Shared by the deploy path and `write_bindings` so the
+/// two cannot validate differently -- every field is caller-supplied, and
+/// `LogicalServiceName::new` *panics* on an empty name or one containing
+/// '/'.
 fn prepare_binding(
     binding: &DependencyBinding,
     app_instance_id: &str,
 ) -> Result<(LogicalServiceName, TopologyEntry), String> {
-    // D-A2-2 / ADR-0021 §2: A2 resolves intra-app dependencies only -- a
+    // ADR-0021 §2: dependency resolution is intra-app only -- a
     // deploy (or a binding push) may bind dependencies for its own
     // declared app instance, never a different one. `DependencyBinding.
     // app_instance_id` is deliberately caller-supplied, ahead of the
@@ -487,12 +486,12 @@ async fn resolve_document(
     }
 }
 
-/// Resolves an `asset-bundle.archive` field (M06A A1) to raw bytes. `Binary`
+/// Resolves an `asset-bundle.archive` field to raw bytes. `Binary`
 /// is the only real case -- the SDK's mapper (`resolve_artifact_source`)
 /// already turns a local path or an inlined hex artifact into `Binary` bytes
 /// before the manifest ever reaches the wire. `Url` is a dead branch here,
 /// exactly as it already is for the Wasm component's own `source` (nothing
-/// fetches it); reviving it is out of A1's scope (deferred-backlog.md), so
+/// fetches it); reviving it is a deferred item (deferred-backlog.md), so
 /// it is rejected explicitly rather than silently accepted and ignored.
 fn resolve_asset_archive(source: &ArtifactSource) -> Result<Vec<u8>, String> {
     match source {
@@ -503,7 +502,7 @@ fn resolve_asset_archive(source: &ArtifactSource) -> Result<Vec<u8>, String> {
     }
 }
 
-/// D-04-02-c's deploy-time author-time warning: compares a deployed policy's
+/// Deploy-time author warning: compares a deployed policy's
 /// `definitions:` against the service's actual collections (its own tables
 /// are the collection inventory -- a manifest declares no collection list of
 /// its own). Warn-only in both directions, never a hard failure:
@@ -620,15 +619,15 @@ impl ControlPlaneService {
         Ok(())
     }
 
-    /// Writes `prepared`'s app-context and binding rows (A2, post-review
-    /// fix). Called only once every earlier fallible step in `deploy_
-    /// with_context` has already succeeded -- see the call site's own
-    /// comment -- so a storage error here is the *only* way this can fail,
-    /// never a validation problem (`prepared`'s fields already passed
-    /// `try_new`). The app-instance management stamp is *not* written
-    /// here (M05A A5a §0.27) -- `deploy_with_context` persists it right
-    /// after `check_generation` succeeds, before this method ever runs,
-    /// since it records who is writing rather than what was installed.
+    /// Writes `prepared`'s app-context and binding rows. Called only once
+    /// every earlier fallible step in `deploy_with_context` has already
+    /// succeeded -- see the call site's own comment -- so a storage error
+    /// here is the *only* way this can fail, never a validation problem
+    /// (`prepared`'s fields already passed `try_new`). The app-instance
+    /// management stamp is *not* written here -- `deploy_with_context`
+    /// persists it right after `check_generation` succeeds, before this
+    /// method ever runs, since it records who is writing rather than what
+    /// was installed.
     async fn install_app_context(
         &self,
         service_id: &str,
@@ -664,10 +663,10 @@ impl ControlPlaneService {
                 )
                 .await
                 .map_err(|e| e.to_string())?;
-            // Last-write-wins (D-A2-10). ADR-0021 §3's four-case epoch
+            // Last-write-wins. ADR-0021 §3's four-case epoch
             // guard -- lower rejects, equal+identical no-ops, equal+
             // different is a reported conflict, higher applies -- belongs
-            // at exactly this call and is the supervisor slice's.
+            // at exactly this call site.
             self.logical_resolver.register(
                 TopologyKey::local(prepared.instance_id.clone(), dependency_name.clone()),
                 entry.clone(),
@@ -683,13 +682,13 @@ impl ControlPlaneService {
     ///
     /// The generation is a tiebreaker, so an *unadopted* instance
     /// (`supervisor_did: None`) accepts any authorized writer -- that is
-    /// what keeps A0-A4's operator-driven `app deploy` working unchanged
-    /// after this lands, and what `release-app-instance` restores. The
+    /// what keeps the operator-driven `app deploy` working unchanged,
+    /// and what `release-app-instance` restores. The
     /// returned value is what the caller must persist immediately
     /// (`set_app_instance_management`), before anything else it does
-    /// (M05A A5a §0.27) -- it records *who is writing*, not what was
-    /// installed, so it is not behind A2's defer-until-everything-
-    /// succeeds rule that governs bindings.
+    /// -- it records *who is writing*, not what was installed, so it is
+    /// not behind the defer-until-everything-succeeds rule that governs
+    /// bindings.
     ///
     /// `presented == 0` never claims supervision, regardless of whether a
     /// row already exists: the WIT `app-context.generation` doc is
@@ -763,8 +762,8 @@ impl ControlPlaneService {
         }
     }
 
-    /// Rolls back an in-progress deploy's asset-bundle work (M06A D-A1-9,
-    /// R3-B backward direction): deletes every blob this attempt itself
+    /// Rolls back an in-progress deploy's asset-bundle work (the backward
+    /// direction of asset cleanup): deletes every blob this attempt itself
     /// wrote, keeping any hash the still-live previous generation (`old`)
     /// still references. A no-op when `written` is empty, so calling this
     /// unconditionally on every failure branch above the registry commit
@@ -847,7 +846,7 @@ impl ControlPlaneService {
             return Err(format!("WASM deployment failed: {e}"));
         }
 
-        // D-B4-1/validate_stage4_export (ADR-0017 §8): a policy that opts a
+        // `validate_stage4_export` (ADR-0017 §8): a policy that opts a
         // permission into the stage-4 after-step but whose compiled
         // component doesn't export `syneroym:data-layer/authorizer#
         // authorize-rows` would deny **every** read through that permission
@@ -869,7 +868,7 @@ impl ControlPlaneService {
             ));
         }
 
-        // M06A D-A2-10b: a declared `guest` route whose compiled component
+        // A declared `guest` route whose compiled component
         // doesn't export the handler would 500 on every request it ever
         // gets, discoverable only in production -- same reasoning, and
         // placed right after, the stage-4 export check above. Must run
@@ -1093,14 +1092,14 @@ impl ControlPlaneService {
 
 #[async_trait::async_trait]
 impl OrchestratorInterface for ControlPlaneService {
-    /// M04A Slice B7b (§2.4.1): `readyz` has two forms, and only one is a
+    /// `readyz` has two forms, and only one is a
     /// status-check in the ownership sense. Empty `service_id` is a
     /// substrate-liveness ping -- `SyneroymClient::wait_for_ready` calls it
     /// pre-capability during `connect()`, so gating it would break connect
-    /// for every ordinary client; it stays open, as a health probe (design
-    /// §6.1.2's spirit: liveness is not an authorization surface). A
-    /// non-empty `service_id` is a per-service readiness check (task.md item
-    /// 1's "status-check") and is gated on `orchestrator/status`, exactly
+    /// for every ordinary client; it stays open, as a health probe
+    /// (liveness is not an authorization surface). A
+    /// non-empty `service_id` is a per-service readiness check
+    /// and is gated on `orchestrator/status`, exactly
     /// like `deploy`/`undeploy` gate on their own abilities below --
     /// node-wide authority (the owner, via a verified `ControllerAgreement`)
     /// passes for free; otherwise the caller needs a grant covering this
@@ -1167,11 +1166,11 @@ impl OrchestratorInterface for ControlPlaneService {
                 }
             }
 
-            // D-A4-17: was "any `TcpHostPort` endpoint means container",
+            // This once used "any `TcpHostPort` endpoint means container",
             // which fires against real TCP services too (both register the
             // same endpoint variant) and reports the resulting failure as
             // unreadiness. Reads the recorded service type instead -- a
-            // service with no recorded facts (deployed by a pre-A4 binary)
+            // service with no recorded facts (deployed by an older binary)
             // is no longer podman-inspected, matching `status`'s `unknown`,
             // so the two surfaces cannot disagree.
             if let Some((t, ..)) = self.registry.deploy_facts(&service_id)
@@ -1229,7 +1228,7 @@ impl OrchestratorInterface for ControlPlaneService {
         manifest: DeployManifest,
         caller: &CallerContext,
     ) -> Result<(), String> {
-        // A standalone deploy carries no app context (D-A2-2), so it
+        // A standalone deploy carries no app context, so it
         // resolves no declared dependency name -- it can still be called,
         // and can still call out by DID.
         self.deploy_with_context(service_id, manifest, None, caller).await
@@ -1381,8 +1380,8 @@ impl OrchestratorInterface for ControlPlaneService {
 }
 
 impl ControlPlaneService {
-    /// The trait method's entire body (§3.1's `deploy` <->
-    /// `deploy_with_context` split, D-A2-6): no app context, so no
+    /// The `deploy` trait method's entire body -- the `deploy` <->
+    /// `deploy_with_context` split lets `deploy` pass no app context, so no
     /// bindings, unchanged for every existing caller including the JSON-RPC
     /// `deploy` dispatch. `deploy_plan` calls this directly, passing
     /// `service.app_context`.
@@ -1394,7 +1393,7 @@ impl ControlPlaneService {
         caller: &CallerContext,
     ) -> Result<(), String> {
         // `service_id` is joined verbatim into `hosted_apps_dir/<service_id>.json`
-        // below (write, and now also delete on a private redeploy, D-B2-5) --
+        // below (write, and also delete on a private redeploy) --
         // reject anything that could walk that join out of the directory
         // before it is used for anything, including the ownership/capability
         // checks that follow.
@@ -1424,16 +1423,16 @@ impl ControlPlaneService {
             ));
         }
 
-        // M04A Slice B7a / F7: a service_id already owned by someone else may
+        // A service_id already owned by someone else may
         // not be re-deployed into. An unowned substrate holds no node-wide
         // orchestrator authority, so this always
         // enforces the takeover check there -- only an owned substrate's
         // owner can override it, and today's overwrite-on-redeploy behavior
-        // is preserved exactly for that case. Checks ORCHESTRATOR_DEPLOY specifically
-        // (post-review fix, not the old single-ability
-        // `has_node_wide_orchestrator_authority`): a caller who holds only
-        // `orchestrator/status` must not be able to override someone else's
-        // takeover protection just because they can also list every app.
+        // is preserved exactly for that case. Checks ORCHESTRATOR_DEPLOY
+        // specifically, not a single catch-all ability: a caller who holds
+        // only `orchestrator/status` must not be able to override someone
+        // else's takeover protection just because they can also list every
+        // app.
         //
         // TOCTOU note (reviewed, accepted): this read and the terminal
         // `set_owner` write below are separated by the whole deploy body,
@@ -1447,7 +1446,7 @@ impl ControlPlaneService {
         // service_id nobody owns yet, not a takeover-check bypass. Not fixed
         // here: closing it fully needs a per-service_id lock or an atomic
         // claim-then-verify around the entire (non-atomic, pre-existing)
-        // deploy flow, which is a larger change than this slice's scope.
+        // deploy flow, which is a larger change than this one.
         if let Some(existing) = self.registry.owner_of(&service_id)
             && existing != caller.caller_did
             && !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_DEPLOY)
@@ -1458,7 +1457,7 @@ impl ControlPlaneService {
             ));
         }
 
-        // M04A Slice B7b (§3.2): Tier-1 deploy admission. The caller must
+        // Tier-1 deploy admission. The caller must
         // hold `orchestrator/deploy` covering this app. No owner/unowned
         // branch and no separate substrate-owner bypass here: a bare
         // `substrate:<node>` capability (the owner's `substrate/admin`) is
@@ -1500,7 +1499,7 @@ impl ControlPlaneService {
             manifest.registry_certificate.as_deref(),
         )?;
 
-        // ADR-0021 §2 / D-A2-2: validated here, before the artifact work,
+        // ADR-0021 §2: validated here, before the artifact work,
         // for the same reason the certificate is -- a malformed or
         // unauthorized binding is a deploy failure, not a routing failure
         // discovered later. The write itself is deferred past every other
@@ -1514,7 +1513,7 @@ impl ControlPlaneService {
             // Validate before anything touches storage, so a later read of
             // these rows can only fail on real corruption rather than on
             // something a deploy caller sent. The registry itself stores
-            // plain `String`s (D-A2-7), so this is the only place the shape
+            // plain `String`s, so this is the only place the shape
             // can be enforced on the way in.
             let instance_id = AppInstanceId::try_new(&ctx.app_instance_id)
                 .map_err(|e| format!("app context names an invalid app instance id: {e}"))?;
@@ -1555,10 +1554,10 @@ impl ControlPlaneService {
                 ));
             }
 
-            // ADR-0021 §4's generation gate (M05A A5a §0.18): persisted
+            // ADR-0021 §4's generation gate: persisted
             // immediately, before binding validation or any artifact work,
             // so a manager is recorded even if a later step in this deploy
-            // fails (§0.27) -- this write records *who is writing*, not
+            // fails -- this write records *who is writing*, not
             // what was installed.
             let management = self.check_generation(&ctx.app_instance_id, caller, ctx.generation)?;
             self.registry
@@ -1582,28 +1581,28 @@ impl ControlPlaneService {
             None
         };
 
-        // M05A A5a §4A / D-A5-18: deploy idempotency (failure-matrix row
-        // 10), distinct from the epoch guard (dedups binding writes) and
-        // the generation gate (picks between writers) -- ADR-0021 §3 says
-        // explicitly that neither covers the other. Canonical hash over
+        // Deploy idempotency, distinct from the epoch guard (dedups
+        // binding writes) and the generation gate (picks between writers)
+        // -- ADR-0021 §3 says explicitly that neither covers the other.
+        // Canonical hash over
         // (manifest, app_context-minus-generation); the generation is
         // excluded deliberately, since bumping it is a change of *writer*,
         // not a change to the deployed service, and hashing it would make
         // an `adopt` force a pointless reinstall of every service.
         let service_type = app_service_type(&manifest.service_type);
-        // M05A A5a §0.23: every rollback below re-enters through
+        // Every rollback below re-enters through
         // `self.undeploy`, now generation-gated -- send the same
         // generation this deploy itself presented, so a rollback of the
         // supervisor's own deploy is never rejected by its own gate.
         let generation = app_context.as_ref().map_or(0, |c| c.generation);
-        // Review finding A-2: `epoch` is `generation`'s sibling, not its
+        // `epoch` is `generation`'s sibling, not its
         // opposite -- it too records who is writing (the supervisor
-        // advances it before every apply, D-A5c-4), not what gets
+        // advances it before every apply), not what gets
         // installed. Hashing it raw meant every re-apply changed the
         // hash and forced a genuine reinstall of every dependent, which
         // is exactly the restart `write-bindings` exists to avoid. Each
-        // binding is hashed minus its `epoch`, by the same reasoning
-        // §4A already applies to `generation` above.
+        // binding is hashed minus its `epoch`, by the same reasoning the
+        // idempotency hash already applies to `generation` above.
         let context_for_hash = app_context.as_ref().map(|c| {
             let bindings: Vec<_> = c
                 .bindings
@@ -1614,7 +1613,7 @@ impl ControlPlaneService {
                 .collect();
             (&c.app_instance_id, &c.service_name, bindings)
         });
-        // Review finding E-1 (A-2's fix was inert): `manifest.instance_
+        // The earlier `epoch` fix was inert on its own: `manifest.instance_
         // certificate`/`registry_certificate` are minted fresh on every
         // apply -- `certify_placed_members` calls `certify_instance` and
         // builds an `EndpointInfo` whose `not_after` is derived from
@@ -1650,11 +1649,11 @@ impl ControlPlaneService {
                 .map_err(|e| format!("Failed to canonicalize deploy manifest for dedup: {e}"))?;
             blake3::hash(canonical.as_bytes()).to_hex().to_string()
         };
-        // The owner check: row 10 is "a retry after a lost response" --
-        // the *same* caller re-sending a request whose response never
-        // arrived. A *different* caller presenting byte-identical content
-        // is a takeover, not a retry, and `set_owner` below must still run
-        // unconditionally for it (M04A B7a: "authorized or not") -- a
+        // The owner check: the idempotency case is "a retry after a lost
+        // response" -- the *same* caller re-sending a request whose
+        // response never arrived. A *different* caller presenting
+        // byte-identical content is a takeover, not a retry, and
+        // `set_owner` below must still run unconditionally for it -- a
         // dedup that skipped straight to `Ok(())` here would silently
         // leave the service owned by whoever deployed it first.
         // `full_deploy_completed` is the witness that *this* process (not
@@ -1712,7 +1711,7 @@ impl ControlPlaneService {
 
         // Configuration Generation & Validation
         let mut flat_config = BTreeMap::new();
-        // M3B Slice 7: `http_routes` is a reserved top-level key inside
+        // `http_routes` is a reserved top-level key inside
         // `custom_config`'s JSON (see `crate::http_routes`) -- parsed here,
         // alongside the existing flatten step, since this is already the
         // one place `custom_config` gets interpreted rather than treated as
@@ -1751,12 +1750,12 @@ impl ControlPlaneService {
             config_utils::flatten_json_config(&custom_json, "", &mut flat_config);
         }
 
-        // D-A4-6: a probe kind that cannot address this service type is a
+        // A probe kind that cannot address this service type is a
         // manifest error, checked before any engine work runs. Accepting it
         // would produce a permanently `failing` probe that is
         // indistinguishable, at the supervisor, from a real outage.
-        // (`service_type` was already computed above, for the row-10 dedup
-        // check.)
+        // (`service_type` was already computed above, for the idempotency
+        // dedup check.)
         if let Some(check) = &manifest.config.health_check {
             let model = model_health_check(check)?;
             if !model.valid_for().contains(&service_type) {
@@ -1774,7 +1773,7 @@ impl ControlPlaneService {
             }
         }
 
-        // M06A A1: an asset bundle is only reachable through a `Wasm`
+        // An asset bundle is only reachable through a `Wasm`
         // service's `NativeService` HTTP path (`try_handle_asset`,
         // `crates/router/src/route_handler/http.rs`) -- a `Tcp`/`Container`
         // service's endpoint is registered as `SubstrateEndpoint::
@@ -1787,10 +1786,11 @@ impl ControlPlaneService {
         // that could never be served, silently: a wasted blob write with no
         // signal to the caller. Also matches the CLI's existing
         // `--asset-visibility requires --assets requires --wasm` chain
-        // (`apps/roymctl/src/commands/svc.rs`) and this fact from
-        // `status.md`: `Tcp`/`Container` services already run their own web
-        // server outside the substrate, which is exactly what A1 exists to
-        // stop being the only way to serve a web app -- they have no need
+        // (`apps/roymctl/src/commands/svc.rs`) and this fact:
+        // `Tcp`/`Container` services already run their own web
+        // server outside the substrate, which is exactly what asset
+        // bundles exist to stop being the only way to serve a web app --
+        // they have no need
         // for this feature, not just no support for it yet.
         if manifest.config.assets.is_some() && service_type != AppServiceType::Wasm {
             return Err(format!(
@@ -1898,7 +1898,7 @@ impl ControlPlaneService {
                 .map_err(|e| format!("Failed to clear FDAE policy: {e}"))?;
         }
 
-        // M06A A1: static asset bundle unpack, before the wasm/tcp/container
+        // Static asset bundle unpack, before the wasm/tcp/container
         // dispatch below so a bad archive fails deploy the same way a bad
         // FDAE policy does -- before anything guest-visible has started.
         //
@@ -1906,7 +1906,7 @@ impl ControlPlaneService {
         // point that can see the still-live previous generation, which the
         // backward rollback below (any failure between here and the
         // registry commit further down) must keep, and which the forward
-        // cleanup at the commit point must diff against (D-A1-9).
+        // cleanup at the commit point must diff against.
         let old_assets = self.assets.get(&service_id).map(|entry| entry.value().clone());
         let mut written_asset_hashes = BTreeSet::new();
         let new_assets: Option<ServiceAssets> = if let Some(bundle) = &manifest.config.assets {
@@ -1993,11 +1993,11 @@ impl ControlPlaneService {
             };
             written_asset_hashes.insert(manifest_hash.clone());
             let public = matches!(bundle.visibility.as_ref(), Some(WitVisibility::Public));
-            // D-A1-1: a caller who forgets to declare `public` gets 404s
+            // A caller who forgets to declare `public` gets 404s
             // with no signal anywhere unless this is logged -- absence of
             // an explicit `visibility` defaults to `private` by
             // construction (the wire's `option<visibility>`), which is
-            // deliberately silent at the *serving* layer (D-A1-8: a miss
+            // deliberately silent at the *serving* layer (a miss
             // and a non-public bundle look identical to a caller), so the
             // one place left to say so is here, at deploy time.
             info!(
@@ -2014,7 +2014,7 @@ impl ControlPlaneService {
             None
         };
 
-        // M06A D-A2-7: a `public` guest route is reachable with no verified
+        // A `public` guest route is reachable with no verified
         // caller identity over a direct anonymous connection -- the same
         // loud-signal treatment the asset bundle's own visibility gets
         // above, so an author who didn't mean to leave a route open still
@@ -2099,7 +2099,7 @@ impl ControlPlaneService {
             }
         }
 
-        // D-04-02-c's author-time `strict:` warning: the service's own
+        // Author-time `strict:` warning: the service's own
         // database is the collection inventory (a manifest declares no
         // collection list -- collections come from the guest's `init()` or
         // native calls), so this is the first point at which a first
@@ -2153,7 +2153,7 @@ impl ControlPlaneService {
                 // `undeploy` above only cleans up whatever the registry
                 // already held (the *old* generation, if any) -- it knows
                 // nothing about this attempt's own writes, so they need
-                // their own rollback here too (D-A1-9, R3-B).
+                // their own rollback here too.
                 self.rollback_asset_bundle(&service_id, &written_asset_hashes, old_assets.as_ref())
                     .await;
                 self.rollback_config_generation(&service_id, new_gen).await;
@@ -2199,7 +2199,7 @@ impl ControlPlaneService {
                 self.assets.remove(&service_id);
             }
         }
-        // Forward cleanup (D-A1-9): remove whatever the *old* manifest held
+        // Forward cleanup: remove whatever the *old* manifest held
         // that the *new* one (if any) no longer references -- never a
         // wholesale delete of the old bundle, since unchanged files share
         // hashes across generations. Best-effort: a GC failure here must
@@ -2221,7 +2221,7 @@ impl ControlPlaneService {
             }
         }
 
-        // M04A Slice B7a: record the owner last, after every other step
+        // Record the owner last, after every other step
         // succeeded. Every earlier failure path above either never reached
         // this line, or calls `undeploy` (whose rollback is itself safe --
         // see the doc comment there), so a crash/failure before this point
@@ -2239,13 +2239,12 @@ impl ControlPlaneService {
         // the native-capability-registration failure branch a few lines up
         // (`self.undeploy(...)` after the `registry.register` loop) already
         // does the exact same full-teardown rollback for the exact same
-        // reason, predating B7a. `deploy` has never been transactional
-        // across config-generation / engine / registry writes (plan §2.3,
-        // "Known non-atomicity... B7a does not make this worse"); making a
-        // re-deploy's late failure preserve the prior running version would
-        // need a genuinely versioned/staged deploy (keep the old instance
-        // live until the new one fully commits), which is a materially
-        // larger change than this slice's scope -- not attempted here.
+        // reason, and predates the ownership gate. `deploy` has never been
+        // transactional across config-generation / engine / registry
+        // writes; making a re-deploy's late failure preserve the prior
+        // running version would need a genuinely versioned/staged deploy
+        // (keep the old instance live until the new one fully commits),
+        // which is a materially larger change -- not attempted here.
         if let Err(e) = self.registry.set_owner(service_id.clone(), caller.caller_did.clone()).await
         {
             if let Err(undeploy_err) = self.undeploy(service_id.clone(), generation, caller).await {
@@ -2282,7 +2281,7 @@ impl ControlPlaneService {
             return Err(format!("Instance certificate installation failed: {e}"));
         }
 
-        // M05A A4: what this deploy said the service is, and its declared
+        // What this deploy said the service is, and its declared
         // probe if any. Stored as the **wire** variant's own JSON (not
         // `model_check`, which only exists for the `valid_for`/`kind_name`
         // validation above and serializes under a different serde config) --
@@ -2365,7 +2364,7 @@ impl ControlPlaneService {
         Ok(())
     }
 
-    /// Epoch-guarded binding write (M05A A5a, ADR-0021 §3): the only path
+    /// Epoch-guarded binding write (ADR-0021 §3): the only path
     /// that changes a dependent's resolution without redeploying it.
     /// Touches the binding tables and the resolver and nothing else -- no
     /// artifact work, no restart, no lifecycle hook.
@@ -2432,7 +2431,7 @@ impl ControlPlaneService {
             ));
         }
 
-        // D-A5-23: persisted immediately, before any binding is examined
+        // Persisted immediately, before any binding is examined
         // -- the same rule every other gate site follows (deploy, restart,
         // undeploy, claim). A mid-validation refusal below must not leave
         // the accepting generation unrecorded.
@@ -2513,14 +2512,14 @@ impl ControlPlaneService {
             outcomes.push(wire_binding_outcome(&outcome));
         }
 
-        // §4A's dedup key hashes what a deploy *sends*, not what is
+        // The deploy dedup key hashes what a deploy *sends*, not what is
         // currently installed, so it cannot see a push that happened since
         // the last deploy. Without this, a repair redeploy of byte-identical
         // content after a push would match the stale hash and take the
         // no-op path, silently leaving the pushed (not the redeployed)
-        // bindings in place -- exactly the case §4A's "restart is the cheap
-        // path, deploy is the repair path" promises to handle. Clearing the
-        // hash here forces that redeploy through the full reinstall instead.
+        // bindings in place -- exactly the "restart is the cheap path,
+        // deploy is the repair path" case. Clearing the hash here forces
+        // that redeploy through the full reinstall instead.
         if any_applied
             && let Some((service_type, health_check_json, _, visibility)) =
                 self.registry.deploy_facts(&write.service_id)
@@ -2540,14 +2539,14 @@ impl ControlPlaneService {
         Ok(outcomes)
     }
 
-    /// M04A Slice B7a / F7: gates on ownership before tearing anything down
+    /// Gates on ownership before tearing anything down
     /// -- a non-owner undeploying someone else's service is the same
     /// escalation as taking it over via redeploy. Checks
-    /// `ORCHESTRATOR_UNDEPLOY` specifically (post-review fix -- see
+    /// `ORCHESTRATOR_UNDEPLOY` specifically (see
     /// `has_node_wide_ability`'s doc comment): a status-only grantee must
     /// not be able to undeploy someone else's app.
     ///
-    /// Safe to call from `deploy`'s own rollback path (§2.3): at that point
+    /// Safe to call from `deploy`'s own rollback path: at that point
     /// `owner_of` is one of (a) `None` (the native-capability-registration
     /// failure path, reached before `set_owner` ever ran), (b) already
     /// `caller.caller_did` (the happy-path retry: this same `deploy` call
@@ -2587,14 +2586,14 @@ impl ControlPlaneService {
             ));
         }
 
-        // M04A Slice B7b (§3.2): Tier-1 undeploy admission, the same shape
+        // Tier-1 undeploy admission, the same shape
         // as `deploy`'s -- the caller must hold `orchestrator/undeploy`
         // covering this app.
         //
-        // Interaction with `deploy`'s own rollback path (§2.3): `deploy`
+        // Interaction with `deploy`'s own rollback path: `deploy`
         // calls `self.undeploy(service_id.clone(), caller)` with the *same*
         // `caller` on two failure paths. Abilities are deliberately flat
-        // and independently grantable (§3.1 A2), so "deploy but not
+        // and independently grantable, so "deploy but not
         // undeploy" is a real, supported shape -- a deploy-only grantee
         // (`roymctl identity issue-grant --can orchestrator/deploy`, no
         // `orchestrator/undeploy`) whose deploy fails partway would be
@@ -2622,7 +2621,7 @@ impl ControlPlaneService {
             ));
         }
 
-        // M05A A5a §0.23: `undeploy` is a lifecycle action, gated the same
+        // `undeploy` is a lifecycle action, gated the same
         // as `deploy`/`restart` -- a superseded supervisor must not be
         // able to tear down services it no longer manages. Ungated for a
         // standalone service with no app context, same as `restart`.
@@ -2729,7 +2728,7 @@ impl ControlPlaneService {
         self.http_routes.remove(&service_id);
         self.full_deploy_completed.remove(&service_id);
 
-        // M06A A1: nothing survives an undeploy, so there is nothing to
+        // Nothing survives an undeploy, so there is nothing to
         // keep -- unlike the deploy-time forward cleanup, which diffs
         // against a still-live new generation.
         if let Some((_, old)) = self.assets.remove(&service_id) {
@@ -2762,8 +2761,8 @@ impl ControlPlaneService {
             tracing::warn!("Failed to remove deploy facts for {}: {}", service_id, e);
         }
         self.probe_cache.remove(&service_id);
-        // A2: persisted rows only -- the in-memory `StaticInventory` entry
-        // stays (D-A2-9). A `TopologyEntry` is an app-scoped fact ("where
+        // Persisted rows only -- the in-memory `StaticInventory` entry
+        // stays. A `TopologyEntry` is an app-scoped fact ("where
         // does `backend` live in instance X"), not a per-dependent one;
         // removing it when one of several dependents goes away would break
         // the others.
@@ -2787,8 +2786,8 @@ impl ControlPlaneService {
             tracing::warn!("Failed to remove app context for service {}: {}", service_id, e);
         }
 
-        // M05A A5a §5.6: the standing backlog row `app_instance_owners`
-        // rows never get forgotten. Once no service on this node names the
+        // Without this, `app_instance_owners` rows never get forgotten.
+        // Once no service on this node names the
         // instance any more, its management row is dead weight and its id
         // can never be reclaimed by another caller without this.
         if let Some(instance_id) = app_instance_id
@@ -2801,9 +2800,9 @@ impl ControlPlaneService {
         Ok(())
     }
 
-    /// Restart a deployed service in place (M05A A5a §4, ADR-0021 §4's
+    /// Restart a deployed service in place (ADR-0021 §4's
     /// "lifecycle actions"). Type-dispatched off `service_deploy_facts`
-    /// (A4) recorded at deploy -- a `tcp` service's process runs outside
+    /// recorded at deploy -- a `tcp` service's process runs outside
     /// this substrate and there is nothing here to restart, so it is
     /// refused rather than silently succeeding, which a supervisor's
     /// remediation budget would otherwise count as a real attempt.
@@ -2824,7 +2823,7 @@ impl ControlPlaneService {
             ));
         }
 
-        // M05A A5c §19.17: `deploy`/`undeploy`/`write-bindings` all refuse a
+        // `deploy`/`undeploy`/`write-bindings` all refuse a
         // takeover of a service a different caller owns; `restart` was the
         // one lifecycle write missing this check. A node-wide grantee (the
         // same override `undeploy_impl` honours) skips it for free.
@@ -2838,7 +2837,7 @@ impl ControlPlaneService {
             ));
         }
 
-        // Generation gate, only where an app instance exists (§0.23) --
+        // Generation gate, only where an app instance exists --
         // ungated for a standalone service, same as `undeploy`.
         if let Some((instance, _)) = self.registry.app_context_of(&service_id) {
             let management = self.check_generation(&instance, caller, generation)?;
@@ -2971,8 +2970,8 @@ impl ControlPlaneService {
                 origin: CallOrigin::Native { service_id: Some(service_id) },
                 protocol: ProxyProtocol::JsonRpcV1,
                 // A tick is not safe to repeat by default, and therefore
-                // never fenced or replayed -- and never queued (ADR-0023
-                // §3): the caller's next tick is the retry.
+                // never fenced or replayed -- and never queued (ADR-0023 §3):
+                // the caller's next tick is the retry.
                 idempotent: false,
                 idempotency_key: None,
                 // The proxy's own default; the guest's epoch budget is the
@@ -3168,12 +3167,11 @@ impl ControlPlaneService {
         }
     }
 
-    /// M05A A5a §0.26/§5.7: `adopt`'s read half. `Ok(None)` (not an error)
+    /// `adopt`'s read half. `Ok(None)` (not an error)
     /// for a caller with no visibility into the instance -- indistinguish-
     /// able from "no deploy has ever named this instance here", so a
     /// caller with no grant cannot use this to probe for an instance's
-    /// existence (the same rule `status`'s `not-found` already follows,
-    /// A4-10).
+    /// existence (the same rule `status`'s `not-found` already follows).
     async fn app_instance_management_of_impl(
         &self,
         app_instance_id: String,
@@ -3191,7 +3189,7 @@ impl ControlPlaneService {
         Ok(held.as_ref().map(management_to_wire))
     }
 
-    /// M05A A5a §0.26/§5.7: `adopt`'s write half. Subject to the same
+    /// `adopt`'s write half. Subject to the same
     /// four-case rule as every other write, so a racing adopt loses here
     /// rather than at whichever supervisor issues a deploy first. A claim
     /// against an instance with no row at all creates one with
@@ -3216,7 +3214,7 @@ impl ControlPlaneService {
         // would persist a row with no supervisor recorded, reporting
         // success while claiming nothing. Refused outright rather than
         // silently accepted -- a real `adopt` always presents `held + 1`
-        // (D-A5-10, at least 1), so this only rejects a caller invoking the
+        // (at least 1), so this only rejects a caller invoking the
         // raw verb with a generation that cannot mean what `claim` means.
         if generation == 0 {
             return Err(format!(
@@ -3231,9 +3229,9 @@ impl ControlPlaneService {
             .map_err(|e| e.to_string())
     }
 
-    /// M05A A5a §0.24/§5.6: clears an app instance's management stamp --
+    /// Clears an app instance's management stamp --
     /// `supervisor_did` back to `None`, `generation` back to 0, keeping
-    /// `owner_did`. Gated node-wide (§0.28), not on an invented
+    /// `owner_did`. Gated node-wide, not on an invented
     /// `app-instance/<id>` selector: `covers_resource` matches over a
     /// documented selector set with no such segment, and reusing
     /// `app/<app_instance_id>` would put app-instance ids and service ids
@@ -3314,22 +3312,23 @@ impl ControlPlaneService {
         let mut result: Vec<DeployedService> = services.into_values().collect();
         result.sort_by(|a, b| a.service_id.cmp(&b.service_id));
 
-        // M04A Slice B7a: node-wide orchestrator authority sees everything --
+        // Node-wide orchestrator authority sees everything --
         // the substrate owner (a verified `ControllerAgreement` controller;
         // an unowned substrate holds no node-wide authority
         // and so sees nothing here). Checks
-        // ORCHESTRATOR_STATUS specifically (unlike deploy/undeploy's checks
-        // above): a status-only monitoring grantee is meant to see the
-        // list -- that is what the ability names -- without thereby gaining
-        // any deploy/undeploy override, which the two checks above enforce
-        // independently.
+        // ORCHESTRATOR_STATUS specifically (unlike the deploy/undeploy
+        // checks above): a status-only monitoring grantee is meant to see
+        // the list -- that is what the ability names -- without thereby
+        // gaining any deploy/undeploy override, which the two checks above
+        // enforce independently.
         if self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_STATUS) {
             return Ok(result);
         }
         // A service owner sees only their own. `owner_of` == None (deployed
-        // pre-B7a, or the §2.3 crash window) filters OUT: an unattributed
-        // app is not "everyone's", and defaulting it visible would make that
-        // window a disclosure bug. The substrate owner still sees it above.
+        // by an older binary, or the deploy-crash window) filters OUT: an
+        // unattributed app is not "everyone's", and defaulting it visible
+        // would make that window a disclosure bug. The substrate owner
+        // still sees it above.
         Ok(result
             .into_iter()
             .filter(|s| {
@@ -3338,16 +3337,16 @@ impl ControlPlaneService {
             .collect())
     }
 
-    /// M05A A4: per-instance status for a supervisor's poll loop. An empty
+    /// Per-instance status for a supervisor's poll loop. An empty
     /// `service_ids` means "every service this caller may see", using
     /// `list_impl`'s own visibility filter -- reused verbatim rather than
     /// re-derived, since two independently-maintained visibility rules is
     /// how a disclosure bug gets introduced.
-    /// Node facts (D-A4-18): gated on node-wide authority, not on seeing any
+    /// Node facts: gated on node-wide authority, not on seeing any
     /// one service -- what this node can run and where it publishes is a
     /// property of the node, not of a service grant. Split out of
-    /// `status_impl` (A4-06) so a caller that only wants these four fields
-    /// (`app deploy`'s preflight, D-A4-15) never pays `status_impl`'s
+    /// `status_impl` so a caller that only wants these four fields
+    /// (`app deploy`'s preflight) never pays `status_impl`'s
     /// per-service phase-check-and-probe cost, which for the node-wide owner
     /// credential means every deployed service on the node.
     fn node_facts_for(&self, caller: &CallerContext) -> Option<NodeFacts> {
@@ -3457,9 +3456,9 @@ impl ControlPlaneService {
         Ok(SubstrateStatus { node, checked_at: now, services })
     }
 
-    /// Builds one service's status entry -- phase, probe (D-A4-7's
-    /// probe-not-gated-by-phase rule), and certificate metadata. Split out of
-    /// `status_impl` so every target can be computed concurrently (A4-05)
+    /// Builds one service's status entry -- phase, probe (which is not
+    /// gated by phase), and certificate metadata. Split out of
+    /// `status_impl` so every target can be computed concurrently
     /// via `join_all` instead of one after another.
     async fn service_status_for(
         &self,
@@ -3471,7 +3470,7 @@ impl ControlPlaneService {
         let service_type = facts.as_ref().map(|(t, ..)| t.clone());
         let phase = self.instance_phase(service_id, service_type.as_deref()).await;
 
-        // D-A4-7: phase does NOT gate the probe. A `tcp` service is always
+        // Phase does NOT gate the probe. A `tcp` service is always
         // `Unknown` -- probing only `Running` would mean a declared probe
         // never runs for exactly the type that has no other signal. It is
         // skipped only where the instance is already known to be down,
@@ -3486,7 +3485,7 @@ impl ControlPlaneService {
         let cert = self.registry.instance_cert(service_id);
         let app_ctx = self.registry.app_context_of(service_id);
 
-        // M05A A5a §6: read from the per-dependent persisted row, not the
+        // Read from the per-dependent persisted row, not the
         // shared resolver entry -- the resolver is keyed
         // `(app-instance-id, service-name)` and is one value per node, so
         // reading it would give every dependent the same answer.
@@ -3528,13 +3527,12 @@ impl ControlPlaneService {
     }
 
     /// Derives an [`InstancePhase`] for `service_id` from its recorded
-    /// service type (M05A A4, D-A4-7). `readyz`'s `is_container` guess
-    /// (D-A4-17) is repaired to read this same fact, so the two surfaces
-    /// cannot disagree.
+    /// service type. `readyz`'s `is_container` guess is repaired to read
+    /// this same fact, so the two surfaces cannot disagree.
     async fn instance_phase(&self, service_id: &str, service_type: Option<&str>) -> InstancePhase {
         let Some(t) = service_type.and_then(parse_service_type) else {
             // Two cases land here, both correctly "the substrate cannot
-            // say": (a) deployed by a pre-A4 binary -- pre-release, there is
+            // say": (a) deployed by an older binary -- pre-release, there is
             // no migration, the row appears on the next deploy; (b) the
             // node's own `orchestrator`/`security` endpoints, which
             // `list_impl` includes (it filters `NATIVE_CAPABILITY_INTERFACES`,
@@ -3577,7 +3575,7 @@ impl ControlPlaneService {
     }
 
     /// Serves a cached probe result within `PROBE_MIN_INTERVAL_SECS`, or runs
-    /// a fresh one (D-A4-8): a supervisor polling every few seconds must not
+    /// a fresh one: a supervisor polling every few seconds must not
     /// turn into probe load on the target, and a wasm `rpc` probe costs a
     /// component instantiation.
     async fn probe_cached(&self, service_id: &str, now: u64) -> (ProbeStatus, Option<u64>) {
@@ -3670,7 +3668,7 @@ impl ControlPlaneService {
                     id: Some(Value::from(1)),
                     idempotency_key: None,
                 };
-                // M05A A5c §19.13/D-A5c-12: `execute_probe_json`, not
+                // `execute_probe_json`, not
                 // `execute_wasm_json` directly -- bounded by the engine's
                 // own `probe_instance_permits`, so a sweep with many
                 // `rpc`-probed wasm services cannot request more
@@ -3700,9 +3698,9 @@ impl ControlPlaneService {
     }
 }
 
-/// Service types this build can actually run (M05A A4). Container support is
+/// Service types this build can actually run. Container support is
 /// a compile-time Cargo feature and invisible on the wire, which is why the
-/// A3 substrate inventory had to trust an operator-typed `capabilities` list
+/// substrate inventory had to trust an operator-typed `capabilities` list
 /// (deferred-backlog.md). `tcp` needs no engine and is always available.
 fn compiled_service_types() -> Vec<String> {
     let mut types = vec!["tcp".to_string()];
@@ -3721,11 +3719,11 @@ fn unix_seconds() -> u64 {
 }
 
 /// A supervisor polling every few seconds must not turn into probe load on
-/// the target substrate (the milestone's "health poll cost" budget), and a
-/// wasm `rpc` probe costs a component instantiation (D-A4-8).
+/// the target substrate (the health-poll-cost budget), and a
+/// wasm `rpc` probe costs a component instantiation.
 const PROBE_MIN_INTERVAL_SECS: u64 = 5;
 
-/// The most `service_ids` a single `status` call answers (A4-11). Well above
+/// The most `service_ids` a single `status` call answers. Well above
 /// any real fleet a `HealthTarget`/inventory names today; exists only to cap
 /// an unbounded, caller-supplied list from any verified caller, not to
 /// constrain normal use.
@@ -3792,14 +3790,12 @@ mod tests {
         service.service_proxy.set(weak).expect("service_proxy already set");
     }
 
-    /// M04A Slice B7b: a caller holding node-wide orchestrator authority on
+    /// A caller holding node-wide orchestrator authority on
     /// `"did:key:zTestNode"` (every test in this module inits
     /// `ControlPlaneService` with that node DID) -- the shape `build_caller`
-    /// issues for a verified `ControllerAgreement` controller (before that
-    /// tool existed, this was also the unowned-substrate bootstrap grant,
-    /// now removed). Deploy/undeploy
-    /// now gate on an explicit `orchestrator/{deploy,undeploy}` capability
-    /// (§3.2), so every test below that exercises `deploy`/`deploy_plan`/
+    /// issues for a verified `ControllerAgreement` controller. Deploy/undeploy
+    /// gate on an explicit `orchestrator/{deploy,undeploy}` capability,
+    /// so every test below that exercises `deploy`/`deploy_plan`/
     /// `undeploy` and expects to get *past* that gate (to reach a
     /// path-traversal/schema/rollback/ownership assertion further in) needs
     /// a caller that holds it -- `CallerContext::service_system` (zero
@@ -3832,7 +3828,7 @@ mod tests {
         }
     }
 
-    /// M04A Slice B7b: a caller holding an app-scoped `orchestrator/deploy`
+    /// A caller holding an app-scoped `orchestrator/deploy`
     /// grant for exactly `service_id` (`substrate:<node>/app/<service_id>`
     /// selector) rather than `node_wide_caller`'s bare, node-wide form.
     /// `has_node_wide_ability` returns `false` for this caller -- needed for
@@ -4315,7 +4311,7 @@ mod tests {
             app_instance_id: app_instance_id.to_string(),
             service_name: service_name.to_string(),
             bindings,
-            // Unmanaged (M05A A5a): every existing test here is an
+            // Unmanaged: every existing test here is an
             // ordinary operator-style deploy, unaffected by the
             // generation gate. Tests that need a specific generation
             // override it with `AppContext { generation: N, ..app_context(...) }`.
@@ -4413,13 +4409,12 @@ mod tests {
         );
     }
 
-    /// D-A2-9, extended explicitly to redeploy (post-review): a `Topology
-    /// Entry` is an app-scoped fact, not a per-dependent one, so dropping
-    /// the only dependent that declared it must not evict the in-memory
-    /// `StaticInventory` entry other dependents in the same app instance
-    /// might still rely on. Pins the decision either way, as the review
-    /// asked for -- this asserts "keep it", matching `undeploy`'s existing
-    /// behavior and the same reasoning restated at its call site.
+    /// Extended explicitly to redeploy: a `TopologyEntry` is an app-scoped
+    /// fact, not a per-dependent one, so dropping the only dependent that
+    /// declared it must not evict the in-memory `StaticInventory` entry
+    /// other dependents in the same app instance might still rely on. This
+    /// asserts "keep it", matching `undeploy`'s existing behavior and the
+    /// same reasoning restated at its call site.
     #[tokio::test]
     async fn a_redeploy_that_drops_a_dependency_still_resolves_it_in_memory() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -4470,7 +4465,7 @@ mod tests {
         );
     }
 
-    /// D-A2-2 / ADR-0021 §2 (post-review fix): a deploy may only bind
+    /// ADR-0021 §2: a deploy may only bind
     /// dependencies for its own declared app instance. Without this check,
     /// a `DependencyBinding.app_instance_id` that disagrees with its own
     /// `AppContext.app_instance_id` would silently write into a different
@@ -4504,17 +4499,17 @@ mod tests {
         assert!(service.registry.all_bindings().await.unwrap().is_empty());
     }
 
-    /// A2 post-review fix: an app instance's first successful deploy
+    /// An app instance's first successful deploy
     /// becomes its owner (first-write-wins, the same shape `service_id`
     /// ownership already uses). Without it, any caller authorized to
     /// deploy *some* service could name a different, already-claimed app
     /// instance in its own `app_context` and overwrite the binding that
     /// instance's other, unrelated services resolve -- reachable even
     /// though every `binding.app_instance_id` here correctly matches its
-    /// own `app_context.app_instance_id` (finding 02's check alone does
+    /// own `app_context.app_instance_id` (the same-instance check alone does
     /// not close this: it only forces the attacker to also lie about which
     /// app instance its own service belongs to).
-    /// B1 (Slice A5b review): `open_service_db` and `native_dispatch` both
+    /// `open_service_db` and `native_dispatch` both
     /// key on a bare `service_id` with no reservation of their own, so
     /// before this check a deploy under the node's own DID overwrote
     /// `ControlPlaneService`'s own dispatch entry (full node takeover), and
@@ -4644,11 +4639,11 @@ mod tests {
         assert!(result.is_ok(), "the app instance's own owner must be able to join it: {result:?}");
     }
 
-    // ── M05A A5a: the generation stamp ───────────────────────────────────
+    // ── The generation stamp ────────────────────────────────────────────
 
-    /// Matrix row 9's substrate half: a write presenting a generation
+    /// A write presenting a generation
     /// below the held one is rejected, and the error names the held
-    /// generation -- the text A5b's supervisor parses to know it has been
+    /// generation -- the text a supervisor parses to know it has been
     /// superseded (ADR-0021 §4).
     #[tokio::test]
     async fn a_lower_generation_write_is_rejected_and_the_error_names_the_held_generation() {
@@ -4712,7 +4707,7 @@ mod tests {
         assert!(err.contains("second writer"), "{err}");
     }
 
-    /// §0.18's regression guard: the bug that would have locked a
+    /// Regression guard for the bug that would have locked a
     /// supervisor out of its own app on its first post-adopt reconcile.
     /// The same caller, presenting the *same* generation it already holds
     /// (not 0), must keep succeeding -- this is the supervisor's steady
@@ -4824,7 +4819,7 @@ mod tests {
         );
     }
 
-    /// §0.24: releasing an app instance clears its management stamp
+    /// Releasing an app instance clears its management stamp
     /// (`supervisor_did`/`generation`, not `owner_did` -- release restores
     /// manual operation, it does not transfer ownership), so a plain
     /// operator deploy (presenting generation 0, since nothing manages the
@@ -4904,7 +4899,7 @@ mod tests {
         );
     }
 
-    /// §0.26: `adopt`'s read half must report the held generation to the
+    /// `adopt`'s read half must report the held generation to the
     /// instance's own owner -- otherwise a supervisor cannot compute
     /// `held + 1`.
     #[tokio::test]
@@ -4933,7 +4928,7 @@ mod tests {
         assert_eq!(management.supervisor_did.as_deref(), Some("did:key:zAlice"));
     }
 
-    /// A4-10's rule, applied here too (§0.26): a caller with no visibility
+    /// A caller with no visibility
     /// into the instance gets `Ok(None)`, indistinguishable from "never
     /// deployed here", not an error -- so it cannot be used to probe for
     /// the instance's existence.
@@ -4963,7 +4958,7 @@ mod tests {
         );
     }
 
-    /// §0.26: the property that makes `adopt` durable at the moment of the
+    /// The property that makes `adopt` durable at the moment of the
     /// claim, not on whatever write happens next -- a bare claim, with no
     /// deploy at all, must be readable back and must not have installed
     /// anything else.
@@ -5005,7 +5000,7 @@ mod tests {
         assert!(err.contains("second writer"), "{err}");
     }
 
-    /// §0.28: `claim`/`release` are node-scoped acts (an app instance
+    /// `claim`/`release` are node-scoped acts (an app instance
     /// spans services), so an app-scoped `orchestrator/deploy` grant --
     /// enough to deploy one service -- must not be enough for either.
     #[tokio::test]
@@ -5043,7 +5038,7 @@ mod tests {
         );
     }
 
-    // ── M05A A5a: write-bindings ─────────────────────────────────────────
+    // ── write-bindings ──────────────────────────────────────────────────
 
     #[tokio::test]
     async fn write_bindings_is_rejected_without_an_orchestrator_deploy_grant() {
@@ -5209,11 +5204,11 @@ mod tests {
         assert!(err.contains("cache") && err.contains("redeploy"), "{err}");
     }
 
-    /// D-A5-23: the accepting generation is persisted before any binding is
+    /// The accepting generation is persisted before any binding is
     /// examined, not after the whole call succeeds -- so a write that is
     /// later refused (here, an undeclared dependency) still leaves the
     /// substrate remembering who was authorized to write at that
-    /// generation, the same property §0.27 proves on the deploy path.
+    /// generation, the same property the deploy path proves.
     #[tokio::test]
     async fn a_refused_write_still_persists_the_accepting_generation() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -5402,7 +5397,7 @@ mod tests {
         );
     }
 
-    /// §0.20: the epoch guard and the convergence read both classify
+    /// The epoch guard and the convergence read both classify
     /// against the **persisted per-dependent row**, not the shared
     /// resolver entry -- a push targeted at one dependent must not affect
     /// what a different dependent of the same instance has recorded.
@@ -5480,11 +5475,11 @@ mod tests {
         );
     }
 
-    // ── M05A A5a: deploy idempotency (matrix row 10) ─────────────────────
+    // ── deploy idempotency ──────────────────────────────────────────────
 
-    /// Matrix row 10: a retry after a lost response -- the same manifest,
+    /// A retry after a lost response -- the same manifest,
     /// the same app context minus generation, against a still-running
-    /// service -- is a no-op. §0.27's regression guard: the management
+    /// service -- is a no-op. Regression guard: the management
     /// stamp must still advance to the new generation even though the
     /// deploy itself is deduplicated, because it is persisted at the
     /// generation gate, before the dedup check ever runs.
@@ -5542,18 +5537,18 @@ mod tests {
         );
     }
 
-    /// Review finding E-1: `instance_certificate`/`registry_certificate`
+    /// `instance_certificate`/`registry_certificate`
     /// are minted fresh by `certify_placed_members` on every real apply
     /// (a new signature, a `SystemTime::now()`-derived expiry), so the
     /// test above -- which leaves both `None` on every call, like every
-    /// other row-10 test -- never exercised the actual supervisor/
+    /// other idempotency test -- never exercised the actual supervisor/
     /// `roymctl app deploy` path: hashing the whole manifest made those
     /// two fields alone change the hash every time, epoch or no epoch,
     /// so the no-op branch was unreachable from either real deploy path.
     /// Two independently-issued, genuinely different-in-bytes certificates
     /// for the *same* member -- like two real applies of the same desired
     /// state -- must still dedup as a no-op: without this assertion, this
-    /// test passes against the bug E-1 found.
+    /// test passes against that bug.
     #[tokio::test]
     async fn an_identical_redeploy_with_freshly_minted_certificates_is_still_a_no_op() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -5765,7 +5760,7 @@ mod tests {
     /// byte-identical content after a push must not match the stale hash
     /// and take the no-op path -- that would leave the pushed bindings in
     /// place under a deploy that reports success, defeating "restart is
-    /// the cheap path, deploy is the repair path" (§4A).
+    /// the cheap path, deploy is the repair path".
     #[tokio::test]
     async fn a_redeploy_after_a_binding_push_reinstalls_the_manifests_own_bindings() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -5824,11 +5819,11 @@ mod tests {
         );
     }
 
-    /// The dedup check's own regression guard: row 10 is "the same caller
-    /// retrying a lost response", not "any caller sending identical
-    /// bytes". A *different*, authorized caller presenting byte-identical
-    /// content must still take ownership -- `set_owner` runs
-    /// unconditionally on every successful deploy (M04A B7a) -- rather
+    /// The dedup check's own regression guard: the idempotency case is
+    /// "the same caller retrying a lost response", not "any caller sending
+    /// identical bytes". A *different*, authorized caller presenting
+    /// byte-identical content must still take ownership -- `set_owner` runs
+    /// unconditionally on every successful deploy -- rather
     /// than being silently skipped by the dedup no-op.
     #[tokio::test]
     async fn an_identical_redeploy_by_a_different_caller_still_transfers_ownership() {
@@ -5894,10 +5889,10 @@ mod tests {
         );
     }
 
-    /// §0.27's other half: the management stamp records *who is writing*,
+    /// The management stamp records *who is writing*,
     /// not what was installed, so it must survive a deploy that fails
     /// after the generation gate -- unlike the bindings, it is not behind
-    /// A2's defer-until-everything-succeeds rule.
+    /// the defer-until-everything-succeeds rule.
     #[tokio::test]
     async fn a_deploy_that_fails_after_the_gate_still_recorded_its_writer() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -5943,9 +5938,9 @@ mod tests {
         assert_eq!(management.generation, 3);
     }
 
-    // ── M05A A5a: restart ─────────────────────────────────────────────────
+    // ── restart ─────────────────────────────────────────────────────────
 
-    /// A5's remediation half of restart-in-place: evicting and recompiling
+    /// The remediation half of restart-in-place: evicting and recompiling
     /// a wasm component from the artifact the substrate already holds,
     /// with no redeploy and no identity work.
     #[tokio::test]
@@ -6008,7 +6003,7 @@ mod tests {
         assert!(err.contains("tcp") && err.contains("outside this substrate"), "{err}");
     }
 
-    /// §0.23: `restart` is a lifecycle action and must be generation-gated
+    /// `restart` is a lifecycle action and must be generation-gated
     /// exactly like `deploy`/`write-bindings` -- a superseded supervisor
     /// must not be able to restart a service it no longer manages.
     #[tokio::test]
@@ -6031,7 +6026,7 @@ mod tests {
         assert!(err.contains("at generation 5"), "{err}");
     }
 
-    /// M05A A5c §19.17: `restart` was the one lifecycle write with no
+    /// `restart` was the one lifecycle write with no
     /// service-owner check -- a scoped grantee for `service_id` could
     /// restart a service a *different* caller owns, which `deploy`/
     /// `undeploy`/`write-bindings` all already refuse as a takeover.
@@ -6053,7 +6048,7 @@ mod tests {
     }
 
     /// The boundary of the check above: a node-wide `orchestrator/deploy`
-    /// grantee -- the shape a supervisor holds (§0.28) -- restarts a
+    /// grantee -- the shape a supervisor holds -- restarts a
     /// service it does not own without being blocked by the new check.
     #[tokio::test]
     async fn restart_by_a_node_wide_deploy_grantee_ignores_the_service_owner() {
@@ -6257,10 +6252,10 @@ mod tests {
         assert!(err.contains("at generation 5"), "{err}");
     }
 
-    /// The whole of §0.1's authorization argument: the target observes
-    /// `CallerContext::service_system(service_id)` -- the service acting as
-    /// itself -- not the supervisor's own identity, and the call travels as
-    /// `CallOrigin::Native` with the dispatching service named.
+    /// The whole authorization argument for scheduled ticks: the target
+    /// observes `CallerContext::service_system(service_id)` -- the service
+    /// acting as itself -- not the supervisor's own identity, and the call
+    /// travels as `CallOrigin::Native` with the dispatching service named.
     #[tokio::test]
     async fn run_scheduled_dispatches_the_named_method_as_the_service_itself() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -6294,7 +6289,7 @@ mod tests {
         assert_eq!(req.idempotency_key, None);
     }
 
-    /// §0.10 bullet 2: absent `params-json` sends an empty positional array,
+    /// Absent `params-json` sends an empty positional array,
     /// not `Value::Null` -- the shape the one existing in-tree caller of a
     /// no-argument guest method (the `rpc` readiness probe) sends.
     #[tokio::test]
@@ -6379,7 +6374,7 @@ mod tests {
         assert!(err.contains("guest refused"), "{err}");
     }
 
-    /// §0.23 / matrix row 14's blast-radius half at the substrate level: a
+    /// The blast-radius half at the substrate level: a
     /// superseded supervisor must not be able to undeploy -- the most
     /// destructive lifecycle action there is -- a service it no longer
     /// manages.
@@ -6683,7 +6678,7 @@ mod tests {
         }
     }"#;
 
-    /// D-B4-1/`validate_stage4_export` (ADR-0017 §8): a policy that opts
+    /// `validate_stage4_export` (ADR-0017 §8): a policy that opts
     /// into the stage-4 after-step but whose compiled WASM component does
     /// not export `syneroym:data-layer/authorizer#authorize-rows` must fail
     /// the deploy, not ship a service that silently denies every read
@@ -8541,7 +8536,7 @@ mod tests {
         assert!(disjoint.is_empty(), "disjoint abilities must not warn: {disjoint}");
     }
 
-    /// M3B Slice 7: `deploy()` parses `http_routes` out of `custom_config`
+    /// `deploy()` parses `http_routes` out of `custom_config`
     /// and populates the shared `HttpRouteRegistry` (the same `Arc` handed
     /// to `RouteHandlerInner` in production); `undeploy()` clears it. A TCP
     /// manifest is enough -- `http_routes` parsing/storage is independent
@@ -8638,7 +8633,7 @@ mod tests {
         );
     }
 
-    /// M3B Slice 7: a service deployed with no `http_routes` key gets no
+    /// A service deployed with no `http_routes` key gets no
     /// entry in the shared registry at all (not an empty-`Vec` entry) --
     /// keeps the registry from growing with a no-op entry per ordinary
     /// deployed service.
@@ -8759,7 +8754,7 @@ mod tests {
         encoder.finish().unwrap()
     }
 
-    /// M06A A1: a deploy declaring `assets` unpacks them into blobs,
+    /// A deploy declaring `assets` unpacks them into blobs,
     /// registers a `ServiceAssets` entry the router can serve from, and
     /// undeploy removes both the registry entry and the underlying blobs.
     #[tokio::test]
@@ -8868,7 +8863,7 @@ mod tests {
         );
     }
 
-    /// M06A A1/D-A1-9: a redeploy that changes only some files keeps every
+    /// A redeploy that changes only some files keeps every
     /// blob the new manifest still shares with the old one, and deletes
     /// only what genuinely dropped out.
     #[tokio::test]
@@ -8978,7 +8973,7 @@ mod tests {
         service.undeploy(service_id.clone(), 0, &caller).await.unwrap();
     }
 
-    /// M06A A1 (D-A1-9): the backward asset rollback, driven through a real
+    /// The backward asset rollback, driven through a real
     /// deploy failure rather than `delete_hashes` called directly as pure
     /// set arithmetic. `rollback_asset_bundle` is reached from five
     /// separate failure branches in `deploy_with_context`; this exercises
@@ -9140,7 +9135,7 @@ mod tests {
         service.undeploy(service_id.clone(), 0, &caller).await.unwrap();
     }
 
-    /// M06A A1: an asset bundle is only reachable through a `Wasm`
+    /// An asset bundle is only reachable through a `Wasm`
     /// service's HTTP path -- a `Tcp`/`Container` endpoint is registered as
     /// `SubstrateEndpoint::TcpHostPort`, which the router's `dispatch.rs`
     /// unconditionally routes to raw passthrough regardless of what the
@@ -9337,7 +9332,7 @@ mod tests {
         .to_string()
     }
 
-    /// M06A D-A2-10a: same reasoning as
+    /// Same reasoning as
     /// `test_asset_bundle_is_rejected_for_a_tcp_service` -- a `Tcp`
     /// service's endpoint is raw passthrough, so a declared `guest` route
     /// would be silent dead configuration.
@@ -9509,7 +9504,7 @@ mod tests {
         assert!(http_routes.get(&service_id).is_none());
     }
 
-    /// M06A D-A2-10b: a declared `guest` route whose compiled component
+    /// A declared `guest` route whose compiled component
     /// does not export `handle-request` must fail the deploy -- rolling
     /// back the config generation, the FDAE policy, and any asset bundle
     /// already written, exactly as `test_stage4_policy_without_the_export_
@@ -9735,14 +9730,12 @@ mod tests {
         }
     }
 
-    /// M04A Slice B7a (§2.3, F11): `deploy` records `caller.caller_did` as
+    /// `deploy` records `caller.caller_did` as
     /// the owner -- the same DID `build_caller` resolves to the
     /// `DelegationCertificate`'s `master_did`, never the ephemeral
     /// `temporary_did`. `crates/router/src/route_handler/io.rs`'s
     /// `build_caller_uses_master_did_not_temporary_did_as_caller_did`
-    /// (added on post-commit review -- every other `build_caller` test
-    /// constructed `master_did == temporary_did`, so none could actually
-    /// distinguish the two) proves that resolution; this test covers what
+    /// proves that resolution; this test covers what
     /// `ControlPlaneService` does with whatever `caller_did` it is handed.
     #[tokio::test]
     async fn deploy_records_owner_as_caller_did() {
@@ -9953,7 +9946,7 @@ mod tests {
             service_with_dispatch(temp_dir.path(), node_identity.clone()).await;
         let alice = node_wide_caller("did:key:zAlice");
         // `instance_identity` gates on `orchestrator/status`, not `deploy`
-        // (§0.28's own flat-abilities split) -- bob needs the former here.
+        // (the abilities are flat and independent) -- bob needs the former here.
         let bob = status_capable_caller("did:key:zBob");
 
         let master = syneroym_identity::Identity::generate().unwrap();
@@ -10129,7 +10122,7 @@ mod tests {
         );
     }
 
-    // ── M05A A5d: renew-cert ──────────────────────────────────────────────
+    // ── renew-cert ──────────────────────────────────────────────────────
 
     /// A minimal, stage-4-free policy for the renewal tests: enough for
     /// `resolve-relation` on `members` to reach a real query rather than
@@ -10857,7 +10850,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // M05A A4: health-check declaration, deploy-facts recording, status
+    // health-check declaration, deploy-facts recording, status
     // -----------------------------------------------------------------
 
     fn tcp_manifest_with(port: u16, health_check: Option<WitHealthCheck>) -> DeployManifest {
@@ -11050,9 +11043,9 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let service = service_for_inline_tests(temp_dir.path()).await;
 
-        // Both register the identical `TcpHostPort` endpoint variant --
-        // the §0.5 finding -- so the distinction must come from the
-        // recorded fact, not the endpoint.
+        // Both register the identical `TcpHostPort` endpoint variant,
+        // so the distinction must come from the recorded fact, not the
+        // endpoint.
         service
             .registry
             .register(
@@ -11241,7 +11234,7 @@ mod tests {
         );
     }
 
-    /// Failure-matrix row 14, extending the gate their neighbours already
+    /// The proxy verbs extend the gate their neighbours already
     /// use rather than inventing a second authority to hold.
     #[tokio::test]
     async fn the_new_verbs_are_refused_without_the_gate_their_neighbours_use() {
@@ -11366,7 +11359,7 @@ mod tests {
 
     /// `saga-compensate` causes calls to leave the node, so it takes the
     /// write gate, not the listing's read gate -- the same rule
-    /// `proxy-replay` follows (B2's F7).
+    /// `proxy-replay` follows.
     #[tokio::test]
     async fn saga_compensate_is_not_reachable_with_only_the_read_grant() {
         use syneroym_rpc::{AuthLevel, Capability, SessionContext};
@@ -11433,7 +11426,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Before D-A4-17 this called `podman inspect` against a real TCP
+        // This once called `podman inspect` against a real TCP
         // service and reported the resulting failure as unreadiness.
         let result =
             service.readyz("tcp-readyz-svc".to_string(), &status_capable_caller("owner")).await;
@@ -11507,10 +11500,10 @@ mod tests {
         assert!(matches!(named.services[0].phase, InstancePhase::NotFound));
     }
 
-    /// M05A A5a §6: `status` reports the epoch this substrate currently
+    /// `status` reports the epoch this substrate currently
     /// serves for each of a service's own declared dependencies, read
-    /// from the per-dependent persisted binding row -- the exit
-    /// criterion's per-dependent binding convergence data.
+    /// from the per-dependent persisted binding row -- the per-dependent
+    /// binding convergence data.
     #[tokio::test]
     async fn status_reports_the_epoch_it_currently_serves_per_dependency() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -11560,8 +11553,7 @@ mod tests {
         );
     }
 
-    /// A4-10's rule, re-pinned (M05A A5a §6 adds `binding-epochs` to the
-    /// same record): a caller with no grant on a named id must not learn
+    /// A caller with no grant on a named id must not learn
     /// anything about it, including what it depends on -- `not-found`
     /// carries an empty `binding_epochs`, same as every other field.
     #[tokio::test]
@@ -12232,29 +12224,27 @@ mod tests {
         );
     }
 
-    /// M05A A5c §19.13 / D-A5c-12: the health-poll-cost budget, measured
+    /// The health-poll-cost budget, measured
     /// **before** the resident loop exists so `poll_interval_secs`'s
     /// default is chosen from this number rather than defended after it.
     /// "One in-process node" (one real `ControlPlaneService`, dispatched
     /// directly -- no client, no network) with 20 real `rpc`-probed wasm
     /// services, all cache-missing on this, their first sweep --
     /// `probe_cached`'s 5s minimum interval means every sweep at the
-    /// default 30s `poll_interval_secs` pays this cost, which is the
-    /// number this finding says is at risk. A4-05 already runs every
-    /// target's probe concurrently, so this also pins that the batching
-    /// holds at 20 rather than degrading linearly.
+    /// default 30s `poll_interval_secs` pays this cost. Every
+    /// target's probe already runs concurrently, so this also pins that
+    /// the batching holds at 20 rather than degrading linearly.
     ///
-    /// Budget, set a priori: **under 2s** for the whole pass. The other
-    /// two numbers in the finding (**at most 2 RPCs per substrate**, and
+    /// Budget, set a priori: **under 2s** for the whole pass. Two related
+    /// numbers (**at most 2 RPCs per substrate**, and
     /// **under 5% of one core**) are not asserted here: the RPC count is
     /// this test's own shape by construction -- one `status` call for all
     /// 20 ids, exactly what a supervisor's sweep issues, with the second
     /// RPC (`app-instance-management-of`) being an O(1) generation read
     /// unrelated to service count. That second RPC's own "exactly one
     /// call per substrate, not per service" half is a separate,
-    /// dedicated regression test at the call site (review finding C-3:
-    /// this doc used to claim that without one existing --
-    /// `max_held_generation_from_clients_calls_held_generation_once_per_alias`,
+    /// dedicated regression test at the call site
+    /// (`max_held_generation_from_clients_calls_held_generation_once_per_alias`,
     /// `crates/app_supervisor/src/service.rs`, drives
     /// `SupervisorService::max_held_generation_from_clients` against a
     /// counting fake and pins the call count directly). CPU-percent is
@@ -12476,9 +12466,9 @@ mod tests {
         assert!(is_safe_service_id_for_path("did:key:z6MkExample"));
     }
 
-    /// Test 36 / `D-B2-5`: a public service redeployed as `private` clears
+    /// A public service redeployed as `private` clears
     /// its stored record file -- otherwise the substrate keeps republishing
-    /// the old record on every heartbeat sweep for up to `not_after` (F2).
+    /// the old record on every heartbeat sweep for up to `not_after`.
     #[tokio::test]
     async fn a_private_redeploy_removes_the_stored_endpoint_record_file() {
         let temp_dir = tempfile::tempdir().unwrap();
