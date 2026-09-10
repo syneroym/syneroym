@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
-//! M03-sss performance budgets not covered by
+//! Performance budgets not covered by
 //! `crates/sandbox_wasm/benches/data_layer_bench.rs`: `vault/reveal`,
 //! `config/get`, KEK rotation (100 DEKs), and the SQLCipher-vs-plaintext A/B
 //! overhead comparison for `put`/`get`.
@@ -167,8 +167,8 @@ fn bench_sqlcipher_overhead(c: &mut Criterion) {
     group.finish();
 }
 
-/// Isolated cost of the HKDF-SHA256 derivation `resolve_dek` now performs
-/// on every call (M04A Slice B6, `derive_instance_kek` in
+/// Isolated cost of the HKDF-SHA256 derivation `resolve_dek` performs
+/// on every call (`derive_instance_kek` in
 /// `syneroym_data_keystore::key_store`) -- same construction (no salt, a
 /// `"syneroym:kek:v1:{scope}"` info string, 32-byte OKM), duplicated here
 /// rather than exposing the private helper, so
@@ -188,9 +188,8 @@ fn bench_hkdf_derive_in_isolation(c: &mut Criterion) {
 }
 
 /// Benchmark: `open_service_db` end-to-end with per-instance KEK
-/// derivation (M04A Slice B6): HKDF-derive, AES-GCM DEK generate-or-load,
-/// and the SQLCipher `PRAGMA key` open. Two shapes, per the task.md
-/// perf-budget row ("Service DB open with per-app KEK"): a first open (DEK
+/// derivation: HKDF-derive, AES-GCM DEK generate-or-load,
+/// and the SQLCipher `PRAGMA key` open. Two shapes: a first open (DEK
 /// generated) and a warm re-open (DEK loaded). The warm case uses a fresh
 /// `SqliteStorageProvider` instance over the same `db_dir` so the
 /// in-memory `service_stores` cache is empty and `open_service_db` is
