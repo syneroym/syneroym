@@ -1,9 +1,9 @@
-//! Applying a compiled deployment plan across one or more substrates
-//! (M05A Slice A3), and the per-substrate member-identity minting that A3's
-//! multi-substrate placement requires (M05A §0.1).
+//! Applying a compiled deployment plan across one or more substrates, and
+//! the per-substrate member-identity minting that multi-substrate placement
+//! requires.
 //!
 //! `PlanApplier` is ADR-0021 §5's narrow "apply this action to that
-//! substrate" boundary, introduced here rather than at A5 for two reasons:
+//! substrate" boundary, introduced here for two reasons:
 //! partial-failure behavior is otherwise not testable without killing a live
 //! substrate mid-test, and a durable, queue-backed implementation
 //! ([`build_durable_actor`]) replaces this trait's body instead of
@@ -40,8 +40,8 @@ use crate::{
 pub const DEFAULT_INSTANCE_CERT_EXPIRES_HOURS: u64 = 24;
 
 /// ADR-0021 §5's narrow "apply this action to that substrate" boundary.
-/// Three actions, not one: A3 introduced this trait (as `PlanApplier`) when
-/// applying a plan was the only action, and A5 adds the two the
+/// Three actions, not one: this trait (as `PlanApplier`) began when
+/// applying a plan was the only action, and later gained the two the
 /// supervisor's own loop issues. [`build_durable_actor`] wraps this trait
 /// with an outbox/DLQ-backed implementation, and nothing above it changed --
 /// which holds only because every action that must be made durable is *on*
@@ -78,7 +78,7 @@ pub trait SubstrateActor: fmt::Debug + Send + Sync {
         Err("this actor does not run scheduled tasks".to_string())
     }
     /// Install a freshly-issued instance certificate in place, without a
-    /// reinstall (M05A A5's unattended renewal). On the trait for the same
+    /// reinstall -- the unattended-renewal path. On the trait for the same
     /// reason `restart` is: the supervisor's renewal work-list is a control
     /// flow worth testing against a fake substrate rather than a live one.
     async fn renew_cert(
@@ -93,11 +93,11 @@ pub trait SubstrateActor: fmt::Debug + Send + Sync {
     /// rotate sequence is exercisable without a live substrate.
     async fn instance_identity(&self, service_id: &str) -> Result<InstanceIdentity, String>;
     /// This substrate's held generation for an app instance, if it has
-    /// ever recorded one (M05A A5c §19.7/§19.12) -- the supervisor's own
-    /// resident loop uses this to detect supersession (ADR-0021 §4).
-    /// Behind this trait, not called directly against `SyneroymClient`,
-    /// so the loop's superseded/skip decisions are testable against a
-    /// fake substrate with no live connection.
+    /// ever recorded one -- the supervisor's own resident loop uses this
+    /// to detect supersession (ADR-0021 §4). Behind this trait, not
+    /// called directly against `SyneroymClient`, so the loop's
+    /// superseded/skip decisions are testable against a fake substrate
+    /// with no live connection.
     async fn held_generation(&self, app_instance_id: &str) -> Result<Option<u64>, String>;
 }
 
@@ -198,8 +198,8 @@ impl SubstrateActor for SyneroymClient {
 /// a connected client (or, in a test, a fake) into the trait-object shape
 /// [`DeployTarget::actor`] and [`ApplyRequest`]'s targets consume --
 /// replacing ten near-identical `client.clone() as Arc<dyn SubstrateActor>`
-/// expressions (M05B B1, D-B1-4). `roymctl` and the SDK's own e2e fixtures
-/// call this deliberately (D-B1-11): a one-shot process exits when its
+/// expressions. `roymctl` and the SDK's own e2e fixtures
+/// call this deliberately: a one-shot process exits when its
 /// command finishes, so a durable queue behind it would be written and never
 /// drained. [`build_durable_actor`] is the other call this function's
 /// callers choose between, for the one action-owner that keeps a worker
@@ -210,7 +210,7 @@ pub fn build_actor<T: SubstrateActor + 'static>(actor: Arc<T>) -> Arc<dyn Substr
 }
 
 /// What a durable actor's `write_bindings` enqueues onto when it cannot
-/// reach its target (D-B1-1: try synchronously first, enqueue only on
+/// reach its target (try synchronously first, enqueue only on
 /// transport failure). A trait here, rather than this crate depending on
 /// `syneroym-async-queue` directly, so the queue's storage, its worker, and
 /// the `instance_lock` it coordinates with stay owned by the crate that
@@ -219,7 +219,7 @@ pub fn build_actor<T: SubstrateActor + 'static>(actor: Arc<T>) -> Arc<dyn Substr
 #[async_trait::async_trait]
 pub trait WriteBindingsOutbox: fmt::Debug + Send + Sync {
     /// `queue_key` is opaque to this crate -- the caller's own grouping key
-    /// (the supervisor's is `(instance, logical_ref, substrate)`, D-B1-6),
+    /// (the supervisor's is `(instance, logical_ref, substrate)`),
     /// bound in at [`build_durable_actor`] rather than derived here, since
     /// `BindingWrite` alone does not carry a logical ref. Infallible from
     /// this trait's own perspective: an enqueue that cannot itself be
@@ -238,14 +238,14 @@ pub trait WriteBindingsOutbox: fmt::Debug + Send + Sync {
 /// some other error type. A callee error is never worth retrying: the
 /// substrate was reached and it said no, and retrying against the same
 /// answer forever would be a second, silent policy competing with the one
-/// that already reported it (test 16, D-B1-1).
+/// that already reported it.
 #[must_use]
 pub fn is_callee_error(err: &anyhow::Error) -> bool {
     err.downcast_ref::<JsonRpcError>().is_some()
 }
 
 /// `true` when `err` is specifically the substrate answering that this
-/// write's own target no longer exists (failure-matrix row 9) -- narrower
+/// write's own target no longer exists -- narrower
 /// than [`is_callee_error`], which is `true` for *every* reached-and-
 /// answered failure. `control_plane`'s `write-bindings` dispatch maps every
 /// server-side refusal (a stale generation, an authorization gap, a
@@ -261,8 +261,7 @@ pub fn is_callee_error(err: &anyhow::Error) -> bool {
 /// durable). Dead-lettering a queued item on any callee error, as
 /// `is_callee_error` alone would, would also give up on a transient,
 /// reached-and-answered failure (a locked database, a service still
-/// starting) that a later retry would have cleared (M05B B1 review finding
-/// 10).
+/// starting) that a later retry would have cleared.
 #[must_use]
 pub fn is_target_gone_error(err: &anyhow::Error) -> bool {
     err.downcast_ref::<JsonRpcError>()
@@ -294,19 +293,19 @@ impl WriteBindingsAttempt for SyneroymClient {
 
 /// The durable `SubstrateActor`: every action but `write_bindings` stays
 /// exactly the synchronous, undurable call the trait already made
-/// (D-B1-3/D-B1-12 -- `restart`, `apply_plan`, and `renew_cert` are never
+/// (`restart`, `apply_plan`, and `renew_cert` are never
 /// queued, the last two because they embed a certificate that expires in
 /// hours, not because queueing them is hard). `write_bindings` attempts
 /// synchronously first and, only on a transport failure, also enqueues onto
 /// `outbox` before returning the same error a bare client would have
-/// returned (D-B1-1) -- so a caller reading the return value sees no
+/// returned -- so a caller reading the return value sees no
 /// difference from today, and `push_bindings`'s existing alert/`Degraded`
 /// handling needs no change at all.
 #[derive(Debug)]
 struct DurableActor<T> {
     inner: Arc<T>,
     substrate_did: String,
-    /// The caller's own grouping key (D-B1-6), bound at construction --
+    /// The caller's own grouping key, bound at construction --
     /// `BindingWrite` alone carries no logical ref for this to derive.
     queue_key: String,
     outbox: Arc<dyn WriteBindingsOutbox>,
@@ -380,7 +379,7 @@ impl<T: SubstrateActor + WriteBindingsAttempt + 'static> SubstrateActor for Dura
 
 /// The other constructor [`build_actor`]'s callers choose between: wraps a
 /// connected client so its `write_bindings` survives a transport failure
-/// past this process's own lifetime (D-B1-4). `substrate_did` and
+/// past this process's own lifetime. `substrate_did` and
 /// `queue_key` are carried alongside the client because
 /// `WriteBindingsOutbox::enqueue` needs both and `SubstrateActor` itself
 /// never learns which substrate -- or which of its caller's own logical
@@ -417,19 +416,16 @@ pub struct ApplyRequest<'a> {
     pub instance_certificates: &'a BTreeMap<ServiceId, String>,
     pub registry_certificates: &'a BTreeMap<ServiceId, String>,
     pub emit_bindings: bool,
-    /// The generation this apply writes at (ADR-0021 §4, M05A A5a). `0`
-    /// for every caller through A5a -- the supervisor that presents a
-    /// real, `adopt`-minted generation does not exist yet.
+    /// The generation this apply writes at (ADR-0021 §4). `0` for an
+    /// unmanaged deploy; a managing supervisor stamps its adopted
+    /// generation here.
     pub generation: u64,
     /// The binding epoch to stamp on each dependent member's own bindings,
-    /// keyed by the dependent's `MemberRef` (M05A A5c §19.3/D-A5c-4;
-    /// re-keyed from `LogicalServiceRef` in M05A A5e, D-A5e-2, since each
-    /// member holds its own `service_bindings` row on the substrate) -- not
-    /// a scalar, since one apply can deploy several dependent members whose
-    /// counters have each advanced independently. A member absent from this
-    /// map maps its bindings at epoch `0`, meaning "no supervisor has
-    /// written here", which is what every caller through A5b still means by
-    /// it.
+    /// keyed by the dependent's `MemberRef` (each member holds its own
+    /// `service_bindings` row on the substrate) -- not a scalar, since one
+    /// apply can deploy several dependent members whose counters have each
+    /// advanced independently. A member absent from this map maps its
+    /// bindings at epoch `0`, meaning "no supervisor has written here".
     pub binding_epochs: &'a BTreeMap<MemberRef, u64>,
 }
 
@@ -497,16 +493,16 @@ pub fn resolve_targets<'a>(
 /// `DeploymentJournal::get_completed_actions`/`get_completed_actions_for_
 /// instance` return it.
 ///
-/// `member_ref` is a `MemberRef`'s display string (M05A A5e, D-A5e-2): the
+/// `member_ref` is a `MemberRef`'s display string: the
 /// journal's action rows are keyed per managed member, not per logical
 /// service, since two members of one logical service land as two separate
 /// placements.
 ///
 /// Shared by `apply_plan`'s resume-skip and `roymctl`'s placement-change
 /// refusal (`check_no_placement_change`) so the two cannot read the journal
-/// two different ways again: post-review, the refusal was fixed to this
-/// most-recent-row-wins reading (a `REMOVE` from `app forget` clears it) but
-/// the resume skip was not, so a service `forget`-ten and redeployed under
+/// two different ways again: the refusal reads most-recent-row-wins (a
+/// `REMOVE` from `app forget` clears it); before this was shared the
+/// resume skip did not, so a service `forget`-ten and redeployed under
 /// an *unchanged* manifest was wrongly reported "already applied" while
 /// running nowhere -- the stale `ADD` row was still present, `.any()` does
 /// not care that a `REMOVE` sits after it.
@@ -522,10 +518,9 @@ pub fn current_placement<'a>(
 
 /// Applies one deploy call per (service, substrate), recording a journal
 /// action row for each and continuing past a failure rather than aborting
-/// the whole app (task.md's partial-deploy non-goal / failure-matrix row
-/// 12). A service whose most recent row is `COMPLETED ADD` on the same
-/// substrate DID is skipped -- this is A3's "retry" mechanism: a re-run
-/// resumes rather than redeploying everything.
+/// the whole app -- a partial deploy is deliberately allowed. A service
+/// whose most recent row is `COMPLETED ADD` on the same substrate DID is
+/// skipped: a re-run resumes rather than redeploying everything.
 pub async fn apply_plan(
     req: ApplyRequest<'_>,
     journal: &DeploymentJournal,
@@ -538,7 +533,7 @@ pub async fn apply_plan(
     for (svc, target) in placed {
         let l_ref = svc.member_ref().to_string();
 
-        // D-A3-11: keyed on the DID, so an alias re-pointed at a different
+        // Keyed on the DID, so an alias re-pointed at a different
         // node correctly redeploys rather than being skipped as already
         // done. `current_placement` reads the most recent row, not just any
         // ADD -- a `REMOVE` from `app forget` must force a redeploy, not a
@@ -712,7 +707,7 @@ fn certificate_over_instance_identity(
     )
 }
 
-/// ADR-0018 §4 / D-B2-7: the registry record a placed member's declared
+/// ADR-0018 §4: the registry record a placed member's declared
 /// visibility produces, signed and serialized -- or `None` for `private`,
 /// which mints no record at all. Pure and network-free (unlike
 /// [`certify_instance`], which needs the substrate's own derived key), so it
@@ -927,8 +922,8 @@ mod tests {
         }
     }
 
-    /// Plan test 11/12 (D-B2-7): a `private` member gets no registry record
-    /// at all -- not an empty one, an absent one.
+    /// A `private` member gets no registry record at all -- not an empty
+    /// one, an absent one.
     #[test]
     fn member_registry_record_mints_nothing_for_a_private_member() {
         let master = Identity::generate().unwrap();
@@ -938,7 +933,7 @@ mod tests {
         assert!(record.is_none());
     }
 
-    /// Plan test 12 (D-B2-7): `internal` signs `is_private: true`; `public`
+    /// `internal` signs `is_private: true`; `public`
     /// signs `is_private: false`. This is the exact mapping ADR-0018 §4's
     /// table specifies, and the one the record's own signature makes
     /// impossible to correct downstream if it is ever wrong.
@@ -1193,7 +1188,7 @@ mod tests {
         assert_eq!(applier.calls.lock().unwrap().len(), 1);
     }
 
-    /// Post-review finding A: `app forget` appends a `REMOVE` row for the
+    /// `app forget` appends a `REMOVE` row for the
     /// same (logical ref, DID) an earlier `ADD` in this very record already
     /// completed. A skip check scoped to "does any completed ADD match"
     /// would still find that ADD and skip -- reporting a service "already
@@ -1304,7 +1299,7 @@ mod tests {
         assert_eq!(applier_b.calls.lock().unwrap().len(), 1);
     }
 
-    /// D-A5-8: `apply_plan` holds `&DeploymentJournal` across every `.await`,
+    /// `apply_plan` holds `&DeploymentJournal` across every `.await`,
     /// so its future is `Send` only because the journal itself now is
     /// (`Arc<Mutex<Connection>>`, not a bare `Connection`) -- required for
     /// a supervisor's reconcile loop to `tokio::spawn` a call to this
@@ -1341,7 +1336,7 @@ mod tests {
         assert_send(fut);
     }
 
-    // ── M05B B1: the durable actor's try-then-queue decision ────────────
+    // ── The durable actor's try-then-queue decision ────────────────────
 
     /// A fake standing in for `SyneroymClient`: `attempt_write_bindings`
     /// returns whatever `outcome` says, and `write_bindings`/every other
@@ -1442,8 +1437,8 @@ mod tests {
         }
     }
 
-    /// Test 14: D-B1-1 -- a successful call returns exactly what the trait
-    /// returns today, with no queue involvement.
+    /// A successful call returns exactly what the trait returns today, with
+    /// no queue involvement.
     #[tokio::test]
     async fn a_successful_write_bindings_returns_the_same_outcomes_it_returns_today() {
         let inner = Arc::new(DurableTestActor {
@@ -1463,10 +1458,10 @@ mod tests {
         assert!(outbox.enqueued.lock().unwrap().is_empty());
     }
 
-    /// Test 15 (the enqueue half; `Degraded` reporting is
-    /// `push_bindings`'s own concern in `app_supervisor`, unchanged by this
-    /// wrap per D-B1-1): a transport failure enqueues before returning the
-    /// same error a bare client would have.
+    /// The enqueue half; `Degraded` reporting is `push_bindings`'s own
+    /// concern in `app_supervisor`, unchanged by this wrap: a transport
+    /// failure enqueues before returning the same error a bare client
+    /// would have.
     #[tokio::test]
     async fn a_transport_failure_enqueues_and_returns_the_same_error_a_bare_client_would() {
         let inner = Arc::new(DurableTestActor {
@@ -1489,7 +1484,7 @@ mod tests {
         assert_eq!(enqueued[0].1, "did:key:zB");
     }
 
-    /// Test 16: a callee error (the substrate reached and refused the
+    /// A callee error (the substrate reached and refused the
     /// call) is never enqueued -- retrying the same refusal forever would
     /// be a second policy competing with the one that already answered.
     #[tokio::test]
@@ -1513,8 +1508,7 @@ mod tests {
         assert!(outbox.enqueued.lock().unwrap().is_empty(), "a callee error must not be queued");
     }
 
-    /// Test 17: D-B1-3, failure-matrix row 3 -- `restart` never touches
-    /// the outbox at all, whatever it returns.
+    /// `restart` never touches the outbox at all, whatever it returns.
     #[tokio::test]
     async fn a_failed_restart_is_never_enqueued() {
         let inner = Arc::new(DurableTestActor { restart_should_fail: true, ..Default::default() });
@@ -1561,9 +1555,8 @@ mod tests {
         assert!(outbox.enqueued.lock().unwrap().is_empty());
     }
 
-    /// Test 18: D-B1-12 -- `apply_plan` and `renew_cert` embed a
-    /// certificate that expires in hours, so neither is ever queued
-    /// either, whatever it returns.
+    /// `apply_plan` and `renew_cert` embed a certificate that expires in
+    /// hours, so neither is ever queued either, whatever it returns.
     #[tokio::test]
     async fn a_failed_apply_plan_and_renew_cert_are_never_enqueued() {
         let inner = Arc::new(DurableTestActor {
