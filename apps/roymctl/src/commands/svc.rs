@@ -107,21 +107,20 @@ pub enum SvcCommands {
         /// anchor exists some other way (`roymctl identity publish-anchor`).
         #[arg(long)]
         registry_url: Option<String>,
-        /// Path to a gzip-compressed tar archive of static assets (M06A
-        /// A1), served straight from blob storage without instantiating
-        /// the component. Only meaningful alongside `--wasm`.
+        /// Path to a gzip-compressed tar archive of static assets, served
+        /// straight from blob storage without instantiating the component.
+        /// Only meaningful alongside `--wasm`.
         #[arg(long, requires = "wasm")]
         assets: Option<PathBuf>,
         /// Who may fetch `--assets` with no signature or delegation:
         /// "public", "internal", or "private" (default). `internal` and
-        /// `private` are identical to no `--assets` at all -- A1 has no
+        /// `private` are identical to no `--assets` at all -- there is no
         /// middle tier.
         #[arg(long, default_value = "private", requires = "assets")]
         asset_visibility: String,
         /// Path to a JSON file used verbatim as the service's
         /// `custom_config` -- the reserved `http_routes` key inside it is
-        /// what declares HTTP routes (M3B Slice 7, M06A A2). Only
-        /// meaningful alongside `--wasm`.
+        /// what declares HTTP routes. Only meaningful alongside `--wasm`.
         #[arg(long, requires = "wasm")]
         custom_config: Option<PathBuf>,
         /// Whether this service's endpoint record is published (ADR-0018):
@@ -150,9 +149,9 @@ pub enum SvcCommands {
     },
     /// List installed `SynSvcs` via API
     List,
-    /// Restart a deployed `SynSvc` in place, without reinstalling it (M05A
-    /// A5a). Replaces the pre-A5a `start`/`stop` pair, which called
-    /// orchestrator methods that never existed.
+    /// Restart a deployed `SynSvc` in place, without reinstalling it.
+    /// Replaces an earlier `start`/`stop` pair, which called orchestrator
+    /// methods that never existed.
     Restart {
         #[arg(long)]
         svc_id: String,
@@ -487,8 +486,8 @@ pub async fn handle(
             }
         }
         SvcCommands::Remove { svc_id } => {
-            // Unmanaged (M05A A5a): an operator-driven `svc remove` always
-            // presents generation 0, the same convention `svc deploy` uses.
+            // Unmanaged: an operator-driven `svc remove` always presents
+            // generation 0, the same convention `svc deploy` uses.
             client.undeploy(svc_id.clone(), 0).await?;
             println!("Successfully removed svc {svc_id}");
         }
@@ -578,9 +577,9 @@ pub async fn handle(
             println!("Re-armed saga {saga_id} for {svc_id}");
         }
         SvcCommands::Restart { svc_id } => {
-            // Unmanaged (M05A A5a): an operator-driven `svc restart`
-            // always presents generation 0, the same convention `svc
-            // deploy`/`svc remove` use.
+            // Unmanaged: an operator-driven `svc restart` always presents
+            // generation 0, the same convention `svc deploy`/`svc remove`
+            // use.
             client.restart(svc_id.clone(), 0).await?;
             println!("Successfully restarted svc {svc_id}");
         }
@@ -618,8 +617,8 @@ fn parse_visibility(value: &str, flag_name: &str) -> anyhow::Result<Visibility> 
 /// false`; `internal` and `private` both sign `is_private: true`, since a
 /// record exported for a `private` service must never be admitted by a
 /// registry, and `is_private` lives inside the signature, so this is the
-/// only chance to say so. `RegistryClient::register`'s DHT gate (D-B2-16)
-/// trusts this flag verbatim.
+/// only chance to say so. `RegistryClient::register`'s DHT gate trusts
+/// this flag verbatim.
 fn signed_export_record(
     visibility: Visibility,
     svc_id: &str,
@@ -1235,9 +1234,9 @@ mod tests {
         }
     }
 
-    /// Plan test 45 (ADR-0018 §2, `D-B2-8`): the `--record-out` -> file ->
-    /// `new_with_record` round trip, over the record `signed_export_record`
-    /// actually builds -- `new_with_record_verifies_signature_and_sets_fields`
+    /// The `--record-out` -> file -> `new_with_record` round trip
+    /// (ADR-0018 §2), over the record `signed_export_record` actually
+    /// builds -- `new_with_record_verifies_signature_and_sets_fields`
     /// (`crates/sdk/src/lib.rs`) already covers the signature-verification
     /// half against an in-memory record; what is missing is the file itself
     /// (`svc deploy` cannot be driven from a test -- `roymctl` is a binary,
