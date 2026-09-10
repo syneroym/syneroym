@@ -1,12 +1,12 @@
 //! ADR-0017 §9 decision trace: a structured record of one FDAE tier-3 (SQL
 //! pushdown sieve) decision, emitted via `tracing` so a deny -- or an
 //! admitted-but-runtime-filtered allow -- is observable without a queryable
-//! trace API, which is a later slice.
+//! trace API.
 
 use tracing::{debug, info};
 
 /// Provenance for one successful cross-service relationship-proof fetch
-/// (Slice B3 pipeline stage 2, ADR-0017 §6). Recorded regardless of caching
+/// (ADR-0017 §6). Recorded regardless of caching
 /// -- even an immediate, uncached fetch must leave a record of *which
 /// service asserted what, valid how long*, so the trace isn't allow-shaped
 /// silence the way a fail-closed deny already is.
@@ -77,7 +77,7 @@ pub struct DecisionTrace {
     /// data that has no business in an operator log).
     pub caveats_applied: Vec<String>,
     /// Cross-service relationship-proof fetches this decision's compiled
-    /// sieve depended on (Slice B3), populated by `finalize` from each
+    /// sieve depended on, populated by `finalize` from each
     /// consumed `FetchResult.trace`. Empty for a fully-local policy.
     pub remote_fetches: Vec<RemoteFetchTrace>,
     /// Applicable permissions that opted into the stage-4 after-step
