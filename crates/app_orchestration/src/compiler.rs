@@ -51,7 +51,7 @@ pub async fn compile(
 }
 
 /// Refuses a plan whose visibility declarations contradict its own placement
-/// (ADR-0018 + ADR-0022 §5, `D-B2-14`). Operates on the **plan**, not the
+/// (ADR-0018 + ADR-0022 §5). Operates on the **plan**, not the
 /// manifest: a supervisor receives `plan-json` through `submit` and never
 /// sees a `SynAppManifest`, so a manifest-level check would leave that whole
 /// path silent.
@@ -62,8 +62,8 @@ pub async fn compile(
 ///     `visibility = private` -- a private record is never registered, so
 ///     the dependency could never resolve to an address.
 /// (b) a service declaring `topology_visibility = open` while declaring
-///     `visibility = private` -- F13's `(open, private)` row: a caller
-///     receives a signed member list and then has nothing it can dial.
+///     `visibility = private` -- a caller receives a signed member list and
+///     then has nothing it can dial.
 pub fn validate_plan_visibility(plan: &DeploymentPlan) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
     let by_id: BTreeMap<&ServiceId, &PlannedService> =
@@ -99,7 +99,7 @@ pub fn validate_plan_visibility(plan: &DeploymentPlan) -> Result<(), Vec<String>
             }
         }
 
-        // (b) -- F13's (open, private) row.
+        // (b) -- open topology visibility with a private service.
         if service.topology_visibility == TopologyVisibility::Open
             && service.config.visibility == Visibility::Private
         {
@@ -142,7 +142,7 @@ fn compile_recursive<'a>(
         blueprint_stack.push(manifest.id.clone());
         compilation_stack.push(instance_id.clone());
 
-        // D-A3-3: this manifest's own default wins; otherwise the root's cascades in.
+        // This manifest's own default wins; otherwise the root's cascades in.
         let default_placement = manifest.placement.as_ref().or(inherited_placement);
 
         // Recursively compile spawned dependencies first
@@ -193,15 +193,15 @@ fn compile_recursive<'a>(
                 service_name: name.clone(),
             };
 
-            // `replicas > 1` compiles to `Redundant` (D-A5e-4); `Sharded`
-            // stays unreachable until a `ShardingStrategy` manifest surface
-            // exists (slice S1). `validate()` already refused `replicas ==
-            // 0`, so this is exactly the member count to emit.
+            // `replicas > 1` compiles to `Redundant`; `Sharded` stays
+            // unreachable until a `ShardingStrategy` manifest surface
+            // exists. `validate()` already refused `replicas == 0`, so this
+            // is exactly the member count to emit.
             let topology_mode =
                 if spec.replicas > 1 { TopologyMode::Redundant } else { TopologyMode::default() };
 
             // A dependent's `resolved_dependencies` names *every* member of
-            // its dependency (D-A5e-4/§33.7), since a binding write reaches
+            // its dependency, since a binding write reaches
             // one member's `service_bindings` row at a time and each is its
             // own `service_id`.
             let resolved_dependencies: BTreeMap<LogicalServiceName, Vec<ServiceId>> = spec
@@ -262,18 +262,17 @@ fn compile_recursive<'a>(
 /// Derives a deterministic `ServiceId` for one member of a logical service
 /// reference.
 ///
-/// **TODO(M2/M3A):** This is a temporary M1 hack that forcefully prepends the
+/// **TODO:** This is a temporary hack that forcefully prepends the
 /// `ed25519-pub` multicodec prefix to a SHA-256 hash to forge a `did:key`. This
 /// produces a mock key where we do not have the private key, and the 32 bytes
 /// may not be a valid Curve25519 point.
 ///
-/// In M2 (Identity Handshake) and M3A (Vault/Configuration), this should be
-/// replaced by actual deterministic derivation of valid Ed25519 keypairs (e.g.,
-/// via HKDF from a seed), where the public key goes into the plan and the
-/// private key is injected into the service.
+/// This should later be replaced by actual deterministic derivation of valid
+/// Ed25519 keypairs (e.g., via HKDF from a seed), where the public key goes
+/// into the plan and the private key is injected into the service.
 ///
-/// `member_index` folds into the hash **only above index 0** (M05A A5e,
-/// D-A5e-3): without `--mint-masters` there is no substitution step, so this
+/// `member_index` folds into the hash **only above index 0**:
+/// without `--mint-masters` there is no substitution step, so this
 /// fabricated id *is* the deployed `service_id` for an unmastered deploy, and
 /// changing what index 0 hashes to would silently re-identify every existing
 /// unmastered deployment out from under `diff_plans`, which keys on the
@@ -557,9 +556,9 @@ mod tests {
         );
     }
 
-    /// D-A5e-3 (§33.3, revised after review R1): `derive_deterministic_
-    /// service_id` folds the member index into its hash **only above index
-    /// 0**. Without `--mint-masters` there is no substitution step, so this
+    /// `derive_deterministic_service_id` folds the member index into its hash
+    /// **only above index 0**. Without `--mint-masters` there is no
+    /// substitution step, so this
     /// fabricated id *is* the deployed `service_id` -- changing what index 0
     /// hashes to would silently re-identify every existing unmastered
     /// deployment. Pins the literal hash a plain, unscaled manifest compiles
@@ -605,7 +604,7 @@ mod tests {
         assert_ne!(id1, id2);
     }
 
-    // ── M05A A5e phase 2: `replicas` and the compiler (D-A5e-3/D-A5e-4) ─
+    // ── `replicas` and the compiler ─
 
     /// The no-change regression guard for every existing manifest: a
     /// manifest with no `replicas` compiles to exactly one member at
@@ -801,8 +800,7 @@ mod tests {
         assert!(SynAppManifest::from_toml(at_cap).is_ok());
     }
 
-    /// D-A5e-16 (§41 answer 3): `replicas > 1` alongside a declared
-    /// `schema` is refused, naming M7 as the reason it will relax --
+    /// `replicas > 1` alongside a declared `schema` is refused --
     /// silently splitting a stateful service's data across N databases is
     /// discovered as data loss otherwise.
     #[tokio::test]
@@ -1065,7 +1063,7 @@ mod tests {
     }
 
     /// A two-service plan: `frontend` depends on `backend`, each optionally
-    /// placed on the given substrate alias. Mirrors `D-B2-14`(a)'s shape.
+    /// placed on the given substrate alias.
     fn plan_with_dependency(
         frontend_substrate: Option<SubstrateAlias>,
         backend_substrate: Option<SubstrateAlias>,
@@ -1095,8 +1093,8 @@ mod tests {
         }
     }
 
-    /// Test 14: two services on explicitly different aliases, the
-    /// dependency `private` -> refused, naming both services and `internal`.
+    /// Two services on explicitly different aliases, the dependency `private`
+    /// -> refused, naming both services and `internal`.
     #[test]
     fn validate_plan_visibility_cross_substrate_private_dependency_fails() {
         let plan = plan_with_dependency(
@@ -1111,7 +1109,7 @@ mod tests {
         assert!(errs[0].contains("internal"), "{}", errs[0]);
     }
 
-    /// Test 15: the same pair with the dependency `internal` -> `Ok`.
+    /// The same pair with the dependency `internal` -> `Ok`.
     #[test]
     fn validate_plan_visibility_cross_substrate_internal_dependency_succeeds() {
         let plan = plan_with_dependency(
@@ -1122,16 +1120,16 @@ mod tests {
         assert!(validate_plan_visibility(&plan).is_ok());
     }
 
-    /// Test 16: no explicit placement on either side -> `Ok` (no false
-    /// positive on an unresolvable `None`).
+    /// No explicit placement on either side -> `Ok` (no false positive on an
+    /// unresolvable `None`).
     #[test]
     fn validate_plan_visibility_no_explicit_placement_is_not_flagged() {
         let plan = plan_with_dependency(None, None, Visibility::Private);
         assert!(validate_plan_visibility(&plan).is_ok());
     }
 
-    /// Test 17: one `Some(a)`, one `None` -> `Ok` (conservative; the runtime
-    /// failure is the backstop).
+    /// One `Some(a)`, one `None` -> `Ok` (conservative; the runtime failure is
+    /// the backstop).
     #[test]
     fn validate_plan_visibility_partial_placement_is_not_flagged() {
         let plan =
@@ -1139,8 +1137,8 @@ mod tests {
         assert!(validate_plan_visibility(&plan).is_ok());
     }
 
-    /// Test 18: `topology_visibility = open` with `visibility = private` ->
-    /// refused, naming both fields (F13's (open, private) row).
+    /// `topology_visibility = open` with `visibility = private` -> refused,
+    /// naming both fields.
     #[test]
     fn validate_plan_visibility_open_with_private_fails() {
         let plan = plan_with_service("web", Visibility::Private, TopologyVisibility::Open);
@@ -1151,10 +1149,10 @@ mod tests {
         assert!(errs[0].contains("internal"), "{}", errs[0]);
     }
 
-    /// Test 19: `topology_visibility = open` with `visibility = internal` ->
-    /// `Ok` -- `internal`, not `public`, is what a cross-substrate member
-    /// needs (`D-B2-15`), and `open` only requires the member be resolvable
-    /// inside the community registry, not propagated to a parent.
+    /// `topology_visibility = open` with `visibility = internal` -> `Ok` --
+    /// `internal`, not `public`, is what a cross-substrate member needs, and
+    /// `open` only requires the member be resolvable inside the community
+    /// registry, not propagated to a parent.
     #[test]
     fn validate_plan_visibility_open_with_internal_succeeds() {
         let plan = plan_with_service("web", Visibility::Internal, TopologyVisibility::Open);
