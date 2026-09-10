@@ -17,8 +17,8 @@ use crate::{KeyStoreError, Result};
 /// and per-service DEKs in the database. Each DEK is wrapped not by the raw
 /// master but by a **per-instance KEK derived via
 /// HKDF-SHA256(master, info = "syneroym:kek:v1:{service_id}")** — see
-/// [`derive_instance_kek`] (M04A Slice B6, "Model A": derived, not
-/// separately provisioned; ADR-0006). The `service_id` is the derivation
+/// [`derive_instance_kek`] ("Model A": derived, not separately
+/// provisioned; ADR-0006). The `service_id` is the derivation
 /// scope; it is also the app-instance id (`io.rs` in `syneroym-router`
 /// records `app_instance_id == service_id`), so this is per-app-instance
 /// narrowing without any new identifier. A leaked derived key does not
@@ -191,8 +191,8 @@ impl KeyStore {
     /// database transaction: each row is unwrapped under the per-instance
     /// key derived from the *old* master and re-wrapped under the
     /// per-instance key derived from the *new* master, both scoped by that
-    /// row's own `service_id`. This is the re-wrap mechanism the Migration
-    /// Strategy calls for (M04A Slice B6) — exercised end-to-end by
+    /// row's own `service_id`. This is the re-wrap mechanism the migration
+    /// strategy calls for, exercised end-to-end by
     /// `rotate_kek_preserves_per_instance_deks`.
     pub fn rotate_kek(&self, new_kek: [u8; 32], conn: &mut Connection) -> Result<()> {
         let new_kek = Zeroizing::new(new_kek);
@@ -325,7 +325,8 @@ mod tests {
         assert_eq!(dek, loaded);
     }
 
-    /// M04A Slice B6 §5 test 1: guards the derive path end-to-end.
+    /// The per-instance derive path round-trips: a DEK wrapped under a
+    /// scope's derived key loads back unchanged.
     #[test]
     fn per_instance_wrap_round_trip() {
         let db = Connection::open_in_memory().unwrap();
@@ -348,11 +349,9 @@ mod tests {
         assert_eq!(dek, loaded);
     }
 
-    /// M04A Slice B6 §5 test 2 — the failure-table proof (task.md's
-    /// "Failure and Security Tests" row): a DEK wrapped for one instance's
-    /// scope is cryptographically undecryptable under a sibling instance's
-    /// derived key, and `load_dek` only ever resolves the matching
-    /// `service_id`'s own row.
+    /// A DEK wrapped for one instance's scope is cryptographically
+    /// undecryptable under a sibling instance's derived key, and `load_dek`
+    /// only ever resolves the matching `service_id`'s own row.
     #[test]
     fn cross_instance_kek_isolation() {
         let db = Connection::open_in_memory().unwrap();
@@ -399,8 +398,7 @@ mod tests {
         assert_eq!(ks.load_dek("svc-b", &db).unwrap(), dek_b_stored);
     }
 
-    /// M04A Slice B6 §5 test 3 (extends the former `test_rotate_kek`) --
-    /// the re-wrap-path proof the Migration Strategy asks for: unwrap under
+    /// The re-wrap path on master rotation: unwrap under
     /// `HKDF(old_master, service_id)`, re-wrap under
     /// `HKDF(new_master, service_id)`.
     #[test]
@@ -489,9 +487,8 @@ mod tests {
         }
     }
 
-    /// M3A exit criterion: "DEK never appears in plaintext on disk;
-    /// verified by hex dump of `substrate.db`." Uses a real file-backed
-    /// database (not `open_in_memory`) so the assertion covers what
+    /// The DEK must never appear in plaintext on disk. Uses a real
+    /// file-backed database (not `open_in_memory`) so the assertion covers what
     /// actually lands on disk, then re-reads the raw file bytes after the
     /// connection is closed and searches for the plaintext DEK as a
     /// contiguous byte run.
@@ -531,10 +528,9 @@ mod tests {
         );
     }
 
-    /// M04A Slice B6 review (S2 gap): a DEK generated under one master must
-    /// fail to load -- cleanly, not by panicking -- once the keystore holds
-    /// a *different* master. Guards the M3-era-DB-wipe assumption (task.md
-    /// F2/F3): rotation is the only supported path between masters.
+    /// A DEK generated under one master must fail to load -- cleanly, not by
+    /// panicking -- once the keystore holds a *different* master. Rotation is
+    /// the only supported path between masters.
     #[test]
     fn load_dek_fails_cleanly_under_wrong_master() {
         let db = Connection::open_in_memory().unwrap();
@@ -562,9 +558,8 @@ mod tests {
         );
     }
 
-    /// M04A Slice B6 review (T3 gap): rotation must succeed as a no-op when
-    /// `dek_store` has no rows yet (a fresh substrate rotating before any
-    /// service has been provisioned).
+    /// Rotation must succeed as a no-op when `dek_store` has no rows yet (a
+    /// fresh substrate rotating before any service has been provisioned).
     #[test]
     fn rotate_kek_succeeds_on_empty_dek_store() {
         let mut db = Connection::open_in_memory().unwrap();

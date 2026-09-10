@@ -348,8 +348,8 @@ struct ObjectStoreUploadSession {
     encryptor: Option<BlobEncryptor>,
     /// Header bytes (if encrypted) followed by ciphertext segments as they
     /// are sealed, or raw plaintext bytes when unencrypted. Buffered in
-    /// memory, bounded by `max_blob_bytes` -- see crates/data_blob's
-    /// module docs / status.md for why this is an accepted trade-off.
+    /// memory, bounded by `max_blob_bytes` -- see this crate's module docs
+    /// for why this is an accepted trade-off.
     ciphertext_buf: Vec<u8>,
 }
 

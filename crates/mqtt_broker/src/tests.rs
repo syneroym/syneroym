@@ -109,7 +109,7 @@ async fn retained_message_delivered_to_late_subscriber() {
 /// actually is true and cancellable: dropping `MqttBroker` cancels its
 /// `CancellationToken`, which cascades to every live subscription's
 /// forwarding task (a genuine Tokio task this crate owns) and closes its
-/// receiver — all within the 1-second bound task.md asks for.
+/// receiver — all within a 1-second bound.
 #[tokio::test]
 async fn dropping_broker_terminates_subscription_forwarding_tasks_within_one_second() {
     let broker = test_broker();
@@ -212,7 +212,7 @@ fn namespace_topic_for_publish_always_prefixes_caller_namespace() {
     );
 }
 
-/// Found while building M05A A5c's alert publication: a real caller
+/// Found while building the alert publication path: a real caller
 /// (`SupervisorService::handle_status`) doing genuine async work between
 /// two publishes -- not a tight loop, not a bare `sleep` -- reliably hit
 /// `LinkRx::next()` returning `Ok(None)` for a *benign* empty wakeup
