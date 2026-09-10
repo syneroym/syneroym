@@ -76,9 +76,9 @@ impl CoordinatorWebRtc {
 
         let registry_client = RegistryClient::new(true, config.substrate.registry_url.clone());
 
-        // S3, D-S3-11: the coordinator resolves app-scoped (`-a…-s…`)
-        // bootstrap hosts the same way the client gateway does, over its
-        // own `AppHostResolver` (D-S3-7 -- never shared). The blind tunnel
+        // The coordinator resolves app-scoped (`-a…-s…`) bootstrap hosts
+        // the same way the client gateway does, over its own
+        // `AppHostResolver` (never shared). The blind tunnel
         // has no identity of its own; `resolve` is authorized, so it needs
         // one, and it reuses the node's own key (not a fresh one) so
         // `[iam].grant_resolve_to_node_did` covers this component with the

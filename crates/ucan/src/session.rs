@@ -9,9 +9,9 @@ use crate::{
 };
 
 /// The *verified, in-memory* result of resolving a caller's capabilities —
-/// never deserialized-and-trusted from the wire. At B0 `capabilities` is
-/// populated by the interim admin-root path, not a real UCAN chain; B1
-/// replaces that with `SessionContext::from_verified_chain`.
+/// never deserialized-and-trusted from the wire. `capabilities` is
+/// populated by `SessionContext::from_verified_chain` from a verified UCAN
+/// chain.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionContext {
     pub subject_did: String,
@@ -33,7 +33,7 @@ impl SessionContext {
     }
 
     /// Verify a presented UCAN chain and normalize it into a `SessionContext`
-    /// (ADR-0015 §3, Slice B1). The leaf's `facts` become `claims` -- but
+    /// (ADR-0015 §3). The leaf's `facts` become `claims` -- but
     /// only when the leaf's own issuer is *itself* a trusted root.
     ///
     /// Unlike `capabilities`, `facts` are not attenuated through the proof
@@ -45,20 +45,20 @@ impl SessionContext {
     /// leaf carrying arbitrary fabricated `facts` -- the capability
     /// attenuation logic would correctly admit the *capability* from the
     /// proof, but would just as happily carry the fabricated `facts` along
-    /// for free if they were copied unconditionally. Since `facts` are the
-    /// co-design seam M04B binds as SQL `?` parameters, that would be a
+    /// for free if they were copied unconditionally. Since the data layer
+    /// binds `facts` as SQL `?` parameters, that would be a
     /// claims-injection path with no attenuation check at all. Guard against
     /// it by only trusting `facts` when the leaf was signed directly by a
     /// trusted root -- i.e. the root asserted them itself, not a delegate.
     pub fn from_verified_chain(leaf: &CapabilityToken, opts: &ChainVerifyOpts<'_>) -> Result<Self> {
         let capabilities = verify_chain(leaf, opts)?;
-        // M04A Slice B7b (ADR-0015 A6): resolved the former TODO(B7). Once
-        // `is_trusted_root` became resource-scoped (owner-rooted trust per
-        // service, not just the node-wide admin root), the old synthetic
-        // `substrate(leaf.issuer_did)` probe stopped making sense -- it
-        // asked "is this issuer a root for a resource named after itself?",
-        // which is not a question about any resource the leaf actually
-        // targets. Trust the leaf's `facts` only if its issuer is a trusted
+        // ADR-0015 A6: once `is_trusted_root` became resource-scoped
+        // (owner-rooted trust per service, not just the node-wide admin
+        // root), the old synthetic `substrate(leaf.issuer_did)` probe
+        // stopped making sense -- it asked "is this issuer a root for a
+        // resource named after itself?", which is not a question about any
+        // resource the leaf actually targets. Trust the leaf's `facts` only
+        // if its issuer is a trusted
         // root for *every* resource its own capabilities name -- a root for
         // *something* is not a root for *anything*, and a leaf naming zero
         // capabilities has no resource to attest the issuer against, so it
@@ -104,8 +104,7 @@ mod tests {
         assert!(!session.has_capability(&resource, &Ability(Ability::DATA_LAYER_READ.to_string())));
     }
 
-    // -- M04A Slice B7b (ADR-0015 A6): from_verified_chain's trusted-root
-    // -- facts gate, formerly the session.rs TODO(B7).
+    // -- ADR-0015 A6: from_verified_chain's trusted-root facts gate.
 
     use crate::token::CapabilityToken;
 

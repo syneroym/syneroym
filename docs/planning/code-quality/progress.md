@@ -67,14 +67,14 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/data_db` | 34 | 9 | 4 | 0 | done | | |
 | `crates/fdae` | 27 | 5 | 2 | 1 | done | | |
 | `crates/rpc` | 21 | 8 | 0 | 0 | done | | |
-| `crates/ucan` | 14 | 0 | 0 | 0 | | | |
-| `crates/coordinator_iroh` | 7 | 2 | 1 | 4 | | | |
-| `crates/coordinator_webrtc` | 7 | 2 | 1 | 0 | | | |
+| `crates/ucan` | 14 | 0 | 0 | 0 | done | | |
+| `crates/coordinator_iroh` | 7 | 2 | 1 | 4 | done | | |
+| `crates/coordinator_webrtc` | 7 | 2 | 1 | 0 | done | | |
 | `crates/data_keystore` | 7 | 2 | 0 | 0 | done | | |
 | `crates/data_blob` | 5 | 0 | 1 | 0 | done | | |
 | `crates/community_registry` | 5 | 0 | 0 | 0 | done | | |
 | `crates/mqtt_broker` | 5 | 0 | 0 | 0 | done | | |
-| `crates/conversation` | 4 | 0 | 4 | 6 | | | |
+| `crates/conversation` | 4 | 0 | 4 | 6 | done | | |
 | `crates/roym_transaction` | 0 | 0 | 1 | 7 | n/a | | |
 | `crates/roym_directory` | 0 | 0 | 1 | 4 | n/a | | |
 | `crates/roym_web` | 0 | 0 | 0 | 3 | n/a | n/a | |
