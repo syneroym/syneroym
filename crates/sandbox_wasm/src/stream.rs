@@ -1,12 +1,12 @@
-//! M3B Slice 6B bidirectional streaming (ADR-0014).
+//! Bidirectional streaming (ADR-0014).
 //!
 //! `stream-cursor`/`stream-sink` are guest-**implemented** WIT resources --
 //! the reverse of `blob-writer`/`blob-reader` -- so the host calls methods on
 //! a `ResourceAny` the guest returned, via the same dynamic
 //! `get_export`/`Func::call_async` pattern `AppSandboxEngine::get_wasm_func`
 //! already uses for plain functions, generalized to resource methods
-//! (confirmed working against wasmtime 46.0.1 by this slice's day-0 spike;
-//! see the ADR). [`GuestStreamCursor`]/[`GuestStreamSink`] each own a
+//! (confirmed working against wasmtime 46.0.1; see the ADR).
+//! [`GuestStreamCursor`]/[`GuestStreamSink`] each own a
 //! dedicated `Store`/`Instance` for one stream's lifetime -- unlike every
 //! other invocation path in this crate, which gets a fresh `Store` per call.
 
@@ -31,7 +31,7 @@ use crate::{engine::AppSandboxEngine, host_capabilities::HostState};
 /// WIT-package-qualified name of the `stream-types` interface, matching how
 /// `AppSandboxEngine::deliver_message` names `guest-api` (the short interface
 /// name alone doesn't resolve -- see that function's own comment on the
-/// bug this caused in Slice 6A).
+/// bug this caused).
 pub(crate) const STREAM_TYPES_INTERFACE: &str = "syneroym:messaging/stream-types@0.1.0";
 
 /// Bundles the streaming-specific pieces of `HostState`: the registry
@@ -48,7 +48,7 @@ pub struct StreamContext {
 /// `AppSandboxEngine::unsubscribe_all`) -- but also so *any other* teardown
 /// path (e.g. the whole `AppSandboxEngine` being dropped) aborts them too.
 /// A bare `tokio::task::AbortHandle` does nothing on `Drop`, so this wrapper
-/// exists specifically to backstop that gap; `SubscriptionHandle` (Slice 6A)
+/// exists specifically to backstop that gap; `SubscriptionHandle`
 /// doesn't need an equivalent because it actively unsubscribes on drop.
 #[derive(Debug, Default)]
 pub struct StreamRegistry {
@@ -118,7 +118,7 @@ impl Drop for StreamRegistry {
 }
 
 /// Converts a `Vec<u8>` into the `Val::List(Vec<Val::U8>)` shape wasmtime's
-/// dynamic API uses to represent a WIT `list<u8>`. `pub(crate)` (M06A A2):
+/// dynamic API uses to represent a WIT `list<u8>`. `pub(crate)`:
 /// also used by `crate::http`'s guest HTTP request/response marshalling.
 pub(crate) fn bytes_to_val_list(data: Vec<u8>) -> Val {
     Val::List(data.into_iter().map(Val::U8).collect())
@@ -141,11 +141,11 @@ pub(crate) fn val_list_to_bytes(val: &Val) -> Result<Vec<u8>> {
 /// Unwraps a `result<T, string>` shaped `Val::Result`, calling
 /// `ok_extractor` on the boxed `Ok` payload (or treating a `None` payload as
 /// `Ok(_)` for `result<_, string>`'s unit-ok case, handled by callers that
-/// pass an extractor tolerating `None`). Every guest export in this slice's
-/// WIT returns exactly this one-value shape, so `results` is validated for
-/// that arity here rather than callers indexing `results[0]` directly -- a
-/// deployed component whose export declares a different arity (e.g. no
-/// results) must surface as a clean `Err`, not a host panic.
+/// pass an extractor tolerating `None`). Every stream-cursor / stream-sink
+/// guest export returns exactly this one-value shape, so `results` is
+/// validated for that arity here rather than callers indexing `results[0]`
+/// directly -- a deployed component whose export declares a different arity
+/// (e.g. no results) must surface as a clean `Err`, not a host panic.
 fn extract_result<T>(
     results: &[Val],
     ok_extractor: impl FnOnce(Option<&Val>) -> Result<T>,

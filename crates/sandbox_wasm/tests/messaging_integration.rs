@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! M3B Slice 6A integration test: two deployed WASM components in
+//! Integration test: two deployed WASM components in
 //! different services exchange a message guest-to-guest, using the
 //! fully-qualified cross-service topic (a bare `subscribe-to("orders/new")`
 //! from a different service would resolve to the *subscriber's own*
 //! namespace and never see the publish -- see ADR-0010's Topic Namespace
-//! Isolation section and task.md's Finding B1).
+//! Isolation section).
 
 use std::{fs, path::Path, sync::Arc, time::Duration};
 
@@ -27,7 +27,7 @@ const SERVICE_B: &str = "messaging-svc-b";
 
 /// Builds an `AppSandboxEngine` wrapped in `Arc` with `self_weak` set, the
 /// same recipe `syneroym_substrate::runtime::build_route_handler_deps` uses
-/// in production (see Step 9 of the Slice 6A plan) -- required for a live
+/// in production -- required for a live
 /// `subscribe-to` call's forwarding task to be able to reach back into the
 /// engine and invoke `deliver_message` once the originating `Store` is gone.
 async fn make_engine(dir: &Path) -> Arc<AppSandboxEngine> {
@@ -148,7 +148,7 @@ async fn test_guest_to_guest_cross_service_message_delivery() {
     assert_eq!(received, format!("{fully_qualified_topic}\thello from A"));
 }
 
-/// ADR-0010 Topic Namespace Isolation / task.md:854 Security Test: a
+/// ADR-0010 Topic Namespace Isolation: a
 /// publish-side `svc/`-prefixed topic must not let one service impersonate
 /// another's namespace. Service B subscribes to its own bare topic (which
 /// the host namespaces to `svc/messaging-svc-b/orders/new`); Service A then
@@ -189,9 +189,9 @@ async fn test_publish_cannot_spoof_another_services_namespace() {
     assert_eq!(received, "", "service B must not receive a publish spoofed via svc/<B>/...");
 }
 
-/// task.md's Measurable Exit Criteria: guest `handle-message` delivery
-/// <25ms p99 (the guest path is more expensive than the native-subscriber
-/// path due to fresh-Store-per-delivery instantiation cost).
+/// Guest `handle-message` delivery has a 25ms p99 budget (the guest path
+/// is more expensive than the native-subscriber path due to
+/// fresh-Store-per-delivery instantiation cost).
 #[tokio::test]
 async fn test_guest_delivery_latency_budget() {
     let Ok(wasm_bytes) = fs::read(test_constants::messaging_pubsub_test_wasm_path()) else {
@@ -274,7 +274,7 @@ async fn test_guest_delivery_latency_budget() {
         latencies.last().unwrap(),
         latencies.len()
     );
-    // task.md's Measurable Exit Criteria budget is 25ms p99. A hard bound on
+    // The budget is 25ms p99. A hard bound on
     // this metric does not survive contact with a shared CI runner: n=20
     // means p99 is decided by a single sample, and that sample has been
     // observed anywhere from ~4ms (idle) to 334ms (loaded CI) with no change
