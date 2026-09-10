@@ -78,7 +78,7 @@ pub enum Mode {
 }
 
 /// Upper bound on a single remote fetch's returned id-set, bound as the
-/// `IN (...)` list's cardinality (Slice B3 plan §5, fan-out containment). An
+/// `IN (...)` list's cardinality (fan-out containment). An
 /// unbounded id-set would let a misbehaving or compromised remote blow up
 /// the local query's `IN` list arbitrarily. Matches `data_db`'s existing
 /// per-page query cap.
@@ -91,11 +91,10 @@ pub const MAX_FETCH_IDS: usize = 1000;
 pub struct FetchSlot(usize);
 
 /// One remote relationship-proof fetch [`plan_read`] needs before its sieve
-/// can be finalized (ADR-0017 §6 / pipeline stage 2, Slice B3). The
-/// orchestration that actually performs the fetch (resolving `service` to a
-/// DID, issuing the proxy call, enforcing the timeout) lives outside this
-/// crate (`crates/fdae` stays proxy-free, plan §1.1); this struct is only
-/// the *request* shape.
+/// can be finalized (ADR-0017 §6). The orchestration that actually performs
+/// the fetch (resolving `service` to a DID, issuing the proxy call,
+/// enforcing the timeout) lives outside this crate (`crates/fdae` stays
+/// proxy-free); this struct is only the *request* shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteFetch {
     /// Logical service name from `Relation.service`, resolved to a DID by
@@ -119,8 +118,8 @@ pub struct RemoteFetch {
     /// own declared terminal word is `caller` or `anchor`.
     pub principal_did: String,
     /// The DID a fetched `RelationshipProof` for this relation must be
-    /// signed by, from the policy's own `Relation.expected_asserter_did`
-    /// (D-B3-8) -- never derived by the fetching side (a per-node HKDF
+    /// signed by, from the policy's own `Relation.expected_asserter_did` --
+    /// never derived by the fetching side (a per-node HKDF
     /// derivation cannot be reproduced by a different node), and never
     /// taken from the proof's own self-declared field (self-referential,
     /// verifies for any signer). The caller performing the fetch rejects a
@@ -133,7 +132,7 @@ pub struct RemoteFetch {
 /// is the already-verified provenance the fetching side observed (asserter,
 /// relation, principal, TTL) -- `finalize` folds it into the sieve's
 /// [`DecisionTrace`] so a successful fetch, not just a timeout/deny, leaves a
-/// record (ADR-0017 §6 reason 2, `slice-b3-implementation-plan.md` §3.2).
+/// record (ADR-0017 §6 reason 2).
 #[derive(Debug, Clone)]
 pub struct FetchResult {
     pub slot: FetchSlot,
@@ -171,10 +170,9 @@ struct PendingMarker {
 }
 
 /// A [`CompiledSieve`] that still needs one or more remote relationship
-/// fetches before it can run -- the "plan" half of the two-phase compile
-/// (Slice B3 plan §1.1). Opaque outside this module; the only thing a
-/// caller does with one is pass it to [`finalize`] alongside the fetched
-/// [`FetchResult`]s.
+/// fetches before it can run -- the "plan" half of the two-phase compile.
+/// Opaque outside this module; the only thing a caller does with one is
+/// pass it to [`finalize`] alongside the fetched [`FetchResult`]s.
 #[derive(Debug, Clone)]
 pub struct PendingSieve {
     where_clause: String,
@@ -186,8 +184,8 @@ pub struct PendingSieve {
     abac_permissions: Vec<String>,
 }
 
-/// The result of [`plan_read`]: either a fully-compiled local sieve (the B2
-/// case -- `fetches` empty, `pending` `None`, `local` mirrors
+/// The result of [`plan_read`]: either a fully-compiled local sieve (the
+/// local-only case -- `fetches` empty, `pending` `None`, `local` mirrors
 /// `compile_read`'s `Option<CompiledSieve>` exactly), or a
 /// [`PendingSieve`] plus the [`RemoteFetch`]es it's waiting on.
 #[derive(Debug, Clone)]
@@ -289,7 +287,7 @@ impl FetchCtx {
 /// resolves to nobody would otherwise deny every row (`NOT NULL` is
 /// `NULL`, not `true`) instead of excluding none. `IN (<empty subquery>)`
 /// has no such ambiguity -- there is no candidate row to compare against,
-/// NULL or otherwise. Verified against SQLite directly during review:
+/// NULL or otherwise. Verified against SQLite directly:
 /// `SELECT typeof('x' IN (NULL))` -- `'null'`; `SELECT 'x' IN (SELECT 1
 /// WHERE 0), NOT ('x' IN (SELECT 1 WHERE 0))` -- `0, 1`.
 pub fn finalize(
@@ -379,11 +377,10 @@ pub fn finalize(
 ///   `strict`: the grant layer already admitted this read, no filtering.
 /// - `Ok(Some(sieve))` -- apply this block (may be a deny-all `0=1`).
 /// - `Err(PolicyError)` -- malformed/unsupported input, **or the policy's
-///   selected paths require a remote relationship fetch** (B3 pipeline stage
-///   2): this function is the synchronous/local-only entry point (unchanged
-///   from B2) and cannot itself resolve one -- a caller that needs to may call
-///   [`plan_read`] directly. Either way the caller must treat this as deny,
-///   never as unfiltered access.
+///   selected paths require a remote relationship fetch**: this function is the
+///   synchronous/local-only entry point and cannot itself resolve one -- a
+///   caller that needs to may call [`plan_read`] directly. Either way the
+///   caller must treat this as deny, never as unfiltered access.
 pub fn compile_read(
     policy: &Policy,
     collection: &str,
@@ -394,7 +391,7 @@ pub fn compile_read(
 ) -> Result<Option<CompiledSieve>, PolicyError> {
     let plan = plan_read(policy, collection, session, service_id, operation, mode)?;
     if !plan.fetches.is_empty() {
-        // B3-08: `plan_read` already emitted a trace for this compilation,
+        // `plan_read` already emitted a trace for this compilation,
         // but it necessarily reads as an *allow* (`operation_admitted:
         // true`, no `path_failed`, `compiled_predicate` full of unresolved
         // `@@FDAE_FETCH_...@@` markers) -- it doesn't yet know the caller
@@ -428,7 +425,7 @@ pub fn compile_read(
     Ok(plan.local)
 }
 
-/// The two-phase counterpart of [`compile_read`] (Slice B3 plan §1.1): same
+/// The two-phase counterpart of [`compile_read`]: same
 /// inputs, but when a selected permission path needs a remote relation
 /// (`Relation.service.is_some()`), it is compiled with a placeholder `IN`
 /// predicate and recorded as a [`RemoteFetch`] instead of failing closed.
@@ -685,7 +682,7 @@ fn find_definition<'a>(policy: &'a Policy, collection: &str) -> Option<(&'a str,
 
 /// The physical table backing the definition matching `collection`
 /// (case-insensitively, by key or table -- same rule as `find_definition`),
-/// or `None` if no definition matches. B3's native `resolve-relation` needs
+/// or `None` if no definition matches. The native `resolve-relation` needs
 /// this for two reasons: (1) as a **hard pre-check** -- unlike an ordinary
 /// `compile_read` call, where "no definition" correctly means "the grant
 /// layer already admitted this read, run unfiltered" (`compile_read`'s
@@ -695,7 +692,7 @@ fn find_definition<'a>(policy: &'a Policy, collection: &str) -> Option<(&'a str,
 /// unfiltered dump; and (2) because `ServiceStore::query` (unlike
 /// `compile_read`'s own permissive key-or-table matching) addresses a
 /// collection by its **literal physical table name** -- a caller passing a
-/// policy's *definition key* (e.g. B3's `RemoteFetch.relation`, which is a
+/// policy's *definition key* (e.g. `RemoteFetch.relation`, which is a
 /// local relation name, not necessarily a table name) would otherwise hit
 /// `collection-not-found` even though the definition itself resolves fine.
 #[must_use]
@@ -707,8 +704,8 @@ pub fn definition_table<'a>(policy: &'a Policy, collection: &str) -> Option<&'a 
 /// the stage-4 after-step (ADR-0017 §7, `Permission.authorize_rows`).
 /// Coarser than a compiled sieve's `abac_permissions` (which knows which
 /// permissions this caller actually selected) and deliberately so: the one
-/// caller is B3's `resolve-relation` (both its A1 sieve-backed branch and
-/// its A2 `resolve_structural` fallback), which has no compiled sieve for
+/// caller is the native `resolve-relation` (both its sieve-backed branch
+/// and its `resolve_structural` fallback), which has no compiled sieve for
 /// the requesting anchor and must fail closed rather than let a remote
 /// caller route around this node's after-step. An unknown `collection`
 /// returns `false` -- `find_definition` returning `None` already means "no
@@ -719,8 +716,8 @@ pub fn definition_has_abac(policy: &Policy, collection: &str) -> bool {
         .is_some_and(|(_, def)| def.permissions.values().any(|p| p.authorize_rows))
 }
 
-/// A raw `<principal_column> = ?` predicate for [`resolve_structural`] (B3
-/// D-B3-3, the A2 fallback): no `WHERE EXISTS`, no capability check, no
+/// A raw `<principal_column> = ?` predicate for [`resolve_structural`]'s
+/// capability-free fallback: no `WHERE EXISTS`, no capability check, no
 /// `CompiledSieve` -- just enough to run `SELECT id FROM <table> WHERE
 /// <where_clause>` against the caller's own connection.
 #[derive(Debug, Clone)]
@@ -733,11 +730,11 @@ pub struct StructuralQuery {
     pub params: Vec<String>,
 }
 
-/// B3 D-B3-3 (A2): the raw `<principal_column> = ?` predicate for a
+/// The raw `<principal_column> = ?` predicate for a
 /// definition that has explicitly opted into
 /// [`Definition::resolvable_without_capability`], bypassing the capability/
 /// grant-intersection gate [`compile_read`] requires. The caller (native
-/// `resolve-relation`, Slice B3 Phase 3) uses this only when the requesting
+/// `resolve-relation`) uses this only when the requesting
 /// anchor holds zero capabilities scoped to the target service -- see that
 /// field's doc comment for the authorization-model tradeoff; this function
 /// itself performs no capability check, since it has no `SessionContext` to
@@ -1056,7 +1053,7 @@ struct Hop<'a> {
 
 /// Resolves and validates every non-terminal segment of a path in order,
 /// failing closed on a recursive relation anywhere but the last hop, or a
-/// remote (cross-service) relation anywhere but the last hop (B3: a remote
+/// remote (cross-service) relation anywhere but the last hop (a remote
 /// hop's fetched id-set is checked directly against the *preceding* local
 /// row, mirroring the last-local-hop terminal check -- there is no local
 /// table to keep joining through past it).
@@ -1102,8 +1099,8 @@ fn resolve_hops<'a>(
 
 /// Walks a path (`[relation..., terminal]`) into a correlated `EXISTS`
 /// subquery, a single `EXISTS (WITH RECURSIVE ...)` block when the last
-/// relation is recursive (§3.4), or -- when the last relation is remote (B3)
-/// -- a direct `IN (...)` membership check against a not-yet-fetched id-set.
+/// relation is recursive, or a direct `IN (...)` membership check against a
+/// not-yet-fetched id-set when the last relation is remote.
 fn compile_path(
     policy: &Policy,
     start_type: &str,
@@ -1150,8 +1147,8 @@ fn compile_path(
 
 /// Emits nested `EXISTS` for a chain of local-join hops, fusing the last two
 /// hops into a single `EXISTS (WITH RECURSIVE ...)` block when the final hop
-/// is recursive (§3.4, ADR-0017), or emitting a direct `IN (...)`
-/// membership check when the final hop is remote (B3, §3).
+/// is recursive (ADR-0017), or emitting a direct `IN (...)`
+/// membership check when the final hop is remote.
 fn emit_chain(
     hops: &[Hop],
     correlate_qualifier: &str,
@@ -1214,7 +1211,7 @@ fn emit_chain(
     }
 }
 
-/// The terminal hop of a path whose last relation is remote (B3, plan §3):
+/// The terminal hop of a path whose last relation is remote:
 /// unlike a local hop, there is no local `target_table` to `EXISTS`-join
 /// against (the object lives on another service). Instead, the current
 /// row's own `join_column` value will be checked for membership in the
@@ -2072,7 +2069,7 @@ mod tests {
         let policy = single_hop_policy();
         // A capability for a *different* collection: covers the operation
         // but not this resource, so no permission becomes applicable and
-        // there is no `default` -- default-deny (D-04-02-b).
+        // there is no `default` -- default-deny.
         let bob = session("did:key:bob", vec![read_cap(Some("other_collection"))]);
         let sieve = compile_read(
             &policy,
@@ -2155,9 +2152,9 @@ mod tests {
     /// platform-ability capability -- so "view" can only ever become
     /// applicable through `manage`'s `includes`, never through the direct
     /// route. This is what makes the write-mode assertion below a real
-    /// regression test for the escalation Reviewer 1 found: closure used to
-    /// widen unconditionally, so a write-mode check would previously have
-    /// pulled in "view" (read-only) anyway.
+    /// regression test for a privilege escalation: the closure used to widen
+    /// unconditionally, so a write-mode check would previously have pulled in
+    /// "view" (read-only) anyway.
     #[test]
     fn includes_closure_is_gated_by_the_included_permissions_own_allows() {
         let policy = parse_and_validate(
@@ -2235,7 +2232,7 @@ mod tests {
 
     #[test]
     fn collection_selector_grant_is_honored_and_scoped() {
-        // Guards the §3.2 finding: a capability scoped to
+        // Guards grant-intersection scoping: a capability scoped to
         // `.../collection/document` must be admitted for `document` and
         // denied for an unrelated collection under the *same* service.
         let policy = single_hop_policy();
@@ -2304,10 +2301,10 @@ mod tests {
         .unwrap()
     }
 
-    /// `compile_read` (B2's synchronous, local-only entry point) still fails
+    /// `compile_read` (the synchronous, local-only entry point) still fails
     /// closed on a policy whose selected path needs a remote fetch -- it has
-    /// no way to perform one itself. `plan_read` is the B3 entry point that
-    /// actually resolves it (see the tests below).
+    /// no way to perform one itself. `plan_read` is the two-phase entry point
+    /// that actually resolves it (see the tests below).
     #[test]
     fn compile_read_fails_closed_when_a_remote_fetch_is_needed() {
         let policy = remote_relation_policy();
@@ -2327,7 +2324,7 @@ mod tests {
     /// `plan_read` splits a policy needing a remote relation into a
     /// `RemoteFetch` (carrying the anchor as principal, per the
     /// confused-deputy defense) plus a `PendingSieve`, instead of failing
-    /// closed -- the plan half of the two-phase compile (B3 plan §1.1).
+    /// closed -- the plan half of the two-phase compile.
     #[test]
     fn plan_read_collects_a_remote_fetch_instead_of_failing_closed() {
         let policy = remote_relation_policy();
@@ -2357,8 +2354,8 @@ mod tests {
 
     /// A fully-local policy plans identically to `compile_read` -- `local`
     /// carries the finished sieve and `fetches`/`pending` are empty/`None`,
-    /// exactly B2's shape. Zero behavior change for every existing
-    /// local-only policy.
+    /// matching the fully-local shape. Zero behavior change for every
+    /// existing local-only policy.
     #[test]
     fn plan_read_of_a_fully_local_policy_has_no_fetches() {
         let policy = single_hop_policy();
@@ -2380,7 +2377,7 @@ mod tests {
     /// `abac_permissions` lists only the applicable permissions that opted
     /// into the stage-4 after-step, not every applicable permission -- a
     /// single capability entitles both `view` and `view_secret` here (the
-    /// grant∩policy intersection, D-04-02-a), but only `view_secret` set
+    /// grant∩policy intersection), but only `view_secret` set
     /// `authorize_rows: true`.
     #[test]
     fn abac_permissions_lists_only_opted_in_applicable_permissions() {
@@ -2610,7 +2607,7 @@ mod tests {
         assert!(run_sieve(&conn, "documents", &sieve).is_empty());
     }
 
-    /// B3-03 regression: an `exclusion`-operator permission with a remote
+    /// An `exclusion`-operator permission with a remote
     /// hop that legitimately resolves to nobody must exclude *nobody* (the
     /// row stays visible) -- not deny every row, which `{col} IN (NULL)`'s
     /// three-valued-logic inversion under `NOT` would have caused.
@@ -2676,8 +2673,8 @@ mod tests {
     }
 
     /// `finalize`'s `params_index + shift` insertion arithmetic under two
-    /// *distinct* remote relations (different targets, so they don't dedupe
-    /// -- B3-05) at different text/param positions: `intersection` requires
+    /// *distinct* remote relations (different targets, so they don't dedupe)
+    /// at different text/param positions: `intersection` requires
     /// both `owner` and `department` to match, each bound from its own
     /// fetched id-set, spliced at the correct offset into a single flat
     /// `params` vector. The delicate part -- verified by the assertion
@@ -2857,7 +2854,7 @@ mod tests {
         assert_eq!(run_sieve(&conn, "documents", &sieve), vec!["doc-1"]);
     }
 
-    /// Plan §1.2: "one fetch shape serves both [Mode A and Mode B]." Mode A
+    /// One fetch shape serves both Mode A and Mode B. Mode A
     /// (point-in-time) over a remote relation was asserted in the plan but
     /// never actually run -- this exercises it for real: the `id = ?`
     /// predicate `Mode::PointInTime` ANDs on must survive alongside the
@@ -2941,8 +2938,8 @@ mod tests {
     }
 
     /// An id-set larger than `MAX_FETCH_IDS` is rejected rather than
-    /// silently truncated or spliced into an unbounded `IN (...)` list (B3
-    /// plan §5, fan-out containment).
+    /// silently truncated or spliced into an unbounded `IN (...)` list
+    /// (fan-out containment).
     #[test]
     fn finalize_rejects_an_oversized_id_set() {
         let policy = remote_relation_policy();
@@ -2991,9 +2988,9 @@ mod tests {
         assert!(matches!(err, PolicyError::Semantic(_)));
     }
 
-    /// D-B3-5: a `recursive: true` relation that is also remote
-    /// (`service` set) is rejected at parse time -- B3 does not support an
-    /// iterative cross-node transitive closure. Confirms the guard the
+    /// A `recursive: true` relation that is also remote
+    /// (`service` set) is rejected at parse time -- an iterative cross-node
+    /// transitive closure is not supported. Confirms the guard the
     /// policy schema already enforces (`policy::` tests pin the schema
     /// layer directly); this is the fdae-crate-level confirmation that a
     /// `Policy` value with that combination can never reach `plan_read` at
@@ -3023,13 +3020,13 @@ mod tests {
 
     /// Two OR'd permission paths that both reach the *same* remote relation
     /// collapse into a single `RemoteFetch` (deduped by `(service,
-    /// relation)`, plan §5) even though the marker text appears twice.
+    /// relation)`) even though the marker text appears twice.
     #[test]
     fn plan_read_dedupes_repeated_fetches_to_the_same_remote_relation() {
         // Two *different* local relation names ("owner", "lead") both
         // pointing at the same remote (service, target) pair -- the dedupe
         // key is `(service, relation)` where `relation` is the remote
-        // object type (`Relation.target`, B3-02), not the local edge name,
+        // object type (`Relation.target`), not the local edge name,
         // so these collapse into one fetch even though `hop.name` differs.
         let policy = parse_and_validate(
             r#"{
@@ -3078,7 +3075,7 @@ mod tests {
         );
     }
 
-    /// B3-05 regression: two remote relations naming the *same* service but
+    /// Two remote relations naming the *same* service but
     /// *different* target types must **not** dedupe -- each needs its own
     /// fetch and its own `IN (...)` predicate bound to its own id-set.
     #[test]
@@ -3133,8 +3130,8 @@ mod tests {
         assert_eq!(targets, BTreeSet::from(["employee", "team"]));
     }
 
-    /// `RemoteFetch.expected_asserter_did` (D-B3-8) is threaded from the
-    /// policy's `Relation.expected_asserter_did`, not left empty or derived.
+    /// `RemoteFetch.expected_asserter_did` is threaded from the policy's
+    /// `Relation.expected_asserter_did`, not left empty or derived.
     #[test]
     fn plan_read_carries_the_policys_expected_asserter_did_onto_the_fetch() {
         let policy = remote_relation_policy();
@@ -3283,7 +3280,7 @@ mod tests {
         .unwrap()
     }
 
-    /// D-B3-3 (A2): a definition opted into `resolvable_without_capability`
+    /// A definition opted into `resolvable_without_capability`
     /// resolves via a bare `principal_column = ?` predicate, runnable
     /// directly against the seeded table.
     #[test]
@@ -3370,10 +3367,10 @@ mod tests {
     }
 
     /// `definition_table` resolves either the definition key or the
-    /// physical table name (case-insensitively) to the physical table --
-    /// B3's `resolve-relation` needs the *table*, since `ServiceStore::query`
-    /// addresses a collection literally, unlike `compile_read`'s own
-    /// permissive key-or-table matching.
+    /// physical table name (case-insensitively) to the physical table -- the
+    /// native `resolve-relation` needs the *table*, since
+    /// `ServiceStore::query` addresses a collection literally, unlike
+    /// `compile_read`'s own permissive key-or-table matching.
     #[test]
     fn definition_table_resolves_by_key_or_table_case_insensitively() {
         let policy = resolvable_employee_policy("did");
@@ -3645,8 +3642,8 @@ mod tests {
 
     #[test]
     fn default_fallback_still_carries_the_entitling_capabilitys_caveats() {
-        // Regression test (both reviews flagged this independently): when
-        // no permission is directly/app-permission-applicable and access
+        // Regression test: when no permission is
+        // directly/app-permission-applicable and access
         // comes only through `default`, the capability that satisfied
         // `holds_operation` must still contribute its caveats -- dropping
         // them would silently widen access beyond what the caveat allows.
@@ -3692,7 +3689,7 @@ mod tests {
 
     #[test]
     fn default_permission_not_covering_operation_is_denied() {
-        // Regression for the escalation this review found: `default` used
+        // Regression for a privilege escalation: `default` used
         // to apply regardless of whether its own permission's `allows`
         // covered the requested operation, so a caller holding *only* a
         // write capability could ride a read-only (or ability-less)
@@ -3741,7 +3738,7 @@ mod tests {
 
     #[test]
     fn collection_lookup_is_case_insensitive_like_sqlite() {
-        // Regression for the bypass this review found: SQLite resolves
+        // Regression for a policy bypass: SQLite resolves
         // table names case-insensitively, so a case-sensitive
         // `find_definition` let a caller spell the collection differently
         // than the policy and fall through to the unfiltered "no
@@ -3789,7 +3786,7 @@ mod tests {
         assert!(matches!(err, PolicyError::Semantic(_)));
     }
 
-    // -- ADR-0017 §9 decision trace (M04B Slice B2 Phase 5) -----------------
+    // -- ADR-0017 §9 decision trace ---------------------------------------
     //
     // `compile_read` returns the same `DecisionTrace` it emits via `tracing`
     // on `CompiledSieve::trace`, so these assert on the struct directly
@@ -4096,7 +4093,7 @@ mod tests {
         assert!(logs_content.contains("did:key:alice"), "logs were: {logs_content}");
     }
 
-    /// B3-08: when `compile_read` rejects a plan needing a remote fetch,
+    /// When `compile_read` rejects a plan needing a remote fetch,
     /// the trace record must say so -- `plan_read`'s own trace (emitted
     /// first, before `compile_read` sees the fetch count) necessarily
     /// reads as an allow, since `plan_read` itself doesn't fail; without
