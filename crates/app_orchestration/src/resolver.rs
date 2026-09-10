@@ -1,4 +1,4 @@
-//! Slice 3 — Addressing & Resolution Overlay
+//! Addressing and resolution overlay
 //!
 //! This module implements the logical resolver that sits *above* the physical
 //! network router. The router continues to route by explicit [`ServiceId`]s;
@@ -38,8 +38,8 @@
 //!
 //! A cache **hit** does *not* compare epochs against the registry -- there is
 //! no live re-check on the hot path, only TTL and explicit eviction. A writer
-//! that wants a change visible before the TTL elapses (A2's binding write
-//! does, to meet the milestone's convergence budget) must call
+//! that wants a change visible before the TTL elapses (the binding write
+//! does, to meet the convergence budget) must call
 //! [`LogicalResolver::register`], never write the registry directly.
 
 use std::{
@@ -62,7 +62,7 @@ use crate::models::{AppDid, AppInstanceId, LogicalServiceName, ServiceId, Topolo
 // Domain types
 // ─────────────────────────────────────────────────────────────
 
-/// Default cache TTL for a binding written at deploy time (A2), matching
+/// Default cache TTL for a binding written at deploy time, matching
 /// what this module's own tests already treat as ordinary
 /// (`Duration::from_secs(60)`).
 pub const DEFAULT_BINDING_CACHE_TTL_MS: u64 = 60_000;
@@ -256,10 +256,10 @@ pub struct TopologyEntry {
     /// Maximum age of a cached copy of this topology.
     #[serde(with = "duration_millis")]
     pub cache_ttl: Duration,
-    /// Unix seconds after which this entry must stop resolving (ADR-0022 §3,
-    /// failure-matrix row 6: past `not_after`, fail -- not "stale but
-    /// usable"). `None` for an entry pushed by the intra-app binding path,
-    /// which has no expiry and is refreshed by a later push.
+    /// Unix seconds after which this entry must stop resolving (ADR-0022 §3):
+    /// past `not_after`, fail -- not "stale but usable". `None` for an entry
+    /// pushed by the intra-app binding path, which has no expiry and is
+    /// refreshed by a later push.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_after: Option<u64>,
 }
@@ -296,7 +296,7 @@ pub(crate) fn unix_now() -> u64 {
 ///
 /// A caller that wants to retry on the first kind and surface the second
 /// kind directly checks [`is_retryable`] rather than matching on the error
-/// text -- `AppHostResolver::resolve_app_host` (S3) is the reason this
+/// text -- `AppHostResolver::resolve_app_host` is the reason this
 /// exists: treating every `resolve` error as a cache miss made a permanent
 /// selection failure (e.g. a `Sharded` service called with no routing key)
 /// refetch Tier 2 on every single request.
@@ -344,7 +344,7 @@ pub struct AllMembers {
 // AppScope / TopologyKey
 // ─────────────────────────────────────────────────────────────
 
-/// Which app a topology entry belongs to (ADR-0022 §1, milestone plan §0.4).
+/// Which app a topology entry belongs to (ADR-0022 §1).
 ///
 /// `Local` is an app instance deployed through this node, keyed by the name
 /// this node's own operator chose -- unique here by construction. `Foreign`
@@ -442,14 +442,14 @@ pub trait AppRegistry: Send + Sync + fmt::Debug {
 }
 
 // ─────────────────────────────────────────────────────────────
-// StaticInventory — Phase 0 standalone mode
+// StaticInventory — standalone mode
 // ─────────────────────────────────────────────────────────────
 
-/// Phase 0 in-memory registry: resolved bindings are injected at deploy time
+/// In-memory registry: resolved bindings are injected at deploy time
 /// and never replicated to a live backend.
 ///
-/// `StaticInventory` is the only registry mode required for M1.  Dynamic or
-/// database-backed registries are deferred to M3/M5.
+/// `StaticInventory` is the only registry mode implemented. Dynamic or
+/// database-backed registries are future work.
 #[derive(Debug, Clone)]
 pub struct StaticInventory {
     inner: Arc<RwLock<StaticInventoryInner>>,
@@ -683,7 +683,7 @@ impl LogicalResolver {
     /// cached topology behind. `AppRegistry::register` alone would leave a
     /// live cache entry serving the old membership for up to `cache_ttl`,
     /// which is what would make a scale-out invisible for up to a minute --
-    /// well past the milestone's 5s convergence budget.
+    /// well past the 5s convergence budget.
     pub fn register(&self, key: TopologyKey, entry: TopologyEntry) {
         self.registry.register(key.clone(), entry);
         self.cache.evict(&key);
@@ -695,8 +695,8 @@ impl LogicalResolver {
     /// valid, or re-fetching from the registry and updating the cache.
     ///
     /// Checked on both paths -- a cache entry whose `cache_ttl` outlives its
-    /// `not_after` must not keep answering (ADR-0022 §3, failure-matrix row
-    /// 6: "fails. Not 'stale but usable'").
+    /// `not_after` must not keep answering (ADR-0022 §3): it fails, it is not
+    /// "stale but usable".
     fn get_topology(&self, key: &TopologyKey) -> Result<Arc<ResolvedTopology>> {
         let now = unix_now();
 
@@ -1361,11 +1361,10 @@ mod tests {
         assert_eq!(entry, decoded);
     }
 
-    // ── AppScope / TopologyKey / not_after (S2) ──────────────
+    // ── AppScope / TopologyKey / not_after ──────────────
 
-    /// Failure-matrix row 8: two unrelated apps both called `chat` must not
-    /// collide -- each is keyed by its own app DID, a disjoint namespace
-    /// from `AppScope::Local`.
+    /// Two unrelated apps both called `chat` must not collide -- each is keyed
+    /// by its own app DID, a disjoint namespace from `AppScope::Local`.
     #[test]
     fn two_foreign_apps_with_the_same_instance_id_do_not_collide() {
         let reg = registry_with(vec![
@@ -1411,9 +1410,8 @@ mod tests {
         );
     }
 
-    /// Matrix row 6, checked on both the registry-read path and the
-    /// cache-hit path -- an entry past `not_after` must fail, not keep
-    /// answering from a warm cache.
+    /// Checked on both the registry-read path and the cache-hit path -- an
+    /// entry past `not_after` must fail, not keep answering from a warm cache.
     #[test]
     fn an_entry_past_its_not_after_stops_resolving() {
         // Registry path: an already-expired entry is never even cached.
@@ -1638,7 +1636,7 @@ mod tests {
         assert!(bad_order.validate().is_err());
     }
 
-    // ── classify_binding_write (M05A A5a) ────────────────────
+    // ── classify_binding_write ────────────────────
 
     #[test]
     fn a_higher_epoch_applies() {

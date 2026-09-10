@@ -1,6 +1,6 @@
 //! `RelationshipProof`: the signed, TTL'd wire record answering "which rows
-//! does `principal` reach via `relation`" (Slice B3 pipeline stage 2,
-//! ADR-0017 §6). Shared by the receiving side (`syneroym-control-plane`'s
+//! does `principal` reach via `relation`" (ADR-0017 §6). Shared by the
+//! receiving side (`syneroym-control-plane`'s
 //! `resolve_relation`, which signs one via [`RelationshipProof::sign`]) and
 //! the requesting side (`syneroym-rpc`'s `fdae_fetch::resolve_fetches`,
 //! which verifies one via [`RelationshipProof::verify`]) so both sides agree
@@ -16,11 +16,11 @@ use syneroym_identity::{
 /// How long a `resolve-relation` answer is valid for (ADR-0017 §6's own
 /// worked example: "valid 60s"). A fixed constant, not policy-configurable,
 /// in this phase -- the fetch is used immediately by the same request that
-/// triggered it; a cache honoring this TTL is a pure future addition
-/// (D-B3-6), not something this phase relies on.
+/// triggered it; a cache honoring this TTL is a pure future addition,
+/// not something this phase relies on.
 pub const RELATIONSHIP_PROOF_TTL_SECS: u64 = 60;
 
-/// B3-09: returns an error rather than a bogus timestamp on failure. The
+/// Returns an error rather than a bogus timestamp on failure. The
 /// only way `duration_since(UNIX_EPOCH)` fails is a system clock set before
 /// 1970 -- vanishingly unlikely, but this value feeds a cryptographically
 /// **signed** artifact, unlike an ordinary internal timestamp field:
@@ -34,10 +34,10 @@ pub fn now_secs() -> anyhow::Result<u64> {
 }
 
 /// A signed, TTL'd assertion answering "which rows does `principal` reach
-/// via `relation`" (Slice B3, ADR-0017 §6): the wire response of
+/// via `relation`" (ADR-0017 §6): the wire response of
 /// `resolve-relation`. Signing (not just transport authentication) is what
 /// makes the id-set self-authenticating for the `DecisionTrace` provenance a
-/// *successful* fetch records and for any future cache (D-B3-6, deferred) --
+/// *successful* fetch records and for any future cache (deferred) --
 /// both need to know *which node* asserted this, independent of the
 /// connection it arrived over.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,9 +69,9 @@ pub struct RelationshipProof {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RelationshipProofError {
-    /// D-B3-8 (load-bearing): the proof's own `asserter_did` field is
-    /// self-referential -- any signer can embed its own DID and sign under
-    /// the matching key. This must be checked against a policy-declared
+    /// The proof's own `asserter_did` field is self-referential -- any
+    /// signer can embed its own DID and sign under the matching key. This
+    /// must be checked against a policy-declared
     /// `expected_asserter_did` the fetching side already trusted *before*
     /// issuing the fetch, never derived from the response.
     #[error("relationship proof asserter mismatch: expected '{expected}', got '{actual}'")]
@@ -123,7 +123,7 @@ impl RelationshipProof {
     }
 
     /// Verifies this proof against a policy-declared `expected_asserter_did`
-    /// (D-B3-8) -- **not** the proof's own `asserter_did` field alone, which
+    /// -- **not** the proof's own `asserter_did` field alone, which
     /// is self-referential and would verify for any signer self-declaring
     /// its own DID. Also enforces the TTL: an expired proof is rejected even
     /// if the signature is otherwise valid.
@@ -148,11 +148,11 @@ impl RelationshipProof {
 
         // The signing key is the instance key the certificate names, and the
         // certificate is what ties it to `asserter_did`. Checked with the
-        // full `verify` (wall-clock expiry included), not A1's reader-level
+        // full `verify` (wall-clock expiry included), not the reader-level
         // `verify_chain`: a relationship proof is minted per fetch and lives
         // 60 seconds, so a lapsed certificate means the responder stopped
         // renewing -- the attended posture's outage, surfaced here rather
-        // than silently accepted (D-A2-12).
+        // than silently accepted.
         let signer_did = match &self.delegation {
             Some(json) => {
                 let cert = DelegationCertificate::from_json(json)

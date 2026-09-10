@@ -1,4 +1,4 @@
-//! FDAE pushdown-sieve integration tests (M04B Slice B2 Phase 2): real SQL
+//! FDAE pushdown-sieve integration tests: real SQL
 //! against seeded rows through the `ServiceStore` trait, exercised with a
 //! real compiled [`Policy`] and hand-built `SessionContext`s -- asserting row
 //! *visibility*, not SQL string shape.
@@ -152,7 +152,7 @@ fn cls_policy() -> Policy {
 }
 
 /// A `manage` permission covering `data-layer/write`, reachable via the same
-/// creator relation -- used to exercise `delete_many`'s D2 write-op binding.
+/// creator relation -- used to exercise `delete_many`'s write-op binding.
 /// A single permission covering both read and write, opted into the
 /// stage-4 after-step (ADR-0017 §7, `authorize_rows: true`) -- `data_db`
 /// has no WASM engine, so this is exactly the shape
@@ -259,8 +259,8 @@ fn write_cap(collection: &str) -> Capability {
 
 /// `document.creator` targets a definition (`ghost_user`) whose physical
 /// table is never created via `create_collection` -- ADR-0017's 2026-07-20
-/// `principal_column` amendment's residual "missing target table" case
-/// (§6.6): this must fail closed, not leak.
+/// `principal_column` amendment's residual "missing target table" case:
+/// this must fail closed, not leak.
 fn missing_target_table_policy() -> Policy {
     parse_and_validate(
         r#"{
@@ -341,8 +341,8 @@ async fn mode_b_query_excludes_unreachable_rows_not_error() {
     assert!(outcome.masked_fields.is_empty());
 }
 
-/// Slice B3 Phase 4: `QueryAuth.resolved_sieve`, when present, is used
-/// as-is and `compile_read` is never consulted -- a caller that already ran
+/// `QueryAuth.resolved_sieve`, when present, is used as-is and
+/// `compile_read` is never consulted -- a caller that already ran
 /// `plan_read` + the `resolve_fetches` orchestration + `finalize` (because
 /// the policy needed a remote relationship fetch) must not have its result
 /// silently re-derived (and potentially narrowed or widened) by the store
@@ -656,18 +656,17 @@ async fn masked_fields_exposed_but_rows_unmasked_in_phase_2() {
     let opts = QueryOptions { filter: None, limit: None, cursor: None };
     let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
     assert_eq!(outcome.masked_fields, vec!["ssn".to_string()]);
-    // Phase 2 never strips fields itself (Phase 3 does, host-side) -- the
+    // This crate never strips fields itself (the host does that) -- the
     // row's payload is untouched even though the mask metadata is exposed.
     assert_eq!(outcome.value.records.len(), 1);
 }
 
-/// A CLS-masked field must not be filterable either -- otherwise the Phase-3
+/// A CLS-masked field must not be filterable either -- otherwise the
 /// host-side strip only hides the value from the *output*, while the
 /// caller's own filter predicate (which runs in SQL against the raw
 /// payload, unaware of `masked_fields`) still turns row presence/absence
 /// into a boolean oracle -- and with `$regex`/comparison operators, a full
-/// extraction channel, not just a single guess. Surfaced during Slice B2
-/// Phase 3 review.
+/// extraction channel, not just a single guess.
 #[tokio::test]
 async fn query_filter_referencing_a_cls_masked_field_is_denied() {
     let store = setup_store().await;
@@ -731,7 +730,7 @@ async fn delete_many_is_row_filtered_as_a_write_operation() {
     seed_creator_docs(store.as_ref()).await;
     let policy = write_policy();
     // Alice holds only a *read* capability -- `manage` requires
-    // data-layer/write, so D2's write-mode compile must deny every row.
+    // data-layer/write, so the write-mode compile must deny every row.
     let alice_read_only = session("did:key:alice", vec![read_cap("documents")]);
     let auth_ro = QueryAuth {
         policy: &policy,
@@ -979,11 +978,10 @@ async fn differently_cased_collection_name_does_not_bypass_the_write_sieve() {
     );
 }
 
-/// Plan §11's "adversarial `subject_did`/caveat bound not interpolated
-/// (covered in `fdae`; add a data_db end-to-end row)" -- `fdae`'s own unit
-/// tests already prove `compile_read` binds these as `?` params; this proves
-/// the same holds once `data_db` runs the merged sieve+caveat SQL for real,
-/// through both Mode B (`query`) and Mode A (`check_access`).
+/// `fdae`'s own unit tests already prove `compile_read` binds an adversarial
+/// `subject_did` or caveat bound as `?` params; this proves the same holds
+/// once `data_db` runs the merged sieve+caveat SQL for real, through both
+/// Mode B (`query`) and Mode A (`check_access`).
 #[tokio::test]
 async fn adversarial_subject_did_and_caveat_value_are_bound_not_interpolated() {
     let store = setup_store().await;
@@ -1030,20 +1028,18 @@ async fn adversarial_subject_did_and_caveat_value_are_bound_not_interpolated() {
     );
 }
 
-/// **Known limitation, tracked as D-04-02-g** (surfaced during Slice B2
-/// Phase 2 review): `CompiledSieve.where_caveats` is a flat list collected
-/// from *every* entitling capability (`crates/fdae/src/compile.rs`'s
+/// **Known limitation**: `CompiledSieve.where_caveats` is a flat list
+/// collected from *every* entitling capability (`crates/fdae/src/compile.rs`'s
 /// `entitling_caps`), not associated per-OR-branch. `merge_sieve` ANDs all
 /// of them onto the single RLS predicate, so a caller holding a second,
 /// narrower-caveated capability on the same resource has their *broader*
 /// capability's access narrowed too -- capabilities are meant to be
-/// additive, not intersective. This is a `crates/fdae` (Phase 1, already
-/// shipped) data-shape issue, not something Phase 2's `merge_sieve` can fix
-/// on its own: resolving it needs `CompiledSieve` to carry each caveat
-/// alongside the OR-branch it entitles, an ADR-0017-level change. Fails
-/// toward *over-restriction*, never a leak -- not a Phase 2 blocker, but
-/// pinned here so a future fix has a concrete regression to update (see
-/// task.md's Decision Register, D-04-02-g).
+/// additive, not intersective. This is a `crates/fdae` data-shape issue,
+/// not something `merge_sieve` can fix on its own: resolving it needs
+/// `CompiledSieve` to carry each caveat alongside the OR-branch it
+/// entitles, an ADR-0017-level change. Fails toward *over-restriction*,
+/// never a leak -- pinned here so a future fix has a concrete regression
+/// to update.
 #[tokio::test]
 async fn two_capabilities_with_conflicting_caveats_currently_narrow_to_zero_rows() {
     let store = setup_store().await;

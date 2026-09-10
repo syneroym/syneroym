@@ -1,4 +1,4 @@
-//! The saga compensation convention (ADR-0023 §7, as amended). A service
+//! The saga compensation convention (ADR-0023 §7). A service
 //! that can undo an operation exports a second function beside it, named by
 //! prefixing the forward operation.
 

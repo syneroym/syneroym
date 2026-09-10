@@ -1,4 +1,4 @@
-//! Transport-agnostic service-proxy contract (M04A Slice A1).
+//! Transport-agnostic service-proxy contract.
 //!
 //! [`ServiceProxy`] is the Universal Proxy's outbound-call interface: a typed
 //! `(service, interface, method, params)` call routed to a local native
@@ -48,11 +48,10 @@ pub enum CallOrigin {
     /// the guest's own raw component id -- not the `"system:"`-prefixed
     /// synthetic DID `CallerContext::service_system` puts in `caller_did`.
     Guest { service_id: String },
-    /// Substrate-internal: the FDAE policy engine's relationship-proof fetch
-    /// (M04B B3), control-plane internals, tests. Not subject to the guest
+    /// Substrate-internal: the FDAE policy engine's relationship-proof
+    /// fetch, control-plane internals, tests. Not subject to the guest
     /// native-capability gate -- enforcement for these lives at the
-    /// data-owning node (ADR-0016 §6; M04B "enforce at the data-owning
-    /// node").
+    /// data-owning node (ADR-0016 §6).
     Native {
         /// The deployed service this call is made *on behalf of*, when there
         /// is one -- the FDAE relationship-proof fetch, which must travel as
@@ -131,8 +130,8 @@ impl ProxyError {
 }
 
 /// Reserved JSON-RPC error code for a caller declaring a protocol scheme this
-/// node does not speak (the minimal `[LFC-VER]` behavior kept from the
-/// deferred protocol-negotiation slice, A.7).
+/// node does not speak (minimal `[LFC-VER]` behavior; full protocol
+/// negotiation is deferred).
 /// JSON-RPC code a node answers with when it does not host the service a
 /// call named. Named rather than inlined because a *caller* has to
 /// recognise it on the wire: it is the one "the callee answered" code that
@@ -143,7 +142,7 @@ pub const UNSUPPORTED_PROTOCOL_RPC_CODE: i32 = -32091;
 /// failure, malformed response, or exhausted retries).
 pub const PROXY_TRANSPORT_RPC_CODE: i32 = -32092;
 /// Reserved JSON-RPC error code for a proxy target endpoint kind that isn't
-/// callable over the proxy (e.g. a TCP/Podman passthrough target -- Flag F4).
+/// callable over the proxy (e.g. a TCP/Podman passthrough target).
 pub const UNSUPPORTED_TARGET_RPC_CODE: i32 = -32093;
 /// Default per-call deadline when [`ProxyRequest::timeout`] is `None`.
 pub const DEFAULT_PROXY_CALL_TIMEOUT: Duration = Duration::from_secs(30);
