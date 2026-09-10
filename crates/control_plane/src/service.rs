@@ -69,8 +69,8 @@ pub const AUTH_RESERVED_SERVICE_ID: &str = syneroym_core::protocol_utils::AUTH_S
 /// like Podman or Wasmtime.
 pub struct ControlPlaneService {
     service_id: String,
-    /// This node's own DID; `substrate:<node_did>` resources name it (M04A
-    /// Slice B7a). Distinct field from `service_id` above (which happens to
+    /// This node's own DID; `substrate:<node_did>` resources name it.
+    /// Distinct field from `service_id` above (which happens to
     /// hold the same value in production) because it is used as an
     /// *identity*, not a routing key -- mirrors `RouteHandlerInner::node_did`.
     node_did: String,
@@ -83,22 +83,23 @@ pub struct ControlPlaneService {
     blob_provider: Arc<dyn BlobProvider>,
     messaging_broker: Arc<MqttBroker>,
     /// This node's own signing identity -- threaded to each deployed
-    /// service's `SynSvcNativeService` so it can sign Slice B3's
-    /// relationship-proof records as this node's asserter DID
+    /// service's `SynSvcNativeService` so it can sign relationship-proof
+    /// records as this node's asserter DID
     /// (`node_identity.to_doc(..).id`). Distinct from `node_did` above,
     /// which is only the DID string; this carries the actual key material.
     node_identity: Arc<Identity>,
-    /// A2 (ADR-0021 §2): the write side of dependency resolution. `deploy`
-    /// writes a binding's persisted row and its in-memory topology through
-    /// this in one step (`LogicalResolver::register`), so a scale-out is
-    /// never left serving a stale cached topology for up to `cache_ttl`.
+    /// The write side of intra-app dependency resolution (ADR-0021 §2).
+    /// `deploy` writes a binding's persisted row and its in-memory topology
+    /// through this in one step (`LogicalResolver::register`), so a
+    /// scale-out is never left serving a stale cached topology for up to
+    /// `cache_ttl`.
     /// Shared with `AppSandboxEngine`'s read side over the same
     /// `StaticInventory` -- one registry, one resolver, two holders.
     logical_resolver: Arc<syneroym_app_orchestration::LogicalResolver>,
-    /// The Universal Proxy (M04A Slice A1), for Slice B3 Phase 4's
-    /// cross-service relationship-proof fetch, threaded on into each
-    /// deployed service's `SynSvcNativeService`. `pub` and a post-
-    /// construction `OnceLock`, mirroring `AppSandboxEngine.service_proxy`
+    /// The Universal Proxy, for the cross-service relationship-proof fetch,
+    /// threaded on into each deployed service's `SynSvcNativeService`. `pub`
+    /// and a post-construction `OnceLock`, mirroring
+    /// `AppSandboxEngine.service_proxy`
     /// exactly (`crates/sandbox_wasm/src/engine.rs`): `ProxyRouter` (the
     /// only implementation) is constructed in `RouteHandler::init`, which
     /// runs *after* this service (`RouteHandlerDeps` already holds it), so
@@ -161,7 +162,7 @@ pub struct ControlPlaneService {
     // `syneroym_core::http_routes`) for lookup from
     // `crates/router/src/route_handler/http.rs`.
     http_routes: HttpRouteRegistry,
-    /// Static asset manifests, per service (M06A A1). Same `Arc`, same
+    /// Static asset manifests, per service. Same `Arc`, same
     /// producer/consumer split, and same cache-not-persistence lifecycle as
     /// `http_routes` above -- `RouteHandlerInner` holds the identical `Arc`
     /// for lookup from `crates/router/src/route_handler/http.rs`.
@@ -181,9 +182,9 @@ pub struct ControlPlaneService {
     full_deploy_completed: DashMap<String, ()>,
     /// Bounded concurrent SSE subscriptions per service.
     sse_permits: SsePermitRegistry,
-    /// Last probe result per service, `(checked_at_secs, ProbeStatus)` (M05A
-    /// A4). A supervisor polling every few seconds must not turn into probe
-    /// load on the target (the milestone's "health poll cost" budget), and a
+    /// Last probe result per service, `(checked_at_secs, ProbeStatus)`. A
+    /// supervisor polling every few seconds must not turn into probe
+    /// load on the target (the health-poll-cost budget), and a
     /// wasm `rpc` probe costs a component instantiation. Entries are dropped
     /// on undeploy.
     probe_cache: DashMap<String, (u64, ProbeStatus)>,
@@ -270,7 +271,7 @@ impl ControlPlaneService {
     }
 
     /// Wires in the substrate's `EndpointPublisher` so `deploy` can publish
-    /// an endpoint record immediately (D-A1-3) instead of waiting for the
+    /// an endpoint record immediately instead of waiting for the
     /// next heartbeat. A no-op past the first call -- `OnceLock::set` simply
     /// returns `Err`, which is discarded, mirroring `service_proxy`'s and
     /// `row_authorizer`'s two-phase wiring.
@@ -369,36 +370,33 @@ impl ControlPlaneService {
     /// `Ability::SUBSTRATE_ADMIN` itself, to gate the `security` interface.
     /// There is deliberately no "is the substrate owned?"
     /// branch anywhere else, because ownership is expressed as an issued
-    /// capability, not as a skipped check (design §6.1.1). An unowned
+    /// capability, not as a skipped check. An unowned
     /// substrate holds no node-wide capability at all: it
     /// fails closed rather than granting every verified caller
     /// `orchestrator/*` the way the old bootstrap posture did.
     ///
-    /// **Parameterized by `ability`, not hardcoded to one** (post-review
-    /// fix): B7b's design (§3.1 A2) deliberately keeps the three
-    /// `orchestrator/*` abilities flat and independently grantable ("deploy
-    /// but not undeploy" must stay expressible), so a future grantee could
-    /// hold `orchestrator/status` alone. Checking a single hardcoded ability
-    /// here for every caller-side use -- deploy's takeover override, undeploy's
-    /// gate, and list's visibility -- would let a *read-only, status-only*
-    /// grantee also override another owner's deploy/undeploy, a privilege
-    /// escalation once B7b mints such a grant (not reachable in B7a itself:
-    /// F4 only ever issues all three abilities together, and no tooling
-    /// exists yet to mint a partial grant). Each call site below must pass
-    /// the ability it actually needs to exercise -- `ORCHESTRATOR_DEPLOY` to
-    /// override a takeover, `ORCHESTRATOR_UNDEPLOY` to override an undeploy
-    /// gate, `ORCHESTRATOR_STATUS` for list's broader visibility bar (a
+    /// **Parameterized by `ability`, not hardcoded to one.** The three
+    /// `orchestrator/*` abilities are flat and independently grantable
+    /// ("deploy but not undeploy" must stay expressible), so a future
+    /// grantee could hold `orchestrator/status` alone. Checking a single
+    /// hardcoded ability here for every caller-side use -- deploy's takeover
+    /// override, undeploy's gate, and list's visibility -- would let a
+    /// *read-only, status-only* grantee also override another owner's
+    /// deploy/undeploy, a privilege escalation once such a partial grant can
+    /// be minted. Each call site below must pass the ability it actually
+    /// needs to exercise -- `ORCHESTRATOR_DEPLOY` to override a takeover,
+    /// `ORCHESTRATOR_UNDEPLOY` to override an undeploy gate,
+    /// `ORCHESTRATOR_STATUS` for list's broader visibility bar (a
     /// monitoring-only grantee is meant to see the list; it is not thereby
     /// meant to deploy/undeploy over someone else's app).
     ///
-    /// The resource is the **bare** `substrate:<node_did>` -- node-wide (F2).
-    /// That excludes an app-scoped B7b grantee (`substrate:<node>/app/foo`):
+    /// The resource is the **bare** `substrate:<node_did>` -- node-wide.
+    /// That excludes an app-scoped grantee (`substrate:<node>/app/foo`):
     /// their capability carries a selector, so it is not `is_substrate_scope`
-    /// (`ResourceUri::is_substrate_scope`, narrowed at M04A Slice B7b to
-    /// exclude selector-bearing resources -- landed alongside this gate, so
-    /// the exclusion is real, not merely inert-by-absence as it was at B7a).
-    /// They are prefix-covered by `covers_resource` instead, at each gate's
-    /// own selectored resource check (deploy/undeploy/per-service readyz).
+    /// (`ResourceUri::is_substrate_scope` excludes selector-bearing
+    /// resources). They are prefix-covered by `covers_resource` instead, at
+    /// each gate's own selectored resource check
+    /// (deploy/undeploy/per-service readyz).
     fn has_node_wide_ability(&self, caller: &CallerContext, ability: &'static str) -> bool {
         caller
             .has_capability(&ResourceUri::substrate(&self.node_did), &Ability(ability.to_string()))
@@ -901,20 +899,19 @@ mod tests {
 
     use super::*;
 
-    /// M04A Slice B7b: a caller holding node-wide orchestrator authority on
+    /// A caller holding node-wide orchestrator authority on
     /// `"did:key:zTestNode"` (every test in this module inits
     /// `ControlPlaneService` with that node DID) -- the shape `build_caller`
-    /// issues for a verified `ControllerAgreement` controller (before that
-    /// tool existed, this was also the unowned-substrate bootstrap grant,
-    /// now removed). `deploy`/`undeploy` now gate on an explicit
-    /// `orchestrator/{deploy,undeploy}`
-    /// capability (§3.2), so any test that deploys/undeploys a service as
+    /// issues for a verified `ControllerAgreement` controller.
+    /// `deploy`/`undeploy` gate on an explicit
+    /// `orchestrator/{deploy,undeploy}` capability, so any test that
+    /// deploys/undeploys a service as
     /// setup for exercising a *different* interface (data-layer, blob-store,
     /// messaging) needs a caller that holds it --
     /// `CallerContext::service_system` (zero capabilities) no longer
     /// suffices for that setup step. Not used for the native-interface
-    /// dispatch calls themselves, which stay ungated (F3.1/Q2: B7 does not
-    /// close the five data interfaces).
+    /// dispatch calls themselves, which stay ungated: the five data
+    /// interfaces are not closed by this gate.
     fn node_wide_caller(caller_did: &str) -> CallerContext {
         use syneroym_rpc::{Ability, AuthLevel, Capability, ResourceUri, SessionContext};
 
@@ -1192,9 +1189,9 @@ mod tests {
         assert_eq!(secret_res.payload, serde_json::json!({"status": "secret_set"}));
     }
 
-    /// **Matrix row 16** (task.md): a caller holding no `substrate/admin`
-    /// is denied every `security` method, with `PERMISSION_DENIED_CODE`
-    /// (-32010) so a caller can assert denial without string-matching.
+    /// A caller holding no `substrate/admin` is denied every `security`
+    /// method, with `PERMISSION_DENIED_CODE` (-32010) so a caller can
+    /// assert denial without string-matching.
     #[tokio::test]
     async fn security_is_denied_without_substrate_admin() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1267,7 +1264,7 @@ mod tests {
         }
     }
 
-    /// Slice 5: deploy a service (TCP type -- no WASM component needed),
+    /// Deploy a service (TCP type -- no WASM component needed),
     /// then exercise data-layer and blob-store entirely through
     /// `SynSvcNativeService::dispatch`, with no WASM component involved at
     /// all. Confirms `undeploy` removes the native dispatch registration.
@@ -1787,7 +1784,7 @@ mod tests {
         assert!(matches!(quota_err, RpcError::Custom(-32002, _, _)));
     }
 
-    /// M3B Slice 6A: a guest subscription's `messaging_subscriptions` row
+    /// A guest subscription's `messaging_subscriptions` row
     /// and live broker registration are both removed by `undeploy`, and a
     /// publish to that topic afterward does not error (nothing is left to
     /// deliver to).
@@ -1879,7 +1876,7 @@ mod tests {
         messaging_broker.publish(namespaced_topic, b"post-undeploy".to_vec()).await.unwrap();
     }
 
-    /// M3B Slice 6A: service A cannot receive messages published in
+    /// Service A cannot receive messages published in
     /// service B's own namespace without the explicit fully-qualified
     /// `svc/<other>/...` opt-in (ADR-0010's Topic Namespace Isolation).
     #[tokio::test]
@@ -1987,8 +1984,8 @@ mod tests {
         );
     }
 
-    /// M3B Slice 6A (ADR-0010 Finding A1): a guest subscription's
-    /// `messaging_subscriptions` row survives a substrate restart, and
+    /// A guest subscription's `messaging_subscriptions` row survives a
+    /// substrate restart, and
     /// replaying it into a freshly-constructed broker/engine (the same
     /// steps `syneroym_substrate::runtime::build_route_handler_deps`
     /// performs on real startup) restores delivery without the guest
@@ -2139,13 +2136,12 @@ mod tests {
         }
     }
 
-    /// M3B Slice 6B (ADR-0014): `ControlPlaneService::undeploy` already
-    /// iterates every registered interface for a `service_id` and removes
-    /// it generically (see the ADR's "Where Registration Lives") -- this
-    /// proves that generic loop also cleans up a `register-stream-protocol`
-    /// registration (the stream-test fixture registers `"file-transfer"`
-    /// from its own `init()`), with no Slice-6B-specific cleanup code
-    /// needed in `undeploy` itself.
+    /// `ControlPlaneService::undeploy` already iterates every registered
+    /// interface for a `service_id` and removes it generically (ADR-0014,
+    /// "Where Registration Lives") -- this proves that generic loop also
+    /// cleans up a `register-stream-protocol` registration (the stream-test
+    /// fixture registers `"file-transfer"` from its own `init()`), with no
+    /// protocol-specific cleanup code needed in `undeploy` itself.
     #[tokio::test]
     async fn test_stream_protocol_undeploy_removes_registration() {
         let Ok(wasm_bytes) = std::fs::read(test_constants::stream_test_wasm_path()) else {

@@ -1,4 +1,4 @@
-//! Parses a deployed service's declared HTTP routes (M3B Slice 7) out of the
+//! Parses a deployed service's declared HTTP routes out of the
 //! `http_routes` key of its `custom_config` JSON
 //! (`ServiceConfig.custom_config`, already a free-form per-service deploy-time
 //! extension point -- see `ControlPlaneService::deploy`). The
@@ -6,13 +6,13 @@
 //! `syneroym_core::http_routes`, shared with `syneroym-router` (see that
 //! module's doc comment for why).
 //!
-//! `task.md` (`§B8`) requires HTTP routes to be per-service, not a global
-//! substrate-wide policy, since different services expose different
+//! HTTP routes are per-service, not a global substrate-wide policy, since
+//! different services expose different
 //! data-layer collections / messaging topics. Reusing `custom_config`
 //! avoids adding new WIT surface for this: `crates/router/src/route_handler/
 //! http.rs` looks routes up by `service_id` at request time to decide how a
 //! given HTTP verb+path bridges onto `data-layer`/`messaging`/a registered
-//! stream protocol, or (M06A A2) reaches the deployed component's own
+//! stream protocol, or reaches the deployed component's own
 //! `syneroym:http/incoming-handler#handle-request` export.
 
 use serde::Deserialize;
@@ -120,8 +120,8 @@ fn validate_route(route: &HttpRoute) -> Result<(), String> {
         _ => Ok(()),
     }?;
 
-    // M06A D-A2-7, A3, A4: `public` does nothing outside a guest or websocket
-    // route, so accepting it there would be exactly the silently-dead
+    // `public` does nothing outside a guest or websocket route, so
+    // accepting it there would be exactly the silently-dead
     // configuration this module's duplicate-route check already exists to
     // prevent.
     if route.public && (route.target != "guest" && route.target != "websocket") {
