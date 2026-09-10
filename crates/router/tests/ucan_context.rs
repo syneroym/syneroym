@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Slice B1 (M04A): UCAN context extraction and normalization -- reference
-//! scenario step 21 ("A client presents a UCAN; the gateway verifies the
-//! chain and normalizes claims/capabilities into a SessionContext").
+//! UCAN context extraction and normalization: a client presents a UCAN,
+//! the gateway verifies the chain and normalizes claims/capabilities into
+//! a SessionContext.
 //!
 //! Router-internal chain verification/revocation wiring (`build_caller`) is
 //! unit-tested directly in `crates/router/src/route_handler/io.rs` (it is a

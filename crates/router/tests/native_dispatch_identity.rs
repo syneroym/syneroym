@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Slice B0 (M04A): native-dispatch identity threading -- "the single most
-//! important test in this milestone" (task.md Tests Summary). Drives
+//! Native-dispatch identity threading -- one of the most
+//! important behaviours in the router. Drives
 //! `RouteHandler::dispatch_json_rpc_once`/`handle_http_stream` directly
 //! (the wire handshake itself is `crates/router/src/handshake.rs`'s own
 //! test responsibility) to prove:
@@ -428,7 +428,7 @@ async fn drop_collection_denied_for_ordinary_native_caller() {
 
 /// A caller matching `[iam].admin_ucan_root` -- represented by the
 /// `substrate/admin` grant `build_caller` constructs for it -- must be
-/// admitted to native `execute-ddl` (B0.md §11.2).
+/// admitted to native `execute-ddl`.
 #[tokio::test]
 async fn execute_ddl_allowed_for_admin_ucan_root_native_caller() {
     let (route_handler, _http_routes) = test_route_handler().await;
@@ -468,7 +468,7 @@ async fn execute_ddl_allowed_for_admin_ucan_root_native_caller() {
     assert!(resp.get("error").is_none(), "admin_ucan_root caller must be admitted: {resp:?}");
 }
 
-/// `query-raw` (Slice B5, ADR-0011) is gated on `data-layer/admin`, mirroring
+/// `query-raw` (ADR-0011) is gated on `data-layer/admin`, mirroring
 /// `execute-ddl` -- an ordinary caller must be denied.
 #[tokio::test]
 async fn ordinary_caller_denied_query_raw() {
@@ -557,7 +557,7 @@ async fn admin_caller_admitted_query_raw() {
     assert!(result.get("rows").is_some(), "result must carry a rows field: {result:?}");
 }
 
-/// End-to-end injection resistance (task.md:439): a `query-raw` `params`
+/// End-to-end injection resistance: a `query-raw` `params`
 /// value containing SQL-injection-shaped text is bound, never interpolated.
 #[tokio::test]
 async fn query_raw_binds_params_no_injection() {
@@ -638,7 +638,7 @@ async fn query_raw_binds_params_no_injection() {
     );
 }
 
-/// Flag F1 (B5.md §4/§7): the hand-rolled `SqlValueDto`'s unit `Null` variant
+/// The hand-rolled `SqlValueDto`'s unit `Null` variant
 /// under `#[serde(tag = "type", content = "value")]` must deserialize from
 /// `{"type": "null"}` (no `value` key) -- exercised here through the real
 /// wire path rather than as an isolated unit test, since the DTO is scoped
@@ -913,9 +913,9 @@ async fn messaging_subscribe_rejected_for_anonymous_caller() {
     let _ = handle.await;
 }
 
-/// `aggregate` (Slice B4, ADR-0007) is deliberately unprivileged, like
-/// `query` -- the deliberate contrast with B5's `ordinary_caller_denied_
-/// query_raw`: an ordinary (non-admin) caller must be admitted, and the
+/// `aggregate` (ADR-0007) is deliberately unprivileged, like
+/// `query` -- the deliberate contrast with `ordinary_caller_denied_query_raw`:
+/// an ordinary (non-admin) caller must be admitted, and the
 /// payload carries the `columns`/`rows` `raw-query-result` shape.
 #[tokio::test]
 async fn ordinary_caller_admitted_aggregate() {
@@ -1629,10 +1629,10 @@ async fn native_aggregate_is_row_filtered_through_native_dispatch() {
     );
 }
 
-// -- Slice B3 Phase 3: native `resolve-relation` (the cross-service
-// relationship-proof fetch's receiving side, D-B3-3) --------------------
+// -- native `resolve-relation` (the cross-service relationship-proof
+// fetch's receiving side) ---------------------------------------------
 
-/// A single `employee` definition supporting both D-B3-3 authorization
+/// A single `employee` definition supporting both authorization
 /// models: `view_self`'s zero-hop `paths: [["caller"]]` is what A1 (the
 /// existing capability-gated sieve) evaluates, and
 /// `resolvable_without_capability: true` is the explicit per-definition
@@ -1710,7 +1710,7 @@ fn unrelated_resource_capability_caller(subject_did: &str, service_id: &str) -> 
 /// resource (`employees`) but for an ability `view_self`'s `allows:
 /// ["data-layer/read"]` doesn't cover -- routes to A1 (a capability *is*
 /// scoped here), which then genuinely denies via the grant∩policy
-/// intersection. Exercises A1's real (not-A2-rescued) deny.
+/// intersection. Exercises the real A1 deny, not one A2 rescued.
 ///
 /// Must be an ability data-layer/read doesn't entail: the `data-layer`
 /// namespace is a *tiered* hierarchy (`admin ⊇ write ⊇ read`,
@@ -1871,7 +1871,7 @@ async fn seed_many_employees(
     }
 }
 
-/// B3 plan §5 fan-out containment: A1's `ServiceStore::query` limit is
+/// Fan-out containment: the A1 `ServiceStore::query` limit is
 /// `MAX_FETCH_IDS` (1000); when more rows are actually reachable,
 /// `next_cursor` comes back `Some`, and `resolve_relation` must map that
 /// to `quota-exceeded`, not silently return a truncated -- and therefore
@@ -2119,11 +2119,11 @@ async fn resolve_relation_an_unrelated_resource_capability_still_gets_a2() {
     );
 }
 
-/// A1's real deny (a capability scoped to `employees` but for an ability
+/// The real A1 deny (a capability scoped to `employees` but for an ability
 /// `view_self` doesn't cover) is final -- it must **not** be rescued by
 /// A2, even though the definition has opted into
 /// `resolvable_without_capability`. Mutually exclusive per request, not a
-/// fallback chain (D-B3-3).
+/// fallback chain.
 #[tokio::test]
 async fn resolve_relation_a1_deny_is_not_rescued_by_a2() {
     let service_id = "resolve-relation-a1-deny-svc";
@@ -2261,8 +2261,7 @@ async fn resolve_relation_is_empty_when_no_policy_is_deployed() {
     assert_eq!(resp["result"]["ids"], json!([]));
 }
 
-// -- Slice B4-fdae: `resolve-relation` denies closed under a stage-4
-// definition (D-B4-3) ----------------------------------------------------
+// -- `resolve-relation` denies closed under a stage-4 definition --------
 
 /// Same shape as `resolvable_employee_policy`, but `view_self` opts into
 /// the stage-4 after-step. Neither A1 nor A2 has a compiled sieve in hand
@@ -2349,7 +2348,7 @@ async fn resolve_relation_a2_denies_closed_under_a_stage4_definition() {
     );
 }
 
-/// Slice B3 Phase 4: constructs hr-svc's `SynSvcNativeService` directly
+/// Constructs hr-svc's `SynSvcNativeService` directly
 /// (not via `resolve_relation_service_and_pipeline_with`/`RouteHandler`,
 /// which hides its registry/native_dispatch -- this test needs a real
 /// `ProxyRouter` it can hand to `syneroym_rpc::resolve_fetches`), registers
@@ -2466,7 +2465,7 @@ async fn plan_read_resolve_fetches_finalize_join_end_to_end_through_a_real_proxy
 
     // -- the local (requesting) service: app-svc, whose own policy names a
     // remote relation pointing at hr-svc, trusting the *real* derived
-    // asserter DID (D-B3-8) -- not a placeholder.
+    // asserter DID -- not a placeholder.
     let local_service_id = "app-svc-join-test";
     let local_policy = parse_and_validate(&format!(
         r#"{{
@@ -2710,7 +2709,7 @@ async fn native_dispatch_query_resolves_a_cross_service_fetch_end_to_end() {
 /// A `RelationshipProof` signed by an identity the policy does *not* name in
 /// `expected_asserter_did` (e.g. an impersonator standing up its own service
 /// at the same logical name) must be rejected, not silently trusted off its
-/// own self-declared `asserter_did` field (D-B3-8) -- exercised through the
+/// own self-declared `asserter_did` field -- exercised through the
 /// real `ProxyRouter`/`resolve_fetches` path, not just `rpc`'s own unit test
 /// of `RelationshipProof::verify` in isolation.
 #[tokio::test]

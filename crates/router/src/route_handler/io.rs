@@ -84,12 +84,13 @@ async fn ucan_chain_not_revoked(
     true
 }
 
-/// M04A Slice B7b (ADR-0015 A6/F6): whether `res`'s named substrate node is
-/// *this* node. `synapp:...` service resources are always local (evaluated
-/// locally by construction -- a cross-node proxy hop re-verifies with a
-/// fresh `CallerContext` at the destination, ADR-0016 §6); a
-/// `substrate:<node_did>[/selector]` resource is local only when it names
-/// this node's own DID. This is the node-locality half of A6's
+/// Whether `res`'s named substrate node is
+/// *this* node (ADR-0015 A6). `synapp:...` service resources are always
+/// local (evaluated locally by construction -- a cross-node proxy hop
+/// re-verifies with a fresh `CallerContext` at the destination, per
+/// ADR-0016 §6); a `substrate:<node_did>[/selector]` resource is local
+/// only when it
+/// names this node's own DID. This is the node-locality half of
 /// `is_trusted_root`; the per-service half is `owning_service_id` below.
 fn resource_is_local(res: &ResourceUri, node_did: &str) -> bool {
     match res.0.strip_prefix("substrate:") {
@@ -98,7 +99,7 @@ fn resource_is_local(res: &ResourceUri, node_did: &str) -> bool {
     }
 }
 
-/// M04A Slice B7b (ADR-0015 A6): the `service_id` a resource names, for the
+/// The `service_id` a resource names (ADR-0015 A6), for the
 /// per-service `owner_of` root check -- both forms a live resource can take:
 /// `synapp:<app_instance_id>:svc:<service_id>[/selector]` (in practice
 /// `app_instance_id == service_id` today, since `CallerContext.app_instance`
@@ -121,21 +122,21 @@ fn owning_service_id(res: &ResourceUri) -> Option<&str> {
     None
 }
 
-/// Builds the `CallerContext` for a verified handshake identity (ADR-0016
-/// §4.2, Slice B1). A caller whose master DID equals the configured
-/// `[iam].admin_ucan_root` is granted `substrate/admin` on this node (the B0
-/// direct-equality path, kept). A presented `preamble.ucan` chain is
+/// Builds the `CallerContext` for a verified handshake identity
+/// (ADR-0016 §4.2). A caller whose master DID equals the configured
+/// `[iam].admin_ucan_root` is granted `substrate/admin` on this node (the
+/// direct-equality path). A presented `preamble.ucan` chain is
 /// additionally verified and merged in -- rooted either at that same admin
-/// root (node-wide, and only for a resource this node actually names, F6)
-/// or at a resource's own recorded owner (ADR-0015 A6, M04A Slice B7b: a
+/// root (node-wide, and only for a resource this node actually names)
+/// or at a resource's own recorded owner (ADR-0015 A6: a
 /// service owner is an independent root for their own service, regardless of
 /// whether the substrate itself has an admin root at all) -- except for
 /// `data-layer/admin` (or anything entailing it): an owner cannot self-root
 /// that ability on their own service, only the node admin root can, so a
 /// self-issued `data-layer/admin` grant does not silently open
-/// `execute-ddl`/`query-raw` on every deployment (post-commit review, F1 --
-/// `is_trusted_root`'s resource-only predicate was ability-agnostic and would
-/// otherwise have admitted it; see
+/// `execute-ddl`/`query-raw` on every deployment
+/// (`is_trusted_root`'s resource-only predicate was ability-agnostic and
+/// would otherwise have admitted it; see
 /// `unowned_substrate_does_not_grant_data_layer_admin`'s
 /// sibling `owner_rooted_chain_does_not_grant_data_layer_admin`). `auth` is
 /// upgraded to `AuthLevel::Ucan` only when the chain actually admitted at
@@ -144,16 +145,15 @@ fn owning_service_id(res: &ResourceUri) -> Option<&str> {
 /// capability" to any future code that checks `auth == Ucan` as a privilege
 /// signal.
 ///
-/// TODO(B7b / post-B7): B0's gate only proves *an* identity is present.
+/// TODO: the identity gate only proves *an* identity is present.
 /// "May this caller touch this service at all?" is Tier 1 -- a µs-scale
-/// grant-layer capability check, NOT an FDAE/M04B policy question (ADR-0017
-/// Open, design §9.8; this comment previously mis-addressed it to M04B).
-/// The deploy-grant work implements it for `orchestrator`; `security` is
-/// now also gated on `substrate/admin`. The five data native-capability
-/// interfaces remain
+/// grant-layer capability check, NOT an FDAE policy question (ADR-0017
+/// Open). The deploy-grant work implements it for `orchestrator`;
+/// `security` is also gated on `substrate/admin`. The five data
+/// native-capability interfaces remain
 /// open -- today any verified identity reaches any native service there.
 /// FDAE owns Tier 3 (rows/columns) only.
-/// The `None` rejection below is correct and settled (design §6.1.2):
+/// The `None` rejection below is correct and settled:
 /// native interfaces reject anonymous callers, WASM guests admit them.
 async fn build_caller(
     preamble: &RoutePreamble,
@@ -172,9 +172,9 @@ async fn build_caller(
     };
     let mut auth = AuthLevel::Delegated;
 
-    // The substrate-owner capability is issued from this single site (this
-    // design's §6.1.1: no "is this substrate owned?" branch
-    // anywhere downstream). The unowned bootstrap
+    // The substrate-owner capability is issued from this single site (there
+    // is no "is this substrate owned?" branch anywhere
+    // downstream). The unowned bootstrap
     // grant that used to sit here is now removed: an unowned substrate issued
     // `orchestrator/{deploy,undeploy,status}` to every verified caller,
     // which was defensible while one operator hand-deployed to their own
@@ -192,7 +192,7 @@ async fn build_caller(
         });
     }
 
-    // D-S3-6(a): the same-node resolve grant. A caller whose verified DID
+    // The same-node resolve grant. A caller whose verified DID
     // is this node's own is granted a bare `substrate:<node_did>`
     // capability whose ability is `supervisor/resolve`, deliberately not
     // `substrate/admin` -- the bare resource short-circuits
@@ -502,7 +502,7 @@ impl RouteHandler {
                 }
                 Ok(())
             }
-            // M3B Slice 6B bidirectional stream protocols (ADR-0014):
+            // Bidirectional stream protocols (ADR-0014):
             // `preamble.interface` carries the registered protocol name
             // (the WasmChannel endpoint was resolved via the same registry
             // `register-stream-protocol` writes into -- see the ADR's
@@ -577,7 +577,7 @@ impl RouteHandler {
         // The raw-QUIC-stream path has no HTTP-style status code to map a
         // decline onto -- `run_stream_protocol_request` already closes the
         // stream cleanly either way, so the caller here doesn't need to
-        // distinguish `Declined` from `Completed` (unlike Slice 7's HTTP
+        // distinguish `Declined` from `Completed` (unlike the HTTP
         // chunked-upload bridge, `crates/router/src/route_handler/http.rs`,
         // which maps `Declined` to HTTP 403).
         let _ = outcome;
@@ -619,7 +619,7 @@ mod tests {
 
     use super::*;
 
-    /// A fresh, empty `EndpointRegistry` for tests that don't exercise A6's
+    /// A fresh, empty `EndpointRegistry` for tests that don't exercise
     /// owner-rooted trust (every other test in this module).
     fn empty_registry() -> EndpointRegistry {
         EndpointRegistry::new_mock(Arc::new(MockStorage::new()))
@@ -1198,7 +1198,7 @@ mod tests {
         ));
     }
 
-    /// Test 91: D-S3-6(a) -- the node's own DID is granted
+    /// The node's own DID is granted
     /// `supervisor/resolve` node-wide only when
     /// `[iam].grant_resolve_to_node_did` is on, and never otherwise (even
     /// for the node's own DID) or for any other caller.
@@ -1236,7 +1236,8 @@ mod tests {
         assert!(caller.has_capability(&node_resource, &resolve_ability), "gate on, node's DID");
     }
 
-    /// Test 92: D-S3-6(a)'s whole safety claim, as a negative on the same
+    /// The whole safety claim of the same-node resolve grant, as a
+    /// negative on the same
     /// `CallerContext` -- the granted capability answers `supervisor/resolve`
     /// on any `synapp:` resource and `false` for `substrate/admin`,
     /// `orchestrator/deploy`, and `data-layer/admin`.
@@ -1373,8 +1374,8 @@ mod tests {
         );
     }
 
-    /// Post-commit review (B7a): task.md item 3 / F11 requires attribution
-    /// to resolve to the delegation's `master_did`, not the ephemeral
+    /// Attribution must resolve to the delegation's `master_did`, not the
+    /// ephemeral
     /// `temporary_did` -- the DID `ControlPlaneService::deploy` later
     /// records as a service's owner. Every other test in this module
     /// constructs `VerifiedIdentity { master_did == temporary_did }`, so none
@@ -1410,7 +1411,7 @@ mod tests {
         assert_ne!(caller.caller_did, temporary_did);
     }
 
-    // -- M04A Slice B7b (ADR-0015 A6/F6/A7): owner-rooted trust ----------
+    // -- owner-rooted trust (ADR-0015 A6/F6/A7) ----------------------------
 
     #[test]
     fn owning_service_id_parses_both_resource_shapes() {
@@ -1502,12 +1503,12 @@ mod tests {
         );
     }
 
-    /// Post-commit review (F1): the owner-rooted trust ADR-0015 A6 grants is
+    /// The owner-rooted trust ADR-0015 A6 grants is
     /// bounded away from `data-layer/admin` -- a service owner self-issuing a
     /// UCAN claiming `data-layer/admin` on their own service must not be
     /// admitted, or `execute-ddl`/`query-raw` would be open on every owned
-    /// service, contradicting task.md's "execute-ddl/query-raw remain denied
-    /// ... unaffected by B7b" guarantee. `substrate/admin` is included too
+    /// service, contradicting the guarantee that `execute-ddl`/`query-raw`
+    /// remain denied. `substrate/admin` is included too
     /// (it entails `data-layer/admin`), though it cannot reach this path in
     /// practice: `owning_service_id` never matches a bare `substrate:` URI.
     #[tokio::test]
@@ -1521,7 +1522,7 @@ mod tests {
         registry.set_owner("svc-a".to_string(), owner_did.clone()).await.unwrap();
 
         // The owner self-issues a token to themselves, claiming admin on
-        // their own service -- the shape F1's reproduction describes.
+        // their own service.
         let token = CapabilityToken::issue(
             &owner,
             &owner_did,

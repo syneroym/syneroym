@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Slice A1 (M04A): Universal Proxy dispatch integration tests -- drives the
+//! Universal Proxy dispatch integration tests -- drives the
 //! guest-facing `syneroym:proxy/proxy::call` host function end to end
 //! through a real `RouteHandler::init` composition (which wires
 //! `AppSandboxEngine::service_proxy` to a live `ProxyRouter`), the same
@@ -220,8 +220,8 @@ async fn test_route_handler_with_proxy_components() -> Option<RouteHandler> {
 /// Same as `test_route_handler_with_proxy_components`, but `proxy-caller` is
 /// deployed as part of app instance `"app-1"`, with a declared dependency
 /// `"callee-dep"` bound to `proxy-callee` -- so a guest driving `call-peer`
-/// with `target-kind = "dependency"` exercises A2's real host-side
-/// resolution path end to end, not just the Rust-level unit tests in
+/// with `target-kind = "dependency"` exercises the real host-side
+/// dependency-resolution path end to end, not just the Rust-level unit tests in
 /// `sandbox_wasm::host_capabilities`.
 async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, Arc<LogicalResolver>)>
 {
@@ -468,7 +468,7 @@ async fn guest_dependency_target_reaches_the_bound_member_and_a_re_registration_
 }
 
 /// A guest reaching another service's native capability (`data-layer`)
-/// through the proxy is denied -- the §5.3 guest native-capability gate,
+/// through the proxy is denied -- the guest native-capability gate,
 /// exercised end to end through the WIT boundary (the callee doesn't even
 /// need to exist: the gate fires before any registry lookup).
 #[tokio::test]
@@ -512,7 +512,7 @@ async fn guest_cross_service_native_capability_through_proxy_is_permission_denie
 // the guest, and the proxy gate's same-service exception (`proxy.rs:224-231`)
 // deliberately permits a component to reach its **own** service's native
 // `data-layer` this way. This ingress carries the same capability-less
-// identity as the direct WIT `store::Host` path (D-04-02-h, task.md), so it
+// identity as the direct WIT `store::Host` path, so it
 // must observably return empty under a deployed policy too -- pinned here
 // since nothing else exercises it in either direction.
 
@@ -801,8 +801,7 @@ async fn test_route_handler_with_self_native_data_layer_and_stage4(
 /// interface: `create-collection` + `put` + `get`, all through
 /// `syneroym:proxy/proxy::call`. `caller` is forwarded to
 /// `dispatch_json_rpc_once` verbatim -- `None` for an unauthenticated
-/// connection (today's baseline), `Some` for a router-verified caller
-/// (D-04-02-h ingress (ii)'s closure).
+/// connection (today's baseline), `Some` for a router-verified caller.
 async fn self_proxy_call(
     route_handler: &RouteHandler,
     method: &str,
@@ -913,12 +912,13 @@ async fn guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_s
 
 /// No-verified-caller pin: the same self-proxy `get` against a service
 /// constructed with `Some(policy)`, dispatched with `caller: None` (an
-/// unauthenticated connection -- WASM guests admit these, design §6.1.2),
+/// unauthenticated connection -- WASM guests admit these),
 /// returns empty, because `HostState.caller` (and so `proxy::Host::call`'s
 /// forwarded self-proxy caller) is `service_system`, which holds no
 /// capability the policy's `view` permission can be entitled through. This
-/// is the one D-04-02-h case Slice B3.5-fdae does **not** change -- an
-/// anonymous connection still can't be filtered *for* anyone. See
+/// is the one guest-originated-read case the self-proxy closure does
+/// **not** change -- an anonymous connection still can't be filtered *for*
+/// anyone. See
 /// `guest_self_proxy_data_layer_filters_for_a_real_caller_d04_02_h_closed`
 /// below for the closed case: a real, router-verified caller.
 #[tokio::test]
@@ -938,7 +938,7 @@ async fn guest_self_proxy_data_layer_returns_empty_when_policy_present() {
     // write-side gate denies closed under a policy (this fixture's
     // `self_proxy_items_policy` declares no `data-layer/write` permission at
     // all, so the fixture's own `put` would fail regardless of caller
-    // identity). This test is about the *read* side (D-04-02-h); seeding
+    // identity). This test is about the *read* side; seeding
     // must not itself exercise the write-side gate.
     let store = storage_provider.open_service_db("proxy-caller", &key_store).await.unwrap();
     store
@@ -987,7 +987,7 @@ fn self_proxy_items_principal_column_policy() -> Policy {
     .unwrap()
 }
 
-/// Slice B3.5-fdae closure of D-04-02-h ingress (ii): a **real**,
+/// The self-proxy closure of the guest-originated-read ingress: a **real**,
 /// router-verified caller reaching the guest (`dispatch_json_rpc_once`'s
 /// `caller: Some(&real_caller)`) now flows all the way through
 /// `HostState.caller` into `proxy::Host::call`'s self-proxy branch (the
@@ -1077,7 +1077,7 @@ async fn guest_self_proxy_data_layer_filters_for_a_real_caller_d04_02_h_closed()
     );
 }
 
-// -- Slice B4-fdae: ingress (ii) applies the stage-4 after-step -----------
+// -- the guest-originated-read ingress applies the stage-4 after-step ----
 
 /// Same `items`/`principal_column` shape as
 /// `self_proxy_items_principal_column_policy`, but `view` opts into the

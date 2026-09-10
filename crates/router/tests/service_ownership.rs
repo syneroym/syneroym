@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! M04A Slice B7a: substrate & service ownership attribution. Drives
+//! Substrate & service ownership attribution. Drives
 //! `ControlPlaneService::dispatch` (the public `NativeService` trait --
 //! `deploy`/`undeploy`/`list` themselves are behind a crate-private trait,
 //! matching `native_dispatch_identity.rs`'s dispatch-level style) to prove:
@@ -8,11 +8,11 @@
 //!    -- a verified `ControllerAgreement` controller) sees every deployed app
 //!    regardless of who deployed it.
 //! 2. An ordinary caller with no node-wide capability sees only the apps they
-//!    themselves deployed; an app deployed by someone else -- or deployed
-//!    before B7a and therefore unattributed -- is hidden.
+//!    themselves deployed; an app deployed by someone else -- or deployed by an
+//!    older binary and therefore unattributed -- is hidden.
 //! 3. `deploy` rejects a redeploy from a different DID than the recorded owner
-//!    unless the caller holds node-wide authority (F7); `undeploy` rejects a
-//!    non-owner, non-node-wide caller the same way (§2.3).
+//!    unless the caller holds node-wide authority; `undeploy` rejects a
+//!    non-owner, non-node-wide caller the same way.
 //!
 //! `build_caller` (`crates/router/src/route_handler/io.rs`) is what actually
 //! issues that grant on a real connection; its own unit tests cover that
@@ -51,10 +51,10 @@ const NODE_DID: &str = "did:key:zNodeUnderTest";
 /// An ordinary verified caller with no capabilities at all -- used where a
 /// caller must be rejected outright (no admission grant, no ownership) or
 /// where only `list`'s ownership-filter behavior is under test (`list` is
-/// not gated on any ability -- §2.4/§3.2). **Not** used for `deploy`/
-/// `undeploy` setup calls any more: M04A Slice B7b adds a Tier-1 admission
-/// gate requiring an explicit `orchestrator/{deploy,undeploy}` capability
-/// (`orchestration.rs`'s new checks), which this caller by construction
+/// not gated on any ability). **Not** used for `deploy`/
+/// `undeploy` setup calls any more: a Tier-1 admission gate requires an
+/// explicit `orchestrator/{deploy,undeploy}` capability
+/// (`orchestration.rs`'s checks), which this caller by construction
 /// never holds -- see `app_grantee` for that.
 fn plain_caller(did: &str) -> CallerContext {
     CallerContext {
@@ -66,11 +66,11 @@ fn plain_caller(did: &str) -> CallerContext {
     }
 }
 
-/// M04A Slice B7b: a caller holding an app-scoped `orchestrator/{deploy,
-/// undeploy}` grant for exactly `service_id` -- the shape a real B7b deploy
-/// grant produces (§3.2's `substrate:<node>/app/<name>` selector), as
+/// A caller holding an app-scoped `orchestrator/{deploy,
+/// undeploy}` grant for exactly `service_id` -- the shape a real deploy
+/// grant produces (a `substrate:<node>/app/<name>` selector), as
 /// opposed to `node_wide_caller`'s bare, node-wide form. Used for every
-/// `deploy`/`undeploy` setup call in this file so B7b's new admission gate
+/// `deploy`/`undeploy` setup call in this file so the admission gate
 /// does not mask what these tests actually exercise (ownership/list
 /// filtering, not admission) -- `plain_caller` alone no longer clears that
 /// gate.

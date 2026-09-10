@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! The receiver-side idempotency fence at the *wire* entry point
-//! ([ADR-0023](../../../docs/decisions/0023-durable-async-primitives.md) §4).
+//! The receiver-side idempotency fence at the *wire* entry point (see
+//! [ADR-0023](../../../docs/decisions/0023-durable-async-primitives.md),
+//! section 4).
 //!
 //! A call arriving from another node never passes through `ProxyRouter` --
 //! it lands in the route handler's own `dispatch_json_rpc_once`, which has

@@ -33,8 +33,8 @@ use crate::{
 /// binary stream's writer open across multiple pushed frames instead of
 /// returning after a single response (ADR-0010 Finding A2) -- declared
 /// here as a single reusable lookup rather than an ad-hoc condition, so
-/// Slice 6B's `stream-cursor`/`stream-sink` methods (`task.md` lines
-/// 472-663) add a variant + [`Self::lookup`] entry + match arm in
+/// the `stream-cursor`/`stream-sink` methods add a variant +
+/// [`Self::lookup`] entry + match arm in
 /// `handle_binary_stream`, not another hand-rolled "read the first frame,
 /// check interface/method, dispatch" special-case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,9 +119,8 @@ impl RouteHandler {
     /// `caller` is `None` for a connection with no verifiable identity
     /// (ADR-0016 §3). The Native-service arm below rejects it before
     /// dispatch; the WASM arm forwards it into the guest's `HostState.caller`
-    /// (D-04-02-h ingress (i), Slice B3.5-fdae) instead of rejecting or
-    /// ignoring it -- a WASM guest still admits an anonymous (`None`)
-    /// caller, per design §6.1.2.
+    /// instead of rejecting or ignoring it -- a WASM guest still admits an
+    /// anonymous (`None`) caller.
     pub async fn dispatch_json_rpc_once(
         &self,
         pipeline: &RoutePipeline,
@@ -194,18 +193,17 @@ impl RouteHandler {
                     .native_service(service_id)
                     .ok_or_else(|| anyhow!("Native service not found for {service_id}"))?;
 
-                // TODO(B7b / post-B7): B0's gate only proves *an* identity is
+                // TODO: the identity gate only proves *an* identity is
                 // present. "May this caller touch this service at all?" is
                 // Tier 1 -- a µs-scale grant-layer capability check, NOT an
-                // FDAE/M04B policy question (ADR-0017 Open, design §9.8; this
-                // comment previously mis-addressed it to M04B). B7b
-                // implements it for `orchestrator`; `security` is now also
+                // FDAE policy question (ADR-0017 Open). It is
+                // implemented for `orchestrator`; `security` is also
                 // gated on `substrate/admin`. The five data
                 // native-capability interfaces remain open -- today any
                 // verified identity reaches any native service there.
                 // FDAE owns Tier 3 (rows/columns) only.
-                // The `None` rejection below is correct and settled (design
-                // §6.1.2): native interfaces reject anonymous callers, WASM
+                // The `None` rejection below is correct and settled:
+                // native interfaces reject anonymous callers, WASM
                 // guests admit them.
                 let caller = caller.cloned().ok_or_else(|| {
                     anyhow!("unauthenticated caller for native interface '{}'", preamble.interface)
@@ -231,10 +229,9 @@ impl RouteHandler {
                     serde_json::from_slice(body).map_err(|e| anyhow!("JSON parse error: {e}"))?;
 
                 if let Some(app_sandbox_engine) = &self.inner.app_sandbox_engine {
-                    // D-04-02-h ingress (i): forward the router-verified
-                    // caller (or `None` for an unauthenticated connection,
-                    // which WASM guests admit -- design §6.1.2) into
-                    // `HostState.caller`, so the guest's own host-function
+                    // Forward the router-verified caller (or `None` for an
+                    // unauthenticated connection, which WASM guests admit)
+                    // into `HostState.caller`, so the guest's own host-function
                     // reads/writes see who is actually asking instead of the
                     // synthesized `service_system` every prior phase left
                     // in place here.
@@ -335,7 +332,7 @@ impl RouteHandler {
                 AdaptationStage::JsonRpcToWasm,
                 ServiceStage::WasmComponent { service_id: service_id.clone() },
             ),
-            // M3B Slice 6B stream-protocol requests (ADR-0014): without
+            // Stream-protocol requests (ADR-0014): without
             // this arm, `raw://<protocol>|<service_id>` against a
             // `WasmChannel` endpoint falls through to `Unsupported` --
             // `wrpc://` is the only other route that reaches
@@ -500,8 +497,8 @@ impl RouteHandler {
         self.handle_json_rpc_loop(reader, &mut writer, preamble, pipeline, caller.as_ref()).await
     }
 
-    /// Which namespacing rule a `messaging` subscribe uses, by service id
-    /// (M05A A5c §19.5c/§19.5e, D-A5c-6). Every *deployed service*'s
+    /// Which namespacing rule a `messaging` subscribe uses, by service id.
+    /// Every *deployed service*'s
     /// `messaging` endpoint namespaces with `namespace_topic`, whose
     /// subscribe-side cross-service opt-in (a literal `svc/` prefix
     /// passed through unchanged) is deliberate -- ADR-0010's Topic
@@ -636,7 +633,7 @@ pub fn log_pipeline(
 mod tests {
     use super::*;
 
-    /// M05A A5c §19.5e (D-A5c-6, review F10): a subscribe naming a topic
+    /// A subscribe naming a topic
     /// that already looks like another service's fully-qualified topic
     /// would, under the ordinary subscribe-side rule (`namespace_topic`),
     /// pass through unchanged -- the deliberate cross-service opt-in every

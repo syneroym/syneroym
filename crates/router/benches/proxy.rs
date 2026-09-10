@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Universal Proxy same-node latency (M04A Slice A1, F8): the `< 5ms p99`
+//! Universal Proxy same-node latency: the `< 5ms p99`
 //! budget is interpreted as in-process local dispatch (`ProxyRouter::invoke`
 //! -> registry hit -> native/WASM dispatch -> `Value`), not a loopback QUIC
-//! round-trip -- see plan.md F8. Remote-hop latency needs two live nodes and
+//! round-trip. Remote-hop latency needs two live nodes and
 //! is reported from the cross-node e2e test instead (`coordinator_iroh`'s
 //! `test_cross_node_proxy_call`), not benched here.
 

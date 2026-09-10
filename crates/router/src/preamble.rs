@@ -37,7 +37,7 @@
 //! |-------|---------|---------|
 //! | `enc`/`pubkey` | `?enc=ecdh-p256&pubkey=<hex>` | E2E ECDH-P256 + AES-GCM handshake (`handshake.rs`). Orthogonal to transport: `raw://my-interface.my-service?enc=ecdh-p256&pubkey=<hex-encoded-client-pubkey>`. |
 //! | `delegation` | `?delegation=<hex-encoded-json>` | Hex-encoded JSON `DelegationCertificate`. When present, `HandshakeVerifier::verify_preamble` checks it against the `pubkey` param's derived DID and the certificate's own signed scope -- it never reads `preamble.service_id` (see "Interface Names" below for what happens when `delegation` is absent). |
-//! | `dir` | `?dir=upload\|download` | M3B Slice 6B/ADR-0014 stream-protocol direction disambiguator; only meaningful on `raw://` streams routed to a registered `stream-types` protocol. Any other value is rejected at the router before WASM instantiation. |
+//! | `dir` | `?dir=upload\|download` | Stream-protocol direction disambiguator (ADR-0014); only meaningful on `raw://` streams routed to a registered `stream-types` protocol. Any other value is rejected at the router before WASM instantiation. |
 //!
 //! The `RoutePipeline`'s `EncryptionStage` and `AdaptationStage` are **not**
 //! encoded in the preamble itself; they are **derived** at planning time
@@ -49,11 +49,10 @@
 //! `preamble.interface` (the `<interface>` segment) is looked up in the
 //! target service's `EndpointRegistry` to resolve a `SubstrateEndpoint`. Two
 //! disjoint sets of names share this same lookup, which is the source of the
-//! `http`/`http-native` naming collision below -- **tracked as a scope item
-//! for M4's UCAN/FDAE work to clean up** (see
-//! `docs/planning/meta-implementation-plan.md`, Milestone 4 item 7), not
+//! `http`/`http-native` naming collision below -- **tracked as a deferred
+//! item for the capability-scoped-routing work to clean up**, not
 //! resolved here, since restructuring this now would likely need redoing
-//! once M4 adds capability-scoped routing:
+//! once capability-scoped routing lands:
 //!
 //! - **App-declared interfaces**: any WIT interface name (or, for TCP/container
 //!   services, a bare capability tag like `http`, e.g. `roymctl svc deploy
@@ -76,15 +75,14 @@
 //!   tag above -- see `NATIVE_CAPABILITY_INTERFACES`'s own doc comment for the
 //!   regression this collision caused once already.
 //!
-//! **Authentication status, as of M04A Slice B1 (supersedes the M3B/M3C
-//! interim note this replaced):** `HandshakeVerifier::verify_preamble` is
-//! *always* attempted (Slice B0 closed the former "only when
-//! `preamble.delegation` is present" gap); every native-capability interface
+//! **Authentication status:** `HandshakeVerifier::verify_preamble` is
+//! *always* attempted (an earlier version only attempted it when
+//! `preamble.delegation` was present); every native-capability interface
 //! and the HTTP bridge reject a caller with no verified identity. Beyond
 //! transport identity, `preamble.ucan` (this module's `ucan` field) carries
 //! an optional signed `CapabilityToken` chain, verified into
 //! `SessionContext` capabilities by the router's `build_caller`
-//! (`route_handler/io.rs`, Slice B1) -- see that module's doc comment for
+//! (`route_handler/io.rs`) -- see that module's doc comment for
 //! the chain-verification/revocation details.
 
 use std::{convert::Infallible, fmt, result};
@@ -188,10 +186,10 @@ pub struct RoutePreamble {
     pub delegation: Option<DelegationCertificate>,
     /// Client UCAN capability token (optional, hex-encoded JSON in the
     /// `ucan=` query param). Verified into `SessionContext` capabilities at
-    /// ingress (Slice B1). Mirrors `delegation` in transport shape.
+    /// ingress. Mirrors `delegation` in transport shape.
     pub ucan: Option<CapabilityToken>,
-    /// Stream direction for a `raw://` stream-protocol request (M3B Slice
-    /// 6B, ADR-0014's `?dir=upload|download`). `None` for every other
+    /// Stream direction for a `raw://` stream-protocol request
+    /// (ADR-0014's `?dir=upload|download`). `None` for every other
     /// preamble shape; strictly validated (not defaulted) by the router
     /// before a stream-protocol route is served.
     pub dir: Option<StreamDirection>,

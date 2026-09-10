@@ -1,23 +1,22 @@
 //! HTTP router request interception
 //!
 //! Handles incoming HTTP traffic: the original JSON-RPC-over-`POST` bridge
-//! (unchanged), plus M3B Slice 7's HTTP verb/path passthrough onto
-//! `data-layer`/`blob-store`/`messaging` -- see `task.md`'s "Slice 7: HTTP
-//! Passthrough" section. `HttpRoute`/`HttpRouteRegistry` live in
-//! `syneroym_core::http_routes`; entries are parsed and populated by
-//! `syneroym_control_plane::http_routes` on deploy/undeploy.
+//! (unchanged), plus HTTP verb/path passthrough onto
+//! `data-layer`/`blob-store`/`messaging`. `HttpRoute`/`HttpRouteRegistry`
+//! live in `syneroym_core::http_routes`; entries are parsed and populated
+//! by `syneroym_control_plane::http_routes` on deploy/undeploy.
 //!
 //! Route resolution order, per request:
 //! 1. `GET /blobs/{hash}` -- always intercepted (fixed, self-authorizing via
 //!    the signed-URL HMAC, not a per-service opt-in).
-//! 2. M06A A1's static assets: `GET`/`HEAD` only, exact path plus a
-//!    trailing-slash directory index, served straight from blob storage without
-//!    instantiating the component. Deploy-time collision detection (D-A1-4)
-//!    means this and step 3 below never actually contend for the same path.
+//! 2. Static assets: `GET`/`HEAD` only, exact path plus a trailing-slash
+//!    directory index, served straight from blob storage without instantiating
+//!    the component. Deploy-time collision detection means this and step 3
+//!    below never actually contend for the same path.
 //! 3. The connected service's `http_routes` table (method + path-with-
 //!    `{param}` match) -- bridges onto `data-layer`/`messaging`/a registered
-//!    stream protocol, or (M06A A2) hands the request to the deployed
-//!    component's own `syneroym:http/incoming-handler#handle-request` export.
+//!    stream protocol, or hands the request to the deployed component's own
+//!    `syneroym:http/incoming-handler#handle-request` export.
 //! 4. Fallthrough, unchanged: the original `POST`+`application/json` JSON-RPC
 //!    bridge.
 
@@ -105,7 +104,7 @@ const MAX_SMALL_BODY_BYTES: usize = 1024 * 1024;
 /// while streaming a `GET /blobs/{hash}` response body.
 const BLOB_CHUNK_BYTES: u32 = 64 * 1024;
 
-/// Request-body ceiling for a `guest` route (M06A D-A2-8). Its own constant
+/// Request-body ceiling for a `guest` route. Its own constant
 /// rather than `MAX_SMALL_BODY_BYTES`: this body is additionally marshalled
 /// into a `Vec<Val::U8>` for the component-model call, so the two limits
 /// have different cost curves and may diverge.
@@ -121,7 +120,7 @@ const MAX_GUEST_REQUEST_HEADERS: usize = 64;
 const MAX_GUEST_RESPONSE_HEADERS: usize = 64;
 
 /// Headers the host owns, never the guest: stripped from a guest response
-/// and never forwarded from a request (M06A D-A2-5).
+/// and never forwarded from a request.
 const HOST_OWNED_HEADERS: [&str; 8] = [
     "content-length",
     "transfer-encoding",
@@ -201,8 +200,8 @@ enum DispatchOutcome {
 /// Builds and dispatches one native JSON-RPC request through the existing,
 /// unchanged `dispatch_json_rpc_once` path, with `preamble.interface`
 /// overridden to whichever real native interface (`data-layer`/`blob-store`/
-/// `messaging`) the resolved HTTP route implies -- decision 2 of the Slice 7
-/// plan: a client connects once with `http://http-native|<service_id>`, and
+/// `messaging`) the resolved HTTP route implies: a client connects once
+/// with `http://http-native|<service_id>`, and
 /// `pipeline.service` (resolved once per connection from the `"http-native"`
 /// native-capability interface) already points at the right `service_id`
 /// regardless of which real interface a given request targets.
@@ -252,14 +251,14 @@ async fn dispatch_native(
 }
 
 /// Reserved JSON-RPC error code for "no verifiable caller identity" on a
-/// bridged native-capability request (M04A Slice B0) -- never emitted by a
+/// bridged native-capability request -- never emitted by a
 /// native service itself, only by the `dispatch_native` guard above, and
 /// mapped to HTTP 401 below rather than the default 500.
 const UNAUTHENTICATED_RPC_CODE: i32 = -32090;
 
 /// The `data-layer`/`blob-store`/JSON-RPC error -> HTTP status mapping
-/// table, defined once and reused by every bridged route (task.md's Slice 7
-/// checklist). See `data_layer_error`/`blob_error` in
+/// table, defined once and reused by every bridged route. See
+/// `data_layer_error`/`blob_error` in
 /// `crates/control_plane/src/synsvc_native.rs` for the code assignments.
 fn status_for_rpc_error_code(code: i32) -> StatusCode {
     match code {
@@ -293,8 +292,8 @@ fn blob_hash_from_path(path: &str) -> Option<&str> {
     if hash.is_empty() || hash.contains('/') { None } else { Some(hash) }
 }
 
-/// **Cache-Control is chosen by content type, not by path** (M06A A1
-/// §5.2): `text/html`'s name is stable while its content changes every
+/// **Cache-Control is chosen by content type, not by path.**
+/// `text/html`'s name is stable while its content changes every
 /// deploy, so caching it immutably would pin a browser to a stale bundle
 /// indefinitely. Everything else gets long-lived immutable caching, correct
 /// for the bundler-hashed filenames a real asset pipeline produces.
@@ -308,7 +307,7 @@ fn cache_control_for(content_type: &str) -> &'static str {
 
 /// Whether an `If-None-Match` header value matches `etag` (always a strong
 /// validator here -- the manifest's own content hash). Per RFC 9110
-/// §13.1.2: a bare `*` matches unconditionally (the entry was already
+/// section 13.1.2: a bare `*` matches unconditionally (the entry was already
 /// resolved by the caller, so a representation does currently exist), and
 /// the header may otherwise carry a comma-separated list, each member
 /// optionally weak (`W/"..."`) -- a weak comparison ignores that prefix,
@@ -396,8 +395,8 @@ fn service_relative_topic<'a>(service_id: &str, topic: &'a str) -> &'a str {
 /// Formats one broker-delivered `(topic, payload)` message as an SSE frame.
 ///
 /// Payload is treated as UTF-8 text (lossy) -- every fixture in this repo
-/// only ever publishes UTF-8 text payloads (see `status.md`'s Slice 6A
-/// notes), and SSE's `data:` framing is line-oriented, so a payload
+/// only ever publishes UTF-8 text payloads, and SSE's `data:` framing is
+/// line-oriented, so a payload
 /// containing newlines emits multiple `data:` lines.
 ///
 /// Topic replaces `\r` and `\n` with spaces: publisher-supplied topics from
@@ -444,7 +443,7 @@ fn structured_rpc_error(status: StatusCode, code: i32, message: String) -> Respo
     json_response(status, &serde_json::to_value(&body).unwrap_or(Value::Null))
 }
 
-/// Request headers a guest sees (M06A D-A2-5, D-A2-8): lowercased, with
+/// Request headers a guest sees: lowercased, with
 /// every `HOST_OWNED_HEADERS` entry removed (the host owns framing, not the
 /// guest) and any non-UTF-8 value silently dropped rather than failing the
 /// request. A free function so the filtering rule is unit-testable without
@@ -476,14 +475,14 @@ fn guest_request_headers(
 /// request carries a valid session token issued by the local auth service.
 const SESSION_CALLER_MARKER: &str = "__syneroym_session_caller";
 
-/// The router's view of `CallerContext` as a guest may see it (M06A
-/// D-A2-12). `Err` on a substrate-injected `AuthLevel`, which cannot
-/// legitimately reach an inbound HTTP request -- fail closed rather than
-/// report a level that isn't true.
+/// The router's view of `CallerContext` as a guest may see it. `Err` on a
+/// substrate-injected `AuthLevel`, which cannot legitimately reach an
+/// inbound HTTP request -- fail closed rather than report a level that
+/// isn't true.
 ///
 /// Takes `preamble` as well as `caller` because the two `auth` halves read
 /// different sources: `CallerContext.auth` cannot distinguish a verified
-/// certificate from an unchallenged pubkey (F5a) -- `AuthLevel::Delegated`
+/// certificate from an unchallenged pubkey -- `AuthLevel::Delegated`
 /// is assigned to *every* verified preamble, including the client gateway's
 /// unchallenged node-DID pubkey -- while the preamble's own `delegation`
 /// field can, since a malformed certificate is a hard reject before this
@@ -594,8 +593,8 @@ fn resolve_effective_session_caller(
     })
 }
 
-/// Turns a guest's answer into an HTTP response, or into the 500 failure-
-/// matrix row 6 requires (M06A D-A2-5). `Content-Length` is always the
+/// Turns a guest's answer into an HTTP response, or into a 500 when the
+/// guest's answer is malformed. `Content-Length` is always the
 /// host's computed one, never the guest's -- a mismatch would be a
 /// connection desync -- and an invalid header **fails the whole response**
 /// rather than being silently dropped: a guest that thought it set
@@ -781,12 +780,12 @@ impl HttpHandler {
             return handler.handle_blob_get(hash, &query).await;
         }
 
-        // M06A A1: static assets, exact-path plus a trailing-slash
+        // Static assets, exact-path plus a trailing-slash
         // directory index. Placed before route resolution -- an asset path
-        // colliding with a declared route pattern is refused at deploy
-        // (D-A1-4), so this ordering is never actually ambiguous at
+        // colliding with a declared route pattern is refused at deploy,
+        // so this ordering is never actually ambiguous at
         // request time; it exists to keep resolve_asset a cheap, sandbox-
-        // free check (D-06A-1) ahead of the route table lookup.
+        // free check ahead of the route table lookup.
         if let Some(resp) = handler.try_handle_asset(&method, &path, &req).await? {
             return Ok(resp);
         }
@@ -800,21 +799,19 @@ impl HttpHandler {
 
     /// The original `POST`+`application/json` JSON-RPC bridge, wrapped in the
     /// unified `HttpBody` type. An anonymous caller targeting a native
-    /// service is rejected with 401 before dispatch (§5.3); a WASM-component
-    /// target is unaffected, matching pre-Slice-7 behavior.
+    /// service is rejected with 401 before dispatch; a WASM-component
+    /// target is unaffected.
     async fn handle_json_rpc_bridge(&self, req: Request<Incoming>) -> Result<Response<HttpBody>> {
         if req.method() != Method::POST {
             // Also where a static-asset miss and a non-`public` bundle land
-            // (D-A1-8, `try_handle_asset` returning `Ok(None)` for a `GET`/
-            // `HEAD` falls all the way through to here): 405, not the
-            // failure matrix's originally-planned 404, since this bridge
-            // rejects every non-`POST` method uniformly, asset request or
-            // not, and special-casing `GET`/`HEAD` here would change
-            // behaviour for the ordinary JSON-RPC-bridge case too, not just
-            // assets. The property the matrix actually cares about --
-            // absence and refusal look identical from outside -- holds
-            // regardless of which 4xx it is; task.md/status.md record 405
-            // as the deliberate answer, not 404.
+            // (`try_handle_asset` returning `Ok(None)` for a `GET`/
+            // `HEAD` falls all the way through to here): 405, not 404,
+            // since this bridge rejects every non-`POST` method uniformly,
+            // asset request or not, and special-casing `GET`/`HEAD` here
+            // would change behaviour for the ordinary JSON-RPC-bridge case
+            // too, not just assets. The property that matters -- absence
+            // and refusal look identical from outside -- holds regardless
+            // of which 4xx it is; 405 is the deliberate answer.
             return Ok(http_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST is supported".into()));
         }
 
@@ -834,7 +831,7 @@ impl HttpHandler {
             return Ok(http_error(StatusCode::BAD_REQUEST, "Empty request body".into()));
         }
 
-        // Mirrors `dispatch_native`'s guard (§5.3): only the native-service
+        // Mirrors `dispatch_native`'s guard: only the native-service
         // arm of `dispatch_json_rpc_once` requires a caller, so only gate
         // here when the resolved pipeline targets one -- an anonymous
         // WASM-component call over this same fallthrough is unaffected.
@@ -891,7 +888,7 @@ impl HttpHandler {
     }
 
     /// Percent-decodes `path`, then does an exact-path lookup plus
-    /// D-A1-11's one rewrite: a path ending in `/` resolves to
+    /// one rewrite: a path ending in `/` resolves to
     /// `<path>index.html`. This function owns both the decoding and the
     /// rewrite -- callers pass the raw request path and do no
     /// normalisation of their own, so there is exactly one place either
@@ -900,7 +897,7 @@ impl HttpHandler {
     /// named `my file.js` is requested as `/my%20file.js`), so decoding
     /// here -- not at `resolve_route`, which keeps its existing
     /// non-decoding style for API routes -- is what makes such a file
-    /// reachable at all. No history-fallback, no prefix rules (D-A1-4):
+    /// reachable at all. No history-fallback, no prefix rules:
     /// `/api/comments` has no trailing slash, so it is never rewritten and
     /// always falls through to route resolution.
     ///
@@ -908,7 +905,7 @@ impl HttpHandler {
     /// not `public`, `path` isn't valid percent-encoded UTF-8, or no entry
     /// matches the (possibly rewritten) path -- deliberately
     /// indistinguishable, so a miss and a non-public bundle both read as
-    /// "not found" to the caller (D-A1-8).
+    /// "not found" to the caller.
     fn resolve_asset(&self, path: &str) -> Option<AssetEntry> {
         let service_assets = self.route_handler.inner.assets.get(&self.preamble.service_id)?;
         if !service_assets.public {
@@ -922,7 +919,7 @@ impl HttpHandler {
         service_assets.manifest.entries.get(&lookup_path).cloned()
     }
 
-    /// Serves one static asset (M06A A1). `Ok(None)` means "not an asset"
+    /// Serves one static asset. `Ok(None)` means "not an asset"
     /// and the caller falls through to route resolution unchanged.
     async fn try_handle_asset(
         &self,
@@ -983,14 +980,13 @@ impl HttpHandler {
             return Ok(Some(resp));
         }
 
-        // F3: never instantiates the component -- the same
+        // Never instantiates the component -- the same
         // `blob-store/open-download`+`read-chunk` native-dispatch streaming
         // `handle_blob_get` uses, reached through the identical
-        // `NativeService` arm (D-06A-1). Deliberately bypasses `self.
-        // dispatch()` (bound to `self.caller`, which may be `None`): a
-        // public asset's authorization is D-A1-1's declared `visibility`,
-        // already checked in `resolve_asset`, not the connection's own
-        // delegation.
+        // `NativeService` arm. Deliberately bypasses `self.dispatch()`
+        // (bound to `self.caller`, which may be `None`): a public asset's
+        // authorization is its declared `visibility`, already checked in
+        // `resolve_asset`, not the connection's own delegation.
         let system_caller = CallerContext::service_system(&self.preamble.service_id);
         let open_params = serde_json::json!({"hash": entry.hash, "offset": 0});
         let download_id = match dispatch_native(
@@ -1206,9 +1202,8 @@ impl HttpHandler {
                 // No `{id}` path segment (a plain `POST /collection`
                 // create route) means the record id is server-generated --
                 // `data-layer::put`'s WIT signature has no separate
-                // create-vs-update distinction (it's an upsert), and
-                // task.md's own route table only shows this shape without
-                // an id in the path.
+                // create-vs-update distinction (it's an upsert), and this
+                // shape carries no id in the path.
                 let id = path_param.unwrap_or_else(|| Uuid::new_v4().to_string());
                 let value = serde_json::json!({"id": id, "payload": body.to_vec()});
                 match self
@@ -1224,8 +1219,8 @@ impl HttpHandler {
                     }
                     DispatchOutcome::Success(_) => {
                         // `put` itself returns `()` -- fetch the record back
-                        // so the HTTP response can return it, per task.md's
-                        // "POST /orders ... returns the resulting record".
+                        // so the HTTP response can return it (a `POST
+                        // /orders` returns the resulting record).
                         // A `null` here means the record we just wrote is
                         // already gone (e.g. a concurrent delete raced this
                         // request) -- that's a 500, not the plain-`get`
@@ -1596,14 +1591,14 @@ impl HttpHandler {
         }
     }
 
-    // -- guest HTTP route target (M06A A2) --------------------------------
+    // -- guest HTTP route target -------------------------------------------
 
     /// The fourth `dispatch_route` target: hands the request to the
     /// deployed component's `syneroym:http/incoming-handler#handle-request`
     /// export and turns its answer into an HTTP response. Reaches the guest
     /// directly through `app_sandbox_engine`, mirroring
     /// `handle_stream_route` -- an `http-native` connection resolves to a
-    /// `NativeService` pipeline (F2), so `dispatch_json_rpc_once` can never
+    /// `NativeService` pipeline, so `dispatch_json_rpc_once` can never
     /// reach a guest, unlike `data-layer`/`messaging` above.
     async fn handle_guest_route(
         &self,
@@ -1629,7 +1624,7 @@ impl HttpHandler {
             Err(e) => return Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
         };
 
-        // D-A2-7, BEFORE any engine work: an unauthenticated caller on a
+        // BEFORE any engine work: an unauthenticated caller on a
         // non-public route never instantiates anything. Same code and
         // status shape `dispatch_native` uses, so one 401 taxonomy covers
         // the whole bridge.
@@ -2084,10 +2079,10 @@ impl HttpHandler {
             ));
         }
 
-        // TODO(M04B/FDAE): the signed-URL HMAC is the B0 authorization for
+        // TODO(FDAE): the signed-URL HMAC is the interim authorization for
         // blob GET. Final policy (who may fetch which blob) is enforced by
-        // FDAE (M04B) against the resolved caller; `service_system` is an
-        // interim system identity.
+        // a full FDAE policy against the resolved caller; `service_system`
+        // is an interim system identity.
         //
         // This bypasses `self.dispatch()` (bound to `self.caller`, which may
         // be `None` for an anonymous signed-URL request) deliberately -- the
@@ -2142,7 +2137,7 @@ impl HttpHandler {
 /// call. No `blob_provider`/DEK access here -- streaming reuses the
 /// existing `open-download`/`read-chunk` methods (which resolve the DEK
 /// internally per call, same as every other native-dispatch blob-store
-/// method), per decision 7 of the Slice 7 plan.
+/// method).
 struct BlobDownloadState {
     route_handler: RouteHandler,
     pipeline: RoutePipeline,
@@ -2378,7 +2373,7 @@ mod tests {
         assert_eq!(service_relative_topic("svc-a", "plain"), "plain");
     }
 
-    // -- guest HTTP route target (M06A A2) -------------------------------
+    // -- guest HTTP route target ------------------------------------------
 
     fn caller_context(auth: AuthLevel) -> CallerContext {
         CallerContext {

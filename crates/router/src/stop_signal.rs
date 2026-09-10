@@ -4,8 +4,8 @@
 //! (`STOP_SENDING`) independently of the peer closing its own read/send
 //! halves or the connection outright -- see `SendStream::stopped()`. This
 //! is the one dead-subscriber signal `messaging/subscribe`'s
-//! read-until-EOF detection can't see (task.md's "Dead-subscriber
-//! cleanup"). WebRTC has no equivalent primitive, so its `stop_signal()`
+//! read-until-EOF detection can't see. WebRTC has no equivalent primitive,
+//! so its `stop_signal()`
 //! never resolves and that transport relies solely on read-EOF/connection-
 //! close detection, as it already did.
 

@@ -122,10 +122,10 @@ pub async fn build_iroh_endpoint(
     Ok(endpoint)
 }
 
-/// Resolves a service's Iroh `EndpointAddr` via the community registry / DHT
-/// (M04A Slice A1, factored out of `route_handler/io.rs`'s registry-miss
-/// relay path so `ProxyRouter::invoke_remote`'s outbound hop can share the
-/// exact same resolution logic instead of re-implementing it).
+/// Resolves a service's Iroh `EndpointAddr` via the community registry / DHT.
+/// Factored out of `route_handler/io.rs`'s registry-miss relay path so
+/// `ProxyRouter::invoke_remote`'s outbound hop can share the exact same
+/// resolution logic instead of re-implementing it.
 pub async fn resolve_iroh_addr(
     registry_client: &RegistryClient,
     service_id: &str,

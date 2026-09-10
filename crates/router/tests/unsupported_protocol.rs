@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Slice A1 (M04A): a caller declaring a protocol scheme this node does not
+//! A caller declaring a protocol scheme this node does not
 //! speak (`wrpc://`, any `Other(_)` scheme) gets a typed *unsupported-
 //! protocol* JSON-RPC error (`-32091`), not the confusing "missing dir="
-//! error the pre-A1 code produced by falling into the ADR-0014 raw-stream
-//! path (see plan.md Flag F2). The minimal `[LFC-VER]` behavior kept from
-//! the deferred protocol-negotiation slice (A.7).
+//! error an earlier version produced by falling into the ADR-0014
+//! raw-stream path. The minimal `[LFC-VER]` behavior kept from the
+//! deferred protocol-negotiation work.
 
 use std::sync::Arc;
 
