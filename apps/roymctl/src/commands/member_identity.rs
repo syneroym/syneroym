@@ -7,9 +7,9 @@
 //! member without an operator having to track it by hand.
 //!
 //! Per-substrate certificate and endpoint-record minting lives in
-//! `syneroym_sdk::deploy` (M05A Slice A3 §6), not here: it needs the
-//! per-alias client map A3's multi-substrate placement introduces, and
-//! living in the SDK lets the two-substrate e2e harness exercise it directly.
+//! `syneroym_sdk::deploy`, not here: it needs the per-alias client map that
+//! multi-substrate placement introduces, and living in the SDK lets the
+//! two-substrate e2e harness exercise it directly.
 
 use std::{
     collections::BTreeMap,
@@ -33,10 +33,10 @@ const DEFAULT_INSTANCE_CERT_EXPIRES_HOURS: u64 = 24;
 /// `<dir>/identities/member-<app_instance_id>#<service_name>-<index>.key`'s
 /// stem. `index` is the member ordinal (`0` for a `Singleton`).
 ///
-/// The `app_instance_id`/`service_name` boundary is `#`, not `-` (M05A A5e,
-/// D-A5e-12): both id types forbid `/` and `#` at construction, but neither
-/// forbids `-`, so instance `a` + service `b-c` and instance `a-b` +
-/// service `c` would otherwise both stem to `member-a-b-c-0` -- one master
+/// The `app_instance_id`/`service_name` boundary is `#`, not `-`: both id
+/// types forbid `/` and `#` at construction, but neither forbids `-`, so
+/// instance `a` + service `b-c` and instance `a-b` + service `c` would
+/// otherwise both stem to `member-a-b-c-0` -- one master
 /// key handed to two different app instances. `#` is forbidden in both, so
 /// it always marks the true boundary regardless of what either segment
 /// contains. Kept in sync with `crates/app_supervisor/src/keys.rs`'s own
@@ -67,21 +67,19 @@ pub fn resolve_member_master(dir: &Path, name: &str) -> Result<Identity> {
 }
 
 /// The DID a service actually landed under: the local member-master identity
-/// if one exists, else the plan's own (possibly fabricated) `service_id`
-/// (M05A A4, D-A4-11).
+/// if one exists, else the plan's own (possibly fabricated) `service_id`.
 ///
 /// Extracted from `check_no_placement_change`'s pre-existing workaround for
 /// the same gap: `app deploy` writes the journal from the **pre-substitution**
 /// plan (`--mint-masters` only substitutes a *copy*, after the journal
 /// already recorded the fabricated ids), so the journal's `service_id` is
 /// never the deployed DID for a minted deploy. Two call sites reading this
-/// two different ways is exactly the bug A3 already fixed once for
+/// two different ways is exactly the bug already fixed once for
 /// `current_placement` -- this is the same fix for the same shape of gap.
 ///
 /// Inherits that site's **member-index-0** assumption, correct today because
 /// nothing in a manifest can express more than one member; it becomes wrong
-/// the moment a supervisor scales a service (A5's own reference-scenario
-/// step 5).
+/// the moment a supervisor scales a service.
 pub fn deployed_service_id(dir: &Path, svc: &PlannedService) -> Result<String> {
     let name = member_master_name(&svc.logical_ref, svc.member_index);
     Ok(match resolve_member_master(dir, &name) {
@@ -115,7 +113,7 @@ pub fn resolve_or_mint_member_master(dir: &Path, name: &str) -> Result<Identity>
     Ok(identity)
 }
 
-/// Publishes or refreshes `master`'s anchor at `registry_url` (D-A1-7), or
+/// Publishes or refreshes `master`'s anchor at `registry_url`, or
 /// warns naming the consequence when none was supplied: a certificate just
 /// minted is unusable on the wire until its master's anchor is resolvable --
 /// `HandshakeVerifier::verify_preamble` resolves it on every delegated
@@ -151,7 +149,7 @@ pub async fn refresh_anchor_or_warn(registry_url: Option<&str>, master: &Identit
 /// substituted from the compiler's fabricated id to the resolved master DID,
 /// plus a certified instance certificate and a master-signed endpoint record
 /// per resolved master, minted against **each member's own placed
-/// substrate** (M05A Slice A3 §0.1) -- a certificate minted through one
+/// substrate** -- a certificate minted through one
 /// substrate's client is rejected at deploy by any other, since the
 /// derivation includes both the node and the calling DID.
 ///
@@ -211,7 +209,7 @@ pub async fn substitute_and_certify_members(
     )
     .await?;
 
-    // Once per master (D-A1-7): `masters` is already deduplicated by master
+    // Once per master: `masters` is already deduplicated by master
     // DID, unlike `plan.services`, which can name the same master more than
     // once for a redundant member.
     for master in masters.values() {
@@ -246,20 +244,19 @@ mod tests {
         assert_eq!(name, "member-inst-1#backend-2");
     }
 
-    /// M05A A5e closed this one layer up: `AppInstanceId::try_new` itself
-    /// refuses a path separator now, so a `LogicalServiceRef` carrying one
-    /// can no longer be constructed at all, and `member_master_name` needs
-    /// no defensive check of its own.
+    /// `AppInstanceId::try_new` itself refuses a path separator, so a
+    /// `LogicalServiceRef` carrying one can no longer be constructed at all,
+    /// and `member_master_name` needs no defensive check of its own.
     #[test]
     fn an_app_instance_id_containing_a_path_separator_is_refused_at_construction() {
         assert!(AppInstanceId::try_new("inst/../escape").is_err());
     }
 
-    /// D-A5e-12: the pre-existing collision this slice closes -- instance
-    /// `a` + service `b-c` and instance `a-b` + service `c` used to both
-    /// stem to `member-a-b-c-0` under the old `-`-only boundary. The `#`
-    /// boundary keeps them apart because both id types forbid `#`, so `-`
-    /// inside either segment can never be mistaken for the separator.
+    /// The collision the `#` boundary closes -- instance `a` + service
+    /// `b-c` and instance `a-b` + service `c` used to both stem to
+    /// `member-a-b-c-0` under an `-`-only boundary. The `#` boundary keeps
+    /// them apart because both id types forbid `#`, so `-` inside either
+    /// segment can never be mistaken for the separator.
     #[test]
     fn member_master_name_cannot_collide_across_two_instance_and_service_pairs() {
         let a_bc = member_master_name(&logical_ref("a", "b-c"), 0);
@@ -334,9 +331,9 @@ mod tests {
         assert_eq!(deployed_service_id(dir.path(), &svc).unwrap(), real_did);
     }
 
-    /// D-A5e-5/D-A5e-11: member 1's own local master file must win, not
-    /// member 0's -- `deployed_service_id` reads `svc.member_index` rather
-    /// than the literal `0` it used to.
+    /// Member 1's own local master file must win, not member 0's --
+    /// `deployed_service_id` reads `svc.member_index` rather than the
+    /// literal `0` it used to.
     #[test]
     fn deployed_service_id_reads_the_members_own_index_rather_than_zero() {
         let dir = tempfile::tempdir().unwrap();

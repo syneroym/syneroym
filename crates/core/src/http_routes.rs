@@ -1,4 +1,4 @@
-//! The shared per-service HTTP route vocabulary (M3B Slice 7): `HttpRoute`
+//! The shared per-service HTTP route vocabulary: `HttpRoute`
 //! and the `HttpRouteRegistry` table it's kept in.
 //!
 //! Lives in `core` rather than in `router` or `control_plane` because both
@@ -8,7 +8,7 @@
 //! and `syneroym-router` reads the registry per HTTP request
 //! (`crates/router/src/route_handler/http.rs`) to decide how a given verb+
 //! path bridges onto `data-layer`/`messaging`/a registered stream protocol/
-//! guest code (M06A A2).
+//! guest code.
 
 use std::sync::Arc;
 
@@ -32,13 +32,13 @@ pub struct HttpRoute {
     pub topic: Option<String>,
     #[serde(default)]
     pub protocol: Option<String>,
-    /// Whether a caller with no verified identity may reach this route
-    /// (M06A D-A2-7). Only meaningful for `target = "guest"` and `target =
+    /// Whether a caller with no verified identity may reach this route.
+    /// Only meaningful for `target = "guest"` and `target =
     /// "websocket"`, where `false` -- the default -- answers an anonymous
     /// request with 401 before the component is instantiated. Refused at
     /// deploy on any other target, where it would do nothing:
     /// `data-layer`/`messaging` already reject an anonymous caller inside
-    /// `dispatch_native`, and `stream` predates this field (M06A §9.5).
+    /// `dispatch_native`, and `stream` predates this field.
     ///
     /// `true` does not just relax *reachability*: with no caller to
     /// substitute, the handler runs as the service itself
@@ -72,11 +72,11 @@ pub type SsePermitRegistry = Arc<DashMap<String, Arc<Semaphore>>>;
 /// request path. Returns `None` if the pattern doesn't match at all,
 /// `Some(None)` if it matches with no captured parameter, `Some(Some(v))` if
 /// it matches and captured `v`. Only a single `{param}` segment is supported
-/// (sufficient for every route shape `task.md` specifies) -- no general
+/// (sufficient for every route shape services declare) -- no general
 /// globbing/regex.
 ///
-/// Lives in `core`, not `router` (M06A A1, R3-A): `syneroym-control-plane`'s
-/// deploy-time asset/route collision check (`D-A1-4`) needs it too, and it
+/// Lives in `core`, not `router`: `syneroym-control-plane`'s
+/// deploy-time asset/route collision check needs it too, and it
 /// must not depend on `syneroym-router` to get it.
 pub fn match_path(pattern: &str, path: &str) -> Option<Option<String>> {
     let pattern_segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
@@ -99,7 +99,7 @@ pub fn match_path(pattern: &str, path: &str) -> Option<Option<String>> {
 /// `Some("id")`), or `None` when the pattern has no `{...}` segment.
 ///
 /// Returns the **last** such segment, matching `match_path`'s own last-wins
-/// capture (M06A `D-A2-4`): with two `{...}` segments the two functions must
+/// capture: with two `{...}` segments the two functions must
 /// describe the same segment, or a guest would receive a name and a value
 /// from different parts of the path. Only a single capture is supported
 /// anyway.

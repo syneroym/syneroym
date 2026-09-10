@@ -30,7 +30,7 @@ struct Cli {
 
     /// Act as this locally-stored identity (see `roymctl identity create
     /// --name`). Defaults to an ephemeral per-invocation key, which owns
-    /// nothing and can see nothing on an owned substrate (M04A Slice B7a).
+    /// nothing and can see nothing on an owned substrate.
     ///
     /// Distinct from `svc deploy --identity`, which names the *app's*
     /// signing key for its registry certificate; this names the *operator*.
@@ -38,7 +38,7 @@ struct Cli {
     run_as: Option<String>,
 
     /// Path to a signed UCAN `CapabilityToken` JSON file (see `roymctl
-    /// identity issue-grant`) to present on connect (M04A Slice B7b) --
+    /// identity issue-grant`) to present on connect --
     /// proves whatever capability the grant names, on top of `--as`'s
     /// transport identity. Requires `--as <name>`, where `<name>` is the
     /// identity the grant's `--to` names -- the token's audience must match

@@ -131,8 +131,7 @@ pub enum DirectoryCommands {
         #[arg(long)]
         host: Option<String>,
     },
-    /// Create or update this installation's own SynOrg settings -- journey
-    /// step S2.
+    /// Create or update this installation's own SynOrg settings.
     Serve {
         #[arg(long)]
         name: String,
@@ -151,7 +150,7 @@ pub enum DirectoryCommands {
         #[arg(long)]
         host: Option<String>,
     },
-    /// The SynOrg's own roster (S4-S6's approval half).
+    /// The SynOrg's own roster: add, remove, and list members.
     Member {
         #[command(subcommand)]
         command: MemberCommands,
@@ -1159,8 +1158,8 @@ async fn find(
         let age = hit.get("age_secs").and_then(|v| v.as_u64()).unwrap_or(0);
         let revocation = hit.get("revocation_status").and_then(|v| v.as_str()).unwrap_or("unknown");
         // `credential` is the membership verdict `merge` carries. "unknown"
-        // (its only value in R1) renders as "not checked"; a later slice
-        // adds real values without changing the field, and each gets its
+        // is its only value today and renders as "not checked"; real values
+        // can be added later without changing the field, and each gets its
         // own word here rather than a hardcoded string swallowing it.
         let membership =
             membership_words(hit.get("credential").and_then(|v| v.as_str()).unwrap_or("unknown"));

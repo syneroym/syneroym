@@ -75,12 +75,12 @@ pub enum Commands {
         /// Optional nickname. Required with `--service`: it must be the
         /// app instance's own `AppInstanceId`, since `<nickname>-<app-did-
         /// hash>` is the registry alias the app's Tier-1 record was
-        /// admitted under (D-S3-2)
+        /// admitted under
         #[arg(long)]
         nickname: Option<String>,
         /// Optional interface name to include in the host. Omitted means
         /// "the service's one app-declared interface", resolved at the
-        /// destination (D-S3-15)
+        /// destination
         #[arg(long)]
         interface: Option<String>,
         /// The logical service name of an app instance -- when given,
@@ -141,17 +141,15 @@ fn get_substrate_did(substrate_opt: Option<String>, dir: &Path) -> anyhow::Resul
 }
 
 /// Build a client acting as `--as <name>` if given, else with the ephemeral
-/// key `SyneroymClient::new` generates (today's behavior) -- M04A Slice B7a,
-/// F5. Distinct from `svc deploy --identity`, which names the app's own
-/// signing key for its registry certificate, not the operator. If `--ucan
-/// <path>` names a signed `CapabilityToken` JSON file (M04A Slice B7b,
-/// `roymctl identity issue-grant`'s output), it is read, parsed, and
-/// presented via `with_ucan` -- on top of whichever transport identity `--as`
-/// selected.
+/// key `SyneroymClient::new` generates (today's behavior). Distinct from
+/// `svc deploy --identity`, which names the app's own signing key for its
+/// registry certificate, not the operator. If `--ucan <path>` names a signed
+/// `CapabilityToken` JSON file (`roymctl identity issue-grant`'s output), it
+/// is read, parsed, and presented via `with_ucan` -- on top of whichever
+/// transport identity `--as` selected.
 ///
-/// `--ucan` requires `--as` (post-commit review, F2): the token's
-/// `audience_did` must equal the connection's verified master DID
-/// (`from_verified_chain`'s audience check,
+/// `--ucan` requires `--as`: the token's `audience_did` must equal the
+/// connection's verified master DID (`from_verified_chain`'s audience check,
 /// `crates/router/src/route_handler/io.rs`), and without `--as` that DID is a
 /// fresh ephemeral key `SyneroymClient::new` generates per invocation --
 /// never the grant's `--to`. The mismatch fails only on the server side (a
@@ -221,7 +219,7 @@ pub async fn run(
             .await?;
         }
         Commands::App { command } => {
-            // Resolved on demand, not eagerly (D-A3-20): a fully-placed
+            // Resolved on demand, not eagerly: a fully-placed
             // deploy and `app reconcile` need no default substrate at all,
             // and `get_substrate_did` hard-fails when neither `--substrate`
             // nor `substrate.key` exists.
@@ -333,8 +331,8 @@ pub async fn run(
 mod tests {
     use super::*;
 
-    /// Post-commit review (F2): `client_for` rejects `--ucan` without `--as`
-    /// directly, not just via clap's `requires` on the CLI's global flags --
+    /// `client_for` rejects `--ucan` without `--as` directly, not just via
+    /// clap's `requires` on the CLI's global flags --
     /// a direct caller within the crate would otherwise hit the confusing
     /// downstream "holds no grant" failure instead of a clear cause.
     #[test]

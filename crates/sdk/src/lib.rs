@@ -102,7 +102,7 @@ impl Publication {
     }
 }
 
-/// Whether the substrate believes a service's instance is running (M05A A4).
+/// Whether the substrate believes a service's instance is running.
 /// Deliberately not a bool: a supervisor's remediation differs per variant,
 /// and `Unknown` must never be silently read as healthy.
 ///
@@ -118,9 +118,9 @@ pub enum InstancePhase {
     NotRunning(String),
     Unknown(String),
     /// Also what a caller without a grant on an explicitly named id gets
-    /// back -- identical to an id never deployed at all, deliberately
-    /// (A4-10), so a caller with no grant cannot use this to probe for an
-    /// id's existence.
+    /// back -- identical to an id never deployed at all, deliberately, so
+    /// a caller with no grant cannot use this to probe for an id's
+    /// existence.
     NotFound,
 }
 
@@ -132,7 +132,7 @@ pub enum ProbeStatus {
     Failing(String),
 }
 
-/// Outcome of one epoch-guarded binding write (ADR-0021 §3, M05A A5a).
+/// Outcome of one epoch-guarded binding write (ADR-0021 §3).
 /// **No `rename_all`** -- see [`InstancePhase`]'s doc comment.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BindingWriteOutcome {
@@ -155,12 +155,12 @@ pub struct ServiceStatus {
     pub instance_certificate_expires_at: Option<u64>,
     pub probe_checked_at: Option<u64>,
     /// Per declared dependency of this service, the epoch this substrate
-    /// currently serves it (M05A A5a). `status`'s per-dependent binding
-    /// convergence report.
+    /// currently serves it. `status`'s per-dependent binding convergence
+    /// report.
     pub binding_epochs: Vec<(String, u64)>,
 }
 
-/// What this node is, as opposed to what is running on it (M05A A4). Present
+/// What this node is, as opposed to what is running on it. Present
 /// only for a caller holding node-wide `orchestrator/status`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodeFacts {
@@ -184,7 +184,7 @@ pub struct SubstrateStatus {
 /// [`SyneroymClient::with_connect_timeout`].
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// M06A D-A1-5: the authoritative size check the asset-bundle deploy-time
+/// The authoritative size check the asset-bundle deploy-time
 /// caps are only a "cheap early guard" ahead of
 /// (`crates/core/src/deploy_docs.rs`'s `MAX_ASSET_BUNDLE_BYTES` doc
 /// comment) -- every binary artifact in a request's `params` (a Wasm
@@ -227,20 +227,18 @@ pub struct SyneroymClient {
     connection: Option<TransportConnection>,
     connect_timeout: Duration,
     /// A self-asserted caller identity (pubkey only, no delegation) sent on
-    /// every outbound preamble (M04A Slice B0, ADR-0016 §4.2/§0.5). Without
-    /// it, every SDK-driven call resolves to the anonymous bucket once the
-    /// router makes verify_preamble mandatory for native-capability
-    /// dispatch.
+    /// every outbound preamble (ADR-0016 §4.2). Without it, every
+    /// SDK-driven call resolves to the anonymous bucket once the router
+    /// makes verify_preamble mandatory for native-capability dispatch.
     ///
-    /// TODO(M04B/FDAE): a self-asserted pubkey is an assertion, not proof-
+    /// TODO(FDAE): a self-asserted pubkey is an assertion, not proof-
     /// of-possession (the no-delegation handshake path does not challenge
-    /// it). B1/M04B tighten this to verified UCAN chains; B0 only needs
-    /// "not anonymous."
+    /// it). A later change tightens this to verified UCAN chains; today it
+    /// only needs "not anonymous."
     identity: Identity,
     /// A verified UCAN capability chain to present on every outbound
-    /// preamble (M04A Slice B1), set via [`Self::with_ucan`]. `None` by
-    /// default -- callers that don't hold one still get the B0 self-
-    /// asserted-identity admission.
+    /// preamble, set via [`Self::with_ucan`]. `None` by default -- callers
+    /// that don't hold one still get the self-asserted-identity admission.
     caller_ucan: Option<CapabilityToken>,
     /// Handles for endpoints from failed/timed-out connect attempts (see
     /// `spawn_background_close`), reaped by [`Self::shutdown`]. Unlike the
@@ -295,9 +293,9 @@ fn generate_ephemeral_identity() -> Identity {
 }
 
 /// Everything optional about a [`SyneroymClient::deploy_svc_wasm_with_options`]
-/// call (M06A A2, `D-A2-9`). Replaces the growing positional tail
-/// `deploy_svc_wasm_with_assets` had started: `assets` was A1's addition,
-/// `custom_config` is A2's, and a third would have meant a third method.
+/// call. Replaces the growing positional tail `deploy_svc_wasm_with_assets`
+/// had started: `assets` was the first optional addition, `custom_config`
+/// the second, and a third would have meant a third method.
 #[derive(Debug, Default)]
 pub struct DeploySvcOptions {
     pub publication: Publication,
@@ -474,7 +472,7 @@ impl SyneroymClient {
         self
     }
 
-    /// Attaches a verified UCAN capability chain (M04A Slice B1) to present
+    /// Attaches a verified UCAN capability chain to present
     /// on every outbound preamble opened by this client.
     #[must_use]
     pub fn with_ucan(mut self, caller_ucan: CapabilityToken) -> Self {
@@ -680,7 +678,7 @@ impl SyneroymClient {
 
                 // Every stream must start with a RoutePreamble identifying the target service.
                 // A self-asserted pubkey (no delegation) is set so this
-                // connection is not anonymous (M04A Slice B0, ADR-0016 §0.5)
+                // connection is not anonymous (ADR-0016 §0.5)
                 // -- see `SyneroymClient::identity`'s doc comment.
                 let mut preamble = RoutePreamble::binary_json_rpc(&self.service_id, interface_name);
                 preamble.pubkey = Some(hex::encode(self.identity.public_key().to_bytes()));
@@ -803,10 +801,9 @@ impl SyneroymClient {
     }
 
     /// [`deploy_svc_wasm`](Self::deploy_svc_wasm), plus everything optional
-    /// about a WASM deploy (M06A A2, `D-A2-9`): a static asset bundle
-    /// (M06A A1) and a `custom_config` JSON blob, whose reserved
-    /// `http_routes` key declares a service's HTTP route table (M3B
-    /// Slice 7, M06A A2's `target = "guest"`). Replaces
+    /// about a WASM deploy: a static asset bundle and a `custom_config`
+    /// JSON blob, whose reserved `http_routes` key declares a service's
+    /// HTTP route table for a guest target. Replaces
     /// `deploy_svc_wasm_with_assets`, which had exactly one call site --
     /// a third optional field would have made the next one a fourth
     /// `deploy_svc_wasm_*` method instead of growing this one.
@@ -966,7 +963,7 @@ impl SyneroymClient {
     }
 
     /// `generation` is checked against the app instance's recorded
-    /// management stamp when the service has one (M05A A5a, ADR-0021 §4);
+    /// management stamp when the service has one (ADR-0021 §4);
     /// send 0 for a standalone service.
     pub async fn undeploy(&self, service_id: String, generation: u64) -> Result<()> {
         let params = serde_json::to_value((service_id, generation))?;
@@ -978,7 +975,7 @@ impl SyneroymClient {
         }
     }
 
-    /// Epoch-guarded binding write (M05A A5a, ADR-0021 §3) -- the only
+    /// Epoch-guarded binding write (ADR-0021 §3) -- the only
     /// path that changes a dependent's resolution without redeploying it.
     /// One outcome per binding, in the order sent.
     pub async fn write_bindings(&self, write: BindingWrite) -> Result<Vec<BindingWriteOutcome>> {
@@ -987,10 +984,10 @@ impl SyneroymClient {
         Ok(serde_json::from_value(res.result)?)
     }
 
-    /// Restart a deployed service in place, without reinstalling it (M05A
-    /// A5's bounded remediation). `generation` is checked against the app
-    /// instance's recorded management stamp when the service has one;
-    /// send 0 for a standalone service.
+    /// Restart a deployed service in place, without reinstalling it.
+    /// `generation` is checked against the app instance's recorded
+    /// management stamp when the service has one; send 0 for a standalone
+    /// service.
     pub async fn restart(&self, service_id: String, generation: u64) -> Result<()> {
         let params = serde_json::to_value((service_id, generation))?;
         let res = self.request("orchestrator", "restart", params).await?;
@@ -1002,7 +999,7 @@ impl SyneroymClient {
     }
 
     /// Install a freshly-issued instance certificate on an already-deployed
-    /// service, without reinstalling it (M05A A5's unattended renewal).
+    /// service, without reinstalling it -- the unattended-renewal path.
     /// `generation` follows `restart`'s rule; send 0 for a standalone
     /// service.
     pub async fn renew_cert(
@@ -1020,7 +1017,7 @@ impl SyneroymClient {
         }
     }
 
-    /// Clear an app instance's management stamp (M05A A5a §0.24):
+    /// Clear an app instance's management stamp:
     /// `supervisor_did` back to `None`, `generation` back to 0. Without
     /// this, an adopted instance can never be hand-deployed again.
     pub async fn release_app_instance(
@@ -1104,7 +1101,7 @@ impl SyneroymClient {
     }
 
     /// A supervisor's poll: per-instance status for `service_ids`, or for
-    /// every service this client may see when the list is empty (M05A A4).
+    /// every service this client may see when the list is empty.
     pub async fn status(&self, service_ids: Vec<String>) -> Result<SubstrateStatus> {
         let res = self
             .request("orchestrator", "status", serde_json::json!({ "service_ids": service_ids }))
@@ -1112,11 +1109,11 @@ impl SyneroymClient {
         Ok(serde_json::from_value(res.result)?)
     }
 
-    /// `status`'s `node` field alone (A4-06), with none of `status`'s
+    /// `status`'s `node` field alone, with none of `status`'s
     /// per-service work -- for a caller that wants only what this node is,
-    /// not what is running on it (e.g. `app deploy`'s preflight, D-A4-15).
-    /// `None` for a caller without node-wide `orchestrator/status`
-    /// (D-A4-18), the same as `status`'s own `node` field.
+    /// not what is running on it (e.g. `app deploy`'s preflight).
+    /// `None` for a caller without node-wide `orchestrator/status`,
+    /// the same as `status`'s own `node` field.
     pub async fn node_facts(&self) -> Result<Option<NodeFacts>> {
         let res = self.request("orchestrator", "node-facts-only", serde_json::json!({})).await?;
         Ok(serde_json::from_value(res.result)?)
@@ -1223,7 +1220,7 @@ impl SyneroymClient {
 /// cannot run `shutdown`'s graceful QUIC handshake directly. This backstops
 /// a caller that forgets to call `shutdown` explicitly -- exactly what
 /// `SupervisorService::handle_adopt` did before it was fixed to call
-/// `shutdown_clients` (N2, M05A Slice A5b review round 2) -- by closing the
+/// `shutdown_clients` -- by closing the
 /// endpoint in the background instead of leaving iroh to abort it
 /// ungracefully. Callers that need to *know* the close finished (a test, or
 /// an RPC handler that should not return until its outbound connections are

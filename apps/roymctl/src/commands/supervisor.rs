@@ -1,8 +1,7 @@
 //! `roymctl supervisor …`: an operator's interface to a running App
 //! Supervisor -- submit desired state, adopt/release/pause/resume/retire an
 //! app instance, force a reconcile, read status/alerts, and back up or
-//! adopt a master (M05A A5b) -- a member master, or, since M05A A7, the
-//! app instance's own.
+//! adopt a master -- a member master, or the app instance's own.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -73,7 +72,7 @@ pub enum SupervisorCommands {
         all: bool,
     },
     /// Ask the supervisor to write a master -- a member's, or the app
-    /// instance's own (M05A A7, named `app-<instance-id>`) -- into its
+    /// instance's own (named `app-<instance-id>`) -- into its
     /// configured `master_backup_dir` and print the path it wrote (backup
     /// is mandatory: mint-in-place means the operator holds nothing until
     /// they ask). Takes a name, not a path -- the destination is operator
@@ -83,12 +82,12 @@ pub enum SupervisorCommands {
         name: String,
     },
     /// Ask the supervisor to adopt a master already placed in that same
-    /// directory: either a member master (an A0-A4 deployment's
+    /// directory: either a member master (an unmanaged deployment's
     /// `<dir>/identities/member-*.key`), or an app instance's own master
     /// carried from another supervisor by a prior `export-master`. For a
     /// handover of an app instance's master, run this *before* `adopt` on
     /// the new supervisor -- adopting first mints a second app identity
-    /// under the same name (M05A A7).
+    /// under the same name.
     ImportMaster {
         name: String,
     },
@@ -103,17 +102,16 @@ pub enum SupervisorCommands {
     RevokeInstance {
         instance_id: String,
         /// The member's full `MemberRef`, as `status` prints it:
-        /// `<instance-id>/<service-name>#<index>` (M05A A5e).
+        /// `<instance-id>/<service-name>#<index>`.
         logical_ref: String,
     },
     /// List this instance's outbox: binding writes still waiting for
-    /// delivery, or currently claimed by the worker (M05B B1 review
-    /// finding 13).
+    /// delivery, or currently claimed by the worker.
     Outbox {
         instance_id: String,
     },
     /// List this instance's dead letters: queued binding writes whose
-    /// delivery attempt budget is exhausted (M05B B1).
+    /// delivery attempt budget is exhausted.
     DeadLetters {
         instance_id: String,
     },
@@ -135,10 +133,10 @@ fn resolve_under(dir: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() { path.to_path_buf() } else { dir.join(path) }
 }
 
-/// `release`/`retire` now act on every placed substrate they *can* reach
-/// rather than failing the whole call the moment one is down (S7, Slice
-/// A5b review) -- this surfaces which ones, if any, still hold a stale
-/// generation stamp and need a manual re-release once reachable again.
+/// `release`/`retire` act on every placed substrate they *can* reach
+/// rather than failing the whole call the moment one is down -- this
+/// surfaces which ones, if any, still hold a stale generation stamp and
+/// need a manual re-release once reachable again.
 fn print_unreleased_substrates(result: &serde_json::Value) {
     let Some(unreleased) = result.get("unreleased_substrates").and_then(|v| v.as_array()) else {
         return;
@@ -225,9 +223,9 @@ pub async fn handle(
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("compiled deployment contains no plans"))?;
 
-            // Inline every Wasm artifact (D-A5-7): the supervisor applies
-            // this plan on a remote substrate with no access to this
-            // machine's filesystem.
+            // Inline every Wasm artifact: the supervisor applies this plan
+            // on a remote substrate with no access to this machine's
+            // filesystem.
             for svc in &mut target_plan.services {
                 if svc.config.service_type == ServiceType::Wasm
                     && !svc.config.source.starts_with("http://")
@@ -242,11 +240,10 @@ pub async fn handle(
                 }
             }
 
-            // Same treatment for a declared asset bundle's archive (M06A
-            // A1, D-A1-1): resolved against `manifest_dir`, not this
-            // process's cwd, and inlined for the same reason as `source`
-            // above -- otherwise a remote submit reaches a substrate that
-            // cannot read the path.
+            // Same treatment for a declared asset bundle's archive:
+            // resolved against `manifest_dir`, not this process's cwd, and
+            // inlined for the same reason as `source` above -- otherwise a
+            // remote submit reaches a substrate that cannot read the path.
             for svc in &mut target_plan.services {
                 if let Some(assets) = &mut svc.config.assets
                     && !assets.archive.starts_with("http://")
@@ -281,10 +278,9 @@ pub async fn handle(
             // this supervisor already holds is server state `roymctl`
             // does not otherwise track -- reading it back from `status`
             // is what makes the documented default true rather than
-            // silently presenting 0 against an adopted instance (S2,
-            // Slice A5b review). A lookup failure just means "no prior
-            // desired state", i.e. a genuine first submission at 0, not
-            // an error worth surfacing here.
+            // silently presenting 0 against an adopted instance. A lookup
+            // failure just means "no prior desired state", i.e. a genuine
+            // first submission at 0, not an error worth surfacing here.
             let effective_generation = match generation {
                 Some(g) => *g,
                 None => client
@@ -317,8 +313,7 @@ pub async fn handle(
                     // The vault key `export-master` actually takes, not the
                     // bare logical name above -- printing `service_name`
                     // here produced a command that always failed with "no
-                    // master named '<service_name>' in this vault" (S1,
-                    // Slice A5b review).
+                    // master named '<service_name>' in this vault".
                     let vault_name =
                         m.get("vault_name").and_then(|v| v.as_str()).unwrap_or(service_name);
                     println!(
@@ -334,9 +329,9 @@ pub async fn handle(
                 .await?;
             let generation = res.result.get("generation").and_then(|v| v.as_u64()).unwrap_or(0);
             println!("Adopted '{instance_id}' at generation {generation}.");
-            // M05A A7 (D-A7-8): told at the moment the key exists, the same
-            // rule `submit`'s own `minted-master` rows already encode --
-            // not left to a follow-up `status` call.
+            // The app master DID is told at the moment the key exists, the
+            // same rule `submit`'s own `minted-master` rows already encode
+            // -- not left to a follow-up `status` call.
             let app_master_did =
                 res.result.get("app_master_did").and_then(|v| v.as_str()).unwrap_or("?");
             let vault_name = res.result.get("vault_name").and_then(|v| v.as_str()).unwrap_or("?");

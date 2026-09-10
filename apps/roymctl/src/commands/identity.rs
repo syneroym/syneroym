@@ -104,8 +104,8 @@ pub enum IdentityCommands {
         substrate: String,
         #[arg(long, default_value_t = 24)]
         expires_hours: u64,
-        /// Community registry URL to publish/refresh this master's anchor at
-        /// (D-A1-7). Without it, the certificate this command mints is
+        /// Community registry URL to publish/refresh this master's anchor at.
+        /// Without it, the certificate this command mints is
         /// unusable on the wire until an anchor exists some other way
         /// (`roymctl identity publish-anchor`).
         #[arg(long)]
