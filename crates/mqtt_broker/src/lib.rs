@@ -1,5 +1,5 @@
 //! Embedded in-process MQTT broker (`rumqttd`) backing `syneroym:messaging`
-//! (ADR-0010, M3B Slice 6A).
+//! (ADR-0010).
 //!
 //! `rumqttd::Broker::new` spawns the router's event loop on its own native
 //! OS thread as a side effect of construction; `Broker::start` is never
@@ -87,7 +87,7 @@ pub struct MqttBroker {
     /// `dispatch_messaging` publish across the process serializes through
     /// this one link. `try_publish` itself is fast/non-blocking, so this
     /// is a contention point rather than a correctness bug -- a deliberate
-    /// accepted tradeoff for Slice 6A, capping publish throughput on
+    /// accepted tradeoff, capping publish throughput on
     /// total substrate-wide volume rather than per-service/per-topic
     /// volume. Worth moving to a per-caller link if publish volume
     /// becomes a real bottleneck.
@@ -157,8 +157,8 @@ impl MqttBroker {
 
     /// Publishes a retained message via the raw-packet escape hatch
     /// (`LinkTx::publish`/`try_publish` have no retain parameter). Not
-    /// part of the guest-facing WIT surface for Slice 6A (ADR-0010
-    /// Finding A4) — used only by this crate's own retained-message test.
+    /// part of the guest-facing WIT surface (ADR-0010 Finding A4) — used
+    /// only by this crate's own retained-message test.
     #[cfg(test)]
     pub(crate) async fn publish_retained_for_test(
         &self,

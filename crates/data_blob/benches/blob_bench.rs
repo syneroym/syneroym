@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
-//! M03-sss (Slice 5) performance budgets: `put-blob`/`get-blob` against the
+//! Performance budgets for `put-blob`/`get-blob` against the
 //! `object_store` local filesystem backend, unencrypted (encryption-at-rest
 //! adds AEAD segment overhead on top -- see the SQLCipher A/B bench in
 //! `crates/data_db/benches/security_config_bench.rs` for the analogous
 //! encrypted-vs-plaintext comparison on the data-layer side; blob content
-//! encryption has no separate budget row in `task.md`).
+//! encryption has no separate budget row).
 
 use std::time::{Duration, Instant};
 

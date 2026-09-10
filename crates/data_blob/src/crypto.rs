@@ -218,7 +218,7 @@ pub fn sign_url(
 
 /// Recomputes and constant-time-compares the HMAC, and checks `exp` against
 /// `now_unix`. Pure/stateless so it's testable without any live serving
-/// endpoint (none exists yet -- see status.md).
+/// endpoint (none exists yet).
 pub fn verify_signed_url(
     dek: &[u8; 32],
     service_id: &str,

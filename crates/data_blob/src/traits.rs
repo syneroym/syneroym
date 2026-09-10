@@ -37,7 +37,7 @@ pub trait BlobProvider: Send + Sync + fmt::Debug {
     async fn delete_blob(&self, service_id: &str, hash: &str) -> Result<(), BlobError>;
 
     /// Computes an HMAC-signed URL string for `hash`. Does not itself serve
-    /// the blob over HTTP -- no such endpoint exists yet (see status.md).
+    /// the blob over HTTP -- no such endpoint exists yet.
     async fn signed_url(
         &self,
         service_id: &str,

@@ -734,7 +734,7 @@ mod tests {
         let master_did = substrate::derive_did_key(&master.public_key());
 
         // Seed the registry directly with a backdated, but genuinely signed,
-        // anchor -- the common case a late operator hits, per D-A1-12.
+        // anchor -- the common case a late operator hits.
         let stale_payload = MasterAnchorPayload {
             revoked_keys: vec!["did:key:zRevoked".to_string()],
             ..Default::default()
@@ -770,8 +770,8 @@ mod tests {
         assert_eq!(stored.0.pkarr_packet_hex, corrupt.pkarr_packet_hex);
     }
 
-    /// D-A1-12's `master_id` equality tightening, against
-    /// `fetch_own_master_anchor` (reached through `refresh_master_anchor`).
+    /// The `master_id` equality check, against `fetch_own_master_anchor`
+    /// (reached through `refresh_master_anchor`).
     /// Unlike `refreshing_refuses_to_overwrite_an_anchor_it_cannot_read`'s
     /// corrupted anchor, this one has a perfectly valid signature -- it is
     /// honestly signed by `other`, and only the identity it is served under
@@ -795,8 +795,8 @@ mod tests {
         assert!(err.is_err(), "a validly-signed anchor for a different master must be refused");
     }
 
-    /// The same D-A1-12 tightening, against `resolve_master_anchor` -- the
-    /// consumer-facing read path, not the refresh path above.
+    /// The same `master_id` equality check, against `resolve_master_anchor`
+    /// -- the consumer-facing read path, not the refresh path above.
     #[tokio::test]
     async fn resolve_master_anchor_refuses_an_anchor_served_under_the_wrong_master() {
         let (registry, url) = spawn_registry().await;
@@ -815,8 +815,8 @@ mod tests {
         assert!(err.is_err(), "a validly-signed anchor for a different master must be refused");
     }
 
-    /// Plan test 32's third case (D-B2-16/D-B2-17): the DHT gate must skip
-    /// only the *DHT* channel for a private-flagged record, not the HTTP
+    /// The DHT gate must skip only the *DHT* channel for a private-flagged
+    /// record, not the HTTP
     /// registry channel -- which is the whole of what `internal` promises
     /// (registered with this substrate's registry only, still reachable
     /// through it). `crates/core::dht_registry`'s own gate tests cannot
@@ -847,7 +847,7 @@ mod tests {
         assert!(looked_up.info.is_private);
     }
 
-    /// Plan test 39, pairing with test 38 (`multi_substrate_placement_e2e.rs`):
+    /// Pairs with the `multi_substrate_placement_e2e.rs` case:
     /// the two published tiers stay distinguishable end to end -- `public`
     /// resolves *and* its record reaches a parent registry, where `internal`
     /// resolves and stops. `admit_endpoint`'s `!payload.info.is_private`
@@ -905,13 +905,13 @@ mod tests {
         );
     }
 
-    /// D-A1-3's recovery path, against a live registry -- `build_record`'s
+    /// The sweep's recovery path, against a live registry -- `build_record`'s
     /// own tests (`crates/core/src/endpoint_publisher.rs`) exercise the
     /// decision table but never call `publish_all_services` itself, since
     /// `register` against no registry is a silent no-op rather than the
     /// failure this test needs.
     ///
-    /// The failure exercised here is D-A1-14's compare-and-swap: a stored
+    /// The failure exercised here is the registry's compare-and-swap: a stored
     /// record whose `service_id` a strictly newer record already occupies
     /// at the live registry (as if a relocation already published one
     /// elsewhere) is a genuine `Err` from `publish_service`, not the benign

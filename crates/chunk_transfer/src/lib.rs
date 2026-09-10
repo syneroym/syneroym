@@ -1,6 +1,6 @@
 //! Shared "push/pull `Vec<u8>` chunks until EOF" core, used by both
-//! `blob-store`'s `UploadSession`/`DownloadSession` (M03-sss Slice 5) and
-//! `syneroym:messaging`'s `stream-sink`/`stream-cursor` (M03B Slice 6B, see
+//! `blob-store`'s `UploadSession`/`DownloadSession` and
+//! `syneroym:messaging`'s `stream-sink`/`stream-cursor` (see
 //! `docs/decisions/0014-quic-stream-protocol-routing.md`). One chunking loop
 //! implementation instead of two parallel ones for the same mechanism.
 

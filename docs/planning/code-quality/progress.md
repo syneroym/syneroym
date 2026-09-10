@@ -70,10 +70,10 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/ucan` | 14 | 0 | 0 | 0 | | | |
 | `crates/coordinator_iroh` | 7 | 2 | 1 | 4 | | | |
 | `crates/coordinator_webrtc` | 7 | 2 | 1 | 0 | | | |
-| `crates/data_keystore` | 7 | 2 | 0 | 0 | | | |
-| `crates/data_blob` | 5 | 0 | 1 | 0 | | | |
-| `crates/community_registry` | 5 | 0 | 0 | 0 | | | |
-| `crates/mqtt_broker` | 5 | 0 | 0 | 0 | | | |
+| `crates/data_keystore` | 7 | 2 | 0 | 0 | done | | |
+| `crates/data_blob` | 5 | 0 | 1 | 0 | done | | |
+| `crates/community_registry` | 5 | 0 | 0 | 0 | done | | |
+| `crates/mqtt_broker` | 5 | 0 | 0 | 0 | done | | |
 | `crates/conversation` | 4 | 0 | 4 | 6 | | | |
 | `crates/roym_transaction` | 0 | 0 | 1 | 7 | n/a | | |
 | `crates/roym_directory` | 0 | 0 | 1 | 4 | n/a | | |
@@ -86,9 +86,9 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/client_gateway` | 0 | 0 | 1 | 1 | n/a | | |
 | `crates/app_host_native` | 1 | 0 | 1 | 1 | | | |
 | `crates/sandbox_podman` | 1 | 1 | 1 | 1 | | | |
-| `crates/identity` | 2 | 0 | 0 | 0 | | n/a | n/a |
-| `crates/chunk_transfer` | 1 | 0 | 0 | 0 | | n/a | n/a |
-| `crates/app_host` | 1 | 0 | 0 | 0 | | n/a | n/a |
+| `crates/identity` | 2 | 0 | 0 | 0 | done | n/a | n/a |
+| `crates/chunk_transfer` | 1 | 0 | 0 | 0 | done | n/a | n/a |
+| `crates/app_host` | 1 | 0 | 0 | 0 | done | n/a | n/a |
 | `crates/smoke-tests` | 0 | 0 | 0 | 1 | n/a | n/a | |
 | `tests/perf` | 1 | 1 | 0 | 4 | | n/a | |
 | `xtask/src` | 0 | 0 | 0 | 2 | n/a | n/a | |

@@ -600,9 +600,8 @@ mod tests {
         let temp = Identity::generate().unwrap();
         let now = now_secs();
         // A window that was genuinely valid at mint time and has since
-        // passed -- the shape D-A1-10 exists for: a reader trusts that the
-        // master authorized this key even though the live credential has
-        // lapsed.
+        // passed: a reader trusts that the master authorized this key even
+        // though the live credential has lapsed.
         let cert = issue_with_window(
             &master,
             temp.public_key(),

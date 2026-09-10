@@ -216,7 +216,7 @@ impl Identity {
     /// to signing identity instead of encryption. Needed because a
     /// substrate node hosts multiple, potentially unrelated services
     /// (multi-tenancy is the normal case, not the exception): assertions a
-    /// service signs -- e.g. Slice B3's `RelationshipProof` ("`hr-svc`
+    /// service signs -- e.g. a `RelationshipProof` ("`hr-svc`
     /// asserts...", ADR-0017 §6/§7) -- must be attributable to *that
     /// service*, not to "some service hosted on this node," and a leaked
     /// derived key must not compromise the node's own identity or any

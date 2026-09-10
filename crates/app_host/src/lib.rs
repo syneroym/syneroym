@@ -100,7 +100,7 @@ pub trait AppAppConfig {
 }
 
 /// Mirrors `syneroym:vault/vault@0.1.0`. One function, and it stays one:
-/// `D-06C-4` forbids using `reveal` to hand a signing key to an app.
+/// `reveal` must never be used to hand a signing key to an app.
 pub trait AppVault {
     fn reveal(&self, key: String) -> impl Future<Output = Result<Vec<u8>, VaultError>> + Send;
 }
