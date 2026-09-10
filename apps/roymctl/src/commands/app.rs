@@ -29,8 +29,8 @@ use syneroym_ucan::CapabilityToken;
 
 use super::member_identity;
 
-/// One-shot readiness check per substrate before any deploy call is made
-/// (D-A3-8): an unreachable substrate is a clean up-front error rather than a
+/// One-shot readiness check per substrate before any deploy call is made:
+/// an unreachable substrate is a clean up-front error rather than a
 /// partial application.
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -54,14 +54,14 @@ pub enum AppCommands {
         #[arg(long)]
         mint_masters: bool,
         /// Community registry URL to publish/refresh each minted master's
-        /// anchor at (D-A1-7). Ignored when `--mint-masters` is absent.
+        /// anchor at. Ignored when `--mint-masters` is absent.
         /// Without it, a minted certificate is unusable on the wire until an
         /// anchor exists some other way (`roymctl identity publish-anchor`).
         #[arg(long)]
         registry_url: Option<String>,
         /// Substrate inventory mapping the aliases a manifest's `placement`
         /// selectors name to DIDs, addresses, credentials, and declared
-        /// capabilities (M05A Slice A3). Defaults to
+        /// capabilities. Defaults to
         /// `<dir>/substrates.toml`. Only read when the plan actually places
         /// a service by alias.
         #[arg(long)]
@@ -79,7 +79,8 @@ pub enum AppCommands {
         journal_path: PathBuf,
     },
     /// Clear a service's placement bookkeeping so a redeploy to a different
-    /// substrate is no longer refused (D-A3-12's escape hatch).
+    /// substrate is no longer refused -- the escape hatch for the
+    /// placement-change refusal.
     ///
     /// `svc remove --svc-id <id>` undeploys the running instance but has no
     /// concept of an app instance or a journal, so it cannot itself clear
@@ -100,7 +101,7 @@ pub enum AppCommands {
         journal_path: PathBuf,
     },
     /// Poll every substrate this app instance's services are placed on and
-    /// report per-service health (M05A A4). Read-only: nothing is restarted,
+    /// report per-service health. Read-only: nothing is restarted,
     /// retried, or redeployed. Alerts are recorded unless `--no-record` is
     /// passed. Exits non-zero when any service reports a fault; a service
     /// the substrate could not decide about is reported but not fatal
@@ -138,12 +139,12 @@ pub enum AppCommands {
         #[arg(long)]
         all: bool,
     },
-    /// Resolve an app's logical service to its current member set (ADR-0022
-    /// §3): look the app DID up in the registry (Tier 1), fetch the signed
-    /// topology document from the supervisor holding it (Tier 2), verify it
-    /// against the app DID, and print the members. Prints the members as
-    /// DIDs, not addresses -- turning one into an address is an ordinary
-    /// registry lookup (Tier 3), unaffected by this command.
+    /// Resolve an app's logical service to its current member set
+    /// (ADR-0022 §3): look the app DID up in the registry (Tier 1), fetch
+    /// the signed topology document from the supervisor holding it (Tier 2),
+    /// verify it against the app DID, and print the members. Prints the
+    /// members as DIDs, not addresses -- turning one into an address is an
+    /// ordinary registry lookup (Tier 3), unaffected by this command.
     Resolve {
         /// The app instance's own master DID, as Tier 1 answers with (not
         /// its human `AppInstanceId`).
@@ -160,7 +161,7 @@ fn resolve_under(dir: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() { path.to_path_buf() } else { dir.join(path) }
 }
 
-/// Resolves the `identity`/`ucan` pair an alias's client presents (D-A3-6).
+/// Resolves the `identity`/`ucan` pair an alias's client presents.
 ///
 /// The pair is inherited from **one** source, entry or global, never mixed
 /// field-by-field: an entry that sets `identity` but not `ucan` would
@@ -217,10 +218,10 @@ where
     }
 }
 
-/// A3's own post-apply fallback, now that A4's `status` call answers the
-/// registry-namespace question at preflight (D-A4-15) whenever the
-/// credential can read node facts (D-A4-18) -- the deploy loop above bails
-/// before any artifact work when it can see a split namespace outright. This
+/// The post-apply fallback, kept now that the `status` call answers the
+/// registry-namespace question at preflight whenever the credential can
+/// read node facts -- the deploy loop above bails before any artifact work
+/// when it can see a split namespace outright. This
 /// probe stays as the propagation check and the fallback for a credential
 /// that cannot: a substrate publishes through its **own** configured
 /// registry, which nothing on the wire reports to a caller who cannot read
@@ -235,7 +236,7 @@ async fn probe_registry_reachability(
     urls: &BTreeSet<String>,
 ) {
     for url in urls {
-        // DHT enabled (finding 06): the warning below names "enable the DHT"
+        // DHT enabled: the warning below names "enable the DHT"
         // as one of the two ways to satisfy the shared-namespace precondition,
         // so the probe must actually be able to see it -- with it disabled, a
         // fleet that took that advice got a false warning on every deploy.
@@ -277,7 +278,7 @@ async fn probe_registry_reachability(
     }
 }
 
-/// The placement-change refusal (D-A3-12, sourced per D-A3-22): a redeploy
+/// The placement-change refusal: a redeploy
 /// that would move a service to a different substrate than it already
 /// landed on is a hard error, not a silent relocation -- the old instance
 /// would keep running and keep republishing its endpoint record, exactly
@@ -288,7 +289,7 @@ async fn probe_registry_reachability(
 /// instance, not the last `ACTIVE` plan: a partially-failed deploy leaves
 /// the record `Degraded` (or leaves no `ACTIVE` record at all, on a first
 /// deploy), while the services that did land are still running -- an
-/// `ACTIVE`-only source misses exactly the sequence A3 introduces.
+/// `ACTIVE`-only source misses exactly that sequence.
 ///
 /// Uses `deploy::current_placement` -- the **most recent** row for the
 /// logical ref, of either action type, not the most recent `ADD`: `app
@@ -298,7 +299,7 @@ async fn probe_registry_reachability(
 /// already cleared the bookkeeping for this service, so any placement --
 /// the same substrate or a different one -- is fine. Shared with
 /// `apply_plan`'s resume-skip so the two cannot read the journal two
-/// different ways again (post-review: they briefly did).
+/// different ways again.
 ///
 /// Pulled out of `handle` so it is unit-testable against a plain journal,
 /// with no live substrate needed.
@@ -336,14 +337,12 @@ fn check_no_placement_change(
     Ok(())
 }
 
-/// M05A A5a §4.5: the standing backlog row "`app deploy` without
-/// --mint-masters binds nothing" names its own fix -- a manifest declaring
-/// dependencies should have no unmastered deploy path at all. A warning at
-/// deploy time and a runtime failure at the guest's first `dependency(...)`
-/// call was the worst split available: the operator sees the consequence
-/// far from the cause. A manifest with no dependencies is unaffected -- an
-/// unmastered deploy of an independent service stays valid, which `svc
-/// deploy` and every pre-A0 manifest rely on.
+/// A manifest declaring dependencies should have no unmastered deploy path
+/// at all. A warning at deploy time and a runtime failure at the guest's
+/// first `dependency(...)` call was the worst split available: the operator
+/// sees the consequence far from the cause. A manifest with no dependencies
+/// is unaffected -- an unmastered deploy of an independent service stays
+/// valid, which `svc deploy` and every dependency-free manifest rely on.
 ///
 /// Pulled out of `handle` so it is unit-testable with no live substrate,
 /// the same reason `check_no_placement_change` is its own function.
@@ -468,16 +467,15 @@ pub async fn handle(
             let journal = DeploymentJournal::open(parent_dir, db_name)?;
 
             // ================================================================
-            // Everything that can bail runs BEFORE the journal is written
-            // (D-A3-19). A record created ahead of a refusal becomes the next
-            // run's resume target and a fake recovery plan for `app reconcile`.
+            // Everything that can bail runs BEFORE the journal is written.
+            // A record created ahead of a refusal becomes the next run's
+            // resume target and a fake recovery plan for `app reconcile`.
             // ================================================================
 
-            // --- inventory + preflight (D-A3-5/6/7/8) -----------------------
+            // --- inventory + preflight -------------------------------------
             let demand = placement_demand(target_plan);
             let mut clients: BTreeMap<SubstrateAlias, Arc<SyneroymClient>> = BTreeMap::new();
             let mut client_urls: BTreeMap<SubstrateAlias, String> = BTreeMap::new();
-            // D-A4-15: closes two A3 backlog rows once `status` exists.
             // `(registry_url, dht_enabled)` per alias whose credential could
             // read node facts; the registry-namespace check below fires only
             // when every placed alias is covered.
@@ -503,7 +501,7 @@ pub async fn handle(
                         format!("substrate '{alias}' ({}) is not reachable", entry.did)
                     })?;
 
-                    // A4-06: `node_facts()` alone, not `status(vec![])` --
+                    // `node_facts()` alone, not `status(vec![])` --
                     // an empty `service_ids` means "every service this
                     // caller may see", so for the node-wide owner credential
                     // that call would derive a phase and run a probe for
@@ -511,7 +509,7 @@ pub async fn handle(
                     // fields.
                     match c.node_facts().await.ok().flatten() {
                         None => {
-                            // D-A4-18: node facts need node-wide
+                            // Node facts need node-wide
                             // orchestrator/status. A deploy-only or
                             // app-scoped credential legitimately cannot
                             // read them, and this must say so rather than
@@ -579,7 +577,7 @@ pub async fn handle(
                 }
             }
 
-            // --- the fallback target, built lazily (D-A3-20) ----------------
+            // --- the fallback target, built lazily ------------------------
             // Only a service with no placement needs it: a fully-placed app
             // must not require a default substrate it never touches.
             let needs_fallback = target_plan.services.iter().any(|s| s.substrate.is_none());
@@ -594,7 +592,7 @@ pub async fn handle(
             let fallback_target = fallback_client.as_ref().map(|fb| DeployTarget {
                 alias: None,
                 substrate_did: fb.service_id().to_string(),
-                // `roymctl` deliberately keeps the undurable actor (D-B1-11):
+                // `roymctl` deliberately keeps the undurable actor:
                 // a CLI process exits when the command finishes, so a
                 // durable queue behind it would be written and never
                 // drained.
@@ -615,18 +613,17 @@ pub async fn handle(
                 })
                 .collect();
 
-            // --- placement change refusal (D-A3-12, sourced per D-A3-22) ----
+            // --- placement change refusal --------------------------------
             let placed = deploy::resolve_targets(target_plan, &targets, fallback_target.as_ref())?;
             let landed = journal.get_completed_actions_for_instance(&instance_id)?;
             check_no_placement_change(dir, &placed, &landed)?;
 
-            // --- masters (§6) -------------------------------------------------
-            // Still before the journal record is created (D-A3-19, finding 07):
-            // certification can bail on its own (an unreachable
-            // instance-identity call, a master-DID mismatch, a missing master
-            // file). Running it *after* the record existed used to leave an
-            // `Applying` record with zero action rows on exactly that bail --
-            // the phantom D-A3-19 was written to prevent, which
+            // --- masters -------------------------------------------------
+            // Still before the journal record is created: certification can
+            // bail on its own (an unreachable instance-identity call, a
+            // master-DID mismatch, a missing master file). Running it *after*
+            // the record existed used to leave an `Applying` record with zero
+            // action rows on exactly that bail -- a phantom record that
             // `recover_applying` would then hand `app reconcile` as a recovery
             // plan for a deploy that never started.
             let (deploy_plan, instance_certs, registry_certs) = if *mint_masters {
@@ -648,7 +645,7 @@ pub async fn handle(
             // Past this point nothing bails before the journal is consistent.
             // ================================================================
 
-            // --- resume (D-A3-10) -------------------------------------------
+            // --- resume --------------------------------------------------
             let record_id = match journal.get_latest(&instance_id)? {
                 Some(rec)
                     if matches!(
@@ -674,13 +671,12 @@ pub async fn handle(
                     instance_certificates: &instance_certs,
                     registry_certificates: &registry_certs,
                     emit_bindings: *mint_masters,
-                    // Unmanaged (M05A A5a): `roymctl app deploy` is the
-                    // operator path; a supervisor's own `submit` presents
-                    // whatever `adopt` minted, and does not go through
-                    // this command.
+                    // Unmanaged: `roymctl app deploy` is the operator path;
+                    // a supervisor's own `submit` presents whatever `adopt`
+                    // minted, and does not go through this command.
                     generation: 0,
                     // Unmanaged for the same reason: the epoch is the
-                    // resident loop's counter (M05A A5c), and an absent
+                    // resident loop's counter, and an absent
                     // entry here means the same "no supervisor has written
                     // here" that `generation: 0` above already means.
                     binding_epochs: &BTreeMap::new(),
@@ -690,7 +686,7 @@ pub async fn handle(
             )
             .await?;
 
-            // --- post-apply registry verification (D-A3-17, §0.12) ---------
+            // --- post-apply registry verification ------------------------
             let distinct_dids: BTreeSet<&str> =
                 placed.iter().map(|(_, t)| t.substrate_did.as_str()).collect();
             if *mint_masters && distinct_dids.len() > 1 {
@@ -701,8 +697,8 @@ pub async fn handle(
                 if let Ok(deployed_placed) =
                     deploy::resolve_targets(&deploy_plan, &targets, fallback_target.as_ref())
                 {
-                    // Finding 03: only the members that actually landed this
-                    // run. A failed service was never deployed at all -- the
+                    // Only the members that actually landed this run. A
+                    // failed service was never deployed at all -- the
                     // registry cannot resolve it for that reason, not a
                     // topology fault, and probing it anyway spends two full
                     // retry budgets per failure to report a warning that
@@ -811,8 +807,8 @@ pub async fn handle(
                 app_instance_id: instance_id.clone(),
                 service_name: LogicalServiceName::new(service.as_str()),
             };
-            // M05A A5e: the journal now keys every action row on a
-            // `MemberRef`, not a bare `LogicalServiceRef`. `--service` names
+            // The journal keys every action row on a `MemberRef`, not a
+            // bare `LogicalServiceRef`. `--service` names
             // only the logical service, with no way to name one member of a
             // scaled one -- forgets member 0, the only member an unscaled
             // deploy ever has. Forgetting one member of a `replicas > 1`
@@ -933,8 +929,8 @@ pub async fn handle(
                     }),
                     Some(row) => {
                         // The plan's `service_id` is the compiler's
-                        // fabricated id whenever the deploy minted masters
-                        // (§0.3), so re-derive.
+                        // fabricated id whenever the deploy minted masters,
+                        // so re-derive.
                         let id = member_identity::deployed_service_id(dir, svc)?;
                         expected.push(health::ExpectedService {
                             logical_ref: svc.logical_ref.clone(),
@@ -1032,8 +1028,8 @@ pub async fn handle(
                 }
             }
 
-            // D-A4-19: faults are fatal; "cannot tell" is not, unless
-            // --strict. A `tcp` service that declared no probe is
+            // Faults are fatal; "cannot tell" is not, unless --strict.
+            // A `tcp` service that declared no probe is
             // permanently undetermined, and must not make every routine
             // sweep exit non-zero. Reuses the loop's own last sweep rather
             // than polling again, so the exit code always agrees with what
@@ -1303,8 +1299,8 @@ mod tests {
         }
     }
 
-    /// D-A3-6, finding 02: an entry overriding neither field inherits the
-    /// global pair as-is -- today's pre-A3 behavior, unaffected.
+    /// An entry overriding neither field inherits the global identity/ucan
+    /// pair as-is.
     #[test]
     fn resolve_credentials_falls_back_to_the_global_pair_when_the_entry_sets_neither() {
         let alias = SubstrateAlias::new("edge-1");
@@ -1341,9 +1337,9 @@ mod tests {
         assert_eq!(ucan.as_deref(), Some(Path::new("/dir/grants/edge-1.json")));
     }
 
-    /// Finding 02's exact hazard: `identity` overridden, `ucan` left to fall
-    /// back to a *global* `--ucan` whose audience is the global identity,
-    /// not this entry's. Must be rejected, not silently paired.
+    /// The hazard: `identity` overridden, `ucan` left to fall back to a
+    /// *global* `--ucan` whose audience is the global identity, not this
+    /// entry's. Must be rejected, not silently paired.
     #[test]
     fn resolve_credentials_rejects_identity_override_with_a_global_ucan_present() {
         let alias = SubstrateAlias::new("edge-1");
@@ -1508,19 +1504,17 @@ mod tests {
         }
     }
 
-    /// D-A3-22: the exact sequence round 1 was blind to -- a first partial
-    /// deploy leaves the record `Degraded` with one `COMPLETED` row and no
-    /// `ACTIVE` record at all. An `ACTIVE`-sourced refusal would pass this
-    /// run silently and leave the service running on two nodes.
+    /// A first partial deploy leaves the record `Degraded` with one
+    /// `COMPLETED` row and no `ACTIVE` record at all. A refusal that read
+    /// only the `ACTIVE` record would pass this run silently and leave the
+    /// service running on two nodes.
     ///
-    /// Post-review (finding 04): `landed` used to be a hand-typed literal,
-    /// identical in shape to the previous test's -- which proves nothing
-    /// about D-A3-22's actual claim, that the rows come from `COMPLETED`
-    /// actions across every record rather than the last `ACTIVE` plan.
-    /// `check_no_placement_change` takes `landed` as a plain slice by
-    /// design (so it needs no live substrate), so the only way to pin the
-    /// *source* is to build the state through a real journal, the same way
-    /// `handle` does, and read `landed` back out with the real query.
+    /// `landed` is built through a real journal here, the same way `handle`
+    /// does, and read back with the real query -- not a hand-typed literal.
+    /// `check_no_placement_change` takes `landed` as a plain slice by design
+    /// (so it needs no live substrate), so building the state for real is
+    /// the only way to pin that the rows come from `COMPLETED` actions
+    /// across every record rather than the last `ACTIVE` plan.
     #[test]
     fn a_placement_change_is_refused_after_a_degraded_run_not_only_an_active_one() {
         let dir = tempfile::tempdir().unwrap();
@@ -1583,10 +1577,10 @@ mod tests {
         check_no_placement_change(dir.path(), &placed, &landed).unwrap();
     }
 
-    /// Finding 01: a most-recent `REMOVE` row (what `app forget` appends)
-    /// must clear the refusal, even though an older `ADD` row for the same
-    /// logical ref still sits underneath it -- a `rfind` scoped to `ADD`
-    /// alone would miss the `REMOVE` and refuse forever.
+    /// A most-recent `REMOVE` row (what `app forget` appends) must clear the
+    /// refusal, even though an older `ADD` row for the same logical ref
+    /// still sits underneath it -- a `rfind` scoped to `ADD` alone would
+    /// miss the `REMOVE` and refuse forever.
     #[test]
     fn a_remove_row_after_an_add_clears_the_refusal() {
         let dir = tempfile::tempdir().unwrap();
@@ -1617,7 +1611,7 @@ mod tests {
     }
 
     /// `app forget` end to end: a real journal, on disk, exactly as `handle`
-    /// itself opens it -- proving the whole escape from finding 01, not just
+    /// itself opens it -- proving the whole `REMOVE`-row escape, not just
     /// `check_no_placement_change`'s half of it.
     #[tokio::test]
     async fn app_forget_appends_a_remove_row_that_clears_a_later_refusal() {
@@ -1695,10 +1689,10 @@ mod tests {
         assert_eq!(landed_again.len(), landed.len(), "{landed_again:?}");
     }
 
-    /// M05A A5e review: `--service` names a logical service, and this
-    /// command hardcodes member 0 -- forgetting a scaled service used to
-    /// silently forget member 0 alone while its siblings stayed tracked as
-    /// if nothing had happened. Refused instead, naming the count.
+    /// `--service` names a logical service, and this command hardcodes
+    /// member 0 -- forgetting a scaled service used to silently forget
+    /// member 0 alone while its siblings stayed tracked as if nothing had
+    /// happened. Refused instead, naming the count.
     #[tokio::test]
     async fn app_forget_refuses_a_service_with_more_than_one_landed_member() {
         let dir = tempfile::tempdir().unwrap();
@@ -1781,7 +1775,7 @@ mod tests {
         assert!(err.to_string().contains("nothing to forget"), "{err}");
     }
 
-    // ── M05A A5a §4.5: unmastered deploy refused when deps are declared ──
+    // ── unmastered deploy refused when deps are declared ──
 
     /// A manifest declaring a dependency has no unmastered deploy path --
     /// the plan carries the compiler's fabricated ids, which resolve to no
@@ -1809,7 +1803,7 @@ mod tests {
 
     /// The boundary: an unmastered deploy of an independent service (no
     /// declared dependencies) stays valid -- `svc deploy` and every
-    /// pre-A0 manifest rely on this.
+    /// dependency-free manifest rely on this.
     #[test]
     fn a_manifest_with_no_dependencies_still_deploys_without_mint_masters() {
         let instance_id = AppInstanceId::new("inst-1");
