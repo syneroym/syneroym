@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Slice 5 integration test: exercises the real `Host`/`HostBlobWriter`/
+//! Integration test: exercises the real `Host`/`HostBlobWriter`/
 //! `HostBlobReader` WIT wiring in `crates/sandbox_wasm/src/engine.rs`
 //! directly against a `HostState` -- the same level
 //! `test_config_get_and_get_section` in `engine.rs` already uses for

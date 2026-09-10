@@ -28,8 +28,8 @@ fn test_cli_parsing() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// M04A Slice B7b: `identity issue-grant --help` parses (the subcommand and
-/// all its flags are wired into clap).
+/// `identity issue-grant --help` parses (the subcommand and all its flags
+/// are wired into clap).
 #[test]
 fn test_identity_issue_grant_help() -> Result<(), Box<dyn Error>> {
     let mut cmd = Command::cargo_bin("roymctl")?;
@@ -47,8 +47,7 @@ fn test_identity_issue_grant_help() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// M04A Slice B7b: the global `--ucan <path>` flag parses alongside an
-/// existing subcommand.
+/// The global `--ucan <path>` flag parses alongside an existing subcommand.
 #[test]
 fn test_global_ucan_flag_parses() -> Result<(), Box<dyn Error>> {
     let mut cmd = Command::cargo_bin("roymctl")?;
@@ -62,7 +61,7 @@ fn test_global_ucan_flag_parses() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Post-commit review (F2): `--ucan` without `--as` is a silent no-op at the
+/// `--ucan` without `--as` is a silent no-op at the
 /// protocol level (the presented token's audience can never match a fresh
 /// ephemeral per-invocation identity), so clap rejects the combination
 /// up front with a clear message instead of letting the caller hit a
@@ -80,8 +79,8 @@ fn test_ucan_without_as_is_rejected() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// M04A Slice B7b end to end: `identity create` then `identity issue-grant`
-/// produces a signed `CapabilityToken` JSON naming exactly the requested
+/// End to end: `identity create` then `identity issue-grant` produces a
+/// signed `CapabilityToken` JSON naming exactly the requested
 /// `with`/`can`/`to`/`can_delegate`.
 #[test]
 fn test_identity_issue_grant_produces_a_signed_token() -> Result<(), Box<dyn Error>> {
@@ -167,7 +166,7 @@ fn test_app_deploy_mint_masters_flag_parses() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// M05A Slice A3: `app deploy --help` lists the new `--inventory` flag.
+/// `app deploy --help` lists the `--inventory` flag.
 #[test]
 fn app_deploy_help_lists_inventory() -> Result<(), Box<dyn Error>> {
     let mut cmd = Command::cargo_bin("roymctl")?;
@@ -266,7 +265,7 @@ fn app_deploy_with_placement_and_no_matching_inventory_entry_names_the_path_and_
     Ok(())
 }
 
-/// D-A3-20: a fully-placed app (every service named by alias) must not
+/// A fully-placed app (every service named by alias) must not
 /// require `--substrate`/`substrate.key`, since it never touches the
 /// fallback target. The inventory entry names an address nothing listens
 /// on, so the run still fails -- but on unreachability, never on the
@@ -343,9 +342,8 @@ fn test_svc_saga_compensate_help() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Test 97 (M05C S3): `roymctl alias --service` prints the app-scoped
-/// host form, and without `--interface` prints the same host with no
-/// `-i` segment.
+/// `roymctl alias --service` prints the app-scoped host form, and without
+/// `--interface` prints the same host with no `-i` segment.
 #[test]
 fn roymctl_alias_with_a_service_prints_the_app_scoped_form() -> Result<(), Box<dyn Error>> {
     let app_did = "did:key:h7wyixfzo3km6k8uq98mcini8q67pxs1jkf1ymnrmrogesimteapsufe";
@@ -391,8 +389,8 @@ fn roymctl_alias_with_a_service_prints_the_app_scoped_form() -> Result<(), Box<d
     Ok(())
 }
 
-/// Test 98: the `AppInstanceId` requirement D-S3-2 rests on -- `--service`
-/// without `--nickname` is refused at the clap level.
+/// The app-scoped form needs an `AppInstanceId` as the nickname, so
+/// `--service` without `--nickname` is refused at the clap level.
 #[test]
 fn roymctl_alias_with_a_service_and_no_nickname_is_refused() -> Result<(), Box<dyn Error>> {
     let mut cmd = Command::cargo_bin("roymctl")?;

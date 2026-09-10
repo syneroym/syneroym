@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
-//! Slice 3A (M03-sss) performance budgets: CRUD/batch operation latency
+//! Performance budgets: CRUD/batch operation latency
 //! against an encrypted per-service SQLite database, plus WASM lifecycle
 //! hook (`init`/`migrate`) timing through a real deployed component.
 

@@ -1,5 +1,5 @@
 //! Full WIT ⇄ JSON value conversion for the component-model dispatch boundary
-//! (Slice A0′, requirement `[PLT-DAT]`).
+//! (requirement `[PLT-DAT]`).
 //!
 //! Two `Type`-directed primitives do all the work:
 //!
@@ -14,7 +14,7 @@
 //! [`wasm_results_to_json_string`] (result serialization) are thin adapters
 //! over these two.
 //!
-//! # JSON encoding conventions (the "lossy-edge design note", Decision A.5)
+//! # JSON encoding conventions
 //!
 //! | WIT type | JSON encoding |
 //! |---|---|
@@ -34,7 +34,7 @@
 //! | resource / future / stream / error-context | **unsupported** ⇒ error (see note below) |
 //!
 //! Known, *documented and deterministic* fidelity limitations (not worked
-//! around — see the M04A A0′ task section):
+//! around):
 //!
 //! - **`u64`/`s64` > 2^53.** `serde_json::Value::Number` stores `u64`/`i64`
 //!   losslessly, so an in-process round-trip is exact for the full 64-bit
@@ -90,7 +90,8 @@ use wasmtime::component::{Val, types::Type};
 /// Convert a wasmtime component [`Val`] to a JSON [`Value`].
 ///
 /// Errors only for values that cannot be represented on a JSON wire: non-finite
-/// floats (§ module docs) and resource/future/stream/error-context handles.
+/// floats (see the module docs) and resource/future/stream/error-context
+/// handles.
 pub fn val_to_json(val: &Val) -> Result<Value> {
     let json = match val {
         Val::Bool(b) => Value::Bool(*b),
@@ -381,8 +382,8 @@ pub fn json_to_wasm_params<'a>(
 /// `route_handler/dispatch.rs` wraps this as `Value::String`, and integration
 /// tests parse the raw string): a `string`-typed result is returned **raw**
 /// (not JSON-quoted); any other value is JSON-serialized; a WIT `result::err`
-/// becomes a transport-level `Err`. Fully typing the `result` field is Slice
-/// A1.
+/// becomes a transport-level `Err`. [`wasm_results_to_json`] is the
+/// fully-typed counterpart, with no string special-case.
 pub fn wasm_results_to_json_string(wasm_results: &[Val]) -> Result<String> {
     match wasm_results {
         [] => Ok(String::new()),
@@ -409,10 +410,10 @@ pub fn wasm_results_to_json_string(wasm_results: &[Val]) -> Result<String> {
     }
 }
 
-/// Typed counterpart of [`wasm_results_to_json_string`] (Slice A1): the
+/// Typed counterpart of [`wasm_results_to_json_string`]: the
 /// guest's results as a JSON [`Value`], with no string special-case. Used by
 /// the Universal Proxy (`ProxyRouter::invoke_local`) and the inbound
-/// `JsonRpcToWasm` route, which A0′ deliberately left on the string-boundary
+/// `JsonRpcToWasm` route, which is deliberately left on the string-boundary
 /// path (see that function's doc comment).
 ///
 ///   `[]`                       -> `Value::Null`
@@ -949,7 +950,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // wasm_results_to_json (Slice A1 typed counterpart).
+    // wasm_results_to_json (typed counterpart).
     // ------------------------------------------------------------------
 
     #[test]

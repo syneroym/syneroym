@@ -1,4 +1,4 @@
-//! The shared static-asset manifest and per-service registry (M06A A1):
+//! The shared static-asset manifest and per-service registry:
 //! request path -> blob hash, served straight from blob storage without
 //! instantiating the component.
 //!
@@ -33,9 +33,9 @@ pub struct AssetManifest {
 #[derive(Debug, Clone)]
 pub struct ServiceAssets {
     pub manifest: Arc<AssetManifest>,
-    /// The declared bundle's `visibility == public` (M06A D-A1-1). `internal`
-    /// and `private` both collapse to `false` here -- A1 implements no
-    /// middle tier (D-A1-8), so the router only ever needs "serve" or
+    /// The declared bundle's `visibility == public`. `internal`
+    /// and `private` both collapse to `false` here -- there is no
+    /// middle tier, so the router only ever needs "serve" or
     /// "don't", never the third value. The full three-way `visibility` enum
     /// lives on the deploy-facing types (`syneroym_app_orchestration::
     /// models::Visibility`, and the WIT `visibility` enum) where the
@@ -43,13 +43,12 @@ pub struct ServiceAssets {
     /// `app_orchestration` and gains none purely for this cache.
     pub public: bool,
     /// Retained so the next `deploy()` generation and `undeploy()` can
-    /// delete the manifest blob itself, not only the entries it lists
-    /// (M06A D-A1-9).
+    /// delete the manifest blob itself, not only the entries it lists.
     pub manifest_hash: String,
 }
 
 /// Shared, keyed-by-`service_id` static asset table. **A cache, not
-/// persistence** (M06A D-A1-2): created empty each boot, populated by
+/// persistence**: created empty each boot, populated by
 /// `deploy()`, cleared by `undeploy()`. Same shape and lifecycle as
 /// `HttpRouteRegistry`.
 pub type AssetRegistry = Arc<DashMap<String, ServiceAssets>>;

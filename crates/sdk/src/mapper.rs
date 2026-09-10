@@ -24,7 +24,7 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 };
 
 /// Marks a `ServiceConfig.source` value as hex-encoded artifact bytes
-/// rather than a URL or a local path (M05A A5b): a plan applied by the App
+/// rather than a URL or a local path: a plan applied by the App
 /// Supervisor runs on a remote substrate with no access to the operator's
 /// filesystem, so `roymctl supervisor submit` inlines each Wasm artifact
 /// into `source` itself before the plan is ever sent -- `hex`, not
@@ -86,9 +86,9 @@ fn map_document_ref(doc: &DocumentRef, field_name: &str) -> anyhow::Result<Docum
 
 /// Resolves a `source`-shaped field into a wire `ArtifactSource`: a URL
 /// passes through, `INLINE_ARTIFACT_PREFIX`-prefixed content decodes as
-/// hex-encoded bytes (D-A5-7's remote-submit inlining), and anything else is
+/// hex-encoded bytes (the remote-submit inlining path), and anything else is
 /// read as a local path off this process's working directory. Shared by the
-/// Wasm component's `source` and M06A A1's asset bundle `archive` -- the two
+/// Wasm component's `source` and the asset bundle `archive` -- the two
 /// fields carrying this same three-way shape.
 fn resolve_artifact_source(source: &str, what: &str) -> anyhow::Result<ArtifactSource> {
     if source.starts_with("http://") || source.starts_with("https://") {
@@ -112,7 +112,7 @@ const fn map_visibility(v: ModelVisibility) -> WitVisibility {
     }
 }
 
-/// Maps the app model's `AssetBundle` (M06A A1) to the wire record. Absent
+/// Maps the app model's `AssetBundle` to the wire record. Absent
 /// `visibility` is never produced here -- the model field already defaults
 /// to `Private` at parse time (`#[serde(default)]`), so the wire always
 /// carries an explicit value.
@@ -124,8 +124,8 @@ fn map_asset_bundle(bundle: &AssetBundle, what: &str) -> anyhow::Result<WitAsset
     })
 }
 
-/// Maps the app model's `TopologyMode` to the wire `topology-mode` variant
-/// (A2). No `sharding-strategy` on the wire yet -- `sharded` means hash
+/// Maps the app model's `TopologyMode` to the wire `topology-mode` variant.
+/// No `sharding-strategy` on the wire yet -- `sharded` means hash
 /// sharding until a manifest can express otherwise.
 fn map_mode(mode: TopologyMode) -> WitTopologyMode {
     match mode {
@@ -138,7 +138,7 @@ fn map_mode(mode: TopologyMode) -> WitTopologyMode {
 /// Maps the app model's `HealthCheck` to the wire variant. Pure translation:
 /// no defaulting, no validation -- serde already applied the field defaults
 /// at parse time, and kind/type compatibility is the substrate's deploy-time
-/// check (D-A4-6), so a client cannot smuggle a bad pairing past it.
+/// check, so a client cannot smuggle a bad pairing past it.
 fn map_health_check(check: &HealthCheck) -> WitHealthCheck {
     match check {
         HealthCheck::TcpConnect(p) => WitHealthCheck::TcpConnect(WitTcpProbe {
@@ -180,9 +180,9 @@ fn map_health_check(check: &HealthCheck) -> WitHealthCheck {
 /// use for the placement of services it is not hosting, and publishing it
 /// would hand every node a partial topology map of the app for nothing.
 ///
-/// `binding_epochs` is keyed by `MemberRef`, not `LogicalServiceRef` (M05A
-/// A5e, D-A5e-2): the epoch belongs to the dependent *member*, since each
-/// member holds its own `service_bindings` row on the substrate.
+/// `binding_epochs` is keyed by `MemberRef`, not `LogicalServiceRef`: the
+/// epoch belongs to the dependent *member*, since each member holds its own
+/// `service_bindings` row on the substrate.
 pub fn map_deployment_plan_to_wit(
     plan: &DeploymentPlan,
     services: &[&PlannedService],
@@ -244,7 +244,7 @@ pub fn map_deployment_plan_to_wit(
         let service_type = match svc.config.service_type {
             ServiceType::Wasm => {
                 // A supervisor's `submit` runs on a remote substrate with no
-                // access to the operator's local filesystem (D-A5-7), so
+                // access to the operator's local filesystem, so
                 // `roymctl supervisor submit` inlines the artifact into
                 // `source` itself before sending the plan -- the
                 // `INLINE_ARTIFACT_PREFIX` arm below is what a
@@ -351,7 +351,7 @@ pub fn map_deployment_plan_to_wit(
         let app_context = Some(WitAppContext {
             app_instance_id: plan_instance_id.clone(),
             service_name: svc.logical_ref.service_name.to_string(),
-            // D-A2-16: without member-master substitution these members are
+            // Without member-master substitution these members are
             // the compiler's fabricated `did:key:h...` ids, which resolve to
             // no key. Publishing them would make `dependency(...)` resolve
             // and then fail a layer down as `service-not-found`; an empty
@@ -362,17 +362,15 @@ pub fn map_deployment_plan_to_wit(
                     .iter()
                     .map(|(name, members)| WitDependencyBinding {
                         dependency_name: name.to_string(),
-                        // Intra-app only (D-A2-2).
+                        // Intra-app only.
                         app_instance_id: plan_instance_id.clone(),
                         mode: map_mode(target_modes.get(name).copied().unwrap_or_default()),
                         members: members.iter().map(ToString::to_string).collect(),
-                        // M05A A5c §19.3/D-A5c-4: the epoch belongs to the
-                        // *dependent* service, not the dependency -- one
-                        // counter per (app_instance_id, dependent
-                        // logical_ref), shared by every one of that
+                        // The epoch belongs to the *dependent* service, not
+                        // the dependency -- one counter per (app_instance_id,
+                        // dependent logical_ref), shared by every one of that
                         // service's bindings. `0` (an absent entry) means
-                        // "no supervisor has written here", which is also
-                        // what every caller through A5b still means by it.
+                        // "no supervisor has written here".
                         epoch: binding_epochs.get(&svc.member_ref()).copied().unwrap_or(0),
                         cache_ttl_ms: DEFAULT_BINDING_CACHE_TTL_MS,
                     })
@@ -380,9 +378,8 @@ pub fn map_deployment_plan_to_wit(
             } else {
                 Vec::new()
             },
-            // ADR-0021 §4 (M05A A5a): 0 for every caller through A5a --
-            // the supervisor that presents a real, `adopt`-minted
-            // generation does not exist yet.
+            // ADR-0021 §4: the management generation this apply writes at,
+            // forwarded from the request unchanged.
             generation,
         });
         wit_services.push(WitPlannedService {
@@ -469,7 +466,7 @@ mod tests {
         emit_bindings: bool,
     ) -> anyhow::Result<WitDeploymentPlan> {
         let all: Vec<&PlannedService> = plan.services.iter().collect();
-        // Unmanaged (M05A A5a): none of these tests exercise the
+        // None of these tests exercise the
         // generation gate, which is `map_deployment_plan_to_wit`'s own
         // concern to unit-test. Epoch defaults to empty (every binding maps
         // at 0) for the same reason -- the epoch map is its own test's
@@ -757,8 +754,8 @@ mod tests {
     /// A plan with `frontend` depending on `backend`, `backend` deployed
     /// `Redundant` with two members -- so a binding assertion exercises
     /// both "one binding per `depends_on` entry" and "the mode is the
-    /// *target's* own topology mode, not the dependent's" (§3.3's landmine:
-    /// every service in this fixture is otherwise `Singleton`).
+    /// *target's* own topology mode, not the dependent's". Every service in
+    /// this fixture is otherwise `Singleton`.
     fn plan_with_a_dependency() -> DeploymentPlan {
         let app_instance_id = AppInstanceId::new("inst-1");
         let backend_ref = LogicalServiceRef {
@@ -837,9 +834,9 @@ mod tests {
         );
     }
 
-    /// This is the latent bug §5.1 exists to fix: `backend`'s topology mode
+    /// The latent bug this guards against: `backend`'s topology mode
     /// must come from the *whole* plan, not from the subset being mapped.
-    /// Mapping only `frontend` (as A3's per-substrate deploy call does when
+    /// Mapping only `frontend` (as a per-substrate deploy call does when
     /// `backend` is placed elsewhere) must still emit `backend`'s real mode
     /// on the binding -- a naive "filter the plan, then map" shape would
     /// silently default it to `Singleton` since `backend` itself is absent
@@ -874,7 +871,7 @@ mod tests {
         );
     }
 
-    /// M05A A5c §19.3/D-A5c-4: the epoch is keyed by the *dependent*
+    /// The epoch is keyed by the *dependent*
     /// member's own ref, not by the dependency name -- frontend's one entry
     /// in the map must land on every one of frontend's bindings.
     #[test]
@@ -917,7 +914,7 @@ mod tests {
         assert!(wit_plan.services[0].app_context.as_ref().unwrap().bindings.is_empty());
     }
 
-    /// D-A2-16: without `--mint-masters`, `resolved_dependencies` still
+    /// Without `--mint-masters`, `resolved_dependencies` still
     /// holds the compiler's fabricated `did:key:h...` ids, which are not
     /// real keys. Publishing them would let `dependency(...)` resolve and
     /// then fail one layer down as `service-not-found`, destroying the

@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! M06A A2 integration tests: `syneroym:http/incoming-handler#handle-request`
+//! Integration tests: `syneroym:http/incoming-handler#handle-request`
 //! driven end to end through `AppSandboxEngine::handle_guest_http_request`,
 //! bypassing the router/HTTP-bridge layer (covered separately by
 //! `crates/router/src/route_handler/http.rs`'s own tests and
 //! `crates/substrate/tests/guest_http_e2e.rs`) so these tests focus on the
-//! Wasmtime/dynamic-invocation boundary this slice adds.
+//! Wasmtime/dynamic-invocation boundary.
 
 use std::{fs, path::Path, sync::Arc};
 

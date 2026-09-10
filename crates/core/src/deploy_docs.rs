@@ -139,7 +139,7 @@ pub fn reject_relative_escape(relative_path: &str, field_name: &str) -> Result<(
 }
 
 /// Cheap early guard on a compressed asset archive. **Not** the real limit --
-/// that is M06A A1's combined client-side check, because the 16 MiB RPC frame
+/// that is the combined client-side check, because the 16 MiB RPC frame
 /// is shared with the component binary and both expand ~3.57x as JSON integer
 /// arrays. 2 MiB is what fits beside a component of realistic size; a bundle
 /// under it can still be refused by the combined check.
