@@ -1,10 +1,9 @@
-//! Slice B3 Phase 4: the orchestration seam that actually performs a
-//! `crates/fdae`-planned remote relationship-proof fetch (pipeline stage 2,
-//! ADR-0017 §6). Deliberately outside `crates/fdae` (kept proxy-free, plan
-//! §1.1) and outside `crates/data_db` (no `ServiceProxy` dependency there
-//! either) -- this is the one place both read ingresses (the WASM host
-//! path, native dispatch) share, per plan §4's "a small `fdae-runtime`-style
-//! helper... not a new crate" recommendation.
+//! The orchestration layer that actually performs a
+//! `crates/fdae`-planned remote relationship-proof fetch (ADR-0017 §6).
+//! Deliberately outside `crates/fdae` (kept proxy-free) and outside
+//! `crates/data_db` (no `ServiceProxy` dependency there either) -- this is
+//! the one place both read ingresses (the WASM host path, native dispatch)
+//! share, so it is a small helper here rather than a new crate.
 
 use std::time::Duration;
 
@@ -18,7 +17,7 @@ use crate::{
 
 /// A conservative ceiling for one cross-service relationship-proof fetch.
 /// Well above the `< 50 ms p99` *floor* the perf budget targets for a
-/// healthy hop (`task.md`), but still bounded -- a fetch that overruns this
+/// healthy hop, but still bounded -- a fetch that overruns this
 /// denies the whole read closed rather than hang the caller indefinitely.
 ///
 /// 15s, not 5s: `IrohHop` (`crates/router/src/proxy.rs`) opens a brand-new
@@ -58,30 +57,30 @@ pub enum FetchError {
 }
 
 /// Issues every `RemoteFetch` a `crates/fdae` `plan_read` collected,
-/// **sequentially** (Phase 4 scope; parallelizing distinct fetches is a
-/// pure perf follow-up, not a correctness dependency -- see plan §5/D-B3-6's
-/// own "correctness over scale" precedent), and returns the corresponding
+/// **sequentially** (parallelizing distinct fetches is a pure perf
+/// follow-up, not a correctness dependency -- correctness comes before
+/// scale here), and returns the corresponding
 /// `FetchResult`s ready for `syneroym_fdae::finalize`.
 ///
-/// `caller` is forwarded **unmodified** (D-B3-9): `ProxyRequest.caller`
+/// `caller` is forwarded **unmodified**: `ProxyRequest.caller`
 /// carries the local invocation's own already-verified `CallerContext`
 /// (proof intact), not a synthesized identity. `invoke_remote_at` already
 /// forwards `caller.proof` verbatim for any `CallOrigin::Native` call
 /// (`router/src/proxy.rs`), so the remote's own `verify_chain` re-derives
-/// `subject_did`/`anchor_did` from the real chain and A1 gates on whatever
-/// was legitimately delegated through it -- no new proof-forwarding
+/// `subject_did`/`anchor_did` from the real chain and gating happens on
+/// whatever was legitimately delegated through it -- no new proof-forwarding
 /// mechanism needed.
 ///
 /// **Fails closed on the first error**: a timeout, transport error, or a
 /// proof that doesn't verify against its `RemoteFetch.expected_asserter_did`
-/// (D-B3-8) aborts the whole batch. The caller (the WASM host path or
+/// aborts the whole batch. The caller (the WASM host path or
 /// native dispatch) must treat any `Err` here as a deny -- Mode B empty,
 /// Mode A `false` -- never as "no fetches needed."
 ///
 /// `local_service_id` names the deployed service this fetch is made *on
 /// behalf of*, so `CallOrigin::Native { service_id }` lets the destination
 /// present that service's certified instance key rather than the node's own
-/// (A2, `ProxyRouter::invoke_remote_at`'s `(None, Native)` arm).
+/// (`ProxyRouter::invoke_remote_at`'s `(None, Native)` arm).
 pub async fn resolve_fetches(
     fetches: &[RemoteFetch],
     caller: &CallerContext,
