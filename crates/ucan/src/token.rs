@@ -60,8 +60,8 @@ pub struct CapabilityToken {
     #[serde(default)]
     pub anchor_did: Option<String>,
     pub capabilities: Vec<Capability>,
-    /// Proven claims surfaced into `SessionContext.claims` (co-design seam
-    /// #1: M04B binds these as SQL `?` params). Empty by default.
+    /// Proven claims surfaced into `SessionContext.claims`; the data layer
+    /// binds these as SQL `?` params. Empty by default.
     #[serde(default)]
     pub facts: Map<String, Value>,
     pub not_before_secs: u64,
@@ -189,11 +189,11 @@ pub struct ChainVerifyOpts<'a> {
     /// someone else.
     pub expected_audience_did: &'a str,
     /// Returns whether `issuer_did` is a trusted root of authority for
-    /// `capability` (its resource *and* the ability being claimed -- M04A
-    /// Slice B7b: an owner-rooted root may need to trust a resource for some
-    /// abilities but not others, e.g. `data-layer/read` but not the
-    /// `data-layer/admin` escape hatch, so the predicate needs the ability,
-    /// not just the resource). At B1 the router passed
+    /// `capability` (its resource *and* the ability being claimed: an
+    /// owner-rooted root may need to trust a resource for some abilities but
+    /// not others, e.g. `data-layer/read` but not the `data-layer/admin`
+    /// escape hatch, so the predicate needs the ability, not just the
+    /// resource). The simplest root predicate is
     /// `|iss, _cap| iss == admin_root`. `Send + Sync` so `ChainVerifyOpts`
     /// (and futures holding it across an `.await`) stay usable from
     /// `tokio::spawn`ed connection handlers.
