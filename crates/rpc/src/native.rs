@@ -14,7 +14,7 @@ use crate::RpcResult;
 /// (ADR-0016 §2). `CallerContext` is always locally constructed from a
 /// verified handshake or a substrate-injected lifecycle context — it is
 /// never serialized into, nor deserialized out of, the wire. A cross-node
-/// proxy hop (M04A Slice A1) carries the caller's DID and its signed proofs
+/// proxy hop carries the caller's DID and its signed proofs
 /// in the request envelope metadata instead, and the data-owning
 /// (destination) node re-verifies those proofs and constructs a fresh
 /// `CallerContext` locally before dispatch (ADR-0016 §6).
@@ -22,18 +22,18 @@ use crate::RpcResult;
 pub struct CallerContext {
     /// Verified `did:key` of the immediate caller.
     pub caller_did: String,
-    /// App-instance the caller acts as (`creator_id`). `None` on the raw B0
-    /// path. Names the per-app identity, but does **not** drive per-app KEK
-    /// selection: M04A Slice B6 derives each service's KEK from the bound
-    /// `service_id` (== this identity today) at the storage layer, not by
+    /// App-instance the caller acts as (`creator_id`). `None` when no
+    /// app-instance is bound. Names the per-app identity, but does **not**
+    /// drive per-app KEK selection: the storage layer derives each service's
+    /// KEK from the bound `service_id` (== this identity today), not by
     /// reading this field — see `syneroym_data_keystore::key_store`.
     pub app_instance: Option<String>,
     /// Verified capabilities/claims. Empty unless the interim admin-root
-    /// path (B0) or a real UCAN chain (B1) populated it.
+    /// path or a real UCAN chain populated it.
     pub session: SessionContext,
     pub auth: AuthLevel,
-    /// Signed, forwardable proof of this caller's identity (M04A Slice A1,
-    /// ADR-0016 §6) -- verbatim what the inbound preamble carried. A
+    /// Signed, forwardable proof of this caller's identity
+    /// (ADR-0016 §6) -- verbatim what the inbound preamble carried. A
     /// cross-node proxy hop (`syneroym-router`'s `ProxyRouter`) re-presents
     /// it on the outbound preamble; the destination re-verifies it with
     /// `HandshakeVerifier::verify_preamble` and builds a **fresh**
@@ -58,20 +58,20 @@ pub struct CallerProof {
 pub enum AuthLevel {
     /// Verified `DelegationCertificate` only (pre-UCAN / transport identity).
     Delegated,
-    /// Full verified UCAN capability chain (B1).
+    /// Full verified UCAN capability chain.
     Ucan,
     /// Substrate-injected lifecycle context (init/migrate), carrying
     /// `data-layer/admin` on the service's own resource.
     LocalElevated,
     /// Substrate-injected stage-4 ABAC context (ADR-0017 §7): the service
     /// acting as itself for the after-step. Carries **no** capabilities and
-    /// is exempt from the FDAE sieve, per §7's "the escape hatches run under
-    /// the service's own identity". Read-only-ness comes from
+    /// is exempt from the FDAE sieve, per ADR-0017 §7's "the escape hatches
+    /// run under the service's own identity". Read-only-ness comes from
     /// `HostState.read_only`, not from a capability -- host write paths
-    /// carry no capability gate of their own (D-04-02-f), so a narrower
+    /// carry no capability gate of their own, so a narrower
     /// capability would enforce nothing. Distinct from capability-less
     /// `System` only because the sieve exemption keys on this level, and
-    /// exempting `System` would re-open D-04-02-h's ingress-(ii) bypass.
+    /// exempting `System` would re-open the ingress-(ii) bypass.
     LocalReadOnly,
     /// Substrate-injected system context (a service acting as itself, or an
     /// already-authorized internal dispatch), not derived from a wire

@@ -1,5 +1,5 @@
-//! CRUD, query-filter, batch, and DDL-gating tests for Slice 3A, exercised
-//! end-to-end against a real (unencrypted, for test speed) SQLite-backed
+//! CRUD, query-filter, batch, and DDL-gating tests, exercised end-to-end
+//! against a real (unencrypted, for test speed) SQLite-backed
 //! `ServiceStore`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -361,7 +361,7 @@ async fn test_query_missing_collection_is_an_error_not_empty_list() {
     assert!(matches!(err, DataLayerError::CollectionNotFound));
 }
 
-// -- query-raw (Slice B5, ADR-0011) --------------------------------------
+// -- query-raw (ADR-0011) -----------------------------------------------
 
 async fn seeded_people_store() -> Box<dyn ServiceStore> {
     let store = setup_store().await;
@@ -490,8 +490,8 @@ async fn test_query_raw_rejects_connection_configuration_escapes() {
     assert_eq!(rows_as_json(&count.rows), rows_as_json(&[vec![SqlValue::Integer(3)]]));
 }
 
-/// Flag S2 (B5 post-commit review): the row-count page cap alone does not
-/// bound *compute* -- a recursive CTE can do effectively unbounded work
+/// The row-count page cap alone does not bound *compute* -- a recursive
+/// CTE can do effectively unbounded work
 /// while producing very few output rows (here: a single `count(*)` row).
 /// `do_query_raw`'s progress handler must interrupt it, surfacing
 /// `quota-exceeded` rather than hanging the reader-pool connection.

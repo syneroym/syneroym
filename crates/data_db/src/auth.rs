@@ -1,5 +1,5 @@
 //! Per-request FDAE authorization context threaded into the read/delete
-//! paths (ADR-0017, M04B Slice B2 Phase 2).
+//! paths (ADR-0017).
 
 use serde_json::Value;
 use syneroym_fdae::{CompiledSieve, Policy};
@@ -15,7 +15,7 @@ pub struct QueryAuth<'a> {
     pub policy: &'a Policy,
     pub session: &'a SessionContext,
     pub service_id: &'a str,
-    /// Pre-resolved by the caller (Slice B3 Phase 4), via
+    /// Pre-resolved by the caller, via
     /// `syneroym_fdae::plan_read` + the `resolve_fetches` orchestration
     /// (`syneroym-rpc`) + `syneroym_fdae::finalize`, when the policy's
     /// selected paths needed a remote relationship fetch -- `crates/fdae`'s
@@ -23,12 +23,12 @@ pub struct QueryAuth<'a> {
     /// caller with `ServiceProxy` access resolves it before ever reaching
     /// this store. `None` (the common, fully-local case) preserves the
     /// original behavior: the store compiles the sieve itself via
-    /// `compile_read`, unchanged since Phase 2.
+    /// `compile_read`.
     pub resolved_sieve: Option<CompiledSieve>,
 }
 
 /// A read result plus the CLS field-mask the host must apply as its final
-/// projection (host-side, Phase 3 -- this crate never strips fields itself,
+/// projection (host-side -- this crate never strips fields itself,
 /// per the stage-4 ordering contract). `masked_fields` is always empty on
 /// the policy-absent path.
 #[derive(Debug)]
@@ -38,7 +38,7 @@ pub struct ReadOutcome<T> {
 }
 
 /// Removes each top-level key in `masked` from a JSON-object payload
-/// (host-side CLS projection, Phase 3). `masked_fields` are always flat
+/// (host-side CLS projection). `masked_fields` are always flat
 /// top-level keys -- `compile_cls` copies `fields.deny` verbatim, no path
 /// parsing -- so a top-level `Map::remove` is sufficient.
 ///

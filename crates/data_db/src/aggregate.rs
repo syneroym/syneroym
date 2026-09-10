@@ -1,5 +1,5 @@
 //! MongoDB-style JSON aggregation document -> parameterized SQLite
-//! `SELECT ... GROUP BY ... HAVING ...` compiler (ADR-0007, Slice B4).
+//! `SELECT ... GROUP BY ... HAVING ...` compiler (ADR-0007).
 //!
 //! Pure and DB-free. Field paths and all literal values are bound as `?`
 //! placeholders; the only caller-derived text ever interpolated into SQL is
