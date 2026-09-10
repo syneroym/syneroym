@@ -23,12 +23,12 @@ pub type DeployFacts = (String, Option<String>, Option<String>, Option<String>);
 /// refused regardless of what generation it presents.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppInstanceManagement {
-    /// First-write-wins, unchanged from A2's `app_instance_owners`.
+    /// First-write-wins.
     pub owner_did: String,
     /// The supervisor that most recently wrote at `generation`. `None`
     /// until an operator's `adopt` names one -- an unadopted instance is
-    /// writable by any authorized caller, which is what keeps A0-A4's
-    /// hand-deploy path working after this lands, and what
+    /// writable by any authorized caller, which is what keeps the
+    /// hand-deploy path working, and what
     /// `release-app-instance` returns it to.
     pub supervisor_did: Option<String>,
     /// Minted by the operator's `adopt`, never self-incremented.
@@ -53,8 +53,7 @@ pub trait EndpointStorage: Send + Sync {
     /// Remove an endpoint from stable storage.
     async fn remove(&self, service_id: &str, interface_name: &str) -> Result<()>;
 
-    /// Load every recorded service owner as (`service_id`, `owner_did`)
-    /// (M04A Slice B7a).
+    /// Load every recorded service owner as (`service_id`, `owner_did`).
     async fn load_all_owners(&self) -> Result<Vec<(String, String)>>;
     /// Record `owner_did` as the owner of `service_id` (upsert).
     async fn save_owner(&self, service_id: &str, owner_did: &str) -> Result<()>;
@@ -71,9 +70,8 @@ pub trait EndpointStorage: Send + Sync {
     async fn remove_cert(&self, service_id: &str) -> Result<()>;
 
     /// Every stored deploy fact, as (`service_id`, `service_type`,
-    /// `health_check_json`, `manifest_hash`, `visibility`) (M05A A4,
-    /// `manifest_hash` added A5a for deploy idempotency, `visibility`
-    /// added ADR-0018).
+    /// `health_check_json`, `manifest_hash`, `visibility`). `manifest_hash`
+    /// supports deploy idempotency; `visibility` was added by ADR-0018.
     async fn load_all_deploy_facts(
         &self,
     ) -> Result<Vec<(String, String, Option<String>, Option<String>, Option<String>)>>;
@@ -95,7 +93,7 @@ pub trait EndpointStorage: Send + Sync {
     async fn remove_deploy_facts(&self, service_id: &str) -> Result<()>;
 
     /// Load every recorded app context as (`service_id`, `app_instance_id`,
-    /// `service_name`) (A2).
+    /// `service_name`).
     async fn load_all_app_contexts(&self) -> Result<Vec<(String, String, String)>>;
     /// Record which app instance and logical name `service_id` was deployed
     /// as (upsert).
@@ -124,20 +122,18 @@ pub trait EndpointStorage: Send + Sync {
         dependency_name: &str,
         topology_entry_json: &str,
     ) -> Result<()>;
-    /// One persisted binding's `entry_json` (M05A A5a). The epoch guard
+    /// One persisted binding's `entry_json`. The epoch guard
     /// compares against exactly one row, so `load_all_bindings`' full
     /// scan (which exists for the startup replay) is the wrong shape for
     /// it.
     async fn load_binding(&self, service_id: &str, dependency_name: &str)
     -> Result<Option<String>>;
     /// Every persisted binding for one service, as (`dependency_name`,
-    /// `entry_json`), for `status`'s per-dependent convergence report
-    /// (M05A A5a).
+    /// `entry_json`), for `status`'s per-dependent convergence report.
     async fn load_bindings_for(&self, service_id: &str) -> Result<Vec<(String, String)>>;
 
     /// Load every recorded app-instance management stamp as
-    /// (`app_instance_id`, `AppInstanceManagement`) (M05A A5a, replacing
-    /// A2's `app_instance_owners`).
+    /// (`app_instance_id`, `AppInstanceManagement`).
     async fn load_all_app_instance_management(
         &self,
     ) -> Result<Vec<(String, AppInstanceManagement)>>;
@@ -151,8 +147,7 @@ pub trait EndpointStorage: Send + Sync {
         management: &AppInstanceManagement,
     ) -> Result<()>;
     /// Forget `app_instance_id`'s management stamp. Idempotent. Called
-    /// when the last service of an instance is undeployed -- the standing
-    /// backlog row `app_instance_owners` rows never get forgotten.
+    /// when the last service of an instance is undeployed.
     async fn remove_app_instance_management(&self, app_instance_id: &str) -> Result<()>;
 }
 

@@ -1,11 +1,11 @@
 //! Polling the health of an app instance's services across the substrates
-//! they are placed on (M05A Slice A4), read-only.
+//! they are placed on, read-only.
 //!
 //! `StatusQuery` is the read-side twin of `deploy::SubstrateActor`, and lives
 //! here for the same two reasons: the two-node e2e can drive it (`sdk` is a
 //! dev-dependency of `crates/substrate`, `roymctl` is a binary that cannot be
-//! linked from a test), and A5's reconcile loop calls this same function
-//! rather than growing a second poller beside it.
+//! linked from a test), and the supervisor's reconcile loop calls this same
+//! function rather than growing a second poller beside it.
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -43,7 +43,7 @@ pub struct HealthTarget {
 }
 
 /// One service the sweep expects to find, already resolved to the DID it was
-/// actually deployed under (D-A4-11 -- the caller resolves it, because the
+/// actually deployed under (the caller resolves it, because the
 /// member-master identity files live under `roymctl`'s `--dir`, not here).
 /// An empty `substrate_did` means the journal records no completed placement.
 #[derive(Debug, Clone)]
@@ -51,33 +51,33 @@ pub struct ExpectedService {
     pub logical_ref: LogicalServiceRef,
     pub service_id: String,
     pub substrate_did: String,
-    /// This member's ordinal within its logical service (M05A A5e,
-    /// D-A5e-17). The caller already holds the `PlannedService` at every
-    /// construction site, so this is a plain `u32`, never an `Option` --
-    /// there is no site that would have to invent an absent value.
+    /// This member's ordinal within its logical service. The caller
+    /// already holds the `PlannedService` at every construction site, so
+    /// this is a plain `u32`, never an `Option` -- there is no site that
+    /// would have to invent an absent value.
     pub member_index: u32,
 }
 
-/// The three signals `task.md` requires stay distinct, plus the two states
+/// The three fault signals stay distinct, plus the two states
 /// that are neither healthy nor a fault.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Signal {
     Healthy,
     /// The substrate did not answer. Never inferred from a service-level
-    /// symptom (D-A4-13).
+    /// symptom.
     SubstrateUnreachable(String),
     InstanceNotRunning(String),
     ProbeFailing(String),
     /// The substrate answered but cannot tell -- a `tcp` service that
     /// declared no probe, a service with no recorded type, or a caller
-    /// without the grant. Not healthy, and not a fault (D-A4-19).
+    /// without the grant. Not healthy, and not a fault.
     Unknown(String),
     /// The journal has no completed placement for this service.
     NotDeployed,
 }
 
 impl Signal {
-    /// Whether this is one of the three faults `task.md` names. `Unknown`
+    /// Whether this is one of the three faults. `Unknown`
     /// and `NotDeployed` are deliberately excluded: "I cannot tell" must not
     /// drive a non-zero exit or an alert.
     #[must_use]
@@ -99,13 +99,13 @@ pub struct ServiceHealth {
     pub instance_certificate_issued_at: Option<u64>,
     pub instance_certificate_expires_at: Option<u64>,
     /// This service's persisted per-dependent binding epochs, as the
-    /// substrate reports them (`ServiceStatus.binding_epochs`, A5a §6).
+    /// substrate reports them (`ServiceStatus.binding_epochs`).
     /// Empty whenever there is no real answer to read it from -- an
     /// unreachable substrate, an untargeted one, or a service the substrate
-    /// has no record of (M05A A5c §19.4) -- rather than fabricating one.
+    /// has no record of -- rather than fabricating one.
     pub binding_epochs: Vec<(String, u64)>,
     /// This member's ordinal, copied straight through from the
-    /// `ExpectedService` the caller resolved (M05A A5e, D-A5e-17) -- the
+    /// `ExpectedService` the caller resolved -- the
     /// `service_id -> member_index` join every health-derived alert clear
     /// and restart-attempt site needs, derived once here rather than
     /// re-derived at each of those sites.
@@ -113,10 +113,10 @@ pub struct ServiceHealth {
 }
 
 impl ServiceHealth {
-    /// This member's identity as a managed unit (M05A A5e, D-A5e-2/D-A5e-17)
-    /// -- the key every per-member alert clear and restart-attempt site
-    /// must use instead of the bare `logical_ref`, now that two members of
-    /// one logical service can report independently.
+    /// This member's identity as a managed unit -- the key every
+    /// per-member alert clear and restart-attempt site must use instead of
+    /// the bare `logical_ref`, now that two members of one logical service
+    /// can report independently.
     #[must_use]
     pub fn member_ref(&self) -> MemberRef {
         MemberRef { logical_ref: self.logical_ref.clone(), index: self.member_index }
@@ -124,12 +124,12 @@ impl ServiceHealth {
 }
 
 /// Why a substrate produced no facts and no per-service answer -- distinct
-/// from a real connectivity failure (A4-02) so `record_report` never raises
+/// from a real connectivity failure so `record_report` never raises
 /// `SubstrateUnreachable` for a caller-side configuration gap (an inventory
 /// entry with no corresponding `HealthTarget`) instead of a down node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubstrateFault {
-    /// The substrate was asked and did not answer (D-A4-13).
+    /// The substrate was asked and did not answer.
     Unreachable(String),
     /// The caller built no `HealthTarget` for this substrate at all.
     NoTargetBuilt(String),
@@ -140,7 +140,7 @@ pub struct SubstrateHealth {
     pub alias: Option<SubstrateAlias>,
     pub substrate_did: String,
     /// `None` when the substrate did not answer, or when this caller holds
-    /// no node-wide `orchestrator/status` (D-A4-18) -- `fault` distinguishes
+    /// no node-wide `orchestrator/status` -- `fault` distinguishes
     /// the two.
     pub node: Option<NodeFacts>,
     pub fault: Option<SubstrateFault>,
@@ -153,8 +153,7 @@ pub struct HealthReport {
 }
 
 impl HealthReport {
-    /// Services reporting one of the three faults. Drives the exit code
-    /// (D-A4-19).
+    /// Services reporting one of the three faults. Drives the exit code.
     #[must_use]
     pub fn faults(&self) -> Vec<&ServiceHealth> {
         self.services.iter().filter(|s| s.signal.is_fault()).collect()
@@ -194,7 +193,7 @@ pub async fn poll_once(
     }
 
     // Substrates with no target built at all need no network call, so they
-    // are resolved up front; everything else is queried below (A4-07).
+    // are resolved up front; everything else is queried below.
     let mut targeted = Vec::new();
     for (did, services) in by_substrate {
         let Some(target) = targets.get(did) else {
@@ -227,7 +226,7 @@ pub async fn poll_once(
         targeted.push((did, target, services));
     }
 
-    // A4-07: every targeted substrate is queried concurrently, not one
+    // Every targeted substrate is queried concurrently, not one
     // after another -- a sweep over n substrates otherwise costs the sum of
     // their latencies, and one node sitting at its connect timeout would
     // delay every node behind it in `by_substrate`'s (`BTreeMap`) order.
@@ -240,7 +239,7 @@ pub async fn poll_once(
     for ((did, target, services), result) in targeted.into_iter().zip(results) {
         match result {
             Err(e) => {
-                // D-A4-13: one substrate-level fault, no per-service alerts.
+                // One substrate-level fault, no per-service alerts.
                 report.substrates.push(SubstrateHealth {
                     alias: target.alias.clone(),
                     substrate_did: did.to_string(),
@@ -294,7 +293,7 @@ pub async fn poll_once(
                         ),
                         // A failing probe is a fault whether or not the
                         // substrate could determine a phase -- for a `tcp`
-                        // service it is the only signal there is (D-A4-7).
+                        // service it is the only signal there is.
                         (
                             InstancePhase::Running | InstancePhase::Unknown(_),
                             ProbeStatus::Failing(r),
@@ -342,7 +341,7 @@ pub async fn poll_once(
 /// Who owns `CertificateNearExpiry`/`CertificateExpired` for this call to
 /// `record_report`.
 ///
-/// A5d found the two kinds already had a producer here, unconditional on
+/// The two kinds already had a producer here, unconditional on
 /// any near-expiry window -- correct for a caller with no renewal of its
 /// own (a one-off `roymctl app health`, an attended posture), wrong for
 /// `syneroym-app-supervisor`'s resident loop, which renews automatically
@@ -368,12 +367,12 @@ pub enum CertAlertPolicy {
 /// what is no longer. Returns the alerts this sweep *opened*, so a caller
 /// prints transitions rather than re-printing the standing set every time.
 ///
-/// `extra_live_pairs` (M05A A5c D-A5c-10): `(logical_ref, substrate_did)`
+/// `extra_live_pairs`: `(logical_ref, substrate_did)`
 /// pairs the caller manages an alert for *outside* this report -- the
 /// supervisor's own "planned but never landed" `InstanceNotRunning` alert
 /// is one, keyed at a sentinel `substrate_did` this report never mentions,
 /// specifically so it is never confused with a real substrate's row.
-/// Without naming it here, the A4-03 stale-alert sweep below would treat
+/// Without naming it here, the stale-alert sweep below would treat
 /// it as an alert for a service/substrate pair that has "left the sweep"
 /// and clear it on every single call, since nothing in `report` ever
 /// mentions that pair. Every other caller passes `&[]`.
@@ -388,7 +387,7 @@ pub fn record_report(
     let mut opened = Vec::new();
 
     for sub in &report.substrates {
-        // A4-02: `NoTargetBuilt` is a caller-side configuration gap (an
+        // `NoTargetBuilt` is a caller-side configuration gap (an
         // inventory entry with no corresponding `HealthTarget`), not a live
         // outage -- raising `SubstrateUnreachable` for it would make
         // `app health`'s exit code and `app alerts`' active rows disagree
@@ -424,7 +423,7 @@ pub fn record_report(
         // time; the other is cleared on every pass, so a service that moves
         // from "not running" to "probe failing" does not leave a stale
         // alert. `SubstrateUnreachable` is deliberately not re-raised per
-        // service -- it was already raised once above (D-A4-13).
+        // service -- it was already raised once above.
         let active = match &svc.signal {
             Signal::InstanceNotRunning(r) => Some((AlertKind::InstanceNotRunning, r.clone())),
             Signal::ProbeFailing(r) => Some((AlertKind::ProbeFailing, r.clone())),
@@ -450,12 +449,11 @@ pub fn record_report(
             }
         }
 
-        // D-A4-16/A4-04: expired is checked before near-expiry and the two
+        // Expired is checked before near-expiry and the two
         // are mutually exclusive, the same shape as the fault pair above --
         // `is_near_expiry_parts` alone saturates to "always near" once a
         // certificate has actually expired, which would report a current
-        // outage (failure-matrix rows 1/3) with the wording of a renewal
-        // reminder.
+        // outage with the wording of a renewal reminder.
         //
         // `ManagedElsewhere` skips this pair entirely, raise and clear
         // alike -- the caller (`syneroym-app-supervisor`) is the sole
@@ -504,7 +502,7 @@ pub fn record_report(
         }
     }
 
-    // A4-03: a service or substrate that has left the sweep entirely --
+    // A service or substrate that has left the sweep entirely --
     // removed from the manifest, or `app forget`'s placement -- is never
     // revisited by either loop above, since both only ever walk what the
     // *current* report names. Left alone, its last-raised row would stay
@@ -681,10 +679,10 @@ mod tests {
         assert!(!report.is_healthy());
     }
 
-    /// M05A A5c §19.4: `ServiceHealth.binding_epochs` must actually carry
-    /// what `ServiceStatus.binding_epochs` reported -- the field the exit
-    /// criterion's convergence read depends on, dropped silently before this
-    /// fix.
+    /// `ServiceHealth.binding_epochs` must actually carry
+    /// what `ServiceStatus.binding_epochs` reported -- the field the
+    /// supervisor's convergence check depends on, dropped silently before
+    /// this fix.
     #[tokio::test]
     async fn poll_once_carries_each_services_binding_epochs_through_to_service_health() {
         let mut status =
@@ -820,7 +818,7 @@ mod tests {
         assert_eq!(alerts.active(&instance_id).unwrap().len(), 1);
     }
 
-    /// A4-02: an untargeted substrate (the caller built no `HealthTarget` for
+    /// An untargeted substrate (the caller built no `HealthTarget` for
     /// it -- e.g. an inventory entry the caller's own config dropped) is a
     /// configuration gap, not a live outage, and must not raise the same
     /// alert a genuinely unreachable substrate does.
@@ -857,7 +855,7 @@ mod tests {
         assert!(alerts.active(&instance_id).unwrap().is_empty());
     }
 
-    /// A4-03: once a service leaves the sweep entirely (removed from the
+    /// Once a service leaves the sweep entirely (removed from the
     /// manifest, or `app forget`), no later report ever mentions it again --
     /// so its last-raised row must be cleared the moment it disappears, not
     /// left active forever.
@@ -916,10 +914,10 @@ mod tests {
         assert!(alerts.active(&instance_id).unwrap().is_empty());
     }
 
-    /// A4-04: an already-expired certificate must not read as a near-expiry
-    /// reminder -- it is a current outage under the attended posture
-    /// (failure-matrix rows 1/3), and the two alert kinds must never both be
-    /// active for the same service at once.
+    /// An already-expired certificate must not read as a near-expiry
+    /// reminder -- it is a current outage under the attended posture,
+    /// and the two alert kinds must never both be active for the same
+    /// service at once.
     #[tokio::test]
     async fn record_report_raises_certificate_expired_not_near_expiry_once_past_the_window() {
         let alerts = AlertStore::open_in_memory().unwrap();

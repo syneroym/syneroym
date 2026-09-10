@@ -36,8 +36,7 @@ pub fn messaging_pubsub_test_wasm_path() -> PathBuf {
     )
 }
 
-/// The `test-driver` interface name for the M3B Slice 6B stream-test
-/// component.
+/// The `test-driver` interface name for the stream-test component.
 pub const STREAM_TEST_DRIVER_INTERFACE: &str = "syneroym-test:stream-test/test-driver@0.1.0";
 
 /// Returns the workspace-relative path to the stream-test component WASM
@@ -52,8 +51,7 @@ pub fn stream_test_wasm_path() -> PathBuf {
     )
 }
 
-/// The `test-driver` interface name for the M04A Slice A1 proxy-test
-/// component.
+/// The `test-driver` interface name for the proxy-test component.
 pub const PROXY_TEST_DRIVER_INTERFACE: &str = "syneroym-test:proxy-test/test-driver@0.1.0";
 
 /// Returns the workspace-relative path to the proxy-test component WASM
@@ -71,7 +69,7 @@ pub fn proxy_test_wasm_path() -> PathBuf {
 /// Returns the workspace-relative path to the abac-test component WASM
 /// module (imports `syneroym:data-layer/store` and `syneroym:app-config/
 /// app-config`, exports `init` and `syneroym:data-layer/authorizer` --
-/// Slice B4-fdae's stage-4 ABAC fixture, ADR-0017 §7. Behavior switches on
+/// the stage-4 ABAC fixture, ADR-0017 §7. Behavior switches on
 /// the deployed `app-config`'s `mode` key -- see
 /// `test-components/abac-test`).
 pub fn abac_test_wasm_path() -> PathBuf {
@@ -114,8 +112,7 @@ pub fn saga_test_wasm_path() -> PathBuf {
     )
 }
 
-/// The `test-driver` interface name for the M06A A2 http-guest-test
-/// component.
+/// The `test-driver` interface name for the http-guest-test component.
 pub const HTTP_GUEST_TEST_DRIVER_INTERFACE: &str =
     "syneroym-test:http-guest-test/test-driver@0.1.0";
 
@@ -142,7 +139,7 @@ pub fn websocket_guest_test_wasm_path() -> PathBuf {
 }
 
 /// Returns the workspace-relative path to the miniapp-demo1-wasm component
-/// WASM module (M06A A4).
+/// WASM module.
 pub fn miniapp_demo1_wasm_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
         "../../test-components/miniapp-demo1-wasm/target/wasm32-wasip2/release/\

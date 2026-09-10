@@ -3,11 +3,11 @@
 //! here -- `register_verified` is the only place a document is trusted, so
 //! a fetcher can never become the trust boundary.
 //!
-//! Also the app-scoped gateway host resolver (S3, D-S3-11): [`AppHostResolver`]
+//! Also the app-scoped gateway host resolver: [`AppHostResolver`]
 //! is the shared implementation of "hostname `-a…-s…` to a member DID"
 //! that the client gateway and the WebRTC coordinator both need, lifted
 //! here rather than written twice, since those two are the pair most
-//! likely to drift subtly apart on the D-S3-5 binding checks.
+//! likely to drift subtly apart on the alias/document binding checks.
 
 use std::{
     fmt::Debug,
@@ -29,10 +29,10 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::SyneroymClient;
 
 /// How long a failed cold `AppHostResolver` resolve is remembered before
-/// being retried (finding B1). Short, deliberately: this exists to blunt
+/// being retried. Short, deliberately: this exists to blunt
 /// a burst of duplicate requests against an unauthenticated, public
 /// listener (the WebRTC bootstrap page resolves through the same
-/// resolver, D-S3-11), not to hide a host that has genuinely started
+/// resolver), not to hide a host that has genuinely started
 /// resolving -- a longer window would mean the fix itself makes recovery
 /// from a transient failure feel broken.
 const NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(5);
@@ -91,8 +91,7 @@ impl RegistryTopologyFetcher {
     /// Tier 2 only, against a supervisor the caller has already resolved.
     /// A caller that reached this app through its Tier-1 record already
     /// holds `substrate_id`; making it round-trip the registry again to
-    /// rediscover the same value is the duplication task.md's budget 2
-    /// forbids (D-S3-17).
+    /// rediscover the same value is a duplicate lookup this path avoids.
     pub async fn fetch_via(
         &self,
         supervisor_did: &str,
@@ -169,8 +168,8 @@ pub async fn fetch_and_register(
 }
 
 /// Tier 1, abstracted behind a trait so a test can substitute a counting
-/// fake instead of a real registry (task.md's own registry-call budgets,
-/// unmeasured before S3).
+/// fake instead of a real registry, to assert how many registry calls a
+/// resolve makes.
 #[async_trait::async_trait]
 pub trait Tier1Lookup: Debug + Send + Sync {
     async fn lookup(&self, alias: &str) -> Result<syneroym_core::dht_registry::SignedEndpointInfo>;
@@ -196,7 +195,7 @@ impl Tier1Lookup for RegistryTier1Lookup {
 }
 
 /// Tier 2, abstracted the same way. `fetch_via` is an inherent method on
-/// [`RegistryTopologyFetcher`] (D-S3-17) rather than part of the
+/// [`RegistryTopologyFetcher`] rather than part of the
 /// [`TopologyFetcher`] trait above -- it deliberately skips Tier 1, and
 /// every other `TopologyFetcher` caller still wants the full two-tier
 /// `fetch`.
@@ -244,10 +243,10 @@ impl<T: Tier2Fetch + ?Sized> Tier2Fetch for std::sync::Arc<T> {
     }
 }
 
-/// D-S3-5's first half: `RegistryClient::lookup` cannot bind an *alias*
-/// lookup to what was asked for, by construction (§0.4) -- a registry
-/// answering the alias with another app's perfectly valid, self-signed
-/// record must not silently redirect this caller to it.
+/// The alias half of the binding check: `RegistryClient::lookup` cannot
+/// bind an *alias* lookup to what was asked for, by construction -- a
+/// registry answering the alias with another app's perfectly valid,
+/// self-signed record must not silently redirect this caller to it.
 fn check_tier1_binding(
     returned_service_id: &str,
     a_hash: &str,
@@ -261,8 +260,8 @@ fn check_tier1_binding(
     Ok(())
 }
 
-/// D-S3-5's second half: `SignedTopologyDocument::verify` checks the
-/// signer and the expiry, never *which service* was asked for.
+/// The document half of the binding check: `SignedTopologyDocument::verify`
+/// checks the signer and the expiry, never *which service* was asked for.
 fn check_tier2_binding(returned_service_name: &str, s_hash: &str) -> Result<()> {
     anyhow::ensure!(
         util::short_hash(returned_service_name) == s_hash,
@@ -273,7 +272,7 @@ fn check_tier2_binding(returned_service_name: &str, s_hash: &str) -> Result<()> 
 
 /// Which log line a caller (`ClientGateway::init`, `CoordinatorWebRtc::init`)
 /// should emit for its own `resolve_ucan`/`grant_resolve_to_node_did`
-/// configuration (D-S3-6), pulled out as a pure, shared function rather
+/// configuration, pulled out as a pure, shared function rather
 /// than reimplemented per component so the two decisions cannot drift
 /// apart. `None` means no warning; `Some` carries whether it is a `warn!`
 /// (both credentials absent) or a `debug!` (the same-node gate alone
@@ -298,7 +297,7 @@ pub fn credential_warning(
     }
 }
 
-/// The state D-S3-7 says each substrate-side consumer of an app-scoped
+/// The state each substrate-side consumer of an app-scoped
 /// gateway host must own for itself -- the client gateway and the WebRTC
 /// coordinator each build one, never shared, since the two have different
 /// construction orders and lifetimes and `AppScope::Foreign` entries are
@@ -311,11 +310,11 @@ pub struct AppHostResolver {
     /// `app_lookup_alias` (the full `<nickname>-<a_hash>` alias, not the
     /// hash alone) -> the app DID a Tier-1 lookup returned **and the
     /// substrate supervising it**, both from the one record, so a repeat
-    /// request re-resolves neither (D-S3-17). Keyed on the alias, not just
+    /// request re-resolves neither. Keyed on the alias, not just
     /// `a_hash`, so a warm entry cannot answer a *different* nickname over
     /// the same hash without its own alias lookup -- `a_hash` alone would
-    /// let the cache silently widen what the parser accepts (finding B3).
-    /// Bound to the hash at insert time regardless (D-S3-5), so a cache hit
+    /// let the cache silently widen what the parser accepts.
+    /// Bound to the hash at insert time regardless, so a cache hit
     /// is as checked as a miss.
     app_dids: DashMap<String, (AppDid, String)>,
     /// `(app_did, short_hash(service_name))` -> the real service name, as
@@ -323,14 +322,14 @@ pub struct AppHostResolver {
     /// that passed the `short_hash(name) == hash` check.
     service_names: DashMap<(AppDid, String), LogicalServiceName>,
     /// One lock per `(app_lookup_alias, s_hash)` cold fetch currently in
-    /// flight (finding B2): concurrent callers for the same not-yet-cached
+    /// flight: concurrent callers for the same not-yet-cached
     /// host share one Tier-1-then-Tier-2 round trip rather than each
     /// starting an independent one. Removed once that fetch completes --
     /// the *outcome* is what stays cached (`app_dids`/`service_names` on
     /// success, `negative_cache` on failure), never the lock itself.
     inflight: DashMap<(String, String), Arc<AsyncMutex<()>>>,
     /// A cold fetch's most recent failure, remembered for
-    /// `NEGATIVE_CACHE_TTL` (finding B1).
+    /// `NEGATIVE_CACHE_TTL`.
     negative_cache: DashMap<(String, String), (String, Instant)>,
 }
 
@@ -362,13 +361,12 @@ impl AppHostResolver {
     }
 
     /// Resolves an app-scoped (`-a…-s…`) target host to a member
-    /// `ServiceId` (D-S3-5, D-S3-17). Tier 1 is cached alongside the
-    /// supervising node, so a repeat request for the same app makes no
-    /// registry call; Tier 2 is cached in the `LogicalResolver`, so a
-    /// repeat request for the same service makes no network call at all
-    /// (task.md budget 1) until the entry expires or is evicted (D-S3-8).
-    /// A cold resolve is single-flighted and a failure briefly remembered
-    /// (findings B1, B2) -- see [`Self::ensure_populated`].
+    /// `ServiceId`. Tier 1 is cached alongside the supervising node, so a
+    /// repeat request for the same app makes no registry call; Tier 2 is
+    /// cached in the `LogicalResolver`, so a repeat request for the same
+    /// service makes no network call at all until the entry expires or is
+    /// evicted. A cold resolve is single-flighted and a failure briefly
+    /// remembered -- see [`Self::ensure_populated`].
     pub async fn resolve_app_host(
         &self,
         app_lookup_alias: &str,
@@ -385,13 +383,13 @@ impl AppHostResolver {
                 // routing key, an empty member set -- is not a cache miss:
                 // the cached document is warm and correct, and re-fetching
                 // the identical document changes nothing. Surfacing it
-                // directly is what keeps budget 1 ("no network call after
-                // the first fetch") true once a caller is stuck in one of
-                // these permanent states, rather than refetching Tier 2 on
-                // every single request (finding A3).
+                // directly keeps "no network call after the first fetch"
+                // true once a caller is stuck in one of these permanent
+                // states, rather than refetching Tier 2 on every single
+                // request.
                 Err(e) if !is_retryable_resolve_error(&e) => return Err(e),
                 // Not registered, or past `not_after`: fall through and
-                // refetch (D-S3-8).
+                // refetch.
                 Err(_) => {}
             }
         }
@@ -418,15 +416,14 @@ impl AppHostResolver {
 
     /// Ensures Tier 1 and Tier 2 are populated for `(app_lookup_alias,
     /// s_hash)`, fetching over the network **at most once** across every
-    /// concurrent caller for the same cold key (finding B2) -- a
-    /// `tokio::sync::Mutex` per key, held across the fetch, is what makes
-    /// a second caller that reaches this while the first is still
-    /// in-flight simply wait rather than start its own redundant fetch.
-    /// A recent identical failure short-circuits before either the lock
-    /// or the network (finding B1): the WebRTC bootstrap listener that
-    /// also calls this is public and unauthenticated (D-S3-11), so a
-    /// caller repeating the same unresolvable host must not repeat a
-    /// full Tier-1/Tier-2 round trip for every repeat.
+    /// concurrent caller for the same cold key -- a `tokio::sync::Mutex`
+    /// per key, held across the fetch, is what makes a second caller that
+    /// reaches this while the first is still in-flight simply wait rather
+    /// than start its own redundant fetch. A recent identical failure
+    /// short-circuits before either the lock or the network: the WebRTC
+    /// bootstrap listener that also calls this is public and
+    /// unauthenticated, so a caller repeating the same unresolvable host
+    /// must not repeat a full Tier-1/Tier-2 round trip for every repeat.
     async fn ensure_populated(
         &self,
         app_lookup_alias: &str,
@@ -481,8 +478,8 @@ impl AppHostResolver {
                 // Swept before inserting, not just on some other timer:
                 // `negative_cache` otherwise only ever loses an entry to a
                 // later *success* for that exact key, so on the public,
-                // unauthenticated bootstrap listener (D-S3-11) it grows by
-                // one entry per distinct bad `Host` header forever. This
+                // unauthenticated bootstrap listener it grows by one entry
+                // per distinct bad `Host` header forever. This
                 // bounds it to roughly one `NEGATIVE_CACHE_TTL` window's
                 // worth of distinct failures.
                 self.negative_cache.retain(|_, (_, at)| at.elapsed() < NEGATIVE_CACHE_TTL);
@@ -532,8 +529,8 @@ impl AppHostResolver {
 
         // Tier 2 may already be known for this `app_did`+`s_hash` through
         // a *different* alias that resolved the same app earlier -- the
-        // Tier-1 lookup above is keyed on the alias (finding B3), but
-        // Tier 2 is keyed on the app DID, which is now known either way.
+        // Tier-1 lookup above is keyed on the alias, but Tier 2 is keyed
+        // on the app DID, which is now known either way.
         // `resolve_all`, not plain presence, so an entry that has since
         // expired still triggers the real fetch below rather than
         // returning a key `resolve_app_host`'s own caller would just
@@ -547,15 +544,14 @@ impl AppHostResolver {
 
         // `fetch_via`, not `fetch`: the supervising node came back with
         // the Tier-1 record above, so `fetch`'s own Tier-1 lookup would
-        // be the same round-trip twice (D-S3-17, task.md budget 2). A
-        // hash is a valid `LogicalServiceName` (8 z32 characters, so
-        // non-empty and free of `/`/`#`), and the supervisor reverses it
-        // (D-S3-3).
+        // be the same round-trip twice. A hash is a valid
+        // `LogicalServiceName` (8 z32 characters, so non-empty and free
+        // of `/`/`#`), and the supervisor reverses it.
         let signed = fetcher
             .fetch_via(&supervisor_did, &app_did, &LogicalServiceName::try_new(s_hash)?)
             .await?;
-        // D-S3-5's second half: `verify` checks the signer and the
-        // expiry, never *which service* was asked for.
+        // The document half of the binding check: `verify` checks the
+        // signer and the expiry, never *which service* was asked for.
         check_tier2_binding(signed.document.service_name.as_str(), s_hash)?;
         let key = register_verified(&self.resolver, &signed, &app_did, None)?;
         self.service_names
@@ -602,13 +598,12 @@ mod tests {
         }
     }
 
-    /// The two performance budgets this exercises, measured directly
+    /// The two performance properties this exercises, measured directly
     /// rather than as timings. One `fetch_and_register`, then N `resolve`
-    /// calls, asserts `fetch_calls
-    /// == 1` (budget 1: "resolution after the first fetch -- no network
-    /// call") -- `register_verified` (the only caller of `verify`) having
-    /// run exactly once by construction here covers budget 3 ("verify
-    /// once per fetch, not once per resolve").
+    /// calls, asserts `fetch_calls == 1` -- resolution after the first
+    /// fetch makes no network call. `register_verified` (the only caller
+    /// of `verify`) having run exactly once by construction here shows
+    /// `verify` runs once per fetch, not once per resolve.
     #[tokio::test]
     async fn one_fetch_and_register_serves_every_later_resolve() {
         let master = Identity::generate().unwrap();
@@ -646,7 +641,7 @@ mod tests {
         );
     }
 
-    // ── `AppHostResolver` (S3): tests 83-89 ─────────────────────────────
+    // ── `AppHostResolver` ──────────────────────────────────────────────
 
     #[derive(Debug)]
     struct FakeTier1 {
@@ -753,11 +748,11 @@ mod tests {
         )
     }
 
-    /// Finding C7: the no-registry path (`fetcher: None`, an empty
-    /// `registry_url`) is what `ClientGateway::init` builds when
-    /// `[substrate].registry_url` is unset -- an app-scoped host must be
-    /// refused with a message naming Tier 1, not left to the panic/hang a
-    /// missing fetcher would otherwise produce.
+    /// The no-registry path (`fetcher: None`, an empty `registry_url`) is
+    /// what `ClientGateway::init` builds when `[substrate].registry_url`
+    /// is unset -- an app-scoped host must be refused with a message
+    /// naming Tier 1, not left to the panic/hang a missing fetcher would
+    /// otherwise produce.
     #[tokio::test]
     async fn an_app_scoped_host_is_refused_with_no_registry_configured() {
         let (master, app_did) = app_master();
@@ -772,8 +767,8 @@ mod tests {
         assert!(err.to_string().contains("no community registry configured"), "{err}");
     }
 
-    /// Test 83: D-S3-5's first half -- a registry answering an alias with
-    /// another app's perfectly valid, self-signed record is refused.
+    /// The alias half of the binding check: a registry answering an alias
+    /// with another app's perfectly valid, self-signed record is refused.
     #[tokio::test]
     async fn a_tier1_record_whose_hash_does_not_match_the_a_segment_is_refused() {
         let (master, app_did) = app_master();
@@ -789,8 +784,8 @@ mod tests {
         assert!(err.to_string().contains("wronghash"), "{err}");
     }
 
-    /// Test 84: D-S3-5's second half -- a document naming a different
-    /// service than the `-s` segment is refused.
+    /// The document half of the binding check: a document naming a
+    /// different service than the `-s` segment is refused.
     #[tokio::test]
     async fn a_document_naming_a_different_service_than_the_s_segment_is_refused() {
         let (master, app_did) = app_master();
@@ -815,19 +810,18 @@ mod tests {
             .resolve_app_host(&format!("my-chat-app-{a_hash}"), &a_hash, "wronghash", None)
             .await
             .unwrap_err();
-        // Pins the Tier-2 check specifically (finding C5): a correct
-        // `a_hash` means Tier 1 must succeed here, so an `OR` against
-        // either segment's error text would just as readily pass on a
-        // Tier-1 regression as on the Tier-2 binding check this test
-        // exists to cover.
+        // Pins the Tier-2 check specifically: a correct `a_hash` means
+        // Tier 1 must succeed here, so an `OR` against either segment's
+        // error text would just as readily pass on a Tier-1 regression as
+        // on the Tier-2 binding check this test exists to cover.
         assert!(
             err.to_string().contains("supervisor answered '-swronghash' with service 'backend'"),
             "{err}"
         );
     }
 
-    /// Test 85: task.md budget 1 at the gateway -- a fetch count, not a
-    /// timing.
+    /// A second request for the same app-scoped host makes no network
+    /// call -- checked as a fetch count, not a timing.
     #[tokio::test]
     async fn a_second_request_for_the_same_app_scoped_host_makes_no_network_call() {
         let (master, app_did) = app_master();
@@ -864,9 +858,8 @@ mod tests {
         assert_eq!(tier1.calls.load(Ordering::SeqCst), tier1_calls_before, "no new Tier-1 lookup");
     }
 
-    /// Test 86: task.md budget 2, measured for the first time in this
-    /// milestone (§0.13, D-S3-17) -- one Tier-1 lookup per cold app-scoped
-    /// resolve, not two, and zero on a warm one.
+    /// One Tier-1 lookup per cold app-scoped resolve, not two, and zero
+    /// on a warm one.
     #[tokio::test]
     async fn a_cold_resolve_makes_exactly_one_tier1_lookup() {
         let (master, app_did) = app_master();
@@ -902,8 +895,8 @@ mod tests {
         );
     }
 
-    /// Finding B3: the Tier-1 cache is keyed on the full
-    /// `app_lookup_alias`, not `a_hash` alone -- a second host carrying a
+    /// The Tier-1 cache is keyed on the full `app_lookup_alias`, not
+    /// `a_hash` alone -- a second host carrying a
     /// *different* nickname over the same app hash must repeat its own
     /// Tier-1 alias lookup rather than silently reuse the first alias's
     /// warm entry, which would let the cache accept a nickname the
@@ -943,19 +936,17 @@ mod tests {
         );
     }
 
-    /// Test 87: D-S3-8, ADR-0022 §3's "on expiry try to refresh" -- an
-    /// expired cache entry triggers exactly one refetch rather than a
-    /// failure.
+    /// ADR-0022 §3's "on expiry try to refresh" -- an expired cache entry
+    /// triggers exactly one refetch rather than a failure.
     #[tokio::test]
     async fn an_expired_entry_triggers_one_refetch_rather_than_a_failure() {
         let (master, app_did) = app_master();
         let a_hash = util::short_hash(app_did.as_str());
         let record = signed_tier1_record(&app_did, "did:key:zSupervisor", &master);
         let tier1 = Arc::new(FakeTier1 { calls: AtomicUsize::new(0), response: record });
-        // A 3s margin, not 1s: commit 38ebbea's flakiness fix (and S2
-        // post-merge finding 8) widened every wall-clock-boundary-adjacent
-        // `not_after` in this codebase from 1s to 3s for the same reason --
-        // a `not_after` computed one second before a real second boundary
+        // A 3s margin, not 1s: every wall-clock-boundary-adjacent
+        // `not_after` in this codebase uses 3s for the same reason -- a
+        // `not_after` computed one second before a real second boundary
         // leaves under 1ms of actual margin.
         let short_lived = signed_topology_doc(
             &app_did,
@@ -992,8 +983,8 @@ mod tests {
         assert_eq!(fetcher.calls.load(Ordering::SeqCst), 2, "exactly one refetch, not a failure");
     }
 
-    /// Test 88: over a `Redundant` document -- the same key twice returns
-    /// the same member, no header returns members in round-robin.
+    /// Over a `Redundant` document -- the same routing key twice returns
+    /// the same member, and no header returns members in round-robin.
     #[tokio::test]
     async fn a_routing_key_header_selects_a_member_and_its_absence_does_not() {
         let (master, app_did) = app_master();
@@ -1025,9 +1016,9 @@ mod tests {
             assert_eq!(repeat, first, "the same routing key must select the same member");
         }
 
-        // The other half of this test's own title (finding C2): with no
-        // header at all, a `Redundant` topology round-robins rather than
-        // pinning one member.
+        // The other half of this test's own title: with no header at all,
+        // a `Redundant` topology round-robins rather than pinning one
+        // member.
         let mut seen = std::collections::HashSet::new();
         for _ in 0..6 {
             seen.insert(
@@ -1037,8 +1028,8 @@ mod tests {
         assert!(seen.len() > 1, "an unkeyed resolve must spread across members, got {seen:?}");
     }
 
-    /// Test 89: ADR-0022 §7's closing sentence -- a `Sharded` service with
-    /// no routing key fails with the resolver's own, specific error.
+    /// ADR-0022 §7's closing sentence -- a `Sharded` service with no
+    /// routing key fails with the resolver's own, specific error.
     #[tokio::test]
     async fn a_sharded_service_with_no_routing_key_fails_with_the_resolvers_own_error() {
         let (master, app_did) = app_master();
@@ -1067,14 +1058,14 @@ mod tests {
         );
     }
 
-    /// Finding A3: a permanent selection failure (here, the same
-    /// `Sharded`-with-no-key case test 89 pins) must not be treated as a
-    /// cache miss. `FakeTier2` is seeded with exactly one response, so a
-    /// second refetch would surface as "no more queued responses" instead
-    /// of the resolver's own error -- the discriminator this test relies
-    /// on -- and `fetcher.calls` pins it directly. Before the fix, every
-    /// repeat call refetched Tier 2, breaking task.md budget 1 for any
-    /// caller stuck in this permanent state.
+    /// A permanent selection failure (here, a `Sharded` topology with no
+    /// routing key) must not be treated as a cache miss. `FakeTier2` is
+    /// seeded with exactly one response, so a second refetch would surface
+    /// as "no more queued responses" instead of the resolver's own error
+    /// -- the discriminator this test relies on -- and `fetcher.calls`
+    /// pins it directly. Before the fix, every repeat call refetched Tier
+    /// 2, making a network call for a caller stuck in this permanent
+    /// state.
     #[tokio::test]
     async fn a_permanent_selection_failure_is_not_treated_as_a_cache_miss() {
         let (master, app_did) = app_master();
@@ -1107,11 +1098,10 @@ mod tests {
         );
     }
 
-    /// Finding B1: a failed cold resolve is remembered for
-    /// `NEGATIVE_CACHE_TTL`, so a caller repeating the same bad host
-    /// (the WebRTC bootstrap listener that also calls this is public and
-    /// unauthenticated, D-S3-11) does not repeat a Tier-1 round trip for
-    /// every repeat. Reuses test 83's shape (a wrong `a_hash`) for the
+    /// A failed cold resolve is remembered for `NEGATIVE_CACHE_TTL`, so a
+    /// caller repeating the same bad host (the WebRTC bootstrap listener
+    /// that also calls this is public and unauthenticated) does not repeat
+    /// a Tier-1 round trip for every repeat. Uses a wrong `a_hash` for the
     /// failure itself; what this test pins is that the *second* identical
     /// failure costs no further lookup.
     #[tokio::test]
@@ -1144,11 +1134,11 @@ mod tests {
         );
     }
 
-    /// Residual finding: the negative cache had no sweep -- an entry was
-    /// only ever removed by a later *success* for that exact key, so on
-    /// the public, unauthenticated bootstrap listener it grew by one
-    /// entry per distinct bad `Host` header forever. A new failure now
-    /// sweeps every expired entry on its way in.
+    /// The negative cache had no sweep -- an entry was only ever removed
+    /// by a later *success* for that exact key, so on the public,
+    /// unauthenticated bootstrap listener it grew by one entry per
+    /// distinct bad `Host` header forever. A new failure now sweeps every
+    /// expired entry on its way in.
     #[tokio::test]
     async fn a_new_failure_sweeps_every_expired_negative_cache_entry() {
         let (master, app_did) = app_master();
@@ -1192,9 +1182,9 @@ mod tests {
         }
     }
 
-    /// Finding B2: N concurrent callers for the same not-yet-cached host
-    /// share one Tier-1-then-Tier-2 round trip rather than each starting
-    /// an independent one. `FakeTier2` is seeded with exactly one
+    /// N concurrent callers for the same not-yet-cached host share one
+    /// Tier-1-then-Tier-2 round trip rather than each starting an
+    /// independent one. `FakeTier2` is seeded with exactly one
     /// response, so this also fails loudly ("no more queued responses")
     /// if the single-flight lock lets more than one caller through to the
     /// real fetch.
