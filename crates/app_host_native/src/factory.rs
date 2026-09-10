@@ -115,7 +115,7 @@ impl NativeHostFactory {
             fdae_policy_generation: AtomicU64::new(0),
             record_signer: OnceLock::new(),
         });
-        // `§6.5`: registers itself as this service's conversation
+        // The factory registers itself as this service's conversation
         // notification target, so the delivery worker wakes a natively-
         // linked app the same way `AppSandboxEngine` wakes a wasm-hosted
         // one -- without this, the fixture's `on-message`/`on-delivery-
@@ -382,7 +382,7 @@ impl NativeHostFactory {
 /// The native build's wake mechanism: a `Weak<dyn ConversationSink>` with
 /// no retry, unlike the WASM build's instantiate-and-call with a 4-attempt
 /// retry (`AppSandboxEngine::notify_guest_message`) -- a stated, permitted
-/// difference (B3's own precedent for `MessageSink`): what must match is
+/// difference, the same precedent as `MessageSink`: what must match is
 /// the store contents afterward, not the delivery mechanism or its timing.
 #[async_trait::async_trait]
 impl ConversationNotifier for NativeHostFactory {

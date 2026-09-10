@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Stage-4 ABAC (ADR-0017 §7) test fixture. Switchable behavior via
 //! `app-config`'s `mode` key, so one compiled component covers every
-//! Failure/Security matrix row 7-9 case plus the read-only/lookup escape
+//! ABAC enforcement failure case plus the read-only/lookup escape
 //! hatch, instead of one fixture per scenario.
 
 use bindings::{
@@ -49,7 +49,7 @@ impl Guest for AbacTestComponent {
         .map_err(|e| format!("{e:?}"))?;
         // Non-empty payloads (`classification`/`ssn`/`note`) so the same two
         // rows also serve `stage4_cls_mask_unions_with_the_after_step_
-        // redact_set` (review finding B4-08): `classification` is
+        // redact_set`: `classification` is
         // CLS-masked by `lookup_targets`'s own policy permission, `ssn` is
         // redacted by the `authorize-rows` after-step in `redact` mode, and
         // `note` must survive both to prove the union subtracts, never
@@ -135,9 +135,9 @@ impl AuthorizerGuest for AbacTestComponent {
                 })
                 .collect())
             }
-            // D-B4-4's recursion bound (see the Rust-side test's doc
-            // comment, `abac_integration.rs`, for the corrected mechanism --
-            // review residual R1). Today this sees both seeded rows
+            // The recursion bound (see the Rust-side test's doc
+            // comment in `abac_integration.rs` for the corrected mechanism).
+            // Today this sees both seeded rows
             // unfiltered, because the `LocalReadOnly` sieve exemption means
             // this nested read carries no `QueryAuth` and never consults a
             // sieve at all. If that exemption were ever narrowed, the read

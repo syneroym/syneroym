@@ -2,7 +2,7 @@
 //! Data-layer test guest component
 //!
 //! Exercises the `syneroym:data-layer/store` host interface end-to-end for
-//! Slice 3A integration tests: schema lifecycle hooks (`init`/`migrate`),
+//! integration tests: schema lifecycle hooks (`init`/`migrate`),
 //! CRUD, and host-injected `creator-id` verification.
 
 use bindings::{

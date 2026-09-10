@@ -157,7 +157,7 @@ pub enum Request {
     /// What `on_conversation_state` stored, same rule.
     ReadStateLog,
 
-    // ---- C1 new verbs ----
+    // ---- Proxy-call and config verbs ----
     ProxyCallSelf {
         service_id: String,
         interface: String,
@@ -785,7 +785,7 @@ pub async fn on_message<H: AppHost>(
 /// Called by both builds when a durable conversation message arrives --
 /// from the exported `guest-api::on-message` on WASM, from
 /// `ConversationSink::on_message` natively. Persists through `data-layer`,
-/// never in-process state (`D-B3-12`), keyed by the message's own id so a
+/// never in-process state, keyed by the message's own id so a
 /// redelivery overwrites rather than duplicates.
 pub async fn on_conversation_message<H: AppHost>(host: &H, msg: Message) -> Result<(), String> {
     ensure_collection(host, CONV_INBOX).await?;

@@ -3,7 +3,7 @@
 //!
 //! Exercises `syneroym:messaging/host-api` (`subscribe`/`publish`) and the
 //! optional `syneroym:messaging/guest-api::handle-message` push-delivery
-//! export end-to-end for M3B Slice 6A integration tests.
+//! export end-to-end for pub/sub integration tests.
 
 use bindings::{
     Guest,
@@ -84,7 +84,7 @@ impl Guest for MessagingPubsubTestComponent {
     }
 }
 
-/// This fixture doesn't exercise M3B Slice 6B streaming -- see
+/// This fixture doesn't exercise bidirectional streaming -- see
 /// `test-components/stream-test` for those fixtures -- but must still
 /// satisfy `guest-api`'s `use stream-types.{stream-cursor, stream-sink}`
 /// reference, since `stream-types` is guest-implemented (ADR-0014). Never

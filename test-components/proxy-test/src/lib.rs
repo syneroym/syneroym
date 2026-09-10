@@ -1,11 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Universal Proxy guest test component (M04A Slice A1).
+//! Universal Proxy guest test component.
 //!
 //! Exercises `syneroym:proxy/proxy::call` from guest code end to end -- the
 //! only way a real component can originate a cross-service call, as opposed
 //! to a Rust-level `ProxyRouter::invoke` unit test. Also exports the
 //! stage-4 ABAC after-step (ADR-0017 §7) so this same component can serve
-//! as the self-proxy target for Slice B4-fdae's router-side ingress-(ii)
+//! as the self-proxy target for the router-side ingress-(ii)
 //! integration test.
 
 use bindings::{
@@ -79,7 +79,7 @@ impl TestDriverGuest for ProxyTestComponent {
 
 /// Deterministic, fixed behavior (no `app-config`-driven mode switching like
 /// `abac-test`'s fixture -- this component only needs to prove ingress (ii)
-/// actually invokes the after-step, not exercise every matrix row again):
+/// actually invokes the after-step, not re-test every authorization case):
 /// denies the row seeded with id `"secret"`, allows everything else.
 impl AuthorizerGuest for ProxyTestComponent {
     fn authorize_rows(

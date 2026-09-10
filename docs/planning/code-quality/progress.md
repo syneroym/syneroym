@@ -84,15 +84,15 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/roym_profile` | 0 | 0 | 1 | 1 | n/a | | |
 | `crates/roym_conversation` | 0 | 0 | 1 | 0 | n/a | | n/a |
 | `crates/client_gateway` | 0 | 0 | 1 | 1 | n/a | | |
-| `crates/app_host_native` | 1 | 0 | 1 | 1 | | | |
-| `crates/sandbox_podman` | 1 | 1 | 1 | 1 | | | |
+| `crates/app_host_native` | 1 | 0 | 1 | 1 | done | | |
+| `crates/sandbox_podman` | 1 | 1 | 1 | 1 | done | | |
 | `crates/identity` | 2 | 0 | 0 | 0 | done | n/a | n/a |
 | `crates/chunk_transfer` | 1 | 0 | 0 | 0 | done | n/a | n/a |
 | `crates/app_host` | 1 | 0 | 0 | 0 | done | n/a | n/a |
 | `crates/smoke-tests` | 0 | 0 | 0 | 1 | n/a | n/a | |
-| `tests/perf` | 1 | 1 | 0 | 4 | | n/a | |
+| `tests/perf` | 1 | 1 | 0 | 4 | done | n/a | |
 | `xtask/src` | 0 | 0 | 0 | 2 | n/a | n/a | |
-| `test-components/*` | 13 | 1 | 1 | 1 | | | |
+| `test-components/*` | 13 | 1 | 1 | 1 | done | | |
 | **total** | **1,222** | **342** | **55** | **125** | | | |
 
 The four Roym service crates (`roym_transaction` 2,944 lines / 21 arms,

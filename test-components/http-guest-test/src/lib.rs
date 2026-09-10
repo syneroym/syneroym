@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Guest HTTP handler test component (M06A A2).
+//! Guest HTTP handler test component.
 //!
 //! Exercises `syneroym:http/incoming-handler#handle-request` end to end.
 //! Behaviour switches on `request.path` -- see the match in `handle_request`
@@ -129,7 +129,7 @@ fn handle_framing() -> Result<HttpResponse, String> {
 
 /// Busy-waits `?ms=N` (default 1000) before answering 200. The query knob
 /// lets a test tune how long one call holds its guest-HTTP admission permit
-/// (M06A D-A2-11) without needing a second near-duplicate test path.
+/// without needing a second near-duplicate test path.
 fn handle_slow(request: &HttpRequest) -> Result<HttpResponse, String> {
     let ms = request
         .query

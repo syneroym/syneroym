@@ -429,7 +429,7 @@ impl ContainerEngine {
         Ok(())
     }
 
-    /// `podman start <name>` (M05A A5a). The other half of a restart --
+    /// `podman start <name>`. The other half of a restart --
     /// `stop` alone leaves the container created but down, which `readyz`
     /// correctly reports as `not-running` forever. Unlike `stop`
     /// (best-effort teardown), a failure here is a real error: a
