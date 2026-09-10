@@ -62,9 +62,9 @@ pub struct BootstrapState {
     /// initiate competing handshakes to the same target peer,
     /// causing protocol conflicts and timeouts in the underlying QUIC stack.
     pub connection_cache: Mutex<HashMap<PublicKey, Connection>>,
-    /// S3, D-S3-7/D-S3-11: resolves an app-scoped (`-a…-s…`) bootstrap
-    /// host through Tier 1 and Tier 2, shared with the client gateway's
-    /// implementation rather than reimplemented.
+    /// Resolves an app-scoped (`-a…-s…`) bootstrap host through Tier 1
+    /// and Tier 2, shared with the client gateway's implementation rather
+    /// than reimplemented.
     pub app_host_resolver: AppHostResolver,
 }
 
@@ -89,9 +89,9 @@ struct PeerProxyTemplate {
     http_version: String,
     target_pubkey_hex: String,
     /// The interface the route preamble names, already resolved from the
-    /// hostname by `parse_target_host` (D-S3-16). Empty when the host
-    /// carried no `-i`, which the destination resolves (D-S3-15).
-    /// Interpolated rather than re-derived in the page: the page used to
+    /// hostname by `parse_target_host`. Empty when the host carried no
+    /// `-i`, which the destination resolves. Interpolated rather than
+    /// re-derived in the page: the page used to
     /// parse `location.hostname` itself, in two places, which made the
     /// browser a third implementation of a grammar that now lives in one
     /// function.
@@ -196,9 +196,9 @@ async fn handle_bootstrap(
                 service_name_hash,
                 interface,
             }) => {
-                // D-S3-11: resolve through Tier 1 -> Tier 2 -> member
+                // Resolve through Tier 1 -> Tier 2 -> member
                 // selection, exactly as the client gateway's own
-                // app-scoped path does (both D-S3-5 binding checks are
+                // app-scoped path does (both binding checks are
                 // applied inside `resolve_app_host`, shared rather than
                 // reimplemented). A failed resolve returns an error,
                 // never the raw-host fallback below -- that fallback
@@ -668,7 +668,7 @@ mod tests {
         assert_eq!(resolved_pubkey.as_bytes(), pubkey.as_bytes());
     }
 
-    // ── S3: app-scoped bootstrap resolution (tests 93-96) ───────────────
+    // ── app-scoped bootstrap resolution ────────────────────────────────
 
     use std::{
         collections::VecDeque,
@@ -731,7 +731,7 @@ mod tests {
     /// `127.0.0.1:0` -- Tier 3 (`state.registry_client.lookup`) is a real
     /// `RegistryClient`, not a seam, so testing the coordinator's own
     /// resolution end to end needs a real registry behind it, the same
-    /// shape the milestone's e2e tests already use. Returns the server's
+    /// shape the e2e tests already use. Returns the server's
     /// URL; the caller must keep the returned `EcosystemRegistry` alive
     /// for the test's duration.
     async fn spawn_test_registry(base: &std::path::Path) -> (String, EcosystemRegistry) {
@@ -855,7 +855,7 @@ mod tests {
         doc.sign(master).unwrap()
     }
 
-    /// Test 93: an axum-level test over `app(state)`, asserting
+    /// An axum-level test over `app(state)`, asserting
     /// `TARGET_SERVICE_ID` in the rendered HTML is a member DID from the
     /// document and `TARGET_PEER_ID` is the substrate hosting it.
     #[tokio::test]
@@ -900,11 +900,11 @@ mod tests {
         assert!(body.contains(&format!("TARGET_PEER_ID = \"{substrate_did}\"")), "{body}");
     }
 
-    /// Test 94: D-S3-16 -- a host with an explicit `-i` renders that hash
-    /// into `TARGET_INTERFACE`, and one without renders the empty string.
-    /// Without this, the JS deletion is unverified and the regression
-    /// §0.1 describes (every host silently losing its interface) has no
-    /// failing test anywhere.
+    /// A host with an explicit `-i` renders that hash into
+    /// `TARGET_INTERFACE`, and one without renders the empty string.
+    /// Without this, the JS deletion is unverified and the regression it
+    /// guards against -- every host silently losing its interface -- has
+    /// no failing test anywhere.
     #[tokio::test]
     async fn the_rendered_page_carries_the_hosts_interface() {
         let dir = tempfile::tempdir().unwrap();
@@ -963,8 +963,8 @@ mod tests {
         assert!(body.contains("TARGET_INTERFACE = \"\""), "{body}");
     }
 
-    /// Finding B4: a value ending in a backslash (reachable through the
-    /// deliberately permissive `-i` segment, D-S3-12) must not be able to
+    /// A value ending in a backslash (reachable through the deliberately
+    /// permissive `-i` segment) must not be able to
     /// escape the JS string literal it is rendered into. Constructed
     /// directly against `PeerProxyTemplate` rather than through a real
     /// hostname, since the point is the template's own escaping, not the
@@ -1008,8 +1008,8 @@ mod tests {
         assert_eq!(decoded, hostile);
     }
 
-    /// Test 95: the no-regression half, on the same handler -- an
-    /// unscoped bootstrap request is unchanged.
+    /// The no-regression half, on the same handler -- an unscoped
+    /// bootstrap request is unchanged.
     #[tokio::test]
     async fn an_unscoped_bootstrap_request_is_unchanged() {
         let dummy_tier1 = SignedEndpointInfo {
@@ -1039,8 +1039,8 @@ mod tests {
         assert!(body.contains(&format!("TARGET_INTERFACE = \"{ih}\"")), "{body}");
     }
 
-    /// Test 96: the phase-4c refusal -- 502, and the raw hostname never
-    /// reaches `resolve_did_key`.
+    /// The refusal path -- a failed app-scoped resolve returns 502, and
+    /// the raw hostname never reaches `resolve_did_key`.
     #[tokio::test]
     async fn an_app_scoped_host_that_fails_to_resolve_does_not_fall_back_to_the_raw_host() {
         let dummy_tier1 = SignedEndpointInfo {
@@ -1058,8 +1058,7 @@ mod tests {
             pkarr_packet_hex: String::new(),
         };
         // No fetcher configured -- `resolve_app_host` fails immediately
-        // ("no community registry configured"), exactly D-S3-6's
-        // uncredentialed case.
+        // ("no community registry configured"), the uncredentialed case.
         let state = test_state(None, FakeTier1 { response: dummy_tier1 }, None).await;
 
         let a_hash = util::short_hash("did:key:zApp");

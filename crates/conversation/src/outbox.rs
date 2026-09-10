@@ -19,8 +19,7 @@ use crate::{
 };
 
 /// How many items one service may have claimed in a single worker tick —
-/// raised to 64 per D-B5-13 because group fan-out multiplies outbox rows by
-/// member count.
+/// set to 64 because group fan-out multiplies outbox rows by member count.
 const CLAIM_LIMIT_PER_TICK: u32 = 64;
 
 impl ConversationService {

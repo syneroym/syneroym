@@ -566,7 +566,7 @@ class SynWebSocket extends EventTarget {
         this.onerror = null;
         this.onclose = null;
 
-        // S3, D-S3-16: the interface is resolved from the hostname once,
+        // The interface is resolved from the hostname once,
         // on the coordinator, and interpolated as TARGET_INTERFACE -- not
         // re-derived here. A per-request parse of `location.hostname` was
         // always redundant anyway, since the page's own origin does not
@@ -933,7 +933,7 @@ async function handleSignalingMessage(msg) {
 async function handleSWRequest(reqData, port) {
     try {
         const url = new URL(reqData.url);
-        // S3, D-S3-16: TARGET_INTERFACE is resolved once, on the
+        // TARGET_INTERFACE is resolved once, on the
         // coordinator, from the bootstrap hostname -- not re-derived per
         // request here (the page's own origin does not change between
         // fetches, so the per-request parse this replaced was redundant).

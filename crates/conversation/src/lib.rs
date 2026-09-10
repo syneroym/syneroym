@@ -115,7 +115,7 @@ impl ConversationService {
     }
 
     /// The default notification target -- the WASM engine, reached for any
-    /// service with no override registered (`§8.2`).
+    /// service with no override registered.
     pub fn set_notifier(&self, notifier: Weak<dyn ConversationNotifier>) {
         #[allow(clippy::expect_used)]
         {
@@ -124,7 +124,7 @@ impl ConversationService {
     }
 
     /// A natively-linked service's own notification target, registered by
-    /// its `NativeHostFactory` (`§6.5`) -- tried before the default.
+    /// its `NativeHostFactory` -- tried before the default.
     pub fn register_service_notifier(
         &self,
         service_id: String,
@@ -187,7 +187,7 @@ impl ConversationService {
     /// open, plus every currently-deployed service with a `conversation.db`
     /// already on disk -- so a restart with a message still `pending`
     /// rediscovers it even if no guest call reopens that service's store
-    /// first (failure-matrix row 4).
+    /// first.
     fn candidate_service_ids(&self) -> Vec<String> {
         let mut ids: HashSet<String> =
             self.stores.lock().expect("store map poisoned").keys().cloned().collect();
@@ -218,8 +218,8 @@ impl ConversationService {
                 "prekey-bundle",
                 serde_json::json!({}),
                 None,
-                // Comfortably inside `dispatch_epoch_timeout_secs` (5s, D-B5-20's own
-                // figure): an unreachable peer must still leave the caller enough of
+                // Comfortably inside `dispatch_epoch_timeout_secs` (5s): an
+                // unreachable peer must still leave the caller enough of
                 // its guest budget to do something with the result, e.g. `add-member`
                 // still has time to persist a membership entry after this returns.
                 Some(std::time::Duration::from_secs(2)),
