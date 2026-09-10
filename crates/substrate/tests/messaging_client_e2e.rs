@@ -1,5 +1,5 @@
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
-//! M3B Slice 6A end-to-end test: a real `SyneroymClient` connects over a
+//! End-to-end test: a real `SyneroymClient` connects over a
 //! live substrate/Iroh connection and calls `SyneroymClient::subscribe` --
 //! the first test in the repo to exercise push delivery to a non-WASM
 //! caller, and the first to exercise a native-capability interface through
@@ -91,8 +91,7 @@ async fn test_native_subscriber_receives_push_delivery_and_close_unsubscribes() 
     }
 
     // Basic-path delivery, plus the native-subscriber performance budget
-    // (<5ms p99) from task.md's Measurable Exit Criteria, measured across a
-    // small burst.
+    // (<5ms p99), measured across a small burst.
     let mut latencies = Vec::new();
     for i in 0..20u32 {
         let publish_start = Instant::now();
@@ -120,7 +119,7 @@ async fn test_native_subscriber_receives_push_delivery_and_close_unsubscribes() 
         latencies.last().unwrap(),
         latencies.len()
     );
-    // task.md's Measurable Exit Criteria budget is 5ms p99; asserted here
+    // The budget is 5ms p99; asserted here
     // at 3x that (15ms) for headroom against shared-CI-runner variance,
     // while still catching an order-of-magnitude regression.
     assert!(

@@ -69,8 +69,8 @@ pub fn setup_substrate_identity(
         })?;
         // A present-but-unparseable agreement is a hard failure on both the
         // explicit and the discovered path. Booting unowned because the
-        // ownership artifact was malformed is the exact silent failure this
-        // slice removes.
+        // ownership artifact was malformed would be a silent failure, so it
+        // is refused here.
         Some(ControllerAgreement::from_json(&json).with_context(|| {
             format!("invalid controller agreement at {}", agreement_path.display())
         })?)

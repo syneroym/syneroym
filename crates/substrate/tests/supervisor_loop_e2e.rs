@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! M05A A5c phase 7 (§23), test 48, matrix row 12: a partial deploy across
-//! two real managed substrates, one of which is down at `submit` time.
+//! A partial deploy across two real managed substrates, one of which is
+//! down at `submit` time.
 //! `submit` now persists desired state before its own best-effort deploy
 //! attempt (so a substrate being unreachable does not stop the *other*
 //! service's placement from being recorded), and the resident loop's own
@@ -236,13 +236,13 @@ async fn a_partial_deploy_is_degraded_and_its_failed_service_is_retried_without_
     // `svc-b` stays missing -- polled with a generous budget since each
     // pass that touches the still-down `managed-b` spends up to
     // `MANAGED_SUBSTRATE_CONNECT_TIMEOUT` (10s) doing so. The manifest
-    // declares no health check (D-A4-19: a `tcp` service with no probe
+    // declares no health check (a `tcp` service with no probe
     // reports `unknown`, not a fault), so "landed" is read off `signal
     // != "not-deployed"`, not `"healthy"`.
     //
-    // Review finding E-2: a 40s deadline was too tight against this
+    // A 40s deadline was too tight against this
     // loop's own cost. `svc-a` lands at 28-30s in every run measured, and
-    // `status`'s own on-demand sweep (D-A5-21) reads the journal at the
+    // `status`'s own on-demand sweep reads the journal at the
     // *start* of the call, before it blocks up to 10s reaching the still-
     // down `managed-b` -- so the 40s deadline left room for roughly one
     // more poll after landing, and whether that poll's journal read fell

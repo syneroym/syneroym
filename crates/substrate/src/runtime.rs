@@ -180,20 +180,19 @@ pub struct RuntimeServices {
     #[cfg(feature = "client_gateway")]
     client_gateway: Option<ClientGateway>,
     supervisor: Option<Arc<SupervisorHandle>>,
-    /// M05A A5c §19.8/D-A5c-8: the supervisor's resident loop is spawned
-    /// (not pinned in `run_until_shutdown`'s own `select!`), so it
-    /// outlives that function's stack frame -- `shutdown` cancels the
-    /// loop's token and awaits this handle, rather than relying on a
-    /// token nothing would ever join in time. Populated by
-    /// `run_until_shutdown`, not `init`, so A5b's startup-ordering note
-    /// (the loop starts only after both composition calls have already
-    /// run) stays true.
+    /// The supervisor's resident loop is spawned (not pinned in
+    /// `run_until_shutdown`'s own `select!`), so it outlives that
+    /// function's stack frame -- `shutdown` cancels the loop's token and
+    /// awaits this handle, rather than relying on a token nothing would
+    /// ever join in time. Populated by `run_until_shutdown`, not `init`,
+    /// so the startup-ordering rule (the loop starts only after both
+    /// composition calls have already run) stays true.
     supervisor_join: Option<JoinHandle<anyhow::Result<()>>>,
-    /// The durable outbox worker's own task (M05B B1, D-B1-1), spawned and
-    /// raced the same way `supervisor_join` is. **Not** awaited in
-    /// `shutdown` (D-B1-8): the resident loop's join proves an in-flight
-    /// pass finished closing its clients, but the worker's own in-flight
-    /// deliveries are deliberately abandoned -- their visibility timeout
+    /// The durable outbox worker's own task, spawned and raced the same
+    /// way `supervisor_join` is. **Not** awaited in `shutdown`: the
+    /// resident loop's join proves an in-flight pass finished closing its
+    /// clients, but the worker's own in-flight deliveries are deliberately
+    /// abandoned -- their visibility timeout
     /// returns them to `Pending` on the next start, and waiting for a
     /// delivery against a substrate that is offline (the exact case this
     /// queue exists for) would make shutdown itself hang on the very
@@ -304,12 +303,11 @@ impl RuntimeServices {
     ) where
         F: Future<Output = ()>,
     {
-        // M05A A5c §19.8/D-A5c-8: spawned here, at the top of this
-        // function rather than in `init`, so the loop's start still comes
-        // after both composition calls -- and so it is a real
-        // `tokio::spawn`ed task by the time the `select!` below races its
-        // `JoinHandle`, not the pinned-and-dropped-on-exit future this
-        // used to be.
+        // Spawned here, at the top of this function rather than in `init`,
+        // so the loop's start still comes after both composition calls --
+        // and so it is a real `tokio::spawn`ed task by the time the
+        // `select!` below races its `JoinHandle`, not the
+        // pinned-and-dropped-on-exit future this used to be.
         self.supervisor_join = spawn_supervisor_role(&self.supervisor);
         self.queue_worker_join = spawn_queue_worker_role(&self.supervisor);
         // Spawned here rather than in `init` for the same reason the two
@@ -429,11 +427,11 @@ impl RuntimeServices {
 
         let mut connection_router_fut = pin::pin!(connection_router.run());
         let mut expiry_sweep_fut = pin::pin!(instance_cert_expiry_sweep_loop(endpoint_registry));
-        // M05A A5c §19.8/D-A5c-8: races the spawned loop's `JoinHandle`
-        // rather than pinning the loop itself -- the supervisor exiting
-        // (a task panic, or the join failing) still brings the substrate
-        // down, unchanged from before, but the loop itself now survives
-        // past this `select!` returning instead of being dropped mid-pass.
+        // Races the spawned loop's `JoinHandle` rather than pinning the
+        // loop itself -- the supervisor exiting (a task panic, or the join
+        // failing) still brings the substrate down, unchanged from before,
+        // but the loop itself now survives past this `select!` returning
+        // instead of being dropped mid-pass.
         let mut supervisor_fut = pin::pin!(async {
             match self.supervisor_join.as_mut() {
                 Some(handle) => match handle.await {
@@ -445,9 +443,9 @@ impl RuntimeServices {
                 None => pending_component().await,
             }
         });
-        // M05B B1: raced the same way `supervisor_fut` is -- a panic in the
-        // queue worker still brings the substrate down, but the task
-        // itself outlives this `select!` returning. Its ordinary exit path
+        // Raced the same way `supervisor_fut` is -- a panic in the queue
+        // worker still brings the substrate down, but the task itself
+        // outlives this `select!` returning. Its ordinary exit path
         // (cancellation) only fires from `shutdown`, at which point this
         // arm racing is moot; see `queue_worker_join`'s own doc for why
         // `shutdown` does not also await it.
@@ -506,10 +504,10 @@ impl RuntimeServices {
 
     async fn shutdown(&mut self) {
         shutdown_supervisor_role(&self.supervisor).await;
-        // M05A A5c D-A5c-8: cancelling the token above unblocks `run`'s
-        // `select!`, but only awaiting this handle proves the pass in
-        // flight, if any, actually finished closing the clients it had
-        // open -- a token alone does not wait for anything.
+        // Cancelling the token above unblocks `run`'s `select!`, but only
+        // awaiting this handle proves the pass in flight, if any, actually
+        // finished closing the clients it had open -- a token alone does
+        // not wait for anything.
         if let Some(handle) = self.supervisor_join.take() {
             match handle.await {
                 Ok(Ok(())) => {}
@@ -519,10 +517,10 @@ impl RuntimeServices {
                 }
             }
         }
-        // M05B B1, D-B1-8: `shutdown_supervisor_role` above already
-        // cancelled the token the queue worker watches too -- both loops
-        // are methods on the same `SupervisorService`, sharing one token --
-        // so the worker has already stopped ticking. Deliberately **not**
+        // `shutdown_supervisor_role` above already cancelled the token the
+        // queue worker watches too -- both loops are methods on the same
+        // `SupervisorService`, sharing one token -- so the worker has
+        // already stopped ticking. Deliberately **not**
         // awaited here, unlike `supervisor_join`: a delivery in flight
         // against an offline substrate is exactly the case this queue
         // exists for, and waiting for it here would make shutdown hang on
@@ -568,9 +566,9 @@ async fn pending_component() -> anyhow::Result<()> {
     future::pending().await
 }
 
-/// Spawns the supervisor's resident loop (M05A A5c §19.8/D-A5c-8) so it
-/// outlives `run_until_shutdown`'s own stack frame instead of being
-/// dropped mid-pass when some other component's future resolves first.
+/// Spawns the supervisor's resident loop so it outlives
+/// `run_until_shutdown`'s own stack frame instead of being dropped
+/// mid-pass when some other component's future resolves first.
 /// Not `#[cfg(feature = "supervisor")]` itself -- `supervisor` is always
 /// `None` when the cargo feature is off (`init_supervisor` refuses to
 /// build one), so this only needs its *body* gated, keeping
@@ -591,9 +589,9 @@ fn spawn_supervisor_role(
     }
 }
 
-/// Spawns the durable outbox worker (M05B B1, D-B1-1) beside the resident
-/// loop -- the same shape `spawn_supervisor_role` uses, for the same
-/// reason: it must outlive `run_until_shutdown`'s own stack frame.
+/// Spawns the durable outbox worker beside the resident loop -- the same
+/// shape `spawn_supervisor_role` uses, for the same reason: it must outlive
+/// `run_until_shutdown`'s own stack frame.
 fn spawn_queue_worker_role(
     supervisor: &Option<Arc<SupervisorHandle>>,
 ) -> Option<JoinHandle<anyhow::Result<()>>> {
@@ -613,8 +611,8 @@ fn spawn_queue_worker_role(
 /// Cancels the loop's token (`SupervisorService::shutdown`) -- the caller
 /// is responsible for then awaiting the `JoinHandle`
 /// `spawn_supervisor_role` returned, which is what actually waits for the
-/// pass in flight to finish closing its clients (M05A A5c D-A5c-8;
-/// cancelling alone does not wait for anything).
+/// pass in flight to finish closing its clients (cancelling alone does
+/// not wait for anything).
 async fn shutdown_supervisor_role(supervisor: &Option<Arc<SupervisorHandle>>) {
     #[cfg(feature = "supervisor")]
     if let Some(service) = supervisor
@@ -736,10 +734,10 @@ async fn setup_router(
         endpoint_registry
             .register(service_id.to_string(), "supervisor".to_string(), supervisor_endpoint)
             .await?;
-        // M05A A5c §19.5a/D-A5c-6: gives the supervisor's own alert
-        // publication a `messaging` endpoint to publish under -- a
-        // supervisor role is not a deployed service, so without this
-        // registration nothing resolves `SUPERVISOR_DISPATCH_ID` for the
+        // Gives the supervisor's own alert publication a `messaging`
+        // endpoint to publish under -- a supervisor role is not a deployed
+        // service, so without this registration nothing resolves
+        // `SUPERVISOR_DISPATCH_ID` for the
         // `messaging` interface at all. **Deliberately** registered under
         // the same reserved id every other supervisor verb uses: the
         // router's own subscribe path (`dispatch.rs::handle_messaging_
@@ -750,7 +748,7 @@ async fn setup_router(
         // for why. Do not "correct" that divergence back to the ordinary
         // rule: it is what keeps a caller's subscribe confined to
         // `svc/supervisor/...` on a node that hosts no deployed services
-        // of its own to share the reach with (test 26 fails if reverted).
+        // of its own to share the reach with.
         let messaging_endpoint =
             SubstrateEndpoint::NativeHostChannel { service_id: SUPERVISOR_DISPATCH_ID.to_string() };
         endpoint_registry
@@ -869,10 +867,10 @@ struct SharedNodeHandles {
     /// client, to other substrates (ADR-0021 §8) -- a second handle to the
     /// node's own key material, not a distinct identity.
     client_identity: Arc<Identity>,
-    /// M05A A5c §19.5a/D-A5c-6: the same broker `AppSandboxEngine` and
-    /// `ControlPlaneService` publish/subscribe through, so the supervisor's
-    /// alert publication shares one broker with the rest of the node
-    /// instead of standing up a second one.
+    /// The same broker `AppSandboxEngine` and `ControlPlaneService`
+    /// publish/subscribe through, so the supervisor's alert publication
+    /// shares one broker with the rest of the node instead of standing up a
+    /// second one.
     messaging_broker: Arc<MqttBroker>,
     /// The `dual_build_fixture` and `roym` roles' `NativeHostFactory` need
     /// the same blob backend and logical resolver `build_route_handler_deps`
@@ -1301,10 +1299,10 @@ async fn init_auth_service(
 const DUAL_BUILD_FIXTURE_DISPATCH_ID: &str = "dual-build-fixture";
 
 /// Links the dual-build-shim fixture's native build in as a
-/// `NativeService`, proving the shim's exit criterion 1 (built both ways
-/// from one source tree, linked into `syneroym-substrate` behind a Cargo
-/// feature) end to end. Not a deployed service: there is no undeploy path,
-/// so `NativeHostFactory::shutdown` is never called here -- dropping the
+/// `NativeService`, proving the shim works end to end: built both ways from
+/// one source tree, linked into `syneroym-substrate` behind a Cargo
+/// feature. Not a deployed service: there is no undeploy path, so
+/// `NativeHostFactory::shutdown` is never called here -- dropping the
 /// factory at process exit is the real teardown, and `SubscriptionHandle`'s
 /// own `Drop` unsubscribes.
 ///
@@ -1949,14 +1947,14 @@ async fn init_roym(
 }
 
 /// Rebuilds the in-memory `StaticInventory` from every dependency binding
-/// `EndpointRegistry` has persisted (A2, ADR-0021 §5) -- a restarted
+/// `EndpointRegistry` has persisted (ADR-0021 §5) -- a restarted
 /// substrate must answer a guest's first call, and nothing re-pushes on
 /// restart. A row that fails to parse is warned and skipped, exactly like
 /// the unparseable-`TopologyEntry`-JSON case beside it: every one of the
-/// three stored strings is caller-supplied at some point in its history
-/// (D-A2-15), so `LogicalServiceName::new` would *panic* substrate startup
-/// on a row containing a `/`, which is a strictly worse outcome than
-/// skipping that one row.
+/// three stored strings is caller-supplied at some point in its history,
+/// so `LogicalServiceName::new` would *panic* substrate startup on a row
+/// containing a `/`, which is a strictly worse outcome than skipping that
+/// one row.
 async fn replay_persisted_bindings(
     registry: &EndpointRegistry,
 ) -> anyhow::Result<Arc<StaticInventory>> {
@@ -1993,7 +1991,7 @@ async fn build_route_handler_deps(
     secret_key: [u8; 32],
 ) -> anyhow::Result<(RouteHandlerDeps, SharedNodeHandles)> {
     // Shared with `ControlPlaneService`'s native `data-layer` dispatch
-    // (`SynSvcNativeService`), which signs Slice B3's relationship-proof
+    // (`SynSvcNativeService`), which signs relationship-proof
     // records as this node's own asserter identity -- the same key material
     // `ConnectionRouter::init` (below, in the caller) separately constructs
     // its own `Identity` from for `ProxyRouter`'s `node_identity`.
@@ -2007,7 +2005,7 @@ async fn build_route_handler_deps(
         channel_capacity: config.mqtt.channel_capacity as usize,
     })?);
 
-    // A2 (ADR-0021 §2): replay persisted bindings before anything can
+    // ADR-0021 §2: replay persisted bindings before anything can
     // resolve one -- a restarted substrate must answer a guest's first
     // call, and nothing re-pushes on restart (ADR-0021 §5 -- push failure
     // is sticky, and so is push absence).
@@ -2455,8 +2453,8 @@ mod tests {
 
     use super::*;
 
-    /// Matrix row 3's observability half: a certificate within 25% of its
-    /// lifetime of expiring is flagged; one nowhere near expiry is not.
+    /// A certificate within 25% of its lifetime of expiring is flagged;
+    /// one nowhere near expiry is not.
     #[tokio::test]
     async fn a_certificate_near_expiry_is_warned_about_on_the_heartbeat_sweep() {
         let registry = EndpointRegistry::new(Arc::new(MockStorage::new())).await.unwrap();
@@ -2492,8 +2490,8 @@ mod tests {
         assert_eq!(warned, vec!["near-expiry-svc".to_string()]);
     }
 
-    /// D-A2-15: a persisted binding row that would panic `LogicalServiceName::
-    /// new` (a `/` in the dependency name) or fails to parse as JSON must be
+    /// A persisted binding row that would panic `LogicalServiceName::new`
+    /// (a `/` in the dependency name) or fails to parse as JSON must be
     /// warned and skipped, not crash substrate startup -- and a good row
     /// alongside it must still replay.
     #[tokio::test]

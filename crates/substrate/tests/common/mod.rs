@@ -172,8 +172,8 @@ impl SubstrateTestContext {
     }
 
     /// [`Self::setup`], plus a hook to mutate the `SubstrateConfig` before
-    /// the substrate boots (M06A A2) -- e.g. setting `roles.app_sandbox` to
-    /// exercise a non-default `AppSandboxRole` knob (`D-A2-11`'s
+    /// the substrate boots -- e.g. setting `roles.app_sandbox` to
+    /// exercise a non-default `AppSandboxRole` knob (such as
     /// `max_concurrent_guest_http_per_service`). Additive: `setup` above is
     /// unchanged for its existing callers.
     pub async fn setup_with(

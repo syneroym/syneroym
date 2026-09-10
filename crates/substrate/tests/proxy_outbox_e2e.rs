@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! The guest-facing durable outbox, end to end across two real substrates
-//! ([ADR-0023](../../../docs/decisions/0023-durable-async-primitives.md)
-//! §2, §4, §5).
+//! (ADR-0023 §2, §4, §5).
 //!
 //! Every *property* these two cases touch already has an in-process test in
 //! `syneroym-router`. What only an e2e can prove is the **sequence**: a
@@ -13,7 +12,7 @@
 //! Each stage is asserted through the `proxy-outbox` operator verb --
 //! queued, still queued as the *same* item after the restart, gone once
 //! delivered -- rather than inferred from a side effect. That is the
-//! correction B1's own review had to make to its equivalent test, and
+//! correction an earlier review had to make to its equivalent test, and
 //! copying its earlier shape would have reproduced the same weakness.
 //!
 //! Skips when the `proxy-test`/`greeter` wasm artifacts are absent

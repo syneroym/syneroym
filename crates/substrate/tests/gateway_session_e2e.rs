@@ -342,7 +342,7 @@ async fn poll_until_guest_ready(client: &Client, gateway_url: &str, host: &str) 
     }
 }
 
-/// Test 16: Anonymous request through gateway sees self-asserted node DID.
+/// Anonymous request through gateway sees self-asserted node DID.
 #[tokio::test]
 async fn test_16_anonymous_request_sees_self_asserted_node_did() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -370,7 +370,7 @@ async fn test_16_anonymous_request_sees_self_asserted_node_did() {
     ctx.teardown().await;
 }
 
-/// Test 17: Logged-in request via Cookie sees delegated person DID.
+/// Logged-in request via Cookie sees delegated person DID.
 #[tokio::test]
 async fn test_17_logged_in_request_via_cookie_sees_delegated_person_did() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -398,7 +398,7 @@ async fn test_17_logged_in_request_via_cookie_sees_delegated_person_did() {
     ctx.teardown().await;
 }
 
-/// Test 18: Two people on one node -> two logins, two tokens;
+/// Two people on one node -> two logins, two tokens;
 /// each /whoami and /echo returns its own DID and never the other's, never the
 /// node's.
 #[tokio::test]
@@ -486,7 +486,7 @@ async fn test_18_two_people_logged_in_each_whoami_and_echo_returns_own_did() {
     ctx.teardown().await;
 }
 
-/// Test 19: A second local process with no token while a session
+/// A second local process with no token while a session
 /// is live sees `self-asserted:<node_did>`.
 #[tokio::test]
 async fn test_19_second_local_process_without_token_while_session_live_sees_self_asserted() {
@@ -529,7 +529,7 @@ async fn test_19_second_local_process_without_token_while_session_live_sees_self
     ctx.teardown().await;
 }
 
-/// Test 20: A forged login (attacker signs with own key, claims
+/// A forged login (attacker signs with own key, claims
 /// Alice's DID) is rejected with 401 at the gateway.
 #[tokio::test]
 async fn test_20_forged_login_is_rejected_with_401() {
@@ -606,7 +606,7 @@ async fn test_20_forged_login_is_rejected_with_401() {
     ctx.teardown().await;
 }
 
-/// Test 21: Gateway session token and raw headers are forwarded untouched.
+/// Gateway session token and raw headers are forwarded untouched.
 #[tokio::test]
 async fn test_21_gateway_session_token_is_forwarded_in_proxied_headers() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -689,7 +689,7 @@ async fn test_21_gateway_session_token_is_forwarded_in_proxied_headers() {
     ctx.teardown().await;
 }
 
-/// Test 22: Cookie takes priority over Bearer when both are present.
+/// Cookie takes priority over Bearer when both are present.
 /// The session cookie determines the caller identity and both headers are
 /// forwarded untouched.
 #[tokio::test]
@@ -732,7 +732,7 @@ async fn test_22_cookie_takes_priority_over_bearer() {
     ctx.teardown().await;
 }
 
-/// Test 23: Login with no published master anchor is refused
+/// Login with no published master anchor is refused
 /// with 409 naming the anchor.
 #[tokio::test]
 async fn test_23_login_with_no_published_anchor_is_refused_with_409() {
@@ -807,7 +807,7 @@ async fn test_23_login_with_no_published_anchor_is_refused_with_409() {
     ctx.teardown().await;
 }
 
-/// Test 24: Expect: 100-continue completes over raw TCP stream.
+/// Expect: 100-continue completes over raw TCP stream.
 #[tokio::test]
 async fn test_24_expect_100_continue_handshake() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -889,7 +889,7 @@ async fn test_24_expect_100_continue_handshake() {
     ctx.teardown().await;
 }
 
-/// Test 25: Expired gateway session falls back to self-asserted node DID.
+/// Expired gateway session falls back to self-asserted node DID.
 #[tokio::test]
 async fn test_25_expired_gateway_session_falls_back_to_self_asserted_node_did() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -927,7 +927,7 @@ async fn test_25_expired_gateway_session_falls_back_to_self_asserted_node_did() 
     ctx.teardown().await;
 }
 
-/// Test 26: Substrate restart clears all in-memory sessions.
+/// Substrate restart clears all in-memory sessions.
 #[tokio::test]
 async fn test_26_restart_clears_all_sessions() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -979,7 +979,7 @@ async fn test_26_restart_clears_all_sessions() {
     ctx2.teardown().await;
 }
 
-/// Test 27: Reserved path challenge, login, whoami, logout lifecycle.
+/// Reserved path challenge, login, whoami, logout lifecycle.
 #[tokio::test]
 async fn test_27_reserved_path_challenge_login_whoami_logout_lifecycle() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -1082,7 +1082,7 @@ async fn test_27_reserved_path_challenge_login_whoami_logout_lifecycle() {
     ctx.teardown().await;
 }
 
-/// Test 28: Unknown auth endpoints return 404.
+/// Unknown auth endpoints return 404.
 #[tokio::test]
 async fn test_28_unknown_auth_endpoint_returns_404() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -1104,7 +1104,7 @@ async fn test_28_unknown_auth_endpoint_returns_404() {
     ctx.teardown().await;
 }
 
-/// Test 29: roymctl session CLI commands lifecycle.
+/// roymctl session CLI commands lifecycle.
 #[tokio::test]
 async fn test_29_roymctl_session_cli_lifecycle() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -1179,7 +1179,7 @@ async fn test_29_roymctl_session_cli_lifecycle() {
     ctx.teardown().await;
 }
 
-/// Test 30: roymctl session CLI error handling.
+/// roymctl session CLI error handling.
 #[tokio::test]
 async fn test_30_roymctl_session_cli_error_handling() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -1232,7 +1232,7 @@ async fn test_30_roymctl_session_cli_error_handling() {
     ctx.teardown().await;
 }
 
-/// Test 31: Oversized headers (>8KB) and invalid HTTP requests return HTTP 400.
+/// Oversized headers (>8KB) and invalid HTTP requests return HTTP 400.
 #[tokio::test]
 async fn test_31_oversized_and_invalid_http_requests_return_400() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -1264,7 +1264,7 @@ async fn test_31_oversized_and_invalid_http_requests_return_400() {
     ctx.teardown().await;
 }
 
-/// Test 32: Session token is refused as capability proof in chain.
+/// Session token is refused as capability proof in chain.
 #[tokio::test]
 async fn test_32_session_token_refused_as_capability_proof() {
     let auth_id = Identity::generate().unwrap();
@@ -1287,7 +1287,7 @@ async fn test_32_session_token_refused_as_capability_proof() {
     );
 }
 
-/// Test 33: Delegated key login handoff from session-key file.
+/// Delegated key login handoff from session-key file.
 #[tokio::test]
 async fn test_33_delegated_key_login_handoff_from_file() {
     let _test_lock = SUBSTRATE_TEST_LOCK.lock().await;
@@ -1331,7 +1331,7 @@ async fn test_33_delegated_key_login_handoff_from_file() {
     ctx.teardown().await;
 }
 
-/// Test 34: Revoked session token is refused and falls back to self-asserted
+/// Revoked session token is refused and falls back to self-asserted
 /// caller.
 #[tokio::test]
 async fn test_34_revoked_token_refused_at_guest_route() {
@@ -1388,7 +1388,7 @@ async fn test_34_revoked_token_refused_at_guest_route() {
     ctx.teardown().await;
 }
 
-/// Test 35: Gateway identity modes: Open, Login with connection_auth_gate,
+/// Gateway identity modes: Open, Login with connection_auth_gate,
 /// Fixed.
 #[tokio::test]
 async fn test_35_gateway_identity_modes_open_login_fixed() {

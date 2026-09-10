@@ -1,8 +1,8 @@
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
-//! M06A A1 end-to-end test: blob-backed static asset serving, driven by
+//! End-to-end test: blob-backed static asset serving, driven by
 //! hand-built raw HTTP/1.1 request/response bytes over a real Iroh QUIC
-//! bidi stream -- the same harness `http_passthrough_e2e.rs` uses for M3B
-//! Slice 7's HTTP passthrough (see that file's module doc for the pattern's
+//! bidi stream -- the same harness `http_passthrough_e2e.rs` uses for its
+//! HTTP passthrough (see that file's module doc for the pattern's
 //! rationale). Helpers are duplicated rather than shared across the two
 //! files' independent test binaries, matching this workspace's existing
 //! convention for `tests/*.rs` (`wasm_deploy_manifest`/`tcp_deploy_manifest`
@@ -195,8 +195,8 @@ fn connect_peer(app_service_id: &str, mechanisms: &[EndpointMechanism]) -> Syner
 /// file's five tests never actually overlap. If that lock is ever narrowed
 /// back to just the setup race, this delta becomes flaky the same way a
 /// missing lock would: prefer `AppSandboxEngine::instantiations()` (a
-/// per-engine, not process-global, counter -- see M06A D-A1-7) if that
-/// coupling ever needs to go away.
+/// per-engine, not process-global, counter) if that coupling ever needs to
+/// go away.
 fn counter_value(name: &str) -> u64 {
     MemoryRecorder::global()
         .expect("global MemoryRecorder must be installed by the substrate under test")
@@ -208,7 +208,7 @@ fn counter_value(name: &str) -> u64 {
 }
 
 // ---------------------------------------------------------------------
-// Exit criteria 3/4, D-A1-11, HEAD, Cache-Control
+// Index rewrite, ETag/If-None-Match, HEAD, Cache-Control
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -236,8 +236,8 @@ async fn test_static_asset_serving_index_etag_and_directory_rewrite() {
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 
-    // Exit criterion 3: GET / -> index.html, correct content type, and the
-    // sandbox is never instantiated for it.
+    // GET / -> index.html, correct content type, and the sandbox is never
+    // instantiated for it.
     let before = counter_value("substrate.wasm.instantiations_total");
     let resp = http_request(&conn, &app_service_id, "GET", "/", &[]).await;
     let after = counter_value("substrate.wasm.instantiations_total");
@@ -251,12 +251,12 @@ async fn test_static_asset_serving_index_etag_and_directory_rewrite() {
     assert_eq!(after, before, "static asset GET must not instantiate the component");
     let etag = resp.headers.get("etag").cloned().expect("index.html response must carry an ETag");
 
-    // D-A1-11: a directory index fires per-subdirectory too.
+    // A directory index fires per-subdirectory too.
     let sub = http_request(&conn, &app_service_id, "GET", "/sub/", &[]).await;
     assert_eq!(sub.status, 200);
     assert_eq!(sub.body, b"<html>sub</html>");
 
-    // D-A1-11 boundary: no trailing slash, no entry -> not index.html. This
+    // Boundary: no trailing slash, no entry -> not index.html. This
     // service declares no `http_routes` and the request isn't a POST, so it
     // falls all the way through to the JSON-RPC bridge's own 405 -- the
     // meaningful assertion is that the asset layer added no special-casing
@@ -268,7 +268,7 @@ async fn test_static_asset_serving_index_etag_and_directory_rewrite() {
     );
     assert_ne!(miss.body, b"<html>root</html>");
 
-    // Exit criterion 4: a repeat GET with If-None-Match -> 304, empty body.
+    // A repeat GET with If-None-Match -> 304, empty body.
     let cached =
         http_request(&conn, &app_service_id, "GET", "/", &[("If-None-Match", &etag)]).await;
     assert_eq!(cached.status, 304);
@@ -360,7 +360,7 @@ async fn test_static_asset_private_visibility_matches_no_bundle() {
 
     let wasm_bytes = std::fs::read(test_constants::greeter_wasm_path()).unwrap();
 
-    // D-A1-8: a non-public bundle must be byte-identical, from the outside,
+    // A non-public bundle must be byte-identical, from the outside,
     // to no bundle at all -- proven by deploying one service each way and
     // comparing their responses to the same request, rather than assuming
     // a specific status code (which depends on whatever else the service

@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Endpoint records published under the member master DID (ADR-0020 §6),
 //! proven across two genuinely independent `syneroym-substrate` instances --
-//! the mapping this slice exists to build, since nothing before it lets a
+//! the mapping this test exists to prove, since nothing else lets a
 //! dependent turn a member master DID into a network address at all.
 //!
 //! **The record is signed by the deployer's own master key, never by the
@@ -213,7 +213,7 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
          succeed",
     );
 
-    // Resolve, not just read -- the assertion this slice exists for.
+    // Resolve, not just read -- the assertion this test exists for.
     let signed = registry_client
         .lookup(&member_master_did, true)
         .await

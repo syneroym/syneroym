@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! M05A A5c phase 4 (§19.5, D-A5c-6), test 27: the `messaging` registration
-//! and the publish/subscribe string symmetry, proven live across two real
+//! The `messaging` registration and the publish/subscribe string symmetry,
+//! proven live across two real
 //! `syneroym-substrate` instances -- no unit test can prove the router's
 //! subscribe-side namespacing (`dispatch.rs::subscribe_namespaced_topic`)
 //! actually lines up with the supervisor's own publish-side namespacing
@@ -49,8 +49,7 @@ fn supervisor_role() -> SupervisorRole {
 
 /// Node-wide `orchestrator/deploy` **and** `orchestrator/status` for
 /// `grantee_did` on `node_did` -- what a supervisor needs on every substrate
-/// it manages (§13's fixture note, copied unchanged from
-/// `supervisor_interface_e2e.rs`).
+/// it manages (copied unchanged from `supervisor_interface_e2e.rs`).
 fn node_wide_supervisor_grant(
     node_owner: &Identity,
     grantee_did: &str,
@@ -135,14 +134,14 @@ fn submission(
     }])
 }
 
-/// Test 27 (§23 phase 4): an operator connects to the supervisor node's own
-/// DID, subscribes over its `messaging` native capability to the alert
-/// topic, and receives the notification the supervisor publishes when its
-/// next `status` sweep opens a `SubstrateUnreachable` alert -- proving
-/// D-A5c-6's `messaging` registration and D-A5c-6/§19.5c's publish-side
-/// namespacing rule produce the exact same topic string the router's
-/// subscribe-side fix (`dispatch.rs::subscribe_namespaced_topic`) computes,
-/// with a real broker and a real wire round trip on both ends.
+/// An operator connects to the supervisor node's own DID, subscribes over
+/// its `messaging` native capability to the alert topic, and receives the
+/// notification the supervisor publishes when its next `status` sweep opens
+/// a `SubstrateUnreachable` alert -- proving the supervisor's `messaging`
+/// registration and its publish-side namespacing rule produce the exact
+/// same topic string the router's subscribe-side fix
+/// (`dispatch.rs::subscribe_namespaced_topic`) computes, with a real broker
+/// and a real wire round trip on both ends.
 #[tokio::test]
 async fn an_operator_subscribed_to_the_alert_topic_receives_an_opened_alert() {
     let _serial_guard = common::serial_guard().await;

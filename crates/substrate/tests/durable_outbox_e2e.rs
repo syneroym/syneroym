@@ -1,12 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! M05B Slice B1's own reference scenario (task.md), end to end over two
+//! The durable-outbox reference scenario, end to end over two
 //! real `syneroym-substrate` instances: `backend` (the dependency) on
 //! `managed-a`, `frontend` (the dependent) on `managed-b`. Both plain TCP
 //! services -- this scenario is about durable *delivery* of a binding
 //! write, not about a live dependency call resolving through one, so it
-//! needs no WASM fixture (unlike M05A's own `reference_scenario_e2e.rs`).
+//! needs no WASM fixture (unlike `reference_scenario_e2e.rs`).
 //!
-//! Steps, matching task.md's reference scenario exactly:
+//! Steps:
 //!
 //! 1. Deploy, converged.
 //! 2. Stop `managed-b` (`frontend`'s host).
@@ -231,10 +231,9 @@ fn is_converged(status: &Value) -> bool {
 }
 
 /// The ids of every item this instance's outbox currently holds against
-/// `substrate_did` -- M05B B1 review finding 13: the reference scenario's
-/// own steps 4/5/7 ask to assert the item is "in the outbox"/"still
-/// queued"/"the outbox is empty", which only this verb (not `alerts` or
-/// `is_converged`) can answer directly.
+/// `substrate_did`. Steps 4/5/7 of the reference scenario assert the item
+/// is "in the outbox"/"still queued"/"the outbox is empty", which only
+/// this verb (not `alerts` or `is_converged`) can answer directly.
 async fn outbox_item_ids(supervisor_node: &SubstrateNode, substrate_did: &str) -> Vec<u64> {
     let items = supervisor_node
         .substrate_client
@@ -477,7 +476,7 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
         json!([INSTANCE_ID])
     );
 
-    // Step 7: within one worker tick (1s here; task.md's own budget is
+    // Step 7: within one worker tick (1s here; the budget is
     // "not one poll interval", 3600s in this test), convergence resumes
     // and the queue's own delivery clears the alert it raised. The
     // deadline is generous (matching step 4's) because it bounds a freshly
@@ -523,11 +522,11 @@ async fn a_permanently_unreachable_substrate_lands_in_the_dlq_and_replays() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
 
-    // Short poll interval, the same reason test 1's first boot has one: the
-    // resident loop's pass discovers the scale-out diff and enqueues the
-    // failed push. Unlike test 1, this test *wants* the low
-    // queue_max_attempts -- it asserts the item does dead-letter. The
-    // supervisor never restarts here.
+    // Short poll interval, the same reason the reference-scenario test's
+    // first boot has one: the resident loop's pass discovers the scale-out
+    // diff and enqueues the failed push. Unlike that test, this one *wants*
+    // the low queue_max_attempts -- it asserts the item does dead-letter.
+    // The supervisor never restarts here.
     let mut supervisor_node = SubstrateNode::builder()
         .owner(&supervisor_owner)
         .supervisor(supervisor_role(3, 3))
@@ -604,13 +603,13 @@ async fn a_permanently_unreachable_substrate_lands_in_the_dlq_and_replays() {
     assert!(scale_out_res.is_err(), "submit with managed-b down must surface the failure");
 
     // The test role's queue_max_attempts (3) and queue_max_backoff_secs
-    // (1) put the item in the DLQ well inside this deadline, not task.md's
-    // own ~10-hour production window (pinned separately by
+    // (1) put the item in the DLQ well inside this deadline, not the
+    // ~10-hour production window (pinned separately by
     // syneroym-async-queue's own unit tests) -- but each of those 3
     // attempts still pays a real `MANAGED_SUBSTRATE_CONNECT_TIMEOUT` (10s)
     // against a genuinely offline node, on top of the resident loop's own
     // pass first discovering the diff and enqueueing it at all. The two
-    // take turns rather than racing (D-B1-14's `instance_lock`), so a slow
+    // take turns rather than racing (the `instance_lock`), so a slow
     // pass and a slow delivery attempt do not overlap -- roughly doubling
     // the real wall-clock cost of each round relative to either alone.
     let deadline = Instant::now() + Duration::from_secs(280);
@@ -651,7 +650,7 @@ async fn a_permanently_unreachable_substrate_lands_in_the_dlq_and_replays() {
     .expect("replay failed");
 
     // managed-b is still down, so the replayed item fails again and
-    // returns to the DLQ (D-B1-7) -- with its attempt history intact, not
+    // returns to the DLQ -- with its attempt history intact, not
     // a fresh budget. Still generous, the same reason the first wait
     // above is: a real connect timeout per attempt, serialized against the
     // resident loop's own pass via `instance_lock`.

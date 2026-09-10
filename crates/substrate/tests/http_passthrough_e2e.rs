@@ -1,5 +1,5 @@
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
-//! M3B Slice 7 end-to-end test: a real substrate instance, HTTP verb/path
+//! End-to-end test: a real substrate instance, HTTP verb/path
 //! passthrough onto `data-layer`/`blob-store`/`messaging` bridged through
 //! `crates/router/src/route_handler/http.rs`, driven by hand-built raw
 //! HTTP/1.1 request/response bytes over a real Iroh QUIC bidi stream
@@ -83,8 +83,8 @@ fn wasm_deploy_manifest(
 
 /// Deploys via the raw `orchestrator/deploy` request rather than
 /// `SyneroymClient::deploy_svc_{wasm,tcp}`, which hardcode
-/// `custom_config: None` -- this slice's whole route-declaration mechanism
-/// lives inside `custom_config`.
+/// `custom_config: None` -- the whole route-declaration mechanism lives
+/// inside `custom_config`.
 async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManifest) {
     let params = serde_json::to_value((service_id.to_string(), manifest)).unwrap();
     let res =
@@ -105,8 +105,8 @@ struct HttpResponse {
 /// ambiguity in a test harness.
 ///
 /// Sets a self-asserted pubkey (a fresh ephemeral identity per stream, no
-/// delegation) so this hand-built preamble is not anonymous (M04A Slice B0,
-/// ADR-0016 §0.5) -- mirroring what `SyneroymClient::open_request_stream`
+/// delegation) so this hand-built preamble is not anonymous
+/// (ADR-0016 §0.5) -- mirroring what `SyneroymClient::open_request_stream`
 /// now does internally. Without this, every bridged native route in this
 /// file would 401.
 async fn open_http_stream(
@@ -193,7 +193,7 @@ fn parse_http_response(raw: &[u8]) -> HttpResponse {
 
 /// Reverses HTTP chunked transfer-encoding (`<hex-size>\r\n<data>\r\n...
 /// 0\r\n\r\n`) -- used for the blob `GET` response body, the only response
-/// type this slice serves without a `Content-Length`.
+/// type served here without a `Content-Length`.
 fn dechunk(mut buf: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     loop {
@@ -284,7 +284,7 @@ async fn test_signed_url_blob_get_resolves_end_to_end_and_meets_performance_budg
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 
-    // 1 MB, per task.md's performance budget row for this metric.
+    // 1 MB, the size the performance budget for this metric names.
     let content: Vec<u8> = (0..1_000_000usize).map(|i| (i % 256) as u8).collect();
     let put_resp = peer
         .request("blob-store", "put-blob", serde_json::json!({"data": content}))
@@ -311,17 +311,16 @@ async fn test_signed_url_blob_get_resolves_end_to_end_and_meets_performance_budg
     assert_eq!(response.body, content, "served blob bytes must match the uploaded content");
 
     eprintln!("HTTP GET signed-URL blob serve (1 MB): {elapsed:?}");
-    // Budget is 100ms p99 per task.md, measured against a release build.
+    // Budget is 100ms p99, measured against a release build.
     // This repo's usual margin convention is 3x for CI-runner variance,
     // but the blob GET path's chunk transfer reuses the existing
-    // `blob-store/read-chunk` native-dispatch method verbatim (decision 7
-    // of the Slice 7 plan -- no new dependency for a base64/binary
-    // encoding), whose `Vec<u8>` chunks serialize as plain JSON number
-    // arrays (~4x size inflation) rather than base64; in an unoptimized
-    // `cargo test` debug build that JSON encode/decode cost dominates far
-    // more than in release, so the margin here is widened to 10x to stay
-    // stable in CI while still catching a real order-of-magnitude
-    // regression -- see status.md for the actual measured numbers.
+    // `blob-store/read-chunk` native-dispatch method verbatim (no new
+    // dependency for a base64/binary encoding), whose `Vec<u8>` chunks
+    // serialize as plain JSON number arrays (~4x size inflation) rather
+    // than base64; in an unoptimized `cargo test` debug build that JSON
+    // encode/decode cost dominates far more than in release, so the margin
+    // here is widened to 10x to stay stable in CI while still catching a
+    // real order-of-magnitude regression.
     assert!(
         elapsed < Duration::from_millis(1000),
         "blob GET performance budget blown: {elapsed:?}"
@@ -388,12 +387,12 @@ async fn test_tampered_and_expired_signed_urls_are_rejected() {
 
 #[tokio::test]
 async fn test_signed_url_rejected_when_svc_does_not_match_connected_service() {
-    // Decision 6 (status.md): `svc` must equal the connecting service_id --
-    // a correctly-signed URL for one service's blob must not be servable
-    // over a connection scoped to a different service, even though the
-    // HMAC signature itself is valid. This is the one piece of this
-    // slice's access-control logic that previously had no test proving it
-    // actually rejects the case it was built for.
+    // `svc` must equal the connecting service_id -- a correctly-signed URL
+    // for one service's blob must not be servable over a connection scoped
+    // to a different service, even though the HMAC signature itself is
+    // valid. This is the one piece of this access-control logic that
+    // previously had no test proving it actually rejects the case it was
+    // built for.
     let _ = ring::default_provider().install_default();
     let ctx = SubstrateTestContext::setup(7916, 7917, 7918).await;
     ctx.substrate_client.inject_kek("13".repeat(32)).await.expect("inject_kek failed");
@@ -560,8 +559,8 @@ async fn test_data_layer_http_routes_error_mapping_and_fallthrough() {
     // A path with no matching route-table entry (and not `/blobs/...`)
     // falls through to the existing JSON-RPC-over-POST bridge unchanged --
     // it always returns 200 (even carrying a JSON-RPC-level error in the
-    // body), the same pre-Slice-7 behavior, proving the route table lookup
-    // didn't swallow or 404 the request.
+    // body), the same behavior as before HTTP passthrough existed, proving
+    // the route table lookup didn't swallow or 404 the request.
     let jsonrpc_body = br#"{"jsonrpc":"2.0","method":"get","params":{},"id":1}"#;
     let response = http_request(
         &conn,
@@ -607,8 +606,8 @@ async fn test_sse_receives_message_published_via_http() {
 
     let (_sse_send, mut sse_recv) = open_sse_stream(&conn, &app_service_id, "/events").await;
     // Give the subscription a moment to register with the broker before
-    // publishing -- mirrors the "warm up the path" pattern other Slice 6A/
-    // 6B e2e tests use for the same subscribe/publish race.
+    // publishing -- mirrors the "warm up the path" pattern other
+    // messaging-client e2e tests use for the same subscribe/publish race.
     time::sleep(Duration::from_millis(200)).await;
 
     let publish_body = br#"{"msg":"profiles updated"}"#;
@@ -807,7 +806,7 @@ async fn test_chunked_upload_decline_and_round_trip_meets_performance_budget() {
     );
 
     eprintln!("HTTP chunked PUT upload (1 MB via stream-sink): {elapsed:?}");
-    // Budget is 150ms p99 per task.md; asserted at 3x for CI-runner
+    // Budget is 150ms p99; asserted at 3x for CI-runner
     // headroom, matching this repo's established budget-test margin.
     assert!(
         elapsed < Duration::from_millis(450),

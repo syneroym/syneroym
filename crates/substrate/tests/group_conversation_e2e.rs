@@ -396,7 +396,7 @@ async fn three_members_converge_to_byte_identical_transcripts() {
 
     // Three membership events so far: Alice's genesis add, Bob's add, Charlie's
     // add. A vacuous comparison (three empty arrays, or three `null`s from a
-    // failed call) must not pass — this is what let the B5-05 `member_list_hash`
+    // failed call) must not pass — that is what once let a `member_list_hash`
     // regression through undetected.
     let mem_a_events = mem_a["ok"]["history"].as_array().expect("membership-history events on A");
     assert_eq!(mem_a_events.len(), 3, "A's membership history: {mem_a:?}");

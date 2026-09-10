@@ -123,9 +123,9 @@ async fn an_app_did_resolves_to_its_supervising_node_through_the_registry() {
         .to_string();
     assert!(app_did.starts_with("did:key:"), "{app_did}");
 
-    // Confirmed on `status` too (D-A7-6, already proven at unit scale) --
-    // the DID this test then resolves through the registry is the exact
-    // one the operator would read off `status`.
+    // Confirmed on `status` too (already proven at unit scale) -- the DID
+    // this test then resolves through the registry is the exact one the
+    // operator would read off `status`.
     let status = supervisor_node
         .substrate_client
         .request("supervisor", "status", json!(["tier1-resolve-inst"]))
@@ -167,8 +167,8 @@ async fn an_app_did_resolves_to_its_supervising_node_through_the_registry() {
     assert_eq!(signed.info.endpoint_type, EndpointType::Substrate);
     assert!(signed.verify().is_ok(), "a freshly published Tier-1 record must verify");
 
-    // `status`'s own expiry field (D-C-2) is populated once a publish has
-    // actually landed.
+    // `status`'s own expiry field is populated once a publish has actually
+    // landed.
     let status_after = supervisor_node
         .substrate_client
         .request("supervisor", "status", json!(["tier1-resolve-inst"]))
@@ -184,10 +184,10 @@ async fn an_app_did_resolves_to_its_supervising_node_through_the_registry() {
     managed_node.teardown().await;
 }
 
-/// Failure-matrix row 1: a Tier-1 record claiming an app DID as its
-/// `service_id` but signed by a key unrelated to it must be rejected at the
-/// registry, in the shape `master_endpoint_record_e2e.rs`'s own
-/// hand-forged-record case already uses.
+/// A Tier-1 record claiming an app DID as its `service_id` but signed by a
+/// key unrelated to it must be rejected at the registry, in the shape
+/// `master_endpoint_record_e2e.rs`'s own hand-forged-record case already
+/// uses.
 #[tokio::test]
 async fn a_forged_tier1_record_is_rejected_at_the_registry() {
     let _serial_guard = common::serial_guard().await;

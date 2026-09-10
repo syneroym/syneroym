@@ -157,10 +157,10 @@ fn two_service_manifest() -> SynAppManifest {
 
 /// Two independent (no `depends_on`) services, both placed on
 /// `BACKEND_ALIAS` and both declaring no visibility (`Visibility::Private`
-/// by default) -- test 37's shape. Same alias, deliberately: a
+/// by default). Same alias, deliberately: a
 /// cross-substrate `depends_on` onto a `private` member is refused by
-/// `validate_plan_visibility` (`D-B2-14`(a)) before a deploy is even
-/// attempted, which would prove the compiler's refusal rather than F1's
+/// `validate_plan_visibility` before a deploy is even
+/// attempted, which would prove the compiler's refusal rather than the
 /// "undeclared = unpublished" consequence this test is actually about.
 fn two_service_manifest_same_alias_private() -> SynAppManifest {
     let mut services = BTreeMap::new();
@@ -329,7 +329,7 @@ async fn boot_pair(
 /// instead of the production default, which is why it is not simply a call
 /// to `certify_placed_members` itself. The registry-record half calls the
 /// exact same [`member_registry_record`] the production function does, so
-/// the visibility -> record decision (`D-B2-7`) cannot drift between this
+/// the visibility -> record decision cannot drift between this
 /// harness and production; that decision's own direct coverage lives in
 /// `crates/sdk`'s unit tests, since it needs no network and this harness
 /// only needs its result.
@@ -513,11 +513,11 @@ async fn a_placed_members_endpoint_record_resolves_to_its_own_substrate() {
     node_b.teardown().await;
 }
 
-/// Test 37: an app deployed with no visibility declaration publishes no
+/// An app deployed with no visibility declaration publishes no
 /// member records, and a cross-node dial for one of its members fails to
-/// resolve -- `D-B2-3`'s consequence made real on the app path, not just
-/// asserted at the unit level (F1: `certify_placed_members` used to mint a
-/// record for every placed member unconditionally).
+/// resolve -- "undeclared = unpublished" made real on the app path, not
+/// just asserted at the unit level (`certify_placed_members` used to mint
+/// a record for every placed member unconditionally).
 #[tokio::test]
 async fn an_app_deployed_with_no_visibility_declaration_publishes_no_member_records() {
     let _serial_guard = common::serial_guard().await;
@@ -531,7 +531,7 @@ async fn an_app_deployed_with_no_visibility_declaration_publishes_no_member_reco
         compile(AppInstanceId::new("a3-undeclared-inst"), &manifest, &catalog).await.unwrap();
     let plan = compiled.plans.last().unwrap().clone();
     let (new_plan, masters) = mint_and_substitute_masters(&plan);
-    // Mirrors `certify_placed_members`'s own behaviour (F1/D-B2-7): a
+    // Mirrors `certify_placed_members`'s own behaviour: a
     // `private` member gets no entry in the returned map at all.
     let (instance_certs, registry_certs) = certify_and_publish(&new_plan, &masters, &clients).await;
     assert!(
@@ -817,7 +817,7 @@ async fn a_dependencys_record_resolves_through_the_dependents_own_registry() {
         .unwrap();
 
     // `frontend` (node A) resolves `backend` (node B) through node A's own
-    // configured registry -- the D-A3-17/§0.12 precondition proven directly:
+    // configured registry -- this precondition proven directly:
     // every substrate in play must share one registry namespace (or the
     // DHT), since a substrate publishes only through its own configured
     // registry and nothing on the wire reports which one that is.

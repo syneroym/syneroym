@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Saga compensations, end to end across two real substrates (ADR-0023
-//! §7, as amended).
+//! Saga compensations, end to end across two real substrates
+//! (ADR-0023 §7, as amended).
 //!
 //! Every *property* the walk touches already has an in-process test in
 //! `syneroym-router`. What only an e2e can prove is the **sequence**: a
@@ -44,7 +44,7 @@ mod retry;
 
 /// A saga must not have to wait out the production retry window for a test
 /// to see its undos land, and the sweep tick must be fast enough that a
-/// 60s-deadline saga (test 2) is picked up promptly once past it.
+/// 60s-deadline saga is picked up promptly once past it.
 fn fast_saga_role() -> AppSandboxRole {
     AppSandboxRole {
         queue_tick_secs: 1,
@@ -63,8 +63,8 @@ fn configure_saga_node(config: &mut syneroym_core::config::SubstrateConfig) {
 
 /// Injects the KEK into a node booted locked (no KEK at boot). A restart
 /// must be observable *before* the KEK is injected, which is why the
-/// reboot in test 2 boots locked and calls this only once the test has
-/// checked the locked-vault behaviour.
+/// restart test's reboot boots locked and calls this only once the test
+/// has checked the locked-vault behaviour.
 async fn unlock(node: &mut SubstrateNode) {
     // Some callers reach this right after a locked boot (no idle gap, never
     // fails), others reach it after the connection sat idle through a
