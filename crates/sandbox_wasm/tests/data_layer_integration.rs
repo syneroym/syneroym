@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! End-to-end Slice 3A integration test: deploy a WASM component that
+//! End-to-end integration test: deploy a WASM component that
 //! imports `syneroym:data-layer/store`, verify `init()` runs on first
 //! deploy, exercise CRUD through the real host functions, verify
 //! host-injected `creator-id`, then re-deploy and verify `migrate()` runs
@@ -189,9 +189,9 @@ async fn test_deploy_init_crud_creator_id_and_migrate() {
     assert_eq!(still_there, SERVICE_ID, "records from before the redeploy must survive migrate()");
 }
 
-/// D-04-02-h pin (task.md Decision Register): a deployed FDAE policy is
-/// loaded at instantiation, but a guest-originated read runs under
-/// `prepare_wasm_execution`'s synthesized `service_system` caller, which
+/// A deployed FDAE policy is loaded at instantiation, but a guest-originated
+/// read runs under `prepare_wasm_execution`'s synthesized `service_system`
+/// caller, which
 /// holds no capability the policy's `view` permission can be entitled
 /// through -- so `compile_read` falls to `deny_all()` and the guest's own
 /// `query` sees none of the seeded rows. Whoever threads real caller
@@ -272,9 +272,9 @@ async fn test_deployed_policy_yields_empty_guest_originated_query_d04_02_h() {
     );
 }
 
-/// Slice B3.5-fdae closure of D-04-02-h ingress (i): a **real** caller
-/// reaching the guest (via `execute_wasm_json`'s `caller` param, the same
-/// one `dispatch.rs`'s `JsonRpcToWasm` branch now threads from a
+/// A **real** caller reaching the guest (via `execute_wasm_json`'s `caller`
+/// param, the same one `dispatch.rs`'s `JsonRpcToWasm` branch now threads
+/// from a
 /// router-verified connection) is no longer synthesized as `service_system`
 /// inside `HostState` -- so the guest's own `query`, running as that real
 /// caller, now reaches exactly the rows the policy grants it, not zero.
@@ -400,11 +400,11 @@ async fn test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d
     // unrelated), so `limit: 7` alone would satisfy `observed == 7` under
     // *no* filtering at all -- a smaller limit here would be
     // indistinguishable from correct filtering (any non-empty result
-    // reaches the limit either way, per D-04-02-h ingress (i)'s original
-    // review finding). With ingress (i) actually closed, the sieve admits
-    // exactly the one row owned by the real caller (neither the 5 unrelated
-    // rows nor the other principal's row match `creator_uuid`), so the true
-    // count -- not a limit truncation -- is what makes `observed == 1`.
+    // reaches the limit either way). With the real-caller sieve active, it
+    // admits exactly the one row owned by the real caller (neither the 5
+    // unrelated rows nor the other principal's row match `creator_uuid`), so
+    // the true count -- not a limit truncation -- is what makes
+    // `observed == 1`.
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "run-query-scenario".to_string(),
@@ -425,7 +425,7 @@ async fn test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d
     );
 }
 
-/// Guest-originated ingress (i): the guest's own `put`
+/// Guest-originated writes: the guest's own `put`
 /// (`run-crud-scenario`'s write half) runs as whatever caller
 /// `execute_wasm_json` forwards through `HostState.caller` -- so a real
 /// caller holding `data-layer/write` on a `principal_column: "creator_id"`

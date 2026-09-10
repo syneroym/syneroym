@@ -1,24 +1,24 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
-//! Slice B4-fdae performance budget (task.md Performance Budgets row 3):
-//! the stage-4 ABAC after-step over a candidate batch. Measures
-//! `RowAuthorizer::authorize_rows` directly (not `apply_stage4`, whose own
+//! Performance budget for the stage-4 ABAC after-step over a candidate
+//! batch. Measures `RowAuthorizer::authorize_rows` directly (not
+//! `apply_stage4`, whose own
 //! overhead is a handful of `Vec` operations, dwarfed by a real WASM call)
 //! against the `abac-test` fixture's `allow_all` mode -- the cheapest
 //! possible guest logic, isolating the after-step's own fixed cost
 //! (component instantiation, WIT value marshalling) from anything a real
 //! policy's guest code might add on top.
 //!
-//! D-B4-1: each call instantiates a fresh, throw-away component instance
+//! Each call instantiates a fresh, throw-away component instance
 //! (no re-entering the live instance a host function is already running
 //! inside), so `abac_after_step_0_rows` -- a call with an empty batch, which
 //! still pays the full instantiate-and-call cost but has nothing to
 //! marshal or iterate -- is this bench's measurement of that fixed
 //! per-call floor. The 1/10/100/1000-row benchmarks show how much (or how
-//! little) scales on top of it, mirroring Slice B3 Phase 5's own finding
-//! that per-call setup dominates over row-count-proportional work.
+//! little) scales on top of it: per-call setup dominates over
+//! row-count-proportional work.
 //!
-//! Review finding B4-02/B4-15: the row-count sweep above uses a fixed
-//! ~28-byte payload per row, which is the *marshalling cost*'s binding
+//! The row-count sweep above uses a fixed ~28-byte payload per row, which
+//! is the *marshalling cost*'s binding
 //! variable (`Val::List(payload.iter().map(Val::U8)...)` expands every
 //! payload byte into its own ~40-byte `wasmtime::component::Val`), not row
 //! count. `abac_after_step_100_rows_at_*kb` holds row count fixed at 100
@@ -27,8 +27,8 @@
 //! This bench measures `RowAuthorizer::authorize_rows` directly, bypassing
 //! `apply_stage4`'s `MAX_ABAC_PAYLOAD_BYTES` cap entirely -- the
 //! `_at_16kb` point (1.6 MB total) is exactly the measurement that showed
-//! the original 16 MiB cap (review residual R4) was too generous and
-//! motivated tightening it to 1 MiB, so that point now exceeds what a real
+//! the original 16 MiB cap was too generous and motivated tightening it to
+//! 1 MiB, so that point now exceeds what a real
 //! read is allowed to reach in production, on purpose: it's here to keep
 //! demonstrating the per-byte cost, not to represent an in-budget batch.
 
@@ -152,9 +152,9 @@ fn bench_stage4_after_step(c: &mut Criterion) {
         });
     }
 
-    // Payload-size axis (review finding B4-02/B4-15): row count fixed at
-    // 100, payload size swept instead, since B4-02 identified payload
-    // bytes -- not row count -- as the actual marshalling-cost driver.
+    // Payload-size axis: row count fixed at 100, payload size swept
+    // instead, since payload bytes -- not row count -- are the actual
+    // marshalling-cost driver.
     for payload_kb in [1usize, 16] {
         let rows: Vec<CandidateRow> =
             (0..100).map(|i| candidate_row_with_payload_size(i, payload_kb * 1024)).collect();

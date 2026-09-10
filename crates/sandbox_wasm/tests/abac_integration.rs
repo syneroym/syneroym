@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Slice B4-fdae end-to-end integration tests: a real `AppSandboxEngine`
+//! End-to-end integration tests: a real `AppSandboxEngine`
 //! with the `abac-test` fixture component deployed (ADR-0017 §7), driving
-//! `HostState::store::Host` directly (ingress i) so the stage-4 after-step
+//! `HostState::store::Host` directly so the stage-4 after-step
 //! actually executes a real WASM export, not a hand-injected stub. Mirrors
 //! `lifecycle_hooks.rs`'s "construct a `HostState` by hand" pattern, with
 //! `row_authorizer` wired to the real deployed engine instead of
@@ -47,24 +47,24 @@ const SERVICE_ID: &str = "abac-test-svc";
 ///
 /// `lookup_targets` is also stage-4-gated, via an unconditionally public
 /// permission (`paths: []`, no `principal_column` needed):
-/// `stage4_nested_read_does_not_re_enter_the_after_step` (review finding
-/// B4-03) needs a nested read that reliably returns rows *today*, under the
+/// `stage4_nested_read_does_not_re_enter_the_after_step` needs a nested
+/// read that reliably returns rows *today*, under the
 /// intact `LocalReadOnly` exemption, so a regression in that exemption
 /// flips the fixture's decision and fails the test's outer assertion.
 /// `paths: []` only makes the row-level predicate unconditional; it does
-/// **not** bypass `applicable_permissions`' capability gate (review residual
-/// R1, `compile.rs::applicable_permissions`), which requires a *held
+/// **not** bypass `applicable_permissions`' capability gate
+/// (`compile.rs::applicable_permissions`), which requires a *held
 /// capability* before any permission -- public or not -- becomes
-/// applicable. `CallerContext::service_abac` is deliberately capability-less
-/// (D-B4-2), so if the exemption were ever narrowed, this nested read would
+/// applicable. `CallerContext::service_abac` is deliberately capability-less,
+/// so if the exemption were ever narrowed, this nested read would
 /// compile `deny_all()` (zero rows, deny-closed), not re-enter
 /// `authorize_rows` -- the capability gate independently blocks true
 /// recursion regardless of this exemption. See the test's own doc comment
 /// for what the test does and doesn't prove.
 ///
 /// `lookup_targets` also carries a `fields.deny` (CLS), unlike `profiles`,
-/// so `stage4_cls_mask_unions_with_the_after_step_redact_set` (review
-/// finding B4-08) has a permission combining both to assert against, which
+/// so `stage4_cls_mask_unions_with_the_after_step_redact_set` has a
+/// permission combining both to assert against, which
 /// no existing `profiles` permission does (adding `fields.deny` there would
 /// change what `stage4_redact_removes_the_named_field_before_the_guest_sees_it`
 /// asserts survives the redact).
@@ -248,8 +248,8 @@ async fn deploy_with_mode(dir: &Path, mode: &str) -> Option<Deployed> {
     // after-step's own throw-away instance gets `empty_row_authorizer()`
     // (`build_store_and_instantiate` falls back to it when `self_weak` is
     // unset), so any nested read from inside `authorize_rows` could never
-    // actually re-enter it -- silently defeating any test of D-B4-4's
-    // recursion bound (review finding B4-03).
+    // actually re-enter it -- silently defeating any test of the
+    // after-step recursion bound.
     engine.self_weak.set(Arc::downgrade(&engine)).unwrap();
 
     storage_provider.save_fdae_policy(SERVICE_ID, &abac_policy()).await.unwrap();
@@ -302,9 +302,8 @@ async fn deploy_with_mode(dir: &Path, mode: &str) -> Option<Deployed> {
 /// built. The silent-skip half is the house pattern shared by every
 /// WASM-fixture test in this workspace (`data_layer_integration.rs` and
 /// friends), kept here for local-dev convenience; the `CI` panic is
-/// deliberately narrower than that pattern (review finding B4-10) --
-/// these eight tests *are* Slice B4-fdae's security evidence
-/// (Failure/Security matrix rows 7-9), and CI is known to build this
+/// deliberately narrower than that pattern -- these tests are the
+/// stage-4 after-step's security evidence, and CI is known to build this
 /// fixture (`.github/actions/ci-build-and-test/action.yml`), so a silent
 /// skip there would mean a green run stopped proving what it claims to.
 macro_rules! skip_if_missing_artifact {
@@ -317,7 +316,7 @@ macro_rules! skip_if_missing_artifact {
     };
 }
 
-/// Row 7 (end to end, real export): the fixture's `deny_by_field` mode
+/// End to end, real export: the fixture's `deny_by_field` mode
 /// denies the row marked `classification: "secret"` -- proving the
 /// after-step's decision actually reaches a real `authorize-rows` export,
 /// not just the sieve's own filtering (both seeded rows pass the sieve;
@@ -352,10 +351,10 @@ async fn stage4_denies_rows_the_guest_rejects_for_a_real_caller() {
     );
 }
 
-/// `store::Host::get`'s stage-4 arm at ingress (i) (review finding B4-09):
-/// every other test in this file drives `query` or `check_access`, leaving
+/// `store::Host::get`'s stage-4 arm: every other test in this file drives
+/// `query` or `check_access`, leaving
 /// `get`'s own fail-closed shape (`apply_stage4`'s `Err` mapped through
-/// `map_abac_error`, per B4-04) untested end to end against a real guest
+/// `map_abac_error`) untested end to end against a real guest
 /// export. Same fixture, same seeded row, same `deny_by_field` mode as
 /// `stage4_denies_rows_the_guest_rejects_for_a_real_caller` above -- only
 /// the ingress method differs.
@@ -452,7 +451,7 @@ async fn stage4_redact_removes_the_named_field_before_the_guest_sees_it() {
 }
 
 /// The CLS-mask ∪ after-step-redact union, at both maskings' actual
-/// sources (review finding B4-08): `lookup_targets`'s `view` permission
+/// sources: `lookup_targets`'s `view` permission
 /// carries a policy `fields.deny: ["classification"]` (CLS) *and*
 /// `authorize_rows: true`, and `redact` mode additionally redacts `ssn` at
 /// runtime -- no existing test combined both on one permission, so the
@@ -491,9 +490,9 @@ async fn stage4_cls_mask_unions_with_the_after_step_redact_set() {
     }
 }
 
-/// Row 8: the `spin` mode's unbounded loop exceeds the after-step's
+/// The `spin` mode's unbounded loop exceeds the after-step's
 /// fuel/epoch budget -- `apply_stage4` maps that to a fail-closed `Err`,
-/// which the ingress maps to a distinguishable `QuotaExceeded` error (B4-04):
+/// which the ingress maps to a distinguishable `QuotaExceeded` error:
 /// resource pressure that stopped the after-step from running at all is not
 /// the same claim as "it ran and denied every row", so it is not a silent
 /// empty-but-successful page either.
@@ -523,7 +522,7 @@ async fn stage4_fuel_exhaustion_denies_the_whole_batch() {
     );
 }
 
-/// Read-only enforcement (D-B4-2): the after-step instance's own write
+/// Read-only enforcement: the after-step instance's own write
 /// attempt is hard-denied by `HostState.read_only`, regardless of what the
 /// guest decides to return -- asserted by checking storage directly, not
 /// by trusting the guest's own report of what happened.
@@ -560,12 +559,12 @@ async fn stage4_instance_cannot_write() {
 /// service's own `lookup_targets` collection (seeded by `init()`)
 /// unfiltered -- no `QueryAuth` reaches a `LocalReadOnly` caller
 /// (`resolve_query_auth`'s exemption) -- to decide every row in the batch.
-/// The recursion-bound half of this claim (review finding B4-03: the same
+/// The recursion-bound half of this claim -- the same
 /// exemption is what *stops* this nested read from re-entering
-/// `authorize_rows`) has its own dedicated test,
+/// `authorize_rows` -- has its own dedicated test,
 /// `stage4_nested_read_does_not_re_enter_the_after_step`, below -- this one
 /// only needs a single-row `get` to exist, which `lookup_targets` having no
-/// reachable sieve at all (pre-B4-03-fix) or a public one (post-fix) would
+/// reachable sieve at all, or a public one, would
 /// satisfy identically, so it can't by itself prove termination would fail
 /// under a narrowed exemption.
 #[tokio::test]
@@ -596,9 +595,7 @@ async fn stage4_lookup_sees_its_own_service_data() {
     );
 }
 
-/// D-B4-4's recursion bound (review finding B4-03) -- corrected per review
-/// residual R1, which is right that the original version of this comment
-/// named the wrong mechanism.
+/// The after-step recursion bound.
 ///
 /// **What this test actually proves.** `resolve_query_auth`'s
 /// `LocalReadOnly` exemption (`host_capabilities.rs`) makes the after-step's
@@ -619,7 +616,7 @@ async fn stage4_lookup_sees_its_own_service_data() {
 /// (`crates/fdae/src/compile.rs`), which requires the caller to hold some
 /// capability granting the operation before *any* permission, public or
 /// not, is even considered applicable. `CallerContext::service_abac` is
-/// deliberately capability-less (D-B4-2), so under a narrowed exemption the
+/// deliberately capability-less, so under a narrowed exemption the
 /// nested read would compile `deny_all()` -- zero rows, no `abac_permissions`
 /// -- rather than reaching a second `authorize_rows` call. The recursion
 /// bound is therefore doubly held today: the exemption (when intact) skips
@@ -644,7 +641,7 @@ async fn stage4_lookup_sees_its_own_service_data() {
 /// like; a regression here surfaces as a broken assertion (this test
 /// fails), not a hang -- and separately, even an actually-recursing
 /// hypothetical would be bounded by `abac_instance_permits` +
-/// `FDAE_ABAC_TIMEOUT` (review finding B4-01) rather than looping forever.
+/// `FDAE_ABAC_TIMEOUT` rather than looping forever.
 #[tokio::test]
 async fn stage4_nested_read_does_not_re_enter_the_after_step() {
     let dir = tempfile::tempdir().unwrap();
@@ -673,7 +670,7 @@ async fn stage4_nested_read_does_not_re_enter_the_after_step() {
     );
 }
 
-/// Row 7's structural guard: `bad_arity` mode returns one fewer decision
+/// A structural guard: `bad_arity` mode returns one fewer decision
 /// than rows, which `apply_stage4` must treat as a whole-batch deny.
 #[tokio::test]
 async fn stage4_bad_arity_denies_the_whole_batch() {
@@ -701,9 +698,9 @@ async fn stage4_bad_arity_denies_the_whole_batch() {
     );
 }
 
-/// `check_access` (Mode A) takes the same stage-4 substitution D-B4-3(b)
-/// specifies: it runs `get` under the point-in-time sieve and asks the
-/// after-step the same question, rather than the plain existence check.
+/// `check_access` runs the stage-4 after-step too: it performs a `get`
+/// under the point-in-time sieve and asks the after-step the same
+/// question, rather than the plain existence check.
 #[tokio::test]
 async fn stage4_check_access_runs_the_after_step_too() {
     let dir = tempfile::tempdir().unwrap();
@@ -737,7 +734,7 @@ async fn stage4_check_access_runs_the_after_step_too() {
     );
 }
 
-/// The runtime missing-export deny path (review finding B4-11). The
+/// The runtime missing-export deny path. The
 /// deploy-time gate (`orchestration.rs`'s `validate_stage4_export`) has its
 /// own tests in `control_plane::service::orchestration`, but this file --
 /// like every other low-level `sandbox_wasm` integration test -- deploys

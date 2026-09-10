@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! M3B Slice 6B integration tests (ADR-0014): `stream-cursor`
+//! Integration tests (ADR-0014): `stream-cursor`
 //! (guest-as-source) and `stream-sink` (guest-as-sink) driven end to end
 //! through `AppSandboxEngine::handle_stream_protocol_request`, bypassing the
 //! router/QUIC layer (covered separately by
@@ -476,9 +476,9 @@ async fn test_download_next_chunk_failure_aborts_stream_cleanly() {
     );
 }
 
-/// task.md's Slice 6B unit-test row: `stream-cursor.next-chunk()` round trip
-/// and `stream-sink.push-chunk()` round trip, both budgeted at < 5ms p99
-/// (same measurement style as Slice 6A's `messaging_client_e2e.rs`).
+/// `stream-cursor.next-chunk()` round trip and `stream-sink.push-chunk()`
+/// round trip, both budgeted at < 5ms p99 (same measurement style as
+/// `messaging_client_e2e.rs`).
 /// Measured indirectly via the full multi-chunk download/upload latency
 /// divided by chunk count, since the per-chunk dynamic-invocation helpers
 /// are crate-private.
@@ -527,15 +527,15 @@ async fn test_next_chunk_and_push_chunk_latency_budget() {
         "next-chunk average round-trip: {per_chunk:?} over {expected_chunks} chunks (total \
          {elapsed:?})"
     );
-    // Budget is 5ms p99 per task.md; asserted here at 3x (15ms) average for
-    // headroom against shared-CI-runner variance, consistent with Slice
-    // 6A's own budget-test margin.
+    // Budget is 5ms p99; asserted here at 3x (15ms) average for headroom
+    // against shared-CI-runner variance, consistent with the messaging
+    // budget test's own margin.
     assert!(per_chunk < Duration::from_millis(15), "next-chunk average round-trip budget blown");
 }
 
-/// task.md's failure/security test row: "a long-running stream exceeds the
-/// default single-invocation epoch deadline while still making progress ->
-/// no spurious trap" (ADR-0014 "Instance Lifetime and Quota"). The peer
+/// A long-running stream that exceeds the default single-invocation epoch
+/// deadline while still making progress must not spuriously trap (ADR-0014
+/// "Instance Lifetime and Quota"). The peer
 /// deliberately paces its reads so the *whole* download spans more than the
 /// 5-second single-call epoch budget, while no individual `next-chunk` call
 /// takes anywhere near that long -- proving the deadline is re-armed per

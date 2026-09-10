@@ -87,7 +87,7 @@ pub struct WasmResourceQuota {
 /// Distinguishes a stream request the guest cleanly declined (`Err` from
 /// `handle-stream-request`/`accept-stream-upload`, or no matching export)
 /// from one that ran to completion -- both of which were previously
-/// collapsed into the same `Ok(())` (M3B Slice 7). Callers that need to
+/// collapsed into the same `Ok(())`. Callers that need to
 /// surface a decline as a structured error (e.g. the HTTP chunked-upload
 /// bridge in `crates/router/src/route_handler/http.rs`, which maps
 /// `Declined` to HTTP 403) can now do so; the raw-QUIC-stream caller
@@ -106,7 +106,7 @@ pub enum StreamRequestOutcome {
     Declined,
 }
 
-/// How a `handle-request` call ended (M06A A2). `Err` from the enclosing
+/// How a `handle-request` call ended. `Err` from the enclosing
 /// `Result` is reserved for host-side failure; everything a *guest* can do
 /// lands in here, mirroring `StreamRequestOutcome`'s split.
 #[derive(Debug)]
@@ -121,8 +121,8 @@ pub enum GuestHttpOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GuestHttpFailure {
     /// The component does not export `handle-request`. Unreachable through
-    /// a normal deploy (`D-A2-10b` refuses it); kept because the engine
-    /// cannot assume its caller checked.
+    /// a normal deploy (deploy-time validation refuses it); kept because the
+    /// engine cannot assume its caller checked.
     NoHandler,
     /// The guest returned `Err(msg)` -- the handler failed. A guest
     /// *rejecting* a request returns `Ok` with a 4xx status instead.
@@ -134,7 +134,7 @@ pub enum GuestHttpFailure {
     Malformed(String),
     /// No instance could be obtained: the per-service admission permit
     /// timed out, or wasmtime's pool refused
-    /// (`PoolConcurrencyLimitError`). M06A D-A2-11.
+    /// (`PoolConcurrencyLimitError`).
     Unavailable(String),
 }
 
@@ -195,11 +195,11 @@ pub struct AppSandboxEngine {
     /// is gone.
     pub self_weak: OnceLock<Weak<AppSandboxEngine>>,
     /// Set once at the composition root, immediately after the engine and
-    /// the `ProxyRouter` (M04A Slice A1, `syneroym-router`) are both
+    /// the `ProxyRouter` (`syneroym-router`) are both
     /// constructed. `Weak`, not `Arc`: the proxy holds a
     /// `Weak<AppSandboxEngine>` back (its local-WASM-target dispatch path),
     /// and two strong refs would be an uncollectable cycle (the same class
-    /// that hung graceful shutdown in Slice 6B).
+    /// that once hung graceful shutdown).
     pub service_proxy: OnceLock<Weak<dyn ServiceProxy>>,
     /// The Conversation service. Same two-phase `Weak`
     /// wiring as `service_proxy`, for the same cycle reason:
@@ -212,11 +212,11 @@ pub struct AppSandboxEngine {
     /// namespaced_topic)`. Dropping an entry unsubscribes from the broker
     /// (see `SubscriptionHandle::drop`).
     pub(crate) subscriptions: DashMap<(String, String), SubscriptionHandle>,
-    /// `register-stream-protocol` (M3B Slice 6B, ADR-0014) writes into this
+    /// `register-stream-protocol` (ADR-0014) writes into this
     /// same registry the router reads from, giving restart-replay and
     /// undeploy-cleanup for free -- see ADR-0014 "Where Registration Lives".
     endpoint_registry: EndpointRegistry,
-    /// A2 (ADR-0021 §2): resolves a guest-declared dependency name to a
+    /// ADR-0021 §2: resolves a guest-declared dependency name to a
     /// member master DID, host-side. One `LogicalResolver` per substrate,
     /// shared with `ControlPlaneService`'s write side (`runtime.rs`'s
     /// composition root) -- read and write share the same cache so a
@@ -225,7 +225,7 @@ pub struct AppSandboxEngine {
     /// Per-service open-stream-instance task tracking; see `StreamRegistry`.
     stream_registry: StreamRegistry,
     max_concurrent_streams_per_service: u32,
-    /// Bounds how many M3B Slice 6B stream instances may be open across
+    /// Bounds how many stream instances may be open across
     /// *all* services at once. Each open stream holds a pooled component
     /// instance for its whole lifetime (`open_stream_instance`), competing
     /// for the same engine-wide `total_component_instances` pool
@@ -238,8 +238,8 @@ pub struct AppSandboxEngine {
     /// ordinary calls, instead of letting streams silently starve them.
     stream_instance_permits: Arc<Semaphore>,
     /// Pool slots the stage-4 ABAC after-step (`authorize_rows`) may hold
-    /// concurrently, out of `max_concurrent_instances` (review finding
-    /// B4-01). A stage-4-active read holds *two* instances at once for the
+    /// concurrently, out of `max_concurrent_instances`. A stage-4-active
+    /// read holds *two* instances at once for the
     /// after-step's duration: its own live dispatch instance (uncounted
     /// here -- it isn't gated by any semaphore today) plus this throw-away
     /// one, which nothing budgeted for before this fix. With no cap, a
@@ -250,9 +250,9 @@ pub struct AppSandboxEngine {
     /// "nothing matched". Acquiring a permit here turns that into bounded
     /// queuing instead: a caller waiting past `FDAE_ABAC_TIMEOUT` surfaces
     /// as `AbacError::BudgetExceeded`, which ingress code now maps to a
-    /// distinguishable resource-exhausted error (B4-04), never to
+    /// distinguishable resource-exhausted error, never to
     /// "authorized, zero rows". Fixed at half of
-    /// `STREAM_INSTANCE_POOL_HEADROOM` (review residual R2; see where it's
+    /// `STREAM_INSTANCE_POOL_HEADROOM` (see where it's
     /// computed in `init` for the full accounting), *not* scaled by
     /// `max_concurrent_instances`: `stream_instance_permits`' own budget
     /// formula predates this fix and is asserted exactly by an existing
@@ -265,10 +265,10 @@ pub struct AppSandboxEngine {
     abac_instance_permits: Arc<Semaphore>,
     /// Pool slots a health sweep's `rpc` probes may hold concurrently, out
     /// of the `STREAM_INSTANCE_POOL_HEADROOM` slots already reserved for
-    /// short-lived ordinary calls generally (M05A A5c §19.13/D-A5c-12,
-    /// found measuring the health-poll-cost budget). Before this, nothing
+    /// short-lived ordinary calls generally, found while measuring the
+    /// health-poll-cost budget. Before this, nothing
     /// bounded how many `rpc` probes could instantiate a component at
-    /// once: `status_impl`'s own concurrent fan-out (A4-05) sends every
+    /// once: `status_impl`'s own concurrent fan-out sends every
     /// target's probe at the same time, and once that count exceeds this
     /// engine's `total_component_instances` pool, wasmtime rejects the
     /// excess outright -- a real deploy reporting `ProbeFailing` with a
@@ -294,16 +294,16 @@ pub struct AppSandboxEngine {
     /// `AppSandboxRole::abac_max_instructions`.
     abac_max_instructions: u64,
     /// Total component instantiations this engine has performed, process-
-    /// lifetime (M06A A1, D-A1-7). Alongside the pre-existing
+    /// lifetime. Alongside the pre-existing
     /// `substrate.wasm.instantiation_ms` histogram (a duration, not a
-    /// count) -- exit criterion 3 needs an in-process value a test can read
+    /// count) -- a test needs an in-process value it can read
     /// a **delta** across (an absolute count is meaningless on its own:
     /// deploy-time lifecycle hooks instantiate the component too, so a test
     /// asserting on an absolute value would be coupled to unrelated
     /// deploy-time behaviour).
     instantiations: AtomicU64,
     /// Pool slots this node will let *guest HTTP* requests hold
-    /// concurrently, per service (M06A D-A2-11). Unlike an RPC client, one
+    /// concurrently, per service. Unlike an RPC client, one
     /// browser page issues six or more parallel requests, and exhausting
     /// wasmtime's pool is a hard `PoolConcurrencyLimitError` at
     /// instantiation rather than a wait -- so without this, a single page
@@ -360,7 +360,7 @@ impl InstanceOptions {
 const STREAM_INSTANCE_POOL_HEADROOM: u32 = 2;
 
 /// How long a guest HTTP request waits for its service's admission permit
-/// before the router answers 503 (M06A D-A2-11). Short on purpose: a
+/// before the router answers 503. Short on purpose: a
 /// browser that waited longer than this has already given the user a
 /// stalled page, and a fast, honest "busy, retry" beats a slow success.
 const GUEST_HTTP_ADMISSION_TIMEOUT: Duration = Duration::from_secs(2);
@@ -379,7 +379,7 @@ const fn ticks_for_secs(secs: u64) -> u64 {
 }
 
 /// Tracks the `substrate.wasm.active_instances` gauge for the lifetime of
-/// one guest call. Hoisted to module scope (M06A A2, call site 12a) from
+/// one guest call. Hoisted to module scope from
 /// its original home inside `execute_wasm_vals` so
 /// `handle_guest_http_request` can reuse it too -- every other
 /// guest-invoking path records this metric, and the guest HTTP path is no
@@ -397,7 +397,7 @@ impl Drop for ActiveInstanceGuard {
     }
 }
 
-/// How a `Func::call_async` failure should be read (M06A D-A2-6). One
+/// How a `Func::call_async` failure should be read. One
 /// definition, shared by `execute_wasm_vals`, `authorize_rows`, and
 /// `handle_guest_http_request` -- previously two hand-rolled, independently
 /// drifting copies of the same taxonomy, one of which had no memory-fault
@@ -549,7 +549,7 @@ impl AppSandboxEngine {
             };
         // A `0` config value builds a zero-permit semaphore: every guest
         // HTTP request then waits the full admission timeout and 503s, with
-        // nothing at startup to explain why (review finding F11). Clamp
+        // nothing at startup to explain why. Clamp
         // loudly rather than let that be silently discovered in the field.
         let max_concurrent_guest_http_per_service = if max_concurrent_guest_http_per_service == 0 {
             warn!(
@@ -560,10 +560,10 @@ impl AppSandboxEngine {
         } else {
             max_concurrent_guest_http_per_service
         };
-        // Fixed, not scaled by `max_concurrent_instances` (review residual
-        // R2 -- an earlier version scaled this and, computed independently
-        // of `stream_instance_budget`, let the two jointly oversubscribe
-        // the pool: default tier 8 + 3 against 10 slots). Each concurrent
+        // Fixed, not scaled by `max_concurrent_instances`: an earlier
+        // version scaled this and, computed independently of
+        // `stream_instance_budget`, let the two jointly oversubscribe the
+        // pool (default tier 8 + 3 against 10 slots). Each concurrent
         // after-step call holds *two* pool slots at once (itself, plus the
         // live ordinary-dispatch instance it was invoked from -- see
         // `abac_instance_permits`'s doc comment), so this reservation is
@@ -900,7 +900,7 @@ impl AppSandboxEngine {
     const AUTHORIZER_INTERFACE: &str = "syneroym:data-layer/authorizer@0.1.0";
 
     /// Total component instantiations this engine has performed,
-    /// process-lifetime (M06A A1, D-A1-7). Tests assert on a **delta**
+    /// process-lifetime. Tests assert on a **delta**
     /// measured around the request under test, never this absolute value --
     /// deploy-time lifecycle hooks instantiate the component too.
     #[must_use]
@@ -946,7 +946,7 @@ impl AppSandboxEngine {
     }
 
     /// Whether `service_id`'s compiled component exports the guest HTTP
-    /// handler (M06A A2). Cheap (static component type, no instantiation) --
+    /// handler. Cheap (static component type, no instantiation) --
     /// exactly `exports_authorize_rows`' shape and deploy-gate role.
     #[must_use]
     pub fn exports_http_handler(&self, service_id: &str) -> bool {
@@ -971,8 +971,7 @@ impl AppSandboxEngine {
     }
 
     /// Whether a compiled component is loaded for `service_id` -- the only
-    /// liveness a wasm service has, since nothing runs between calls (M05A
-    /// A4).
+    /// liveness a wasm service has, since nothing runs between calls.
     #[must_use]
     pub fn is_deployed(&self, service_id: &str) -> bool {
         self.components.contains_key(service_id)
@@ -1058,12 +1057,12 @@ impl AppSandboxEngine {
         conversions::wasm_results_to_json_string(&wasm_results)
     }
 
-    /// Typed entry point (M04A Slice A1): the guest's results as a real JSON
+    /// Typed entry point: the guest's results as a real JSON
     /// [`Value`], with no string special-case. Used by the Universal Proxy
     /// (`ProxyRouter::invoke_local`) and the inbound `JsonRpcToWasm` route.
     ///
     /// `caller`, when `Some`, becomes the invoked guest's `HostState.caller`
-    /// (D-04-02-h ingress (i)) instead of the synthesized `service_system`
+    /// instead of the synthesized `service_system`
     /// [`prepare_wasm_execution`] falls back to on `None` -- so the guest's
     /// own host-function reads see who is actually asking. `dispatch.rs`'s
     /// `JsonRpcToWasm` branch passes the router-verified caller (or `None`
@@ -1103,7 +1102,7 @@ impl AppSandboxEngine {
         conversions::wasm_results_to_json(&wasm_results)
     }
 
-    /// The `rpc` health-probe entry point (M05A A5c §19.13/D-A5c-12):
+    /// The `rpc` health-probe entry point:
     /// identical to [`Self::execute_wasm_json`] with `caller: None` (a
     /// substrate-originated probe, the same choice `ProxyRouter::
     /// invoke_local` makes for a guest-to-guest call), except bounded by
@@ -1391,7 +1390,7 @@ impl AppSandboxEngine {
     /// Helper to prepare WASM execution context and extract function
     ///
     /// `caller`, when `Some`, is the real caller this invocation carries
-    /// through into `HostState.caller` (D-04-02-h ingress (i)); `None`
+    /// through into `HostState.caller`; `None`
     /// preserves the prior synthesized-`service_system` behavior (an
     /// unauthenticated connection, or a test/dev-harness call via
     /// [`Self::execute_wasm`]).
@@ -1526,7 +1525,7 @@ impl AppSandboxEngine {
         self.subscriptions.retain(|(sid, _topic), _handle| sid != service_id);
     }
 
-    /// Aborts every open M3B Slice 6B stream task for `service_id` (called
+    /// Aborts every open stream task for `service_id` (called
     /// from `stop_wasm` and `ControlPlaneService::undeploy`, mirroring
     /// `unsubscribe_all`). `StreamRegistry`'s own `Drop` is the backstop for
     /// every other teardown path (ADR-0014).
@@ -1534,10 +1533,6 @@ impl AppSandboxEngine {
         self.stream_registry.abort_all(service_id);
     }
 
-    /// Drops `service_id`'s guest HTTP admission semaphore (M06A A2).
-    /// Called from the same undeploy path as `unsubscribe_all`; in-flight
-    /// requests keep their own `OwnedSemaphorePermit` and finish, they just
-    /// stop sharing a budget with a service that no longer exists.
     /// Drops `service_id`'s guest HTTP admission semaphore.
     /// Called from the same undeploy path as `unsubscribe_all`; in-flight
     /// requests keep their own `OwnedSemaphorePermit` and finish, they just
@@ -1912,7 +1907,7 @@ impl AppSandboxEngine {
 
     /// Simple test function to invoke test context. `run` (`wit/host/host.wit`
     /// `app::run`) is zero-arg, so `request_ctx` is not threaded through as a
-    /// JSON-RPC param (it never was: the pre-A0′ converter also dropped it,
+    /// JSON-RPC param (it never was: an earlier converter also dropped it,
     /// silently, for any zero-arg target).
     pub async fn invoke_test_context(
         &self,
@@ -1970,7 +1965,7 @@ impl AppSandboxEngine {
     }
 
     /// Evict and recompile `service_id` from the artifact `deploy_wasm`
-    /// persisted to `blobs_dir` (M05A A5a). A5's remediation half of
+    /// persisted to `blobs_dir`. The remediation half of
     /// restart-in-place: a wasm service has no process, so "restart" means
     /// dropping the cached `InstancePre` (and with it the resolved FDAE
     /// policy) and rebuilding it from disk.
@@ -2067,7 +2062,7 @@ impl AppSandboxEngine {
         Ok(())
     }
 
-    /// Opens a fresh, long-lived `Store`/`Instance` for one M3B Slice 6B
+    /// Opens a fresh, long-lived `Store`/`Instance` for one
     /// stream's lifetime (ADR-0014 "Instance Lifetime and Quota") --
     /// distinct from `build_store_and_instantiate`'s per-*call* instances,
     /// which don't outlive a single invocation. Also returns the resolved
@@ -2272,7 +2267,7 @@ impl AppSandboxEngine {
 
 /// Ceiling on how much of a guest-controlled string (a returned `err`
 /// payload, or the debug rendering of an unrecognized `Val`) is kept once it
-/// becomes an `AbacError` detail (review finding B4-06). Every `AbacError`
+/// becomes an `AbacError` detail. Every `AbacError`
 /// eventually reaches `AbacTrace::emit`'s `info!` line unbounded, so without
 /// this a guest returning a multi-megabyte error string -- or a decision
 /// list carrying row-derived data in a malformed shape -- writes it to the
@@ -2303,9 +2298,9 @@ impl RowAuthorizer for AppSandboxEngine {
     /// deny-closed.
     ///
     /// Records `substrate.fdae.abac_ms` on *every* exit path, labelled by
-    /// outcome (review finding B4-13): the un-refactored version only
+    /// outcome: the un-refactored version only
     /// recorded it after a successful `func.call_async`, so instantiation
-    /// failure (B4-01's pool-exhaustion symptom) and a missing export both
+    /// failure (the pool-exhaustion symptom) and a missing export both
     /// skipped it entirely, undercounting exactly the two failure modes an
     /// operator most needs visibility into.
     async fn authorize_rows(
@@ -2346,8 +2341,8 @@ impl AppSandboxEngine {
         ctx: &AbacAuthContext,
         rows: &[CandidateRow],
     ) -> Result<Vec<RowDecision>, AbacError> {
-        // Bounds concurrent after-step instantiation (review finding
-        // B4-01) -- see `abac_instance_permits`'s doc comment. Acquired
+        // Bounds concurrent after-step instantiation -- see
+        // `abac_instance_permits`'s doc comment. Acquired
         // before instantiating, inside `apply_stage4`'s own
         // `FDAE_ABAC_TIMEOUT` wrapper, so a long queue wait surfaces as the
         // same `AbacError::BudgetExceeded` a fuel/epoch overrun would,
@@ -2420,7 +2415,7 @@ impl AppSandboxEngine {
 
         let service = service_id.to_string();
         if let Err(e) = call_result {
-            // `classify_call_failure` (M06A D-A2-6) replaces this site's own
+            // `classify_call_failure` replaces this site's own
             // hand-rolled copy of the trap taxonomy: this site has (and had)
             // no memory-fault arm, so a memory fault still becomes `Trap`,
             // not a budget error. The classifier does not distinguish a
@@ -2428,7 +2423,7 @@ impl AppSandboxEngine {
             // so both now carry the real Wasmtime message (`err_str`)
             // instead of the pre-refactor downcast arm's fixed
             // `"exceeded its fuel budget"` -- a deliberate simplification,
-            // not a behaviour this site's callers depend on (see status.md).
+            // not a behaviour this site's callers depend on.
             let err_str = truncate_detail(e.root_cause().to_string());
             return Err(match classify_call_failure(&e) {
                 CallFailure::OutOfFuel | CallFailure::Deadline => {
@@ -2452,8 +2447,7 @@ impl AppSandboxEngine {
                 // Guest-controlled (an explicit `Err(string)`, or the debug
                 // rendering of an unrecognized `Val`) -- truncated before it
                 // becomes an `AbacError` so it can't carry an unbounded or
-                // row-derived string into `AbacTrace`'s `info!` line
-                // (review finding B4-06).
+                // row-derived string into `AbacTrace`'s `info!` line.
                 let msg = match payload.as_deref() {
                     Some(Val::String(s)) => truncate_detail(s.clone()),
                     Some(other) => truncate_detail(format!("{other:?}")),
@@ -2515,14 +2509,14 @@ impl AppSandboxEngine {
 
     /// Runs one inbound HTTP request through the guest's `handle-request`
     /// export on a fresh per-call instance, bounded by
-    /// `dispatch_epoch_ticks` (task.md's existing 5s
+    /// `dispatch_epoch_ticks` (the 5s
     /// `dispatch_epoch_timeout_secs`), the service's fuel/memory quota, and
-    /// this service's own guest-HTTP admission permit (M06A D-A2-11).
+    /// this service's own guest-HTTP admission permit.
     ///
     /// `caller` is forwarded into `HostState.caller` exactly as
     /// `execute_wasm_json` does. `None` reaches here only for a route the
     /// deploy declared `public` -- the router answers 401 otherwise, before
-    /// this function is called (D-A2-7).
+    /// this function is called.
     pub async fn handle_guest_http_request(
         &self,
         service_id: &str,
@@ -2540,7 +2534,7 @@ impl AppSandboxEngine {
              authorize_rows respectively, neither of which calls this function"
         );
 
-        // D-A2-11: bounded queuing instead of the pool's hard refusal. Per
+        // Bounded queuing instead of the pool's hard refusal. Per
         // service, so one service's traffic degrades that service.
         //
         // MUST NOT be written as `entry(..).or_insert_with(..)` followed by
@@ -3127,22 +3121,20 @@ mod tests {
     /// (`crates/router/src/route_handler/io.rs`) issues it a bare
     /// `substrate:<node_did>` grant of `substrate/admin`, which
     /// `Ability::entails` defines as covering everything on the node
-    /// (including `data-layer/admin`), and
-    /// `lifecycle_hooks.
-    /// rs::test_execute_ddl_allowed_for_admin_ucan_root_caller`
-    /// already pins that fact against a hand-built `HostState` (ADR-0015/
-    /// 0016, B0.md §11.2).
+    /// (including `data-layer/admin`), and a data-layer lifecycle-hook test
+    /// already pins that fact against a hand-built `HostState`
+    /// (ADR-0015/0016).
     ///
-    /// Before Slice B3.5-fdae, that fact was true but practically
-    /// unreachable from the wire: `prepare_wasm_execution` always
-    /// synthesized `service_system` (no capabilities at all) for any
+    /// Before the wire path forwarded the real caller, that fact was true
+    /// but practically unreachable from the wire: `prepare_wasm_execution`
+    /// always synthesized `service_system` (no capabilities at all) for any
     /// wire-dispatched call, so no admin-rooted caller's grant could ever
     /// actually arrive at `HostState.caller` outside `invoke_lifecycle_hook`
     /// (which never calls this function). Forwarding the real caller
-    /// (`dispatch.rs`'s `JsonRpcToWasm` branch, this slice) makes that
+    /// (`dispatch.rs`'s `JsonRpcToWasm` branch) makes that
     /// existing, ADR-accepted admission reachable end to end for the first
     /// time -- this test pins it through the real `prepare_wasm_execution`
-    /// wiring this slice changed, not a hand-built `HostState`, so a
+    /// wiring, not a hand-built `HostState`, so a
     /// regression in that wiring (or an accidental narrowing that
     /// contradicts the ADR) shows up here.
     #[tokio::test]
@@ -3614,13 +3606,12 @@ mod tests {
         assert!(app_engine.fdae_policies.get("svc-bad").unwrap().is_none());
     }
 
-    /// Pins `classify_call_failure`'s taxonomy (M06A D-A2-6, review finding
-    /// F3): the downcast `Trap::OutOfFuel` and the two fuel substrings both
+    /// Pins `classify_call_failure`'s taxonomy: the downcast
+    /// `Trap::OutOfFuel` and the two fuel substrings both
     /// classify as `OutOfFuel`, memory/epoch substrings classify as
-    /// expected, and an unrelated error falls through to `Other`. §8's own
-    /// exit criterion for `D-A2-6` required this test; it did not exist
-    /// before, which is how the fuel-detail regression this same finding
-    /// caught went unnoticed.
+    /// expected, and an unrelated error falls through to `Other`. Without
+    /// this test the fuel-detail regression that prompted it went
+    /// unnoticed.
     #[test]
     fn classify_call_failure_matches_taxonomy() {
         let fuel_trap = wasmtime::Error::from(Trap::OutOfFuel);

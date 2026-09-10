@@ -1,5 +1,5 @@
-//! Dynamic `Val` marshalling for the guest HTTP handler (M06A A2,
-//! `syneroym:http/incoming-handler@0.1.0`). Reuses `stream.rs`'s
+//! Dynamic `Val` marshalling for the guest HTTP handler
+//! (`syneroym:http/incoming-handler@0.1.0`). Reuses `stream.rs`'s
 //! `bytes_to_val_list`/`val_list_to_bytes` -- every guest call in this crate
 //! is already dynamic (`AppSandboxEngine::get_wasm_func` +
 //! `Func::call_async`), so a first typed (`bindgen!`) export path would be
@@ -15,8 +15,8 @@ use crate::{
     stream::{bytes_to_val_list, val_list_to_bytes},
 };
 
-/// WIT-package-qualified name of the guest HTTP handler interface (M06A
-/// A2) -- the short name alone does not resolve, same as
+/// WIT-package-qualified name of the guest HTTP handler interface --
+/// the short name alone does not resolve, same as
 /// `STREAM_TYPES_INTERFACE` and `AUTHORIZER_INTERFACE`.
 pub(crate) const HTTP_HANDLER_INTERFACE: &str = "syneroym:http/incoming-handler@0.1.0";
 

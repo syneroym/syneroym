@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Integration tests for Slice 3A's schema lifecycle-hook gating: `execute-ddl`
+//! Integration tests for schema lifecycle-hook gating: `execute-ddl`
 //! must be denied outside an `init`/`migrate` context, and deploying a
 //! component that doesn't export `init`/`migrate` at all must not error.
 
@@ -181,7 +181,7 @@ async fn test_execute_ddl_allowed_for_admin_ucan_root_caller() {
     // A caller matching `[iam].admin_ucan_root` -- represented by the
     // `substrate/admin` grant `build_caller`
     // (`crates/router/src/route_handler/io.rs`) constructs for it -- must be
-    // admitted to guest `execute-ddl` too (ADR-0015/0016, B0.md §11.2).
+    // admitted to guest `execute-ddl` too (ADR-0015/0016).
     let admin_did = "did:key:z6MkAdminRoot";
     let admin_caller = CallerContext {
         caller_did: admin_did.to_string(),
@@ -222,7 +222,7 @@ async fn test_execute_ddl_allowed_for_admin_ucan_root_caller() {
         .unwrap();
 }
 
-/// `query-raw` (Slice B5, ADR-0011) is gated identically to `execute-ddl`:
+/// `query-raw` (ADR-0011) is gated identically to `execute-ddl`:
 /// an ordinary (non-lifecycle, non-admin) caller must be denied.
 #[tokio::test]
 async fn test_query_raw_denied_for_ordinary_caller() {

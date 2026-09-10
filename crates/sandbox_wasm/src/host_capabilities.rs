@@ -278,24 +278,24 @@ pub struct HostState {
     /// [`AppSandboxEngine::execute_wasm_json_from_wire`]. The `caller`
     /// alone cannot carry this -- see the enum's own doc comment.
     pub invocation_origin: InvocationOrigin,
-    /// Compiled FDAE policy for this service, or `None` if policy-absent
-    /// (today's unfiltered behavior). Loading a real policy at instantiation
-    /// is Phase 4; Phase 3 only threads the field through.
+    /// Compiled FDAE policy for this service, loaded at instantiation by
+    /// `AppSandboxEngine::resolve_fdae_policy`, or `None` when the service
+    /// has no policy (the unfiltered default).
     pub fdae_policy: Option<Arc<Policy>>,
     pub config_generation: u64,
     pub messaging: MessagingContext,
     pub streaming: StreamContext,
-    /// Weak handle to the Universal Proxy (M04A Slice A1), letting a guest
+    /// Weak handle to the Universal Proxy, letting a guest
     /// originate a cross-service call via `syneroym:proxy/proxy::call`.
     /// `Weak`, not `Arc`: `ProxyRouter` (the only implementation) itself
     /// holds a `Weak<AppSandboxEngine>` back for local WASM targets, so two
     /// strong refs would form the same class of uncollectable cycle that
-    /// hung graceful shutdown in Slice 6B.
+    /// once hung graceful shutdown.
     pub service_proxy: Weak<dyn ServiceProxy>,
     /// Stage-4 after-step instances (`AuthLevel::LocalReadOnly`) get this
     /// set: every mutating and egress host function hard-denies. Not
     /// derivable from `caller.auth` alone -- write host paths carry no
-    /// capability gate today (D-04-02-f), so the check has to live somewhere
+    /// capability gate today, so the check has to live somewhere
     /// that isn't the capability layer.
     pub read_only: bool,
     /// Weak handle to the after-step invoker (ADR-0017 §7). `Weak`, not
@@ -429,7 +429,7 @@ impl HostState {
 
     /// Builds the `QueryAuth` for the current request from `fdae_policy` +
     /// `caller.session`, or `None` on the policy-absent path (today's
-    /// unfiltered behavior). Slice B3 Phase 4: runs `syneroym_fdae::
+    /// unfiltered behavior). Runs `syneroym_fdae::
     /// plan_read` itself (rather than letting `data_db` call the
     /// local-only `compile_read` internally), and when the policy's
     /// selected paths need a remote relationship fetch (pipeline stage 2),
@@ -463,7 +463,7 @@ impl HostState {
     /// their own service's data.
     ///
     /// **`AuthLevel::LocalReadOnly` is exempt too, for a related but
-    /// distinct reason (ADR-0017 §7, D-B4-2/D-B4-4).** It is the stage-4
+    /// distinct reason (ADR-0017 §7).** It is the stage-4
     /// after-step's own identity: the ADR is explicit that the after-step's
     /// optional lookups read this service's data unfiltered -- the service
     /// owner authored the policy and could equally have written the same
@@ -471,7 +471,7 @@ impl HostState {
     /// authority breaks most real policies. Read-only-ness comes from
     /// `HostState.read_only` (hard-denying every mutating/egress host
     /// function), not from the sieve. **This early return is also what
-    /// bounds after-step recursion (D-B4-4)**: an after-step instance's own
+    /// bounds after-step recursion**: an after-step instance's own
     /// reads carry no `QueryAuth` at all, hence no sieve, hence no
     /// `abac_permissions` to trigger a second after-step. Narrowing this
     /// exemption without replacing that bound reintroduces unbounded
@@ -827,13 +827,13 @@ fn from_candidate_row(row: CandidateRow) -> RecordReadValue {
 }
 
 /// Maps a stage-4 after-step failure to the `DataLayerError` `get`/`query`
-/// actually return (review finding B4-04). Both fail closed either way (no
+/// actually return. Both fail closed either way (no
 /// row data reaches the caller), but collapsing every `AbacError` into an
 /// empty-but-successful page made "the after-step said no" indistinguishable
 /// from "the after-step couldn't run at all" -- and the ADR-0007 "no result
 /// is a valid outcome" principle this leaned on covers authorization
 /// denials, not infrastructure failures. `Unavailable` (includes the
-/// after-step's own pool-exhaustion case, B4-01) and `BudgetExceeded` are
+/// after-step's own pool-exhaustion case) and `BudgetExceeded` are
 /// resource pressure, reported the same way `data_db`'s watchdog timeout
 /// already reports one (`QuotaExceeded`); the rest are the guest's own
 /// after-step misbehaving (a missing export, a trap, a malformed or
@@ -851,14 +851,14 @@ fn map_abac_error(e: AbacError) -> DataLayerError {
             DataLayerError::Internal(e.to_string())
         }
         // `Trap`/`Malformed` can carry guest-authored (and, for a malformed
-        // decision, potentially row-derived) text -- review residual R3:
-        // echoing it via `DataLayerError::Internal` puts it on the wire to
-        // the calling client, a channel that didn't exist before B4-04's
-        // fix (previously an after-step failure never reached the caller
-        // at all). A generic message keeps the caller-visible signal to
-        // "the after-step failed" without the detail; the detail itself
-        // still reaches `AbacTrace::emit`'s (truncated, B4-06) log line,
-        // which is the audience it's actually useful to.
+        // decision, potentially row-derived) text: echoing it via
+        // `DataLayerError::Internal` puts it on the wire to the calling
+        // client, a channel that did not exist when an after-step failure
+        // never reached the caller at all. A generic message keeps the
+        // caller-visible signal to "the after-step failed" without the
+        // detail; the detail itself still reaches `AbacTrace::emit`'s
+        // (truncated) log line, which is the audience it's actually useful
+        // to.
         AbacError::Trap { .. } => {
             DataLayerError::Internal("stage-4 after-step trapped".to_string())
         }
@@ -1075,7 +1075,7 @@ impl store::Host for HostState {
             return strip_record(record, &outcome.masked_fields).map(Some);
         }
         let candidate = to_candidate_row(&record);
-        // Fail-closed, but distinguishably (B4-04): an after-step error
+        // Fail-closed, but distinguishably: an after-step error
         // (pool exhaustion, a trap, a budget overrun) is not the same claim
         // as "the after-step ran and denied this row" -- only the latter is
         // `Ok(None)`.
@@ -1137,7 +1137,7 @@ impl store::Host for HostState {
                         .map(|(row, extra)| (from_candidate_row(row), extra))
                         .collect(),
                     // Fail-closed, but as a distinguishable error, not a
-                    // silent empty-and-successful page (B4-04): clearing
+                    // silent empty-and-successful page: clearing
                     // `next_cursor` here would make `records: []` +
                     // `next_cursor: None` read as "no more pages", which is
                     // exactly the wrong signal for an after-step that
@@ -1399,8 +1399,8 @@ fn map_proxy_error(e: RpcProxyError) -> proxy::ProxyError {
 }
 
 impl proxy::Host for HostState {
-    /// Originates a cross-service call through the Universal Proxy (M04A
-    /// Slice A1). Always constructs `CallOrigin::Guest` -- this is the only
+    /// Originates a cross-service call through the Universal Proxy.
+    /// Always constructs `CallOrigin::Guest` -- this is the only
     /// construction site a component can reach, so the proxy's guest
     /// native-capability gate (`ProxyRouter::check_native_capability_gate`)
     /// cannot be bypassed from guest code.
@@ -1489,7 +1489,7 @@ impl proxy::Host for HostState {
             }
         };
 
-        // D-04-02-h ingress (ii): a guest proxying into its **own** service's
+        // A guest proxying into its **own** service's
         // native `data-layer` forwards this invocation's real `HostState.
         // caller` (router-verified, or `service_system` if none reached
         // this guest -- see `prepare_wasm_execution`), so the receiving
@@ -1501,9 +1501,9 @@ impl proxy::Host for HostState {
         //
         // A genuine cross-service call still acts as itself: it does NOT
         // inherit the identity of whoever invoked *this* guest (no U->X
-        // delegation exists in B0's model), so a proxied call to a
+        // delegation exists in the current model), so a proxied call to a
         // *different* service cannot be used to escalate to the original
-        // caller's rights. Real cross-service caller-delegation is B1/UCAN,
+        // caller's rights. Real cross-service caller-delegation via UCAN is
         // not yet built. The self-proxy caller-forwarding rule is evaluated
         // against the *resolved* target: a component that reaches its own
         // service through a declared dependency name is still the same
@@ -1527,7 +1527,7 @@ impl proxy::Host for HostState {
         };
 
         let value = service_proxy.invoke(req).await.map_err(map_proxy_error)?;
-        // Mirrors A0's boundary convention (a string result comes back raw,
+        // Mirrors the dispatch-boundary convention (a string result comes back raw,
         // not JSON-quoted) so guest code doesn't have to strip quotes.
         Ok(match value {
             Value::String(s) => s,
@@ -1908,7 +1908,7 @@ impl blob_store::Host for HostState {
 
     async fn signed_url(&mut self, hash: String, ttl_secs: u32) -> Result<String, BlobError> {
         // Every other mutating/egress host function is hard-denied under
-        // `read_only` (review finding B4-14); a signed URL is a read in
+        // `read_only`; a signed URL is a read in
         // shape but mints a time-limited, externally redeemable URL that
         // outlives this throw-away stage-4 instance -- the same kind of
         // egress-beyond-the-call ADR-0017 §7's "local, read-only lookups
@@ -2412,7 +2412,7 @@ pub(crate) mod tests {
     /// Records the last `ProxyRequest` it was invoked with, so a test can
     /// inspect what `proxy::Host::call` actually built (in particular
     /// `caller`) without needing a real downstream service to answer.
-    /// `invoke_count` lets a test pin the "no network hop" budget (plan §7):
+    /// `invoke_count` lets a test pin the "no network hop" budget:
     /// a dependency resolution that went through the router/supervisor
     /// instead of resolving host-side, before the `ProxyRequest` exists,
     /// would still land here, but with more than the one `invoke` a single
@@ -2501,7 +2501,7 @@ pub(crate) mod tests {
     /// A queued call is delivered at least once, so one with no fence
     /// would run the target twice on the first retry. Refused before
     /// anything is resolved, written, or attempted -- and the refusal
-    /// names the missing field, so a future slice relaxing this has to
+    /// names the missing field, so a future change relaxing this has to
     /// confront the argument.
     #[tokio::test]
     async fn an_enqueue_without_an_idempotency_key_is_refused() {
@@ -2630,7 +2630,7 @@ pub(crate) mod tests {
         assert_eq!(stored.caller_service_id, "frontend");
     }
 
-    /// D-04-02-h ingress (ii)'s self-proxy forwarding (`proxy::Host::call`)
+    /// The self-proxy caller forwarding in `proxy::Host::call`
     /// is scoped to `service == self.component_id` -- a genuinely
     /// cross-service proxy call must still synthesize `service_system`, per
     /// the function's own doc comment ("does NOT inherit the identity of
@@ -2703,7 +2703,7 @@ pub(crate) mod tests {
         );
     }
 
-    // ── A2: dependency resolution through `proxy::Host::call` ──────────
+    // ── Dependency resolution through `proxy::Host::call` ──────────────
 
     fn dependency_topology_entry(members: Vec<&str>) -> syneroym_app_orchestration::TopologyEntry {
         syneroym_app_orchestration::TopologyEntry {
@@ -2778,7 +2778,7 @@ pub(crate) mod tests {
 
         let received = proxy.last_request.lock().unwrap().take().unwrap();
         assert_eq!(received.target_service, "did:key:zBackendMember");
-        // Plan §7's "no network hop" budget: dependency resolution happens
+        // The "no network hop" budget: dependency resolution happens
         // host-side, before the `ProxyRequest` is built, so one dependency
         // call must cost exactly one `invoke` -- never a second hop to ask
         // a supervisor or router to resolve it (ADR-0021 §8 forbids that
@@ -3197,12 +3197,12 @@ pub(crate) mod tests {
         assert!(matches!(result, Err(VaultError::NotFound)));
     }
 
-    // -- FDAE host wiring (M04B Slice B2 Phase 3) --------------------------
+    // -- FDAE host wiring --------------------------------------------------
     //
     // Real `QueryAuth` construction from `HostState.fdae_policy`/`caller`,
     // `check-access`, and host-side CLS field-stripping, exercised through
     // `store::Host` on a `HostState` built with a hand-injected `Policy`
-    // (`fdae_policy` stays `None` in production until Phase 4).
+    // (`fdae_policy` is `None` for a service with no stored policy).
 
     const FDAE_SERVICE_ID: &str = "svc-fdae-host-test";
 
@@ -3456,8 +3456,8 @@ pub(crate) mod tests {
     }
 
     /// CLS: a policy with `fields.deny: ["ssn"]` strips `ssn` from the
-    /// payload returned by both `get` and `query` -- the Phase-3 host-side
-    /// projection task.md's "CLS: value never returned" row was waiting on.
+    /// payload returned by both `get` and `query` -- host-side projection
+    /// means a masked value is never returned to the caller.
     #[tokio::test]
     async fn fdae_cls_strips_masked_field_from_get_and_query() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -3715,18 +3715,17 @@ pub(crate) mod tests {
         store::Host::drop_collection(&mut host, "documents".to_string()).await.unwrap();
     }
 
-    /// **D-04-02-g CLS-narrowing pin** (task.md Decision Register): the same
-    /// "an extra capability shouldn't narrow" defect that Phase 2 pinned for
-    /// RLS (`tests_fdae.rs::two_capabilities_with_conflicting_caveats_
-    /// currently_narrow_to_zero_rows`) applies to CLS `fields.deny` union
-    /// across capabilities too, and only becomes observable now that
-    /// field-stripping ships (Phase 3). Alice holds both an unrestricted
-    /// `read` capability and a second `read` capability caveated
-    /// `fields.deny: ["ssn"]` on the same resource; today's `compile_cls`
-    /// unions every entitling capability's deny-list, so even the
-    /// unrestricted grant's payload comes back stripped. If D-04-02-g is
-    /// fixed, this assertion should flip to `ssn` being **present** (the
-    /// unrestricted capability's caveat-free access should win).
+    /// **Extra-capability CLS-narrowing pin.** The same "an extra
+    /// capability shouldn't narrow" defect pinned for RLS (a caveated
+    /// second capability narrowing the result to zero rows) applies to
+    /// CLS `fields.deny` union across capabilities too. Alice holds both
+    /// an unrestricted `read` capability and a second `read` capability
+    /// caveated `fields.deny: ["ssn"]` on the same resource; today's
+    /// `compile_cls` unions every entitling capability's deny-list, so
+    /// even the unrestricted grant's payload comes back stripped. When
+    /// this defect is fixed, this assertion should flip to `ssn` being
+    /// **present** (the unrestricted capability's caveat-free access
+    /// should win).
     #[tokio::test]
     async fn fdae_d04_02_g_extra_caveated_capability_narrows_cls_strip() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -3760,7 +3759,7 @@ pub(crate) mod tests {
         );
     }
 
-    // -- Slice B3 Phase 4: cross-service relationship-proof fetch, wired
+    // -- Cross-service relationship-proof fetch, wired
     // through `HostState::resolve_query_auth` --------------------------
 
     fn fdae_remote_relation_policy(expected_asserter_did: &str) -> Policy {
