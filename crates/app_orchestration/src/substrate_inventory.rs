@@ -202,8 +202,8 @@ mod tests {
         assert!(err.to_string().contains("did:key:"));
     }
 
-    /// D-A3-2 ("never a bare DID") is a `SubstrateAlias` newtype invariant,
-    /// and the inventory parses aliases as `BTreeMap` keys -- a different
+    /// "Never a bare DID" is a `SubstrateAlias` newtype invariant, and the
+    /// inventory parses aliases as `BTreeMap` keys -- a different
     /// serde path than the manifest's `PlacementSelector` value, which is
     /// what every other rejection test here exercises. This pins that the
     /// validator still runs on the map-key path.

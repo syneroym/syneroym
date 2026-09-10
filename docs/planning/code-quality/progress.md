@@ -62,7 +62,7 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/sandbox_wasm` | 90 | 16 | 3 | 6 | done | | |
 | `crates/core` | 75 | 37 | 3 | 0 | done | | |
 | `apps/roymctl` | 69 | 37 | 4 | 9 | done | | |
-| `crates/app_orchestration` | 49 | 22 | 2 | 2 | | | |
+| `crates/app_orchestration` | 49 | 22 | 2 | 2 | done | | |
 | `crates/async_queue` | 34 | 12 | 2 | 0 | | | |
 | `crates/data_db` | 34 | 9 | 4 | 0 | | | |
 | `crates/fdae` | 27 | 5 | 2 | 1 | | | |

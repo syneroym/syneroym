@@ -1,11 +1,12 @@
 //! Alerts raised by a health sweep, and their active/cleared lifecycle.
 //!
 //! Deliberately its own store rather than more tables on `DeploymentJournal`:
-//! A4's sweep is an operator-local process writing beside `deployments.db`,
-//! while A5's supervisor is a substrate role with its own database, and a
-//! substrate cannot open a client-side file. What carries across is this
-//! schema, these types, and `sdk::health::record_report`'s folding logic --
-//! A5 changes only the `Connection` handed to `AlertStore::open`.
+//! the health sweep is an operator-local process writing beside
+//! `deployments.db`, while the supervisor is a substrate role with its own
+//! database, and a substrate cannot open a client-side file. What carries
+//! across is this schema, these types, and `sdk::health::record_report`'s
+//! folding logic -- the supervisor changes only the `Connection` handed to
+//! `AlertStore::open`.
 
 use std::{
     fmt,
@@ -22,13 +23,13 @@ use serde::{Deserialize, Serialize};
 use crate::models::AppInstanceId;
 
 /// Why an alert was raised. One variant per distinct signal, because
-/// remediation differs per signal (task.md A4) -- collapsing them would
-/// erase the distinction A4 exists to establish.
+/// remediation differs per signal -- collapsing them would erase a
+/// distinction the health sweep needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AlertKind {
     /// The substrate itself did not answer. Raised once per substrate, never
-    /// per service (D-A4-13).
+    /// per service.
     SubstrateUnreachable,
     /// The substrate answered and says the instance is down or absent.
     InstanceNotRunning,
@@ -39,37 +40,34 @@ pub enum AlertKind {
     /// expiring.
     CertificateNearExpiry,
     /// The installed instance certificate's validity window has already
-    /// ended -- a current outage (failure-matrix rows 1/3 under the
-    /// attended posture), not a renewal reminder (A4-04).
+    /// ended -- a current outage, not a renewal reminder.
     CertificateExpired,
     /// A managed substrate reports a held generation higher than this
-    /// supervisor's own (ADR-0021 §4, failure-matrix row 9): another
+    /// supervisor's own (ADR-0021 §4): another
     /// supervisor has adopted the instance. This supervisor stops managing
     /// it rather than bumping its own generation to match.
     SupervisorSuperseded,
     /// Bounded restart-in-place exhausted `max_restart_attempts` without the
-    /// service becoming healthy (M05A A5c, failure-matrix row 13). Terminal:
-    /// the service is not restarted again until `force-reconcile` or `adopt`
-    /// clears it (D-A5c-20).
+    /// service becoming healthy. Terminal: the service is not restarted again
+    /// until `force-reconcile` or `adopt` clears it.
     RemediationExhausted,
     /// A binding write landed at the current epoch with different content
     /// than the substrate already held -- the two-writer signal ADR-0021 §3
-    /// requires be reported distinctly from a stale rejection (M05A A5c,
-    /// D-A5c-4/D-A5c-19).
+    /// requires be reported distinctly from a stale rejection.
     BindingConflict,
     /// A re-submit or `force-reconcile` tried to move a service to a
     /// different substrate than where it is already landed. Refused, not
-    /// retried -- relocation is a milestone non-goal (M05A A5c, D-A5c-1).
+    /// retried -- relocation is a non-goal.
     PlacementChangeRefused,
     /// A service the stored plan no longer names, but that the loop found
     /// still running -- dropped by a plan-level edit rather than by the
-    /// operator. Not undeployed (D-A5c-3): undeploying a stateful service
+    /// operator. Not undeployed: undeploying a stateful service
     /// because a manifest was edited is destructive, so this is a standing
     /// alert instead.
     OrphanedService,
     /// The supervisor's own vault holds no KEK, so it cannot read the
-    /// member master this service's certificate must be reissued from
-    /// (M05A A5d). The ordinary state of a freshly-booted supervisor,
+    /// member master this service's certificate must be reissued from.
+    /// The ordinary state of a freshly-booted supervisor,
     /// since the KEK arrives by `security.inject-kek` and does not survive
     /// a restart -- and, once renewal is automated, the single thing
     /// standing between a routine restart and every managed member's
@@ -79,7 +77,7 @@ pub enum AlertKind {
     VaultLocked,
     /// An operator revoked this placement's instance key, so nothing
     /// reinstalls or re-certifies it -- not the resident loop, not
-    /// `submit`, not `force-reconcile` (M05A A5d). Distinct from
+    /// `submit`, not `force-reconcile`. Distinct from
     /// `OrphanedService`: that one is a plan edit the supervisor declined
     /// to act on, this one is an operator decision it is actively
     /// enforcing.
@@ -90,8 +88,8 @@ pub enum AlertKind {
     /// alert kind that survives a healthy renewal -- cleared only once the
     /// restart itself succeeds, not by the certificate window closing.
     RotationRestartPending,
-    /// A queued binding write exhausted its delivery attempt budget
-    /// (M05B B1, D-B1-6). One standing row per `(instance, logical_ref,
+    /// A queued binding write exhausted its delivery attempt budget.
+    /// One standing row per `(instance, logical_ref,
     /// substrate)` with the current dead-letter count in `detail`,
     /// refreshed as more accumulate -- `AlertStore`'s unique index cannot
     /// express one row per item, and an operator wants the standing fact
@@ -184,8 +182,8 @@ pub struct AlertRecord {
     pub cleared_at: Option<i64>,
 }
 
-/// `conn: Arc<Mutex<Connection>>` (M05A A5b, D-A5-8) -- see
-/// `DeploymentJournal`'s identical field doc for why.
+/// `conn: Arc<Mutex<Connection>>` -- see `DeploymentJournal`'s identical
+/// field doc for why.
 #[derive(Debug, Clone)]
 pub struct AlertStore {
     conn: Arc<Mutex<Connection>>,
@@ -443,8 +441,8 @@ mod tests {
         assert_eq!(store.active(&inst).unwrap().len(), 1);
     }
 
-    /// M05A A5c §19.6: `AlertKind` has a `Display` and a `FromStr`, and a
-    /// variant added to one and not the other makes its own stored rows
+    /// `AlertKind` has a `Display` and a `FromStr`, and a variant added to
+    /// one and not the other makes its own stored rows
     /// unreadable at the next `alerts` call with no compile error. Every
     /// variant, named explicitly rather than derived, so a future addition
     /// here must also be added to this list.

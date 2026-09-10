@@ -49,8 +49,7 @@ pub struct TopologyDocument {
     /// role `generation` plays on the Tier-1 record (ADR-0022 §2).
     pub generation: u64,
     pub issued_at: u64,
-    /// Unix seconds. A cached copy routes until this and then fails
-    /// (failure-matrix row 6).
+    /// Unix seconds. A cached copy routes until this and then fails.
     pub not_after: u64,
     /// How long the signer suggests a reader holds this before re-asking.
     /// Advice, not authority -- `not_after` is the authority, and a reader
@@ -139,8 +138,8 @@ impl SignedTopologyDocument {
 /// Verify, convert, and register in one call -- the whole client-side path
 /// ADR-0022 §3 describes, minus the fetch.
 ///
-/// Verification happens here, once per fetch, and never on the resolve path
-/// (task.md's own budget: "Verify on register, not on read").
+/// Verification happens here, once per fetch, and never on the resolve path:
+/// verify on register, not on read.
 pub fn register_verified(
     resolver: &LogicalResolver,
     signed: &SignedTopologyDocument,

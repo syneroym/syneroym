@@ -11,8 +11,8 @@ use crate::{
 pub enum ReconcileAction {
     /// Add a new member
     Add(Box<PlannedService>),
-    /// Remove an existing member, named by its own `MemberRef` (M05A A5e,
-    /// D-A5e-2) -- what makes scale-*down* representable at all: dropping
+    /// Remove an existing member, named by its own `MemberRef` -- what makes
+    /// scale-*down* representable at all: dropping
     /// one member of a scaled service must name which member, not just
     /// which logical service it belongs to.
     Remove(MemberRef),
@@ -54,9 +54,9 @@ impl<'a> Reconciler<'a> {
 
     pub fn recover_applying(&self, instance_id: &AppInstanceId) -> Result<Option<ReconcilePlan>> {
         let latest = self.journal.get_latest(instance_id)?;
-        // D-A3-18: `Degraded` is the resting state of every partially-failed
-        // deploy, so leaving this gated on `Applying` alone would make recovery
-        // go blind on exactly the state A3 introduces.
+        // `Degraded` is the resting state of every partially-failed deploy, so
+        // leaving this gated on `Applying` alone would make recovery go blind
+        // on exactly that state.
         if let Some(record) = latest
             && matches!(record.state, DeploymentState::Applying | DeploymentState::Degraded)
         {
@@ -76,7 +76,7 @@ impl<'a> Reconciler<'a> {
                         ("UPDATE", new.member_ref().to_string(), new.substrate.as_ref())
                     }
                 };
-                // D-A3-11: this path has no inventory, so it compares on the
+                // This path has no inventory, so it compares on the
                 // alias rather than the resolved DID -- a diagnostic for
                 // `app reconcile`, not the resume path `apply_plan` itself uses.
                 !completed.iter().any(|c| {
