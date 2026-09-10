@@ -10,7 +10,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Upper bound on a frame's declared length, checked before allocating a
 /// buffer for it. `read_frame` is reachable pre-authentication (e.g. the
-/// M3B Slice 6B stream preamble's initial payload, read before any capacity
+/// stream preamble's initial payload, read before any capacity
 /// check or WASM instantiation), so an attacker-controlled `u32` length
 /// prefix must never drive an unbounded allocation. Framed payloads here
 /// are always small control-plane/RPC messages or stream-open metadata --

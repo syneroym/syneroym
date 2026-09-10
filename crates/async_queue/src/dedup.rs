@@ -1,7 +1,7 @@
 //! Receiver-side call deduplication: the fence that makes at-least-once
 //! delivery safe for a caller that has none of its own
-//! ([ADR-0023](../../../docs/decisions/0023-durable-async-primitives.md)
-//! §1, §4).
+//! ([ADR-0023](../../../docs/decisions/0023-durable-async-primitives.md),
+//! sections 1 and 4).
 //!
 //! A sender that retries -- because its attempt timed out, because its
 //! durable outbox came back to the item, or because an operator replayed a

@@ -1,11 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
-//! FDAE pushdown query performance budget (M04B, task.md's Performance
-//! Budgets table): "100 records, single-hop ReBAC" `query` (Mode B) end to
-//! end through the real `ServiceStore` -- policy compilation + the merged
-//! `WHERE EXISTS` SQL, executed against real SQLite -- must stay under
-//! 25 ms p99 (M3A's unauthenticated 20 ms baseline + 5 ms for policy
-//! compilation). `criterion`'s own report (mean/p99 in
-//! `target/criterion/fdae_pushdown_query/single_hop_100_records/report/
+//! FDAE pushdown query performance budget: "100 records, single-hop
+//! ReBAC" `query` (Mode B) end to end through the real `ServiceStore` --
+//! policy compilation + the merged `WHERE EXISTS` SQL, executed against
+//! real SQLite -- must stay under 25 ms p99 (the unauthenticated 20 ms
+//! baseline + 5 ms for policy compilation). `criterion`'s own report (mean/p99
+//! in `target/criterion/fdae_pushdown_query/single_hop_100_records/report/
 //! index.html`, or `cargo xtask perf-summary`'s `PERF_SUMMARY.md` append) is
 //! the source of truth for the budget, per this workspace's convention
 //! (`security_config_bench.rs`'s SQLCipher A/B comparison uses the same
@@ -36,7 +35,7 @@ fn write_value(id: &str, json: &str) -> RecordWriteValue {
 }
 
 /// `document` --creator--> `user` (principal_column `did`); `view` reachable
-/// only via the creator relation -- the plan's "single-hop ReBAC" shape.
+/// only via the creator relation -- the "single-hop ReBAC" shape.
 fn single_hop_policy() -> Policy {
     parse_and_validate(
         r#"{
@@ -196,10 +195,10 @@ fn write_session(subject_did: &str) -> SessionContext {
 
 /// The per-mutation `EXISTS` check (2 per row for
 /// `patch`/`put`-update, 1 for `delete`) an authorized write pays that an
-/// unauthorized (`auth: None`) one does not -- claim to establish per
-/// task.md's Performance Budgets table: it must not dominate write latency.
-/// `patch` alone and a 50-mutation `batch_mutate` (all of alice's own,
-/// even-numbered seeded rows), each against the unauthorized baseline.
+/// unauthorized (`auth: None`) one does not -- it must not dominate write
+/// latency. Benched via `patch` alone and a 50-mutation `batch_mutate` (all
+/// of alice's own, even-numbered seeded rows), each against the unauthorized
+/// baseline.
 fn bench_fdae_authorized_writes(c: &mut Criterion) {
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
     let temp_dir = tempfile::tempdir().unwrap();

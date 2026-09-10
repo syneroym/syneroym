@@ -1,15 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! `LogicalResolver::resolve`'s "no network hop" budget (M05A A2/A5e,
-//! D-A5e-13): the name -> master-DID step must stay an in-process cache
-//! lookup. The backlog row this resolves named `crates/router/benches/
-//! proxy.rs` as the bench's home, which does not fit -- `ProxyRouter` has
-//! no dependency target at all; `CallTarget::Dependency` is resolved in the
-//! WASM host capability, before a `ProxyRequest` ever exists (`empty_
-//! resolver()` is what that bench's router uses). This is `resolve`'s own
-//! home instead, over the three cases the budget's wording and A5e's
-//! `replicas` between them actually name: a cache hit, a cache miss that
-//! goes through the registry, and a two-member `Redundant` round-robin
-//! (the first slice to make that mode real).
+//! `LogicalResolver::resolve`'s "no network hop" budget: the name -> master-DID
+//! step must stay an in-process cache lookup. This bench lives here rather than
+//! with the router proxy bench because `ProxyRouter` has no dependency target
+//! at all -- `CallTarget::Dependency` is resolved in the WASM host capability,
+//! before a `ProxyRequest` ever exists (`empty_resolver()` is what that bench's
+//! router uses). It covers the three cases the budget names: a cache hit, a
+//! cache miss that goes through the registry, and a two-member `Redundant`
+//! round-robin.
 
 use std::sync::Arc;
 
@@ -71,8 +68,8 @@ fn bench_cache_miss_through_registry(c: &mut Criterion) {
     });
 }
 
-/// M05A A5e: the first slice where a `Redundant` topology is real
-/// (`replicas > 1`). Unkeyed resolution round-robins in-process
+/// A `Redundant` topology (`replicas > 1`). Unkeyed resolution round-robins
+/// in-process
 /// (`ResolvedTopology::rr_counter`) -- still no network hop, just an
 /// atomic increment on top of the cache-hit path above.
 fn bench_two_member_redundant_round_robin(c: &mut Criterion) {

@@ -49,7 +49,7 @@ pub struct Definition {
     /// within the policy.
     #[serde(default)]
     pub default: Option<String>,
-    /// B3 D-B3-3: opts this definition into structural cross-service
+    /// Opts this definition into structural cross-service
     /// relationship resolution -- a remote node's `resolve-relation`
     /// answering "which rows does `principal` reach" via a bare
     /// `principal_column` match, gated only by the requesting anchor's
@@ -73,15 +73,15 @@ pub struct Relation {
     pub target: String,
     /// Remote relation (ADR-0017 §1/§6): a logical service name resolved via
     /// the app-context registry, fetched over the Universal Proxy at query
-    /// time (B3 pipeline stage 2, `compile::plan_read`). Requires
+    /// time by `compile::plan_read`. Requires
     /// `join_column` too, exactly like a local join -- it names which local
     /// column is checked (`IN (...)`) against the remote's returned id-set,
     /// since there is no local `target` table to `EXISTS`-join through.
     #[serde(default)]
     pub service: Option<String>,
-    /// Required alongside `service` (D-B3-8, Slice B3 Phase 4): the DID a
-    /// fetched `RelationshipProof` for this relation must be signed by. Not
-    /// derived -- `Identity::derive_service_identity` is a node-private
+    /// Required alongside `service`: the DID a fetched `RelationshipProof`
+    /// for this relation must be signed by. Not derived --
+    /// `Identity::derive_service_identity` is a node-private
     /// derivation (keyed on that node's own secret key), so a different
     /// node can never independently reproduce it. The policy author instead
     /// declares an explicit, auditable trust anchor, same category as
@@ -131,7 +131,7 @@ pub struct Permission {
     /// admit a row this permission's `paths:` did not reach.
     ///
     /// **The opt-in is per permission, but its effect is call-scoped, not
-    /// row-scoped (review finding B4-05).** A definition's applicable
+    /// row-scoped.** A definition's applicable
     /// permissions OR into one compiled `where_clause`; if *any* applicable
     /// permission on this definition opts in, every row the combined clause
     /// admits is judged by the after-step, including rows a *different*
@@ -297,8 +297,8 @@ fn validate_relation_shape(
     let is_recursive_shape = rel.from_key.is_some() || rel.to_key.is_some();
     let is_remote = rel.service.is_some();
     // A join-based hop (local or remote) and a recursive self-join are the
-    // only two shapes -- `join_column` and `service` may coexist (B3:
-    // `join_column` names the *local* column checked against the remote
+    // only two shapes -- `join_column` and `service` may coexist
+    // (`join_column` names the *local* column checked against the remote
     // fetch's returned id-set, exactly the role it plays for a local
     // relation's `EXISTS (SELECT ... FROM target_table)`), but neither may
     // combine with `recursive`.
@@ -364,7 +364,7 @@ fn validate_permissions(
             }
         }
         // `fields.allow` is accepted by the schema/model but not enforced
-        // by this slice's compiler (CLS only derives masked_fields from
+        // by the compiler (CLS only derives masked_fields from
         // `deny`-list entries -- an allow-list can't be reduced to a
         // field-name-to-strip list without knowing a record's full key
         // set). Silently ignoring it would give the policy author the
@@ -711,7 +711,7 @@ mod tests {
         assert!(matches!(err, PolicyError::Semantic(_)));
     }
 
-    /// B3-04: a `caller` terminal on a path whose last hop is remote is a
+    /// A `caller` terminal on a path whose last hop is remote is a
     /// parse-time error, not a silent substitution of `anchor` --
     /// `compile::emit_remote_terminal` unconditionally binds the anchor
     /// regardless of the declared terminal word, so accepting `caller` here

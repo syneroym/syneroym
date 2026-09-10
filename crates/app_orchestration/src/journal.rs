@@ -18,10 +18,9 @@ pub enum DeploymentState {
     Planned,
     Applying,
     Active,
-    /// Some services applied and some did not. No rollback (ADR-0021 §5 /
-    /// task.md non-goals): rolling back a stateful service is itself
-    /// destructive, so the deployment stays here until a re-run completes
-    /// the missing actions.
+    /// Some services applied and some did not. No rollback (ADR-0021 §5):
+    /// rolling back a stateful service is itself destructive, so the
+    /// deployment stays here until a re-run completes the missing actions.
     Degraded,
     RollingBack,
     RolledBack,
@@ -76,11 +75,11 @@ pub struct ActionRecord {
     pub substrate_did: String,
 }
 
-/// No `Pending` variant (M05A A5c §24): nothing in this tree ever wrote one
-/// -- `apply_plan` (`sdk/src/deploy.rs`) writes `InProgress` directly for
-/// each action since nothing enqueues work ahead of applying it, and the
-/// resident loop's own filtered plan (D-A5c-2) is applied the same way.
-/// Removed rather than left as a variant no writer will ever populate.
+/// No `Pending` variant: nothing in this tree ever wrote one -- `apply_plan`
+/// (`sdk/src/deploy.rs`) writes `InProgress` directly for each action since
+/// nothing enqueues work ahead of applying it, and the resident loop's own
+/// filtered plan is applied the same way. Removed rather than left as a
+/// variant no writer will ever populate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ActionState {
@@ -113,8 +112,8 @@ impl FromStr for ActionState {
     }
 }
 
-/// `conn: Arc<Mutex<Connection>>`, not a bare `Connection` (M05A A5b,
-/// D-A5-8): `rusqlite::Connection` is `Send` but not `Sync`, so a reference
+/// `conn: Arc<Mutex<Connection>>`, not a bare `Connection`:
+/// `rusqlite::Connection` is `Send` but not `Sync`, so a reference
 /// held across an `.await` point makes the enclosing future non-`Send` --
 /// harmless while every caller blocks on it, fatal for a `tokio::spawn`ed
 /// supervisor loop. `std::sync::Mutex`, not a tokio one: every statement is
@@ -581,7 +580,7 @@ mod tests {
         assert_eq!(completed[0].logical_ref, "inst-1/echo");
     }
 
-    /// D-A5-8: both stores must be `Send + Sync` as a whole, not merely
+    /// Both stores must be `Send + Sync` as a whole, not merely
     /// individually lockable -- a supervisor holds them as fields of a type
     /// that itself must be `Send + Sync` (`NativeService`'s bound).
     #[test]

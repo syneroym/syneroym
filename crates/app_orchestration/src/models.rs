@@ -105,8 +105,8 @@ define_string_wrapper!(
         if s.contains('/') {
             return Err(anyhow!("AppInstanceId cannot contain '/'"));
         }
-        // M05A A5e (D-A5e-2/D-A5e-12): `#` is `MemberRef`'s own index
-        // separator. Forbidding it here, on the instance-id half of the
+        // `#` is `MemberRef`'s own index separator. Forbidding it here, on
+        // the instance-id half of the
         // boundary it splits on, is what closes the pre-existing
         // `member_master_name` collision between instance `a` + service
         // `b-c` and instance `a-b` + service `c` -- the last segment of a
@@ -115,8 +115,8 @@ define_string_wrapper!(
         if s.contains('#') {
             return Err(anyhow!("AppInstanceId cannot contain '#'"));
         }
-        // M05A A7 review finding 5: `..` and `\` are valid here but not as
-        // a vault backup name (`validate_backup_name`,
+        // `..` and `\` are valid here but not as a vault backup name
+        // (`validate_backup_name`,
         // `crates/app_supervisor/src/keys.rs`) -- an instance id built
         // from one of these was refused only at `adopt`'s app-master mint,
         // by which point a services-less plan had already been accepted
@@ -144,8 +144,8 @@ define_string_wrapper!(
         if s.contains('/') {
             return Err(anyhow!("LogicalServiceName cannot contain '/'"));
         }
-        // M05A A5e (D-A5e-2): `#` is `MemberRef`'s own index separator --
-        // forbidden here so a `MemberRef` display string can always be
+        // `#` is `MemberRef`'s own index separator -- forbidden here so a
+        // `MemberRef` display string can always be
         // parsed back by splitting on the last `#`, unambiguously.
         if s.contains('#') {
             return Err(anyhow!("LogicalServiceName cannot contain '#'"));
@@ -280,7 +280,7 @@ impl From<LogicalServiceRef> for String {
 }
 
 /// Identifies one managed **member** of a logical service, as distinct from
-/// the logical service itself (M05A A5e, D-A5e-2).
+/// the logical service itself.
 ///
 /// `LogicalServiceRef` is the key of a logical service -- what the resolver,
 /// `TopologyEntry`, and a binding's dependency name are about. `replicas`
@@ -431,7 +431,7 @@ pub struct RpcProbe {
 }
 
 impl HealthCheck {
-    /// The service types this probe kind can address (D-A4-6). Read by the
+    /// The service types this probe kind can address. Read by the
     /// deploy-time validation, so a manifest error surfaces at deploy rather
     /// than as a permanently `failing` probe.
     #[must_use]
@@ -493,10 +493,10 @@ pub struct ServiceConfig {
     pub rotation_policy: RotationPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fdae: Option<FdaeManifest>,
-    /// Author-declared readiness probe (M05A A4). Absent = liveness only.
+    /// Author-declared readiness probe. Absent = liveness only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check: Option<HealthCheck>,
-    /// Static assets served directly from blob storage (M06A A1).
+    /// Static assets served directly from blob storage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assets: Option<AssetBundle>,
     /// Whether this service's endpoint record is published, and how far it
@@ -566,8 +566,8 @@ impl Visibility {
 ///
 /// Binary by construction, not three-valued like [`Visibility`]: a topology
 /// document is never registered anywhere, so `internal`'s "registered here,
-/// not propagated" has nothing to mean. §5 also forbids a filtered member
-/// list -- a caller receives the whole member set and mode, or a clean
+/// not propagated" has nothing to mean. ADR-0022 §5 also forbids a filtered
+/// member list -- a caller receives the whole member set and mode, or a clean
 /// denial -- so there is no third answer to express.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -602,8 +602,8 @@ pub struct AssetBundle {
     pub visibility: Visibility,
 }
 
-/// A `replicas` value above this is refused at `validate()` (M05A A5e,
-/// D-A5e-14): a bound set before the first measurement can never fail. 16
+/// A `replicas` value above this is refused at `validate()`: a bound set
+/// before the first measurement can never fail. 16
 /// members of one service on one node is already past what a single
 /// substrate's per-service database and instance-certificate budget make
 /// sensible, and per-member placement -- the reason to want more -- does
@@ -628,9 +628,9 @@ pub struct ServiceSpec {
     /// Overrides the manifest-level default for this service only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<PlacementSelector>,
-    /// How many members the compiler emits for this service (M05A A5e,
-    /// D-A5e-4). `1` (the default) compiles exactly what every manifest
-    /// written before `replicas` existed still compiles. Above `1`, the
+    /// How many members the compiler emits for this service. `1` (the
+    /// default) compiles exactly what every manifest written before
+    /// `replicas` existed still compiles. Above `1`, the
     /// compiled `topology_mode` becomes `Redundant` -- `Sharded` stays
     /// unreachable until a `ShardingStrategy` manifest surface exists.
     /// `#[serde(skip_serializing_if)]` so an unscaled manifest's TOML/JSON
@@ -640,8 +640,8 @@ pub struct ServiceSpec {
     /// Which sub-strategy a `Sharded` selection uses (ADR-0022 §6). Read by
     /// nothing yet: the compiler never emits `TopologyMode::Sharded` today
     /// (`replicas` alone only ever produces `Redundant`), and shard
-    /// rebalancing -- the first actual consumer -- is a later milestone's
-    /// work. Declared now anyway, on the same reasoning `replicas` itself
+    /// rebalancing -- the first actual consumer -- is later work.
+    /// Declared now anyway, on the same reasoning `replicas` itself
     /// was added under: a manifest field is free to add before anything
     /// depends on the format, and expensive after.
     /// `#[serde(skip_serializing_if)]` so a manifest that never mentions it
@@ -767,9 +767,8 @@ impl SynAppManifest {
             }
         }
 
-        // 3. `replicas`, all three rules in one place (M05A A5e,
-        // D-A5e-14/D-A5e-16): `>= 1`, `<= MAX_REPLICAS`, and not alongside a
-        // declared `schema`.
+        // 3. `replicas`, all three rules in one place: `>= 1`,
+        // `<= MAX_REPLICAS`, and not alongside a declared `schema`.
         for (name, spec) in &self.services {
             if spec.replicas < 1 {
                 return Err(anyhow!("Service '{name}' declares replicas = 0; the minimum is 1"));
@@ -887,14 +886,14 @@ pub struct PlannedService {
     pub config: ServiceConfig,
     /// Declared dependency name -> the member master DIDs currently serving
     /// it. One entry per `ServiceSpec.depends_on` name; the member list has
-    /// one entry per member of that dependency (M05A A5e `replicas`).
+    /// one entry per member of that dependency.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resolved_dependencies: BTreeMap<LogicalServiceName, Vec<ServiceId>>,
     #[serde(default)]
     pub topology_mode: TopologyMode,
-    /// This member's ordinal within its logical service (M05A A5e,
-    /// D-A5e-3). `0` for every plan compiled before `replicas` existed --
-    /// a stored field, not a `plan.services` vector position, since two
+    /// This member's ordinal within its logical service. `0` for every plan
+    /// compiled before `replicas` existed -- a stored field, not a
+    /// `plan.services` vector position, since two
     /// live code paths filter and rebuild that vector and an index derived
     /// from position would change a member's identity depending on which
     /// pass looked at it. `#[serde(skip_serializing_if)]` so an unscaled
@@ -926,8 +925,8 @@ pub struct PlannedService {
 }
 
 impl PlannedService {
-    /// This member's identity as a managed unit (M05A A5e, D-A5e-2) -- the
-    /// key every per-member stored or reported fact uses, as distinct from
+    /// This member's identity as a managed unit -- the key every per-member
+    /// stored or reported fact uses, as distinct from
     /// `logical_ref`, the key of the *logical service* it belongs to.
     #[must_use]
     pub fn member_ref(&self) -> MemberRef {
@@ -1213,7 +1212,7 @@ mod tests {
         assert!(ServiceId::try_new("did:key:123").is_ok());
     }
 
-    // ── M05A A5e: `MemberRef` and the `#`/`/` validators (D-A5e-2) ──────
+    // ── `MemberRef` and the `#`/`/` validators ──────
 
     #[test]
     fn member_ref_round_trips_through_display_and_from_str() {
@@ -1268,8 +1267,8 @@ mod tests {
         assert!(AppDid::try_new("did:key:zAbc").is_ok());
     }
 
-    /// M05A A7 review finding 5: `..` and `\` are refused at construction
-    /// now, not only later at `crates/app_supervisor/src/keys.rs`'s
+    /// `..` and `\` are refused at construction now, not only later at
+    /// `crates/app_supervisor/src/keys.rs`'s
     /// `validate_backup_name` -- an id that can never be a vault backup
     /// name must never exist, rather than being accepted here and only
     /// failing, permanently, the first time `adopt` tries to mint the
@@ -1318,7 +1317,7 @@ mod tests {
     }
 
     /// An unscaled plan's JSON must stay byte-for-byte what it was before
-    /// `member_index` existed -- the field is skip-if-zero, so a pre-A5e
+    /// `member_index` existed -- the field is skip-if-zero, so an older
     /// stored plan and a fresh single-member one serialize identically.
     #[test]
     fn member_index_zero_emits_no_key_in_serialized_output() {
