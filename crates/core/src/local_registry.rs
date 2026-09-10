@@ -23,7 +23,7 @@ use crate::{
 /// `SubstrateEndpoint::NativeHostChannel` entries, pointing at
 /// `SynSvcNativeService::dispatch` -- no WASM component or app-declared
 /// interface required (`crates/control_plane/src/service/orchestration.rs`'s
-/// `deploy`). Shared here (M04A Slice A1) so `control_plane`'s registration
+/// `deploy`). Shared here so `control_plane`'s registration
 /// logic, `router`'s guest native-capability proxy gate
 /// (`ProxyRouter::check_native_capability_gate`), and their tests all read
 /// from one list rather than three independently-maintained copies that can
@@ -36,7 +36,7 @@ use crate::{
 /// "http" name here collided with it (registering this native-capability
 /// endpoint under the same interface name silently overwrote the app's own
 /// `TcpHostPort` registration, discovered via `mise run test:e2e` breaking
-/// end to end during M3B Slice 7's own verification).
+/// end to end).
 pub const HTTP_NATIVE_INTERFACE: &str = "http-native";
 
 pub const NATIVE_CAPABILITY_INTERFACES: [&str; 8] = [
@@ -81,7 +81,7 @@ pub struct EndpointRegistry {
     /// Secondary map for fast lookup by interface hash: (`service_id`,
     /// `interface_hash`) -> `interface_name`
     interface_hashes: Arc<DashMap<(String, String), String>>,
-    /// `service_id` -> `owner_did` (M04A Slice B7a). Separate from
+    /// `service_id` -> `owner_did`. Separate from
     /// `active_endpoints`, which is keyed per interface.
     service_owners: Arc<DashMap<String, String>>,
     /// `service_id` -> the installed `DelegationCertificate` binding this
@@ -90,17 +90,16 @@ pub struct EndpointRegistry {
     /// (the pre-existing "service is its own master" fallback).
     service_certs: Arc<DashMap<String, DelegationCertificate>>,
     /// `service_id` -> (`service_type`, `health_check_json`) recorded at
-    /// deploy (M05A A4). Absent for a service deployed by a pre-A4 binary,
+    /// deploy. Absent for a service deployed by an older binary,
     /// which is why every reader treats a missing entry as "unknown" rather
     /// than guessing.
     service_deploy_facts: Arc<DashMap<String, DeployFacts>>,
     /// `service_id` -> (`app_instance_id`, `service_name`) for a service
-    /// deployed as part of an app instance (A2). Absent for a standalone
+    /// deployed as part of an app instance. Absent for a standalone
     /// `svc deploy`, which resolves no declared dependencies.
     service_app_contexts: Arc<DashMap<String, (String, String)>>,
-    /// `app_instance_id` -> its management stamp (M05A A5a, replacing A2's
-    /// `app_instance_owners`): who first declared it (first-write-wins,
-    /// unchanged from A2) plus which supervisor, if any, manages it at
+    /// `app_instance_id` -> its management stamp: who first declared it
+    /// (first-write-wins) plus which supervisor, if any, manages it at
     /// which generation (ADR-0021 §4).
     app_instance_management: Arc<DashMap<String, AppInstanceManagement>>,
     /// Stable storage connection for persistence
@@ -208,7 +207,7 @@ impl EndpointRegistry {
     ///   names);
     /// - **empty**, meaning "this service's one app-declared interface"
     ///   (ADR-0022 §7's hostname omits `-i` when a caller has nothing to say
-    ///   about it, D-S3-15).
+    ///   about it).
     ///
     /// The empty case filters [`NATIVE_CAPABILITY_INTERFACES`] and
     /// [`NODE_NATIVE_INTERFACES`], which every deployed service (the
@@ -241,7 +240,7 @@ impl EndpointRegistry {
     /// Lookup a destination for an incoming request.
     /// Returns the endpoint and the canonical interface name it was registered
     /// under. The canonical interface name may differ from `interface_name`
-    /// when a short hash -- or, since S3, an empty string -- is provided.
+    /// when a short hash -- or an empty string -- is provided.
     #[must_use]
     pub fn lookup(
         &self,
@@ -300,7 +299,7 @@ impl EndpointRegistry {
         }
     }
 
-    /// Record the owner of a deployed service (M04A Slice B7a). Overwrites
+    /// Record the owner of a deployed service. Overwrites
     /// any existing entry -- the takeover check is the caller's
     /// responsibility (`ControlPlaneService::deploy`), not this store's.
     pub async fn set_owner(&self, service_id: String, owner_did: String) -> Result<()> {
@@ -309,7 +308,8 @@ impl EndpointRegistry {
         Ok(())
     }
 
-    /// The recorded owner, or `None` for a service deployed before B7a.
+    /// The recorded owner, or `None` for a service deployed before owner
+    /// recording existed.
     #[must_use]
     pub fn owner_of(&self, service_id: &str) -> Option<String> {
         self.service_owners.get(service_id).map(|e| e.value().clone())
@@ -360,9 +360,9 @@ impl EndpointRegistry {
 
     /// Record what a deploy said `service_id` is, its declared health
     /// check if any, the canonical content hash of what was actually
-    /// installed, and its declared visibility (M05A A4, `manifest_hash` added
-    /// A5a, `visibility` added ADR-0018 -- upsert; a redeploy that drops the
-    /// check writes `None`, clearing it by construction).
+    /// installed, and its declared visibility (`visibility` added by
+    /// ADR-0018) -- upsert; a redeploy that drops the
+    /// check writes `None`, clearing it by construction.
     pub async fn set_deploy_facts(
         &self,
         service_id: String,
@@ -386,7 +386,7 @@ impl EndpointRegistry {
     }
 
     /// The recorded `(service_type, health_check_json, manifest_hash)`, or
-    /// `None` for a service deployed by a pre-A4 binary.
+    /// `None` for a service deployed by an older binary.
     #[must_use]
     pub fn deploy_facts(&self, service_id: &str) -> Option<DeployFacts> {
         self.service_deploy_facts.get(service_id).map(|e| e.value().clone())
@@ -400,7 +400,7 @@ impl EndpointRegistry {
     }
 
     /// Record which app instance and logical name `service_id` was deployed
-    /// as (A2, upsert).
+    /// as (upsert).
     pub async fn set_app_context(
         &self,
         service_id: String,
@@ -419,15 +419,15 @@ impl EndpointRegistry {
         self.service_app_contexts.get(service_id).map(|e| e.value().clone())
     }
 
-    /// Forget `service_id`'s app context and every binding row it wrote
-    /// (A2). Idempotent.
+    /// Forget `service_id`'s app context and every binding row it wrote.
+    /// Idempotent.
     pub async fn remove_app_context(&self, service_id: &str) -> Result<()> {
         self.storage.remove_app_context(service_id).await?;
         self.service_app_contexts.remove(service_id);
         Ok(())
     }
 
-    /// Persist one dependency binding (A2). The in-memory `AppRegistry` is
+    /// Persist one dependency binding. The in-memory `AppRegistry` is
     /// written separately by the caller -- this store only makes the write
     /// survive a restart.
     pub async fn save_binding(
@@ -440,14 +440,13 @@ impl EndpointRegistry {
         self.storage.save_binding(service_id, app_instance_id, dependency_name, entry_json).await
     }
 
-    /// Every persisted binding, for the composition root's startup replay
-    /// (A2).
+    /// Every persisted binding, for the composition root's startup replay.
     pub async fn all_bindings(&self) -> Result<Vec<(String, String, String, String)>> {
         self.storage.load_all_bindings().await
     }
 
     /// One persisted binding's `entry_json`, or `None` if `service_id`
-    /// declares no such dependency (M05A A5a). The epoch guard's read.
+    /// declares no such dependency. The epoch guard's read.
     pub async fn binding_of(
         &self,
         service_id: &str,
@@ -457,15 +456,13 @@ impl EndpointRegistry {
     }
 
     /// Every persisted binding for one service, as (`dependency_name`,
-    /// `entry_json`) (M05A A5a). `status`'s per-dependent convergence
-    /// report.
+    /// `entry_json`). `status`'s per-dependent convergence report.
     pub async fn bindings_of(&self, service_id: &str) -> Result<Vec<(String, String)>> {
         self.storage.load_bindings_for(service_id).await
     }
 
     /// `app_instance_id`'s management stamp, or `None` if no deploy has
-    /// ever named it here (M05A A5a, replacing A2's `app_instance_owner_
-    /// of`). Mirrors `owner_of`.
+    /// ever named it here. Mirrors `owner_of`.
     #[must_use]
     pub fn app_instance_management_of(
         &self,
@@ -489,9 +486,7 @@ impl EndpointRegistry {
     }
 
     /// Forget `app_instance_id`'s management stamp. Idempotent. Called
-    /// when the last service of an instance is undeployed (M05A A5a) --
-    /// the standing backlog row `app_instance_owners` rows never get
-    /// forgotten.
+    /// when the last service of an instance is undeployed.
     pub async fn remove_app_instance_management(&self, app_instance_id: &str) -> Result<()> {
         self.storage.remove_app_instance_management(app_instance_id).await?;
         self.app_instance_management.remove(app_instance_id);
@@ -499,7 +494,7 @@ impl EndpointRegistry {
     }
 
     /// The `service_id` of a service that still records `app_instance_id`
-    /// as its app context, if any (M05A A5a) -- used to decide when an app
+    /// as its app context, if any -- used to decide when an app
     /// instance's management row can be forgotten. Unlike a per-service
     /// context lookup, this has to scan: the map is keyed by `service_id`.
     #[must_use]
@@ -565,9 +560,9 @@ mod tests {
         }
     }
 
-    /// Test 79: D-S3-15, with the six `NATIVE_CAPABILITY_INTERFACES` also
-    /// registered, which is what makes the naive "only one endpoint" rule
-    /// wrong (§0.11).
+    /// An empty interface resolves to the one app-declared interface, with
+    /// the native-capability interfaces also registered -- which is what
+    /// makes the naive "only one endpoint" rule wrong.
     #[tokio::test]
     async fn an_empty_interface_resolves_to_the_only_app_declared_one() {
         let storage = Arc::new(MockStorage::new());
@@ -588,7 +583,7 @@ mod tests {
         }
     }
 
-    /// Finding A4: `NODE_NATIVE_INTERFACES` (`orchestrator`/`security`) is
+    /// `NODE_NATIVE_INTERFACES` (`orchestrator`/`security`) is
     /// filtered by the empty branch exactly like `NATIVE_CAPABILITY_INTERFACES`
     /// -- neither is ever "the one app-declared interface" a caller with no
     /// interface named actually meant, even though today `orchestrator`/
@@ -615,7 +610,7 @@ mod tests {
         assert_eq!(canonical, "default");
     }
 
-    /// Test 80: the ambiguity and the empty-set halves, both `None`, never
+    /// The ambiguity and the empty-set halves, both `None`, never
     /// a guess.
     #[tokio::test]
     async fn an_empty_interface_is_refused_when_two_are_declared_and_when_none_is() {
@@ -646,7 +641,7 @@ mod tests {
         assert!(registry.lookup(&two_declared, "").is_none());
     }
 
-    /// Test 81: the scoped form of D-S3-15's property -- at the hop that
+    /// The scoped form of the interface-resolution property -- at the hop that
     /// resolves the service, the interface a downstream check sees is the
     /// registered name, exactly as on the hash path (covered above by
     /// `an_empty_interface_resolves_to_the_only_app_declared_one`). Its
@@ -674,7 +669,7 @@ mod tests {
             .unwrap();
 
         // Terminating: an empty interface canonicalizes to the one
-        // app-declared interface (the property test 79 already pins;
+        // app-declared interface (a property another test already pins;
         // repeated here as the paired half of this test's own claim).
         let (_, canonical) = registry.lookup(&hosted, "").unwrap();
         assert_eq!(canonical, "default");
@@ -690,7 +685,7 @@ mod tests {
         assert!(registry.resolve_interface(unhosted, &util::short_hash("default")).is_none());
     }
 
-    /// M04A Slice B7a: `set_owner`/`owner_of`/`remove_owner` round-trip, and
+    /// `set_owner`/`owner_of`/`remove_owner` round-trip, and
     /// persist across a second `EndpointRegistry::new` on the same storage
     /// (mirrors `test_registry_lifecycle`'s persistence step).
     #[tokio::test]

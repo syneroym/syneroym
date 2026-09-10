@@ -66,14 +66,14 @@ pub struct SubstrateConfig {
     pub substrate: SubstrateGlobalConfig,
     pub retry: RetryPolicy,
     pub tls: Option<SubstrateTlsConfig>,
-    /// Embedded MQTT broker for `syneroym:messaging` (M3B Slice 6A,
-    /// ADR-0010). A core, always-on capability -- not an optional
-    /// deployment role like `RolesConfig`'s members.
+    /// Embedded MQTT broker for `syneroym:messaging` (ADR-0010). A core,
+    /// always-on capability -- not an optional deployment role like
+    /// `RolesConfig`'s members.
     pub mqtt: MessagingConfig,
-    /// Bidirectional stream protocols (M3B Slice 6B, ADR-0014). A core,
-    /// always-on capability, mirroring `mqtt`'s placement above.
+    /// Bidirectional stream protocols (ADR-0014). A core, always-on
+    /// capability, mirroring `mqtt`'s placement above.
     pub streaming: StreamingConfig,
-    /// Identity/capability admission (M04A Slice B0, ADR-0015/0016).
+    /// Identity/capability admission (ADR-0015/0016).
     pub iam: IamConfig,
 }
 
@@ -213,13 +213,13 @@ pub struct StorageConfig {
     pub engine: StorageEngine,
     pub db_dir: PathBuf,
     /// Compiled WASM component binary cache -- unrelated to `blob_store`
-    /// below. Kept as-is; the name collision with the M3B object/blob
+    /// below. Kept as-is; the name collision with the object/blob
     /// service is unfortunate but pre-existing, so the new config lives
     /// under a distinctly-named `blob_store` field instead.
     pub blobs_dir: PathBuf,
     pub encryption: bool,
     pub services_dir: PathBuf,
-    /// M3B blob object service configuration (Slice 5).
+    /// Blob object service configuration.
     pub blob_store: BlobStoreConfig,
 }
 
@@ -406,7 +406,7 @@ pub struct RolesConfig {
     pub auth: Option<AuthRole>,
     pub observability: Option<ObservabilityRole>,
     /// The App Supervisor (ADR-0021 §8). Absent = this node runs no
-    /// supervisor, which is every deployment through A4.
+    /// supervisor.
     pub supervisor: Option<SupervisorRole>,
     /// Linked native Roym product role.
     pub roym: Option<RoymRole>,
@@ -489,8 +489,8 @@ const fn default_abac_epoch_timeout_secs() -> u64 {
     2
 }
 /// A browser page issues several parallel requests against one service, and
-/// exhausting Wasmtime's pool is a hard error at instantiation, not a wait
-/// (M06A `D-A2-11`). Bounded per-service queuing keeps that failure mode
+/// exhausting Wasmtime's pool is a hard error at instantiation, not a wait.
+/// Bounded per-service queuing keeps that failure mode
 /// local to the one overloaded service rather than starving every other
 /// caller's share of the global pool.
 const fn default_max_concurrent_guest_http_per_service() -> u32 {
@@ -543,12 +543,12 @@ pub struct AppSandboxRole {
     /// Fuel ceiling for one stage-4 ABAC after-step invocation (ADR-0017 §7's
     /// "fuel-metered"). Deliberately a small fraction of
     /// `default_max_instructions`: the after-step runs once per read on the
-    /// hot path, and §7's optional read-only lookups are the thing this
+    /// hot path, and the ADR's optional read-only lookups are the thing this
     /// bounds. Overrun denies the whole batch, never returns partially-
     /// checked rows. A starting point, to be re-tuned against a measured
     /// `criterion` bench.
     ///
-    /// Deliberately **not** `Option<u64>` (review finding B4-07): the
+    /// Deliberately **not** `Option<u64>`: the
     /// after-step always overrides the service's own fuel via
     /// `InstanceOptions::fuel_override`, which treats `None` as "keep
     /// whatever the caller already had" -- for every *other*
@@ -755,7 +755,7 @@ const fn default_conversation_relay_fanout() -> u32 {
 const fn default_conversation_sync_now_budget_ms() -> u64 {
     3_000
 }
-/// 10 seconds per peer (§6.16) times a generous 16-member allowance;
+/// 10 seconds per peer times a generous 16-member allowance;
 /// members past that still get reached on a later tick since the pass
 /// rotates its starting member each time.
 const fn default_conversation_background_sync_budget_ms() -> u64 {
@@ -889,16 +889,16 @@ const fn default_supervisor_max_renewals_per_pass() -> u32 {
     5
 }
 /// Six times finer than `poll_interval_secs` (30): the queue's whole point
-/// is convergence within one worker tick, not one poll interval (M05B
-/// D-B1-13, task.md's performance budget). Finer buys nothing -- the wait is
-/// for a substrate to come back, not for the queue to notice.
+/// is convergence within one worker tick, not one poll interval. Finer
+/// buys nothing -- the wait is for a substrate to come back, not for the
+/// queue to notice.
 const fn default_supervisor_queue_tick_secs() -> u64 {
     5
 }
 /// The primary bound on the outbox's attempt budget. Chosen, together with
 /// `queue_max_backoff_secs`, so the combined window covers roughly a
-/// 10-hour outage -- see the M05B B1 plan §0.12 for the arithmetic. Must
-/// outlast a human noticing an outage, not a transient socket error.
+/// 10-hour outage. Must outlast a human noticing an outage, not a
+/// transient socket error.
 const fn default_supervisor_queue_max_attempts() -> u8 {
     54
 }
@@ -992,7 +992,7 @@ pub struct SupervisorRole {
     /// is wide relative to the pass interval, so nothing is at risk.
     pub max_renewals_per_pass: u32,
     /// The durable outbox worker's own tick, independent of
-    /// `poll_interval_secs` (M05B B1, D-B1-13). Recovery after a target
+    /// `poll_interval_secs`. Recovery after a target
     /// returns is measured against this, not against the resident loop's
     /// poll interval -- see `default_supervisor_queue_tick_secs`'s doc.
     pub queue_tick_secs: u64,
@@ -1060,8 +1060,7 @@ pub struct CoordinatorRole {
     pub transport_bridge: Option<TransportBridgeRole>,
     /// Path to a `CapabilityToken` granting `supervisor/resolve` on apps
     /// supervised by *other* nodes -- the WebRTC coordinator's own copy of
-    /// `ClientGatewayRole::resolve_ucan` (D-S3-6). Same default, same
-    /// warning shape.
+    /// `ClientGatewayRole::resolve_ucan`. Same default, same warning shape.
     #[serde(default)]
     pub resolve_ucan: Option<PathBuf>,
 }
@@ -1177,7 +1176,7 @@ pub enum IdentityMode {
 pub struct ClientGatewayRole {
     pub http_port: u16,
     /// Path to a `CapabilityToken` granting `supervisor/resolve` on apps
-    /// supervised by *other* nodes (D-S3-6). Not needed for apps
+    /// supervised by *other* nodes. Not needed for apps
     /// supervised by this node -- `[iam].grant_resolve_to_node_did`
     /// covers those. Absent, with that gate off too, means every logical
     /// hostname is refused by the supervisor it reaches; a startup
@@ -1410,7 +1409,7 @@ pub struct MessagingConfig {
     /// Messages in flight between the host and the embedded broker (and
     /// separately, per-subscriber forwarding capacity). No `bind_addr`
     /// field -- ADR-0010's aspirational `[mqtt] bind_addr` network listener
-    /// is explicitly dropped (Finding A5); the broker is reachable only
+    /// is explicitly dropped; the broker is reachable only
     /// in-process, via `Broker::link`.
     pub channel_capacity: u64,
 }
@@ -1425,7 +1424,7 @@ const fn default_max_concurrent_streams_per_service() -> u32 {
     8
 }
 
-/// M3B Slice 6B bidirectional streaming (ADR-0014). Each open stream holds a
+/// Bidirectional streaming (ADR-0014). Each open stream holds a
 /// live `Store`/`Instance` for its duration, so this caps per-service memory
 /// use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1440,9 +1439,9 @@ impl Default for StreamingConfig {
     }
 }
 
-/// Identity/capability admission (M04A Slices B0 + B1). A caller whose
+/// Identity/capability admission. A caller whose
 /// verified DID equals `admin_ucan_root` is granted `substrate/admin`
-/// directly (B0). B1 additionally roots UCAN chain verification here: any
+/// directly. UCAN chain verification is also rooted here: any
 /// `CapabilityToken` chain presented at ingress must attenuate back to a
 /// token issued by this same DID to be admitted (`build_caller`,
 /// `crates/router/src/route_handler/io.rs`). Owner-rooted *service*
@@ -1459,7 +1458,7 @@ pub struct IamConfig {
     /// value is only the fallback for deployments with no such agreement.
     pub admin_ucan_root: Option<String>,
     /// Grants a caller whose verified DID is **this node's own** the
-    /// ability `supervisor/resolve`, node-wide (ADR-0022 §7, D-S3-6).
+    /// ability `supervisor/resolve`, node-wide (ADR-0022 §7).
     ///
     /// This is what lets a same-node client gateway or WebRTC coordinator
     /// resolve a logical (`-a…-s…`) hostname for an app whose supervisor
@@ -1477,8 +1476,8 @@ pub struct IamConfig {
     /// This gate is the *operator-side* answer for a node's own apps: it
     /// resolves an app's own `restricted` services with no token, for
     /// whoever is running on this node. It is unrelated to a service the
-    /// app itself declares `topology_visibility = open` (ADR-0022 §5,
-    /// M06B B2) -- that declaration needs neither this grant nor a
+    /// app itself declares `topology_visibility = open` (ADR-0022 §5)
+    /// -- that declaration needs neither this grant nor a
     /// `resolve_ucan`, and works for any caller on any installation.
     #[serde(default)]
     pub grant_resolve_to_node_did: bool,
@@ -1545,7 +1544,7 @@ mod tests {
         assert_eq!(config.max_concurrent_streams_per_service, 8);
     }
 
-    /// M05A A5d: the anchor-refresh cadence has to sit comfortably inside
+    /// The anchor-refresh cadence has to sit comfortably inside
     /// the 24-hour window after which an anchor stops verifying at every
     /// consumer -- a refresh interval at or above that window would let
     /// anchors lapse between passes no matter how reliably the loop runs.

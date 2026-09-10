@@ -62,8 +62,8 @@ pub fn extract_host_from_http(buf: &[u8]) -> Result<String> {
     }
 }
 
-/// The request header carrying a logical service's routing key (ADR-0022
-/// §7). Absent means unkeyed. A header rather than a hostname segment
+/// The request header carrying a logical service's routing key
+/// (ADR-0022 §7). Absent means unkeyed. A header rather than a hostname segment
 /// because a routing key is unbounded in cardinality and decides nothing
 /// about authority -- a wrong one sends a legitimate request to the wrong
 /// member, which is what the topology epoch defends against, not a
@@ -115,7 +115,7 @@ pub fn gateway_session_assertion(
 
 /// The exact character width of a `short_hash` (`z32::encode` of a 5-byte
 /// SHA-256 prefix), used to tell an `-a`/`-s` segment apart from a nickname
-/// segment that merely starts with the same letter (§0.12).
+/// segment that merely starts with the same letter.
 pub(crate) const SHORT_HASH_LEN: usize = 8;
 
 /// What a gateway host names (ADR-0022 §7). One grammar:
@@ -134,7 +134,7 @@ pub(crate) const SHORT_HASH_LEN: usize = 8;
 /// a logical name inside an app (reversed by the app's own supervisor) or
 /// a concrete service DID (reversed by the registry's alias index). `-s`
 /// is the only required segment; an omitted `-i` means "the service's one
-/// app-declared interface", resolved at the destination (D-S3-15).
+/// app-declared interface", resolved at the destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TargetHost {
     /// A service that belongs to no app instance.
@@ -156,7 +156,7 @@ pub enum TargetHost {
         app_lookup_alias: String,
         /// Kept beside the alias so a caller can bind the record it gets
         /// back to the host it was asked for -- `RegistryClient::lookup`
-        /// cannot check an alias lookup itself, by construction (§0.4).
+        /// cannot check an alias lookup itself, by construction.
         app_did_hash: String,
         service_name_hash: String,
         interface: String,
@@ -173,7 +173,7 @@ impl TargetHost {
 }
 
 /// `<nickname>-<hash>`, or a bare `<hash>` when there is no nickname -- the
-/// one place the hostname and the registry alias meet (D-S3-2, D-S3-14).
+/// one place the hostname and the registry alias meet.
 fn join_alias(nickname: &str, hash: &str) -> String {
     if nickname.is_empty() { hash.to_string() } else { format!("{nickname}-{hash}") }
 }
@@ -186,7 +186,7 @@ fn join_alias(nickname: &str, hash: &str) -> String {
 /// `-a` and `-s` pass `require_hash_width: true`: both always carry a
 /// `short_hash`, so requiring the exact width is what stops an optional,
 /// last-popped `-a` from misreading a nickname's own final segment as an
-/// app hash (§0.12) -- `data-api-s12345678` must not parse as an app host
+/// app hash -- `data-api-s12345678` must not parse as an app host
 /// with `app_did_hash = "pi"`. `-i` passes `false` and stays
 /// permissive: `EndpointRegistry` resolves an exact interface *name* before
 /// a hash, and `docs/developer-guide.md` documents a working
@@ -251,8 +251,8 @@ mod tests {
         short_hash(s)
     }
 
-    /// Test 60: the `-s`/`-i` form, with a nickname containing dashes, with
-    /// no nickname at all, and with an explicit port.
+    /// The `-s`/`-i` form, with a nickname containing dashes, with no
+    /// nickname at all, and with an explicit port.
     #[test]
     fn an_unscoped_host_parses_into_an_alias_and_an_interface() {
         let sh = h("did:key:zSvc");
@@ -280,7 +280,8 @@ mod tests {
         );
     }
 
-    /// Test 61.
+    /// An app-scoped host (`-a` present) parses into the app alias plus the
+    /// app, service-name, and interface hashes.
     #[test]
     fn an_app_scoped_host_parses_into_an_alias_and_three_hashes() {
         let ah = h("did:key:zApp");
@@ -299,7 +300,7 @@ mod tests {
         );
     }
 
-    /// Test 62: the property the right-to-left grammar exists for.
+    /// The property the right-to-left grammar exists for.
     #[test]
     fn an_app_scoped_host_with_a_dashed_nickname_reassembles_the_nickname() {
         let ah = h("did:key:zApp");
@@ -317,9 +318,8 @@ mod tests {
         );
     }
 
-    /// Test 63: §0.12's defect, the one this plan's own first draft
-    /// shipped -- a nickname whose final segment starts with `a` must not
-    /// be read as an `-a<hash>` app segment.
+    /// A nickname whose final segment starts with `a` must not be read as
+    /// an `-a<hash>` app segment.
     #[test]
     fn a_nickname_ending_in_an_a_segment_is_not_read_as_an_app_host() {
         for nickname in ["data-api", "my-app", "chat-admin"] {
@@ -336,7 +336,7 @@ mod tests {
         }
     }
 
-    /// Test 64: a host missing a well-formed `-s<hash>` segment is refused
+    /// A host missing a well-formed `-s<hash>` segment is refused
     /// -- this is the whole guard now that there is no format marker: an
     /// unrelated host's first label simply never carries one.
     #[test]
@@ -348,8 +348,7 @@ mod tests {
         assert_eq!(parse_target_host("127.0.0.1"), None, "bare loopback IP");
     }
 
-    /// Test 65: §0.12's asymmetry -- `-i` stays permissive, `-a`/`-s` do
-    /// not.
+    /// The parser's asymmetry -- `-i` stays permissive, `-a`/`-s` do not.
     #[test]
     fn an_interface_segment_may_carry_a_literal_name() {
         let sh = h("did:key:zSvc");
@@ -363,8 +362,8 @@ mod tests {
         );
     }
 
-    /// Test 66: the optional `-i` is not an error at the parse -- the
-    /// destination resolves it (D-S3-15).
+    /// The optional `-i` is not an error at the parse -- the destination
+    /// resolves it.
     #[test]
     fn a_host_with_no_interface_segment_parses_with_an_empty_interface() {
         let sh = h("did:key:zSvc");
@@ -388,7 +387,7 @@ mod tests {
         );
     }
 
-    /// Test 67: §0.10's claim that the parser is domain-agnostic.
+    /// The parser is domain-agnostic.
     #[test]
     fn a_domain_other_than_localhost_parses_identically() {
         let sh = h("did:key:zSvc");
