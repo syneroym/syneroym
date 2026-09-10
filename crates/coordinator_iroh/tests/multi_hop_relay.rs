@@ -1,9 +1,8 @@
 //! Integration tests for the multi-hop relay functionality
 //!
-//! Simulates the scenario described in the multi-hop-relay-scenario.md
-//! which organizes relays, registries, substrates across network boundaries in
-//! a hierarchy and tests bidirectional e2e connectivity between clients and
-//! substrates across networks.
+//! Simulates a scenario that organizes relays, registries, and substrates
+//! across network boundaries in a hierarchy and tests bidirectional e2e
+//! connectivity between clients and substrates across networks.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::{
     collections::BTreeSet,
@@ -179,8 +178,8 @@ async fn build_test_route_handler_deps(
 }
 
 /// Like `create_signed_info`, but preserves direct addresses up to pkarr's
-/// 1000-byte DNS packet limit (M04A Slice A1's cross-node proxy test needs
-/// direct addresses because endpoints have no relay). We retain 2 direct
+/// 1000-byte DNS packet limit (the cross-node proxy test needs direct
+/// addresses because endpoints have no relay). We retain 2 direct
 /// addresses to guarantee the signed pkarr record fits within the 1000-byte DNS
 /// payload limit regardless of interface count.
 fn create_signed_info_with_full_addr(
@@ -205,8 +204,8 @@ fn create_signed_info_with_full_addr(
     info.sign(identity).unwrap()
 }
 
-/// Minimal `DeployManifest` for `AppSandboxEngine::deploy_wasm` (M04A Slice
-/// A1's cross-node proxy test) -- no `custom_config`/quota, matching
+/// Minimal `DeployManifest` for `AppSandboxEngine::deploy_wasm` (the
+/// cross-node proxy test) -- no `custom_config`/quota, matching
 /// `lifecycle_hooks.rs`'s own `wasm_deploy_manifest` helper.
 fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
     DeployManifest {
@@ -232,8 +231,8 @@ fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
     }
 }
 
-/// Polls `ep.addr()` until it carries at least one direct address (M04A
-/// Slice A1's cross-node proxy test, direct-connect-only, no relay).
+/// Polls `ep.addr()` until it carries at least one direct address (the
+/// cross-node proxy test is direct-connect-only, no relay).
 /// `Endpoint::online()` is unsuitable here -- it waits for *both* a relay
 /// connection *and* a local address, and these test endpoints configure no
 /// relay at all, so `online()` would never resolve.
@@ -434,9 +433,9 @@ async fn test_inbound_relay() -> Result<()> {
     endpoint_registry_z.register(did_z.clone(), "orchestrator".to_string(), endpoint_z).await?;
 
     // Bind Sz to Iroh so Cp can connect to it (Sz uses Cp's relay url). Built
-    // *before* `RouteHandler::init` (M04A Slice A1, §6): the Universal
-    // Proxy's outbound remote hop needs a live Iroh endpoint, which
-    // `RouteHandler::init` wires into its `ProxyRouter`.
+    // *before* `RouteHandler::init`: the Universal Proxy's outbound remote hop
+    // needs a live Iroh endpoint, which `RouteHandler::init` wires into its
+    // `ProxyRouter`.
     let mut ep_z_bldr = Endpoint::empty_builder();
     if let Some(relay_url) = cp_info.relay_url.as_ref().and_then(|r| r.parse::<RelayUrl>().ok()) {
         ep_z_bldr = ep_z_bldr.relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
@@ -583,8 +582,7 @@ async fn test_outbound_relay() -> Result<()> {
     endpoint_registry_x.register(did_x.clone(), "orchestrator".to_string(), endpoint_x).await?;
 
     // Bind Sx to Iroh so C can connect to it (Sx uses C's relay url). Built
-    // *before* `RouteHandler::init` (M04A Slice A1, §6) -- see the matching
-    // comment on Sz above.
+    // *before* `RouteHandler::init` -- see the matching comment on Sz above.
     let mut ep_x_bldr = Endpoint::empty_builder();
     ep_x_bldr = ep_x_bldr
         .relay_mode(RelayMode::Custom(RelayMap::from(c_relay_url.parse::<RelayUrl>().unwrap())));
@@ -635,18 +633,17 @@ async fn test_outbound_relay() -> Result<()> {
     Ok(())
 }
 
-/// M04A Slice A1 (§11.6, reference scenario step 20): a real cross-node
-/// Universal Proxy call between two full substrate nodes. Unlike
-/// `test_inbound_relay`/`test_outbound_relay`, no coordinator/relay
+/// A real cross-node Universal Proxy call between two full substrate nodes.
+/// Unlike `test_inbound_relay`/`test_outbound_relay`, no coordinator/relay
 /// infrastructure is needed here -- Sx and Sz both bind direct-address-only
 /// Iroh endpoints (same machine, same process) and a lightweight HTTP
 /// community registry is enough for Sx's `ProxyRouter` to resolve Sz's
 /// address. Sx hosts the `proxy-test` component (imports
 /// `syneroym:proxy/proxy`); Sz hosts `greeter`. Driving `call-peer` on Sx
-/// exercises the full remote hop end to end -- §6's outbound-endpoint fix,
-/// §5.5's `IrohHop`/retry loop, and proof/identity forwarding -- not just
-/// the in-process `ProxyRouter::invoke` unit tests (`crates/router/src/
-/// proxy.rs`) or the same-node guest-to-guest test (`proxy_dispatch.rs`).
+/// exercises the full remote hop end to end -- the outbound-endpoint fix,
+/// the `IrohHop`/retry loop, and proof/identity forwarding -- not just the
+/// in-process `ProxyRouter::invoke` unit tests (`crates/router/src/proxy.rs`)
+/// or the same-node guest-to-guest test (`proxy_dispatch.rs`).
 #[tokio::test]
 async fn test_cross_node_proxy_call() -> Result<()> {
     let greeter_bytes =
@@ -847,18 +844,17 @@ impl NativeService for CapturingNativeService {
     }
 }
 
-/// M04A Slice A1 post-commit review finding F3: `test_cross_node_proxy_call`
-/// above only drives a guest -> WASM greeter call, where the callee runs as
-/// `service_system` and native-capability identity never crosses -- the
-/// full loop (`invoke_remote_at` builds the outbound preamble from a real
-/// `CallerProof` -> destination `verify_preamble` re-verifies the
-/// delegation cert -> `build_caller` -> native dispatch with the re-verified
-/// caller) had no integration coverage. This exercises that loop directly
-/// (via `AppSandboxEngine::service_proxy`, bypassing the WASM guest path,
-/// since a guest never carries a proof in A1 -- see `CallOrigin::Native`
-/// callers in `syneroym_router::proxy`) and asserts Sz's `NativeService`
-/// sees the re-verified master DID, not the temporary session key or the
-/// forwarding node's own identity.
+/// `test_cross_node_proxy_call` above only drives a guest -> WASM greeter
+/// call, where the callee runs as `service_system` and native-capability
+/// identity never crosses -- the full loop (`invoke_remote_at` builds the
+/// outbound preamble from a real `CallerProof` -> destination
+/// `verify_preamble` re-verifies the delegation cert -> `build_caller` ->
+/// native dispatch with the re-verified caller) had no integration coverage.
+/// This exercises that loop directly (via `AppSandboxEngine::service_proxy`,
+/// bypassing the WASM guest path, since such a guest never carries a proof
+/// -- see `CallOrigin::Native` callers in `syneroym_router::proxy`) and
+/// asserts Sz's `NativeService` sees the re-verified master DID, not the
+/// temporary session key or the forwarding node's own identity.
 #[tokio::test]
 async fn test_cross_node_native_capability_identity_forwarding() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
