@@ -271,9 +271,9 @@ impl RegistryClient {
         Self { dht_client, registry_url, http_client }
     }
 
-    /// The HTTP registry URL this client publishes into, if configured
-    /// (M05A A4 -- lets a substrate report its own registry namespace rather
-    /// than a caller having to guess it from config).
+    /// The HTTP registry URL this client publishes into, if configured.
+    /// Lets a substrate report its own registry namespace rather
+    /// than a caller having to guess it from config.
     #[must_use]
     pub fn registry_url(&self) -> Option<&str> {
         self.registry_url.as_deref()
@@ -319,7 +319,7 @@ impl RegistryClient {
 
         // Publish to DHT (fire-and-forget in background) if HTTP succeeded or
         // wasn't configured. Every record is self-signed under a key that
-        // resolves from its own `service_id`, so unlike A1's committed
+        // resolves from its own `service_id`, so unlike an earlier
         // design -- where a delegation-signed record could only ever land
         // under the instance key's own DID on the DHT, never the master's --
         // this always has a home there.
@@ -674,7 +674,7 @@ impl RegistryClient {
     /// Reads through `fetch_own_master_anchor`, not `resolve_master_anchor`:
     /// the latter rejects an anchor older than 24 hours, and the refresh is a
     /// daily duty, so a late operator would land on that path every time and
-    /// publish an empty payload over a stale but authentic one (D-A1-12). An
+    /// publish an empty payload over a stale but authentic one. An
     /// unreadable anchor aborts here; it never degrades to "start empty."
     pub async fn refresh_master_anchor(&self, master: &Identity) -> anyhow::Result<()> {
         let master_did = substrate::derive_did_key(&master.public_key());
@@ -684,9 +684,9 @@ impl RegistryClient {
             .map(|prev| (prev.revoked_keys, prev.revoke_list_registry))
             .unwrap_or_default();
         // `sync_dht: false`: the HTTP publish above (awaited inside
-        // `publish_master_anchor`) is the operative guarantee -- D-A1-2
-        // already established that resolution requires a configured HTTP
-        // registry, so the DHT copy is redundant, best-effort backup. This
+        // `publish_master_anchor`) is the operative guarantee: resolution
+        // requires a configured HTTP registry, so the DHT copy is
+        // redundant, best-effort backup. This
         // is called from `roymctl`'s deploy paths (`svc deploy --master`,
         // `app deploy --mint-masters`, once per master), and blocking one of
         // those on a real mainline-DHT publish -- which can take seconds or
@@ -850,7 +850,7 @@ impl SignedMasterAnchor {
                     serde_json::from_str::<MasterAnchorPayload>(&full_string)
                 && parsed_payload.schema == MASTER_ANCHOR_SCHEMA_V1
             {
-                // The whole payload, not just its timestamp (D-A1-13): every
+                // The whole payload, not just its timestamp: every
                 // consumer reads the outer copy, so a relay or a compromised
                 // registry that adds or strips a revocation while leaving the
                 // timestamp untouched must not verify.
@@ -925,7 +925,7 @@ mod tests {
     }
 
     /// Mirrors `MasterAnchorPayload::sign`, but backdates the pkarr packet
-    /// timestamp so the D-A1-12 stale-anchor path can be exercised directly
+    /// timestamp so the stale-anchor path can be exercised directly
     /// instead of argued for structurally.
     fn sign_backdated(
         mut payload: MasterAnchorPayload,
@@ -1155,7 +1155,7 @@ mod tests {
 
     #[test]
     fn an_anchor_whose_master_id_does_not_resolve_is_rejected() {
-        // Not the D-A1-12 `master_id` equality tightening (that guard lives
+        // Not the `master_id` equality tightening (that guard lives
         // in `fetch_own_master_anchor`/`resolve_master_anchor`, which need a
         // real registry to exercise -- see `crates/community_registry`'s
         // `refresh_refuses_an_anchor_served_under_the_wrong_master*` tests).

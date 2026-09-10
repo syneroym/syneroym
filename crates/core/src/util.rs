@@ -13,7 +13,7 @@ use crate::{
 /// `syneroym_substrate::identity::setup_substrate_identity` loads (by the
 /// same path-resolution rule) -- generating and persisting it if this is
 /// the first component to run. Shared by the client gateway and the
-/// WebRTC coordinator (S3, D-S3-6): both present this same node identity
+/// WebRTC coordinator: both present this same node identity
 /// to satisfy `[iam].grant_resolve_to_node_did`, and using the node's own
 /// key rather than a fresh one per component is what lets one config key
 /// cover both.
@@ -90,7 +90,7 @@ pub fn short_hash(data: &str) -> String {
 /// `short_hash` is always exactly 8 characters and always last. Carries no
 /// role letter deliberately: a gateway host reconstructs this same string
 /// from either its `-a` segment or its `-s` segment, and a letter here
-/// would have to stand for both (D-S3-14).
+/// would have to stand for both.
 #[must_use]
 pub fn generate_alias(nickname: Option<&str>, service_id: &str) -> String {
     let service_hash = short_hash(service_id);
@@ -105,11 +105,11 @@ pub fn generate_alias(nickname: Option<&str>, service_id: &str) -> String {
 pub const MAX_DNS_LABEL_LEN: usize = 63;
 
 fn refuse_ambiguous_nickname_tail(nickname: &str) -> anyhow::Result<()> {
-    // §0.12's irreducible residue: a nickname whose own final dash-segment
-    // is `a` followed by exactly 8 characters is genuinely ambiguous to
-    // any parser (it is indistinguishable from a real `-a<hash>`
-    // segment), so it is refused where it is minted rather than misread
-    // where it is used. Only `-a` needs this guard: `-s` is required and
+    // A nickname whose own final dash-segment is `a` followed by exactly
+    // 8 characters is genuinely ambiguous to any parser (it is
+    // indistinguishable from a real `-a<hash>` segment), so it is refused
+    // where it is minted rather than misread where it is used. Only `-a`
+    // needs this guard: `-s` is required and
     // `-i` is popped before it, so neither can ever inspect a nickname
     // segment.
     if let Some(last) = nickname.split('-').next_back()
@@ -143,11 +143,11 @@ fn finish_host(label: String, domain: &str, hashed_suffix_len: usize) -> anyhow:
 ///
 /// # Errors
 /// The label exceeds [`MAX_DNS_LABEL_LEN`], or `nickname`'s own final
-/// segment would misread as an `-a<hash>` segment (§0.12) -- the parser
+/// segment would misread as an `-a<hash>` segment -- the parser
 /// pops an optional `-a` last, so an unscoped host is exposed to the same
 /// ambiguity an app-scoped one is.
 /// `interface: None` omits the `-i` segment: the destination resolves it
-/// to the service's one app-declared interface (D-S3-15).
+/// to the service's one app-declared interface.
 pub fn generate_service_host(
     nickname: Option<&str>,
     service_id: &str,
@@ -178,8 +178,8 @@ pub fn generate_service_host(
 /// # Errors
 /// The label exceeds [`MAX_DNS_LABEL_LEN`] (the three hashed segments cost
 /// 30, so the nickname budget is 33 -- 43 with no `-i`), or `nickname`'s
-/// own final segment would misread as an `-a<hash>` segment (§0.12).
-/// `interface: None` omits the `-i` segment (D-S3-15).
+/// own final segment would misread as an `-a<hash>` segment.
+/// `interface: None` omits the `-i` segment.
 pub fn generate_app_host(
     nickname: &str,
     app_did: &str,
@@ -227,9 +227,9 @@ mod tests {
         assert_eq!(parse_size_string("invalidGi", 128), 128 * 1024 * 1024 * 1024);
     }
 
-    /// Test 68: D-S3-2's whole load-bearing claim -- the alias a gateway
-    /// host's `-a` segment reconstructs must equal the alias the registry
-    /// actually admitted the Tier-1 record under (`register_endpoint`'s
+    /// The alias a gateway host's `-a` segment reconstructs must equal the
+    /// alias the registry actually admitted the Tier-1 record under
+    /// (`register_endpoint`'s
     /// `generate_alias(nickname, service_id)`, where `nickname` is the app
     /// instance id and `service_id` is the app DID).
     #[test]
@@ -250,7 +250,8 @@ mod tests {
         assert_eq!(app_lookup_alias, admitted_alias);
     }
 
-    /// Test 69: D-S3-9, on both builders, asserting the message names 63.
+    /// Both host builders refuse a label over the DNS limit rather than
+    /// truncating it, and the error names the 63-character limit.
     #[test]
     fn a_host_label_over_the_dns_limit_is_refused_not_truncated() {
         let long_nickname = "n".repeat(60);
@@ -263,10 +264,10 @@ mod tests {
         assert!(err.to_string().contains("63"), "{err}");
     }
 
-    /// Test 70: §0.12's irreducible residue -- refused at build, not
-    /// misread at parse. Both builders share the guard: an unscoped host
-    /// is popped through the same optional-`-a` step an app-scoped one is,
-    /// so it is exposed to the identical ambiguity (finding A1).
+    /// The ambiguous-nickname case is refused at build, not misread at
+    /// parse. Both builders share the guard: an unscoped host is popped
+    /// through the same optional-`-a` step an app-scoped one is, so it is
+    /// exposed to the identical ambiguity.
     #[test]
     fn a_nickname_whose_last_segment_looks_like_an_app_hash_is_refused_at_build() {
         let fake_hash = "a".to_string() + &"b".repeat(SHORT_HASH_LEN);
@@ -281,7 +282,7 @@ mod tests {
         assert!(err.to_string().contains(&fake_hash), "{err}");
     }
 
-    /// Test 71: both forms, property-style over a handful of
+    /// Both forms, property-style over a handful of
     /// nickname/name/interface shapes, including a dashed nickname and an
     /// absent one.
     #[test]
@@ -321,8 +322,8 @@ mod tests {
         }
     }
 
-    /// Test 72: D-S3-14's uniqueness claim now that the alias carries no
-    /// letter -- `short_hash` is always 8 characters and always last, so
+    /// The alias stays unambiguous now that it carries no role letter --
+    /// `short_hash` is always 8 characters and always last, so
     /// `rsplit_once('-')` recovers `(nickname, hash)` even when the
     /// nickname itself contains dashes.
     #[test]
