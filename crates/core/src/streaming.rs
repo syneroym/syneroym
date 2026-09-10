@@ -1,4 +1,4 @@
-//! Shared types for M3B Slice 6B bidirectional streaming (ADR-0014).
+//! Shared types for bidirectional streaming (ADR-0014).
 //!
 //! Lives in `syneroym-core` (not `syneroym-router` or `syneroym-sandbox-wasm`)
 //! because both crates need it and `router` already depends on
