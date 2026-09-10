@@ -1,4 +1,4 @@
-//! Slice B4-fdae: the after-step seam for ADR-0017 §7's stage-4 WASM ABAC.
+//! The after-step layer for ADR-0017 §7's stage-4 WASM ABAC.
 //! Sibling to `fdae_fetch.rs` and for the same reason -- `crates/fdae` stays
 //! engine-free, `crates/data_db` has no WASM dependency, and `syneroym-rpc`
 //! is the one crate both read ingresses already depend on. `syneroym-rpc`
@@ -27,14 +27,14 @@ pub const FDAE_ABAC_TIMEOUT: Duration = Duration::from_secs(3);
 /// legitimate read, only on a malformed one.
 pub const MAX_ABAC_ROWS: usize = 1000;
 
-/// Hard cap on one batch's total row-payload bytes (review finding B4-02).
+/// Hard cap on one batch's total row-payload bytes.
 /// `MAX_ABAC_ROWS` bounds row *count*, not bytes: the engine lowers every
 /// payload byte into its own `wasmtime::component::Val` (the dynamic `Val`
 /// API has no raw-bytes fast path), and `Val`'s largest variant is ~40
 /// bytes, so an unbounded per-record payload turns into unbounded transient
 /// host memory at up to ~40x the wire size, per concurrent read.
 ///
-/// 1 MiB (review residual R4 -- an earlier 16 MiB was too generous):
+/// 1 MiB (an earlier 16 MiB was too generous):
 /// `crates/sandbox_wasm/benches/abac_bench.rs` measured 100 rows @ 16 KB
 /// (1.6 MB, a tenth of that old cap) at ~18.4 ms, so a batch actually at
 /// 16 MiB would cost on the order of 180 ms and ~640 MB of transient host
@@ -106,7 +106,7 @@ pub struct CandidateRow {
 pub enum RowDecision {
     Allow,
     Deny,
-    /// Top-level payload keys to strip. Dotted paths are rejected (H3): a
+    /// Top-level payload keys to strip. Dotted paths are rejected: a
     /// dotted entry would silently mask nothing, so it denies the row.
     Redact(Vec<String>),
 }
@@ -116,10 +116,10 @@ pub enum AbacError {
     /// No `RowAuthorizer` was available to run the after-step at all --
     /// either the service isn't WASM-backed/wired (the original meaning of
     /// this variant), or the throw-away instance's own instantiation failed
-    /// (e.g. the wasmtime pooling allocator's instance budget was exhausted,
-    /// review finding B4-01). Both are resource-availability failures, not
+    /// (e.g. the wasmtime pooling allocator's instance budget was
+    /// exhausted). Both are resource-availability failures, not
     /// an authorization decision -- callers map this to a distinguishable
-    /// error, never to "zero rows" (B4-04).
+    /// error, never to "zero rows".
     #[error(
         "no row authorizer is available for service '{0}' (unwired service, or the after-step \
          instance could not be started)"
@@ -187,8 +187,8 @@ pub fn empty_row_authorizer() -> Weak<dyn RowAuthorizer> {
 
 /// Unions CLS's own `masked_fields` (the sieve's compile-time column mask)
 /// with the after-step's per-row `extra` redact set, the projection every
-/// read ingress applies before returning a record. Extracted (review
-/// residual R5) because the four call sites that need it -- WASM
+/// read ingress applies before returning a record. Extracted because
+/// the four call sites that need it -- WASM
 /// `get`/`query` (`sandbox_wasm::host_capabilities`) and native
 /// `get`/`query` (`control_plane::synsvc_native`) -- had each written the
 /// same `masked_fields.iter().cloned().chain(extra).collect()` out by hand;
