@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Bidirectional streaming test guest component (M3B Slice 6B).
+//! Bidirectional streaming test guest component.
 //!
 //! Exercises `syneroym:messaging`'s guest-implemented `stream-cursor`
 //! (guest-as-source, `handle-stream-request`) and `stream-sink`
@@ -110,7 +110,7 @@ impl GuestStreamSink for UploadSink {
         // `data-layer/store::put` validates the payload is JSON at the host
         // boundary, so the raw uploaded bytes are wrapped as a JSON string
         // rather than stored verbatim (mirrors `messaging-pubsub-test`'s own
-        // fixture, which hit the same requirement in Slice 6A).
+        // fixture, which hit the same requirement).
         let content = self.buffer.borrow().clone();
         let payload_str = String::from_utf8_lossy(&content).into_owned();
         let json_payload =
@@ -186,7 +186,7 @@ impl GuestApiGuest for StreamTestComponent {
     }
 
     fn handle_message(_topic: String, _payload: Vec<u8>) -> Result<(), String> {
-        // This fixture doesn't exercise pub/sub (Slice 6A); declared only
+        // This fixture doesn't exercise pub/sub; declared only
         // because `guest-api` requires it.
         Err("handle-message not supported by this fixture".to_string())
     }

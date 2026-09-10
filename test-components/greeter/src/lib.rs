@@ -27,8 +27,7 @@ impl Guest for GreeterComponent {
         // (its deployed `service_id`) -- the one thing that differs between
         // two `replicas` members of an otherwise byte-identical deploy, and
         // otherwise unobservable from a caller resolving through the
-        // dependency-binding host capability (M05A Slice A5e reference
-        // scenario, step 5).
+        // dependency-binding host capability.
         let ctx = context::get_test_context("");
         format!("Hello, {name}! Greetings from greeter::greet::greet ({ctx})")
     }

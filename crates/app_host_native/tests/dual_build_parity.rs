@@ -476,9 +476,9 @@ impl Drop for Harness {
 
 /// Two fully independent host stacks, sharing one `SERVICE_ID`. Panics if
 /// the wasm component artifact hasn't been built -- this suite is the
-/// milestone's evidence for exit criterion 2 (dual-build parity), so a run
-/// that silently skipped every test would be worse than a build failure,
-/// not equivalent to one. Build it with `mise run build:test-components`.
+/// evidence for dual-build parity, so a run that silently skipped every
+/// test would be worse than a build failure, not equivalent to one. Build
+/// it with `mise run build:test-components`.
 async fn harness() -> Harness {
     let wasm_bytes = fs::read(test_constants::dual_build_fixture_wasm_path()).unwrap_or_else(|e| {
         panic!(

@@ -57,8 +57,8 @@ pub async fn run_scenario() -> Result<()> {
     let engine = AppSandboxEngine::build_wasm_engine(None, None, 0, 0, 0)?;
     let linker = AppSandboxEngine::build_wasm_linker(&engine)?;
     let component = Component::new(&engine, &wasm_bytes)?;
-    // `greet`'s reply also echoes this instance's own `component_id` (M05A
-    // Slice A5e, `greeter`'s `context::get-test-context`), so only the fixed
+    // `greet`'s reply also echoes this instance's own `component_id` (via
+    // `greeter`'s `context::get-test-context`), so only the fixed
     // prefix is checked below.
     let expected_result_prefix = "Hello, BenchmarkUser! Greetings from greeter::greet::greet";
 
