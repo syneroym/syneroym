@@ -1,8 +1,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! A durable, owner-local work queue: an `outbox` of items awaiting
 //! delivery, and a `dead_letters` table for the ones that never will be
-//! (M05B Slice B1,
-//! [ADR-0023](../../../docs/decisions/0023-durable-async-primitives.md)).
+//! ([ADR-0023](../../../docs/decisions/0023-durable-async-primitives.md)).
 //!
 //! Generic over an opaque payload -- this crate never interprets what it
 //! carries, only when to retry it and when to give up. Every queue belongs
@@ -22,7 +21,7 @@
 //! is a second, coarser opaque string a caller may supply at [`Queue::enqueue`]
 //! to scope the dead-letter cap ([`QueueConfig::dlq_max_rows`]) and its
 //! pruning: the cap and the oldest-first eviction it triggers apply *within*
-//! one `group_key`, not across the whole table. B1's supervisor outbox
+//! one `group_key`, not across the whole table. The supervisor outbox
 //! groups by app instance, so one noisy instance cannot evict another's
 //! operator-visible dead letters -- but this crate never parses either
 //! string, so any caller-chosen grouping works.
@@ -54,7 +53,7 @@ pub use crate::{
 mod dedup;
 mod saga;
 
-/// The retry curve ([`RetryPolicy`], reused per M05B D-B1-13 -- its struct
+/// The retry curve ([`RetryPolicy`], reused for its struct
 /// and `calculate_jittered_backoff`, not `retry_with_backoff`, which sleeps
 /// in-process where a durable queue must compute a timestamp and forget the
 /// item until a worker tick finds it due) plus this queue's own knobs.
@@ -62,10 +61,10 @@ mod saga;
 pub struct QueueConfig {
     pub retry: RetryPolicy,
     /// How long a claimed item stays invisible to a second claim before a
-    /// crashed worker's hold on it is assumed gone (failure-matrix row 1).
+    /// crashed worker's hold on it is assumed gone.
     pub visibility_timeout_ms: u64,
     /// Dead letters are pruned oldest-first, *within one `group_key`*, on
-    /// every write past this count (D-B1-9) -- a bound and a trigger, not
+    /// every write past this count -- a bound and a trigger, not
     /// an adjective.
     pub dlq_max_rows: u32,
     /// Ceiling on items waiting for delivery. Unlike the dead-letter cap
@@ -75,7 +74,7 @@ pub struct QueueConfig {
     pub max_pending_rows: u32,
 }
 
-/// The supervisor's five `queue_*` fields, converted (M05B D-B1-13):
+/// The supervisor's five `queue_*` fields, converted:
 /// initial backoff and multiplier stay `RetryPolicy`'s own defaults (100 ms,
 /// x2) since `SupervisorRole` configures only the attempt budget and the
 /// ceiling, not the shape of the early curve.
@@ -87,7 +86,7 @@ impl From<&SupervisorRole> for QueueConfig {
         // its own to log through, so it clamps silently and the one caller
         // that constructs this from operator config (`SupervisorService::new`)
         // is the one that warns, mirroring `max_renewals_per_pass`'s
-        // existing clamp (M05B B1 review finding 9).
+        // existing clamp.
         let max_attempts = role.queue_max_attempts.max(1);
         Self {
             retry: RetryPolicy {
@@ -147,10 +146,10 @@ pub const DEFAULT_MAX_PENDING_ROWS: u32 = 10_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueItem {
     pub id: i64,
-    /// The caller's own grouping/dedup key -- opaque to this crate. B1's
+    /// The caller's own grouping/dedup key -- opaque to this crate. The
     /// supervisor outbox encodes `(instance, logical_ref, substrate)` into
-    /// it, since that is the row the DLQ's standing alert groups by
-    /// (D-B1-6); this crate does not need to know that shape.
+    /// it, since that is the row the DLQ's standing alert groups by; this
+    /// crate does not need to know that shape.
     pub queue_key: String,
     pub payload: Vec<u8>,
     /// How many delivery attempts this item has already used, including
@@ -166,20 +165,19 @@ pub struct QueueItem {
     /// reaches `fail`, so `attempts` alone cannot bound it; the caller is
     /// expected to dead-letter (via `Queue::fail(..., terminal: true)`) an
     /// item whose `claim_count` reaches the same attempt budget, closing
-    /// the poison-pill gap the M05B B1 review found (finding 7).
+    /// the poison-pill gap that `attempts` alone leaves open.
     ///
     /// **Also counts a claim a caller abandoned on purpose**, not only a
     /// crash: the supervisor's own worker (`app_supervisor::service::
     /// queue_worker_tick`) races cancellation into a delivery via
-    /// `tokio::select!` so shutdown does not wait for one in flight (D-B1-8,
-    /// finding 5) -- a restart caught at exactly that instant drops the
-    /// delivery after this count was already advanced, with no `attempts`
-    /// to show for it (review follow-on, 2026-08-05). Indistinguishable
-    /// from a real poison pill from inside this crate, and deliberately
-    /// left that way: the failure mode is one claim spent for no attempt,
-    /// bounded by the same budget either way, and it takes the same number
-    /// of consecutive occurrences (the configured `max_attempts`, 54 by
-    /// default) to matter -- an operator sees a real, replayable dead
+    /// `tokio::select!` so shutdown does not wait for one in flight -- a
+    /// restart caught at exactly that instant drops the delivery after this
+    /// count was already advanced, with no `attempts` to show for it.
+    /// Indistinguishable from a real poison pill from inside this crate, and
+    /// deliberately left that way: the failure mode is one claim spent for
+    /// no attempt, bounded by the same budget either way, and it takes the
+    /// same number of consecutive occurrences (the configured `max_attempts`,
+    /// 54 by default) to matter -- an operator sees a real, replayable dead
     /// letter either way, never silent loss.
     pub claim_count: u32,
 }
@@ -204,16 +202,16 @@ pub enum FailOutcome {
     /// Attempts exhausted, or the caller marked this failure terminal;
     /// moved to `dead_letters`. `pruned_keys` carries the `queue_key` of
     /// every *other* dead letter this same write evicted past
-    /// `dlq_max_rows` (D-B1-9) -- a caller with a standing alert keyed by
+    /// `dlq_max_rows` -- a caller with a standing alert keyed by
     /// `queue_key` needs this to clear it, since a prune is otherwise
-    /// silent (failure-matrix row 4a, M05B B1 review finding 3).
+    /// silent.
     DeadLettered { pruned_keys: Vec<String> },
 }
 
 /// One SQLite-backed queue: an `outbox` of pending/in-flight items and a
 /// bounded `dead_letters` table. `conn: Arc<Mutex<Connection>>` (matching
 /// `AlertStore`/`DeploymentJournal`) so a caller with its own multi-table
-/// database -- the supervisor's `supervisor.db` (D-B1-5) -- can hand this
+/// database -- the supervisor's `supervisor.db` -- can hand this
 /// queue a clone of the same connection instead of opening a file of its
 /// own.
 #[derive(Debug, Clone)]
@@ -254,7 +252,7 @@ impl Queue {
 
     /// Wraps an already-open connection -- the supervisor's own outbox is
     /// the fourth sibling `SupervisorStore::from_connection` constructs
-    /// beside the journal and the alert store (D-B1-5), sharing
+    /// beside the journal and the alert store, sharing
     /// `supervisor.db` rather than opening a file of its own.
     pub fn from_connection(conn: Arc<Mutex<Connection>>, config: QueueConfig) -> Result<Self> {
         Self::init_schema(&conn.lock().expect("queue connection lock poisoned"))?;
@@ -306,9 +304,9 @@ impl Queue {
     }
 
     /// Writes one item, immediately due. One indexed insert (the `< 1 ms`
-    /// enqueue-on-failure budget, task.md). `group_key` scopes the
-    /// dead-letter cap this item's eventual failure would count against
-    /// (D-B1-9) -- opaque to this crate, same as `queue_key`.
+    /// enqueue-on-failure budget). `group_key` scopes the dead-letter cap
+    /// this item's eventual failure would count against -- opaque to this
+    /// crate, same as `queue_key`.
     pub fn enqueue(
         &self,
         group_key: &str,
@@ -395,9 +393,9 @@ impl Queue {
     /// identical ceiling to a case this crate cannot see on its own: an
     /// item claimed but never resolved through `fail`/`complete` at all (a
     /// worker panic, a crashed process), which [`QueueItem::claim_count`]
-    /// tracks (M05B B1 review finding 7). Reading it here rather than
-    /// duplicating the number as a second config field keeps the two
-    /// budgets from silently drifting apart.
+    /// tracks. Reading it here rather than duplicating the number as a
+    /// second config field keeps the two budgets from silently drifting
+    /// apart.
     #[must_use]
     pub fn max_attempts(&self) -> u8 {
         self.config.retry.max_attempts
@@ -406,9 +404,9 @@ impl Queue {
     /// Whether `queue_key` already has a row in the outbox -- pending or
     /// claimed, either way already durable and already on its own retry
     /// schedule. An indexed lookup (`idx_outbox_queue_key`), not a scan of
-    /// every payload (M05B B1 review finding 15 -- the caller-side
-    /// `Queue::all()` scan `SupervisorOutbox::already_pending` used to pay
-    /// on every failed push).
+    /// every payload (the caller-side `Queue::all()` scan
+    /// `SupervisorOutbox::already_pending` used to pay on every failed
+    /// push).
     pub fn has_pending(&self, queue_key: &str) -> Result<bool> {
         let conn = self.conn.lock().expect("queue connection lock poisoned");
         Ok(conn
@@ -467,13 +465,12 @@ impl Queue {
     }
 
     /// Claims up to `limit` items due at or before `now` -- either freshly
-    /// due, or in flight past a crashed worker's visibility timeout
-    /// (failure-matrix row 1) -- and marks them invisible until `now +
-    /// visibility_timeout_ms`. The read and every claiming write run under
-    /// one held lock, so two workers in one process cannot claim the same
-    /// row (failure-matrix row 6); nothing here claims across processes,
-    /// which ADR-0023 §6 rules out by construction. Each claiming write is
-    /// itself an `UPDATE ... WHERE id = ? AND visible_at <= ?`, not an
+    /// due, or in flight past a crashed worker's visibility timeout -- and
+    /// marks them invisible until `now + visibility_timeout_ms`. The read
+    /// and every claiming write run under one held lock, so two workers in
+    /// one process cannot claim the same row; nothing here claims across
+    /// processes, which ADR-0023 §6 rules out by construction. Each claiming
+    /// write is itself an `UPDATE ... WHERE id = ? AND visible_at <= ?`, not an
     /// unconditional one, so the guarantee holds even if a future caller
     /// ever shares this table across more than one held lock.
     pub fn claim_due(&self, now: i64, limit: u32) -> Result<Vec<QueueItem>> {
@@ -531,7 +528,7 @@ impl Queue {
         Ok(claimed)
     }
 
-    /// Deletes a completed item (D-B1-9): `applied`/`no-op`/`stale` all
+    /// Deletes a completed item: `applied`/`no-op`/`stale` all
     /// mean the item's intent is satisfied, so nothing is kept once a
     /// worker reaches this call.
     pub fn complete(&self, id: i64) -> Result<()> {
@@ -543,18 +540,17 @@ impl Queue {
     /// Records a failed delivery attempt.
     ///
     /// `terminal`: the caller already knows this item can never succeed
-    /// (failure-matrix row 9 -- e.g. a queued write's target no longer
-    /// exists, or a claim count that alone exhausted the budget with
-    /// `fail` never previously called, finding 7), so it dead-letters
-    /// immediately regardless of budget remaining, with a distinguishable
-    /// reason.
+    /// (e.g. a queued write's target no longer exists, or a claim count
+    /// that alone exhausted the budget with `fail` never previously
+    /// called), so it dead-letters immediately regardless of budget
+    /// remaining, with a distinguishable reason.
     ///
     /// Otherwise: still under the configured attempt budget computes
     /// `next_attempt_at` from `RetryPolicy` + `calculate_jittered_backoff`
-    /// (D-B1-13) and leaves the item due again then; exhausted moves it to
+    /// and leaves the item due again then; exhausted moves it to
     /// `dead_letters` with `error` and this attempt count, deletes it from
     /// `outbox`, and prunes the oldest dead letter -- within this item's
-    /// own `group_key` -- past `dlq_max_rows` (D-B1-9).
+    /// own `group_key` -- past `dlq_max_rows`.
     pub fn fail(&self, id: i64, now: i64, error: &str, terminal: bool) -> Result<FailOutcome> {
         let conn = self.conn.lock().expect("queue connection lock poisoned");
         let (group_key, queue_key, payload, prior_attempts): (String, String, Vec<u8>, i64) = conn
@@ -613,12 +609,12 @@ impl Queue {
     }
 
     /// Prunes `dead_letters` oldest-first *within `group_key`* past
-    /// `max_rows` (D-B1-9), and returns the `queue_key` of every row it
+    /// `max_rows`, and returns the `queue_key` of every row it
     /// deleted -- so a caller with a standing alert keyed by `queue_key`
-    /// can clear it (M05B B1 review finding 3: an unnotified prune left
-    /// `DeliveryExhausted` alerts nothing could ever clear). Scoped to one
-    /// `group_key` (finding 4) rather than the whole table, so one noisy
-    /// group cannot silently evict another's dead letters.
+    /// can clear it (an unnotified prune left `DeliveryExhausted` alerts
+    /// nothing could ever clear). Scoped to one `group_key` rather than the
+    /// whole table, so one noisy group cannot silently evict another's dead
+    /// letters.
     fn prune_dead_letters(
         conn: &Connection,
         max_rows: u32,
@@ -653,7 +649,7 @@ impl Queue {
     }
 
     /// Every dead letter, oldest first -- `roymctl supervisor
-    /// dead-letters`'s own listing (D-B1-6).
+    /// dead-letters`'s own listing.
     pub fn dead_letters(&self) -> Result<Vec<DeadLetter>> {
         let conn = self.conn.lock().expect("queue connection lock poisoned");
         let mut stmt = conn.prepare(
@@ -675,20 +671,19 @@ impl Queue {
         Ok(out)
     }
 
-    /// Re-enqueues a dead letter, ready for the very next claim (D-B1-7:
-    /// "replay re-enqueues; it never executes inline"). Its attempt count
-    /// carries over rather than resetting: a dead letter is already at
-    /// budget, so this buys it exactly one more delivery attempt through
-    /// the ordinary worker path, and a second failure returns it straight
-    /// to `dead_letters` with that history intact.
+    /// Re-enqueues a dead letter, ready for the very next claim; it never
+    /// executes inline. Its attempt count carries over rather than
+    /// resetting: a dead letter is already at budget, so this buys it
+    /// exactly one more delivery attempt through the ordinary worker path,
+    /// and a second failure returns it straight to `dead_letters` with that
+    /// history intact.
     ///
     /// Refuses when the outbox already holds a pending row for the same
-    /// `queue_key` (M05B B1 review finding 2): inserting a second row would
-    /// break the one-row-per-key invariant every caller that dedupes on
-    /// `queue_key` depends on -- a newer, immediately-due duplicate would
-    /// win every later claim over the older one waiting out its backoff,
-    /// and the dead letter's own history would no longer describe the row
-    /// actually in flight.
+    /// `queue_key`: inserting a second row would break the one-row-per-key
+    /// invariant every caller that dedupes on `queue_key` depends on -- a
+    /// newer, immediately-due duplicate would win every later claim over
+    /// the older one waiting out its backoff, and the dead letter's own
+    /// history would no longer describe the row actually in flight.
     pub fn replay(&self, id: i64, now: i64) -> Result<()> {
         let conn = self.conn.lock().expect("queue connection lock poisoned");
         let (group_key, queue_key, payload, attempts): (String, String, Vec<u8>, i64) = conn
@@ -746,9 +741,9 @@ impl Queue {
     }
 
     /// The `EXPLAIN QUERY PLAN` `claim_due`'s own `SELECT` produces --
-    /// test-only, so the idle-tick budget (task.md: "one indexed query,
-    /// the worker must not scan") can be asserted structurally rather than
-    /// by wall-clock.
+    /// test-only, so the idle-tick budget -- one indexed query, the worker
+    /// must not scan -- can be asserted structurally rather than by
+    /// wall-clock.
     #[cfg(test)]
     fn explain_claim_plan(&self) -> Result<String> {
         let conn = self.conn.lock().expect("queue connection lock poisoned");
@@ -825,8 +820,8 @@ fn open_connection<P: AsRef<Path>>(
 /// failed attempt (1-indexed), capped at `policy.max_backoff_ms` --
 /// `RetryPolicy`'s own curve. [`Queue::fail`] applies
 /// `calculate_jittered_backoff` on top of this; tests pin the nominal,
-/// unjittered total the configured defaults promise (M05B B1 plan §0.12)
-/// by calling this directly.
+/// unjittered total the configured defaults promise by calling this
+/// directly.
 #[must_use]
 pub fn backoff_before_wait(policy: &RetryPolicy, wait_number: u32) -> u64 {
     let exponent = wait_number.saturating_sub(1);
@@ -854,7 +849,8 @@ mod tests {
         }
     }
 
-    /// Test 2: the whole point of a durable queue.
+    /// An enqueued item must still be there after the database is closed
+    /// and reopened -- the whole point of a durable queue.
     #[test]
     fn an_enqueued_item_survives_reopening_the_database() {
         let dir = tempfile::tempdir().unwrap();
@@ -911,7 +907,8 @@ mod tests {
         );
     }
 
-    /// Test 3: failure-matrix row 6.
+    /// Two workers must never both hold the same item: once claimed, it is
+    /// invisible to a second claim until its visibility timeout passes.
     #[test]
     fn a_claimed_item_is_invisible_to_a_second_claim() {
         let queue = Queue::open_in_memory(config()).unwrap();
@@ -924,7 +921,8 @@ mod tests {
         assert!(second.is_empty(), "a claimed item must not be claimable again immediately");
     }
 
-    /// Test 4: failure-matrix row 1, the crashed-worker case.
+    /// A worker that claims an item and then crashes must not lock it
+    /// forever: after the visibility timeout the item is claimable again.
     #[test]
     fn a_claim_that_is_never_completed_returns_to_pending_after_its_visibility_timeout() {
         let queue = Queue::open_in_memory(config()).unwrap();
@@ -940,9 +938,9 @@ mod tests {
         assert_eq!(reclaimed[0].id, claimed[0].id);
     }
 
-    /// M05B B1 review finding 7: a delivery that never calls `fail` (a
-    /// worker panic, a crashed process) must still consume a bounded
-    /// number of claims, not be handed out forever.
+    /// A delivery that never calls `fail` (a worker panic, a crashed
+    /// process) must still consume a bounded number of claims, not be
+    /// handed out forever.
     #[test]
     fn a_claim_that_never_resolves_still_counts_toward_the_claim_budget() {
         let mut cfg = config();
@@ -967,7 +965,7 @@ mod tests {
         assert_eq!(claimed[0].claim_count, 4, "claim_count keeps advancing past the budget too");
     }
 
-    /// Test 5: D-B1-13. The observed `next_attempt_at` must land within
+    /// The observed `next_attempt_at` must land within
     /// `calculate_jittered_backoff`'s documented +/-10% band around the
     /// pure, unjittered curve -- not merely "close to the default".
     #[test]
@@ -991,7 +989,8 @@ mod tests {
         );
     }
 
-    /// Test 6: failure-matrix row 4.
+    /// An item that uses up its attempt budget moves to the dead-letter
+    /// table and is gone from the outbox.
     #[test]
     fn an_item_that_exhausts_its_attempts_moves_to_the_dlq_and_leaves_the_outbox() {
         let queue = Queue::open_in_memory(config()).unwrap();
@@ -1015,10 +1014,9 @@ mod tests {
         assert_eq!(dead[0].last_error, "still unreachable");
     }
 
-    /// Test 7: M05B B1 plan §0.12's arithmetic, pinned against the actual
-    /// production defaults -- 54 attempts (53 waits), 100 ms initial
-    /// backoff, x2 multiplier, capped at 900 s -- summing to ~36,738 s
-    /// (~10.2 h), unjittered.
+    /// The production defaults -- 54 attempts (53 waits), 100 ms initial
+    /// backoff, x2 multiplier, capped at 900 s -- sum to ~36,738 s
+    /// (~10.2 h) of unjittered retrying before an item dead-letters.
     #[test]
     fn the_configured_defaults_give_a_ten_hour_window() {
         let policy = RetryPolicy {
@@ -1034,15 +1032,14 @@ mod tests {
             "expected ~36,738 s, got {total_secs} s"
         );
 
-        // The ceiling first binds at the 15th wait, not the 14th (plan
-        // §0.12's own corrected arithmetic).
+        // The ceiling first binds at the 15th wait, not the 14th.
         assert_eq!(backoff_before_wait(&policy, 14), 819_200);
         assert_eq!(backoff_before_wait(&policy, 15), 900_000);
     }
 
     /// `SupervisorRole::default()`'s five `queue_*` fields convert into
-    /// exactly the curve test 7 pins by hand, so the two cannot silently
-    /// drift apart.
+    /// exactly the same curve the hand-written default-window test pins, so
+    /// the two cannot silently drift apart.
     #[test]
     fn supervisor_role_defaults_convert_into_the_same_ten_hour_window() {
         let role = SupervisorRole::default();
@@ -1082,8 +1079,8 @@ mod tests {
         assert_eq!(QueueConfig::from(&role).retry.max_attempts, 1);
     }
 
-    /// M05B B1 review finding 9: a configured `queue_max_attempts` of 0
-    /// must not silently turn the queue into an instant DLQ.
+    /// A configured `queue_max_attempts` of 0 must not silently turn the
+    /// queue into an instant DLQ.
     #[test]
     fn a_configured_zero_max_attempts_is_clamped_to_one() {
         let role = SupervisorRole { queue_max_attempts: 0, ..SupervisorRole::default() };
@@ -1091,7 +1088,7 @@ mod tests {
         assert_eq!(cfg.retry.max_attempts, 1, "0 must clamp to 1, not dead-letter with zero tries");
     }
 
-    /// Test 8: D-B1-9.
+    /// A completed item is deleted outright, not kept as a tombstone.
     #[test]
     fn a_completed_item_is_deleted_not_tombstoned() {
         let queue = Queue::open_in_memory(config()).unwrap();
@@ -1100,7 +1097,8 @@ mod tests {
         assert!(queue.all().unwrap().is_empty());
     }
 
-    /// Test 9: D-B1-9's bound, as a number and a trigger.
+    /// The dead-letter table is capped at its row limit, and pruning runs
+    /// oldest-first on every write.
     #[test]
     fn the_dlq_is_capped_at_its_row_limit_and_prunes_oldest_first() {
         let mut cfg = config();
@@ -1121,9 +1119,8 @@ mod tests {
         assert_eq!(keys, vec!["k2", "k3", "k4"]);
     }
 
-    /// M05B B1 review finding 4: the cap and its pruning are scoped per
-    /// `group_key`, so one noisy group cannot evict another's dead
-    /// letters.
+    /// The cap and its pruning are scoped per `group_key`, so one noisy
+    /// group cannot evict another's dead letters.
     #[test]
     fn the_dlq_cap_is_scoped_per_group_not_across_the_whole_table() {
         let mut cfg = config();
@@ -1156,9 +1153,8 @@ mod tests {
         );
     }
 
-    /// Test 10: failure-matrix row 9 -- a queued item whose target no
-    /// longer exists is terminal, not retryable, regardless of budget
-    /// remaining.
+    /// A queued item whose target no longer exists is terminal, not
+    /// retryable, regardless of budget remaining.
     #[test]
     fn a_terminal_error_skips_the_remaining_attempts() {
         let queue = Queue::open_in_memory(config()).unwrap();
@@ -1172,9 +1168,8 @@ mod tests {
         assert_eq!(dead[0].attempts, 1, "a terminal failure dead-letters on its first attempt");
     }
 
-    /// Test 11: the idle-tick budget -- "one indexed query, no scan"
-    /// (task.md), asserted structurally via the query plan rather than by
-    /// timing.
+    /// The idle-tick budget -- one indexed query, no scan -- asserted
+    /// structurally via the query plan rather than by timing.
     #[test]
     fn an_empty_queue_tick_issues_one_indexed_query_and_no_scan() {
         let queue = Queue::open_in_memory(config()).unwrap();
@@ -1188,9 +1183,9 @@ mod tests {
         assert!(!plan.to_uppercase().contains("SCAN TABLE"), "expected no table scan, got: {plan}");
     }
 
-    /// Test 12: the `< 1 ms` enqueue-on-failure budget (task.md), asserted
-    /// as one row changed by exactly one statement rather than wall-clock,
-    /// so CI noise cannot fail it.
+    /// The `< 1 ms` enqueue-on-failure budget, asserted as one row changed
+    /// by exactly one statement rather than wall-clock, so CI noise cannot
+    /// fail it.
     #[test]
     fn enqueue_on_failure_costs_one_insert() {
         let queue = Queue::open_in_memory(config()).unwrap();
@@ -1199,8 +1194,8 @@ mod tests {
         assert_eq!(conn.changes(), 1, "enqueue must be exactly one INSERT");
     }
 
-    /// M05B B1 review finding 15: the indexed dedup lookup a caller uses
-    /// before every enqueue must not scan.
+    /// The indexed dedup lookup a caller uses before every enqueue must
+    /// not scan.
     #[test]
     fn has_pending_uses_the_indexed_lookup_and_no_scan() {
         let queue = Queue::open_in_memory(config()).unwrap();
@@ -1210,8 +1205,8 @@ mod tests {
         assert!(!queue.has_pending("other").unwrap());
     }
 
-    /// D-B1-7: replay re-enqueues without executing inline, and does not
-    /// simply mutate the dead letter in place.
+    /// Replay re-enqueues without executing inline, and does not simply
+    /// mutate the dead letter in place.
     #[test]
     fn replay_re_enqueues_rather_than_executing_inline() {
         let mut cfg = config();
@@ -1234,8 +1229,8 @@ mod tests {
         assert_eq!(queue.claim_due(2_000, 10).unwrap().len(), 1);
     }
 
-    /// M05B B1 review finding 2: replaying a dead letter whose key already
-    /// has a pending outbox row must not create a second row for that key.
+    /// Replaying a dead letter whose key already has a pending outbox row
+    /// must not create a second row for that key.
     #[test]
     fn replay_refuses_when_a_pending_row_already_exists_for_the_key() {
         let mut cfg = config();
@@ -1284,9 +1279,8 @@ mod tests {
         assert_eq!(queue.all().unwrap().len(), 1);
     }
 
-    /// Failure-matrix row 5: a replayed item that fails again returns to
-    /// the DLQ with its attempt history intact, rather than a fresh
-    /// budget.
+    /// A replayed item that fails again returns to the DLQ with its
+    /// attempt history intact, rather than a fresh budget.
     #[test]
     fn a_replayed_item_that_fails_again_returns_to_the_dlq_with_its_history() {
         let mut cfg = config();

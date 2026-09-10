@@ -818,7 +818,8 @@ fn do_query(
 
 /// Mode A `check-access`: `sieve` is `None` either because the caller passed
 /// no `auth` or because the policy names no definition for `collection` (an
-/// unfiltered read); either way that's D3's existence check. `Some(sieve)`
+/// unfiltered read); either way that falls back to a plain existence
+/// check. `Some(sieve)`
 /// (possibly the `deny_all` `0=1`) is a self-contained `id`-bound predicate
 /// (`Mode::PointInTime`), same shape as `do_get`'s sieve branch.
 fn do_check_access(
@@ -869,7 +870,7 @@ fn do_check_access(
 }
 
 /// Lists the service's collections (user tables) for the deploy-time
-/// `strict:` author-time warning (ADR-0017 §1/D-04-02-c): excludes SQLite
+/// `strict:` author-time warning (ADR-0017 §1): excludes SQLite
 /// internals (`sqlite_%`) and the host's own `_vault` table, since those are
 /// never `definitions:` targets in a policy document.
 fn do_list_collections(conn: &mut Connection) -> Result<Vec<String>, host_store::DataLayerError> {
@@ -893,7 +894,7 @@ fn do_list_collections(conn: &mut Connection) -> Result<Vec<String>, host_store:
     Ok(names)
 }
 
-/// Runs an `aggregate` call (ADR-0007, Slice B4) on the reader pool. The
+/// Runs an `aggregate` call (ADR-0007) on the reader pool. The
 /// compiled SQL is entirely host-generated (bound params + validated
 /// identifiers only), so it is `readonly()` by construction and needs none
 /// of `do_query_raw`'s authorizer (`deny_query_raw_escapes` defends against
@@ -1025,7 +1026,7 @@ fn map_query_raw_step_error(e: rusqlite::Error) -> host_store::DataLayerError {
     map_rusqlite_error(e)
 }
 
-/// Coarse compute bound (Flag S2, B5 post-commit review): the page cap
+/// Coarse compute bound: the page cap
 /// (`MAX_QUERY_PAGE_SIZE`) only bounds *emitted rows* -- a recursive CTE or
 /// an unconstrained cross join can do effectively unbounded work while
 /// producing few or no output rows, pinning a reader-pool connection
@@ -1091,7 +1092,7 @@ fn install_watchdog(conn: &Connection) -> Result<ProgressGuard<'_>, host_store::
 /// Returns `(clause, params)` = RLS ∧ each compiled caveat's `where`. RLS
 /// and caveat `where` filters are both intersective and must AND together
 /// -- dropping `where_caveats` would let a `caveats.where={"region":"EU"}`
-/// caller see every region (Phase-1 dropped-caveat bug class).
+/// caller see every region (a dropped-caveat bug).
 fn merge_sieve(
     sieve: &CompiledSieve,
 ) -> Result<(String, Vec<SqlValue>), host_store::DataLayerError> {
@@ -1171,7 +1172,7 @@ fn sieve_masked_fields(sieve: &Option<CompiledSieve>) -> Vec<String> {
 }
 
 /// Executes a privileged read-only raw-SQL query (ADR-0011) on the reader
-/// pool. Read-only enforcement (D2 of B5.md) is two-layered: `Statement::
+/// pool. Read-only enforcement is two-layered: `Statement::
 /// readonly()` rejects statements that write the database's content
 /// (INSERT/UPDATE/DELETE/DDL/PRAGMA-write), and the authorizer installed
 /// below (`deny_query_raw_escapes`) rejects the connection-configuration
@@ -2575,7 +2576,7 @@ mod tests {
         assert_eq!(via_load, via_load2);
     }
 
-    /// M04A Slice B6 §5 test 5: two distinct `service_id`s under one master
+    /// Two distinct `service_id`s under one master
     /// KEK produce two working, independently-keyed service DBs, exercising
     /// the full `StorageProvider` path with per-instance derivation.
     #[tokio::test]
@@ -2600,8 +2601,8 @@ mod tests {
         assert_ne!(dek_a, dek_b);
     }
 
-    /// M04A Slice B6 §5 test 6 -- the failure row mirrored at the storage
-    /// layer: a DEK that is genuinely instance A's own (not a copy of B's)
+    /// The negative case at the storage layer: a DEK that is genuinely
+    /// instance A's own (not a copy of B's)
     /// does not open instance B's on-disk SQLCipher database. SQLCipher
     /// accepts any `PRAGMA key`; a wrong key surfaces as a decrypt failure
     /// on the first real read ("file is not a database"), asserted here via
@@ -2879,7 +2880,7 @@ mod tests {
         assert!(provider.service_exists("svc-a").await.unwrap());
     }
 
-    // -- FDAE watchdog matrix (ADR-0017 §8, M04B Slice B2 Phase 2) ----------
+    // -- FDAE watchdog matrix (ADR-0017 §8) --------------------------------
     //
     // Hand-builds a `CompiledSieve` whose `where_clause` is a pathological
     // scalar subquery (mirroring `test_query_raw_bounds_compute_independent_
@@ -2949,9 +2950,9 @@ mod tests {
         assert!(do_check_access(&conn, "documents", "doc-1", None).unwrap());
     }
 
-    /// ADR-0017 §9 decision trace, "rows not reached" (M04B Slice B2
-    /// Phase 5): `compile_read` cannot know whether a row actually
-    /// satisfies its compiled predicate -- it only produces SQL. Only
+    /// ADR-0017 §9 decision trace, "rows not reached": `compile_read`
+    /// cannot know whether a row actually satisfies its compiled
+    /// predicate -- it only produces SQL. Only
     /// `do_check_access`, after running that predicate against a real row,
     /// can know. This is the one deny reason that isn't knowable at compile
     /// time, so it's tested here (post-execution) rather than in

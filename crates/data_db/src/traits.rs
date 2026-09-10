@@ -84,9 +84,8 @@ pub trait StorageProvider: Send + Sync {
     ) -> anyhow::Result<Option<(u64, String)>>;
 
     /// Records a guest messaging subscription so it survives a substrate
-    /// restart (see `messaging_subscriptions`, M3B Slice 6A / ADR-0010
-    /// Finding A1). Idempotent: re-subscribing to the same topic is a
-    /// no-op, not an error.
+    /// restart (see `messaging_subscriptions`, ADR-0010). Idempotent:
+    /// re-subscribing to the same topic is a no-op, not an error.
     async fn save_messaging_subscription(
         &self,
         service_id: &str,
@@ -219,7 +218,7 @@ pub trait ServiceStore: Send + Sync {
         auth: Option<&QueryAuth<'_>>,
     ) -> Result<ReadOutcome<host_store::QueryResult>, host_store::DataLayerError>;
 
-    /// Runs an aggregation (ADR-0007, Slice B4) over a collection: compiles
+    /// Runs an aggregation (ADR-0007) over a collection: compiles
     /// the MongoDB-style aggregation document `pipeline` to a parameterized
     /// `GROUP BY`/`HAVING` query and returns the projected columns/rows.
     /// Safe by construction (whitelisted operators, all values bound) -- no
@@ -257,8 +256,8 @@ pub trait ServiceStore: Send + Sync {
 
     /// Applies all mutations in a single transaction, rolling back entirely
     /// on the first failure -- including the first unauthorized mutation
-    /// when `auth` is `Some` (D-04-02-f: `batch_mutate` authorizes per
-    /// mutation, inside the one transaction). See `put`'s doc comment for
+    /// when `auth` is `Some`: `batch_mutate` authorizes per mutation,
+    /// inside the one transaction. See `put`'s doc comment for
     /// `auth`'s write-check semantics.
     async fn batch_mutate(
         &self,
@@ -275,8 +274,8 @@ pub trait ServiceStore: Send + Sync {
     /// interpolated; (2) the statement is read-only (a mutating statement
     /// returns `permission-denied`).
     ///
-    /// **One narrow, deliberate exception**: Slice B3's `resolve-relation`
-    /// (`crates/control_plane/src/synsvc_native.rs`'s A2 branch) calls this
+    /// **One narrow, deliberate exception**: the `resolve-relation` path
+    /// (in `crates/control_plane/src/synsvc_native.rs`) calls this
     /// without an admin check, for a caller holding no relevant capability
     /// at all. Safe there specifically because the SQL/params come from
     /// `syneroym_fdae::resolve_structural`, whose identifiers are

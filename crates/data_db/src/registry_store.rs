@@ -71,7 +71,7 @@ impl SqliteEndpointStorage {
                 );",
                 [],
             )?;
-            // M04A Slice B7a: service ownership. Separate table, not a
+            // Service ownership. Separate table, not a
             // column on local_endpoints -- ownership is per service, and
             // local_endpoints is keyed (service_id, interface_name), so a
             // column would duplicate the owner across every interface and
@@ -96,7 +96,7 @@ impl SqliteEndpointStorage {
                 );",
                 [],
             )?;
-            // A2: which app instance and logical name a deployed service
+            // Which app instance and logical name a deployed service
             // belongs to, and its resolved dependency bindings. Same
             // unconditional-creation reasoning as the tables above.
             conn.execute(
@@ -108,7 +108,7 @@ impl SqliteEndpointStorage {
                 );",
                 [],
             )?;
-            // A4: what a deploy said this service *is*, and how to probe it.
+            // What a deploy said this service *is*, and how to probe it.
             //
             // The type is not derivable after the fact: a container and a
             // TCP service both register `SubstrateEndpoint::TcpHostPort`
@@ -127,13 +127,13 @@ impl SqliteEndpointStorage {
                 );",
                 [],
             )?;
-            // `manifest_hash` (M05A A5a): the canonical content hash of what
-            // was actually installed, written only on full deploy success --
-            // the dedup key for failure-matrix row 10, distinct from the
-            // epoch guard and the generation gate (ADR-0021 §3).
+            // `manifest_hash`: the canonical content hash of what was
+            // actually installed, written only on full deploy success --
+            // the dedup key, distinct from the epoch guard and the
+            // generation gate (ADR-0021 §3).
             //
             // Unlike every table above, `service_deploy_facts` predates this
-            // column (A4), so `CREATE TABLE IF NOT EXISTS` is a no-op here --
+            // column, so `CREATE TABLE IF NOT EXISTS` is a no-op here --
             // it never adds a column to a table that already exists. This
             // `ALTER TABLE` is the one idempotent way to get the column onto
             // a database that opened before it existed; it is not the
@@ -164,11 +164,11 @@ impl SqliteEndpointStorage {
                 );",
                 [],
             )?;
-            // M05A A5a: who manages an app instance on this substrate
-            // (ADR-0021 §4). Replaces A2's `app_instance_owners` outright --
+            // Who manages an app instance on this substrate (ADR-0021 §4).
+            // Replaces the old `app_instance_owners` table outright --
             // pre-release, so no `ALTER TABLE`/version ladder (see AGENTS.md);
             // the old table simply stops being created. `owner_did` keeps
-            // A2's first-write-wins takeover guard; `supervisor_did`/
+            // the first-write-wins takeover guard; `supervisor_did`/
             // `generation` are new: `None`/`0` means "unmanaged", which is
             // what every operator-driven `roymctl app deploy` sends and what
             // an un-adopted instance accepts.
@@ -515,9 +515,9 @@ impl EndpointStorage for SqliteEndpointStorage {
         task::spawn_blocking(move || -> Result<Vec<(String, String, String, String)>> {
             let conn = lock_db(&conn_arc)?;
             // `ORDER BY` makes a multi-writer conflict on the same
-            // `(app_instance_id, dependency_name)` (D-A2-10, last-write-
-            // wins) replay the same way on every restart instead of
-            // depending on SQLite's unspecified row order.
+            // `(app_instance_id, dependency_name)` (last-write-wins) replay
+            // the same way on every restart instead of depending on
+            // SQLite's unspecified row order.
             let mut stmt = conn.prepare(
                 "SELECT service_id, app_instance_id, dependency_name, entry_json FROM \
                  service_bindings ORDER BY service_id, dependency_name",
@@ -699,11 +699,11 @@ mod tests {
         (store, dir)
     }
 
-    /// A4-15: every other deploy-facts test writes through `MockStorage` or
+    /// Every other deploy-facts test writes through `MockStorage` or
     /// a live single-process deploy -- nothing proves the round trip through
     /// a real `SqliteEndpointStorage` file and back out, which is the fact
-    /// D-A4-7/D-A4-17 rest on (`instance_phase`'s recorded-type lookup and
-    /// `readyz`'s repaired guess). If this path regressed, every service on
+    /// `instance_phase`'s recorded-type lookup and `readyz`'s repaired guess
+    /// rest on. If this path regressed, every service on
     /// a rebooted node would silently fall to `Unknown("no service type
     /// recorded")` and `readyz` would quietly stop inspecting containers --
     /// a healthy-looking failure the suite would otherwise never catch.
@@ -738,13 +738,12 @@ mod tests {
         assert_eq!(facts[0].4.as_deref(), Some("internal"));
     }
 
-    /// `service_deploy_facts` predates `manifest_hash` (A4 created the
-    /// table, A5a added the column) -- unlike every other table in this
-    /// file, `CREATE TABLE IF NOT EXISTS` is a no-op against it, so the
-    /// column needs its own idempotent `ALTER TABLE`. Built with a raw
-    /// `Connection` for the same reason as
+    /// `service_deploy_facts` predates its `manifest_hash` column -- unlike
+    /// every other table in this file, `CREATE TABLE IF NOT EXISTS` is a
+    /// no-op against it, so the column needs its own idempotent `ALTER
+    /// TABLE`. Built with a raw `Connection` for the same reason as
     /// `an_existing_database_gains_the_certificate_table_on_open`: it has to
-    /// reproduce the pre-A5a, `manifest_hash`-less table directly, not go
+    /// reproduce the older, `manifest_hash`-less table directly, not go
     /// through `SqliteEndpointStorage::new`, which already creates the
     /// column unconditionally regardless of whether the `ALTER TABLE` still
     /// runs.
@@ -933,8 +932,8 @@ mod tests {
         );
     }
 
-    /// M04A Slice B7a: a freshly created `endpoints.db` gets both tables in
-    /// the same `version == 0` migration block -- `service_owners` is usable
+    /// A freshly created `endpoints.db` gets both tables in the same
+    /// `version == 0` migration block -- `service_owners` is usable
     /// immediately, no separate migration step.
     #[tokio::test]
     async fn test_fresh_db_gets_service_owners_table() {
@@ -1042,7 +1041,7 @@ mod tests {
         assert_eq!(certs, vec![("svc-1".to_string(), r#"{"fake":"cert"}"#.to_string())]);
     }
 
-    /// A2's own version of the same regression: a database that predates
+    /// Another version of the same regression: a database that predates
     /// `service_app_context`/`service_bindings` must still gain both tables
     /// on the next open, for the identical reason `an_existing_database_
     /// gains_the_certificate_table_on_open` exists one table over.
@@ -1116,10 +1115,10 @@ mod tests {
         );
     }
 
-    /// Finding 05 (post-review fix): `load_all_bindings`'s replay consumer
+    /// `load_all_bindings`'s replay consumer
     /// (`substrate::runtime::replay_persisted_bindings`) discards
     /// `service_id` and keys purely on `(app_instance_id, dependency_name)`
-    /// -- last-write-wins (D-A2-10) means a conflict between two services'
+    /// -- last-write-wins means a conflict between two services'
     /// rows for the same instance/name depends entirely on iteration order.
     /// Inserted deliberately out of both id order and insertion order, so a
     /// `SELECT` with no `ORDER BY` (SQLite's row order is otherwise
