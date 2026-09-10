@@ -13,8 +13,8 @@ fn now_secs() -> u64 {
 }
 
 /// Verification of a 2-link chain (`owner` -> `alice` -> `bob`, one
-/// attenuation hop), cache-cold -- the M04A performance budget's "UCAN
-/// chain verification (cache-cold) < 5 ms p99" (task.md).
+/// attenuation hop), cache-cold -- the performance budget is "UCAN chain
+/// verification (cache-cold) < 5 ms p99".
 fn bench_chain_verify(c: &mut Criterion) {
     let owner = Identity::generate().unwrap();
     let alice = Identity::generate().unwrap();

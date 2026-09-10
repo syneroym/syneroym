@@ -24,7 +24,7 @@ impl ResourceUri {
     /// resource -- node-wide authority (ADR-0015 §1, "`substrate/admin` ⊇
     /// everything on that node") -- as opposed to a `synapp:...:svc:...`
     /// service resource or a *selector-bearing* `substrate:<node_did>/
-    /// <selector>` one (ADR-0015 A1, M04A Slice B7b/F2). A selector-bearing
+    /// <selector>` one (ADR-0015 A1). A selector-bearing
     /// `substrate:` resource (e.g. `orchestrator`'s
     /// `substrate:<node>/app/<name>`) names a specific resource, not
     /// node-wide authority, and must prefix-match like any other --
@@ -33,13 +33,12 @@ impl ResourceUri {
     /// Note: this checks the `substrate:` *prefix* only, not which node's
     /// DID follows it -- `covers`/`grants` therefore treat *any* **bare**
     /// `substrate:<node_did>` capability as a wildcard over all resources,
-    /// including a `substrate:<other-node>` one. Inert at B1 (the only
-    /// issuer of a substrate-scoped capability is this node's own admin
-    /// root, naming its own DID -- see `covers`'s tests); at B7b this is
-    /// exactly the shape `build_caller` still issues for a verified
-    /// `ControllerAgreement` controller's `substrate/admin`, so it stays
-    /// inert there too. The node-locality check ADR-0015
-    /// A6/F6 calls for lives in
+    /// including a `substrate:<other-node>` one. This stays inert in
+    /// practice: the only issuer of a substrate-scoped capability is this
+    /// node's own admin root, naming its own DID (see `covers`'s tests),
+    /// and the same shape is what `build_caller` issues for a verified
+    /// `ControllerAgreement` controller's `substrate/admin`. The
+    /// node-locality check ADR-0015 A6 calls for lives in
     /// the *chain-rooting* predicate (`ChainVerifyOpts::is_trusted_root`,
     /// `crates/router/src/route_handler/io.rs`'s `resource_is_local`), not
     /// here -- threading `local_node_did` through `Capability::grants`/
@@ -82,8 +81,8 @@ impl ResourceUri {
     /// selector on `self` but none on `other` is **not** covered (a
     /// selector-restricted grant does not cover the broader, unrestricted
     /// resource). A trailing `/` or a `*` segment is a prefix wildcard,
-    /// matching whole segments only, never a partial string (M04A Slice
-    /// B7b/F8) -- `app/acme-` does **not** cover `app/acme-evil`.
+    /// matching whole segments only, never a partial string --
+    /// `app/acme-` does **not** cover `app/acme-evil`.
     #[must_use]
     pub fn covers_resource(&self, other: &Self) -> bool {
         let (self_base, self_selector) = self.split_selector();
@@ -119,9 +118,9 @@ impl Ability {
     pub const DATA_LAYER_WRITE: &'static str = "data-layer/write";
     pub const MESSAGING_PUBLISH: &'static str = "messaging/publish";
     pub const MESSAGING_SUBSCRIBE: &'static str = "messaging/subscribe";
-    /// M04A Slice B7a/B7b: deploy/undeploy/status-check on the orchestrator
-    /// interface. Flat -- each entails only itself (§6 Q6: no `tier` entry),
-    /// so "deploy but not undeploy" stays expressible.
+    /// Deploy/undeploy/status-check on the orchestrator interface. Flat --
+    /// each entails only itself (no `tier` entry), so "deploy but not
+    /// undeploy" stays expressible.
     pub const ORCHESTRATOR_DEPLOY: &'static str = "orchestrator/deploy";
     pub const ORCHESTRATOR_STATUS: &'static str = "orchestrator/status";
     pub const ORCHESTRATOR_UNDEPLOY: &'static str = "orchestrator/undeploy";
@@ -170,7 +169,7 @@ impl Ability {
 /// to optional passthrough `caveats`. **`caveats` are not evaluated by
 /// `grants`/`covers` today** -- they pass through unread; a caveat-restricted
 /// capability is currently treated identically to an unrestricted one.
-/// Rich caveat evaluation is FDAE/M04B; until it lands, do not rely on
+/// Rich caveat evaluation is future work; until it lands, do not rely on
 /// `caveats` to actually narrow a grant (see
 /// `caveats_passthrough_is_not_yet_enforced`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,8 +184,8 @@ impl Capability {
     /// node-scoped (`substrate:<node_did>`, no selector) grant authorizes any
     /// resource on this node, per ADR-0015 §1 ("`substrate/admin` ⊇
     /// everything on that node"); otherwise the resource must be covered by
-    /// `self.with` (ADR-0015 A1's segment-wise prefix cover, M04A Slice
-    /// B7b/F2). Either way `self.can` must entail `ability`.
+    /// `self.with` (the segment-wise prefix cover of ADR-0015 A1). Either
+    /// way `self.can` must entail `ability`.
     #[must_use]
     pub fn grants(&self, resource: &ResourceUri, ability: &Ability) -> bool {
         if self.with.is_substrate_scope() {
@@ -199,7 +198,7 @@ impl Capability {
     /// `other` (a requested/child capability) asks for. A bare
     /// `substrate:`-scoped `self` covers any resource; otherwise `self.with`
     /// must cover `other.with` (the same prefix-cover rule `grants` uses,
-    /// factored out so UCAN chain attenuation (B1) can reuse it directly).
+    /// factored out so UCAN chain attenuation can reuse it directly).
     #[must_use]
     pub fn covers(&self, other: &Capability) -> bool {
         (self.with.is_substrate_scope() || self.with.covers_resource(&other.with))
@@ -207,13 +206,14 @@ impl Capability {
     }
 
     /// ADR-0015 A3: whether this capability may be further delegated.
-    /// Absent ⇒ `true` (B1's behavior, before caveats were evaluated at all).
-    /// Once `false`, terminal along a chain -- composition is a *check*, not
-    /// a conjunction (`token::granted_capabilities` is the one place a
-    /// parent capability backs a child's; it requires `pc.can_delegate()`
-    /// there). This is the one caveat B7b evaluates; `where`/`fields` (A3's
-    /// other two forms) remain unevaluated passthrough, same as before --
-    /// see `caveats_passthrough_is_not_yet_enforced`.
+    /// Absent ⇒ `true` (the original behavior, before caveats were
+    /// evaluated at all). Once `false`, terminal along a chain --
+    /// composition is a *check*, not a conjunction
+    /// (`token::granted_capabilities` is the one place a parent capability
+    /// backs a child's; it requires `pc.can_delegate()` there). This is the
+    /// one caveat evaluated today; the other two forms in ADR-0015 A3
+    /// (`where`/`fields`) remain unevaluated passthrough -- see
+    /// `caveats_passthrough_is_not_yet_enforced`.
     #[must_use]
     pub fn can_delegate(&self) -> bool {
         self.caveats
@@ -398,13 +398,13 @@ mod tests {
     /// behavior for `where`/`fields`-shaped caveats: a caveat on either side
     /// of `grants`/`covers` is completely ignored -- a caveat-restricted
     /// capability behaves exactly like an unrestricted one. Rich `where`/
-    /// `fields` caveat evaluation belongs to FDAE/M04B; this test exists so
+    /// `fields` caveat evaluation is future work; this test exists so
     /// that gap isn't silently forgotten once caveats gain real meaning.
     ///
-    /// **Narrowed at M04A Slice B7b (ADR-0015 A3):** `can_delegate` is no
-    /// longer part of this passthrough -- it is now evaluated (`Capability::
-    /// can_delegate`, checked by `token::granted_capabilities` at
-    /// attenuation time, not by `grants`/`covers` here). See
+    /// **`can_delegate` (ADR-0015 A3) is no longer part of this
+    /// passthrough** -- it is now evaluated (`Capability::can_delegate`,
+    /// checked by `token::granted_capabilities` at attenuation time, not by
+    /// `grants`/`covers` here). See
     /// `token.rs`'s `can_delegate_false_blocks_further_delegation` for that
     /// behavior. This test uses an unrelated caveat key (`rows`) so it stays
     /// a clean pin of what is still unenforced.
@@ -440,15 +440,14 @@ mod tests {
     /// behavior: it does not check *which* node's DID the *bare*
     /// `substrate:` resource names, so a capability scoped to a *different*
     /// node's substrate resource still covers/grants everything, exactly
-    /// like one scoped to this node's own DID. At B1 this was inert (the
-    /// only issuer of a substrate-scoped capability was this node's own
-    /// admin root, naming its own DID).
+    /// like one scoped to this node's own DID. This is inert in practice:
+    /// the only issuer of a substrate-scoped capability is this node's own
+    /// admin root, naming its own DID.
     ///
-    /// **M04A Slice B7b (F6): still true here, on purpose.** The plan's
-    /// resolution does *not* thread `local_node_did` through
-    /// `Capability::grants`/`covers` -- doing so would touch every call site
-    /// and every other test in this module for a check that belongs one
-    /// layer up, at the *chain-rooting* predicate
+    /// **Still true here, on purpose.** The resolution does *not* thread
+    /// `local_node_did` through `Capability::grants`/`covers` -- doing so
+    /// would touch every call site and every other test in this module for
+    /// a check that belongs one layer up, at the *chain-rooting* predicate
     /// (`ChainVerifyOpts::is_trusted_root`, evaluated in
     /// `crates/router/src/route_handler/io.rs`'s `build_caller`), which
     /// already knows the evaluating node's own DID and is where an
@@ -470,16 +469,15 @@ mod tests {
         );
     }
 
-    // -- M04A Slice B7b: ADR-0015 A1 selectors / F2 / F8 ---------------
+    // -- ADR-0015 A1 selectors ----------------------------------------
 
     fn substrate_app(node_did: &str, selector: &str) -> ResourceUri {
         ResourceUri(format!("substrate:{node_did}/{selector}"))
     }
 
-    /// F2 -- the test that would have caught the wildcard bug the plan
-    /// documents: a capability scoped to one app's selector must not grant
-    /// on a *different* app's selector, even though both share the
-    /// `substrate:` prefix.
+    /// A capability scoped to one app's selector must not grant on a
+    /// *different* app's selector, even though both share the `substrate:`
+    /// prefix.
     #[test]
     fn selector_scoped_substrate_capability_does_not_grant_a_different_app() {
         let cap = Capability {
@@ -516,7 +514,7 @@ mod tests {
         }
     }
 
-    /// F8 -- `*` is a whole-segment wildcard only, never a partial-string
+    /// `*` is a whole-segment wildcard only, never a partial-string
     /// prefix: `app/acme-` must not cover `app/acme-evil`.
     #[test]
     fn wildcard_is_whole_segment_only_not_a_string_prefix() {
