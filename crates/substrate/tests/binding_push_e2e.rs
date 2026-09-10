@@ -324,7 +324,7 @@ async fn deploy_two_service_app(
 
 /// The core claim ADR-0021 §1/§3 exist for: a membership change reaches a
 /// dependent deployed on a *different* node without a redeploy. Verified
-/// through `status`'s `binding-epochs` (M05A A5a §6) -- the persisted,
+/// through `status`'s `binding-epochs` -- the persisted,
 /// per-dependent row `write-bindings` updates -- rather than a live guest
 /// call: no wasm test-component in this tree exports a `dependency(...)`
 /// test-driver interface, and building one is a larger undertaking than
@@ -343,8 +343,8 @@ async fn a_membership_change_pushed_to_a_dependent_takes_effect_without_a_redepl
     let frontend_svc =
         plan.services.iter().find(|s| s.logical_ref.service_name.as_str() == "frontend").unwrap();
 
-    // The initial deploy emits the binding at epoch 0 (A2 mints no
-    // epochs; the supervisor does).
+    // The initial deploy emits the binding at epoch 0 (the deploy path
+    // itself mints no epochs; the supervisor does).
     let before = client_a.status(vec![frontend_svc.service_id.to_string()]).await.unwrap();
     assert_eq!(before.services.len(), 1, "{before:?}");
     assert_eq!(before.services[0].binding_epochs, vec![("backend".to_string(), 0)]);
@@ -382,7 +382,7 @@ async fn a_membership_change_pushed_to_a_dependent_takes_effect_without_a_redepl
     node_b.teardown().await;
 }
 
-/// Matrix row 5, live: a late-arriving retry presenting an epoch below the
+/// A late-arriving retry presenting an epoch below the
 /// one already held must not regress the mapping, proven against a real
 /// substrate rather than the pure `classify_binding_write` unit test.
 #[tokio::test]

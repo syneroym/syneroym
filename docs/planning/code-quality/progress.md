@@ -57,7 +57,7 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/app_supervisor` | 267 | 45 | 3 | 9 | done | done | done |
 | `crates/control_plane` | 151 | 40 | 3 | 14 | done | | |
 | `crates/router` | 120 | 27 | 5 | 12 | done | | |
-| `crates/substrate` | 110 | 28 | 1 | 29 | | | |
+| `crates/substrate` | 110 | 28 | 1 | 29 | done | | |
 | `crates/sdk` | 101 | 47 | 4 | 3 | | | |
 | `crates/sandbox_wasm` | 90 | 16 | 3 | 6 | | | |
 | `crates/core` | 75 | 37 | 3 | 0 | | | |

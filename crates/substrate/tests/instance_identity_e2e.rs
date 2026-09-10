@@ -29,7 +29,7 @@
 //! and every real cross-node call this fixture's sibling
 //! (`federated_fdae_e2e.rs`) drives is `CallOrigin::Native` on a TCP
 //! service, which that arm does not touch. Building a WASM-guest two-node
-//! harness for that one wire hop is out of scope for this slice; the
+//! harness for that one wire hop is out of scope here; the
 //! guest-arm's actual code path is proven at the router level instead
 //! (`crates/router/src/proxy.rs`'s `a_guest_call_travels_under_its_
 //! services_member_master_not_the_node_identity` and neighboring tests).
@@ -152,7 +152,7 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
 
     // A wrong-scope certificate over the *same* correctly-derived key is
     // rejected at deploy -- the install-time check, live against a real
-    // substrate (matrix row 2's install-time half).
+    // substrate.
     let wrong_scope_cert =
         DelegationCertificate::issue(&member_master, pubkey_a, 3600, "routing".to_string())
             .unwrap();

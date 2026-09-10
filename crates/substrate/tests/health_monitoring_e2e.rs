@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Health, read-only (M05A Slice A4), proven across two genuinely independent
+//! Health, read-only, proven across two genuinely independent
 //! `syneroym-substrate` instances -- the reference scenario's own two-node
 //! topology, this time polled rather than deployed.
 //!
@@ -57,7 +57,7 @@ async fn client_for(
 }
 
 /// The owner's own client, node-wide by construction (`admin_ucan_root`) --
-/// no grant needed. This is what a caller reading `node-facts` (D-A4-18)
+/// no grant needed. This is what a caller reading `node-facts`
 /// must be.
 async fn owner_client_for(node: &SubstrateNode, owner: &Identity) -> SyneroymClient {
     let mut client = node.client_as(Identity::from_bytes(&owner.to_bytes()));
@@ -91,9 +91,9 @@ async fn boot_pair(owner: &Identity) -> (SubstrateNode, SubstrateNode) {
 
 /// Deploys a bare TCP service directly against `client`'s own node,
 /// optionally with a declared health check, via a single raw
-/// `orchestrator/deploy` call -- A4's status query needs no member master,
-/// instance certificate, or app context, so this skips A3's minting
-/// machinery entirely.
+/// `orchestrator/deploy` call -- the status query needs no member master,
+/// instance certificate, or app context, so this skips the certificate
+/// minting machinery entirely.
 async fn deploy_tcp(
     client: &SyneroymClient,
     service_id: &str,
@@ -179,7 +179,7 @@ async fn both_services_report_healthy_and_each_node_reports_its_own_registry() {
     deploy_tcp(&client_a, "e2e-frontend", port_a, Some(tcp_connect_check())).await;
     deploy_tcp(&client_b, "e2e-backend", port_b, Some(tcp_connect_check())).await;
 
-    // Node-wide (owner) clients, so `node-facts` (D-A4-18) come back too.
+    // Node-wide (owner) clients, so `node-facts` come back too.
     let owner_client_a = Arc::new(owner_client_for(&node_a, &owner).await);
     let owner_client_b = Arc::new(owner_client_for(&node_b, &owner).await);
 
@@ -276,7 +276,7 @@ async fn a_stopped_substrate_is_reported_unreachable_while_the_other_stays_healt
     let backend = report.services.iter().find(|s| s.service_id == "e2e-backend").unwrap();
     assert_eq!(frontend.signal, health::Signal::Healthy, "{frontend:?}");
     assert!(matches!(backend.signal, health::Signal::SubstrateUnreachable(_)), "{backend:?}");
-    // D-A4-13: exactly one substrate-level fault, not a per-service one.
+    // Exactly one substrate-level fault, not a per-service one.
     assert_eq!(
         report.substrates.iter().filter(|s| s.fault.is_some()).count(),
         1,
@@ -323,9 +323,9 @@ async fn a_failing_readiness_probe_is_distinct_from_a_stopped_instance() {
 
     let report = health::poll_once(&targets, &expected_services).await;
     assert_eq!(report.services.len(), 1);
-    // Buildable only because of §0.5's fix: a `tcp` service's phase stays
-    // `unknown` (nothing runs "on" this substrate), and the probe -- not the
-    // phase -- is the only liveness signal there is.
+    // A `tcp` service's phase stays `unknown` (nothing runs "on" this
+    // substrate), and the probe -- not the phase -- is the only liveness
+    // signal there is.
     assert!(
         matches!(report.services[0].signal, health::Signal::ProbeFailing(_)),
         "{:?}",
@@ -389,7 +389,7 @@ async fn alerts_are_recorded_deduplicated_and_cleared_across_three_sweeps() {
     assert!(opened2.is_empty(), "a second failing sweep must not open a second row");
     assert_eq!(alerts.active(&instance_id).unwrap().len(), 1);
 
-    // The orchestrator caches a probe result for a few seconds (D-A4-8: a
+    // The orchestrator caches a probe result for a few seconds (so a
     // supervisor polling every few seconds must not turn into probe load on
     // the target), keyed off sweep 1's timestamp. Sweeps 1-2 run back to
     // back, well inside that window, so without a real wait here sweep 3

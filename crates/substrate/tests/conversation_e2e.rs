@@ -194,8 +194,9 @@ fn fixture_wasm() -> Option<Vec<u8>> {
     fs::read(test_constants::dual_build_fixture_wasm_path()).ok()
 }
 
-/// The reference scenario's steps 6-8, plus row 6: A sends to B while B
-/// does not exist yet (stronger than merely offline) -- stays `pending`,
+/// The reference scenario's steps 6-8, plus the never-reachable recipient
+/// case: A sends to B while B does not exist yet (stronger than merely
+/// offline) -- stays `pending`,
 /// never `delivered`. A restarts; the same outbox item survives, not
 /// duplicated. B then comes up; the message is delivered, verified on
 /// arrival, and no durable content ever reached the pub/sub broker.
@@ -224,7 +225,7 @@ async fn a_message_survives_a_restart_and_delivers_once_the_peer_exists() {
 
     // The peer's identity is deterministic from its master key, so it can
     // be named before node B ever boots -- this is the "recipient never
-    // reachable" case (failure-matrix row 5), not merely "offline".
+    // reachable" case, not merely "offline".
     let peer_master = Identity::generate().unwrap();
     let peer_did = substrate::derive_did_key(&peer_master.public_key());
 
@@ -250,8 +251,8 @@ async fn a_message_survives_a_restart_and_delivers_once_the_peer_exists() {
         .expect("send-message must return an id")
         .to_string();
 
-    // Row 3/row 5: the peer does not exist, so several consecutive polls
-    // must all see `pending`, never `delivered`.
+    // The peer does not exist, so several consecutive polls must all see
+    // `pending`, never `delivered`.
     for _ in 0..3 {
         let status = fixture_run(
             &node_a,

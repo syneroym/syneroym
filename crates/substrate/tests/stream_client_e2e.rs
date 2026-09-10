@@ -1,11 +1,11 @@
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
-//! M3B Slice 6B end-to-end test (ADR-0014): a real `SyneroymClient` opens a
+//! End-to-end test (ADR-0014): a real `SyneroymClient` opens a
 //! direct raw QUIC stream against a deployed WASM service's registered
 //! stream protocol -- proving the initiator doesn't need to be another
 //! WASM-hosted service (`SyneroymClient::connection()` is already exposed
-//! today; no new client-side plumbing was needed, unlike Slice 6A's
-//! `subscribe`). Covers both directions plus the unregistered-protocol
-//! failure/security row from task.md's table.
+//! today; no new client-side plumbing was needed, unlike the push
+//! `subscribe` path). Covers both directions plus the unregistered-protocol
+//! failure/security case.
 
 use std::time::Duration;
 
@@ -151,7 +151,7 @@ async fn test_real_client_opens_direct_stream_both_directions() {
     ctx.teardown().await;
 }
 
-/// task.md's failure/security test row: "Peer opens a stream against an
+/// The failure/security case: "Peer opens a stream against an
 /// unregistered protocol namespace -> host rejects the stream cleanly; no
 /// panic, no hang." Deploys a plain TCP-typed service (gets the same
 /// `EndpointRegistry` wiring as any deployed service, but no

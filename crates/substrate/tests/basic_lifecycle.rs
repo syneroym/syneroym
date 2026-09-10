@@ -356,9 +356,9 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
     .expect("app run request timed out")
     .expect("App request failed");
 
-    // `greet`'s reply also echoes this instance's own `component_id` (M05A
-    // Slice A5e, `greeter`'s `context::get-test-context`), so only the
-    // fixed prefix is asserted here.
+    // `greet`'s reply also echoes this instance's own `component_id`
+    // (`greeter`'s `context::get-test-context`), so only the fixed prefix
+    // is asserted here.
     assert!(
         app_res
             .result

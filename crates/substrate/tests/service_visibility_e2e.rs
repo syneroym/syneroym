@@ -1,12 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
 //! ADR-0018's publication declaration, proven end to end against one live
-//! `syneroym-substrate` instance (M06B B2). §7 tests 33-36, 40 of the
-//! slice's implementation plan: the substrate refuses a mis-declared
+//! `syneroym-substrate` instance: the substrate refuses a mis-declared
 //! deploy, publishes exactly what was declared, clears a stale record on a
 //! redeploy to `private`, and reports the declared visibility back through
 //! `orchestrator/list`.
 //!
-//! Cross-node resolution for `internal`/`public` (tests 38-39) is proven in
+//! Cross-node resolution for `internal`/`public` is proven in
 //! `multi_substrate_placement_e2e.rs`, which already boots two independent
 //! substrates -- duplicating that harness here would only add boot time.
 
@@ -82,9 +81,8 @@ async fn deploy_raw(
     }
 }
 
-/// Test 33: a service deployed with no declared visibility and no
-/// certificate is not published -- a registry lookup for it misses. The
-/// exit criterion's first half, and failure-matrix row 11.
+/// A service deployed with no declared visibility and no certificate is
+/// not published -- a registry lookup for it misses.
 #[tokio::test]
 async fn undeclared_visibility_deploys_and_publishes_nothing() {
     let _ = ring::default_provider().install_default();
@@ -109,7 +107,7 @@ async fn undeclared_visibility_deploys_and_publishes_nothing() {
     ctx.teardown().await;
 }
 
-/// Test 34: declaring `public` with no registry certificate is refused,
+/// Declaring `public` with no registry certificate is refused,
 /// loudly, at deploy time -- ADR-0018 §4's `validate_publication`, naming
 /// the missing certificate.
 #[tokio::test]
@@ -134,7 +132,7 @@ async fn declaring_public_with_no_certificate_is_refused() {
     ctx.teardown().await;
 }
 
-/// Test 35: `public` with a matching certificate publishes, and the record
+/// `public` with a matching certificate publishes, and the record
 /// resolves through the registry.
 #[tokio::test]
 async fn declaring_public_with_a_matching_certificate_publishes_and_resolves() {
@@ -182,14 +180,14 @@ async fn declaring_public_with_a_matching_certificate_publishes_and_resolves() {
     ctx.teardown().await;
 }
 
-/// Test 36: a public service redeployed as `private` records the new
-/// declaration (`D-B2-5` -- the actual removal of the stale record *file*,
-/// so the substrate stops republishing it on the next heartbeat sweep, is
-/// proven at the unit level in `control_plane::service::orchestration`'s
+/// A public service redeployed as `private` records the new declaration
+/// (the actual removal of the stale record *file*, so the substrate stops
+/// republishing it on the next heartbeat sweep, is proven at the unit
+/// level in `control_plane::service::orchestration`'s
 /// `a_private_redeploy_removes_the_stored_endpoint_record_file`, which has
 /// direct access to `hosted_apps_dir`; the already-registered HTTP record
 /// itself is not retroactively revoked and keeps resolving until its own
-/// `not_after` lapses, by design -- F2's defect was the substrate
+/// `not_after` lapses, by design -- the defect was the substrate
 /// continuing to *republish* it, not the registry's own TTL).
 #[tokio::test]
 async fn a_public_service_redeployed_private_is_recorded_as_private() {
@@ -248,7 +246,7 @@ async fn a_public_service_redeployed_private_is_recorded_as_private() {
     ctx.teardown().await;
 }
 
-/// Test 40: `orchestrator/list` (and, transitively, `roymctl svc list`)
+/// `orchestrator/list` (and, transitively, `roymctl svc list`)
 /// distinguishes a private service from a public one -- ADR-0018 §4's
 /// whole complaint: without this, "deliberately private" and "forgotten"
 /// are indistinguishable from the outside.

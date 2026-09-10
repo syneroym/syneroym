@@ -523,7 +523,7 @@ async fn test_roym_app_e2e_lifecycle() {
 /// publishes no registry record at all. This exercises `EndpointInfo`'s
 /// registry-record `visibility`, not `ServiceSpec.topology_visibility`
 /// (the `supervisor/resolve` path); that field is still uncovered here --
-/// see the deferred-backlog row for matrix row 18.
+/// see the deferred-backlog for the tracking row.
 #[tokio::test]
 async fn an_unaffiliated_caller_resolves_directorys_public_record_but_not_profiles() {
     let RoymDeployment { ctx, registry_url, dir_did, profile_did, .. } = deploy_roym_app().await;

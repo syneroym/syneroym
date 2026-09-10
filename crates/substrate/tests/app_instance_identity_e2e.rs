@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! The app-instance master identity end to end (M05A A7), across two
+//! The app-instance master identity end to end, across two
 //! genuinely independent `syneroym-substrate` instances -- the operator's
 //! own sequence: `submit`, `adopt`, `status`, `export-master`, a second
 //! `adopt`. The supervisor/managed pair and the submit helpers come from
@@ -66,7 +66,7 @@ fn one_service_manifest() -> SynAppManifest {
     }
 }
 
-/// Test 98: the operator's own sequence over a real supervisor and a real
+/// The operator's own sequence over a real supervisor and a real
 /// managed substrate -- `submit`, `adopt`, then (a) `adopt`'s result
 /// carries a `did:key:` app master and a vault name, (b) `status` reports
 /// the same DID, (c) `export-master` with that name writes a file under
@@ -124,7 +124,7 @@ async fn an_adopted_app_instance_carries_an_exportable_master_did() {
         .expect("submit failed");
 
     // (a) `adopt`'s result carries a `did:key:` app master and a vault
-    // name (D-A7-8).
+    // name.
     let adopted = supervisor_node
         .substrate_client
         .request("supervisor", "adopt", json!(["a7-adopt-inst"]))
@@ -146,7 +146,7 @@ async fn an_adopted_app_instance_carries_an_exportable_master_did() {
         .to_string();
     assert_eq!(vault_name, "app-a7-adopt-inst");
 
-    // (b) `status` reports the same DID (D-A7-6).
+    // (b) `status` reports the same DID.
     let status = supervisor_node
         .substrate_client
         .request("supervisor", "status", json!(["a7-adopt-inst"]))
@@ -158,8 +158,8 @@ async fn an_adopted_app_instance_carries_an_exportable_master_did() {
     );
 
     // (c) `export-master` with that name writes a real file under this
-    // node's own `master_backup_dir` (`task.md`'s "movable through
-    // `export-master`/`import-master`", D-A7-3).
+    // node's own `master_backup_dir` -- the master is movable through
+    // `export-master`/`import-master`.
     let exported = supervisor_node
         .substrate_client
         .request("supervisor", "export-master", json!([vault_name.clone()]))
@@ -178,7 +178,7 @@ async fn an_adopted_app_instance_carries_an_exportable_master_did() {
     );
 
     // (d) a second `adopt` reports the identical DID at a higher
-    // generation (D-A7-5).
+    // generation.
     let adopted_again = supervisor_node
         .substrate_client
         .request("supervisor", "adopt", json!(["a7-adopt-inst"]))

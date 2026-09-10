@@ -1,9 +1,9 @@
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
-//! M06A A2 end-to-end tests: the guest HTTP route target
+//! End-to-end tests for the guest HTTP route target
 //! (`syneroym:http/incoming-handler#handle-request`), driven by hand-built
 //! raw HTTP/1.1 request/response bytes over a real Iroh QUIC bidi stream --
-//! the same harness `static_assets_e2e.rs` (M06A A1) and
-//! `http_passthrough_e2e.rs` (M3B Slice 7) use. Helpers are duplicated
+//! the same harness `static_assets_e2e.rs` and
+//! `http_passthrough_e2e.rs` use. Helpers are duplicated
 //! rather than shared across independent `tests/*.rs` binaries, matching
 //! this workspace's existing convention.
 
@@ -73,7 +73,7 @@ fn guest_wasm_manifest_with_assets(
     manifest
 }
 
-/// Same construction `static_assets_e2e.rs` (M06A A1) uses for its own
+/// Same construction `static_assets_e2e.rs` uses for its own
 /// fixture archives.
 fn make_asset_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
     use std::io::Write;
@@ -122,7 +122,7 @@ fn parse_http_response(raw: &[u8]) -> HttpResponse {
 
 /// Opens a fresh Iroh bidi stream and writes the `http://http-native|
 /// <service_id>` route preamble. `pubkey` controls whether this connection
-/// is genuinely anonymous (`None`, the direct-WebRTC shape F5a describes)
+/// is genuinely anonymous (`None`, the direct-WebRTC shape)
 /// or self-asserted (`Some`, an ephemeral identity with no delegation --
 /// mirrors what every other e2e file in this workspace does for an
 /// ordinary "not anonymous" connection).
@@ -148,11 +148,11 @@ async fn open_http_stream(
     (send, recv)
 }
 
-/// F5b's attacker-controlled case: a UCAN token is attached, but it is not
+/// The attacker-controlled case: a UCAN token is attached, but it is not
 /// rooted at anything this node trusts, so `build_caller` fail-opens to
 /// dropping its capabilities rather than rejecting the connection. Same
-/// preamble as `open_http_stream` otherwise -- no `delegation`, so
-/// `D-A2-12` has nothing to report `delegated` from either.
+/// preamble as `open_http_stream` otherwise -- no `delegation`, so the
+/// caller identity has nothing to report `delegated` from either.
 async fn open_http_stream_with_ucan(
     conn: &TransportConnection,
     service_id: &str,
@@ -213,7 +213,7 @@ async fn http_request(
     send.write_all(request.as_bytes()).await.expect("write request head failed");
     if !body.is_empty() {
         // Tolerated, not asserted: a server that rejects the request before
-        // the body finishes (e.g. an over-cap body, M06A D-A2-8) stops
+        // the body finishes (e.g. an over-cap body) stops
         // reading and the stream write fails -- the response is still read
         // below, exactly like a real HTTP client that gets an early
         // response while still uploading.
@@ -252,7 +252,7 @@ macro_rules! skip_if_missing {
 }
 
 // ---------------------------------------------------------------------
-// D-A2-7: a non-public route rejects an anonymous caller before the
+// A non-public route rejects an anonymous caller before the
 // component is instantiated
 // ---------------------------------------------------------------------
 
@@ -285,7 +285,7 @@ async fn test_anonymous_request_to_non_public_route_is_401_with_zero_instantiati
 }
 
 // ---------------------------------------------------------------------
-// D-A2-7: a public route reaches the guest with no verified caller
+// A public route reaches the guest with no verified caller
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -316,7 +316,7 @@ async fn test_public_route_reaches_guest_and_whoami_reports_anonymous() {
 }
 
 // ---------------------------------------------------------------------
-// F5a: the client gateway proxies under the node's own DID, so a
+// The client gateway proxies under the node's own DID, so a
 // non-public route is reached anyway -- pinned so this limitation cannot
 // quietly stop being true or be mistaken for authentication.
 // ---------------------------------------------------------------------
@@ -340,7 +340,7 @@ async fn test_through_the_gateway_a_non_public_route_is_reached_and_reports_self
     // Publish the app's own endpoint record so the gateway's unscoped
     // `s<hash>.localhost` host form (ADR-0022 §7) can resolve it -- direct
     // HTTP POST to the registry, independent of `deploy`'s own
-    // `registry_certificate` path (M3B's `basic_lifecycle.rs` does the
+    // `registry_certificate` path (`basic_lifecycle.rs` does the
     // same for the same reason).
     let registry_url = format!("http://localhost:{registry_port}");
     let info = EndpointInfo {
@@ -396,7 +396,7 @@ async fn test_through_the_gateway_a_non_public_route_is_reached_and_reports_self
 }
 
 // ---------------------------------------------------------------------
-// Exit criterion 5: the guest's own rejection status and message
+// The guest's own rejection status and message
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -427,7 +427,7 @@ async fn test_reject_returns_the_guests_own_status_and_message() {
 }
 
 // ---------------------------------------------------------------------
-// D-A2-8: an over-cap request body is rejected before instantiation
+// An over-cap request body is rejected before instantiation
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -462,8 +462,8 @@ async fn test_over_cap_request_body_is_413_with_zero_instantiations() {
 }
 
 // ---------------------------------------------------------------------
-// Matrix row 5 (wasm-execution half): a trap or a wasm-execution loop each
-// answer 500 with a structured error, and the connection stays usable.
+// A trap or a wasm-execution loop each answer 500 with a structured
+// error, and the connection stays usable.
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -513,7 +513,7 @@ async fn test_trap_and_spin_return_500_and_a_new_stream_still_succeeds() {
 }
 
 // ---------------------------------------------------------------------
-// Matrix row 6: an oversized or malformed guest response is bounded and
+// An oversized or malformed guest response is bounded and
 // rejected, never streamed to the client.
 // ---------------------------------------------------------------------
 
@@ -555,7 +555,7 @@ async fn test_huge_and_bad_header_return_500_with_no_partial_body() {
 }
 
 // ---------------------------------------------------------------------
-// D-A2-11: guest HTTP concurrency is bounded per service, and exhausting
+// Guest HTTP concurrency is bounded per service, and exhausting
 // it degrades that service (503 + Retry-After), not a 500 or a hang.
 // ---------------------------------------------------------------------
 
@@ -636,7 +636,7 @@ async fn test_guest_http_concurrency_limit_returns_503_with_retry_after() {
 }
 
 // ---------------------------------------------------------------------
-// D-A2-4: the path-param name the host sends and the value `match_path`
+// The path-param name the host sends and the value `match_path`
 // captured describe the same segment, over the real wire.
 // ---------------------------------------------------------------------
 
@@ -669,7 +669,7 @@ async fn test_items_path_param_matches_the_captured_url_segment() {
 }
 
 // ---------------------------------------------------------------------
-// D-A2-5: framing headers the guest sets are stripped, and `Content-Length`
+// Framing headers the guest sets are stripped, and `Content-Length`
 // is always the host's, over the real wire.
 // ---------------------------------------------------------------------
 
@@ -710,7 +710,7 @@ async fn test_framing_headers_are_stripped_and_content_length_is_the_hosts() {
 }
 
 // ---------------------------------------------------------------------
-// D-A2-12/F5b: a UCAN attacker-controlled and rooted at nothing this node
+// A UCAN attacker-controlled and rooted at nothing this node
 // trusts must never be reported to the guest as `ucan:...` -- `build_caller`
 // fails open to dropping its capabilities, and `guest_caller_identity` must
 // carry that failure through rather than trusting `preamble.ucan.is_some()`
@@ -823,8 +823,8 @@ async fn test_guest_http_requests_within_budget_all_succeed_via_queuing() {
 }
 
 // ---------------------------------------------------------------------
-// A guest route and other bridge targets/A1 assets coexist without either
-// shadowing the other.
+// A guest route and other bridge targets/static assets coexist without
+// either shadowing the other.
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -866,11 +866,11 @@ async fn test_guest_route_and_data_layer_route_coexist() {
     ctx.teardown().await;
 }
 
-// A1's own coexistence test (`test_static_assets_and_http_routes_coexist`)
-// pairs an asset bundle with a `data-layer` route on a plain `greeter`
-// component. That never exercises a component deployed as *both* an asset
-// bundle and a guest HTTP handler at once, which is the combination this
-// test covers.
+// The static-asset coexistence test
+// (`test_static_assets_and_http_routes_coexist`) pairs an asset bundle with a
+// `data-layer` route on a plain `greeter` component. That never exercises a
+// component deployed as *both* an asset bundle and a guest HTTP handler at
+// once, which is the combination this test covers.
 #[tokio::test]
 async fn test_guest_route_and_asset_bundle_coexist() {
     let wasm_bytes = skip_if_missing!("test_guest_route_and_asset_bundle_coexist");

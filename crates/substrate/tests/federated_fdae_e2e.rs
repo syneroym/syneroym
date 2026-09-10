@@ -40,7 +40,7 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 mod common;
 
 const FETCH_LATENCY_ITERATIONS: usize = 5;
-// The < 50 ms p99 budget in task.md's Performance Budgets table names the
+// The < 50 ms p99 performance budget names the
 // *fetch's own* processing cost; on this sandboxed environment each call
 // measured here is dominated by a different, larger cost that budget was
 // never meant to capture: `IrohHop` (crates/router/src/proxy.rs) opens a
@@ -49,10 +49,10 @@ const FETCH_LATENCY_ITERATIONS: usize = 5;
 // failed; retrying" log lines across every iteration, i.e. each connection
 // succeeded on its first attempt, so the cost is inherent to fresh
 // connection establishment, not retries). Observed p50/p99 land in the
-// low single-digit seconds here, ~100x the budget -- see status.md for the
-// measured numbers and the `deferred-backlog.md` entry this finding adds
-// (`IrohHop` connection reuse). This constant is therefore a hang/
-// regression backstop, not the task.md budget itself.
+// low single-digit seconds here, ~100x the budget -- see the
+// `deferred-backlog.md` entry this finding adds (`IrohHop` connection
+// reuse). This constant is therefore a hang/regression backstop, not the
+// performance budget itself.
 const FETCH_LATENCY_SANITY_CEILING: Duration = Duration::from_secs(30);
 
 /// Reads a node's own raw node identity back off disk -- "node-private" by
@@ -184,9 +184,10 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     // (including alice's forwarded `resolve-relation` identity, who never
     // delegated anything on Node A) would fall back to a free, bare
     // `substrate:<node_did>`-scoped `orchestrator/*` capability, which
-    // `resolve_relation`'s A1/A2 fork treats as "holds a capability scoped to
-    // this resource" regardless of ability -- forcing A1 and defeating
-    // `resolvable_without_capability`'s A2 path for every caller.
+    // `resolve_relation`'s two-way fork treats as "holds a capability scoped
+    // to this resource" regardless of ability -- forcing the
+    // capability-checked path and defeating the
+    // `resolvable_without_capability` path for every caller.
     //
     // Each node injects its own KEK during its own boot (default
     // `storage.encryption = true` needs one before any service database can
@@ -221,9 +222,9 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     let node_b_mechanisms =
         node_b.substrate_client.lookup().await.expect("node B lookup failed").info.mechanisms;
 
-    // --- Node A: the data-owning "hr" service. A2 (`resolvable_without_
-    // capability`) means the resolving fetch needs no capability delegated
-    // cross-node at all -- just a re-verified identity match. ---
+    // --- Node A: the data-owning "hr" service. `resolvable_without_capability`
+    // means the resolving fetch needs no capability delegated cross-node at
+    // all -- just a re-verified identity match. ---
     let hr_service_identity = Identity::generate().unwrap();
     let hr_service_id = substrate::derive_did_key(&hr_service_identity.public_key());
 
@@ -306,7 +307,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     }
 
     // The DID a policy author would independently compute and declare as
-    // `expected_asserter_did` -- never read back off a proof (D-B3-8).
+    // `expected_asserter_did` -- never read back off a proof.
     let node_a_identity = node_identity(&node_a);
     let expected_asserter_did = substrate::derive_did_key(
         &node_a_identity.derive_service_identity(&hr_owner_did, &hr_service_id).public_key(),
@@ -501,8 +502,8 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     );
 
     // A cross-service fetch that times out must fall back to deny, not
-    // silent allow -- Failure/Security matrix row 6 (Slice B3 Phase 4's own
-    // mechanism/unit coverage), now proven across two real substrates: point
+    // silent allow -- covered by a mechanism and unit tests elsewhere,
+    // now proven across two real substrates: point
     // the policy at an asserter node A never actually derives (a node A
     // deploy that names the *wrong* `expected_asserter_did`, the shape a
     // stale/misconfigured policy would produce) and confirm the query denies

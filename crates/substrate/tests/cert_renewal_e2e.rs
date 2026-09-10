@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Unattended certificate renewal and instance-key revocation (M05A A5d),
+//! Unattended certificate renewal and instance-key revocation,
 //! proven against real, running `syneroym-substrate` instances rather than
 //! the in-process coverage `orchestration.rs` and `app_supervisor` already
 //! give the two mechanisms.
@@ -19,16 +19,16 @@
 //!    (`RegistryClient::revoke_instance_key`, what `roymctl supervisor
 //!    revoke-instance` calls) against a real HTTP registry, then read back
 //!    through the real ingress check (`HandshakeVerifier::verify_preamble`
-//!    against a real `RegistryClient` resolver). Before A5d nothing in the tree
+//!    against a real `RegistryClient` resolver). Earlier nothing in the tree
 //!    could *write* a non-empty `revoked_keys` list outside a unit test's
-//!    in-memory mock, so this is the half of failure-matrix row 14 that had a
-//!    mechanism and no trigger.
+//!    in-memory mock, so this is the revocation half that had a mechanism and
+//!    no trigger.
 //!
 //! **Deliberately not covered here:** a wire-level proof that a guest's own
 //! outbound call presents the renewed certificate across a real cross-node
 //! hop. That arm only fires for a WASM guest (`CallOrigin::Guest` in
 //! `crates/router/src/proxy.rs`), and building a WASM-guest two-node harness
-//! for it is out of scope for this slice -- the same scoping, for the same
+//! for it is out of scope here -- the same scoping, for the same
 //! reason, `instance_identity_e2e.rs`'s own module doc records. What the
 //! renewed certificate is *used for* once installed is covered at unit
 //! scale by `renew_cert_rebuilds_syn_svc_native_service_with_the_new_
@@ -131,8 +131,7 @@ fn delegated_preamble(
 /// renewed certificate as the one it holds -- read back through `list-svcs`,
 /// not through a live handshake. A WASM-guest two-node
 /// harness for that arm is the same out-of-proportion item
-/// `instance_identity_e2e.rs` and three backlog rows already decline; see
-/// `status.md`'s own scoping note for this test).
+/// `instance_identity_e2e.rs` and three backlog rows already decline.
 #[tokio::test]
 async fn renew_cert_installs_over_the_real_wire_and_refuses_a_certificate_for_the_wrong_derived_key()
  {
@@ -278,7 +277,7 @@ async fn renew_cert_installs_over_the_real_wire_and_refuses_a_certificate_for_th
     node_b.teardown().await;
 }
 
-/// Failure-matrix row 14's automation half: a revoked instance key fails
+/// The automation half: a revoked instance key fails
 /// while a fresh one from the same master still verifies -- driven through
 /// the real revocation writer and read back through the real ingress check,
 /// against a real registry.
@@ -302,7 +301,7 @@ async fn a_revoked_instance_key_handshake_fails_while_a_fresh_one_verifies() {
         .expect("failed to publish the member master's anchor");
 
     // Two instance keys certified by the same master -- the "reinstantiated
-    // elsewhere" case row 14 is about.
+    // elsewhere" case.
     let doomed = Identity::generate().unwrap();
     let replacement = Identity::generate().unwrap();
     let doomed_did = substrate::derive_did_key(&doomed.public_key());
@@ -338,7 +337,7 @@ async fn a_revoked_instance_key_handshake_fails_while_a_fresh_one_verifies() {
         .expect("the replacement key must verify too");
 
     // The production write path -- what `roymctl supervisor revoke-instance`
-    // calls. Before A5d nothing outside a unit test's in-memory mock could
+    // calls. Earlier nothing outside a unit test's in-memory mock could
     // put a key on this list at all.
     registry
         .revoke_instance_key(&member_master, &doomed_did)

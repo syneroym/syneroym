@@ -1,9 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! The milestone's own reference scenario (M05A Slice A5e, D-A5e-15), end to
+//! The reference scenario, end to
 //! end over two genuinely independent `syneroym-substrate` instances:
 //! `frontend` (a WASM `proxy-test` component) on `managed-a`, depending on
 //! `backend` (a WASM `greeter` component) on `managed-b`, both managed by one
-//! resident supervisor. Steps 1-6 in one test, per the plan -- the claim
+//! resident supervisor. Steps 1-6 in one test -- the claim
 //! under test is the *sequence*, not any one outcome in isolation (several
 //! of which already have their own unit or narrower e2e coverage):
 //!
@@ -25,13 +25,13 @@
 //!    `greeter`'s own `component_id`, echoed through the pre-existing
 //!    `syneroym:host/context::get-test-context` capability -- the one thing
 //!    that differs between two otherwise byte-identical `replicas` members).
-//!    **What this step does not prove** (M05A A5e review, second round):
-//!    `frontend`'s stable `service_id` and its advanced written epoch are both
-//!    consistent with a full reinstall as much as with a push -- neither is a
-//!    WASM instantiation counter, and this harness has no live component to
-//!    sample one from. The push-not-reinstall claim itself is proven where it
-//!    can actually be told apart: at the unit level, against a fake substrate
-//!    that records which calls it saw (`syneroym-app-supervisor`'s
+//!    **What this step does not prove**: `frontend`'s stable `service_id` and
+//!    its advanced written epoch are both consistent with a full reinstall as
+//!    much as with a push -- neither is a WASM instantiation counter, and this
+//!    harness has no live component to sample one from. The push-not-reinstall
+//!    claim itself is proven where it can actually be told apart: at the unit
+//!    level, against a fake substrate that records which calls it saw
+//!    (`syneroym-app-supervisor`'s
 //!    `a_diff_whose_only_change_is_resolved_dependencies_pushes_instead_of_redeploying`
 //!    and its `_config_still_takes_the_redeploy_path` counterpart).
 //! 6. A stale-epoch binding write is rejected without regressing the held
@@ -205,7 +205,7 @@ async fn active_alert_kinds(
 
 /// `frontend`'s own written epoch for its `backend` dependency, off the
 /// supervisor's `status` -- the fact that advances the instant a push lands,
-/// distinct from `binding-epochs`' own read lag (D-A5e-9).
+/// distinct from `binding-epochs`' own read lag.
 fn frontend_written_epoch(status: &Value) -> Option<u64> {
     status.get("bindings").and_then(Value::as_array).into_iter().flatten().find_map(|b| {
         (str_field(b, "dependent_logical_ref")?.ends_with("/frontend#0")
@@ -318,7 +318,7 @@ async fn the_reference_scenario_runs_end_to_end_over_two_substrates() {
     .unwrap();
 
     // ---- Step 1: deploy + push (the initial deploy emits bindings at
-    // deploy time, D-A5e-2's per-member epoch). ----
+    // deploy time, with a per-member epoch). ----
     let plan_json = compiled_plan_json(1).await;
     // `supervisor_node`'s connection was dialed and proven live by its own
     // `wait_for_ready` during its own boot, then sat idle through both
@@ -437,11 +437,11 @@ async fn the_reference_scenario_runs_end_to_end_over_two_substrates() {
     );
 
     // ---- Step 5: backend scales to two members and frontend's binding
-    // converges, then (R5) actually resolves across both members. Whether
+    // converges, then actually resolves across both members. Whether
     // frontend got there via a push or a full reinstall is not
-    // distinguishable from these RPC-surface assertions alone (M05A A5e
-    // review, second round) -- see the module doc's step 5 note; that
-    // claim is proven separately, at the unit level. ----
+    // distinguishable from these RPC-surface assertions alone -- see the
+    // module doc's step 5 note; that claim is proven separately, at the
+    // unit level. ----
     let scaled_plan_json = compiled_plan_json(2).await;
     let scale_res = supervisor_node
         .substrate_client
@@ -494,8 +494,8 @@ async fn the_reference_scenario_runs_end_to_end_over_two_substrates() {
         time::sleep(Duration::from_millis(500)).await;
     }
 
-    // R5's own fix: assert actual cross-member resolution, not merely that a
-    // push happened. `Redundant` round-robins, so a handful of calls must
+    // Assert actual cross-member resolution, not merely that a push
+    // happened. `Redundant` round-robins, so a handful of calls must
     // see both members' own `component_id`.
     let mut seen_components: BTreeSet<String> = BTreeSet::new();
     for _ in 0..8 {

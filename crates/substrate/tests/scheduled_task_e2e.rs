@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! The reference scenario for scheduled tasks (ADR-0023 §6): one real
 //! substrate hosting a scheduled WASM service, one real supervisor evaluating
-//! and firing its schedule on its own reconcile pass. Test 2's supervisor
-//! node boots with `SubstrateNode::builder().base_path(..)` so its restart
-//! comes back under the same identity and the same `supervisor.db`, not a
-//! fresh one.
+//! and firing its schedule on its own reconcile pass. The restart test's
+//! supervisor node boots with `SubstrateNode::builder().base_path(..)` so its
+//! restart comes back under the same identity and the same `supervisor.db`, not
+//! a fresh one.
 //!
 //! Needs `test-components/scheduled-test`'s wasm artifact built by hand
 //! first (`cargo component build --release --target wasm32-wasip2`, from
@@ -17,8 +17,8 @@
 //! Bounded by real cron-minute boundaries, not by anything this test
 //! controls -- each test waits for at least one live "* * * * *" occurrence
 //! (up to ~100s, which includes the resident loop's own real per-pass
-//! connect latency, not just the minute boundary). Test 2's downtime is
-//! anchored to actual minute boundaries (`next_minute_boundary`,
+//! connect latency, not just the minute boundary). The restart test's
+//! downtime is anchored to actual minute boundaries (`next_minute_boundary`,
 //! `sleep_until_unix_secs`) rather than accumulated relative sleeps -- a
 //! fixed-duration version of it is exactly what let a *second*, legitimate
 //! tick masquerade as evidence the first, missed one ran late. Run this
@@ -60,11 +60,12 @@ const INSTANCE_ID: &str = "b3-scheduled-inst";
 /// that widens the window to the real gap on its own, so a slow pass can no
 /// longer drop a tick. 10s is still chosen deliberately, for the case the
 /// floor is all there is: the first pass after a restart has no previous
-/// sweep to measure, and test 2 depends on that pass *not* running the tick
-/// it missed. Measured against this tree's own resident loop, where a pass
-/// reconnects a fresh iroh endpoint to the managed substrate every time
-/// and costs several seconds even locally: 20s covers that comfortably while
-/// staying well under the whole-occurrence gap test 2's downtime creates.
+/// sweep to measure, and the restart test depends on that pass *not*
+/// running the tick it missed. Measured against this tree's own resident
+/// loop, where a pass reconnects a fresh iroh endpoint to the managed
+/// substrate every time and costs several seconds even locally: 20s covers
+/// that comfortably while staying well under the whole-occurrence gap the
+/// restart test's downtime creates.
 const POLL_INTERVAL_SECS: u64 = 10;
 
 /// One `scheduled-test` WASM service, ticking every minute.
@@ -94,7 +95,7 @@ fn scheduled_manifest() -> SynAppManifest {
                 // different substrate (`MANAGED_ALIAS`) -- undeclared
                 // (private) visibility means `certify_placed_members`
                 // mints no record for it, and the tick has nothing to
-                // resolve (ADR-0018 §4, M06B B2, F10 group C).
+                // resolve (ADR-0018 §4).
                 visibility: Visibility::Internal,
             },
             depends_on: vec![],
@@ -279,8 +280,8 @@ async fn a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick() {
     // yet" has a full cron minute to hold in. Without the anchor, a
     // boundary falling inside the convergence loop below (up to 30s, three
     // passes) fires a legitimate tick and the exact-zero assertion fails --
-    // the same wall-clock assumption test 2's fixed sleep already had to
-    // shed.
+    // the same wall-clock assumption the restart test's fixed sleep
+    // already had to shed.
     let plan_json = compiled_plan_json().await;
     sleep_until_unix_secs(next_minute_boundary(now_unix_secs())).await;
     // `supervisor_node`'s connection was dialed and proven live by its own
@@ -340,7 +341,7 @@ async fn a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick() {
     );
 
     // ---- Step 4: several more passes inside the same cron minute must
-    // not run it again -- the watermark, and failure-matrix row 10. ----
+    // not run it again -- the watermark holds. ----
     let hold_until = Instant::now() + Duration::from_secs(15);
     while Instant::now() < hold_until {
         assert_eq!(

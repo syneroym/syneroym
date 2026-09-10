@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! The `supervisor` interface end to end (M05A A5b), across two genuinely
+//! The `supervisor` interface end to end, across two genuinely
 //! independent `syneroym-substrate` instances: one running the supervisor
 //! role, one plain managed substrate. The pair and the submit helpers come
 //! from `common`; the manifests are local.
@@ -73,8 +73,8 @@ fn one_service_manifest() -> SynAppManifest {
 }
 
 /// `frontend` (depends on `backend`), both placed on `MANAGED_ALIAS` -- "a
-/// bound app" for test 25/27: one substrate, a real dependency between two
-/// members the supervisor deploys together.
+/// bound app": one substrate, a real dependency between two members the
+/// supervisor deploys together.
 fn bound_app_manifest() -> SynAppManifest {
     let mut services = BTreeMap::new();
     services.insert(
@@ -254,14 +254,13 @@ async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
         .to_string();
 
     // A rogue second writer -- one that never adopted -- presents
-    // generation 0 directly against the managed substrate. N1 (Slice A5b
-    // review round 2) added a local pre-flight check to `handle_submit`,
-    // so reusing the *same* supervisor's own `submit` no longer reaches
-    // the substrate at all once its own store disagrees -- it would now
-    // prove H3's local guard, not row 8's substrate-side one. A raw
-    // second client, the same shape B4's row-9 test uses to simulate a
-    // second writer, reaches the managed node's own generation gate
-    // directly instead.
+    // generation 0 directly against the managed substrate. `handle_submit`
+    // has a local pre-flight check, so reusing the *same* supervisor's own
+    // `submit` no longer reaches the substrate at all once its own store
+    // disagrees -- it would now prove the local guard, not the
+    // substrate-side one. A raw second client, the same shape the
+    // higher-generation test uses to simulate a second writer, reaches the
+    // managed node's own generation gate directly instead.
     let mut second_writer = managed_node.client_as(Identity::from_bytes(&managed_owner.to_bytes()));
     second_writer
         .wait_for_ready(Duration::from_secs(30))
@@ -272,8 +271,8 @@ async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
         .await
         .expect_err("a stale-generation write must fail");
     // `check_generation`'s own `Ordering::Less` message (ADR-0021 §4) --
-    // asserting on it, rather than on any non-empty error (B5, Slice A5b
-    // review), proves this failed on the generation gate specifically and
+    // asserting on it, rather than on any non-empty error, proves this
+    // failed on the generation gate specifically and
     // not on a connection timeout, a parse failure, or the unrelated
     // "tcp service cannot be restarted" refusal the same call would hit
     // next if the generation gate did not fire first.
@@ -415,7 +414,7 @@ async fn a_pushed_binding_reaches_a_dependent_the_supervisor_deployed() {
         .expect("frontend not in status")
         .to_string();
 
-    // `emit_bindings: true` on the supervisor's apply path (§12) means the
+    // `emit_bindings: true` on the supervisor's apply path means the
     // frontend's binding to backend was populated at deploy time --
     // readable back from the managed node's own service-status, without
     // needing a second `write-bindings` push.
@@ -441,14 +440,13 @@ async fn a_pushed_binding_reaches_a_dependent_the_supervisor_deployed() {
     managed_node.teardown().await;
 }
 
-/// Matrix row 9 (§13 test 9,
-/// `a_supervisor_that_reads_a_higher_generation_marks_the_instance_
-/// superseded_and_alerts`) -- planned as a unit test but, like test 7's own
-/// disclosed substitution, undeliverable as one: there is no injectable
-/// trait over the management verbs, so "a substrate reports a higher
-/// generation than this supervisor holds" can only be produced by a real
-/// second write against a real substrate. Absent entirely from A5b as
-/// shipped (B4, Slice A5b review) -- this is the missing live proof.
+/// A supervisor that reads a higher generation marks the instance
+/// superseded and alerts. Planned as a unit test but, like another
+/// disclosed substitution in this suite, undeliverable as one: there is no
+/// injectable trait over the management verbs, so "a substrate reports a
+/// higher generation than this supervisor holds" can only be produced by a
+/// real second write against a real substrate. This is the missing live
+/// proof.
 ///
 /// The managed node's own owner, who already holds `substrate/admin` there,
 /// claims a higher generation directly against the managed substrate's

@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Tier 2 of the logical discovery overlay (ADR-0022 §3), proven across two
-//! genuinely independent `syneroym-substrate` instances -- the milestone's
-//! reference scenario, steps 3 through 8: a caller outside the app instance
+//! genuinely independent `syneroym-substrate` instances -- the reference
+//! scenario, steps 3 through 8: a caller outside the app instance
 //! fetches the signed topology document, verifies it, routes from it, and
 //! keeps routing after the supervisor that signed it goes away.
 //!
@@ -160,8 +160,8 @@ fn service_manifest(replicas: u32) -> SynAppManifest {
 }
 
 /// Two logical services in **one** app instance, differing only in
-/// `topology_visibility` -- the fixture test 42 needs to prove the
-/// declaration is per logical service, not per app. `topology_visibility`
+/// `topology_visibility` -- the fixture for proving the declaration is per
+/// logical service, not per app. `topology_visibility`
 /// lives on `ServiceSpec` (per service) rather than the manifest root
 /// exactly to make this possible.
 fn two_service_manifest_with_topology_vis(
@@ -377,7 +377,7 @@ async fn an_outside_caller_resolves_an_apps_members_and_calls_one() {
     .expect("fetch_and_register failed");
 
     // Step 5: route to a member. Tier 3 (turning that DID into an address)
-    // is an ordinary registry lookup, unchanged by this milestone and
+    // is an ordinary registry lookup, unchanged by the topology overlay and
     // already proven at unit scale elsewhere -- this asserts the member
     // this overlay resolved to is a real one, not that Tier 3 itself works.
     let member = resolver.resolve(&key, Some(b"routing-key")).expect("resolve failed");
@@ -389,9 +389,8 @@ async fn an_outside_caller_resolves_an_apps_members_and_calls_one() {
     managed_node.teardown().await;
 }
 
-/// Reference scenario step 4, matrix row 5: a document relayed by a party
-/// that never contacted the supervisor must verify identically from bytes
-/// alone.
+/// Reference scenario step 4: a document relayed by a party that never
+/// contacted the supervisor must verify identically from bytes alone.
 #[tokio::test]
 async fn a_relayed_document_verifies_for_a_party_that_never_contacted_the_supervisor() {
     let _serial_guard = common::serial_guard().await;
@@ -493,10 +492,9 @@ async fn a_scaled_out_service_supersedes_the_cached_document_at_a_new_epoch() {
     managed_node.teardown().await;
 }
 
-/// Reference scenario step 7, matrix row 4's first half: an already-cached
-/// document still routes after the supervisor that signed it goes down --
-/// the property that proves the supervisor is off the availability path
-/// after the first fetch.
+/// Reference scenario step 7: an already-cached document still routes after
+/// the supervisor that signed it goes down -- the property that proves the
+/// supervisor is off the availability path after the first fetch.
 #[tokio::test]
 async fn a_cached_document_still_routes_after_the_supervisor_is_down() {
     let _serial_guard = common::serial_guard().await;
@@ -533,9 +531,9 @@ async fn a_cached_document_still_routes_after_the_supervisor_is_down() {
     managed_node.teardown().await;
 }
 
-/// Reference scenario step 7, matrix row 4's **second** half: a caller
-/// with no cached document fails cleanly -- not a hang -- when the
-/// supervisor it would fetch from is down.
+/// Reference scenario step 7, the other half: a caller with no cached
+/// document fails cleanly -- not a hang -- when the supervisor it would
+/// fetch from is down.
 #[tokio::test]
 async fn a_caller_with_no_cached_document_fails_cleanly_when_the_supervisor_is_down() {
     let _serial_guard = common::serial_guard().await;
@@ -602,7 +600,7 @@ async fn a_document_forged_under_a_different_key_is_rejected() {
     managed_node.teardown().await;
 }
 
-/// Test 41: An outside caller with no UCAN grant fetches the Tier-2 topology
+/// An outside caller with no UCAN grant fetches the Tier-2 topology
 /// document of an app whose service is declared `open`, and successfully
 /// resolves its members.
 #[tokio::test]
@@ -645,14 +643,13 @@ async fn an_outside_caller_resolves_an_open_apps_members_with_no_ucan_grant() {
     managed_node.teardown().await;
 }
 
-/// Test 42: one app instance, two logical services -- `open-svc` declares
+/// One app instance, two logical services -- `open-svc` declares
 /// `topology_visibility = open`, `restricted-svc` declares the default
 /// `restricted`. The same ungranted caller gets a different answer for
 /// each, proving the declaration is per logical service and not per app.
 /// (Previously this test booted a *second, separate* app instance whose
 /// single service was `restricted`, which only re-proved a `restricted`
-/// app refuses -- behaviour that already existed before this slice and is
-/// already pinned by
+/// app refuses -- long-standing behaviour that is already pinned by
 /// `an_outside_caller_resolves_an_open_apps_members_with_no_ucan_grant`'s
 /// negative case one test up.)
 #[tokio::test]
