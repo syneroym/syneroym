@@ -1,6 +1,7 @@
 //! The receiver-side idempotency fence, shared by both dispatch entry
-//! points ([ADR-0023](../../../docs/decisions/0023-durable-async-primitives.md)
-//! §4).
+//! points (see
+//! [ADR-0023](../../../docs/decisions/0023-durable-async-primitives.md),
+//! section 4).
 //!
 //! A call reaches a target service two ways -- `ProxyRouter::invoke_local`
 //! for a service on this node, and the route handler's

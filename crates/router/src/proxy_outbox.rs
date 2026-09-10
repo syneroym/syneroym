@@ -1,7 +1,7 @@
 //! The guest-facing durable outbox: fire-and-forget calls that survive an
-//! unreachable target and a process restart
-//! ([ADR-0023](../../../docs/decisions/0023-durable-async-primitives.md)
-//! §2, §4, §5).
+//! unreachable target and a process restart (see
+//! [ADR-0023](../../../docs/decisions/0023-durable-async-primitives.md),
+//! sections 2, 4 and 5).
 //!
 //! **One queue per calling service, in that service's own encrypted
 //! database.** A queued call's payload is the caller's own data -- the same

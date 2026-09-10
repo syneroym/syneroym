@@ -71,7 +71,7 @@ impl ConnectionRouter {
     ) -> Result<Self> {
         let mut router = Self { iroh_router: None, proxy: None };
 
-        // Built *before* `RouteHandler::init` (M04A Slice A1, fixes F7): the
+        // Built *before* `RouteHandler::init`: the
         // Universal Proxy's outbound remote hop needs a live Iroh endpoint,
         // and `RouteHandler::init` wires it into its `ProxyRouter`. Iroh is
         // enabled iff both "iroh" is a configured communication interface

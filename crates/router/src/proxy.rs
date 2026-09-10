@@ -1,4 +1,4 @@
-//! Universal Proxy dispatch (M04A Slice A1): a transport-agnostic outbound
+//! Universal Proxy dispatch: a transport-agnostic outbound
 //! [`ServiceProxy`] implementation. Routes a typed `(service, interface,
 //! method, params)` call to a local native service, a local WASM component,
 //! or a remote node over Iroh QUIC + JSON-RPC, with retry/backoff hook
@@ -211,13 +211,13 @@ impl RemoteHop for IrohHop {
     }
 }
 
-/// The Universal Proxy's outbound router (M04A Slice A1). Holds `Weak`
+/// The Universal Proxy's outbound router. Holds `Weak`
 /// handles into the engine/dispatch-registry it routes to, and the
 /// registry/registry-client it uses to resolve targets -- see the module doc
 /// comment on ownership direction (`RouteHandlerInner` is the strong owner;
 /// `AppSandboxEngine` only ever holds a `Weak<dyn ServiceProxy>` back, to
 /// avoid the `RouteHandlerInner -> ProxyRouter -> AppSandboxEngine ->
-/// ProxyRouter` reference cycle that hung graceful shutdown in Slice 6B).
+/// ProxyRouter` reference cycle that once hung graceful shutdown).
 pub struct ProxyRouter {
     registry: EndpointRegistry,
     registry_client: Arc<RegistryClient>,
@@ -570,32 +570,32 @@ impl ProxyRouter {
     /// auto-registers (`syneroym_core::local_registry::
     /// NATIVE_CAPABILITY_INTERFACES`).
     ///
-    /// TODO(M04B/FDAE): this is an interim, coarse, fail-closed gate -- "a
+    /// TODO(FDAE): this is an interim, coarse, fail-closed gate -- "a
     /// guest may only reach its **own** service's native capabilities
-    /// through the proxy." M04B replaces it with real per-caller/per-row
-    /// policy evaluated against `caller.session` at the data-owning node, at
-    /// which point a guest-originated cross-service `data-layer` read
-    /// becomes expressible (and filtered), not refused outright. Do not
-    /// widen this gate before that policy exists.
+    /// through the proxy." A full FDAE policy replaces it with real
+    /// per-caller/per-row policy evaluated against `caller.session` at the
+    /// data-owning node, at which point a guest-originated cross-service
+    /// `data-layer` read becomes expressible (and filtered), not refused
+    /// outright. Do not widen this gate before that policy exists.
     ///
     /// Applies to `CallOrigin::Guest` only. A substrate-internal
     /// (`CallOrigin::Native`) call to another service's `data-layer` is
-    /// exactly what M04B's Slice B3 relationship-proof fetch is, so gating
-    /// it here would foreclose the scenario A1 is explicitly supposed to
-    /// co-design for. Native-origin calls are authorized at the
+    /// exactly what the relationship-proof fetch is, so gating
+    /// it here would foreclose the scenario the proxy is explicitly
+    /// supposed to co-design for. Native-origin calls are authorized at the
     /// **data-owning node** -- the destination re-verifies the forwarded
-    /// proof (`invoke_remote`) and, once M04B lands, runs the FDAE policy
+    /// proof (`invoke_remote`) and, once the FDAE policy lands, runs it
     /// inside the callee's own `data-layer` dispatch.
     fn check_native_capability_gate(&self, req: &ProxyRequest) -> Result<(), ProxyError> {
         let CallOrigin::Guest { service_id } = &req.origin else { return Ok(()) };
 
-        // An empty interface is D-S3-15's convenience for a caller that
+        // An empty interface is a convenience for a caller that
         // cannot know a remote service's interface names -- a gateway or
         // coordinator resolving an external hostname. A WASM guest is
         // never in that position: it always names the interface it wants.
         // Refused here, before `registry.lookup` gets a chance to resolve
         // it to "the one app-declared interface" of whatever
-        // `target_service` names (finding A4) -- `matches_interface`
+        // `target_service` names -- `matches_interface`
         // below can never match `""` against a real interface name, so
         // nothing past this point would otherwise have stopped it.
         if req.interface.is_empty() {
@@ -697,21 +697,21 @@ impl ProxyRouter {
             }
             // Identity threading through a proxied WASM call is "the callee
             // acts as itself": `caller: None` below always synthesizes
-            // `service_system` (D-B3-4/D-04-02-h; `execute_wasm_json`'s own
-            // doc comment). This is a *different* question from the two
-            // D-04-02-h ingresses B3.5-fdae closed (a router-verified
-            // caller's own identity reaching its own guest's reads, direct
-            // or via self-proxy) -- this is one guest delegating to a
-            // *different* service's guest-exported interface through the
-            // proxy, which would need real caller-delegation (B1/UCAN,
-            // not yet built) to forward safely. Not an oversight.
+            // `service_system` (see `execute_wasm_json`'s own doc comment).
+            // This is a *different* question from the two guest-originated-
+            // read ingresses that thread a router-verified caller's own
+            // identity into its own guest's reads (direct or via
+            // self-proxy) -- this is one guest delegating to a *different*
+            // service's guest-exported interface through the proxy, which
+            // would need real caller-delegation (UCAN, not yet built) to
+            // forward safely. Not an oversight.
             //
             // Known limitation, same boundary: any error from
             // `execute_wasm_json` -- including a callee's own typed
             // `result::err` -- collapses to `Callee{ code: -32603 }` below.
             // The structured `E` doesn't survive the WIT<->JSON boundary
             // here, so a caller can't distinguish a business rejection from
-            // a host crash. Acceptable for A1; a component-to-component
+            // a host crash. Acceptable for now; a component-to-component
             // error channel that can carry typed errors is a follow-up.
             SubstrateEndpoint::WasmChannel { service_id } => {
                 let engine = self.app_sandbox_engine.upgrade().ok_or_else(|| {
@@ -766,7 +766,7 @@ impl ProxyRouter {
         // fresh `CallerContext`); otherwise present this node's own identity
         // -- again only for `CallOrigin::Native`. A guest is never allowed to
         // present the *caller's* proof or the *node's* key remotely, even one
-        // it legitimately carries today (Slice B3.5-fdae forwards a
+        // it legitimately carries today (the self-proxy path forwards a
         // self-proxy caller's real `CallerContext`, proof included, whenever
         // the target is the guest's own service -- `check_native_capability_
         // gate`'s same-service check only restricts *native-capability*
@@ -798,12 +798,12 @@ impl ProxyRouter {
                     .as_deref()
                     .and_then(|json| DelegationCertificate::from_json(json).ok());
             }
-            // A0 built this for the guest-origin arm; the same reasoning
+            // Built for the guest-origin arm; the same reasoning
             // applies to a substrate-internal call made on a service's
             // behalf. Only the no-proof case: the arm above forwards the
             // original caller's chain verbatim, which is what lets the
             // destination re-derive `subject_did`/`anchor_did` and authorize
-            // the real caller (D-B3-9). Presenting the service's identity
+            // the real caller. Presenting the service's identity
             // here instead would silently change who the destination thinks
             // is asking.
             (None, CallOrigin::Native { service_id: Some(sid) }) => {
@@ -2292,8 +2292,8 @@ mod tests {
         assert_eq!(queued[0].queue_key, "k1", "the queue key is the idempotency key");
     }
 
-    /// The same failure B1's review found the hard way, prevented here by
-    /// construction: the queue key is the idempotency key, so a caller
+    /// A failure prevented here by construction: the queue key is the
+    /// idempotency key, so a caller
     /// re-enqueueing the same logical operation gets one item, not two.
     #[tokio::test]
     async fn a_second_enqueue_for_the_same_key_while_one_is_pending_is_a_no_op() {
@@ -2417,8 +2417,8 @@ mod tests {
         assert!(node.queued().await.is_empty(), "a delivered item leaves the outbox");
     }
 
-    /// Failure-matrix row 9, raised by the worker itself before `invoke`
-    /// rather than as a proxy error.
+    /// A queued call whose dependency no longer resolves is raised by the
+    /// worker itself before `invoke`, rather than as a proxy error.
     #[tokio::test]
     async fn a_queued_call_whose_dependency_no_longer_resolves_is_terminal() {
         use syneroym_app_orchestration::{
@@ -2671,7 +2671,7 @@ mod tests {
         req
     }
 
-    /// D-B2-1's first tier, and the assertion that keeps the whole rule
+    /// The first tier, and the assertion that keeps the whole rule
     /// coherent: with no fence there is nothing safe to replay, so there
     /// is no row. The caller is alive and holding the error -- this is not
     /// silent loss.
@@ -2775,7 +2775,7 @@ mod tests {
         assert!(target_produced(&ProxyError::Transport("peer went away".to_string())));
     }
 
-    /// Failure-matrix row 12 says queue growth is bounded. The
+    /// Queue growth must be bounded. The
     /// dead-letter table was; the *pending* outbox was not, so a guest
     /// aimed at an unreachable target could hold unbounded rows for the
     /// whole attempt budget. It refuses rather than evicting: a pending
@@ -3113,7 +3113,7 @@ mod tests {
         assert_eq!(hop.call_count(), 0);
     }
 
-    // -- native capability gate (§5.3) -------------------------------------
+    // -- native capability gate --------------------------------------------
 
     #[tokio::test]
     async fn guest_cross_service_native_capability_is_denied_and_never_dispatched() {
@@ -3225,8 +3225,8 @@ mod tests {
         assert_eq!(service.invoked.load(Ordering::SeqCst), 0);
     }
 
-    /// Finding A4: D-S3-15's empty-interface convenience ("the destination
-    /// resolves the caller's one app-declared interface") is for an
+    /// The empty-interface convenience ("the destination resolves the
+    /// caller's one app-declared interface") is for an
     /// external caller that cannot know a service's interface names -- the
     /// gateway or coordinator resolving a hostname. A WASM guest always
     /// names the interface it wants, so an empty one must be denied before
@@ -3313,8 +3313,8 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    /// The M04B B3 relationship-proof-fetch shape -- a guard against a
-    /// future tightening of the gate silently re-breaking B3.
+    /// The relationship-proof-fetch shape -- a guard against a future
+    /// tightening of the gate silently re-breaking that fetch.
     #[tokio::test]
     async fn native_origin_cross_service_data_layer_call_is_allowed_by_the_gate() {
         let registry = empty_registry();
@@ -3475,7 +3475,7 @@ mod tests {
         assert_eq!(preamble.pubkey, None);
     }
 
-    /// Slice B3.5-fdae's self-proxy branch (`host_capabilities.rs`) forwards
+    /// The self-proxy branch (`host_capabilities.rs`) forwards
     /// a `CallOrigin::Guest` request that legitimately carries the real
     /// caller's proof when the target is the guest's own service. If that
     /// request ever falls through `invoke`'s local-registry lookup (an
@@ -3663,10 +3663,10 @@ mod tests {
         assert!(preamble.delegation.is_none());
     }
 
-    /// A2's transport half: a substrate-internal call made on a deployed
+    /// The transport half: a substrate-internal call made on a deployed
     /// service's behalf (the FDAE relationship-proof fetch) presents that
     /// service's certified instance key, not the node's -- the same
-    /// reasoning A0 applied to the guest-origin arm, now at the
+    /// reasoning applied to the guest-origin arm, now at the
     /// `(None, Native { service_id: Some(_) })` site.
     #[tokio::test]
     async fn a_native_origin_call_on_a_services_behalf_presents_that_services_instance_key() {
@@ -3719,8 +3719,8 @@ mod tests {
         assert_eq!(verified.master_did, member_master_did);
     }
 
-    /// D-B3-9's guard: when the caller already carries a signed proof (a
-    /// forwarded chain), a `Native` call must forward that proof verbatim
+    /// When the caller already carries a signed proof (a forwarded chain),
+    /// a `Native` call must forward that proof verbatim
     /// -- never substitute the service's own identity -- so the destination
     /// can re-derive `subject_did`/`anchor_did` from the real chain. This is
     /// what keeps FDAE's cross-service fetch authorizing the *real* caller
@@ -4655,7 +4655,7 @@ mod tests {
         add_step(&node, &saga_id, "a").await;
         // "Already ran, result too large to retain" -- a delivery reported
         // through the error channel, per `disposition_of`'s `Delivered`
-        // case (B2's N1). `CALL_ALREADY_RUNNING_RPC_CODE` is a *different*
+        // case. `CALL_ALREADY_RUNNING_RPC_CODE` is a *different*
         // code (still in flight right now) and classifies `Retry`, not
         // `Delivered`.
         *node.target.answer_with.lock().unwrap() = Some(ProxyError::Callee {

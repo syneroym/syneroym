@@ -1,22 +1,21 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! M04A Slice B7b: the deploy grant itself (task.md item 1 + F3's
-//! `orchestrator` half). `service_ownership.rs` (B7a) proves ownership
-//! *attribution* and *visibility*; this file proves *admission* -- the
+//! The deploy grant itself (the `orchestrator` half).
+//! `service_ownership.rs` proves ownership *attribution* and *visibility*;
+//! this file proves *admission* -- the
 //! Tier-1 `orchestrator/{deploy,undeploy,status}` capability check
-//! `ControlPlaneService::deploy`/`undeploy`/`readyz` now enforce (plan
-//! §3.2, §2.4.1), independent of ownership:
+//! `ControlPlaneService::deploy`/`undeploy`/`readyz` now enforce,
+//! independent of ownership:
 //!
 //! 1. A caller holding no grant at all is denied `deploy` outright, even for a
 //!    brand-new `service_id` nobody owns yet (the takeover check alone would
 //!    let them through; the new admission gate must not).
 //! 2. An app-scoped grantee (`substrate:<node>/app/<name>`) may deploy their
-//!    own app but not a different one (§3.2's table, rows 3-4).
+//!    own app but not a different one.
 //! 3. An app-scoped grantee does not thereby gain node-wide visibility on
-//!    `list` -- the selector excludes them from `has_node_wide_ability` (§2.2's
-//!    predicate).
-//! 4. Per-service `readyz` is gated the same way (§2.4.1); the empty-
-//!    `service_id` liveness ping stays open regardless (the `wait_for_ready`
-//!    regression guard).
+//!    `list` -- the selector excludes them from `has_node_wide_ability`.
+//! 4. Per-service `readyz` is gated the same way; the empty- `service_id`
+//!    liveness ping stays open regardless (the `wait_for_ready` regression
+//!    guard).
 //!
 //! ADR-0015 A6 (owner-rooted trust)/A7 (revocation)/A4 (`can_delegate`)
 //! themselves are proven end to end through real signed `CapabilityToken`s
@@ -25,13 +24,12 @@
 //! `ControlPlaneService` directly with hand-built `CallerContext`s, matching
 //! `service_ownership.rs`'s style, since admission itself does not depend on
 //! how the capability was verified. The two `..._real_signed_token_...` /
-//! `..._real_token_...` tests near the end (post-commit review, F3) are the
+//! `..._real_token_...` tests near the end are the
 //! exception: they join both halves -- a real signed, real-registry-owner-
 //! rooted `CapabilityToken` verified with `syneroym_ucan::verify_chain` (the
 //! same code `build_caller` calls), fed into this file's real
-//! `ControlPlaneService::deploy` gate -- closing the gap task.md item 1's
-//! "exercised end to end ... not just hand-built `CallerContext`s" claim
-//! otherwise left half-proven.
+//! `ControlPlaneService::deploy` gate -- so admission is exercised end to
+//! end, not just against hand-built `CallerContext`s.
 
 use std::{
     path::Path,
@@ -78,8 +76,8 @@ fn plain_caller(did: &str) -> CallerContext {
 }
 
 /// An app-scoped grantee holding `orchestrator/{deploy,undeploy,status}` on
-/// exactly `substrate:<NODE_DID>/app/<service_id>` -- the shape a real B7b
-/// deploy grant produces (plan §3.2's grant JSON).
+/// exactly `substrate:<NODE_DID>/app/<service_id>` -- the shape a real
+/// deploy grant's JSON produces.
 fn app_grantee(did: &str, service_id: &str) -> CallerContext {
     let resource = ResourceUri(format!("substrate:{NODE_DID}/app/{service_id}"));
     CallerContext {
@@ -238,9 +236,9 @@ async fn list(service: &ControlPlaneService, caller: &CallerContext) -> Vec<Depl
     serde_json::from_value(response.payload).unwrap()
 }
 
-/// §3.2's table, row 5: an ordinary caller holding no grant at all is
+/// An ordinary caller holding no grant at all is
 /// denied `deploy`, even for a brand-new `service_id` nobody owns yet --
-/// the takeover check (F7) alone would let them through (no existing owner
+/// the takeover check alone would let them through (no existing owner
 /// to conflict with); the new Tier-1 admission gate must reject them
 /// independently. `test_service` builds an unowned `ControlPlaneService`
 /// with no `admin_ucan_root`, so this is also
@@ -261,7 +259,7 @@ async fn deploy_denied_without_an_orchestrator_grant() {
     assert!(result.is_err(), "a caller with no orchestrator/deploy grant must be denied deploy");
 }
 
-/// §3.2's table, row 4: an app-scoped grantee's capability is prefix-covered
+/// An app-scoped grantee's capability is prefix-covered
 /// to their own app selector -- it does not cover a *different* app.
 #[tokio::test]
 async fn app_scoped_grantee_cannot_deploy_a_different_app() {
@@ -274,7 +272,7 @@ async fn app_scoped_grantee_cannot_deploy_a_different_app() {
     assert!(result.is_err(), "a grant scoped to one app must not cover a different app");
 }
 
-/// §3.2's table, row 3, positive path: the same grantee may deploy the app
+/// The positive path: the same grantee may deploy the app
 /// their grant actually names.
 #[tokio::test]
 async fn app_scoped_grantee_can_deploy_their_own_app() {
@@ -286,8 +284,8 @@ async fn app_scoped_grantee_can_deploy_their_own_app() {
     assert!(result.is_ok(), "a grant scoped to this app must admit its own deploy: {result:?}");
 }
 
-/// §2.2's predicate: a selector-bearing capability is not `is_substrate_scope`
-/// (M04A Slice B7b/F2), so an app-scoped grantee does not gain the node-wide
+/// A selector-bearing capability is not `is_substrate_scope`,
+/// so an app-scoped grantee does not gain the node-wide
 /// visibility bar `list` grants a bare `substrate:<node>` holder -- they see
 /// only their own app, exactly like an ordinary (unscoped) owner.
 #[tokio::test]
@@ -305,7 +303,7 @@ async fn app_scoped_grantee_does_not_see_every_app() {
     assert_eq!(seen[0].service_id, "my-app");
 }
 
-/// §2.4.1: the per-service form of `readyz` (a non-empty `service_id`) is
+/// The per-service form of `readyz` (a non-empty `service_id`) is
 /// gated on `orchestrator/status`, exactly like `deploy`/`undeploy` gate on
 /// their own abilities.
 #[tokio::test]
@@ -324,7 +322,7 @@ async fn per_service_readyz_denied_without_orchestrator_status() {
     );
 }
 
-/// The `wait_for_ready` regression guard (§2.4.1): the empty-`service_id`
+/// The `wait_for_ready` regression guard: the empty-`service_id`
 /// liveness ping must stay open even for a caller holding no capabilities at
 /// all -- every `roymctl`/SDK client calls it pre-capability during
 /// `connect()`, so gating it would break connect for every ordinary client.
@@ -350,7 +348,7 @@ async fn empty_readyz_stays_open_regardless_of_capabilities() {
 /// finish the underlying readiness check (a TCP-manifest deploy makes
 /// `readyz` also probe a container engine after the gate), so asserting
 /// `is_ok()` here would make the test depend on podman being installed,
-/// which is not what B7b's admission gate is about. What must hold is that
+/// which is not what the admission gate is about. What must hold is that
 /// the *admission* error (`"holds no orchestrator/status grant"`) is gone.
 #[tokio::test]
 async fn per_service_readyz_admitted_with_orchestrator_status() {
@@ -402,14 +400,14 @@ fn owner_rooted_caller_from_real_token(
     }
 }
 
-/// Post-commit review (F3): joins the two halves task.md item 1 claims are
-/// both covered -- a real signed, real-registry-owner-rooted `CapabilityToken`
+/// Joins the two halves so both are covered -- a real signed,
+/// real-registry-owner-rooted `CapabilityToken`
 /// (ADR-0015 A6), verified through the real `syneroym_ucan` chain-verification
 /// code `build_caller` also calls (not a hand-built `SessionContext`), admits
 /// at the real `ControlPlaneService::deploy` gate. Positive case: the owner
 /// self-issues a real token to redeploy their own already-existing service --
 /// the one owner-rooted-grant shape that clears *both* the Tier-1 capability
-/// gate and F7's takeover-protection check (which requires `caller_did` to
+/// gate and the takeover-protection check (which requires `caller_did` to
 /// equal the recorded owner, or node-wide authority -- see the negative case
 /// below for what a non-owner delegate's real grant runs into).
 #[tokio::test]
@@ -457,9 +455,9 @@ async fn owner_self_issued_real_token_admits_redeploy_of_their_own_service() {
     );
 }
 
-/// The negative half of F3's join: a *different* party holding a real
+/// The negative half of that join: a *different* party holding a real
 /// signed, owner-rooted grant for someone else's service is admitted at the
-/// Tier-1 capability gate but still rejected by F7's takeover-protection
+/// Tier-1 capability gate but still rejected by the takeover-protection
 /// check, which binds on `caller_did == recorded owner` (or node-wide
 /// authority), not on capability possession. Confirms capability delegation
 /// cannot be used to bypass takeover protection -- the two checks in

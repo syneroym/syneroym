@@ -93,12 +93,12 @@ pub struct RouteHandlerInner {
     pub native_http: syneroym_rpc::NativeHttpRegistry,
     pub websocket_senders: Arc<syneroym_rpc::WebSocketSenders>,
     pub app_sandbox_engine: Option<Arc<AppSandboxEngine>>,
-    /// `Arc`-wrapped (M04A Slice A1) so the `ProxyRouter`'s outbound remote
+    /// `Arc`-wrapped so the `ProxyRouter`'s outbound remote
     /// hop can share this exact node identity rather than constructing (and
     /// signing with) a second one.
     pub identity: Arc<Identity>,
     pub iroh_endpoint: Option<Endpoint>,
-    /// `Arc`-wrapped (M04A Slice A1) so the `ProxyRouter` can share this
+    /// `Arc`-wrapped so the `ProxyRouter` can share this
     /// exact client -- re-constructing a second `RegistryClient` would spin
     /// up a second DHT client (background bootstrap/routing-table tasks and
     /// sockets) when DHT is enabled.
@@ -112,7 +112,7 @@ pub struct RouteHandlerInner {
     /// `CancellationToken` governing its own subscription-forwarding
     /// tasks, mirroring `AppSandboxEngine`'s epoch-timer task lifecycle.
     pub messaging_broker: Arc<MqttBroker>,
-    /// Per-service HTTP route table (M3B Slice 7); the `HttpRoute`/
+    /// Per-service HTTP route table; the `HttpRoute`/
     /// `HttpRouteRegistry` types live in `syneroym_core::http_routes`,
     /// populated by `ControlPlaneService::deploy`/`undeploy` -- see
     /// `syneroym_control_plane::http_routes`. Read by
@@ -127,36 +127,36 @@ pub struct RouteHandlerInner {
     /// `None` in coordinator mode (`new_coordinator`), `Some` for a real
     /// substrate node (`init`) -- mirrors `app_sandbox_engine`'s own
     /// coordinator-mode-is-absent pattern. Used only by the signed-URL blob
-    /// `GET` route (M3B Slice 7) to resolve a service's DEK the same way
+    /// `GET` route to resolve a service's DEK the same way
     /// `SynSvcNativeService::resolve_blob_dek` does, so
     /// `crypto::verify_signed_url` can be checked before any bytes are
     /// streamed -- the streaming itself still goes through the existing
     /// `blob-store/open-download`+`read-chunk` native-dispatch methods.
     pub key_store: Option<Arc<KeyStore>>,
     pub storage_provider: Option<Arc<dyn StorageProvider>>,
-    /// Interim Admin-capability allowlist root (M04A Slice B0, ADR-0015/0016
+    /// Interim Admin-capability allowlist root (ADR-0015/0016
     /// `[iam].admin_ucan_root`): a caller whose verified master DID equals
     /// this is granted `substrate/admin`. `None` in coordinator mode
     /// (coordinators don't host native capabilities).
     pub admin_ucan_root: Option<String>,
-    /// `[iam].grant_resolve_to_node_did` (S3, D-S3-6(a)): when set, a
+    /// `[iam].grant_resolve_to_node_did`: when set, a
     /// caller whose verified DID is this node's own is granted a bare
     /// `substrate:<node_did>` capability whose ability is
     /// `supervisor/resolve`, so a same-node client gateway or WebRTC
     /// coordinator can resolve a logical hostname with no credential
     /// file. `false` in coordinator mode, the same as `admin_ucan_root`.
     pub grant_resolve_to_node_did: bool,
-    /// This node's own DID -- `RouteHandler::init`'s `service_id` (M04A
-    /// Slice B7a). Named `node_did` where it is used as an identity rather
+    /// This node's own DID -- `RouteHandler::init`'s `service_id`.
+    /// Named `node_did` where it is used as an identity rather
     /// than a routing key: `substrate:<node_did>` resources name it.
     pub node_did: String,
-    /// The Universal Proxy (M04A Slice A1). `RouteHandlerInner` is its
+    /// The Universal Proxy. `RouteHandlerInner` is its
     /// strong owner -- `AppSandboxEngine::service_proxy` only ever holds the
     /// `Weak` published from here, to avoid the `RouteHandlerInner ->
     /// ProxyRouter -> AppSandboxEngine -> ProxyRouter` reference cycle that
-    /// hung graceful shutdown in Slice 6B. `None` in coordinator mode
+    /// once hung graceful shutdown. `None` in coordinator mode
     /// (coordinators have no native capabilities or sandbox to proxy to).
-    /// Not read anywhere yet -- A1 only wires the *outbound* call surface
+    /// Not read anywhere yet -- only the *outbound* call surface is wired
     /// (reachable via the guest WIT import and `AppSandboxEngine`'s `Weak`
     /// handle); this field's job is solely to keep the `ProxyRouter` alive
     /// for as long as this `RouteHandler` is (mirrors `_parent_relay_url`'s
@@ -201,7 +201,7 @@ pub struct RouteHandlerDeps {
     pub native_http: syneroym_rpc::NativeHttpRegistry,
     pub websocket_senders: Arc<syneroym_rpc::WebSocketSenders>,
     pub http_routes: HttpRouteRegistry,
-    /// Static asset manifests, per service (M06A A1). Same `Arc`, same
+    /// Static asset manifests, per service. Same `Arc`, same
     /// registration path (`ControlPlaneService::deploy`/`undeploy`), and
     /// same cache-not-persistence lifecycle as `http_routes` above.
     pub assets: AssetRegistry,
@@ -216,7 +216,8 @@ pub struct RouteHandlerDeps {
     pub control_plane_service: Arc<dyn NativeService>,
     /// The concrete `ControlPlaneService`, when the caller has a real one --
     /// `None` for a test double that only needs `control_plane_service`
-    /// above for dispatch-registration behavior. Slice B3 Phase 4 uses this
+    /// above for dispatch-registration behavior. The cross-service
+    /// relationship-proof fetch uses this
     /// solely to set `ControlPlaneService.service_proxy`'s `OnceLock` once
     /// `ProxyRouter` exists (same two-phase wiring `AppSandboxEngine.
     /// service_proxy` already needs, for the identical ordering reason);
@@ -258,7 +259,7 @@ impl RouteHandler {
             .and_then(|c| c.iroh.as_ref())
             .and_then(|i| i.max_connections);
 
-        // The Universal Proxy (M04A Slice A1). Built here, before `inner`,
+        // The Universal Proxy. Built here, before `inner`,
         // so its `Weak` handles can be downgraded from the still-owned
         // `deps.native_dispatch`/`deps.app_sandbox_engine` Arcs -- `Weak`,
         // never a second strong ref, matching the `RouteHandlerInner ->
@@ -318,7 +319,7 @@ impl RouteHandler {
             .service_proxy
             .set(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>)
             .map_err(|_| anyhow::anyhow!("AppSandboxEngine::service_proxy set more than once"))?;
-        // Slice B4-fdae: `SynSvcNativeService`'s stage-4 ABAC after-step
+        // `SynSvcNativeService`'s stage-4 ABAC after-step
         // (ADR-0017 §7) needs a handle to the same engine -- `AppSandboxEngine`
         // is the sole `RowAuthorizer` implementation. Threaded through
         // `ControlPlaneService.row_authorizer` below, same two-phase
@@ -333,7 +334,7 @@ impl RouteHandler {
                     anyhow::anyhow!("ControlPlaneService::row_authorizer set more than once")
                 })?;
         }
-        // Slice B3 Phase 4: `SynSvcNativeService`'s cross-service
+        // `SynSvcNativeService`'s cross-service
         // relationship-proof fetch needs the same proxy handle, threaded
         // through `ControlPlaneService` at deploy time -- same two-phase
         // wiring as `AppSandboxEngine`'s above, for the identical ordering

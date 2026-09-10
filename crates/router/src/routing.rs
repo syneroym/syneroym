@@ -75,8 +75,8 @@ pub enum ServiceStage {
     Unsupported,
     /// The preamble declared a protocol scheme this node does not speak
     /// (`wrpc://`, any `Other(_)` scheme) against a service that otherwise
-    /// exists (M04A Slice A1, the minimal `[LFC-VER]` behavior kept from the
-    /// deferred protocol-negotiation slice, A.7). Distinct from
+    /// exists -- the minimal `[LFC-VER]` behavior kept from the deferred
+    /// protocol-negotiation work. Distinct from
     /// `Unsupported`: this is "I understood the target but not the
     /// protocol", answered with a typed *unsupported-protocol* error rather
     /// than a generic diagnostic.
