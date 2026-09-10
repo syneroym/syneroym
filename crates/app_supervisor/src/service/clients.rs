@@ -1,6 +1,84 @@
 use super::*;
 
 impl SupervisorService {
+    /// Folds `plan.services` against the completed-action journal into a
+    /// [`PassPlacements`]. A service with no `current_placement` row is
+    /// added to `expected` with empty ids (so the poll reports it
+    /// `NotDeployed`) and recorded in `missing_placement`; a placed one
+    /// contributes its real ids and, when the row names an alias, a
+    /// `did -> alias` entry.
+    pub(super) fn resolve_pass_placements(
+        landed: &[ActionRecord],
+        plan: &DeploymentPlan,
+    ) -> PassPlacements {
+        let mut placements = PassPlacements {
+            expected: Vec::new(),
+            missing_placement: BTreeSet::new(),
+            did_to_alias: BTreeMap::new(),
+        };
+        for svc in &plan.services {
+            match deploy::current_placement(landed, &svc.member_ref().to_string()) {
+                None => {
+                    placements.expected.push(ExpectedService {
+                        logical_ref: svc.logical_ref.clone(),
+                        service_id: String::new(),
+                        substrate_did: String::new(),
+                        member_index: svc.member_index,
+                    });
+                    placements.missing_placement.insert(svc.member_ref().to_string());
+                }
+                Some(row) => {
+                    placements.expected.push(ExpectedService {
+                        logical_ref: svc.logical_ref.clone(),
+                        service_id: svc.service_id.to_string(),
+                        substrate_did: row.substrate_did.clone(),
+                        member_index: svc.member_index,
+                    });
+                    if let Some(alias) = &row.substrate_alias {
+                        placements.did_to_alias.insert(row.substrate_did.clone(), alias.clone());
+                    }
+                }
+            }
+        }
+        placements
+    }
+
+    /// One `HealthTarget` per placed substrate DID this pass can name an
+    /// inventory entry for. A DID with a connected client polls through it;
+    /// one without gets an `UnreachableQuery`, so `poll_once` reports
+    /// `SubstrateUnreachable` through its normal error path. A DID whose
+    /// alias has no inventory entry at all is a caller-side configuration
+    /// gap, not a live outage -- no target is built, and `poll_once`
+    /// reports `NoTargetBuilt`/`Unknown` for it.
+    pub(super) fn health_targets(
+        did_to_alias: &BTreeMap<String, String>,
+        inventory: &SupervisorInventory,
+        clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+    ) -> BTreeMap<String, HealthTarget> {
+        let mut targets: BTreeMap<String, HealthTarget> = BTreeMap::new();
+        for (did, alias) in did_to_alias {
+            if !inventory.contains_key(alias) {
+                continue;
+            }
+            let query: Arc<dyn StatusQuery> = match clients.get(&SubstrateAlias::new(alias.clone()))
+            {
+                Some(c) => c.clone() as Arc<dyn StatusQuery>,
+                None => Arc::new(UnreachableQuery(format!(
+                    "failed to connect to substrate alias '{alias}'"
+                ))),
+            };
+            targets.insert(
+                did.clone(),
+                HealthTarget {
+                    alias: Some(SubstrateAlias::new(alias.clone())),
+                    substrate_did: did.clone(),
+                    query,
+                },
+            );
+        }
+        targets
+    }
+
     pub(super) async fn connected_client(
         &self,
         entry: &SupervisorInventoryEntry,

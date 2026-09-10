@@ -123,6 +123,18 @@ const SCHEDULED_RUN_CEILING: Duration = Duration::from_millis(MAX_SCHEDULE_TIMEO
 const SUPERVISOR_CERT_ALERT_POLICY: health::CertAlertPolicy =
     health::CertAlertPolicy::ManagedElsewhere;
 
+/// What a pass needs to know about where a plan's members are placed,
+/// derived once from the completed-action journal: the `ExpectedService`
+/// list the health poll takes, the members with no landed placement at
+/// all, and the DID -> alias map every later connect and health target is
+/// keyed through. Built the same way by the resident loop and
+/// `handle_status`, so the two can never read placement two different ways.
+struct PassPlacements {
+    expected: Vec<ExpectedService>,
+    missing_placement: BTreeSet<String>,
+    did_to_alias: BTreeMap<String, String>,
+}
+
 /// One pass's write half, as arguments. A struct rather than nine
 /// positional parameters because A5d adds a fourth work-list to a signature
 /// that was already at the edge of readable.

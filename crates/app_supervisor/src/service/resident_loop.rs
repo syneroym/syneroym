@@ -62,105 +62,18 @@ impl SupervisorService {
     /// content-unchanged diff cannot see on its own). One client set for
     /// the whole pass, closed once at the end.
     pub(super) async fn reconcile_instance_pass(&self, app_instance_id: &str) {
-        // Each of these four reads used to fail silently -- no log, no
-        // alert -- which drops the instance out
-        // of every future pass with nothing anywhere to say why. None of
-        // the four can raise a *stored* alert (the failure is in reading
-        // the store, or in parsing what it just returned, so there is no
-        // instance state left to attach one to that is any more trustworthy
-        // than the log line itself), but a `tracing::warn!` at least makes
-        // the drop observable instead of indistinguishable from an
-        // instance that was never submitted.
-        let Ok(Some(state)) = self.store.get(app_instance_id) else {
-            tracing::warn!(
-                app_instance_id,
-                "failed to read this instance's desired state; skipping it this pass"
-            );
-            return;
-        };
-        if state.paused || state.retired {
-            return;
-        }
-        let Ok(plan) = DeploymentPlan::from_json(&state.plan_json) else {
-            tracing::warn!(
-                app_instance_id,
-                "stored plan-json does not parse as a DeploymentPlan; skipping this instance \
-                 until it is resubmitted"
-            );
-            return;
-        };
-        let Ok(inventory) = serde_json::from_str::<SupervisorInventory>(&state.inventory_json)
+        let Some((state, plan, inventory, instance_id)) =
+            self.load_active_instance_for_pass(app_instance_id)
         else {
-            tracing::warn!(
-                app_instance_id,
-                "stored inventory-json does not parse; skipping this instance until it is \
-                 resubmitted"
-            );
             return;
         };
-        let Ok(instance_id) = AppInstanceId::try_new(app_instance_id.to_string()) else {
-            tracing::warn!(
-                app_instance_id,
-                "the stored app_instance_id itself is not a valid AppInstanceId; skipping this \
-                 instance"
-            );
-            return;
-        };
-
-        // Review finding A-7: nothing else ever moves a crashed-mid-apply
-        // record out of `Applying` -- `apply_with_clients` only ever
-        // updates one to `Active`/`Degraded` itself, from inside the same
-        // call that appended it. The per-instance lock this pass holds
-        // proves that call is gone: a second apply for this instance
-        // cannot be in flight while we hold the lock, so a record still
-        // reading `Applying` here was abandoned by a process that exited
-        // between appending it and updating it. `Degraded` is the correct
-        // resting state for "we do not know whether this landed" --
-        // `handle_status` would otherwise report
-        // `Applying` forever, past the point this pass's own diff (which
-        // reads completed action rows, not this record's state) has
-        // already re-derived and retried whatever was actually missing.
-        if let Ok(Some(latest)) = self.store.journal.get_latest(&instance_id)
-            && latest.state == DeploymentState::Applying
-            && let Err(e) = self.store.journal.update_state(latest.id, DeploymentState::Degraded)
-        {
-            tracing::warn!(
-                app_instance_id,
-                error = %e,
-                "failed to recover a deployment record stuck in Applying"
-            );
-        }
+        self.recover_stuck_applying(&instance_id, app_instance_id);
 
         let landed =
             self.store.journal.get_completed_actions_for_instance(&instance_id).unwrap_or_default();
 
-        let mut expected = Vec::new();
-        let mut missing_placement: BTreeSet<String> = BTreeSet::new();
-        let mut did_to_alias: BTreeMap<String, String> = BTreeMap::new();
-        for svc in &plan.services {
-            match deploy::current_placement(&landed, &svc.member_ref().to_string()) {
-                None => {
-                    expected.push(ExpectedService {
-                        logical_ref: svc.logical_ref.clone(),
-                        service_id: String::new(),
-                        substrate_did: String::new(),
-                        member_index: svc.member_index,
-                    });
-                    missing_placement.insert(svc.member_ref().to_string());
-                }
-                Some(row) => {
-                    expected.push(ExpectedService {
-                        logical_ref: svc.logical_ref.clone(),
-                        service_id: svc.service_id.to_string(),
-                        substrate_did: row.substrate_did.clone(),
-                        member_index: svc.member_index,
-                    });
-                    if let Some(alias) = &row.substrate_alias {
-                        did_to_alias.insert(row.substrate_did.clone(), alias.clone());
-                    }
-                }
-            }
-        }
+        let PassPlacements { expected, missing_placement, did_to_alias } =
+            Self::resolve_pass_placements(&landed, &plan);
 
         let plan_aliases: BTreeSet<String> =
             Self::placed_aliases(&plan).unwrap_or_default().into_iter().collect();
@@ -181,75 +94,20 @@ impl SupervisorService {
             );
         }
 
-        let mut targets: BTreeMap<String, HealthTarget> = BTreeMap::new();
-        for (did, alias) in &did_to_alias {
-            if !inventory.contains_key(alias) {
-                continue;
-            }
-            let query: Arc<dyn StatusQuery> = match clients.get(&SubstrateAlias::new(alias.clone()))
-            {
-                Some(c) => c.clone() as Arc<dyn StatusQuery>,
-                None => Arc::new(UnreachableQuery(format!(
-                    "failed to connect to substrate alias '{alias}'"
-                ))),
-            };
-            targets.insert(
-                did.clone(),
-                HealthTarget {
-                    alias: Some(SubstrateAlias::new(alias.clone())),
-                    substrate_did: did.clone(),
-                    query,
-                },
-            );
-        }
-
+        let targets = Self::health_targets(&did_to_alias, &inventory, &clients);
         let report = health::poll_once(&targets, &expected).await;
         drop(targets);
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
 
-        // D-A5c-10, the same sentinel-keyed alert `handle_status` raises.
-        let extra_live_pairs: Vec<(String, String)> = missing_placement
-            .iter()
-            .map(|l_ref| (l_ref.clone(), NEVER_LANDED_SUBSTRATE_DID.to_string()))
-            .collect();
-        // D-A5d-9: `SUPERVISOR_CERT_ALERT_POLICY`'s own doc explains why.
-        let mut opened = match health::record_report(
-            &self.store.alerts,
+        let mut opened = self.record_pass_health(
             &instance_id,
+            app_instance_id,
+            &plan,
             &report,
+            &missing_placement,
             now,
-            &extra_live_pairs,
-            SUPERVISOR_CERT_ALERT_POLICY,
-        ) {
-            Ok(o) => o,
-            Err(e) => {
-                tracing::warn!(app_instance_id, error = %e, "failed to record this pass's health report");
-                Vec::new()
-            }
-        };
-        for svc in &plan.services {
-            let l_ref = svc.member_ref().to_string();
-            if missing_placement.contains(&l_ref) {
-                if let Ok(true) = self.store.alerts.raise(
-                    &instance_id,
-                    Some(&l_ref),
-                    None,
-                    NEVER_LANDED_SUBSTRATE_DID,
-                    AlertKind::InstanceNotRunning,
-                    "planned but never deployed; the supervisor holds no completed placement for \
-                     this service",
-                ) {
-                    opened.push((AlertKind::InstanceNotRunning, l_ref));
-                }
-            } else {
-                let _ = self.store.alerts.clear(
-                    &instance_id,
-                    Some(&l_ref),
-                    NEVER_LANDED_SUBSTRATE_DID,
-                    AlertKind::InstanceNotRunning,
-                );
-            }
-        }
+        );
+
         let diff = Reconciler::new(&self.store.journal).compute_diff(&plan);
         // A dependent member whose diff against the last active plan
         // changed *only* `resolved_dependencies` is a
@@ -267,43 +125,10 @@ impl SupervisorService {
             .as_ref()
             .map(|d| Self::classify_update_actions(&landed, &d.actions))
             .unwrap_or_default();
-        let needs_work = Self::redeploy_work_list(
-            &missing_placement,
-            diff.as_ref().map(|d| d.actions.as_slice()).unwrap_or_default(),
-            &redeploy_exclusions,
-        );
-        // `Remove` is the one action the work list above ignores: a
-        // plan-level removal is never undeployed here, only alerted on.
-        for action in diff.iter().flat_map(|d| &d.actions) {
-            let ReconcileAction::Remove(l_ref) = action else { continue };
-            let l_ref_str = l_ref.to_string();
-            if let Some(row) = deploy::current_placement(&landed, &l_ref_str)
-                && let Ok(true) = self.store.alerts.raise(
-                    &instance_id,
-                    Some(&l_ref_str),
-                    row.substrate_alias.as_deref(),
-                    &row.substrate_did,
-                    AlertKind::OrphanedService,
-                    "dropped from the plan but still running on its substrate; not undeployed -- \
-                     remove it by hand (`svc remove`) if that is intended",
-                )
-            {
-                opened.push((AlertKind::OrphanedService, l_ref_str));
-            }
-        }
-        // A member back in the current plan cannot be orphaned this
-        // pass, regardless of what an older diff once said.
-        for svc in &plan.services {
-            let l_ref = svc.member_ref().to_string();
-            if let Some(row) = deploy::current_placement(&landed, &l_ref) {
-                let _ = self.store.alerts.clear(
-                    &instance_id,
-                    Some(&l_ref),
-                    &row.substrate_did,
-                    AlertKind::OrphanedService,
-                );
-            }
-        }
+        let diff_actions = diff.as_ref().map(|d| d.actions.as_slice()).unwrap_or_default();
+        let needs_work =
+            Self::redeploy_work_list(&missing_placement, diff_actions, &redeploy_exclusions);
+        self.sync_orphaned_alerts(&instance_id, &plan, &landed, diff_actions, &mut opened);
 
         // Landed services the sweep just found `InstanceNotRunning` are
         // restart
@@ -418,6 +243,184 @@ impl SupervisorService {
         Self::shutdown_clients(clients.into_values()).await;
     }
 
+    /// Reads and parses everything a pass needs about one instance, or
+    /// returns `None` (after a `tracing::warn!`) when the instance should
+    /// be skipped this pass: it is paused or retired, or one of the four
+    /// stored fields does not read or parse. None of the four failures can
+    /// raise a *stored* alert -- the failure is in reading the store or
+    /// parsing what it returned, so there is no trustworthy instance state
+    /// left to attach one to -- but the log line makes the drop observable
+    /// rather than indistinguishable from an instance that was never
+    /// submitted.
+    fn load_active_instance_for_pass(
+        &self,
+        app_instance_id: &str,
+    ) -> Option<(DesiredState, DeploymentPlan, SupervisorInventory, AppInstanceId)> {
+        let Ok(Some(state)) = self.store.get(app_instance_id) else {
+            tracing::warn!(
+                app_instance_id,
+                "failed to read this instance's desired state; skipping it this pass"
+            );
+            return None;
+        };
+        if state.paused || state.retired {
+            return None;
+        }
+        let Ok(plan) = DeploymentPlan::from_json(&state.plan_json) else {
+            tracing::warn!(
+                app_instance_id,
+                "stored plan-json does not parse as a DeploymentPlan; skipping this instance \
+                 until it is resubmitted"
+            );
+            return None;
+        };
+        let Ok(inventory) = serde_json::from_str::<SupervisorInventory>(&state.inventory_json)
+        else {
+            tracing::warn!(
+                app_instance_id,
+                "stored inventory-json does not parse; skipping this instance until it is \
+                 resubmitted"
+            );
+            return None;
+        };
+        let Ok(instance_id) = AppInstanceId::try_new(app_instance_id.to_string()) else {
+            tracing::warn!(
+                app_instance_id,
+                "the stored app_instance_id itself is not a valid AppInstanceId; skipping this \
+                 instance"
+            );
+            return None;
+        };
+        Some((state, plan, inventory, instance_id))
+    }
+
+    /// Nothing else ever moves a crashed-mid-apply record out of
+    /// `Applying` -- `apply_with_clients` only ever updates one to
+    /// `Active`/`Degraded` itself, from inside the same call that appended
+    /// it. The per-instance lock this pass holds proves that call is gone,
+    /// so a record still reading `Applying` here was abandoned by a process
+    /// that exited between appending it and updating it. `Degraded` is the
+    /// correct resting state for "we do not know whether this landed":
+    /// `handle_status` would otherwise report `Applying` forever, past the
+    /// point this pass's own diff has already re-derived and retried
+    /// whatever was actually missing.
+    fn recover_stuck_applying(&self, instance_id: &AppInstanceId, app_instance_id: &str) {
+        if let Ok(Some(latest)) = self.store.journal.get_latest(instance_id)
+            && latest.state == DeploymentState::Applying
+            && let Err(e) = self.store.journal.update_state(latest.id, DeploymentState::Degraded)
+        {
+            tracing::warn!(
+                app_instance_id,
+                error = %e,
+                "failed to recover a deployment record stuck in Applying"
+            );
+        }
+    }
+
+    /// Records this pass's health report and syncs the never-landed
+    /// `InstanceNotRunning` alert for every planned service, returning the
+    /// alerts newly opened. `SUPERVISOR_CERT_ALERT_POLICY` is the same
+    /// constant `handle_status` passes. A `record_report` failure is
+    /// logged and treated as "nothing opened" rather than propagated -- a
+    /// pass must still do its reconcile work.
+    fn record_pass_health(
+        &self,
+        instance_id: &AppInstanceId,
+        app_instance_id: &str,
+        plan: &DeploymentPlan,
+        report: &health::HealthReport,
+        missing_placement: &BTreeSet<String>,
+        now: u64,
+    ) -> Vec<(AlertKind, String)> {
+        // The sentinel-keyed exemption `record_report`'s own cleanup needs
+        // so it does not clear this alert every call -- see
+        // `NEVER_LANDED_SUBSTRATE_DID`'s own doc.
+        let extra_live_pairs: Vec<(String, String)> = missing_placement
+            .iter()
+            .map(|l_ref| (l_ref.clone(), NEVER_LANDED_SUBSTRATE_DID.to_string()))
+            .collect();
+        let mut opened = match health::record_report(
+            &self.store.alerts,
+            instance_id,
+            report,
+            now,
+            &extra_live_pairs,
+            SUPERVISOR_CERT_ALERT_POLICY,
+        ) {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::warn!(app_instance_id, error = %e, "failed to record this pass's health report");
+                Vec::new()
+            }
+        };
+        for svc in &plan.services {
+            let l_ref = svc.member_ref().to_string();
+            if missing_placement.contains(&l_ref) {
+                if let Ok(true) = self.store.alerts.raise(
+                    instance_id,
+                    Some(&l_ref),
+                    None,
+                    NEVER_LANDED_SUBSTRATE_DID,
+                    AlertKind::InstanceNotRunning,
+                    "planned but never deployed; the supervisor holds no completed placement for \
+                     this service",
+                ) {
+                    opened.push((AlertKind::InstanceNotRunning, l_ref));
+                }
+            } else {
+                let _ = self.store.alerts.clear(
+                    instance_id,
+                    Some(&l_ref),
+                    NEVER_LANDED_SUBSTRATE_DID,
+                    AlertKind::InstanceNotRunning,
+                );
+            }
+        }
+        opened
+    }
+
+    /// Raises `OrphanedService` for every `Remove` action whose member is
+    /// still running on its substrate (a plan-level removal is never
+    /// undeployed here, only alerted on), and clears it for every member
+    /// back in the current plan, whatever an older diff once said.
+    fn sync_orphaned_alerts(
+        &self,
+        instance_id: &AppInstanceId,
+        plan: &DeploymentPlan,
+        landed: &[ActionRecord],
+        diff_actions: &[ReconcileAction],
+        opened: &mut Vec<(AlertKind, String)>,
+    ) {
+        for action in diff_actions {
+            let ReconcileAction::Remove(l_ref) = action else { continue };
+            let l_ref_str = l_ref.to_string();
+            if let Some(row) = deploy::current_placement(landed, &l_ref_str)
+                && let Ok(true) = self.store.alerts.raise(
+                    instance_id,
+                    Some(&l_ref_str),
+                    row.substrate_alias.as_deref(),
+                    &row.substrate_did,
+                    AlertKind::OrphanedService,
+                    "dropped from the plan but still running on its substrate; not undeployed -- \
+                     remove it by hand (`svc remove`) if that is intended",
+                )
+            {
+                opened.push((AlertKind::OrphanedService, l_ref_str));
+            }
+        }
+        for svc in &plan.services {
+            let l_ref = svc.member_ref().to_string();
+            if let Some(row) = deploy::current_placement(landed, &l_ref) {
+                let _ = self.store.alerts.clear(
+                    instance_id,
+                    Some(&l_ref),
+                    &row.substrate_did,
+                    AlertKind::OrphanedService,
+                );
+            }
+        }
+    }
+
     /// The write half of a loop pass: mints, certifies, and applies only
     /// `needs_work`'s services, then attempts one bounded restart per
     /// `restart_candidates` entry. Extracted from `reconcile_instance_pass`
@@ -448,179 +451,36 @@ impl SupervisorService {
         if fresh_state.paused || fresh_state.retired {
             return;
         }
+        let generation = fresh_state.generation;
 
-        // Set only when `apply_with_clients` below is actually called this
-        // pass -- the signal the finding-A downgrade further down needs to
-        // tell "this pass's own record_plan might already carry a push
-        // candidate's converged state" from "the last Active record is
-        // stale and unrelated to this pass's push", which it must not
-        // downgrade.
-        let mut redeployed_this_pass = false;
-        if !needs_work.is_empty() {
-            let mut filtered_plan = plan.clone();
-            // `resolve_targets` (deploy.rs) fails the *whole* `apply_plan`
-            // call closed if even one service in the plan it is given has
-            // no built target -- correct for `roymctl app deploy`'s own
-            // all-or-nothing call, wrong here: a plan spanning two
-            // substrates where only one is reachable this pass must not
-            // block the service that *could* land. Only
-            // services whose alias this pass actually connected to are
-            // included; an unreachable one stays in `needs_work` (nothing
-            // landed for it) and is picked up again next pass.
-            filtered_plan.services.retain(|s| {
-                needs_work.contains(&s.member_ref().to_string())
-                    && s.substrate.as_ref().is_some_and(|a| clients.contains_key(a))
-            });
-            if !filtered_plan.services.is_empty() {
-                // What gets *applied* this pass is deliberately narrowed
-                // to `filtered_plan`, but what gets
-                // *journaled* as the new baseline must not be -- diffing
-                // future passes against a snapshot that only ever holds
-                // this pass's touched subset drops every untouched,
-                // already-landed service out of the baseline, so the next
-                // pass reads it as missing and redeploys it, which then
-                // drops today's subset out in turn. The loop alternates
-                // forever instead of converging. `record_plan` carries
-                // every service this supervisor still believes landed
-                // (everything outside `needs_work`) plus whatever this
-                // pass is about to (re)land, and excludes only a
-                // `needs_work` service still unreachable this pass, which
-                // genuinely has not landed.
-                let record_plan = Self::record_plan_for_pass(plan, needs_work, clients);
-                match keys::mint_and_substitute(&mut filtered_plan, &self.vault).await {
-                    Ok((minted, masters)) => {
-                        // Set from the call's own result, not from having
-                        // reached this arm -- mirrors `apply_result_is_ok`
-                        // in `apply_with_membership_pushes` and for the
-                        // same reason: `apply_with_clients` returning `Err`
-                        // can mean nothing was journaled this pass at all
-                        // (a certify failure before the journal write), in
-                        // which case `redeployed_this_pass` must stay
-                        // false, or `Degraded` was already journaled
-                        // instead of `Active`, in which case the finding-A
-                        // downgrade below is a harmless no-op either way.
-                        redeployed_this_pass = self
-                            .apply_with_clients(
-                                &filtered_plan,
-                                &record_plan,
-                                &masters,
-                                clients,
-                                fresh_state.generation,
-                                minted,
-                            )
-                            .await
-                            .inspect_err(|e| {
-                                tracing::warn!(
-                                    app_instance_id,
-                                    error = %e,
-                                    "this pass's redeploy did not fully land"
-                                );
-                            })
-                            .is_ok();
-                    }
-                    Err(e) => tracing::warn!(
-                        app_instance_id,
-                        error = %e,
-                        "failed to mint members for this pass"
-                    ),
-                }
-            }
-        }
+        // `redeployed_this_pass` is the signal the finding-A downgrade
+        // below needs to tell "this pass's own `record_plan` might already
+        // carry a push candidate's converged state" from "the last Active
+        // record is stale and unrelated to this pass's push", which it
+        // must not downgrade.
+        let redeployed_this_pass =
+            self.redeploy_needs_work(plan, app_instance_id, needs_work, clients, generation).await;
 
         let mut opened = Vec::new();
 
-        // Every member whose only change is which DIDs a dependency
-        // resolves to gets a binding push instead of the
-        // redeploy above -- an unreachable member this pass simply retries
-        // next pass, since `resolved_dependencies` still disagrees with
-        // what was last pushed.
-        let mut any_push_failed = false;
-        for (svc, substrate_did) in push_candidates {
-            // A dependent this pass could not even connect to used to be
-            // dropped here with no alert and no `opened` entry, so
-            // `BindingConflict` was never set and `Degraded` never derived
-            // from it -- indistinguishable from "nothing to push". Raised
-            // through the same alert `write_bindings_at_epoch` itself
-            // failing would raise, so the operator sees the same row
-            // either way.
-            //
-            // Raising the alert and moving on used to be the whole story
-            // here, which left a substrate this pass could
-            // not even reach with nothing durable behind it -- the DLQ's
-            // try-then-queue only fires *inside* an attempted call
-            // (`DurableActor::write_bindings`), and neither branch below
-            // gets far enough to make one. `enqueue_unreachable_push`
-            // queues the write directly so a substrate that is durably
-            // offline, not merely flaky mid-call, still converges once it
-            // returns.
-            let Some(alias) = did_to_alias.get(substrate_did) else {
-                self.enqueue_unreachable_push(
-                    instance_id,
-                    app_instance_id,
-                    plan,
-                    svc,
-                    substrate_did,
-                    fresh_state.generation,
-                    "this pass has no known substrate alias for the member's landed DID",
-                    &mut opened,
-                )
-                .await;
-                any_push_failed = true;
-                continue;
-            };
-            let Some(client) = clients.get(&SubstrateAlias::new(alias.clone())) else {
-                self.enqueue_unreachable_push(
-                    instance_id,
-                    app_instance_id,
-                    plan,
-                    svc,
-                    substrate_did,
-                    fresh_state.generation,
-                    &format!("failed to connect to substrate alias '{alias}' this pass"),
-                    &mut opened,
-                )
-                .await;
-                any_push_failed = true;
-                continue;
-            };
-            let actor = self.durable_actor(
-                client.clone(),
+        let any_push_failed = self
+            .push_membership_candidates(
+                instance_id,
                 app_instance_id,
-                &svc.member_ref().to_string(),
-                substrate_did,
-            );
-            // `Deferred` means the push did not land this pass -- it must
-            // count the same as an error here, or a redeploy landing in
-            // the same pass would journal this member's new baseline as
-            // converged while the queue still holds stale content for it.
-            // Distinct from `Landed` with zero outcomes (every dependency
-            // was just removed from this member's manifest), which is a
-            // real, converged success, not deferred -- an earlier version
-            // of this match used an empty `Vec` as the deferred sentinel,
-            // which that case collided with.
-            match self
-                .push_bindings(
-                    instance_id,
-                    plan,
-                    svc,
-                    substrate_did,
-                    &actor,
-                    fresh_state.generation,
-                    &mut opened,
-                )
-                .await
-            {
-                Ok(PushOutcome::Deferred) => any_push_failed = true,
-                Ok(PushOutcome::Landed(_)) => {}
-                Err(_) => any_push_failed = true,
-            }
-        }
+                plan,
+                push_candidates,
+                did_to_alias,
+                clients,
+                generation,
+                &mut opened,
+            )
+            .await;
         // Review round 2, finding A (same shape, narrower window here):
-        // `record_plan_for_pass` above keeps every push candidate's *new*
+        // `record_plan_for_pass` keeps every push candidate's *new*
         // `resolved_dependencies` in `record_plan` unconditionally (it is
         // not a `needs_work` member, so nothing filters it out) -- so a
         // needs_work redeploy this same pass journals that push candidate
-        // as already converged, before this loop ever runs. If the push
+        // as already converged, before the push loop runs. If the push
         // then fails, the next pass's diff would read it as landed and
         // never retry. Gated on `redeployed_this_pass`: the ordinary case
         // (a push with no needs_work redeploy alongside it in the same
@@ -640,24 +500,17 @@ impl SupervisorService {
             );
         }
 
-        for (logical_ref, service_id, substrate_did) in restart_candidates {
-            let Some(alias) = did_to_alias.get(substrate_did) else { continue };
-            let Some(client) = clients.get(&SubstrateAlias::new(alias.clone())) else { continue };
-            let actor =
-                self.durable_actor(client.clone(), app_instance_id, logical_ref, substrate_did);
-            self.attempt_restart(
-                instance_id,
-                app_instance_id,
-                logical_ref,
-                service_id,
-                substrate_did,
-                &actor,
-                fresh_state.generation,
-                now,
-                &mut opened,
-            )
-            .await;
-        }
+        self.attempt_pass_restarts(
+            instance_id,
+            app_instance_id,
+            restart_candidates,
+            did_to_alias,
+            clients,
+            generation,
+            now,
+            &mut opened,
+        )
+        .await;
 
         self.renew_due_members(
             instance_id,
@@ -698,6 +551,169 @@ impl SupervisorService {
         )
         .await;
         self.publish_opened_alerts(app_instance_id, &opened).await;
+    }
+
+    /// Mints, certifies, and applies only the `needs_work` services this
+    /// pass actually connected to a substrate for, and returns whether that
+    /// apply landed cleanly. `resolve_targets` (deploy.rs) fails the whole
+    /// `apply_plan` call closed if even one service has no built target --
+    /// correct for `roymctl app deploy`'s all-or-nothing call, wrong here:
+    /// a plan spanning two substrates where only one is reachable this pass
+    /// must not block the service that *could* land. An unreachable service
+    /// stays in `needs_work` and is picked up again next pass.
+    ///
+    /// What gets *journaled* as the new baseline is `record_plan_for_pass`,
+    /// not the filtered subset -- see that function's own doc for why
+    /// conflating the two makes the loop alternate forever instead of
+    /// converging. The return is read from `apply_with_clients`'s own
+    /// result, not from having reached the call: an `Err` can mean nothing
+    /// was journaled this pass (a certify failure before the journal
+    /// write), in which case the finding-A downgrade must not fire.
+    async fn redeploy_needs_work(
+        &self,
+        plan: &DeploymentPlan,
+        app_instance_id: &str,
+        needs_work: &BTreeSet<String>,
+        clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+        generation: u64,
+    ) -> bool {
+        if needs_work.is_empty() {
+            return false;
+        }
+        let mut filtered_plan = plan.clone();
+        filtered_plan.services.retain(|s| {
+            needs_work.contains(&s.member_ref().to_string())
+                && s.substrate.as_ref().is_some_and(|a| clients.contains_key(a))
+        });
+        if filtered_plan.services.is_empty() {
+            return false;
+        }
+        let record_plan = Self::record_plan_for_pass(plan, needs_work, clients);
+        let (minted, masters) = match keys::mint_and_substitute(&mut filtered_plan, &self.vault)
+            .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!(app_instance_id, error = %e, "failed to mint members for this pass");
+                return false;
+            }
+        };
+        self.apply_with_clients(&filtered_plan, &record_plan, &masters, clients, generation, minted)
+            .await
+            .inspect_err(|e| {
+                tracing::warn!(
+                    app_instance_id,
+                    error = %e,
+                    "this pass's redeploy did not fully land"
+                );
+            })
+            .is_ok()
+    }
+
+    /// Pushes bindings for every member whose only change is which DIDs a
+    /// dependency resolves to, and returns whether any push did not land.
+    /// A member this pass could not reach an actor for is queued directly
+    /// through `enqueue_unreachable_push` (the DLQ's try-then-queue only
+    /// fires *inside* an attempted call, and neither branch here gets that
+    /// far) so a durably-offline substrate still converges once it returns.
+    /// `Deferred` counts the same as an error: a redeploy landing in the
+    /// same pass would otherwise journal this member's baseline as
+    /// converged while the queue still holds stale content for it.
+    #[allow(clippy::too_many_arguments)]
+    async fn push_membership_candidates(
+        &self,
+        instance_id: &AppInstanceId,
+        app_instance_id: &str,
+        plan: &DeploymentPlan,
+        push_candidates: &[(PlannedService, String)],
+        did_to_alias: &BTreeMap<String, String>,
+        clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+        generation: u64,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) -> bool {
+        let mut any_push_failed = false;
+        for (svc, substrate_did) in push_candidates {
+            let Some(alias) = did_to_alias.get(substrate_did) else {
+                self.enqueue_unreachable_push(
+                    instance_id,
+                    app_instance_id,
+                    plan,
+                    svc,
+                    substrate_did,
+                    generation,
+                    "this pass has no known substrate alias for the member's landed DID",
+                    opened,
+                )
+                .await;
+                any_push_failed = true;
+                continue;
+            };
+            let Some(client) = clients.get(&SubstrateAlias::new(alias.clone())) else {
+                self.enqueue_unreachable_push(
+                    instance_id,
+                    app_instance_id,
+                    plan,
+                    svc,
+                    substrate_did,
+                    generation,
+                    &format!("failed to connect to substrate alias '{alias}' this pass"),
+                    opened,
+                )
+                .await;
+                any_push_failed = true;
+                continue;
+            };
+            let actor = self.durable_actor(
+                client.clone(),
+                app_instance_id,
+                &svc.member_ref().to_string(),
+                substrate_did,
+            );
+            match self
+                .push_bindings(instance_id, plan, svc, substrate_did, &actor, generation, opened)
+                .await
+            {
+                Ok(PushOutcome::Deferred) => any_push_failed = true,
+                Ok(PushOutcome::Landed(_)) => {}
+                Err(_) => any_push_failed = true,
+            }
+        }
+        any_push_failed
+    }
+
+    /// One bounded restart attempt per landed-but-`InstanceNotRunning`
+    /// service the sweep found -- skipping any whose substrate this pass
+    /// could not name an alias for or connect to.
+    #[allow(clippy::too_many_arguments)]
+    async fn attempt_pass_restarts(
+        &self,
+        instance_id: &AppInstanceId,
+        app_instance_id: &str,
+        restart_candidates: &[(String, String, String)],
+        did_to_alias: &BTreeMap<String, String>,
+        clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+        generation: u64,
+        now: u64,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) {
+        for (logical_ref, service_id, substrate_did) in restart_candidates {
+            let Some(alias) = did_to_alias.get(substrate_did) else { continue };
+            let Some(client) = clients.get(&SubstrateAlias::new(alias.clone())) else { continue };
+            let actor =
+                self.durable_actor(client.clone(), app_instance_id, logical_ref, substrate_did);
+            self.attempt_restart(
+                instance_id,
+                app_instance_id,
+                logical_ref,
+                service_id,
+                substrate_did,
+                &actor,
+                generation,
+                now,
+                opened,
+            )
+            .await;
+        }
     }
 
     /// The plan to journal as this pass's new baseline, as distinct from

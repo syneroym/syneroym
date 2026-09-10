@@ -114,101 +114,17 @@ impl SupervisorService {
         let lock = self.instance_lock(&key.app_instance_id);
         let _guard = lock.lock().await;
 
-        let Ok(Some(state)) = self.store.get(&key.app_instance_id) else {
-            let _ = self.store.queue.fail(item.id, now, "app instance no longer known", true);
-            return;
-        };
-        if state.retired {
-            // The operator retired this instance between enqueue and
-            // delivery. Neither attempting the write (it would resurrect a
-            // binding the operator just released) nor dead-lettering it
-            // with a `DeliveryExhausted` alert (noise against an instance
-            // nobody is going to act on) is right -- the item's own intent
-            // is simply moot now, the same as `applied`/`no-op`/`stale`.
-            let _ = self.store.queue.complete(item.id);
-            return;
-        }
-        let Ok(inventory) = serde_json::from_str::<SupervisorInventory>(&state.inventory_json)
+        let Some(client) =
+            self.connect_for_queued_delivery(&item, &key, &instance_id, &queued, now).await
         else {
-            let _ =
-                self.store.queue.fail(item.id, now, "stored inventory-json does not parse", true);
             return;
-        };
-        let Some(entry) = inventory.values().find(|e| e.did == queued.substrate_did) else {
-            let _ = self.store.queue.fail(
-                item.id,
-                now,
-                "target substrate is no longer in this instance's inventory",
-                true,
-            );
-            return;
-        };
-
-        let client = match self.queue_connector.connect(entry).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::debug!(
-                    queue_key = %item.queue_key,
-                    attempt = item.attempts,
-                    error = %e,
-                    "queue worker delivery attempt failed to connect"
-                );
-                // Re-read the clock rather than reusing `now` from function
-                // entry: `connect` can burn up to
-                // `MANAGED_SUBSTRATE_CONNECT_TIMEOUT` (10s), and the early
-                // backoff waits this feeds are sub-second -- a stale `now`
-                // can put `next_attempt_at` in the past, governing the wait
-                // by `queue_tick_secs` instead of the configured curve.
-                let failed_at = outbox::now_ms();
-                self.fail_queued_item(
-                    &instance_id,
-                    &key,
-                    item.id,
-                    failed_at,
-                    &e.to_string(),
-                    false,
-                )
-                .await;
-                return;
-            }
         };
         let outcome = client.attempt_write_bindings(queued.write.clone()).await;
 
         match outcome {
             Ok(outcomes) => {
-                let _ = self.store.queue.complete(item.id);
-                let conflict =
-                    outcomes.iter().any(|o| matches!(o, BindingWriteOutcome::Conflict(_)));
-                if conflict {
-                    if let Ok(true) = self.store.alerts.raise(
-                        &instance_id,
-                        Some(&key.logical_ref),
-                        None,
-                        &queued.substrate_did,
-                        AlertKind::BindingConflict,
-                        &format!(
-                            "a queued binding push for '{}' landed as a conflict on replay: \
-                             {outcomes:?}",
-                            key.logical_ref
-                        ),
-                    ) {
-                        self.publish_opened_alerts(
-                            &key.app_instance_id,
-                            &[(AlertKind::BindingConflict, key.logical_ref.clone())],
-                        )
-                        .await;
-                    }
-                } else {
-                    // The original transport failure's own alert (raised
-                    // when this item was first enqueued) is stale now that
-                    // delivery has actually converged.
-                    let _ = self.store.alerts.clear(
-                        &instance_id,
-                        Some(&key.logical_ref),
-                        &queued.substrate_did,
-                        AlertKind::BindingConflict,
-                    );
-                }
+                self.record_queued_write_success(&instance_id, &key, item.id, &queued, &outcomes)
+                    .await;
             }
             Err(err) => {
                 let failed_at = outbox::now_ms();
@@ -235,6 +151,111 @@ impl SupervisorService {
                 )
                 .await;
             }
+        }
+    }
+
+    /// Resolves a claimed item to a connected actor for its target
+    /// substrate, or returns `None` when there is nothing left to do this
+    /// tick: the instance is gone or its inventory does not parse (both
+    /// terminal), the target substrate left the inventory (terminal), the
+    /// instance was retired between enqueue and delivery (completed as
+    /// moot, not dead-lettered -- attempting the write would resurrect a
+    /// binding the operator just released, and a `DeliveryExhausted` alert
+    /// would be noise), or the connect failed (a non-terminal retry).
+    async fn connect_for_queued_delivery(
+        &self,
+        item: &QueueItem,
+        key: &QueueKey,
+        instance_id: &AppInstanceId,
+        queued: &outbox::QueuedBindingWrite,
+        now: i64,
+    ) -> Option<Arc<dyn WriteBindingsAttempt>> {
+        let Ok(Some(state)) = self.store.get(&key.app_instance_id) else {
+            let _ = self.store.queue.fail(item.id, now, "app instance no longer known", true);
+            return None;
+        };
+        if state.retired {
+            let _ = self.store.queue.complete(item.id);
+            return None;
+        }
+        let Ok(inventory) = serde_json::from_str::<SupervisorInventory>(&state.inventory_json)
+        else {
+            let _ =
+                self.store.queue.fail(item.id, now, "stored inventory-json does not parse", true);
+            return None;
+        };
+        let Some(entry) = inventory.values().find(|e| e.did == queued.substrate_did) else {
+            let _ = self.store.queue.fail(
+                item.id,
+                now,
+                "target substrate is no longer in this instance's inventory",
+                true,
+            );
+            return None;
+        };
+
+        match self.queue_connector.connect(entry).await {
+            Ok(c) => Some(c),
+            Err(e) => {
+                tracing::debug!(
+                    queue_key = %item.queue_key,
+                    attempt = item.attempts,
+                    error = %e,
+                    "queue worker delivery attempt failed to connect"
+                );
+                // Re-read the clock rather than reusing `now` from function
+                // entry: `connect` can burn up to
+                // `MANAGED_SUBSTRATE_CONNECT_TIMEOUT` (10s), and the early
+                // backoff waits this feeds are sub-second -- a stale `now`
+                // can put `next_attempt_at` in the past, governing the wait
+                // by `queue_tick_secs` instead of the configured curve.
+                let failed_at = outbox::now_ms();
+                self.fail_queued_item(instance_id, key, item.id, failed_at, &e.to_string(), false)
+                    .await;
+                None
+            }
+        }
+    }
+
+    /// A queued write that reached its substrate: completes the item, then
+    /// raises `BindingConflict` if the replay landed as a conflict (exactly
+    /// as the synchronous path does) or clears the original transport
+    /// failure's own alert now that delivery has actually converged.
+    async fn record_queued_write_success(
+        &self,
+        instance_id: &AppInstanceId,
+        key: &QueueKey,
+        item_id: i64,
+        queued: &outbox::QueuedBindingWrite,
+        outcomes: &[BindingWriteOutcome],
+    ) {
+        let _ = self.store.queue.complete(item_id);
+        let conflict = outcomes.iter().any(|o| matches!(o, BindingWriteOutcome::Conflict(_)));
+        if conflict {
+            if let Ok(true) = self.store.alerts.raise(
+                instance_id,
+                Some(&key.logical_ref),
+                None,
+                &queued.substrate_did,
+                AlertKind::BindingConflict,
+                &format!(
+                    "a queued binding push for '{}' landed as a conflict on replay: {outcomes:?}",
+                    key.logical_ref
+                ),
+            ) {
+                self.publish_opened_alerts(
+                    &key.app_instance_id,
+                    &[(AlertKind::BindingConflict, key.logical_ref.clone())],
+                )
+                .await;
+            }
+        } else {
+            let _ = self.store.alerts.clear(
+                instance_id,
+                Some(&key.logical_ref),
+                &queued.substrate_did,
+                AlertKind::BindingConflict,
+            );
         }
     }
 

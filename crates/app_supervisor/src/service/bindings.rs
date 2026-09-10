@@ -74,20 +74,57 @@ impl SupervisorService {
             self.apply_with_clients(&apply_plan, plan, masters, clients, generation, minted).await;
         let apply_result_is_ok = apply_result.is_ok();
 
+        let push_errors = self
+            .push_submission_membership_candidates(plan, &push_candidates, clients, generation)
+            .await;
+
+        // `apply_with_clients` above already journaled `plan` -- the full
+        // desired state, including a pushed member's new
+        // `resolved_dependencies` -- as `Active` the moment the redeploy
+        // half landed, regardless of whether the pushes then succeeded.
+        // Left alone, a failed push leaves that `Active` record as the next
+        // pass's diff baseline, so `compute_diff` reads the member as
+        // already converged and the `BindingConflict` this call raised is
+        // never retried. Downgrading to `Degraded` makes the next pass see
+        // the same diff and reclassify the member as a push candidate
+        // again. Gated on `apply_result_is_ok`: an `Err` means either
+        // nothing was journaled this call (a stale, unrelated record must
+        // not be touched) or `Degraded` was journaled already.
+        if apply_result_is_ok && !push_errors.is_empty() {
+            self.downgrade_record_after_failed_submit_push(&plan.app_instance_id);
+        }
+
+        match (apply_result, push_errors.is_empty()) {
+            (Ok(minted), true) => Ok(minted),
+            (Ok(_), false) => {
+                Err(format!("binding push did not fully land: {}", push_errors.join("; ")))
+            }
+            (Err(e), true) => Err(e),
+            (Err(e), false) => {
+                Err(format!("{e}; binding push did not fully land: {}", push_errors.join("; ")))
+            }
+        }
+    }
+
+    /// Pushes bindings for each membership-change candidate an operator
+    /// resubmit produced, and returns one `"<member>: <reason>"` string per
+    /// push that did not land. A candidate with no connected client is
+    /// queued through `enqueue_unreachable_push` -- as unreachable as one
+    /// the resident loop could not connect to, and needing the same
+    /// durability -- and also reported. `Deferred` counts as a failure so
+    /// `submit`/`force-reconcile` reports it and the caller's downgrade
+    /// fires. Publishes its own newly-opened alerts before returning.
+    async fn push_submission_membership_candidates(
+        &self,
+        plan: &DeploymentPlan,
+        push_candidates: &[(PlannedService, String)],
+        clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+        generation: u64,
+    ) -> Vec<String> {
         let mut opened = Vec::new();
         let mut push_errors = Vec::new();
-        for (svc, substrate_did) in &push_candidates {
+        for (svc, substrate_did) in push_candidates {
             let Some(client) = svc.substrate.as_ref().and_then(|a| clients.get(a)) else {
-                // Visible on `alerts`, the same as any other push failure,
-                // not just returned to this call's own caller -- the
-                // resident loop's next pass does not re-raise a fresh
-                // alert for the same cause until this one clears. Also
-                // queued, the same reason the resident loop's own
-                // analogous branch is (`enqueue_unreachable_push`'s doc
-                // comment) -- a fallback-
-                // placed member with no client this call is exactly as
-                // unreachable as one the resident loop could not connect
-                // to, and needs the same durability.
                 self.enqueue_unreachable_push(
                     &plan.app_instance_id,
                     &plan.app_instance_id.to_string(),
@@ -111,12 +148,6 @@ impl SupervisorService {
                 &svc.member_ref().to_string(),
                 substrate_did,
             );
-            // `Deferred` means the push did not land this call -- must
-            // count the same as an error here too, so
-            // `submit`/`force-reconcile` reports it and the downgrade
-            // below fires, same as the resident loop's own call site.
-            // `Landed` with zero outcomes (every dependency just removed)
-            // is a real success, not deferred.
             match self
                 .push_bindings(
                     &plan.app_instance_id,
@@ -140,55 +171,23 @@ impl SupervisorService {
             }
         }
         self.publish_opened_alerts(&plan.app_instance_id.to_string(), &opened).await;
+        push_errors
+    }
 
-        // Review round 2, finding A: `apply_with_clients` above already
-        // journaled `plan` -- the *full* desired state, including this
-        // pushed member's new `resolved_dependencies` -- as `Active` the
-        // moment the redeploy half landed, regardless of whether the
-        // pushes below it then succeeded. Left alone, a failed push here
-        // leaves that `Active` record as the next pass's diff baseline, so
-        // `compute_diff` reads the member as already converged: not in
-        // `needs_work` (it has a landed placement) and not a push
-        // candidate either (nothing differs from the "desired" record
-        // anymore), so the `BindingConflict` this call just raised is
-        // never retried and never clears. Downgrading the just-journaled
-        // record to `Degraded` makes `compute_diff` fall back to the
-        // *previous* `Active` baseline instead, so the next pass sees the
-        // same diff this call did and reclassifies the member as a push
-        // candidate again -- the same recovery shape a partially-failed
-        // redeploy already gets.
-        //
-        // Gated on `apply_result.is_ok()`, not just `push_errors` being
-        // non-empty: `apply_with_clients` returns `Ok` only when it just
-        // journaled *this* call's `record_plan` as `Active` -- if it
-        // returned `Err` instead, either nothing was journaled this call
-        // at all (a certify failure before the journal write, in which
-        // case `get_latest` would read a stale, unrelated record left by
-        // an earlier call and must not be touched), or it already
-        // journaled `Degraded` itself (in which case there is nothing to
-        // downgrade).
-        if apply_result_is_ok
-            && !push_errors.is_empty()
-            && let Ok(Some(latest)) = self.store.journal.get_latest(&plan.app_instance_id)
+    /// Downgrades this call's just-journaled `Active` record to `Degraded`
+    /// after a binding push failed -- see the call site for why this is
+    /// what lets the next pass reclassify the member as a push candidate
+    /// instead of reading it as converged.
+    fn downgrade_record_after_failed_submit_push(&self, app_instance_id: &AppInstanceId) {
+        if let Ok(Some(latest)) = self.store.journal.get_latest(app_instance_id)
             && latest.state == DeploymentState::Active
             && let Err(e) = self.store.journal.update_state(latest.id, DeploymentState::Degraded)
         {
             tracing::warn!(
-                app_instance_id = %plan.app_instance_id,
+                app_instance_id = %app_instance_id,
                 error = %e,
                 "failed to mark this submit's record Degraded after a binding push did not land"
             );
-        }
-
-        match (apply_result, push_errors.is_empty()) {
-            (Ok(minted), true) => Ok(minted),
-            (Ok(_), false) => {
-                Err(format!("binding push did not fully land: {}", push_errors.join("; ")))
-            }
-            (Err(e), true) => Err(e),
-            (Err(e), false) => {
-                Err(format!("{e}; binding push did not fully land: {}", push_errors.join("; ")))
-            }
         }
     }
 
@@ -208,74 +207,7 @@ impl SupervisorService {
         generation: u64,
         minted: Vec<MintedMaster>,
     ) -> Result<Vec<MintedMaster>, String> {
-        // The one place every certificate-minting caller passes through --
-        // the resident loop, `submit`, and
-        // `force-reconcile` alike. Filtering here rather than only in the
-        // renewal work-list is what makes revocation stick: `submit` and
-        // `force-reconcile` both call this with the full stored plan, so
-        // without this an ordinary resubmit would silently re-mint and
-        // reinstall the very key the operator just revoked. Skipped, not
-        // failed, the same way a placement-changed service is -- the rest
-        // of the plan still reconciles.
-        let app_instance_id = plan.app_instance_id.to_string();
-        let revoked = self.store.revoked_placements(&app_instance_id).unwrap_or_default();
-        // `None` on the ordinary path, so a plan carrying hex-inlined wasm
-        // artifacts is not cloned just to discover nothing is revoked.
-        let filtered: Option<(DeploymentPlan, DeploymentPlan)> = if revoked.is_empty() {
-            None
-        } else {
-            let mut opened = Vec::new();
-            if let Ok(instance_id) = AppInstanceId::try_new(app_instance_id.clone()) {
-                for svc in &plan.services {
-                    let l_ref = svc.member_ref().to_string();
-                    if !revoked.contains(&l_ref) {
-                        continue;
-                    }
-                    // This used to pass the *alias* for
-                    // both arguments, so the alert row's `substrate_did`
-                    // column held e.g. `edge-1` where every other call
-                    // site records a real DID -- resolved through this
-                    // pass's own connected clients instead, the same
-                    // source `apply_with_clients`'s certify step already
-                    // trusts for the substrate a service is placed on.
-                    let substrate_did = svc
-                        .substrate
-                        .as_ref()
-                        .and_then(|a| clients.get(a))
-                        .map(|c| c.service_id().to_string())
-                        .unwrap_or_default();
-                    if let Ok(true) = self.store.alerts.raise(
-                        &instance_id,
-                        Some(&l_ref),
-                        svc.substrate.as_ref().map(SubstrateAlias::as_str),
-                        &substrate_did,
-                        AlertKind::InstanceRevoked,
-                        &format!(
-                            "'{l_ref}' has a revoked instance key, so it is not reinstalled or \
-                             re-certified; the rest of the plan still reconciles. Undeploy it \
-                             separately if the process itself should stop"
-                        ),
-                    ) {
-                        opened.push((AlertKind::InstanceRevoked, l_ref));
-                    }
-                }
-            }
-            self.publish_opened_alerts(&app_instance_id, &opened).await;
-            let mut filtered = plan.clone();
-            filtered.services.retain(|s| !revoked.contains(&s.member_ref().to_string()));
-            // `record_plan` must keep the revoked member, not drop it.
-            // This is the same baseline `Reconciler::
-            // compute_diff` reads next pass -- filtering it here as well
-            // as `plan` above tells the diff the member was never landed,
-            // so every later pass reports it as a fresh `Add`, re-enters
-            // `needs_work`, and lands right back here to be filtered out
-            // again: a permanent no-op write, journaled forever. A
-            // revoked member is not undeployed (the alert above says so
-            // explicitly); it is still the same landed placement, just
-            // one this supervisor will not re-mint or reinstall for --
-            // so the baseline should keep saying it is there.
-            Some((filtered, record_plan.clone()))
-        };
+        let filtered = self.filter_revoked_placements(plan, record_plan, clients).await;
         let (plan, record_plan) = match &filtered {
             Some((p, r)) => (p, r),
             None => (plan, record_plan),
@@ -296,46 +228,8 @@ impl SupervisorService {
             .journal
             .append(record_plan, DeploymentState::Applying)
             .map_err(|e| e.to_string())?;
-        // Deliberately the plain, undurable constructor: `deploy::
-        // apply_plan` only ever calls `actor.apply_plan(..)` on these
-        // targets, never `write_bindings`, and `apply_plan` is never queued
-        // regardless -- there is no per-service logical ref to
-        // bind a queue key to here anyway, since one alias's actor covers
-        // every service placed on it.
-        let targets: BTreeMap<SubstrateAlias, DeployTarget> = clients
-            .iter()
-            .map(|(alias, c)| {
-                (
-                    alias.clone(),
-                    DeployTarget {
-                        alias: Some(alias.clone()),
-                        substrate_did: c.service_id().to_string(),
-                        actor: deploy::build_actor(c.clone()),
-                    },
-                )
-            })
-            .collect();
-
-        // The counter always advances before a write -- a deploy is an
-        // authoritative write like any other, so
-        // every dependent service this apply touches gets a fresh epoch
-        // here, not just the standalone push (phase 7). A service with no
-        // declared dependencies emits no bindings at all, so its epoch is
-        // never read; advancing it anyway would be harmless but pointless.
-        let mut binding_epochs: BTreeMap<MemberRef, u64> = BTreeMap::new();
-        for svc in &plan.services {
-            if svc.resolved_dependencies.is_empty() {
-                continue;
-            }
-            let epoch = self
-                .store
-                .advance_binding_epoch(
-                    &plan.app_instance_id.to_string(),
-                    &svc.member_ref().to_string(),
-                )
-                .map_err(|e| e.to_string())?;
-            binding_epochs.insert(svc.member_ref(), epoch);
-        }
+        let targets = Self::deploy_targets(clients);
+        let binding_epochs = self.advance_binding_epochs_for_apply(plan)?;
 
         let report = deploy::apply_plan(
             ApplyRequest {
@@ -377,6 +271,119 @@ impl SupervisorService {
         }
 
         Ok(minted)
+    }
+
+    /// `apply_with_clients` is the one place every certificate-minting
+    /// caller passes through -- the resident loop, `submit`, and
+    /// `force-reconcile` alike -- so filtering revoked placements here is
+    /// what makes revocation stick: without it an ordinary resubmit would
+    /// silently re-mint and reinstall the very key the operator just
+    /// revoked. A revoked member is skipped, not failed (the rest of the
+    /// plan still reconciles), and raises `InstanceRevoked`.
+    ///
+    /// Returns `None` on the ordinary path (nothing revoked), so a plan
+    /// carrying hex-inlined wasm artifacts is not cloned for nothing.
+    /// Otherwise returns `(plan_without_revoked, record_plan_with_revoked)`:
+    /// `record_plan` must *keep* the revoked member, since it is the same
+    /// baseline `compute_diff` reads next pass -- dropping it there would
+    /// have every later pass report it as a fresh `Add` and land right back
+    /// here to be filtered out again, a no-op write journaled forever.
+    async fn filter_revoked_placements(
+        &self,
+        plan: &DeploymentPlan,
+        record_plan: &DeploymentPlan,
+        clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+    ) -> Option<(DeploymentPlan, DeploymentPlan)> {
+        let app_instance_id = plan.app_instance_id.to_string();
+        let revoked = self.store.revoked_placements(&app_instance_id).unwrap_or_default();
+        if revoked.is_empty() {
+            return None;
+        }
+        let mut opened = Vec::new();
+        if let Ok(instance_id) = AppInstanceId::try_new(app_instance_id.clone()) {
+            for svc in &plan.services {
+                let l_ref = svc.member_ref().to_string();
+                if !revoked.contains(&l_ref) {
+                    continue;
+                }
+                // The `substrate_did` column holds a real DID at every
+                // other call site -- resolved here through this call's own
+                // connected clients, the same source the certify step
+                // already trusts for the substrate a service is placed on.
+                let substrate_did = svc
+                    .substrate
+                    .as_ref()
+                    .and_then(|a| clients.get(a))
+                    .map(|c| c.service_id().to_string())
+                    .unwrap_or_default();
+                if let Ok(true) = self.store.alerts.raise(
+                    &instance_id,
+                    Some(&l_ref),
+                    svc.substrate.as_ref().map(SubstrateAlias::as_str),
+                    &substrate_did,
+                    AlertKind::InstanceRevoked,
+                    &format!(
+                        "'{l_ref}' has a revoked instance key, so it is not reinstalled or \
+                         re-certified; the rest of the plan still reconciles. Undeploy it \
+                         separately if the process itself should stop"
+                    ),
+                ) {
+                    opened.push((AlertKind::InstanceRevoked, l_ref));
+                }
+            }
+        }
+        self.publish_opened_alerts(&app_instance_id, &opened).await;
+        let mut filtered = plan.clone();
+        filtered.services.retain(|s| !revoked.contains(&s.member_ref().to_string()));
+        Some((filtered, record_plan.clone()))
+    }
+
+    /// The plain, undurable deploy targets `apply_plan` takes -- one per
+    /// connected alias. Deliberately not durable: `apply_plan` only ever
+    /// calls `actor.apply_plan(..)` on these, never `write_bindings`, and
+    /// there is no per-service logical ref to bind a queue key to here
+    /// anyway, since one alias's actor covers every service placed on it.
+    fn deploy_targets(
+        clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+    ) -> BTreeMap<SubstrateAlias, DeployTarget> {
+        clients
+            .iter()
+            .map(|(alias, c)| {
+                (
+                    alias.clone(),
+                    DeployTarget {
+                        alias: Some(alias.clone()),
+                        substrate_did: c.service_id().to_string(),
+                        actor: deploy::build_actor(c.clone()),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Advances the binding epoch for every dependent service this apply
+    /// touches -- a deploy is an authoritative write like any other. A
+    /// service with no declared dependencies emits no bindings, so its
+    /// epoch is never read and is left alone.
+    fn advance_binding_epochs_for_apply(
+        &self,
+        plan: &DeploymentPlan,
+    ) -> Result<BTreeMap<MemberRef, u64>, String> {
+        let mut binding_epochs: BTreeMap<MemberRef, u64> = BTreeMap::new();
+        for svc in &plan.services {
+            if svc.resolved_dependencies.is_empty() {
+                continue;
+            }
+            let epoch = self
+                .store
+                .advance_binding_epoch(
+                    &plan.app_instance_id.to_string(),
+                    &svc.member_ref().to_string(),
+                )
+                .map_err(|e| e.to_string())?;
+            binding_epochs.insert(svc.member_ref(), epoch);
+        }
+        Ok(binding_epochs)
     }
 
     /// One dependent member's bindings, at its next epoch, without a
@@ -458,48 +465,92 @@ impl SupervisorService {
             .store
             .advance_binding_epoch(&app_instance_id, &l_ref)
             .map_err(|e| e.to_string())?;
-        // A `write_bindings` call that fails outright (the dependent
-        // unreachable) used to propagate with `?`, before the
-        // alert-raising code below was ever reached
-        // -- the alert only fired for a `Stale`/`Conflict` *outcome*, a
-        // clean round trip reporting a problem, never for the round trip
-        // itself failing.
+        let outcomes = self
+            .write_bindings_with_stale_retry(
+                instance_id,
+                plan,
+                svc,
+                substrate_did,
+                actor,
+                generation,
+                &app_instance_id,
+                &l_ref,
+                epoch,
+                opened,
+            )
+            .await?;
+        self.settle_binding_push_alert(instance_id, substrate_did, &l_ref, &outcomes, opened);
+        Ok(PushOutcome::Landed(outcomes))
+    }
+
+    /// Sends `svc`'s bindings at `epoch`, and -- if the substrate answers
+    /// `Stale(held)` -- retries exactly once at `held + 1`: no re-read,
+    /// since `Stale` already carries the number a second round trip would
+    /// only relearn. A `write_bindings` call that fails outright (the
+    /// dependent unreachable) raises `BindingConflict` and returns `Err`,
+    /// the same alert a `Stale`/`Conflict` *outcome* raises -- an operator
+    /// reading `alerts` should not have to know which shape the failure
+    /// took.
+    #[allow(clippy::too_many_arguments)]
+    async fn write_bindings_with_stale_retry(
+        &self,
+        instance_id: &AppInstanceId,
+        plan: &DeploymentPlan,
+        svc: &PlannedService,
+        substrate_did: &str,
+        actor: &Arc<dyn SubstrateActor>,
+        generation: u64,
+        app_instance_id: &str,
+        l_ref: &str,
+        epoch: u64,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) -> Result<Vec<BindingWriteOutcome>, String> {
         let outcomes = match self.write_bindings_at_epoch(plan, svc, actor, generation, epoch).await
         {
             Ok(o) => o,
             Err(e) => {
-                self.raise_binding_push_failure(instance_id, substrate_did, &l_ref, &e, opened);
+                self.raise_binding_push_failure(instance_id, substrate_did, l_ref, &e, opened);
                 return Err(e);
             }
         };
-
-        let stale_held = outcomes.iter().find_map(|o| match o {
+        let Some(held) = outcomes.iter().find_map(|o| match o {
             BindingWriteOutcome::Stale(held) => Some(*held),
             _ => None,
-        });
-        let outcomes = if let Some(held) = stale_held {
-            let retry_epoch = held + 1;
-            self.store
-                .set_binding_epoch_at_least(&app_instance_id, &l_ref, retry_epoch)
-                .map_err(|e| e.to_string())?;
-            match self.write_bindings_at_epoch(plan, svc, actor, generation, retry_epoch).await {
-                Ok(o) => o,
-                Err(e) => {
-                    self.raise_binding_push_failure(instance_id, substrate_did, &l_ref, &e, opened);
-                    return Err(e);
-                }
-            }
-        } else {
-            outcomes
+        }) else {
+            return Ok(outcomes);
         };
+        let retry_epoch = held + 1;
+        self.store
+            .set_binding_epoch_at_least(app_instance_id, l_ref, retry_epoch)
+            .map_err(|e| e.to_string())?;
+        match self.write_bindings_at_epoch(plan, svc, actor, generation, retry_epoch).await {
+            Ok(o) => Ok(o),
+            Err(e) => {
+                self.raise_binding_push_failure(instance_id, substrate_did, l_ref, &e, opened);
+                Err(e)
+            }
+        }
+    }
 
+    /// Raises `BindingConflict` when a push's outcomes still carry a
+    /// `Stale`/`Conflict` after the one retry, or clears it when the push
+    /// landed cleanly -- the clear site this alert kind never had, without
+    /// which a `Degraded` derived from it would be permanent.
+    fn settle_binding_push_alert(
+        &self,
+        instance_id: &AppInstanceId,
+        substrate_did: &str,
+        l_ref: &str,
+        outcomes: &[BindingWriteOutcome],
+        opened: &mut Vec<(AlertKind, String)>,
+    ) {
         let failed = outcomes
             .iter()
             .any(|o| matches!(o, BindingWriteOutcome::Stale(_) | BindingWriteOutcome::Conflict(_)));
         if failed {
             if let Ok(true) = self.store.alerts.raise(
                 instance_id,
-                Some(&l_ref),
+                Some(l_ref),
                 None,
                 substrate_did,
                 AlertKind::BindingConflict,
@@ -508,17 +559,16 @@ impl SupervisorService {
                      {outcomes:?}"
                 ),
             ) {
-                opened.push((AlertKind::BindingConflict, l_ref));
+                opened.push((AlertKind::BindingConflict, l_ref.to_string()));
             }
         } else {
             let _ = self.store.alerts.clear(
                 instance_id,
-                Some(&l_ref),
+                Some(l_ref),
                 substrate_did,
                 AlertKind::BindingConflict,
             );
         }
-        Ok(PushOutcome::Landed(outcomes))
     }
 
     /// The alert half of an unreachable dependent: a push that fails to
