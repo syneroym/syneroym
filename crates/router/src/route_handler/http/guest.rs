@@ -1,6 +1,13 @@
 use super::*;
 
 impl HttpHandler {
+    /// The fourth `dispatch_route` target: hands the request to the
+    /// deployed component's `syneroym:http/incoming-handler#handle-request`
+    /// export and turns its answer into an HTTP response. Reaches the guest
+    /// directly through `app_sandbox_engine`, mirroring
+    /// `handle_stream_route` -- an `http-native` connection resolves to a
+    /// `NativeService` pipeline, so `dispatch_json_rpc_once` can never
+    /// reach a guest, unlike `data-layer`/`messaging` above.
     pub(super) async fn handle_guest_route(
         &self,
         route: &HttpRoute,

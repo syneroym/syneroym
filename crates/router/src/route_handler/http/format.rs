@@ -19,6 +19,11 @@ pub(super) fn status_for_rpc_error_code(code: i32) -> StatusCode {
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
+/// **Cache-Control is chosen by content type, not by path.**
+/// `text/html`'s name is stable while its content changes every
+/// deploy, so caching it immutably would pin a browser to a stale bundle
+/// indefinitely. Everything else gets long-lived immutable caching, correct
+/// for the bundler-hashed filenames a real asset pipeline produces.
 pub(super) fn cache_control_for(content_type: &str) -> &'static str {
     if content_type.starts_with("text/html") {
         "no-cache"
@@ -206,6 +211,8 @@ pub(super) fn describe_guest_http_failure(failure: &GuestHttpFailure) -> String 
         }
     }
 }
+/// Formats a JSON-RPC error response within an HTTP response, using the
+/// generic `-32603` internal-error code -- callers with a real mapped RPC
 /// error code use `structured_rpc_error` instead, to preserve it.
 pub fn http_error(status: StatusCode, message: String) -> Response<HttpBody> {
     let body = JsonRpcErrorResponse {

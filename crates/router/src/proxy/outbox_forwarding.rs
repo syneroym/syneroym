@@ -20,18 +20,17 @@ impl ProxyRouter {
         }
     }
 
-    /// Writes a dead letter for a failed call that carried a fence.
+    /// Delivers one queued item: re-resolve, then invoke. Split out so the
+    /// worker and the immediate try-then-queue attempt cannot drift apart.
+    /// Returns `Err` only when there is nothing to deliver *to* -- the
+    /// stored dependency name no longer resolves to any member.
     ///
-    /// An **unkeyed** call writes nothing, and that is the rule rather
-    /// than an omission: its caller is alive and holding the error, so
-    /// this is not silent loss, and there would be nothing safe to replay
-    /// -- a replayable dead letter for a call with no fence *is* a second
-    /// delivery of an unfenced call.
+    /// Kept separate from the delivery itself because the two failures are
+    /// not the same kind. "This name is bound to nobody" is settled: no
+    /// number of retries invents a member, so it is terminal. "I could not
+    /// reach the member it is bound to" is not settled at all, and is
+    /// handled by the ordinary retry classification.
     ///
-    /// The recorded target is the DID this attempt actually resolved to,
-    /// not the dependency name: this row describes one specific attempt an
-    /// operator may choose to repeat, and the resolution already happened
-    /// before the request existed.
     /// Re-resolved on every attempt and never stored, so a binding
     /// re-pushed while the item waited takes effect (ADR-0021 §2).
     pub(super) fn resolve_queued_target(&self, call: &QueuedCall) -> Result<String, ProxyError> {

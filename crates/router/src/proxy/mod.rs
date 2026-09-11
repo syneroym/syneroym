@@ -55,7 +55,7 @@ use crate::{
 ///
 /// Only the former is worth a dead letter: a dead letter exists to be
 /// replayed, and replaying a refusal just re-earns the refusal.
-pub(super) fn target_produced(error: &ProxyError) -> bool {
+fn target_produced(error: &ProxyError) -> bool {
     match error {
         ProxyError::Callee { code, .. } => {
             *code != CALL_ALREADY_RUNNING_RPC_CODE && *code != CALL_RESULT_NOT_RETAINED_RPC_CODE
@@ -91,7 +91,7 @@ pub(super) fn target_produced(error: &ProxyError) -> bool {
 /// answer promptly whatever the target is doing, and anything this probe
 /// would have waited longer to learn is something the outbox worker will
 /// find out on its own schedule.
-pub(super) const ENQUEUE_PROBE_BUDGET: Duration = Duration::from_secs(2);
+const ENQUEUE_PROBE_BUDGET: Duration = Duration::from_secs(2);
 
 /// Bounds one saga undo's own call attempt. `compensate_next_step` sends up
 /// to `SAGA_SWEEP_LIMIT` undos per service, sequentially, from
@@ -101,12 +101,12 @@ pub(super) const ENQUEUE_PROBE_BUDGET: Duration = Duration::from_secs(2);
 /// other service's delivery, for minutes. A saga is not a probe -- it is a
 /// real delivery attempt on its own retry schedule -- so this is longer
 /// than `ENQUEUE_PROBE_BUDGET`, just not unbounded.
-pub(super) const SAGA_UNDO_CALL_BUDGET: Duration = Duration::from_secs(5);
+const SAGA_UNDO_CALL_BUDGET: Duration = Duration::from_secs(5);
 
 mod hop;
-mod outbox;
+mod outbox_forwarding;
 mod router;
-mod saga;
+mod saga_dispatch;
 mod state;
 
 #[cfg(test)]
@@ -114,7 +114,7 @@ mod tests;
 
 pub use hop::*;
 #[cfg(test)]
-use saga::{merge_forward_result, step_call_budget_ms};
+use saga_dispatch::{merge_forward_result, step_call_budget_ms};
 pub use state::*;
 
 /// avoid the `RouteHandlerInner -> ProxyRouter -> AppSandboxEngine ->

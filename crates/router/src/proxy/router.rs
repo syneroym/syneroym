@@ -1,6 +1,16 @@
 use super::*;
 
 impl ProxyRouter {
+    /// Writes a dead letter for a failed call that carried a fence.
+    ///
+    /// An **unkeyed** call writes nothing, and that is the rule rather
+    /// than an omission: its caller is alive and holding the error, so
+    /// this is not silent loss, and there would be nothing safe to replay
+    /// -- a replayable dead letter for a call with no fence *is* a second
+    /// delivery of an unfenced call.
+    ///
+    /// The recorded target is the DID this attempt actually resolved to,
+    /// not the dependency name: this row describes one specific attempt an
     /// operator may choose to repeat, and the resolution already happened
     /// before the request existed.
     pub(super) async fn record_failed_call(&self, req: &ProxyRequest, error: &ProxyError) {

@@ -98,7 +98,7 @@ type HttpBody = UnsyncBoxBody<Bytes, Infallible>;
 /// Small-body routes (`data-layer` `put`/`patch`, `messaging` `publish`)
 /// share this guard; blob download and chunked-upload routes are exempt by
 /// design (see the module doc).
-pub(super) const UNAUTHENTICATED_RPC_CODE: i32 = -32090;
+const UNAUTHENTICATED_RPC_CODE: i32 = -32090;
 
 const MAX_SMALL_BODY_BYTES: usize = 1024 * 1024;
 
@@ -146,16 +146,19 @@ pub struct HttpHandler {
     pub caller: Option<CallerContext>,
 }
 
+mod auth;
 mod blobs;
 mod dispatch;
 mod format;
 mod guest;
 mod parse;
 mod streaming;
+mod websocket;
 
 #[cfg(test)]
 mod tests;
 
+use auth::*;
 use dispatch::*;
 pub use format::http_error;
 use format::*;
