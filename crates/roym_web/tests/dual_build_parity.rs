@@ -86,9 +86,34 @@ fn owner_did() -> String {
     derive_did_key(&owner_identity().public_key())
 }
 
+/// `directory.publish`'s ledger row id is `<published_by>:<now_secs>:
+/// <record_id>` -- `now_secs` is the one clock the two builds cannot share
+/// a reading of, unlike the signed envelope's own pinned `issued_at_secs`.
+/// A same-named field would already be caught by the removals below, but
+/// here the volatile value is folded into a composite string used as a
+/// bundle row's `id`, so it needs picking out by shape instead: the first
+/// run of digits sandwiched between two colons. Returns `None` when the id
+/// has no such run (every other collection's id -- a DID or a
+/// content-derived record id -- never does).
+fn normalize_ledger_row_id(id: &str) -> Option<String> {
+    let colons: Vec<usize> = id.match_indices(':').map(|(i, _)| i).collect();
+    for pair in colons.windows(2) {
+        let (start, end) = (pair[0] + 1, pair[1]);
+        if start < end && id.as_bytes()[start..end].iter().all(u8::is_ascii_digit) {
+            return Some(format!("{}:TS:{}", &id[..pair[0]], &id[pair[1] + 1..]));
+        }
+    }
+    None
+}
+
 fn strip_volatile(val: &mut Value) {
     match val {
         Value::Object(map) => {
+            if let Some(normalized) =
+                map.get("id").and_then(Value::as_str).and_then(normalize_ledger_row_id)
+            {
+                map.insert("id".to_string(), Value::String(normalized));
+            }
             map.remove("verified_at_secs");
             map.remove("added_at_secs");
             map.remove("at_secs");
