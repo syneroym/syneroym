@@ -4119,7 +4119,7 @@ async fn scenario_84_a_withdrawn_publication_consumes_no_budget_and_clears_the_i
 
     both_rpc(&h, "listing.withdraw", json!({ "listing_id": id })).await;
     let (gw2, gn2) = both_rpc(&h, "listing.get", json!({ "listing_id": id })).await;
-    assert_eq!(gw2, gn2);
+    assert_eq!(stripped(&gw2), stripped(&gn2));
     let e2 = gw2["result"]["envelope"].as_str().unwrap().to_string();
     let (pw, pn) = publish_signed_listing(&h, &e2).await;
     assert_eq!(pw, pn);
@@ -4439,13 +4439,20 @@ async fn scenario_97_client_fan_out_over_one_source_yields_a_merged_hit_parity()
 #[tokio::test]
 async fn scenario_101_a_run_with_zero_sources_succeeds_with_zero_hits_parity() {
     let h = harness().await;
-    let (start_w, start_n) = both_rpc(&h, "directory.start-run", json!({})).await;
-    assert_eq!(start_w, start_n);
-    let run_id = start_w["result"]["run_id"].as_str().unwrap().to_string();
+    // Per build, minting each build's own run id (the id folds in the
+    // guest's own wall clock) -- `start-run`'s raw response is never
+    // compared directly across builds for that reason.
+    let start_w = one_rpc(&h, true, "directory.start-run", json!({})).await;
+    let start_n = one_rpc(&h, false, "directory.start-run", json!({})).await;
     assert_eq!(start_w["result"]["sources"], json!([]));
+    assert_eq!(start_n["result"]["sources"], json!([]));
+    assert_eq!(start_w["result"]["max_concurrency"], start_n["result"]["max_concurrency"]);
+    let run_w = start_w["result"]["run_id"].as_str().unwrap().to_string();
+    let run_n = start_n["result"]["run_id"].as_str().unwrap().to_string();
 
-    let (mw, mn) = both_rpc(&h, "directory.merge", json!({ "run_id": run_id })).await;
-    assert_eq!(mw, mn);
+    let mw = one_rpc(&h, true, "directory.merge", json!({ "run_id": run_w })).await;
+    let mn = one_rpc(&h, false, "directory.merge", json!({ "run_id": run_n })).await;
+    assert_eq!(stripped(&mw), stripped(&mn));
     assert_eq!(mw["result"]["hits"], json!([]));
     assert!(mw["result"].get("error").is_none());
 }
