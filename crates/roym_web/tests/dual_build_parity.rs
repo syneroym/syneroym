@@ -2081,8 +2081,12 @@ async fn scenario_22_report_create_get_withdraw_and_refile_refusal_parity() {
     .into_bytes();
     let wasm_sub = h.wasm_http.post("/rpc", submit_req.clone(), Some(caller())).await;
     let native_sub = h.native_http.post("/rpc", submit_req.clone(), Some(caller())).await;
-    assert_eq!(wasm_sub.body, native_sub.body);
     let sub_val: Value = serde_json::from_slice(&wasm_sub.body).unwrap();
+    let sub_val_n: Value = serde_json::from_slice(&native_sub.body).unwrap();
+    // report.create's own response carries the same at_secs (see
+    // strip_volatile) as report.get, so this needs the same
+    // parse-then-strip comparison instead of a raw byte one.
+    assert_eq!(stripped(&sub_val), stripped(&sub_val_n));
     assert_ne!(sub_val.get("error").and_then(|e| e.get("code")), Some(&json!(-32601)));
     let report_id = sub_val["result"]["report_id"].as_str().unwrap();
 
@@ -2103,22 +2107,28 @@ async fn scenario_22_report_create_get_withdraw_and_refile_refusal_parity() {
         .into_bytes();
     let wasm_with = h.wasm_http.post("/rpc", withdraw_req.clone(), Some(caller())).await;
     let native_with = h.native_http.post("/rpc", withdraw_req, Some(caller())).await;
-    assert_eq!(wasm_with.body, native_with.body);
     let with_val: Value = serde_json::from_slice(&wasm_with.body).unwrap();
+    let with_val_n: Value = serde_json::from_slice(&native_with.body).unwrap();
+    assert_eq!(stripped(&with_val), stripped(&with_val_n));
     assert_eq!(with_val["result"]["status"], "withdrawn");
 
-    // Verify report.get reflects status "withdrawn"
+    // Verify report.get reflects status "withdrawn" -- report.create's own
+    // at_secs (see strip_volatile) carries through, so this is a raw-byte
+    // comparison only after parsing and stripping, like the report.get
+    // check above.
     let wasm_get2 = h.wasm_http.post("/rpc", get_req.clone(), Some(caller())).await;
     let native_get2 = h.native_http.post("/rpc", get_req, Some(caller())).await;
-    assert_eq!(wasm_get2.body, native_get2.body);
     let get2_val: Value = serde_json::from_slice(&wasm_get2.body).unwrap();
+    let get2_val_n: Value = serde_json::from_slice(&native_get2.body).unwrap();
+    assert_eq!(stripped(&get2_val), stripped(&get2_val_n));
     assert_eq!(get2_val["result"]["status"], "withdrawn");
 
     // Attempting to re-file a withdrawn report refuses on both builds
     let wasm_refile = h.wasm_http.post("/rpc", submit_req.clone(), Some(caller())).await;
     let native_refile = h.native_http.post("/rpc", submit_req, Some(caller())).await;
-    assert_eq!(wasm_refile.body, native_refile.body);
     let refile_val: Value = serde_json::from_slice(&wasm_refile.body).unwrap();
+    let refile_val_n: Value = serde_json::from_slice(&native_refile.body).unwrap();
+    assert_eq!(stripped(&refile_val), stripped(&refile_val_n));
     assert!(refile_val.get("error").is_some());
     assert!(refile_val["error"]["message"].as_str().unwrap().contains("withdrawn"));
 }
