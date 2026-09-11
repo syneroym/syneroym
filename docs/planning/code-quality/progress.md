@@ -55,7 +55,7 @@ parenthetical that can be removed without rewriting the sentence.
 | Crate | Comment blocks | mechanical | Files 500+ | Long fns | Comments | Split | Functions |
 | --- | ---: | ---: | ---: | ---: | --- | --- | --- |
 | `crates/app_supervisor` | 267 | 45 | 3 | 9 | done | done | done |
-| `crates/control_plane` | 151 | 40 | 3 | 14 | done | | |
+| `crates/control_plane` | 151 | 40 | 3 | 14 | done | done | |
 | `crates/router` | 120 | 27 | 5 | 12 | done | done | |
 | `crates/substrate` | 110 | 28 | 1 | 29 | done | | |
 | `crates/sdk` | 101 | 47 | 4 | 3 | done | | |
@@ -64,7 +64,7 @@ parenthetical that can be removed without rewriting the sentence.
 | `apps/roymctl` | 69 | 37 | 4 | 9 | done | done | |
 | `crates/app_orchestration` | 49 | 22 | 2 | 2 | done | | |
 | `crates/async_queue` | 34 | 12 | 2 | 0 | done | | |
-| `crates/data_db` | 34 | 9 | 4 | 0 | done | | |
+| `crates/data_db` | 34 | 9 | 4 | 0 | done | done | |
 | `crates/fdae` | 27 | 5 | 2 | 1 | done | | |
 | `crates/rpc` | 21 | 8 | 0 | 0 | done | | |
 | `crates/ucan` | 14 | 0 | 0 | 0 | done | | |
