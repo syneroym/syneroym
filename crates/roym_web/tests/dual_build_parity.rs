@@ -106,6 +106,21 @@ fn normalize_ledger_row_id(id: &str) -> Option<String> {
     None
 }
 
+/// The rate limiter's `retry_after_secs` (see the removal below) is a
+/// difference of two unpinned wall-clock reads, and `directory.publish`
+/// folds the same number into this human-readable error `message`, not
+/// just the named field. Picks out `retry in <digits>s` and blanks the
+/// digits; returns `None` for every other message, which is untouched.
+fn normalize_retry_message(msg: &str) -> Option<String> {
+    let marker = "retry in ";
+    let start = msg.find(marker)? + marker.len();
+    let digits_end = start + msg[start..].bytes().take_while(u8::is_ascii_digit).count();
+    if digits_end == start || !msg[digits_end..].starts_with('s') {
+        return None;
+    }
+    Some(format!("{}N{}", &msg[..start], &msg[digits_end..]))
+}
+
 fn strip_volatile(val: &mut Value) {
     match val {
         Value::Object(map) => {
@@ -113,6 +128,11 @@ fn strip_volatile(val: &mut Value) {
                 map.get("id").and_then(Value::as_str).and_then(normalize_ledger_row_id)
             {
                 map.insert("id".to_string(), Value::String(normalized));
+            }
+            if let Some(normalized) =
+                map.get("message").and_then(Value::as_str).and_then(normalize_retry_message)
+            {
+                map.insert("message".to_string(), Value::String(normalized));
             }
             map.remove("verified_at_secs");
             map.remove("added_at_secs");
