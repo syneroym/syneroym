@@ -86,9 +86,34 @@ fn owner_did() -> String {
     derive_did_key(&owner_identity().public_key())
 }
 
+/// `directory.publish`'s ledger row id is `<published_by>:<now_secs>:
+/// <record_id>` -- `now_secs` is the one clock the two builds cannot share
+/// a reading of, unlike the signed envelope's own pinned `issued_at_secs`.
+/// A same-named field would already be caught by the removals below, but
+/// here the volatile value is folded into a composite string used as a
+/// bundle row's `id`, so it needs picking out by shape instead: the first
+/// run of digits sandwiched between two colons. Returns `None` when the id
+/// has no such run (every other collection's id -- a DID or a
+/// content-derived record id -- never does).
+fn normalize_ledger_row_id(id: &str) -> Option<String> {
+    let colons: Vec<usize> = id.match_indices(':').map(|(i, _)| i).collect();
+    for pair in colons.windows(2) {
+        let (start, end) = (pair[0] + 1, pair[1]);
+        if start < end && id.as_bytes()[start..end].iter().all(u8::is_ascii_digit) {
+            return Some(format!("{}:TS:{}", &id[..pair[0]], &id[pair[1] + 1..]));
+        }
+    }
+    None
+}
+
 fn strip_volatile(val: &mut Value) {
     match val {
         Value::Object(map) => {
+            if let Some(normalized) =
+                map.get("id").and_then(Value::as_str).and_then(normalize_ledger_row_id)
+            {
+                map.insert("id".to_string(), Value::String(normalized));
+            }
             map.remove("verified_at_secs");
             map.remove("added_at_secs");
             map.remove("at_secs");
@@ -4094,7 +4119,7 @@ async fn scenario_84_a_withdrawn_publication_consumes_no_budget_and_clears_the_i
 
     both_rpc(&h, "listing.withdraw", json!({ "listing_id": id })).await;
     let (gw2, gn2) = both_rpc(&h, "listing.get", json!({ "listing_id": id })).await;
-    assert_eq!(gw2, gn2);
+    assert_eq!(stripped(&gw2), stripped(&gn2));
     let e2 = gw2["result"]["envelope"].as_str().unwrap().to_string();
     let (pw, pn) = publish_signed_listing(&h, &e2).await;
     assert_eq!(pw, pn);
@@ -4414,13 +4439,20 @@ async fn scenario_97_client_fan_out_over_one_source_yields_a_merged_hit_parity()
 #[tokio::test]
 async fn scenario_101_a_run_with_zero_sources_succeeds_with_zero_hits_parity() {
     let h = harness().await;
-    let (start_w, start_n) = both_rpc(&h, "directory.start-run", json!({})).await;
-    assert_eq!(start_w, start_n);
-    let run_id = start_w["result"]["run_id"].as_str().unwrap().to_string();
+    // Per build, minting each build's own run id (the id folds in the
+    // guest's own wall clock) -- `start-run`'s raw response is never
+    // compared directly across builds for that reason.
+    let start_w = one_rpc(&h, true, "directory.start-run", json!({})).await;
+    let start_n = one_rpc(&h, false, "directory.start-run", json!({})).await;
     assert_eq!(start_w["result"]["sources"], json!([]));
+    assert_eq!(start_n["result"]["sources"], json!([]));
+    assert_eq!(start_w["result"]["max_concurrency"], start_n["result"]["max_concurrency"]);
+    let run_w = start_w["result"]["run_id"].as_str().unwrap().to_string();
+    let run_n = start_n["result"]["run_id"].as_str().unwrap().to_string();
 
-    let (mw, mn) = both_rpc(&h, "directory.merge", json!({ "run_id": run_id })).await;
-    assert_eq!(mw, mn);
+    let mw = one_rpc(&h, true, "directory.merge", json!({ "run_id": run_w })).await;
+    let mn = one_rpc(&h, false, "directory.merge", json!({ "run_id": run_n })).await;
+    assert_eq!(stripped(&mw), stripped(&mn));
     assert_eq!(mw["result"]["hits"], json!([]));
     assert!(mw["result"].get("error").is_none());
 }
