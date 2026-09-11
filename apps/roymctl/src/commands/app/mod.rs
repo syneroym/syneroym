@@ -1,12 +1,17 @@
 //! SynApp management subcommands.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use clap::Subcommand;
+use syneroym_app_orchestration::{models::SubstrateAlias, substrate_inventory::SubstrateEntry};
 
 pub mod deploy;
 pub mod health;
 pub mod reconcile;
+pub mod resolve;
 
 #[cfg(test)]
 mod tests;
@@ -17,7 +22,6 @@ pub(crate) use std::{collections::BTreeMap, sync::Arc};
 #[cfg(test)]
 pub(crate) use deploy::{
     check_no_placement_change, plan_declares_a_schedule, refuse_unmastered_dependencies,
-    resolve_credentials, resolve_under,
 };
 #[cfg(test)]
 pub(crate) use semver::Version;
@@ -26,15 +30,63 @@ pub(crate) use syneroym_app_orchestration::{
     ActionRecord, ActionState, AppInstanceId, DeploymentJournal, DeploymentPlan, DeploymentState,
     models::{
         AppBlueprintId, LogicalServiceName, LogicalServiceRef, PlannedService, ServiceConfig,
-        ServiceType, SubstrateAlias,
+        ServiceType,
     },
-    substrate_inventory::SubstrateEntry,
 };
 #[cfg(test)]
 pub(crate) use syneroym_sdk::deploy::DeployTarget;
 
 #[cfg(test)]
 pub(crate) use crate::commands::member_identity;
+
+/// How long `deploy` and `health` each wait for a substrate to report ready
+/// before giving up on it -- shared so the two commands agree on one budget
+/// for the same kind of wait.
+pub(super) const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Resolves a possibly-relative path against `dir` (`<roymctl --dir>`),
+/// matching how `client_for` already resolves `identities/<name>.key` --
+/// an inventory entry's `ucan` path should behave the same way.
+pub(crate) fn resolve_under(dir: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() { path.to_path_buf() } else { dir.join(path) }
+}
+
+/// Resolves the `identity`/`ucan` pair an alias's client presents.
+///
+/// The pair is inherited from **one** source, entry or global, never mixed
+/// field-by-field: an entry that sets `identity` but not `ucan` would
+/// otherwise fall back to the *global* `--ucan`, connecting as the entry's
+/// identity while presenting a token whose `audience_did` is the global
+/// one. `client_for`'s own guard only rejects "ucan without as", not this,
+/// and the mismatch then fails silently server-side (a `warn!`-logged chain
+/// drop), surfacing downstream as a confusing "holds no grant" instead of
+/// the real cause -- the exact failure that guard was written to prevent.
+///
+/// Shared by `deploy` and `health`: both resolve a substrate alias's
+/// credentials from the same inventory the same way.
+pub(crate) fn resolve_credentials<'a>(
+    alias: &SubstrateAlias,
+    entry: &'a SubstrateEntry,
+    inv_path: &Path,
+    dir: &Path,
+    run_as: Option<&'a str>,
+    ucan_path: Option<&'a Path>,
+) -> anyhow::Result<(Option<&'a str>, Option<PathBuf>)> {
+    if entry.identity.is_some() != entry.ucan.is_some() {
+        anyhow::bail!(
+            "substrate '{alias}' in {} sets only one of `identity`/`ucan`. A partial override \
+             would pair this entry's value with the *global* --as/--ucan for the other field, \
+             which is almost never the intended credential -- set both in the entry, or neither \
+             to inherit the global pair as-is.",
+            inv_path.display()
+        );
+    }
+    if entry.identity.is_some() {
+        Ok((entry.identity.as_deref(), entry.ucan.as_deref().map(|p| resolve_under(dir, p))))
+    } else {
+        Ok((run_as, ucan_path.map(Path::to_path_buf)))
+    }
+}
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum AppCommands {
@@ -232,7 +284,7 @@ pub async fn handle(
             )
         }
         AppCommands::Resolve { app_did, service_name } => {
-            reconcile::handle_resolve(
+            resolve::handle_resolve(
                 app_did.clone(),
                 service_name.clone(),
                 api_url,

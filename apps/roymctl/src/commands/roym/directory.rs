@@ -11,7 +11,7 @@ use clap::Subcommand;
 use serde_json::{Value, json};
 use tokio::{sync::Semaphore, task::JoinSet};
 
-use super::transaction::parse_near;
+use super::parse_near;
 use crate::DEFAULT_GATEWAY_URL;
 
 #[derive(Subcommand, Debug, Clone)]

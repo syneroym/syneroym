@@ -10,6 +10,7 @@ use clap::Subcommand;
 use serde_json::{Value, json};
 use syneroym_roym_core::{money, transaction};
 
+use super::parse_near;
 use crate::DEFAULT_GATEWAY_URL;
 
 #[derive(Subcommand, Debug, Clone)]
@@ -411,25 +412,6 @@ pub(super) async fn handle_transaction(
         }
     }
     Ok(())
-}
-
-/// Parses `lat,lon,radius_m` at this boundary and converts to integer
-/// micro-degrees: nothing decimal reaches a signed payload, and this is
-/// the one place a person's decimal input becomes that integer.
-pub(super) fn parse_near(input: &str) -> Result<serde_json::Value> {
-    let parts: Vec<&str> = input.split(',').collect();
-    let [lat, lon, radius] = parts.as_slice() else {
-        anyhow::bail!("--near expects lat,lon,radius_m");
-    };
-    let lat: f64 = lat.trim().parse().context("invalid latitude")?;
-    let lon: f64 = lon.trim().parse().context("invalid longitude")?;
-    let radius: f64 = radius.trim().parse().context("invalid radius_m")?;
-    Ok(json!({
-        "kind": "circle",
-        "lat_e6": (lat * 1e6).round() as i64,
-        "lon_e6": (lon * 1e6).round() as i64,
-        "radius_m": radius.round() as u64,
-    }))
 }
 
 /// Parses `earliest,latest` unix timestamps at this boundary.

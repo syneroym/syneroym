@@ -17,7 +17,7 @@ use syneroym_app_orchestration::{
         AppBlueprintId, LogicalServiceName, PlannedService, ServiceConfig, ServiceSpec,
         ServiceType, SubstrateAlias,
     },
-    substrate_inventory::{SubstrateEntry, SubstrateInventory, check_placement, placement_demand},
+    substrate_inventory::{SubstrateInventory, check_placement, placement_demand},
 };
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_sdk::{
@@ -25,50 +25,8 @@ use syneroym_sdk::{
     deploy::{self, ApplyRequest, DeployTarget},
 };
 
+use super::{PREFLIGHT_TIMEOUT, resolve_credentials};
 use crate::commands::member_identity;
-
-pub(super) const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Resolves a possibly-relative path against `dir` (`<roymctl --dir>`),
-/// matching how `client_for` already resolves `identities/<name>.key` --
-/// an inventory entry's `ucan` path should behave the same way.
-pub(crate) fn resolve_under(dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() { path.to_path_buf() } else { dir.join(path) }
-}
-
-/// Resolves the `identity`/`ucan` pair an alias's client presents.
-///
-/// The pair is inherited from **one** source, entry or global, never mixed
-/// field-by-field: an entry that sets `identity` but not `ucan` would
-/// otherwise fall back to the *global* `--ucan`, connecting as the entry's
-/// identity while presenting a token whose `audience_did` is the global
-/// one. `client_for`'s own guard only rejects "ucan without as", not this,
-/// and the mismatch then fails silently server-side (a `warn!`-logged chain
-/// drop), surfacing downstream as a confusing "holds no grant" instead of
-/// the real cause -- the exact failure that guard was written to prevent.
-pub(crate) fn resolve_credentials<'a>(
-    alias: &SubstrateAlias,
-    entry: &'a SubstrateEntry,
-    inv_path: &Path,
-    dir: &Path,
-    run_as: Option<&'a str>,
-    ucan_path: Option<&'a Path>,
-) -> anyhow::Result<(Option<&'a str>, Option<PathBuf>)> {
-    if entry.identity.is_some() != entry.ucan.is_some() {
-        anyhow::bail!(
-            "substrate '{alias}' in {} sets only one of `identity`/`ucan`. A partial override \
-             would pair this entry's value with the *global* --as/--ucan for the other field, \
-             which is almost never the intended credential -- set both in the entry, or neither \
-             to inherit the global pair as-is.",
-            inv_path.display()
-        );
-    }
-    if entry.identity.is_some() {
-        Ok((entry.identity.as_deref(), entry.ucan.as_deref().map(|p| resolve_under(dir, p))))
-    } else {
-        Ok((run_as, ucan_path.map(Path::to_path_buf)))
-    }
-}
 
 /// Retries `f` until it succeeds or `budget` elapses, returning the last
 /// error. Used only for the post-apply registry probe, which tolerates a

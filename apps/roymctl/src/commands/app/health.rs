@@ -13,7 +13,7 @@ use syneroym_app_orchestration::{
 };
 use syneroym_sdk::{SubstrateStatus, deploy, health};
 
-use super::deploy::{PREFLIGHT_TIMEOUT, resolve_credentials};
+use super::{PREFLIGHT_TIMEOUT, resolve_credentials};
 use crate::commands::member_identity;
 
 #[allow(clippy::too_many_arguments)]
@@ -212,6 +212,7 @@ pub(super) fn handle_alerts(
     Ok(())
 }
 
+/// A substrate that never came up: "the connection never came up" and "the
 /// status call failed" take **one** path into `poll_once` instead of two, so
 /// `SubstrateUnreachable` has a single producer.
 #[derive(Debug)]
