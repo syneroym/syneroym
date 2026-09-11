@@ -3,7 +3,7 @@ use rusqlite::{Connection, types::Value as SqlValue};
 use super::MAX_QUERY_PAGE_SIZE;
 use crate::{errors::map_rusqlite_error, host_store};
 
-pub(crate) fn wit_to_rusqlite_value(v: &host_store::SqlValue) -> SqlValue {
+fn wit_to_rusqlite_value(v: &host_store::SqlValue) -> SqlValue {
     match v {
         host_store::SqlValue::Text(s) => SqlValue::Text(s.clone()),
         host_store::SqlValue::Integer(i) => SqlValue::Integer(*i),
@@ -13,7 +13,7 @@ pub(crate) fn wit_to_rusqlite_value(v: &host_store::SqlValue) -> SqlValue {
     }
 }
 
-pub(crate) fn rusqlite_to_wit_value(
+fn rusqlite_to_wit_value(
     v: rusqlite::types::ValueRef<'_>,
 ) -> Result<host_store::SqlValue, host_store::DataLayerError> {
     use rusqlite::types::ValueRef;
@@ -51,9 +51,7 @@ pub(crate) fn rusqlite_to_wit_value(
 /// leaks onto whichever caller borrows this pooled connection next. None of
 /// these has a legitimate use in `query-raw`, a read-only escape hatch
 /// scoped to this service's own database (ADR-0011).
-pub(crate) fn deny_query_raw_escapes(
-    ctx: rusqlite::hooks::AuthContext<'_>,
-) -> rusqlite::hooks::Authorization {
+fn deny_query_raw_escapes(ctx: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization {
     use rusqlite::hooks::{AuthAction, Authorization};
     match ctx.action {
         AuthAction::Attach { .. } | AuthAction::Detach { .. } | AuthAction::Transaction { .. } => {
@@ -68,7 +66,7 @@ pub(crate) fn deny_query_raw_escapes(
 /// so a prepare failure -- e.g. "no such table" for an `aggregate` over a
 /// missing collection -- doesn't misattribute itself to the other, shared
 /// `run_query_raw` caller.
-pub(crate) fn map_sql_prepare_error(op: &str, e: rusqlite::Error) -> host_store::DataLayerError {
+fn map_sql_prepare_error(op: &str, e: rusqlite::Error) -> host_store::DataLayerError {
     if let rusqlite::Error::SqliteFailure(ffi_err, _) = &e
         && ffi_err.code == rusqlite::ErrorCode::AuthorizationForStatementDenied
     {
@@ -77,11 +75,11 @@ pub(crate) fn map_sql_prepare_error(op: &str, e: rusqlite::Error) -> host_store:
     host_store::DataLayerError::SchemaViolation(format!("{op} prepare failed: {e}"))
 }
 
-pub(crate) fn is_operation_interrupted(e: &rusqlite::Error) -> bool {
+fn is_operation_interrupted(e: &rusqlite::Error) -> bool {
     matches!(e, rusqlite::Error::SqliteFailure(ffi_err, _) if ffi_err.code == rusqlite::ErrorCode::OperationInterrupted)
 }
 
-pub(crate) fn map_query_raw_step_error(e: rusqlite::Error) -> host_store::DataLayerError {
+pub(super) fn map_query_raw_step_error(e: rusqlite::Error) -> host_store::DataLayerError {
     if is_operation_interrupted(&e) {
         return host_store::DataLayerError::QuotaExceeded;
     }
@@ -97,7 +95,7 @@ pub(crate) fn map_query_raw_step_error(e: rusqlite::Error) -> host_store::DataLa
 /// budget is intentionally generous (legitimate small-per-service-DB
 /// queries should never approach it) -- this is a backstop against
 /// pathological/runaway statements, not a query-cost optimizer.
-pub(crate) const QUERY_RAW_MAX_VM_OPS: i32 = 50_000_000;
+pub(super) const QUERY_RAW_MAX_VM_OPS: i32 = 50_000_000;
 
 /// Clears the authorizer and progress handler on drop -- including on
 /// unwind, if `run_query_raw` panics mid-statement -- so this pooled
@@ -107,8 +105,8 @@ pub(crate) const QUERY_RAW_MAX_VM_OPS: i32 = 50_000_000;
 /// the pool, so the panic path is not reachable in practice today; this
 /// guard makes the cleanup correct regardless of that pool behavior, not
 /// dependent on it.
-pub(crate) struct QueryRawGuard<'c> {
-    pub(crate) conn: &'c Connection,
+pub(super) struct QueryRawGuard<'c> {
+    pub(super) conn: &'c Connection,
 }
 
 impl Drop for QueryRawGuard<'_> {
@@ -132,7 +130,7 @@ impl Drop for QueryRawGuard<'_> {
 /// step outside this service's own file. A progress handler
 /// (`QUERY_RAW_MAX_VM_OPS`) additionally bounds total compute, independent
 /// of the row-count page cap.
-pub(crate) fn do_query_raw(
+pub(super) fn do_query_raw(
     conn: &Connection,
     sql: &str,
     params: &[host_store::SqlValue],
@@ -145,7 +143,7 @@ pub(crate) fn do_query_raw(
     run_query_raw(conn, "query-raw", sql, &bound)
 }
 
-pub(crate) fn run_query_raw(
+pub(super) fn run_query_raw(
     conn: &Connection,
     op: &str,
     sql: &str,

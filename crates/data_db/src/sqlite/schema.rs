@@ -5,7 +5,10 @@ use rusqlite::Connection;
 
 use crate::{errors::map_rusqlite_error, host_store};
 
-pub(crate) const SUBSTRATE_SCHEMA_VERSION: &str = "m3b";
+pub(super) const SUBSTRATE_SCHEMA_VERSION: &str = "m3b";
+pub(super) const VAULT_TABLE: &str = "_vault";
+pub(super) const RECORD_COLUMNS: &str = "id, payload, creator_id, created_at, updated_at";
+pub(super) const RECORD_COLUMNS_WITHOUT_ID: &str = "payload, creator_id, created_at, updated_at";
 
 #[allow(clippy::unwrap_used)]
 static IDENTIFIER_REGEX: LazyLock<Regex> =
@@ -23,7 +26,7 @@ pub(crate) fn validate_identifier(name: &str) -> Result<(), host_store::DataLaye
     }
 }
 
-pub(crate) fn do_create_collection(
+pub(super) fn do_create_collection(
     conn: &Connection,
     schema: &host_store::CollectionSchema,
 ) -> Result<(), host_store::DataLayerError> {
@@ -54,7 +57,7 @@ pub(crate) fn do_create_collection(
     Ok(())
 }
 
-pub(crate) fn do_drop_collection(
+pub(super) fn do_drop_collection(
     conn: &Connection,
     name: &str,
 ) -> Result<(), host_store::DataLayerError> {
@@ -63,7 +66,7 @@ pub(crate) fn do_drop_collection(
     Ok(())
 }
 
-pub(crate) fn do_execute_ddl(
+pub(super) fn do_execute_ddl(
     conn: &Connection,
     sql: &str,
 ) -> Result<(), host_store::DataLayerError> {

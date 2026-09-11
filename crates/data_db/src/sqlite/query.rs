@@ -4,7 +4,7 @@ use syneroym_fdae::CompiledSieve;
 use super::{
     MAX_QUERY_PAGE_SIZE,
     query_raw::{QUERY_RAW_MAX_VM_OPS, QueryRawGuard, map_query_raw_step_error, run_query_raw},
-    schema::validate_identifier,
+    schema::{RECORD_COLUMNS, RECORD_COLUMNS_WITHOUT_ID, VAULT_TABLE, validate_identifier},
     sieve::{
         ModeAOutcome, emit_mode_a_execution_trace, emit_mode_b_trace, install_watchdog, merge_sieve,
     },
@@ -15,7 +15,7 @@ use crate::{aggregate, errors::map_rusqlite_error, filter, host_store};
 /// appends `... AND {table}.id = ?` to the RLS), so a sieve'd fetch is a
 /// self-contained `WHERE` -- no separate `id = ?1` alongside it, which would
 /// double-bind the id.
-pub(crate) fn do_get(
+pub(super) fn do_get(
     conn: &Connection,
     collection: &str,
     id: &str,
@@ -32,10 +32,7 @@ pub(crate) fn do_get(
         (|| {
             Ok(match sieve {
                 None => conn.query_row(
-                    &format!(
-                        "SELECT payload, creator_id, created_at, updated_at FROM {collection} \
-                         WHERE id = ?1"
-                    ),
+                    &format!("SELECT {RECORD_COLUMNS_WITHOUT_ID} FROM {collection} WHERE id = ?1"),
                     params![id],
                     read_record_row,
                 ),
@@ -44,8 +41,7 @@ pub(crate) fn do_get(
                     let (clause, sieve_params) = merge_sieve(s)?;
                     conn.query_row(
                         &format!(
-                            "SELECT payload, creator_id, created_at, updated_at FROM {collection} \
-                             WHERE {clause}"
+                            "SELECT {RECORD_COLUMNS_WITHOUT_ID} FROM {collection} WHERE {clause}"
                         ),
                         rusqlite::params_from_iter(sieve_params.iter()),
                         read_record_row,
@@ -83,9 +79,7 @@ pub(crate) fn do_get(
     }
 }
 
-pub(crate) fn read_record_row(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<(String, String, i64, i64)> {
+fn read_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String, i64, i64)> {
     Ok((
         row.get::<_, String>(0)?,
         row.get::<_, String>(1)?,
@@ -94,7 +88,7 @@ pub(crate) fn read_record_row(
     ))
 }
 
-pub(crate) fn do_query(
+pub(super) fn do_query(
     conn: &Connection,
     collection: &str,
     opts: &host_store::QueryOptions,
@@ -149,10 +143,8 @@ pub(crate) fn do_query(
     // next-cursor should be returned.
     bound_params.push(SqlValue::Integer(i64::from(limit) + 1));
 
-    let sql = format!(
-        "SELECT id, payload, creator_id, created_at, updated_at FROM {collection} {where_sql} \
-         ORDER BY id ASC LIMIT ?"
-    );
+    let sql =
+        format!("SELECT {RECORD_COLUMNS} FROM {collection} {where_sql} ORDER BY id ASC LIMIT ?");
     let mut stmt = conn.prepare(&sql).map_err(map_rusqlite_error)?;
     let mut records = stmt
         .query_map(rusqlite::params_from_iter(bound_params.iter()), |row| {
@@ -183,7 +175,7 @@ pub(crate) fn do_query(
 /// check. `Some(sieve)`
 /// (possibly the `deny_all` `0=1`) is a self-contained `id`-bound predicate
 /// (`Mode::PointInTime`), same shape as `do_get`'s sieve branch.
-pub(crate) fn do_check_access(
+pub(super) fn do_check_access(
     conn: &Connection,
     collection: &str,
     id: &str,
@@ -234,7 +226,7 @@ pub(crate) fn do_check_access(
 /// `strict:` author-time warning (ADR-0017 §1): excludes SQLite
 /// internals (`sqlite_%`) and the host's own `_vault` table, since those are
 /// never `definitions:` targets in a policy document.
-pub(crate) fn do_list_collections(
+pub(super) fn do_list_collections(
     conn: &mut Connection,
 ) -> Result<Vec<String>, host_store::DataLayerError> {
     // Excludes SQLite's own internal tables and the host's own `_vault` by
@@ -243,11 +235,11 @@ pub(crate) fn do_list_collections(
     // like `_audit` is a legal name that must still appear here for the
     // `strict:` warning to see it correctly in both directions.
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT name FROM sqlite_master
              WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
-               AND name != '_vault'",
-        )
+               AND name != '{VAULT_TABLE}'"
+        ))
         .map_err(|e| host_store::DataLayerError::Internal(format!("list_collections: {e}")))?;
     let names = stmt
         .query_map([], |row| row.get::<_, String>(0))
@@ -279,7 +271,7 @@ pub(crate) fn do_list_collections(
 /// never surfaces rows -- only accumulator output, which can leak a
 /// would-be-denied row's contribution the same way a masked field can leak
 /// through `SUM`/`AVG`.
-pub(crate) fn do_aggregate(
+pub(super) fn do_aggregate(
     conn: &Connection,
     collection: &str,
     pipeline_json: &str,

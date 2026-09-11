@@ -8,7 +8,7 @@ use syneroym_fdae::CompiledSieve;
 use super::{
     MAX_BATCH_SIZE,
     query_raw::map_query_raw_step_error,
-    schema::validate_identifier,
+    schema::{RECORD_COLUMNS, validate_identifier},
     sieve::{
         ModeAOutcome, emit_mode_a_execution_trace, emit_mode_b_trace, install_watchdog, merge_sieve,
     },
@@ -17,7 +17,7 @@ use crate::{errors::map_rusqlite_error, filter, host_store};
 
 /// Applies an RFC 7396 JSON merge-patch: `patch` values overwrite `target`,
 /// `null` values remove the key, and nested objects merge recursively.
-pub(crate) fn apply_merge_patch(target: &mut Value, patch: &Value) {
+fn apply_merge_patch(target: &mut Value, patch: &Value) {
     let Value::Object(patch_obj) = patch else {
         *target = patch.clone();
         return;
@@ -37,7 +37,7 @@ pub(crate) fn apply_merge_patch(target: &mut Value, patch: &Value) {
     }
 }
 
-pub(crate) fn payload_to_text(payload: &[u8]) -> Result<String, host_store::DataLayerError> {
+fn payload_to_text(payload: &[u8]) -> Result<String, host_store::DataLayerError> {
     let text = str::from_utf8(payload).map_err(|_| {
         host_store::DataLayerError::SchemaViolation("payload must be valid UTF-8".into())
     })?;
@@ -47,7 +47,7 @@ pub(crate) fn payload_to_text(payload: &[u8]) -> Result<String, host_store::Data
     Ok(text.to_string())
 }
 
-pub(crate) fn do_put(
+pub(super) fn do_put(
     conn: &Connection,
     collection: &str,
     value: &host_store::RecordWriteValue,
@@ -77,9 +77,9 @@ pub(crate) fn do_put(
     // `principal_column: "creator_id"` policy.
     conn.execute(
         &format!(
-            "INSERT INTO {collection} (id, payload, creator_id, created_at, updated_at) VALUES \
-             (?1, ?2, ?3, ?4, ?5) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, \
-             updated_at = excluded.updated_at"
+            "INSERT INTO {collection} ({RECORD_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5) ON \
+             CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = \
+             excluded.updated_at"
         ),
         params![value.id, payload_text, creator_id, created_at, now],
     )
@@ -87,7 +87,7 @@ pub(crate) fn do_put(
     Ok(())
 }
 
-pub(crate) fn do_patch(
+pub(super) fn do_patch(
     conn: &Connection,
     collection: &str,
     id: &str,
@@ -127,7 +127,7 @@ pub(crate) fn do_patch(
     Ok(())
 }
 
-pub(crate) fn do_delete(
+pub(super) fn do_delete(
     conn: &Connection,
     collection: &str,
     id: &str,
@@ -140,7 +140,7 @@ pub(crate) fn do_delete(
     Ok(())
 }
 
-pub(crate) fn do_delete_many(
+pub(super) fn do_delete_many(
     conn: &Connection,
     collection: &str,
     filter_json: Option<&str>,
@@ -189,7 +189,7 @@ pub(crate) fn do_delete_many(
     Ok(affected as u64)
 }
 
-pub(crate) fn do_batch_mutate(
+pub(super) fn do_batch_mutate(
     conn: &mut Connection,
     collection: &str,
     mutations: &[host_store::Mutation],
@@ -251,7 +251,7 @@ pub(crate) fn do_batch_mutate(
 /// (pre-image required, or not), not whether the write is allowed --
 /// both branches still end in `PermissionDenied` on failure, so this leaks
 /// nothing beyond "id `X` was free", inherent to any create-by-id API.
-pub(crate) fn row_exists(
+fn row_exists(
     conn: &Connection,
     collection: &str,
     id: &str,
@@ -267,7 +267,7 @@ pub(crate) fn row_exists(
 /// Reads a record's raw JSON payload directly, bypassing the sieve -- only
 /// ever called from `authorize_and_mutate` after the relevant reachability
 /// check has already run (or for a create, where there is no pre-image).
-pub(crate) fn read_payload(
+fn read_payload(
     conn: &Connection,
     collection: &str,
     id: &str,
@@ -287,7 +287,7 @@ pub(crate) fn read_payload(
 /// author it either. Fail-closed on a payload that won't parse as a JSON
 /// object while a non-empty mask applies, mirroring
 /// `auth::strip_masked_fields`'s own rule.
-pub(crate) fn masked_fields_unchanged(
+fn masked_fields_unchanged(
     pre: Option<&[u8]>,
     post: &[u8],
     masked: &[String],
@@ -330,7 +330,7 @@ pub(crate) fn masked_fields_unchanged(
 ///
 /// Fail-closed: a watchdog interrupt, a malformed caveat, or a missing table
 /// is `Ok(false)`, never a silent pass. Same contract as `do_check_access`.
-pub(crate) fn row_reachable(
+fn row_reachable(
     conn: &Connection,
     collection: &str,
     id: &str,
@@ -378,7 +378,7 @@ pub(crate) fn row_reachable(
 /// unfiltered behavior, unchanged. `conn` is always inside a transaction the
 /// caller owns, so an `Err` here rolls the mutation back.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn authorize_and_mutate(
+fn authorize_and_mutate(
     conn: &Connection,
     collection: &str,
     id: &str,
@@ -440,7 +440,7 @@ pub(crate) fn authorize_and_mutate(
 
 /// Transaction wrapper for an authorized `put`. Opens a transaction only
 /// when a sieve is present, so the policy-absent hot path pays nothing new.
-pub(crate) fn do_authorized_put(
+pub(super) fn do_authorized_put(
     conn: &mut Connection,
     collection: &str,
     value: &host_store::RecordWriteValue,
@@ -458,7 +458,7 @@ pub(crate) fn do_authorized_put(
 }
 
 /// Transaction wrapper for an authorized `patch`. See `do_authorized_put`.
-pub(crate) fn do_authorized_patch(
+pub(super) fn do_authorized_patch(
     conn: &mut Connection,
     collection: &str,
     id: &str,
@@ -476,7 +476,7 @@ pub(crate) fn do_authorized_patch(
 
 /// Transaction wrapper for an authorized `delete`. See `do_authorized_put`.
 /// No `WITH CHECK` half -- a deleted row has no post-image to evaluate.
-pub(crate) fn do_authorized_delete(
+pub(super) fn do_authorized_delete(
     conn: &mut Connection,
     collection: &str,
     id: &str,

@@ -16,7 +16,7 @@ use tokio::{sync::mpsc, task};
 use zeroize::Zeroizing;
 
 use super::{
-    schema::SUBSTRATE_SCHEMA_VERSION,
+    schema::{SUBSTRATE_SCHEMA_VERSION, VAULT_TABLE},
     service_store::{SqliteServiceStore, run_writer_loop},
 };
 use crate::traits::{ServiceStore, StorageProvider};
@@ -32,10 +32,10 @@ static SERVICE_ID_REGEX: LazyLock<Regex> =
 /// SqliteStorageProvider manages the substrate.db (metadata) and per-service
 /// encrypted databases.
 pub struct SqliteStorageProvider {
-    pub(crate) db_dir: PathBuf,
-    pub(crate) substrate_conn: Arc<Mutex<Connection>>,
-    pub(crate) service_stores: Arc<Mutex<HashMap<String, Arc<SqliteServiceStore>>>>,
-    pub(crate) encryption_enabled: bool,
+    db_dir: PathBuf,
+    substrate_conn: Arc<Mutex<Connection>>,
+    pub(super) service_stores: Arc<Mutex<HashMap<String, Arc<SqliteServiceStore>>>>,
+    encryption_enabled: bool,
 }
 
 impl fmt::Debug for SqliteStorageProvider {
@@ -112,7 +112,7 @@ impl SqliteStorageProvider {
         })
     }
 
-    pub(crate) fn run_m3a_migration(conn: &Connection) -> rusqlite::Result<()> {
+    fn run_m3a_migration(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS dek_store (
                 service_id    TEXT PRIMARY KEY,
@@ -135,7 +135,7 @@ impl SqliteStorageProvider {
         Ok(())
     }
 
-    pub(crate) fn run_m3b_migration(conn: &Connection) -> rusqlite::Result<()> {
+    fn run_m3b_migration(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS messaging_subscriptions (
                 service_id TEXT NOT NULL,
@@ -148,7 +148,7 @@ impl SqliteStorageProvider {
         Ok(())
     }
 
-    pub(crate) fn run_fdae_migration(conn: &Connection) -> rusqlite::Result<()> {
+    fn run_fdae_migration(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS fdae_policies (
                 service_id  TEXT PRIMARY KEY,
@@ -161,7 +161,7 @@ impl SqliteStorageProvider {
     }
 
     /// Internal helper to obtain KEK status and print warnings.
-    pub(crate) fn verify_encryption_mode(&self, key_store: &Arc<KeyStore>) -> anyhow::Result<()> {
+    pub(super) fn verify_encryption_mode(&self, key_store: &Arc<KeyStore>) -> anyhow::Result<()> {
         if self.encryption_enabled {
             if !key_store.kek_is_loaded() {
                 tracing::error!("Production encryption is enabled, but no KEK has been injected!");
@@ -188,7 +188,7 @@ impl SqliteStorageProvider {
     /// including `load_service_dek`, which has no filesystem path to guard
     /// on -- rejects the same malformed `service_id`s before they become an
     /// HKDF scope.
-    pub(crate) fn resolve_dek(
+    fn resolve_dek(
         &self,
         service_id: &str,
         key_store: &Arc<KeyStore>,
@@ -214,7 +214,7 @@ impl SqliteStorageProvider {
     /// Validates `service_id` and resolves its expected per-service database
     /// directory, guarding against path traversal. Does not touch the
     /// filesystem.
-    pub(crate) fn resolve_service_db_dir(&self, service_id: &str) -> anyhow::Result<PathBuf> {
+    fn resolve_service_db_dir(&self, service_id: &str) -> anyhow::Result<PathBuf> {
         if !SERVICE_ID_REGEX.is_match(service_id) {
             return Err(anyhow::anyhow!("Invalid service ID format: {service_id}"));
         }
@@ -286,12 +286,14 @@ impl StorageProvider for SqliteStorageProvider {
 
         // Initialize vault table
         writer_conn.execute(
-            "CREATE TABLE IF NOT EXISTS _vault (
+            &format!(
+                "CREATE TABLE IF NOT EXISTS {VAULT_TABLE} (
                 key        TEXT PRIMARY KEY,
                 ciphertext BLOB NOT NULL,
                 nonce      BLOB NOT NULL,
                 updated_at INTEGER NOT NULL
-            )",
+            )"
+            ),
             [],
         )?;
 

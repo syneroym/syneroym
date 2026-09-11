@@ -8,7 +8,7 @@ use crate::{auth::QueryAuth, errors::map_rusqlite_error, filter, host_store};
 /// The real, post-execution outcome of a Mode A (point-in-time) predicate
 /// run -- the distinction `compile_read`'s compile-time trace cannot make,
 /// since it never executes SQL (ADR-0017 §9).
-pub(crate) enum ModeAOutcome {
+pub(super) enum ModeAOutcome {
     /// The predicate matched a row.
     Matched,
     /// The predicate ran to completion and matched no row -- a genuine,
@@ -29,7 +29,7 @@ pub(crate) enum ModeAOutcome {
 /// the only place "rows not reached" (an admitted operation whose compiled
 /// predicate matched no row) -- or a policy-evaluation abort -- becomes
 /// knowable.
-pub(crate) fn emit_mode_a_execution_trace(trace: Option<&DecisionTrace>, outcome: ModeAOutcome) {
+pub(super) fn emit_mode_a_execution_trace(trace: Option<&DecisionTrace>, outcome: ModeAOutcome) {
     let Some(trace) = trace else { return };
     let mut trace = trace.clone();
     match outcome {
@@ -58,7 +58,7 @@ pub(crate) fn emit_mode_a_execution_trace(trace: Option<&DecisionTrace>, outcome
 /// fetch provenance (asserter DID, TTL) becomes observable; a fully local
 /// sieve just logs the same allow/deny a second time, mirroring Mode A's
 /// always-re-emit precedent.
-pub(crate) fn emit_mode_b_trace(sieve: Option<&CompiledSieve>) {
+pub(super) fn emit_mode_b_trace(sieve: Option<&CompiledSieve>) {
     if let Some(s) = sieve {
         s.trace.clone().emit();
     }
@@ -70,7 +70,7 @@ pub(crate) fn emit_mode_b_trace(sieve: Option<&CompiledSieve>) {
 /// schema change plus substrate-config plumbing, not this crate's call to
 /// make). Recorded so the fixed constant isn't mistaken for "configurable,
 /// done".
-pub(crate) const FDAE_MAX_VM_OPS: i32 = QUERY_RAW_MAX_VM_OPS;
+const FDAE_MAX_VM_OPS: i32 = QUERY_RAW_MAX_VM_OPS;
 
 /// Clears only the progress handler on drop -- unlike `QueryRawGuard`, the
 /// FDAE sieve paths install no authorizer (they emit only host-generated,
@@ -78,8 +78,8 @@ pub(crate) const FDAE_MAX_VM_OPS: i32 = QUERY_RAW_MAX_VM_OPS;
 /// would be dead noise. Needed on both reader-pool connections (reused
 /// across calls) and the persistent writer connection (`delete_many`) so a
 /// sieve'd call never leaves its budget installed for the next borrower.
-pub(crate) struct ProgressGuard<'c> {
-    pub(crate) conn: &'c Connection,
+pub(super) struct ProgressGuard<'c> {
+    conn: &'c Connection,
 }
 
 impl Drop for ProgressGuard<'_> {
@@ -88,7 +88,7 @@ impl Drop for ProgressGuard<'_> {
     }
 }
 
-pub(crate) fn install_watchdog(
+pub(super) fn install_watchdog(
     conn: &Connection,
 ) -> Result<ProgressGuard<'_>, host_store::DataLayerError> {
     conn.progress_handler(FDAE_MAX_VM_OPS, Some(|| true)).map_err(map_rusqlite_error)?;
@@ -99,7 +99,7 @@ pub(crate) fn install_watchdog(
 /// and caveat `where` filters are both intersective and must AND together
 /// -- dropping `where_caveats` would let a `caveats.where={"region":"EU"}`
 /// caller see every region (a dropped-caveat bug).
-pub(crate) fn merge_sieve(
+pub(super) fn merge_sieve(
     sieve: &CompiledSieve,
 ) -> Result<(String, Vec<SqlValue>), host_store::DataLayerError> {
     let mut clauses = vec![format!("({})", sieve.where_clause)];
@@ -119,7 +119,7 @@ pub(crate) fn merge_sieve(
 /// when `auth` is absent (today's unfiltered behavior). A compile error is
 /// loud (`Err`), never silently treated as unfiltered -- Mode B/A's own
 /// caller decides whether that maps to a hard error or fail-closed `false`.
-pub(crate) fn compile_sieve_for(
+pub(super) fn compile_sieve_for(
     auth: Option<&QueryAuth<'_>>,
     collection: &str,
     mode: Mode,
@@ -127,7 +127,7 @@ pub(crate) fn compile_sieve_for(
     compile_sieve_for_op(auth, collection, Ability::DATA_LAYER_READ, mode)
 }
 
-pub(crate) fn compile_sieve_for_op(
+pub(super) fn compile_sieve_for_op(
     auth: Option<&QueryAuth<'_>>,
     collection: &str,
     operation: &str,
@@ -173,6 +173,6 @@ pub(crate) fn compile_sieve_for_op(
     .map_err(|e| host_store::DataLayerError::Internal(e.to_string()))
 }
 
-pub(crate) fn sieve_masked_fields(sieve: &Option<CompiledSieve>) -> Vec<String> {
+pub(super) fn sieve_masked_fields(sieve: &Option<CompiledSieve>) -> Vec<String> {
     sieve.as_ref().map(|s| s.masked_fields.clone()).unwrap_or_default()
 }

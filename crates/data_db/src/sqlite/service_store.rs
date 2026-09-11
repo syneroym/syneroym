@@ -18,7 +18,7 @@ use super::{
     },
     query::{do_aggregate, do_check_access, do_get, do_list_collections, do_query},
     query_raw::do_query_raw,
-    schema::{do_create_collection, do_drop_collection, do_execute_ddl},
+    schema::{VAULT_TABLE, do_create_collection, do_drop_collection, do_execute_ddl},
     sieve::{compile_sieve_for, compile_sieve_for_op, sieve_masked_fields},
 };
 use crate::{
@@ -27,7 +27,7 @@ use crate::{
     traits::ServiceStore,
 };
 
-pub(crate) enum DbCommand {
+pub(super) enum DbCommand {
     WriteSecret {
         key: String,
         secret_bytes: Vec<u8>,
@@ -90,7 +90,7 @@ pub(crate) enum DbCommand {
     },
 }
 
-pub(crate) fn run_writer_loop(
+pub(super) fn run_writer_loop(
     mut conn: Connection,
     mut rx: mpsc::Receiver<DbCommand>,
     dek: Zeroizing<[u8; 32]>,
@@ -114,8 +114,11 @@ pub(crate) fn run_writer_loop(
                     Ok(ciphertext) => {
                         let now = Utc::now().timestamp_millis();
                         conn.execute(
-                            "INSERT OR REPLACE INTO _vault (key, ciphertext, nonce, updated_at)
-                             VALUES (?1, ?2, ?3, ?4)",
+                            &format!(
+                                "INSERT OR REPLACE INTO {VAULT_TABLE} (key, ciphertext, nonce, \
+                                 updated_at)
+                             VALUES (?1, ?2, ?3, ?4)"
+                            ),
                             rusqlite::params![key, ciphertext, nonce_bytes.as_slice(), now],
                         )
                         .map(|_| ())
@@ -127,8 +130,9 @@ pub(crate) fn run_writer_loop(
             }
             DbCommand::RevealSecret { key, resp } => {
                 let res = (|| -> anyhow::Result<Option<Vec<u8>>> {
-                    let mut stmt =
-                        conn.prepare("SELECT ciphertext, nonce FROM _vault WHERE key = ?1")?;
+                    let mut stmt = conn.prepare(&format!(
+                        "SELECT ciphertext, nonce FROM {VAULT_TABLE} WHERE key = ?1"
+                    ))?;
                     let mut rows = stmt.query(rusqlite::params![key])?;
 
                     if let Some(row) = rows.next()? {
@@ -208,8 +212,8 @@ pub(crate) fn run_writer_loop(
 }
 
 pub struct SqliteServiceStore {
-    pub(crate) reader_pool: Pool,
-    pub(crate) writer_tx: mpsc::Sender<DbCommand>,
+    pub(super) reader_pool: Pool,
+    pub(super) writer_tx: mpsc::Sender<DbCommand>,
 }
 
 impl fmt::Debug for SqliteServiceStore {
@@ -220,7 +224,7 @@ impl fmt::Debug for SqliteServiceStore {
 
 /// Sends a write command over the single-writer channel and awaits its
 /// response, flattening channel-disconnect failures into a `DataLayerError`.
-pub(crate) async fn send_write_command<T>(
+async fn send_write_command<T>(
     writer_tx: &mpsc::Sender<DbCommand>,
     build: impl FnOnce(oneshot::Sender<Result<T, host_store::DataLayerError>>) -> DbCommand,
 ) -> Result<T, host_store::DataLayerError> {
