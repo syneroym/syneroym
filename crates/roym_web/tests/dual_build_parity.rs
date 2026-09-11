@@ -106,6 +106,21 @@ fn normalize_ledger_row_id(id: &str) -> Option<String> {
     None
 }
 
+/// The rate limiter's `retry_after_secs` (see the removal below) is a
+/// difference of two unpinned wall-clock reads, and `directory.publish`
+/// folds the same number into this human-readable error `message`, not
+/// just the named field. Picks out `retry in <digits>s` and blanks the
+/// digits; returns `None` for every other message, which is untouched.
+fn normalize_retry_message(msg: &str) -> Option<String> {
+    let marker = "retry in ";
+    let start = msg.find(marker)? + marker.len();
+    let digits_end = start + msg[start..].bytes().take_while(u8::is_ascii_digit).count();
+    if digits_end == start || !msg[digits_end..].starts_with('s') {
+        return None;
+    }
+    Some(format!("{}N{}", &msg[..start], &msg[digits_end..]))
+}
+
 fn strip_volatile(val: &mut Value) {
     match val {
         Value::Object(map) => {
@@ -113,6 +128,11 @@ fn strip_volatile(val: &mut Value) {
                 map.get("id").and_then(Value::as_str).and_then(normalize_ledger_row_id)
             {
                 map.insert("id".to_string(), Value::String(normalized));
+            }
+            if let Some(normalized) =
+                map.get("message").and_then(Value::as_str).and_then(normalize_retry_message)
+            {
+                map.insert("message".to_string(), Value::String(normalized));
             }
             map.remove("verified_at_secs");
             map.remove("added_at_secs");
@@ -2061,8 +2081,12 @@ async fn scenario_22_report_create_get_withdraw_and_refile_refusal_parity() {
     .into_bytes();
     let wasm_sub = h.wasm_http.post("/rpc", submit_req.clone(), Some(caller())).await;
     let native_sub = h.native_http.post("/rpc", submit_req.clone(), Some(caller())).await;
-    assert_eq!(wasm_sub.body, native_sub.body);
     let sub_val: Value = serde_json::from_slice(&wasm_sub.body).unwrap();
+    let sub_val_n: Value = serde_json::from_slice(&native_sub.body).unwrap();
+    // report.create's own response carries the same at_secs (see
+    // strip_volatile) as report.get, so this needs the same
+    // parse-then-strip comparison instead of a raw byte one.
+    assert_eq!(stripped(&sub_val), stripped(&sub_val_n));
     assert_ne!(sub_val.get("error").and_then(|e| e.get("code")), Some(&json!(-32601)));
     let report_id = sub_val["result"]["report_id"].as_str().unwrap();
 
@@ -2083,22 +2107,28 @@ async fn scenario_22_report_create_get_withdraw_and_refile_refusal_parity() {
         .into_bytes();
     let wasm_with = h.wasm_http.post("/rpc", withdraw_req.clone(), Some(caller())).await;
     let native_with = h.native_http.post("/rpc", withdraw_req, Some(caller())).await;
-    assert_eq!(wasm_with.body, native_with.body);
     let with_val: Value = serde_json::from_slice(&wasm_with.body).unwrap();
+    let with_val_n: Value = serde_json::from_slice(&native_with.body).unwrap();
+    assert_eq!(stripped(&with_val), stripped(&with_val_n));
     assert_eq!(with_val["result"]["status"], "withdrawn");
 
-    // Verify report.get reflects status "withdrawn"
+    // Verify report.get reflects status "withdrawn" -- report.create's own
+    // at_secs (see strip_volatile) carries through, so this is a raw-byte
+    // comparison only after parsing and stripping, like the report.get
+    // check above.
     let wasm_get2 = h.wasm_http.post("/rpc", get_req.clone(), Some(caller())).await;
     let native_get2 = h.native_http.post("/rpc", get_req, Some(caller())).await;
-    assert_eq!(wasm_get2.body, native_get2.body);
     let get2_val: Value = serde_json::from_slice(&wasm_get2.body).unwrap();
+    let get2_val_n: Value = serde_json::from_slice(&native_get2.body).unwrap();
+    assert_eq!(stripped(&get2_val), stripped(&get2_val_n));
     assert_eq!(get2_val["result"]["status"], "withdrawn");
 
     // Attempting to re-file a withdrawn report refuses on both builds
     let wasm_refile = h.wasm_http.post("/rpc", submit_req.clone(), Some(caller())).await;
     let native_refile = h.native_http.post("/rpc", submit_req, Some(caller())).await;
-    assert_eq!(wasm_refile.body, native_refile.body);
     let refile_val: Value = serde_json::from_slice(&wasm_refile.body).unwrap();
+    let refile_val_n: Value = serde_json::from_slice(&native_refile.body).unwrap();
+    assert_eq!(stripped(&refile_val), stripped(&refile_val_n));
     assert!(refile_val.get("error").is_some());
     assert!(refile_val["error"]["message"].as_str().unwrap().contains("withdrawn"));
 }
@@ -5463,13 +5493,22 @@ async fn scenario_129_agreement_accept_provider_and_consumer_halves_parity() {
         one_rpc(&h, true, "agreement.accept", json!({ "quote_record_id": q_rec_id_w })).await;
     let mut an =
         one_rpc(&h, false, "agreement.accept", json!({ "quote_record_id": q_rec_id_n })).await;
+    // agreement.accept mints its own receipt envelope with
+    // clock::now_secs() (unlike a listing's pinned signing clock), so
+    // record_id/quote_record_id -- content hashes over that envelope --
+    // and agreement_record_id/message_id are each build's own values,
+    // never equal to the other build's.
     if let Some(res) = aw.get_mut("result").and_then(Value::as_object_mut) {
         res.remove("message_id");
         res.remove("agreement_record_id");
+        res.remove("record_id");
+        res.remove("quote_record_id");
     }
     if let Some(res) = an.get_mut("result").and_then(Value::as_object_mut) {
         res.remove("message_id");
         res.remove("agreement_record_id");
+        res.remove("record_id");
+        res.remove("quote_record_id");
     }
     assert_eq!(stripped(&aw), stripped(&an));
     assert_eq!(aw["result"]["role"], "provider");
@@ -5516,20 +5555,27 @@ async fn scenario_129_agreement_accept_provider_and_consumer_halves_parity() {
         both_rpc(&h, "agreement.accept", json!({ "quote_record_id": peer_q_rec_id })).await;
     if let Some(res) = cw.get_mut("result").and_then(Value::as_object_mut) {
         res.remove("message_id");
+        res.remove("record_id");
     }
     if let Some(res) = cn.get_mut("result").and_then(Value::as_object_mut) {
         res.remove("message_id");
+        res.remove("record_id");
     }
     assert_eq!(stripped(&cw), stripped(&cn));
     assert_eq!(cw["result"]["role"], "consumer");
     assert_eq!(cw["result"]["pair"]["state"], "half");
 
+    // Not a full-struct comparison: pair.consumer is a ReceiptHalf whose
+    // own record_id/envelope/issued_at_secs are each build's own
+    // clock::now_secs()-derived values, same as above.
     let (cgw, cgn) =
         both_rpc(&h, "agreement.get", json!({ "quote_record_id": peer_q_rec_id })).await;
-    assert_eq!(stripped(&cgw), stripped(&cgn));
     assert_eq!(cgw["result"]["pair"]["state"], "half");
+    assert_eq!(cgn["result"]["pair"]["state"], "half");
     assert!(cgw["result"]["consumer"].is_object());
+    assert!(cgn["result"]["consumer"].is_object());
     assert!(cgw["result"]["provider"].is_null());
+    assert!(cgn["result"]["provider"].is_null());
 }
 
 #[tokio::test]
