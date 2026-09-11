@@ -5483,13 +5483,22 @@ async fn scenario_129_agreement_accept_provider_and_consumer_halves_parity() {
         one_rpc(&h, true, "agreement.accept", json!({ "quote_record_id": q_rec_id_w })).await;
     let mut an =
         one_rpc(&h, false, "agreement.accept", json!({ "quote_record_id": q_rec_id_n })).await;
+    // agreement.accept mints its own receipt envelope with
+    // clock::now_secs() (unlike a listing's pinned signing clock), so
+    // record_id/quote_record_id -- content hashes over that envelope --
+    // and agreement_record_id/message_id are each build's own values,
+    // never equal to the other build's.
     if let Some(res) = aw.get_mut("result").and_then(Value::as_object_mut) {
         res.remove("message_id");
         res.remove("agreement_record_id");
+        res.remove("record_id");
+        res.remove("quote_record_id");
     }
     if let Some(res) = an.get_mut("result").and_then(Value::as_object_mut) {
         res.remove("message_id");
         res.remove("agreement_record_id");
+        res.remove("record_id");
+        res.remove("quote_record_id");
     }
     assert_eq!(stripped(&aw), stripped(&an));
     assert_eq!(aw["result"]["role"], "provider");
@@ -5536,20 +5545,27 @@ async fn scenario_129_agreement_accept_provider_and_consumer_halves_parity() {
         both_rpc(&h, "agreement.accept", json!({ "quote_record_id": peer_q_rec_id })).await;
     if let Some(res) = cw.get_mut("result").and_then(Value::as_object_mut) {
         res.remove("message_id");
+        res.remove("record_id");
     }
     if let Some(res) = cn.get_mut("result").and_then(Value::as_object_mut) {
         res.remove("message_id");
+        res.remove("record_id");
     }
     assert_eq!(stripped(&cw), stripped(&cn));
     assert_eq!(cw["result"]["role"], "consumer");
     assert_eq!(cw["result"]["pair"]["state"], "half");
 
+    // Not a full-struct comparison: pair.consumer is a ReceiptHalf whose
+    // own record_id/envelope/issued_at_secs are each build's own
+    // clock::now_secs()-derived values, same as above.
     let (cgw, cgn) =
         both_rpc(&h, "agreement.get", json!({ "quote_record_id": peer_q_rec_id })).await;
-    assert_eq!(stripped(&cgw), stripped(&cgn));
     assert_eq!(cgw["result"]["pair"]["state"], "half");
+    assert_eq!(cgn["result"]["pair"]["state"], "half");
     assert!(cgw["result"]["consumer"].is_object());
+    assert!(cgn["result"]["consumer"].is_object());
     assert!(cgw["result"]["provider"].is_null());
+    assert!(cgn["result"]["provider"].is_null());
 }
 
 #[tokio::test]
