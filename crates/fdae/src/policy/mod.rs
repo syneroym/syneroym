@@ -9,7 +9,11 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-pub use types::*;
+use types::MAX_PATH_HOPS;
+pub use types::{
+    CondOp, Condition, Definition, FieldsPolicy, Operator, Permission, Policy, PolicyError,
+    Relation,
+};
 
 const FDAE_V1_SCHEMA: &str = include_str!("../../schema/fdae-v1.json");
 

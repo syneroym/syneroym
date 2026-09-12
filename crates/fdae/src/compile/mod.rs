@@ -11,4 +11,7 @@ mod tests;
 
 pub use emit::{definition_has_abac, definition_table, resolve_structural};
 pub use plan::{compile_read, finalize, plan_read};
-pub use types::*;
+pub use types::{
+    CompiledSieve, FetchResult, FetchSlot, MAX_FETCH_IDS, Mode, PendingSieve, ReadPlan,
+    RemoteFetch, StructuralQuery,
+};
