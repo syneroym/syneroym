@@ -10,7 +10,7 @@ use zeroize::Zeroizing;
 
 pub mod types;
 
-pub use types::*;
+pub use types::{DEFAULT_MAX_PENDING_ROWS, DeadLetter, FailOutcome, QueueConfig, QueueItem};
 
 /// One SQLite-backed queue: an `outbox` of pending/in-flight items and a
 /// bounded `dead_letters` table. `conn: Arc<Mutex<Connection>>` (matching
@@ -85,10 +85,10 @@ impl Queue {
              -- `claim_due`'s single indexed range scan finds both kinds
              -- with no separate state check.
              CREATE INDEX IF NOT EXISTS idx_outbox_visible_at ON outbox(visible_at);
-             -- Queue::has_pending's indexed dedup lookup (M05B B1 review
-             -- finding 15) -- an outbox is normally small, but a caller
-             -- should not have to pull every payload blob into memory just
-             -- to answer whether a key already has a row.
+             -- Queue::has_pending's indexed dedup lookup -- an outbox is
+             -- normally small, but a caller should not have to pull every
+             -- payload blob into memory just to answer whether a key
+             -- already has a row.
              CREATE INDEX IF NOT EXISTS idx_outbox_queue_key ON outbox(queue_key);
 
              CREATE TABLE IF NOT EXISTS dead_letters (

@@ -19,12 +19,19 @@ use rusqlite::{Connection, OptionalExtension, params};
 use syneroym_core::retry::calculate_jittered_backoff;
 use zeroize::Zeroizing;
 
-use crate::backoff_before_wait;
+use crate::queue::backoff_before_wait;
 
 pub mod types;
 
-pub use types::*;
+pub use types::{
+    CompensationOutcome, MAX_SAGA_PAYLOAD_BYTES, MIN_STEP_CALL_BUDGET_MS, SagaConfig, SagaHead,
+    SagaInfo, SagaState, StepIntent, StepRow, StepState,
+};
 
+/// One service's durable saga log: `sagas` (one row per workflow) and
+/// `saga_steps` (its recorded, ordered steps). Shares this crate's
+/// connection/timestamp conventions with [`crate::Queue`] and
+/// [`crate::DedupStore`].
 #[derive(Debug, Clone)]
 pub struct SagaLog {
     conn: Arc<Mutex<Connection>>,

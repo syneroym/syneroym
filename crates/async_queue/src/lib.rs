@@ -30,8 +30,6 @@ pub mod dedup;
 pub mod queue;
 pub mod saga;
 
-pub(crate) use queue::open_connection;
-
 pub use crate::{
     dedup::{
         CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, ClaimToken, DedupConfig,
