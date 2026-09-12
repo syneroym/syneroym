@@ -446,7 +446,7 @@ Live `TODO`/`FIXME` markers that encode a real deferral. Remove both the code ma
 
 | Location | Marker | Maps to |
 |---|---|---|
-| `crates/app_orchestration/src/compiler.rs:163` | Temporary M1 hack force-prepending in the deployment-plan compiler | §8. **Survives [M05A slice A0](./milestones/M05A-app-supervisor/slice-a0-implementation-plan.md)**: A0 substitutes real member master DIDs into `PlannedService.service_id`/`resolved_dependencies` *after* `compile()` returns (D-A0-7), keeping `compile()` pure, so the fabricated no-private-key DID remains the plan's internal graph key and stays the actual deployed id on the no-master path |
+| `crates/app_orchestration/src/compiler/mod.rs:265` | Temporary M1 hack force-prepending in the deployment-plan compiler | §8. **Survives [M05A slice A0](./milestones/M05A-app-supervisor/slice-a0-implementation-plan.md)**: A0 substitutes real member master DIDs into `PlannedService.service_id`/`resolved_dependencies` *after* `compile()` returns (D-A0-7), keeping `compile()` pure, so the fabricated no-private-key DID remains the plan's internal graph key and stays the actual deployed id on the no-master path |
 | `crates/client_gateway/src/gateway.rs:180` | Local-machine-only security stopgap | §7 |
 | `crates/observability/src/engine.rs:6` | Engine is a placeholder/basic shell | §9 |
 | `crates/observability/src/engine.rs:52,70` | Cleaner process-global tracing init | §9 |
