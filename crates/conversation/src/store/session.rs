@@ -1,3 +1,8 @@
+//! `sessions` and `local_identity` table operations: reading and upserting
+//! per-peer X3DH sessions (`SessionRow`), storing the node's own identity
+//! key material, and initialising prekey bundles. Entirely independent of
+//! the DAG and message tables; only the transport layer reads these rows.
+
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use zeroize::Zeroizing;

@@ -15,6 +15,12 @@ use crate::{
     store::{StoredMessage, now_ms},
 };
 
+mod group_sync;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests;
+
 pub(super) fn internal(e: impl std::fmt::Display) -> ConversationError {
     ConversationError::Internal(e.to_string())
 }
@@ -451,9 +457,3 @@ pub(super) fn classify(error: ProxyError) -> Disposition {
         ProxyError::Internal(_) => Disposition::Retry,
     }
 }
-
-mod group_sync;
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests;

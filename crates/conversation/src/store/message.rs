@@ -1,3 +1,8 @@
+//! Read and write operations on the `messages` table: inserting outgoing
+//! messages (atomically with the async-queue enqueue), storing incoming
+//! deliveries, updating delivery state, and paginating history. Does not
+//! touch `dag_entries` — group DAG persistence lives in `dag_store.rs`.
+
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use syneroym_rpc::ConversationDeliveryState;

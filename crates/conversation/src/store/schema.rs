@@ -1,3 +1,9 @@
+//! Database connection setup and schema DDL (`CREATE TABLE IF NOT EXISTS`
+//! for all tables: `conversations`, `messages`, `dag_entries`, `group_members`,
+//! `group_epochs`, `sessions`, and `local_identity`). Every other store file
+//! assumes these tables already exist; this file is always called first via
+//! `ConversationStore::open_encrypted`.
+
 use std::{
     path::Path,
     sync::{Arc, Mutex},

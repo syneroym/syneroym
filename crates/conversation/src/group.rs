@@ -21,6 +21,10 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests;
+
 fn internal(e: impl std::fmt::Display) -> ConversationError {
     ConversationError::Internal(e.to_string())
 }
@@ -789,7 +793,3 @@ impl ConversationService {
         }
     }
 }
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests;

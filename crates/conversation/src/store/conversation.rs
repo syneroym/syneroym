@@ -1,3 +1,8 @@
+//! CRUD operations on the `conversations` table: looking up or creating
+//! direct conversations, creating group conversations, reading metadata
+//! (`ConversationRow`), and listing all conversations. Sibling files
+//! `message.rs` and `dag_store.rs` own the per-conversation payload tables.
+
 use anyhow::{Result, anyhow};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use syneroym_rpc::ConversationKind;

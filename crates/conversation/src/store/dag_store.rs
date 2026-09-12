@@ -1,3 +1,8 @@
+//! Persistence for the group DAG: `dag_entries`, `group_members`, and
+//! `group_epochs` tables. Handles appending and reading `StoredDagEntry`
+//! rows, tracking current membership and epoch keys, and walking parent
+//! chains. Distinct from `message.rs`, which owns the plain `messages` table.
+
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use syneroym_rpc::ConversationMembershipEvent;
