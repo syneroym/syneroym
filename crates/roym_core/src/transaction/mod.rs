@@ -58,8 +58,8 @@ pub const MAX_PAYEE_LEN: usize = 256;
 pub const MAX_PAYMENT_METHODS: usize = 16;
 pub const MAX_PAYMENT_METHOD_LEN: usize = 32;
 
-/// A quote may not be offered open-endedly; failure-matrix row 9 is the
-/// reason there is a ceiling as well as a floor.
+/// A quote may not be offered open-endedly, so both a floor and a ceiling
+/// are enforced on how long one can stay valid.
 pub const MIN_QUOTE_LIFETIME_SECS: u64 = 300;
 pub const MAX_QUOTE_LIFETIME_SECS: u64 = 90 * 24 * 3600;
 
