@@ -67,19 +67,19 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/data_db` | 34 | 9 | 4 | 0 | done | done | |
 | `crates/fdae` | 27 | 5 | 2 | 1 | done | done | |
 | `crates/rpc` | 21 | 8 | 0 | 0 | done | | |
-| `crates/ucan` | 14 | 0 | 0 | 0 | done | | |
+| `crates/ucan` | 14 | 0 | 0 | 0 | done | done | n/a |
 | `crates/coordinator_iroh` | 7 | 2 | 1 | 4 | done | | |
 | `crates/coordinator_webrtc` | 7 | 2 | 1 | 0 | done | | |
 | `crates/data_keystore` | 7 | 2 | 0 | 0 | done | | |
 | `crates/data_blob` | 5 | 0 | 1 | 0 | done | | |
-| `crates/community_registry` | 5 | 0 | 0 | 0 | done | | |
+| `crates/community_registry` | 5 | 0 | 0 | 0 | done | done | |
 | `crates/mqtt_broker` | 5 | 0 | 0 | 0 | done | | |
 | `crates/conversation` | 4 | 0 | 4 | 6 | done | done | |
 | `crates/roym_transaction` | 0 | 0 | 1 | 7 | n/a | | |
 | `crates/roym_directory` | 0 | 0 | 1 | 4 | n/a | | |
 | `crates/roym_web` | 0 | 0 | 0 | 3 | n/a | n/a | |
 | `crates/auth` | 0 | 0 | 1 | 3 | n/a | | |
-| `crates/roym_core` | 0 | 0 | 2 | 0 | n/a | | n/a |
+| `crates/roym_core` | 0 | 0 | 2 | 0 | n/a | done | n/a |
 | `crates/roym_catalog` | 0 | 0 | 1 | 1 | n/a | | |
 | `crates/roym_profile` | 0 | 0 | 1 | 1 | n/a | | |
 | `crates/roym_conversation` | 0 | 0 | 1 | 0 | n/a | | n/a |
