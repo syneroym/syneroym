@@ -6885,7 +6885,7 @@ async fn scenario_147_replaying_declined_quote_preserves_decline_parity() {
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
 
     let (gw, gn) = both_rpc(&h, "quote.list", json!({ "conversation": conv })).await;
-    assert_eq!(gw, gn);
+    assert_eq!(stripped(&gw), stripped(&gn));
     let quote_id = gw["result"]["quotes"][0]["quote_id"].as_str().unwrap();
 
     // Node declines the quote using quote_record_id
@@ -6929,9 +6929,11 @@ async fn scenario_147_replaying_declined_quote_preserves_decline_parity() {
     let (sw, sn) = both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
     assert_eq!(sw, sn);
 
-    // Quote pointer row still has declined_at_secs and note
+    // Quote pointer row still has declined_at_secs and note. quote.get and
+    // quote.list both carry the pointer row's own updated_at_secs (see
+    // strip_volatile), so this is a stripped comparison, not a raw one.
     let (qg_w, qg_n) = both_rpc(&h, "quote.get", json!({ "quote_id": quote_id })).await;
-    assert_eq!(qg_w, qg_n);
+    assert_eq!(stripped(&qg_w), stripped(&qg_n));
     assert!(qg_w["result"]["declined_at_secs"].is_number());
     assert_eq!(qg_w["result"]["decline_note"], "Price is too high");
 
