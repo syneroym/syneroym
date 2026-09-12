@@ -31,7 +31,7 @@ use std::{
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::open_connection;
+use crate::queue::open_connection;
 
 /// Reserved JSON-RPC error code: a call with this idempotency key is
 /// already running on this node. Distinguished from every other callee
