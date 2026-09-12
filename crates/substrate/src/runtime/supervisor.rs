@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use syneroym_core::config::SubstrateConfig;
 
-use super::router::SharedNodeHandles;
+use super::handles::SharedNodeHandles;
 
 /// The literal `native_dispatch` key the supervisor's `NativeService`
 /// registers under, independent of this node's own DID: unlike
@@ -47,8 +47,8 @@ pub(super) async fn init_supervisor(
     let store = SupervisorStore::open_with_role(&config.app_data_dir, &role.db_name, role)?;
     let backup_dir = config.app_data_dir.join(&role.master_backup_dir);
     let vault = MasterVault::new(
-        shared.storage_provider.clone(),
-        shared.key_store.clone(),
+        shared.storage_provider().clone(),
+        shared.key_store().clone(),
         SUPERVISOR_DISPATCH_ID.to_string(),
         backup_dir,
     );
@@ -69,9 +69,9 @@ pub(super) async fn init_supervisor(
         service_id.to_string(),
         store,
         vault,
-        &shared.client_identity,
+        shared.client_identity(),
         config.substrate.enable_bep0044_dht,
-        shared.messaging_broker.clone(),
+        shared.messaging_broker().clone(),
         role.alert_topic.clone(),
         role.poll_interval_secs,
         role.max_restart_attempts,
@@ -86,17 +86,22 @@ pub(super) async fn init_supervisor(
         role.topology_document_cache_ttl_secs,
     ));
     shared
-        .native_dispatch
+        .native_dispatch()
         .insert(SUPERVISOR_DISPATCH_ID.to_string(), supervisor.clone() as Arc<dyn NativeService>);
 
-    if !shared.key_store.kek_is_loaded() {
+    if !shared.key_store().kek_is_loaded() {
         warn!(
-            "supervisor role is enabled but its vault is LOCKED: no KEK has been injected, so it              cannot mint, certify, or renew member masters. Inject one with: roymctl --substrate              {service_id} security inject-kek --kek-hex <...>"
+            "supervisor role is enabled but its vault is LOCKED: no KEK has been injected, so it \
+             cannot mint, certify, or renew member masters. Inject one with: roymctl --substrate \
+             {service_id} security inject-kek --kek-hex <...>"
         );
     }
     if config.substrate.registry_url.is_none() {
         warn!(
-            "supervisor role is enabled but this node has no substrate.registry_url configured:              the Tier-1 registry record for every app instance this supervisor manages cannot be              published, so callers outside those apps will not be able to discover them              (ADR-0022). Intra-app service discovery is unaffected."
+            "supervisor role is enabled but this node has no substrate.registry_url configured: \
+             the Tier-1 registry record for every app instance this supervisor manages cannot be \
+             published, so callers outside those apps will not be able to discover them \
+             (ADR-0022). Intra-app service discovery is unaffected."
         );
     }
 
@@ -110,6 +115,7 @@ pub(super) async fn init_supervisor(
     _shared: &SharedNodeHandles,
 ) -> anyhow::Result<Arc<SupervisorHandle>> {
     Err(anyhow::anyhow!(
-        "[roles.supervisor] is configured but this binary was built without the `supervisor`          feature"
+        "[roles.supervisor] is configured but this binary was built without the `supervisor` \
+         feature"
     ))
 }

@@ -16,6 +16,7 @@ use tracing::{error, info};
 
 mod auth;
 mod dual_build_fixture;
+mod handles;
 mod publish;
 mod router;
 mod roym;
@@ -144,9 +145,7 @@ pub async fn init(config: SubstrateConfig) -> anyhow::Result<InitializedRuntime>
     services.set_supervisor(supervisor);
     services.set_conversation(conversation);
     #[cfg(feature = "client_gateway")]
-    if let Some(gateway) = services.client_gateway.as_ref() {
-        gateway.set_auth_did(auth_did);
-    }
+    services.set_gateway_auth_did(auth_did);
 
     Ok(InitializedRuntime { observability, services, connection_router, endpoint_registry })
 }

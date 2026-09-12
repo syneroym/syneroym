@@ -9,13 +9,19 @@ use syneroym_core::local_registry::{EndpointRegistry, SubstrateEndpoint};
 use syneroym_rpc::NativeService;
 
 #[cfg(feature = "dual_build_fixture")]
-use super::router::SharedNodeHandles;
+use super::handles::SharedNodeHandles;
 
 /// The reserved `native_dispatch` key the dual-build-shim fixture registers
-/// under, independent of this node's own DID -- the same shape
+/// under, independent of this node's own DID — the same shape
 /// `SUPERVISOR_DISPATCH_ID` uses.
+///
+/// Private (not `pub(super)`) because no other module references this
+/// constant: unlike `SUPERVISOR_DISPATCH_ID`, which `router.rs` uses when
+/// registering the supervisor and messaging endpoints before calling
+/// `init_supervisor`, all uses of this constant are inside
+/// `init_dual_build_fixture` itself.
 #[cfg(feature = "dual_build_fixture")]
-pub(super) const DUAL_BUILD_FIXTURE_DISPATCH_ID: &str = "dual-build-fixture";
+const DUAL_BUILD_FIXTURE_DISPATCH_ID: &str = "dual-build-fixture";
 
 /// Links the dual-build-shim fixture's native build in as a
 /// `NativeService`, proving the shim works end to end: built both ways from
@@ -47,16 +53,16 @@ pub(super) async fn init_dual_build_fixture(
     let service_id = DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string();
     let factory = NativeHostFactory::new(
         service_id.clone(),
-        shared.key_store.clone(),
-        shared.storage_provider.clone(),
-        shared.blob_provider.clone(),
-        shared.messaging_broker.clone(),
+        shared.key_store().clone(),
+        shared.storage_provider().clone(),
+        shared.blob_provider().clone(),
+        shared.messaging_broker().clone(),
         endpoint_registry.clone(),
-        shared.logical_resolver.clone(),
-        shared.conversation.clone(),
-        shared.websocket_senders.clone(),
+        shared.logical_resolver().clone(),
+        shared.conversation().clone(),
+        shared.websocket_senders().clone(),
     );
-    factory.set_record_signer(shared.record_signer.clone());
+    factory.set_record_signer(shared.record_signer().clone());
     let f = factory.clone();
     let f_http = factory.clone();
     let fixture = Arc::new(NativeFixture::new(
@@ -71,7 +77,7 @@ pub(super) async fn init_dual_build_fixture(
     factory.set_http_sink(Arc::downgrade(&fixture) as Weak<dyn HttpSink>);
     factory.set_websocket_sink(Arc::downgrade(&fixture) as Weak<dyn WebSocketSink>);
 
-    shared.native_dispatch.insert(
+    shared.native_dispatch().insert(
         DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
         fixture.clone() as Arc<dyn NativeService>,
     );
@@ -81,11 +87,11 @@ pub(super) async fn init_dual_build_fixture(
         Arc::downgrade(&fixture) as Weak<dyn HttpSink>,
         Arc::downgrade(&fixture) as Weak<dyn WebSocketSink>,
     ));
-    shared.native_http.insert(
+    shared.native_http().insert(
         DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
         adapter.clone() as Arc<dyn NativeHttpService>,
     );
-    shared.native_http.insert(node_service_id.to_string(), adapter as Arc<dyn NativeHttpService>);
+    shared.native_http().insert(node_service_id.to_string(), adapter as Arc<dyn NativeHttpService>);
     let routes = vec![
         HttpRoute {
             method: "POST".into(),
@@ -138,8 +144,8 @@ pub(super) async fn init_dual_build_fixture(
             public: true,
         },
     ];
-    shared.http_routes.insert(DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(), routes.clone());
-    shared.http_routes.insert(node_service_id.to_string(), routes);
+    shared.http_routes().insert(DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(), routes.clone());
+    shared.http_routes().insert(node_service_id.to_string(), routes);
 
     // Exactly one endpoint. Do not also register a `messaging` endpoint:
     // `EndpointRegistry::register` is a silent last-write-wins insert on

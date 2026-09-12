@@ -32,7 +32,7 @@ pub struct RuntimeServices {
     #[cfg(feature = "coordinator")]
     coordinator: Option<EcosystemCoordinator>,
     #[cfg(feature = "client_gateway")]
-    pub(super) client_gateway: Option<ClientGateway>,
+    client_gateway: Option<ClientGateway>,
     supervisor: Option<Arc<SupervisorHandle>>,
     /// The supervisor's resident loop is spawned (not pinned in
     /// `run_until_shutdown`'s own `select!`), so it outlives that
@@ -146,6 +146,19 @@ impl RuntimeServices {
     /// `set_supervisor`.
     pub(super) fn set_conversation(&mut self, conversation: Arc<ConversationService>) {
         self.conversation = Some(conversation);
+    }
+
+    /// Passes the auth service DID to the client gateway so it can route
+    /// `/_syneroym/session/*` requests to the auth service. Matches the
+    /// pattern of `set_supervisor`/`set_conversation` — the gateway is
+    /// already constructed in `init`, so injection after
+    /// `setup_connection_router` keeps the two composition calls in the
+    /// same relative order they have always been in.
+    #[cfg(feature = "client_gateway")]
+    pub(super) fn set_gateway_auth_did(&self, auth_did: Option<String>) {
+        if let Some(gateway) = self.client_gateway.as_ref() {
+            gateway.set_auth_did(auth_did);
+        }
     }
 
     pub(super) async fn run_until_shutdown<F>(

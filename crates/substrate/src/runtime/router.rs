@@ -8,14 +8,17 @@ use syneroym_app_orchestration::{
     TopologyEntry, TopologyKey,
 };
 use syneroym_control_plane::ControlPlaneService;
-use syneroym_conversation::ConversationService;
+use syneroym_conversation::{
+    ConversationConfig, ConversationService, store::ConversationConfig as StoreConversationConfig,
+};
 use syneroym_core::{
     asset_manifest::AssetRegistry,
-    config::{BlobBackend, SubstrateConfig},
+    config::{BlobBackend, RetryPolicy, SubstrateConfig},
     dht_registry::RegistryClient,
     endpoint_publisher::EndpointPublisher,
     http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
+    protocol_utils::{AUTH_SERVICE_ALIAS, SessionRevocationCheck},
     record_signer::NodeRecordSigner,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
@@ -24,7 +27,10 @@ use syneroym_data_keystore::KeyStore;
 use syneroym_identity::{Identity, substrate::SubstrateIdentityStatus};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_router::{ConnectionRouter, RouteHandlerDeps};
-use syneroym_rpc::{ConversationHost, ConversationNotifier, NativeDispatchRegistry, ServiceProxy};
+use syneroym_rpc::{
+    ConversationHost, ConversationNotifier, NativeDispatchRegistry, NativeHttpRegistry,
+    NativeHttpService, ServiceProxy, WebSocketSenders,
+};
 use syneroym_sandbox_podman::ContainerEngine;
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::sync::mpsc;
@@ -37,6 +43,7 @@ use super::dual_build_fixture::init_dual_build_fixture;
 #[cfg(feature = "roym")]
 use super::roym::init_roym;
 use super::{
+    handles::SharedNodeHandles,
     publish::publish_to_community_registry,
     supervisor::{SUPERVISOR_DISPATCH_ID, SupervisorHandle, init_supervisor},
 };
@@ -193,7 +200,10 @@ async fn setup_router(
     // same post-construction way `AppSandboxEngine.service_proxy`/
     // `ControlPlaneService.service_proxy` already are.
     if let Some(proxy) = router.proxy() {
-        shared.conversation.set_service_proxy(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>);
+        ConversationService::set_service_proxy(
+            shared.conversation(),
+            Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>,
+        );
         #[cfg(feature = "dual_build_fixture")]
         if let Some(factory) = fixture_factory {
             factory.set_service_proxy(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>);
@@ -252,61 +262,11 @@ async fn setup_router(
     }
 
     let auth_did = shared
-        .native_http
-        .get(syneroym_core::protocol_utils::AUTH_SERVICE_ALIAS)
-        .and_then(|svc| svc.service_id().map(ToString::to_string));
+        .native_http()
+        .get(AUTH_SERVICE_ALIAS)
+        .and_then(|svc| NativeHttpService::service_id(&**svc.value()).map(ToString::to_string));
 
-    Ok((router, endpoint_registry, publisher, supervisor, shared.conversation.clone(), auth_did))
-}
-
-/// Handles the supervisor role (and any future post-router role that must
-/// act as a first-class dispatch target on this same node) needs, but
-/// which are otherwise fully consumed by `build_route_handler_deps`'s
-/// return value before this function's caller gets to see them again.
-/// Built once, in `build_route_handler_deps`, since only it has all of
-/// these in scope before they move into `RouteHandlerDeps`/
-/// `ControlPlaneService`.
-pub(super) struct SharedNodeHandles {
-    pub(super) key_store: Arc<KeyStore>,
-    pub(super) storage_provider: Arc<dyn StorageProvider>,
-    pub(super) native_dispatch: NativeDispatchRegistry,
-    /// The identity a post-router role presents when it connects, as a
-    /// client, to other substrates (ADR-0021 §8) -- a second handle to the
-    /// node's own key material, not a distinct identity.
-    pub(super) client_identity: Arc<Identity>,
-    /// The same broker `AppSandboxEngine` and `ControlPlaneService`
-    /// publish/subscribe through, so the supervisor's alert publication
-    /// shares one broker with the rest of the node instead of standing up a
-    /// second one.
-    pub(super) messaging_broker: Arc<MqttBroker>,
-    /// The `dual_build_fixture` and `roym` roles' `NativeHostFactory` need
-    /// the same blob backend and logical resolver `build_route_handler_deps`
-    /// already built, rather than standing up their own.
-    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
-    pub(super) blob_provider: Arc<dyn BlobProvider>,
-    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
-    pub(super) logical_resolver: Arc<LogicalResolver>,
-    /// Needed by `setup_router` to wire the real
-    /// `ServiceProxy` in once `ConnectionRouter::init` has built it, and by
-    /// the `dual_build_fixture`/`roym` roles' `NativeHostFactory`.
-    pub(super) conversation: Arc<ConversationService>,
-    /// The per-service HTTP route table. A linked native app has no deploy
-    /// record, so nothing else would ever put its routes here.
-    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
-    pub(super) http_routes: HttpRouteRegistry,
-    /// The `guest`/`websocket` route targets' native registry.
-    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
-    pub(super) native_http: syneroym_rpc::NativeHttpRegistry,
-    /// The shared live-WebSocket table (`AppSandboxEngine` holds the same
-    /// `Arc`).
-    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
-    pub(super) websocket_senders: Arc<syneroym_rpc::WebSocketSenders>,
-    /// The static asset table. A linked native app has no deploy record,
-    /// so nothing else would put its UI bundle here.
-    #[cfg_attr(not(feature = "roym"), allow(dead_code))]
-    pub(super) assets: AssetRegistry,
-    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
-    pub(super) record_signer: Arc<NodeRecordSigner>,
+    Ok((router, endpoint_registry, publisher, supervisor, shared.conversation().clone(), auth_did))
 }
 
 /// Rebuilds the in-memory `StaticInventory` from every dependency binding
@@ -375,42 +335,16 @@ async fn build_route_handler_deps(
     let app_registry = replay_persisted_bindings(registry).await?;
     let logical_resolver = Arc::new(LogicalResolver::new(app_registry));
 
-    let app_sandbox_engine = Arc::new(
-        AppSandboxEngine::init(
-            config,
-            registry.get_all_endpoints(),
-            key_store.clone(),
-            storage_provider.clone(),
-            blob_provider.clone(),
-            messaging_broker.clone(),
-            registry.clone(),
-            logical_resolver.clone(),
-        )
-        .await?,
-    );
-    app_sandbox_engine
-        .self_weak
-        .set(Arc::downgrade(&app_sandbox_engine))
-        .map_err(|_| anyhow::anyhow!("AppSandboxEngine::self_weak set more than once"))?;
-    let websocket_senders = syneroym_rpc::WebSocketSenders::new();
-    app_sandbox_engine
-        .websocket_senders
-        .set(websocket_senders.clone())
-        .map_err(|_| anyhow::anyhow!("AppSandboxEngine::websocket_senders set more than once"))?;
-
-    replay_persisted_subscriptions(&storage_provider, &app_sandbox_engine).await?;
-
-    let podman_path = config
-        .roles
-        .podman_sandbox
-        .as_ref()
-        .map(|cfg| cfg.podman_path.clone())
-        .unwrap_or_else(|| "podman".to_string());
-    let podman_sandbox_engine = Arc::new(ContainerEngine::new(
-        podman_path,
-        &config.app_local_data_dir,
-        Some(storage_provider.clone()),
-    ));
+    let (app_sandbox_engine, podman_sandbox_engine, websocket_senders) = build_sandbox_engines(
+        config,
+        registry,
+        &key_store,
+        &storage_provider,
+        &blob_provider,
+        &messaging_broker,
+        &logical_resolver,
+    )
+    .await?;
 
     // Shared with `ControlPlaneService`, which registers/deregisters
     // per-deployment native services (data-layer/vault/app-config/
@@ -418,7 +352,7 @@ async fn build_route_handler_deps(
     // -- `RouteHandler`'s own dispatch path reads through the identical
     // handles.
     let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
-    let native_http: syneroym_rpc::NativeHttpRegistry = Arc::new(DashMap::new());
+    let native_http: NativeHttpRegistry = Arc::new(DashMap::new());
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
     let assets: AssetRegistry = Arc::new(DashMap::new());
 
@@ -429,50 +363,8 @@ async fn build_route_handler_deps(
     // connects, as a client, to the substrates it manages (ADR-0021 §8).
     let supervisor_client_identity = node_identity.clone();
 
-    // Same lifetime as `app_sandbox_engine` above -- built
-    // once, wired to the real `ServiceProxy`/engine notifier once those
-    // exist (`setup_router`, after `ConnectionRouter::init`).
-    let app_sandbox_role = config.roles.app_sandbox.clone().unwrap_or_default();
-    let conversation = ConversationService::new(
-        storage_provider.clone(),
-        key_store.clone(),
-        registry.clone(),
-        syneroym_async_queue::QueueConfig {
-            retry: syneroym_core::config::RetryPolicy {
-                max_attempts: 54,
-                initial_backoff_ms: 100,
-                backoff_multiplier: 2.0,
-                max_backoff_ms: 900_000,
-            },
-            visibility_timeout_ms: 120_000,
-            dlq_max_rows: 1000,
-            max_pending_rows: syneroym_async_queue::DEFAULT_MAX_PENDING_ROWS,
-        },
-        syneroym_conversation::ConversationConfig {
-            store: syneroym_conversation::store::ConversationConfig {
-                max_body_bytes: app_sandbox_role.conversation_max_body_bytes,
-                max_pending_per_conversation: app_sandbox_role
-                    .conversation_max_pending_per_conversation,
-                max_messages_per_conversation: app_sandbox_role
-                    .conversation_max_messages_per_conversation,
-                max_pending_age_secs: app_sandbox_role.conversation_max_pending_age_secs,
-                max_clock_skew_secs: app_sandbox_role.conversation_max_clock_skew_secs,
-                prekey_requests_per_peer_per_hour: app_sandbox_role
-                    .conversation_prekey_requests_per_peer_per_hour,
-                conversation_group_sync_secs: app_sandbox_role.conversation_group_sync_secs,
-                conversation_group_rekey_secs: app_sandbox_role.conversation_group_rekey_secs,
-                conversation_max_group_members: app_sandbox_role.conversation_max_group_members,
-                conversation_max_dag_entries_per_conversation: app_sandbox_role
-                    .conversation_max_dag_entries_per_conversation,
-                conversation_max_sync_entries_per_call: app_sandbox_role
-                    .conversation_max_sync_entries_per_call,
-                conversation_relay_fanout: app_sandbox_role.conversation_relay_fanout,
-                conversation_sync_now_budget_ms: app_sandbox_role.conversation_sync_now_budget_ms,
-                conversation_background_sync_budget_ms: app_sandbox_role
-                    .conversation_background_sync_budget_ms,
-            },
-        },
-    )?;
+    let conversation = build_conversation_service(config, &storage_provider, &key_store, registry)?;
+
     // Both directions, `Weak` on both sides: the engine reaches
     // `conversation` for the guest-facing WIT surface, `conversation`
     // reaches the engine to notify a wasm-hosted service of an inbound
@@ -516,26 +408,26 @@ async fn build_route_handler_deps(
         .set(Arc::downgrade(&conversation) as Weak<dyn ConversationHost>)
         .map_err(|_| anyhow::anyhow!("ControlPlaneService::conversation set more than once"))?;
 
-    let shared = SharedNodeHandles {
-        key_store: key_store.clone(),
-        storage_provider: storage_provider.clone(),
-        native_dispatch: native_dispatch.clone(),
-        client_identity: supervisor_client_identity,
-        messaging_broker: messaging_broker.clone(),
+    let shared = SharedNodeHandles::new(
+        key_store.clone(),
+        storage_provider.clone(),
+        native_dispatch.clone(),
+        supervisor_client_identity,
+        messaging_broker.clone(),
         blob_provider,
-        logical_resolver: logical_resolver.clone(),
-        conversation: conversation.clone(),
-        http_routes: http_routes.clone(),
-        native_http: native_http.clone(),
-        websocket_senders: websocket_senders.clone(),
-        assets: assets.clone(),
+        logical_resolver.clone(),
+        conversation.clone(),
+        http_routes.clone(),
+        native_http.clone(),
+        websocket_senders.clone(),
+        assets.clone(),
         record_signer,
-    };
+    );
 
     #[cfg(feature = "auth")]
     let auth_service = init_auth_service(config, &shared, registry, service_id).await?;
     #[cfg(not(feature = "auth"))]
-    let auth_service: Option<Arc<dyn syneroym_core::protocol_utils::SessionRevocationCheck>> = None;
+    let auth_service: Option<Arc<dyn SessionRevocationCheck>> = None;
 
     Ok((
         RouteHandlerDeps {
@@ -552,11 +444,120 @@ async fn build_route_handler_deps(
             sse_permits: control_plane_service.sse_permits(),
             control_plane_service: control_plane_service.clone(),
             control_plane: Some(control_plane_service),
-            session_revocation: auth_service
-                .map(|a| a as Arc<dyn syneroym_core::protocol_utils::SessionRevocationCheck>),
+            session_revocation: auth_service.map(|a| a as Arc<dyn SessionRevocationCheck>),
         },
         shared,
     ))
+}
+
+/// Builds and wires the WASM app sandbox engine, the container sandbox
+/// engine, and the shared WebSocket sender table. Extracted from
+/// `build_route_handler_deps` so that function reads as sequential
+/// composition rather than one large allocation block.
+async fn build_sandbox_engines(
+    config: &SubstrateConfig,
+    registry: &EndpointRegistry,
+    key_store: &Arc<KeyStore>,
+    storage_provider: &Arc<dyn StorageProvider>,
+    blob_provider: &Arc<dyn BlobProvider>,
+    messaging_broker: &Arc<MqttBroker>,
+    logical_resolver: &Arc<LogicalResolver>,
+) -> anyhow::Result<(Arc<AppSandboxEngine>, Arc<ContainerEngine>, Arc<WebSocketSenders>)> {
+    let app_sandbox_engine = Arc::new(
+        AppSandboxEngine::init(
+            config,
+            registry.get_all_endpoints(),
+            key_store.clone(),
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            registry.clone(),
+            logical_resolver.clone(),
+        )
+        .await?,
+    );
+    app_sandbox_engine
+        .self_weak
+        .set(Arc::downgrade(&app_sandbox_engine))
+        .map_err(|_| anyhow::anyhow!("AppSandboxEngine::self_weak set more than once"))?;
+    let websocket_senders = WebSocketSenders::new();
+    app_sandbox_engine
+        .websocket_senders
+        .set(websocket_senders.clone())
+        .map_err(|_| anyhow::anyhow!("AppSandboxEngine::websocket_senders set more than once"))?;
+
+    replay_persisted_subscriptions(storage_provider, &app_sandbox_engine).await?;
+
+    let podman_path = config
+        .roles
+        .podman_sandbox
+        .as_ref()
+        .map(|cfg| cfg.podman_path.clone())
+        .unwrap_or_else(|| "podman".to_string());
+    let podman_sandbox_engine = Arc::new(ContainerEngine::new(
+        podman_path,
+        &config.app_local_data_dir,
+        Some(storage_provider.clone()),
+    ));
+
+    Ok((app_sandbox_engine, podman_sandbox_engine, websocket_senders))
+}
+
+/// Constructs the `ConversationService` with its full config derived from
+/// the substrate config's `app_sandbox` role. Extracted from
+/// `build_route_handler_deps`; the caller is responsible for wiring the
+/// bidirectional `Weak` links to `AppSandboxEngine` and `ControlPlaneService`
+/// afterwards (those components don't exist at construction time).
+fn build_conversation_service(
+    config: &SubstrateConfig,
+    storage_provider: &Arc<dyn StorageProvider>,
+    key_store: &Arc<KeyStore>,
+    registry: &EndpointRegistry,
+) -> anyhow::Result<Arc<ConversationService>> {
+    // Same lifetime as `app_sandbox_engine` above -- built
+    // once, wired to the real `ServiceProxy`/engine notifier once those
+    // exist (`setup_router`, after `ConnectionRouter::init`).
+    let app_sandbox_role = config.roles.app_sandbox.clone().unwrap_or_default();
+    ConversationService::new(
+        storage_provider.clone(),
+        key_store.clone(),
+        registry.clone(),
+        syneroym_async_queue::QueueConfig {
+            retry: RetryPolicy {
+                max_attempts: 54,
+                initial_backoff_ms: 100,
+                backoff_multiplier: 2.0,
+                max_backoff_ms: 900_000,
+            },
+            visibility_timeout_ms: 120_000,
+            dlq_max_rows: 1000,
+            max_pending_rows: syneroym_async_queue::DEFAULT_MAX_PENDING_ROWS,
+        },
+        ConversationConfig {
+            store: StoreConversationConfig {
+                max_body_bytes: app_sandbox_role.conversation_max_body_bytes,
+                max_pending_per_conversation: app_sandbox_role
+                    .conversation_max_pending_per_conversation,
+                max_messages_per_conversation: app_sandbox_role
+                    .conversation_max_messages_per_conversation,
+                max_pending_age_secs: app_sandbox_role.conversation_max_pending_age_secs,
+                max_clock_skew_secs: app_sandbox_role.conversation_max_clock_skew_secs,
+                prekey_requests_per_peer_per_hour: app_sandbox_role
+                    .conversation_prekey_requests_per_peer_per_hour,
+                conversation_group_sync_secs: app_sandbox_role.conversation_group_sync_secs,
+                conversation_group_rekey_secs: app_sandbox_role.conversation_group_rekey_secs,
+                conversation_max_group_members: app_sandbox_role.conversation_max_group_members,
+                conversation_max_dag_entries_per_conversation: app_sandbox_role
+                    .conversation_max_dag_entries_per_conversation,
+                conversation_max_sync_entries_per_call: app_sandbox_role
+                    .conversation_max_sync_entries_per_call,
+                conversation_relay_fanout: app_sandbox_role.conversation_relay_fanout,
+                conversation_sync_now_budget_ms: app_sandbox_role.conversation_sync_now_budget_ms,
+                conversation_background_sync_budget_ms: app_sandbox_role
+                    .conversation_background_sync_budget_ms,
+            },
+        },
+    )
 }
 
 /// Guest subscriptions survive a restart (ADR-0010 Finding A1): replay

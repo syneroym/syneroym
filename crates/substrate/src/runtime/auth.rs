@@ -4,16 +4,22 @@
 use std::sync::Arc;
 
 #[cfg(feature = "auth")]
+use syneroym_auth::AuthService;
+#[cfg(feature = "auth")]
 use syneroym_core::{
     config::SubstrateConfig,
     dht_registry::RegistryClient,
+    http_routes::HttpRoute,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
+    protocol_utils::AUTH_SERVICE_ALIAS,
 };
 #[cfg(feature = "auth")]
 use syneroym_identity::Identity;
+#[cfg(feature = "auth")]
+use syneroym_rpc::NativeHttpService;
 
 #[cfg(feature = "auth")]
-use super::router::SharedNodeHandles;
+use super::handles::SharedNodeHandles;
 
 #[cfg(feature = "auth")]
 pub(super) async fn init_auth_service(
@@ -21,11 +27,7 @@ pub(super) async fn init_auth_service(
     shared: &SharedNodeHandles,
     endpoint_registry: &EndpointRegistry,
     node_service_id: &str,
-) -> anyhow::Result<Option<Arc<syneroym_auth::AuthService>>> {
-    use syneroym_auth::AuthService;
-    use syneroym_core::{http_routes::HttpRoute, protocol_utils::AUTH_SERVICE_ALIAS};
-    use syneroym_rpc::NativeHttpService;
-
+) -> anyhow::Result<Option<Arc<AuthService>>> {
     let Some(auth_cfg) = &config.roles.auth else {
         return Ok(None);
     };
@@ -57,11 +59,29 @@ pub(super) async fn init_auth_service(
     let auth_did = auth_service.auth_did().to_string();
 
     shared
-        .native_http
+        .native_http()
         .insert(AUTH_SERVICE_ALIAS.to_string(), auth_service.clone() as Arc<dyn NativeHttpService>);
-    shared.native_http.insert(auth_did.clone(), auth_service.clone() as Arc<dyn NativeHttpService>);
+    shared
+        .native_http()
+        .insert(auth_did.clone(), auth_service.clone() as Arc<dyn NativeHttpService>);
 
-    let auth_routes = vec![
+    let auth_routes = auth_http_routes();
+    register_auth_endpoints(shared, &auth_did, &auth_routes, endpoint_registry).await?;
+
+    Ok(Some(auth_service))
+}
+
+/// The static HTTP route table the auth service exposes. All 21 routes share
+/// the same `guest`/`handle-request` target; only the method and path differ.
+/// Extracted so the route list is testable independently and
+/// `init_auth_service` reads as orchestration rather than a large literal
+/// block.
+#[cfg(feature = "auth")]
+fn auth_http_routes() -> Vec<HttpRoute> {
+    // Paired short paths (`/challenge`, `/login`, …) and their canonical
+    // `/_syneroym/session/*` equivalents (some tooling targets only the
+    // canonical form; both forms are kept for backward compatibility).
+    vec![
         HttpRoute {
             method: "POST".into(),
             path: "/challenge".into(),
@@ -272,10 +292,21 @@ pub(super) async fn init_auth_service(
             protocol: None,
             public: true,
         },
-    ];
+    ]
+}
 
-    shared.http_routes.insert(AUTH_SERVICE_ALIAS.to_string(), auth_routes.clone());
-    shared.http_routes.insert(auth_did.clone(), auth_routes);
+/// Inserts the auth service's route table and registers its two endpoint
+/// entries (one under `AUTH_SERVICE_ALIAS`, one under the auth DID). Split
+/// from `init_auth_service` so that function reads as orchestration.
+#[cfg(feature = "auth")]
+async fn register_auth_endpoints(
+    shared: &SharedNodeHandles,
+    auth_did: &str,
+    routes: &[HttpRoute],
+    endpoint_registry: &EndpointRegistry,
+) -> anyhow::Result<()> {
+    shared.http_routes().insert(AUTH_SERVICE_ALIAS.to_string(), routes.to_vec());
+    shared.http_routes().insert(auth_did.to_string(), routes.to_vec());
 
     endpoint_registry
         .register(
@@ -286,11 +317,11 @@ pub(super) async fn init_auth_service(
         .await?;
     endpoint_registry
         .register(
-            auth_did.clone(),
+            auth_did.to_string(),
             "default".to_string(),
-            SubstrateEndpoint::NativeHostChannel { service_id: auth_did },
+            SubstrateEndpoint::NativeHostChannel { service_id: auth_did.to_string() },
         )
         .await?;
 
-    Ok(Some(auth_service))
+    Ok(())
 }

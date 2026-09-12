@@ -149,7 +149,9 @@ pub(super) fn warn_on_near_expiry_instance_certs(registry: &EndpointRegistry) ->
                 service_id = %service_id,
                 expires_at_secs = cert.expires_at_secs,
                 remaining_secs,
-                "instance certificate is within 25% of its lifetime of expiring -- renew with                  `roymctl identity certify-instance` before it lapses, which fails the                  handshake closed"
+                "instance certificate is within 25% of its lifetime of expiring -- renew with \
+                 `roymctl identity certify-instance` before it lapses, which fails the \
+                 handshake closed"
             );
             near_expiry.push(service_id);
         }
