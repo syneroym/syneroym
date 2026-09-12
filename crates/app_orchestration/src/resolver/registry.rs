@@ -13,8 +13,9 @@ use super::types::{AppScope, LogicalServiceName, ResolvedTopology, TopologyEntry
 
 /// Registry abstraction that manages topology state for logical service names.
 ///
-/// Lives outside the router; the router only ever sees [`ServiceId`]s.  The
-/// registry is responsible for persisting and invalidating topology entries.
+/// Lives outside the router; the router only ever sees
+/// [`crate::models::ServiceId`]s.  The registry is responsible for
+/// persisting and invalidating topology entries.
 pub trait AppRegistry: Send + Sync + fmt::Debug {
     /// Register or update the topology for `key`.
     fn register(&self, key: TopologyKey, entry: TopologyEntry);

@@ -265,9 +265,9 @@ impl fmt::Display for RetryableResolveError {
 
 impl error::Error for RetryableResolveError {}
 
-/// True when `err` came from [`LogicalResolver::resolve`] (or
-/// [`LogicalResolver::resolve_all`]) for a reason a fresh Tier-2 fetch can
-/// fix. See [`RetryableResolveError`].
+/// True when `err` came from [`crate::resolver::LogicalResolver::resolve`]
+/// (or [`crate::resolver::LogicalResolver::resolve_all`]) for a reason a
+/// fresh Tier-2 fetch can fix. See [`RetryableResolveError`].
 #[must_use]
 pub fn is_retryable_resolve_error(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| cause.downcast_ref::<RetryableResolveError>().is_some())
