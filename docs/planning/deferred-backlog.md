@@ -458,8 +458,8 @@ Live `TODO`/`FIXME` markers that encode a real deferral. Remove both the code ma
 | `crates/router/src/route_handler/io.rs:147`, `route_handler/dispatch.rs:84` | Fine-grained caller authorization for the five data native-capability interfaces. **Narrowed by [M05A slice P0](./milestones/M05A-app-supervisor/slice-p0-implementation-plan.md)** (2026-07-30): `security` is gated on `substrate/admin` now too, alongside `orchestrator` (M04A Slice B7b); only the five data interfaces remain ungated here. | §3 |
 | `crates/router/src/route_handler/http.rs:930` | Blob GET authorization is HMAC-only pending FDAE | §3 |
 | `crates/router/src/lib.rs:4`, `preamble.rs:19,28,29,140`, `route_handler.rs:4` | wRPC wire formats not implemented | §1 |
-| `crates/sandbox_wasm/src/engine.rs:533` | `migrate()` snapshot/rollback safety net | §2 |
-| `crates/sandbox_wasm/src/engine.rs:599` | Cache function-parameter details (perf) | §2 |
+| `crates/sandbox_wasm/src/engine/lifecycle.rs:116` | `migrate()` snapshot/rollback safety net | §2 |
+| `crates/sandbox_wasm/src/engine/execute.rs:99` | Cache function-parameter details (perf) | §2 |
 | `apps/roymctl/tests/cli_args.rs:10` | Expand CLI argument-parsing tests | (test coverage) |
 | `conversions.rs` (data layer) | Positional→named param binding | §2 |
 
