@@ -1,128 +1,4 @@
-//! Catalog service application logic, target-independent.
-//!
-//! The provider's offer: a signed `listing` record with a stable
-//! content-derived id, edited only by producing a new version that
-//! `supersedes` the last, plus unsigned availability state and the
-//! catalog-side publication limiter.
-
-use std::{cmp::Reverse, collections::BTreeMap};
-
-use serde::Deserialize;
-use serde_json::{Map, Value, json};
-use syneroym_app_host::{
-    AppDataLayer, AppHost, AppSigning,
-    types::{
-        data_layer::{
-            CollectionSchema, IndexDefinition, IndexType, Mutation, QueryOptions, RecordWriteValue,
-        },
-        proxy::CallTarget,
-        signing::{Principal, RecordDraft},
-    },
-};
-use syneroym_roym_core::{
-    admit,
-    backup::{BUNDLE_VERSION, Bundle, BundleManifest, SECTION_AVAILABILITY, SECTION_LISTINGS},
-    clock,
-    envelope::{Request, Response},
-    listing::{self, ListingPayload, ListingStatus},
-    person::ProfilePayload,
-    record::{Envelope, RECORD_LISTING, VerifyOptions, content_digest, verify_json},
-    safety::{self, Admission, PublicationLimits},
-    services,
-    signing::{self, CertificateError},
-};
-
-/// Bumped in this slice: the service gains its first state.
-pub const SCHEMA_VERSION: u32 = 2;
-
-pub const LISTINGS: &str = "listings";
-pub const LISTING_HISTORY: &str = "listing_history";
-pub const AVAILABILITY: &str = "availability";
-pub const PUBLICATIONS: &str = "publications";
-pub const SETTINGS: &str = "settings";
-pub const PUBLICATION_LIMITS_KEY: &str = "publication_limits";
-
-const SLOT_ID_PREFIX: &str = "slot_";
-
-pub async fn status<H: AppHost>(_host: &H) -> Result<String, String> {
-    Ok(json!({
-        "service": services::CATALOG.name,
-        "schema_version": SCHEMA_VERSION,
-    })
-    .to_string())
-}
-
-async fn ensure_coll<H: AppHost>(
-    host: &H,
-    name: &str,
-    indexes: &[IndexDefinition],
-) -> Result<(), String> {
-    AppDataLayer::create_collection(
-        host,
-        CollectionSchema { name: name.to_string(), indexes: indexes.to_vec() },
-    )
-    .await
-    .map_err(|e| e.to_string())
-}
-
-fn idx(field: &str, ty: IndexType) -> IndexDefinition {
-    IndexDefinition { field_name: field.to_string(), type_: ty }
-}
-
-async fn ensure_listings<H: AppHost>(host: &H) -> Result<(), String> {
-    ensure_coll(
-        host,
-        LISTINGS,
-        &[idx("status", IndexType::String), idx("updated_at_secs", IndexType::Numeric)],
-    )
-    .await
-}
-
-async fn ensure_availability<H: AppHost>(host: &H) -> Result<(), String> {
-    ensure_coll(
-        host,
-        AVAILABILITY,
-        &[idx("listing_id", IndexType::String), idx("start_secs", IndexType::Numeric)],
-    )
-    .await
-}
-
-/// Every row of `collection`, as `{ id, payload }` -- the shape a `Bundle`
-/// section holds and `profile.export` uses.
-async fn collect<H: AppHost>(host: &H, collection: &str) -> Result<Vec<Value>, String> {
-    let mut out = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            collection.to_string(),
-            QueryOptions { filter: None, limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        for r in page.records {
-            if let Ok(parsed) = serde_json::from_slice::<Value>(&r.payload) {
-                out.push(json!({ "id": r.id, "payload": parsed }));
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(out)
-}
-
-async fn load_publication_limits<H: AppHost>(host: &H) -> Result<PublicationLimits, String> {
-    ensure_coll(host, SETTINGS, &[]).await?;
-    let row = AppDataLayer::get(host, SETTINGS.to_string(), PUBLICATION_LIMITS_KEY.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    match row {
-        Some(r) => serde_json::from_slice(&r.payload).map_err(|e| e.to_string()),
-        None => Ok(PublicationLimits::default()),
-    }
-}
+use super::*;
 
 /// The pointer row `listings/<listing_id>`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -202,43 +78,6 @@ struct SetListingParams {
     service_record: Option<listing::ServiceRecordTerms>,
 }
 
-#[derive(Debug, Deserialize)]
-struct SlotInput {
-    start_secs: u64,
-    end_secs: u64,
-    capacity: u32,
-}
-
-pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
-    if let Some(resp) = admit::require_internal(host).await {
-        return resp;
-    }
-    if let Some(resp) = signing::handle_certificate_verb(host, "catalog.", &req).await {
-        return resp;
-    }
-
-    match req.method.as_str() {
-        "listing.ping" => Response::ok(json!({ "service": services::CATALOG.name })),
-        "listing.set" => set_listing(host, &req).await,
-        "listing.withdraw" => withdraw_listing(host, &req).await,
-        "listing.get" => get_listing(host, &req).await,
-        "listing.list" => list_listings(host, &req).await,
-        "listing.history" => listing_history(host, &req).await,
-        "listing.verify" => verify_listing(host, &req).await,
-        "listing.limits" => match load_publication_limits(host).await {
-            Ok(l) => Response::ok(json!(l)),
-            Err(e) => Response::internal_error(e),
-        },
-        "listing.set-limits" => set_limits(host, &req).await,
-        "availability.set" => availability_set(host, &req).await,
-        "availability.list" => availability_list(host, &req).await,
-        "availability.remove" => availability_remove(host, &req).await,
-        "catalog.export" => export(host).await,
-        "catalog.import" => import(host, &req).await,
-        other => Response::method_not_found(other),
-    }
-}
-
 async fn resolve_principal_and_owner<H: AppHost>(
     host: &H,
     now: u64,
@@ -295,11 +134,11 @@ async fn write_version<H: AppHost>(
     let next_count = prior.as_ref().map(|r| r.version_count).unwrap_or(0) + 1;
 
     if count_publication {
-        let limits = match load_publication_limits(host).await {
+        let limits = match limits::load_publication_limits(host).await {
             Ok(l) => l,
             Err(e) => return Response::internal_error(e),
         };
-        let prior_secs = match publication_secs_in_window(host, &limits, now).await {
+        let prior_secs = match limits::publication_secs_in_window(host, &limits, now).await {
             Ok(v) => v,
             Err(e) => return Response::internal_error(e),
         };
@@ -446,47 +285,6 @@ async fn write_version<H: AppHost>(
     }))
 }
 
-async fn publication_secs_in_window<H: AppHost>(
-    host: &H,
-    limits: &PublicationLimits,
-    now: u64,
-) -> Result<Vec<u64>, String> {
-    ensure_coll(host, PUBLICATIONS, &[idx("at_secs", IndexType::Numeric)]).await?;
-    let floor = now.saturating_sub(limits.window_secs);
-    // Filtered at the host rather than scanned and dropped in the guest.
-    // Still not an indexed scan -- the filter compiler binds the JSON
-    // path as a parameter, which SQLite will not match against an
-    // expression index -- but far fewer rows cross the host boundary.
-    let filter = json!({ "at_secs": { "$gt": floor } });
-    let mut out = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            PUBLICATIONS.to_string(),
-            QueryOptions {
-                filter: Some(filter.to_string()),
-                limit: Some(500),
-                cursor: cursor.clone(),
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        for r in page.records {
-            if let Ok(v) = serde_json::from_slice::<Value>(&r.payload)
-                && let Some(at) = v.get("at_secs").and_then(Value::as_u64)
-            {
-                out.push(at);
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(out)
-}
-
 async fn build_payload<H: AppHost>(
     host: &H,
     p: SetListingParams,
@@ -543,7 +341,7 @@ async fn build_payload<H: AppHost>(
     })
 }
 
-async fn set_listing<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(super) async fn set_listing<H: AppHost>(host: &H, req: &Request) -> Response {
     let now = clock::now_secs();
     let params: SetListingParams = match serde_json::from_value(req.params.clone()) {
         Ok(p) => p,
@@ -563,7 +361,7 @@ async fn set_listing<H: AppHost>(host: &H, req: &Request) -> Response {
     write_version(host, payload, true, now).await
 }
 
-async fn withdraw_listing<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(super) async fn withdraw_listing<H: AppHost>(host: &H, req: &Request) -> Response {
     let now = clock::now_secs();
     let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
         Some(id) => id.to_string(),
@@ -585,7 +383,7 @@ async fn withdraw_listing<H: AppHost>(host: &H, req: &Request) -> Response {
     write_version(host, payload, false, now).await
 }
 
-async fn get_listing<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(super) async fn get_listing<H: AppHost>(host: &H, req: &Request) -> Response {
     let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
         Some(id) => id,
         None => return Response::invalid_params("listing_id is required"),
@@ -603,7 +401,7 @@ async fn get_listing<H: AppHost>(host: &H, req: &Request) -> Response {
     }
 }
 
-async fn list_listings<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(super) async fn list_listings<H: AppHost>(host: &H, req: &Request) -> Response {
     if let Err(e) = ensure_listings(host).await {
         return Response::internal_error(e);
     }
@@ -663,7 +461,7 @@ async fn list_listings<H: AppHost>(host: &H, req: &Request) -> Response {
     Response::ok(json!({ "listings": out }))
 }
 
-async fn listing_history<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(super) async fn listing_history<H: AppHost>(host: &H, req: &Request) -> Response {
     let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
         Some(id) => id.to_string(),
         None => return Response::invalid_params("listing_id is required"),
@@ -730,7 +528,7 @@ async fn listing_history<H: AppHost>(host: &H, req: &Request) -> Response {
 /// `ListingVerdict` (record id, revocation status, issued-at, supersedes
 /// and the full payload), not a five-field subset; an underivable
 /// listing_id comes back as `verified: false`, not an internal error.
-async fn verify_listing<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(super) async fn verify_listing<H: AppHost>(host: &H, req: &Request) -> Response {
     let _ = host;
     let now = clock::now_secs();
     let env_val = match req.params.get("envelope") {
@@ -743,287 +541,4 @@ async fn verify_listing<H: AppHost>(host: &H, req: &Request) -> Response {
     };
     let verdict = listing::verify_envelope(&env_str, now);
     Response::ok(json!(verdict))
-}
-
-async fn set_limits<H: AppHost>(host: &H, req: &Request) -> Response {
-    let window_secs = match req.params.get("window_secs").and_then(Value::as_u64) {
-        Some(w) => w,
-        None => return Response::invalid_params("window_secs is required"),
-    };
-    let max_per_window = match req.params.get("max_per_window").and_then(Value::as_u64) {
-        Some(m) => m as u32,
-        None => return Response::invalid_params("max_per_window is required"),
-    };
-    let limits = PublicationLimits { window_secs, max_per_window };
-    if let Err(e) = limits.validate() {
-        return Response::invalid_params(e.to_string());
-    }
-    if let Err(e) = ensure_coll(host, SETTINGS, &[]).await {
-        return Response::internal_error(e);
-    }
-    let payload = match serde_json::to_vec(&limits) {
-        Ok(b) => b,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-    if let Err(e) = AppDataLayer::put(
-        host,
-        SETTINGS.to_string(),
-        RecordWriteValue { id: PUBLICATION_LIMITS_KEY.to_string(), payload },
-    )
-    .await
-    {
-        return Response::internal_error(e.to_string());
-    }
-    Response::ok(json!(limits))
-}
-
-fn slot_id(listing_id: &str, start_secs: u64, end_secs: u64) -> Result<String, String> {
-    content_digest(
-        SLOT_ID_PREFIX,
-        &json!({ "listing_id": listing_id, "start_secs": start_secs, "end_secs": end_secs }),
-    )
-    .map_err(|e| e.to_string())
-}
-
-async fn availability_set<H: AppHost>(host: &H, req: &Request) -> Response {
-    let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
-        Some(id) => id.to_string(),
-        None => return Response::invalid_params("listing_id is required"),
-    };
-    let slots: Vec<SlotInput> = match req.params.get("slots").cloned() {
-        Some(v) => match serde_json::from_value(v) {
-            Ok(s) => s,
-            Err(e) => return Response::invalid_params(format!("invalid slots: {e}")),
-        },
-        None => return Response::invalid_params("slots is required"),
-    };
-    if let Err(e) = ensure_availability(host).await {
-        return Response::internal_error(e);
-    }
-    let mut ids = Vec::new();
-    for s in slots {
-        if s.end_secs <= s.start_secs {
-            return Response::invalid_params("slot end_secs must be after start_secs");
-        }
-        let id = match slot_id(&listing_id, s.start_secs, s.end_secs) {
-            Ok(id) => id,
-            Err(e) => return Response::internal_error(e),
-        };
-        let row = json!({
-            "slot_id": id,
-            "listing_id": listing_id,
-            "start_secs": s.start_secs,
-            "end_secs": s.end_secs,
-            "capacity": s.capacity,
-        });
-        if let Err(e) = AppDataLayer::put(
-            host,
-            AVAILABILITY.to_string(),
-            RecordWriteValue {
-                id: id.clone(),
-                payload: serde_json::to_vec(&row).unwrap_or_default(),
-            },
-        )
-        .await
-        {
-            return Response::internal_error(e.to_string());
-        }
-        ids.push(id);
-    }
-    Response::ok(json!({ "listing_id": listing_id, "slot_ids": ids }))
-}
-
-async fn availability_list<H: AppHost>(host: &H, req: &Request) -> Response {
-    let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
-        Some(id) => id.to_string(),
-        None => return Response::invalid_params("listing_id is required"),
-    };
-    let from = req.params.get("from_secs").and_then(Value::as_u64);
-    let to = req.params.get("to_secs").and_then(Value::as_u64);
-    if let Err(e) = ensure_availability(host).await {
-        return Response::internal_error(e);
-    }
-    let rows = match collect(host, AVAILABILITY).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let mut slots: Vec<Value> = rows
-        .into_iter()
-        .filter_map(|r| r.get("payload").cloned())
-        .filter(|p| p.get("listing_id").and_then(Value::as_str) == Some(listing_id.as_str()))
-        .filter(|p| {
-            let start = p.get("start_secs").and_then(Value::as_u64).unwrap_or(0);
-            from.map(|f| start >= f).unwrap_or(true) && to.map(|t| start <= t).unwrap_or(true)
-        })
-        .collect();
-    slots.sort_by_key(|p| p.get("start_secs").and_then(Value::as_u64).unwrap_or(0));
-    Response::ok(json!({ "slots": slots }))
-}
-
-async fn availability_remove<H: AppHost>(host: &H, req: &Request) -> Response {
-    let slot_id = match req.params.get("slot_id").and_then(Value::as_str) {
-        Some(id) => id.to_string(),
-        None => return Response::invalid_params("slot_id is required"),
-    };
-    if let Err(e) = ensure_availability(host).await {
-        return Response::internal_error(e);
-    }
-    let existed = AppDataLayer::get(host, AVAILABILITY.to_string(), slot_id.clone())
-        .await
-        .map(|o| o.is_some())
-        .unwrap_or(false);
-    if existed && let Err(e) = AppDataLayer::delete(host, AVAILABILITY.to_string(), slot_id).await {
-        return Response::internal_error(e.to_string());
-    }
-    Response::ok(json!({ "removed": existed }))
-}
-
-async fn export<H: AppHost>(host: &H) -> Response {
-    let owner = match signing::owner_did(host).await {
-        Ok(o) => o,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-    let now = clock::now_secs();
-    if let Err(e) = ensure_listings(host).await {
-        return Response::internal_error(e);
-    }
-    if let Err(e) = ensure_availability(host).await {
-        return Response::internal_error(e);
-    }
-    let listings = match collect(host, LISTINGS).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let availability = match collect(host, AVAILABILITY).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let sections = BTreeMap::from([
-        (SECTION_LISTINGS.to_string(), listings),
-        (SECTION_AVAILABILITY.to_string(), availability),
-    ]);
-    let mut manifest_sections = BTreeMap::new();
-    for (k, v) in &sections {
-        match Bundle::digest(SCHEMA_VERSION, v) {
-            Ok(d) => {
-                manifest_sections.insert(k.clone(), d);
-            }
-            Err(e) => return Response::internal_error(e.to_string()),
-        }
-    }
-    let bundle = Bundle {
-        manifest: BundleManifest {
-            bundle_version: BUNDLE_VERSION,
-            produced_at_secs: now,
-            subject_did: owner,
-            sections: manifest_sections,
-        },
-        sections,
-    };
-    match serde_json::to_value(&bundle) {
-        Ok(v) => Response::ok(v),
-        Err(e) => Response::internal_error(e.to_string()),
-    }
-}
-
-async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
-    let bundle_val = match req.params.get("bundle").cloned().or_else(|| Some(req.params.clone())) {
-        Some(v) => v,
-        None => return Response::invalid_params("bundle is required"),
-    };
-    let bundle = match Bundle::from_json(&bundle_val.to_string()) {
-        Ok(b) => b,
-        Err(e) => return Response::invalid_params(format!("invalid bundle: {e}")),
-    };
-    if let Err(e) = bundle.check_integrity() {
-        return Response::invalid_params(e.to_string());
-    }
-    let owner = match signing::owner_did(host).await {
-        Ok(o) => o,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-    if bundle.manifest.subject_did != owner {
-        return Response::invalid_params(format!(
-            "bundle belongs to '{}', this node holds '{}'",
-            bundle.manifest.subject_did, owner
-        ));
-    }
-    for (name, declared) in &bundle.manifest.sections {
-        if declared.schema_version != SCHEMA_VERSION {
-            return Response::invalid_params(format!(
-                "section '{name}' has schema version {}, this node requires {SCHEMA_VERSION}",
-                declared.schema_version
-            ));
-        }
-    }
-
-    let now = clock::now_secs();
-    let mut prepared: Vec<(&'static str, Vec<Mutation>)> = Vec::new();
-    for (name, records) in &bundle.sections {
-        let collection = match name.as_str() {
-            SECTION_LISTINGS => LISTINGS,
-            SECTION_AVAILABILITY => AVAILABILITY,
-            other => return Response::invalid_params(format!("unknown section '{other}'")),
-        };
-        let mut muts = Vec::new();
-        for rec in records {
-            let id = match rec.get("id").and_then(Value::as_str) {
-                Some(i) => i.to_string(),
-                None => return Response::invalid_params("record missing id"),
-            };
-            let payload_val = match rec.get("payload") {
-                Some(p) => p.clone(),
-                None => return Response::invalid_params("record missing payload"),
-            };
-            if name == SECTION_LISTINGS {
-                let env_str = match payload_val.get("envelope").and_then(Value::as_str) {
-                    Some(s) => s,
-                    None => return Response::invalid_params("listing record missing envelope"),
-                };
-                let verified = match verify_json(env_str, &VerifyOptions::new(now)) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return Response::invalid_params(format!(
-                            "listing record '{id}' failed verification: {e}"
-                        ));
-                    }
-                };
-                if verified.record_type != RECORD_LISTING
-                    || verified.version != listing::LISTING_VERSION
-                {
-                    return Response::invalid_params("record is not a listing");
-                }
-                if verified.issuer != owner {
-                    return Response::invalid_params(format!(
-                        "listing record '{id}' was signed by '{}', not this node's owner",
-                        verified.issuer
-                    ));
-                }
-            }
-            let payload_bytes = match serde_json::to_vec(&payload_val) {
-                Ok(b) => b,
-                Err(e) => return Response::internal_error(e.to_string()),
-            };
-            muts.push(Mutation::Put(RecordWriteValue { id, payload: payload_bytes }));
-        }
-        prepared.push((collection, muts));
-    }
-
-    let mut counts = Map::new();
-    for (collection, muts) in prepared {
-        // Re-ensure the collection; indexes are added lazily on first
-        // regular write, so an import needs none of its own.
-        if let Err(e) = ensure_coll(host, collection, &[]).await {
-            return Response::internal_error(e);
-        }
-        counts.insert(collection.to_string(), json!(muts.len()));
-        for chunk in muts.chunks(100) {
-            if let Err(e) =
-                AppDataLayer::batch_mutate(host, collection.to_string(), chunk.to_vec()).await
-            {
-                return Response::internal_error(e.to_string());
-            }
-        }
-    }
-    Response::ok(json!({ "imported": counts }))
 }
