@@ -84,7 +84,7 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/roym_profile` | 0 | 0 | 1 | 1 | n/a | done | |
 | `crates/roym_conversation` | 0 | 0 | 1 | 0 | n/a | done | n/a |
 | `crates/client_gateway` | 0 | 0 | 1 | 1 | n/a | | |
-| `crates/app_host_native` | 1 | 0 | 1 | 1 | done | | |
+| `crates/app_host_native` | 1 | 0 | 1 | 1 | done | done | |
 | `crates/sandbox_podman` | 1 | 1 | 1 | 1 | done | | |
 | `crates/identity` | 2 | 0 | 0 | 0 | done | n/a | n/a |
 | `crates/chunk_transfer` | 1 | 0 | 0 | 0 | done | n/a | n/a |
