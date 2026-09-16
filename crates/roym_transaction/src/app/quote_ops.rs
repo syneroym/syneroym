@@ -3,13 +3,9 @@
 use std::cmp::Reverse;
 
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
-use syneroym_app_host::{
-    AppDataLayer, AppHost, AppSigning,
-    types::{data_layer::QueryOptions, signing::RecordDraft},
-};
+use serde_json::{Value, json};
+use syneroym_app_host::{AppHost, AppSigning, types::signing::RecordDraft};
 use syneroym_roym_core::{
-    card::{self, CARD_CONTENT_TYPE},
     clock,
     envelope::{Request, Response},
     record::{Envelope, RECORD_QUOTE},
@@ -22,8 +18,9 @@ use syneroym_roym_core::{
 
 use super::{
     AGREEMENTS, AgreementRow, ListParams, QUOTE_HISTORY, QUOTES, REQUEST_HISTORY, RecordPointerRow,
-    conversation_call, count_mine, ensure_collections, file_own_card, get_bytes, get_row,
-    put_bytes, put_row, resolve_principal_and_owner,
+    collect_record_history, collect_typed, conversation_mine_filter, count_mine,
+    ensure_collections, get_bytes, get_row, put_bytes, put_row, resolve_principal_and_owner,
+    send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -204,54 +201,16 @@ pub(crate) async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
         return Response::internal_error(e);
     }
 
-    let body = match card::card_body(RECORD_QUOTE, QUOTE_VERSION, &envelope_json) {
-        Ok(b) => b,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    let send_resp = conversation_call(
+    let (message_id, state, send_error) = send_card_and_file(
         host,
-        "conversation.send",
-        json!({
-            "conversation": conversation,
-            "body": body,
-            "content_type": CARD_CONTENT_TYPE,
-        }),
+        &conversation,
+        RECORD_QUOTE,
+        QUOTE_VERSION,
+        &envelope_json,
+        now,
+        Some(next_count),
     )
     .await;
-
-    let (message_id, state, sender_timestamp_ms, mut send_error) = match send_resp {
-        Ok(r) if r.error.is_none() => {
-            let res = r.result.unwrap_or(Value::Null);
-            let mid = res.get("message_id").and_then(Value::as_str).unwrap_or("").to_string();
-            let st = res.get("state").and_then(Value::as_str).unwrap_or("").to_string();
-            let ts =
-                res.get("sender_timestamp_ms").and_then(Value::as_i64).unwrap_or(now as i64 * 1000);
-            (mid, st, ts, None)
-        }
-        Ok(r) => {
-            let err_msg = r.error.map(|e| e.message).unwrap_or_else(|| "send error".to_string());
-            (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(err_msg))
-        }
-        Err(e) => (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(e)),
-    };
-
-    if !message_id.is_empty()
-        && let Err(e) = file_own_card(
-            host,
-            &message_id,
-            &conversation,
-            RECORD_QUOTE,
-            QUOTE_VERSION,
-            &envelope_json,
-            sender_timestamp_ms,
-            now,
-            Some(next_count),
-        )
-        .await
-    {
-        send_error = send_error.or(Some(format!("file own card failed: {e}")));
-    }
 
     let mut out = json!({
         "quote_id": quote_id,
@@ -311,39 +270,11 @@ pub(crate) async fn quote_list<H: AppHost>(host: &H, req: &Request) -> Response 
         return Response::internal_error(e);
     }
 
-    let mut filter_obj = Map::new();
-    if let Some(ref c) = params.conversation {
-        filter_obj.insert("conversation".to_string(), json!(c));
-    }
-    if let Some(m) = params.mine {
-        filter_obj.insert("mine".to_string(), json!(m));
-    }
-    let filter =
-        if filter_obj.is_empty() { None } else { Some(Value::Object(filter_obj).to_string()) };
-
-    let mut rows = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = match AppDataLayer::query(
-            host,
-            QUOTES.to_string(),
-            QueryOptions { filter: filter.clone(), limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => return Response::internal_error(e.to_string()),
-        };
-        for r in page.records {
-            if let Ok(p) = serde_json::from_slice::<RecordPointerRow>(&r.payload) {
-                rows.push(p);
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
+    let filter = conversation_mine_filter(params.conversation.as_deref(), params.mine);
+    let mut rows: Vec<RecordPointerRow> = match collect_typed(host, QUOTES, filter).await {
+        Ok(rows) => rows,
+        Err(e) => return e,
+    };
     rows.sort_by_key(|p| Reverse(p.updated_at_secs));
     let page: Vec<Value> = rows
         .into_iter()
@@ -379,45 +310,11 @@ pub(crate) async fn quote_history<H: AppHost>(host: &H, req: &Request) -> Respon
     if let Err(e) = ensure_collections(host).await {
         return Response::internal_error(e);
     }
-    let history_filter = json!({ "payload.quote_id": params.quote_id }).to_string();
-    let mut envelopes: Vec<(u64, String)> = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = match AppDataLayer::query(
-            host,
-            QUOTE_HISTORY.to_string(),
-            QueryOptions {
-                filter: Some(history_filter.clone()),
-                limit: Some(500),
-                cursor: cursor.clone(),
-            },
-        )
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => return Response::internal_error(e.to_string()),
-        };
-        for r in page.records {
-            let env_str = String::from_utf8_lossy(&r.payload).into_owned();
-            if let Ok(env) = Envelope::from_json(&env_str) {
-                let matches = env
-                    .payload
-                    .get("quote_id")
-                    .and_then(Value::as_str)
-                    .map(|id| id == params.quote_id)
-                    .unwrap_or(false);
-                if matches {
-                    envelopes.push((env.issued_at_secs, env_str));
-                }
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    envelopes.sort_by_key(|(t, _)| *t);
-    let out: Vec<Value> = envelopes.into_iter().map(|(_, e)| Value::String(e)).collect();
+    let out = match collect_record_history(host, QUOTE_HISTORY, "quote_id", &params.quote_id).await
+    {
+        Ok(out) => out,
+        Err(e) => return e,
+    };
     Response::ok(json!({ "history": out }))
 }
 

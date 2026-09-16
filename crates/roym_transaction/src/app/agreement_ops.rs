@@ -4,10 +4,7 @@ use std::cmp::Reverse;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use syneroym_app_host::{
-    AppDataLayer, AppHost, AppSigning,
-    types::{data_layer::QueryOptions, signing::RecordDraft},
-};
+use syneroym_app_host::{AppHost, AppSigning, types::signing::RecordDraft};
 use syneroym_roym_core::{
     card::{self, CARD_CONTENT_TYPE},
     clock,
@@ -21,8 +18,9 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, QUOTE_HISTORY, conversation_call, default_list_limit,
+    AGREEMENTS, AgreementRow, QUOTE_HISTORY, collect_typed, conversation_call, default_list_limit,
     ensure_collections, file_own_card, get_bytes, get_row, put_row, resolve_principal_and_owner,
+    send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -172,58 +170,16 @@ pub(crate) async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Res
         return Response::internal_error(e);
     }
 
-    let body = match card::card_body(
+    let (message_id, state, send_error) = send_card_and_file(
+        host,
+        &quote_payload.conversation,
         RECORD_AGREEMENT_RECEIPT,
         AGREEMENT_RECEIPT_VERSION,
         &envelope_json,
-    ) {
-        Ok(b) => b,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    let send_resp = conversation_call(
-        host,
-        "conversation.send",
-        json!({
-            "conversation": quote_payload.conversation,
-            "body": body,
-            "content_type": CARD_CONTENT_TYPE,
-        }),
+        now,
+        None,
     )
     .await;
-
-    let (message_id, state, sender_timestamp_ms, mut send_error) = match send_resp {
-        Ok(r) if r.error.is_none() => {
-            let res = r.result.unwrap_or(Value::Null);
-            let mid = res.get("message_id").and_then(Value::as_str).unwrap_or("").to_string();
-            let st = res.get("state").and_then(Value::as_str).unwrap_or("").to_string();
-            let ts =
-                res.get("sender_timestamp_ms").and_then(Value::as_i64).unwrap_or(now as i64 * 1000);
-            (mid, st, ts, None)
-        }
-        Ok(r) => {
-            let err_msg = r.error.map(|e| e.message).unwrap_or_else(|| "send error".to_string());
-            (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(err_msg))
-        }
-        Err(e) => (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(e)),
-    };
-
-    if !message_id.is_empty()
-        && let Err(e) = file_own_card(
-            host,
-            &message_id,
-            &quote_payload.conversation,
-            RECORD_AGREEMENT_RECEIPT,
-            AGREEMENT_RECEIPT_VERSION,
-            &envelope_json,
-            sender_timestamp_ms,
-            now,
-            None,
-        )
-        .await
-    {
-        send_error = send_error.or(Some(format!("file own card failed: {e}")));
-    }
 
     let pair = pair_state(row.consumer.as_ref(), row.provider.as_ref());
     let mut out = json!({
@@ -295,29 +251,10 @@ pub(crate) async fn agreement_list<H: AppHost>(host: &H, req: &Request) -> Respo
     }
 
     let filter = params.conversation.map(|c| json!({ "conversation": c }).to_string());
-    let mut rows = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = match AppDataLayer::query(
-            host,
-            AGREEMENTS.to_string(),
-            QueryOptions { filter: filter.clone(), limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => return Response::internal_error(e.to_string()),
-        };
-        for r in page.records {
-            if let Ok(a) = serde_json::from_slice::<AgreementRow>(&r.payload) {
-                rows.push(a);
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
+    let mut rows: Vec<AgreementRow> = match collect_typed(host, AGREEMENTS, filter).await {
+        Ok(rows) => rows,
+        Err(e) => return e,
+    };
     rows.sort_by_key(|a| Reverse(a.updated_at_secs));
     let page: Vec<Value> = rows
         .into_iter()
@@ -338,33 +275,6 @@ pub(crate) async fn agreement_list<H: AppHost>(host: &H, req: &Request) -> Respo
         })
         .collect();
     Response::ok(json!({ "agreements": page }))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RecordKind {
-    Request,
-    Quote,
-    AgreementReceipt,
-}
-
-pub(crate) async fn verify_verb<H: AppHost>(host: &H, req: &Request, kind: RecordKind) -> Response {
-    let _ = host;
-    let now = clock::now_secs();
-    let env_val = match req.params.get("envelope") {
-        Some(v) => v,
-        None => return Response::invalid_params("envelope is required"),
-    };
-    let env_str = match env_val {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    };
-    match kind {
-        RecordKind::Request => Response::ok(json!(transaction::verify_request(&env_str, now))),
-        RecordKind::Quote => Response::ok(json!(transaction::verify_quote(&env_str, now))),
-        RecordKind::AgreementReceipt => {
-            Response::ok(json!(transaction::verify_agreement_receipt(&env_str, now)))
-        }
-    }
 }
 
 pub(crate) async fn maybe_countersign<H: AppHost>(
