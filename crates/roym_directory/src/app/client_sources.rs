@@ -16,21 +16,21 @@ use syneroym_roym_core::{
 use super::{SOURCES, collect_raw, ensure_coll, put_json};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct SourceRow {
-    pub(crate) did: String,
-    pub(crate) label: String,
-    pub(crate) added_at_secs: u64,
+pub(in crate::app) struct SourceRow {
+    pub(in crate::app) did: String,
+    pub(in crate::app) label: String,
+    pub(in crate::app) added_at_secs: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) last_ok_secs: Option<u64>,
+    pub(in crate::app) last_ok_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) last_error: Option<SourceError>,
+    pub(in crate::app) last_error: Option<SourceError>,
 }
 
 /// One `directory.info` call at a chosen address, over the wire, with no
 /// side effect. What `add_source`'s own probe does; also its own verb, for
 /// a caller (`roymctl roym directory info`) that wants to read a
 /// directory's public statement without adding it as a source.
-pub(crate) async fn probe_info<H: AppHost>(host: &H, did: &str) -> Result<String, ProxyError> {
+async fn probe_info<H: AppHost>(host: &H, did: &str) -> Result<String, ProxyError> {
     let probe_params = json!({ "method": "directory.info", "params": {} }).to_string();
     host.call(
         CallTarget::Service(did.to_string()),
@@ -48,7 +48,7 @@ pub(crate) async fn probe_info<H: AppHost>(host: &H, did: &str) -> Result<String
     .await
 }
 
-pub(crate) async fn probe_info_verb<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(in crate::app) async fn probe_info_verb<H: AppHost>(host: &H, req: &Request) -> Response {
     let did = match req.params.get("did").and_then(Value::as_str) {
         Some(d) if !d.is_empty() => d.to_string(),
         _ => return Response::invalid_params("did is required"),
@@ -62,7 +62,7 @@ pub(crate) async fn probe_info_verb<H: AppHost>(host: &H, req: &Request) -> Resp
     }
 }
 
-pub(crate) async fn add_source<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(in crate::app) async fn add_source<H: AppHost>(host: &H, req: &Request) -> Response {
     let did = match req.params.get("did").and_then(Value::as_str) {
         Some(d) if !d.is_empty() => d.to_string(),
         _ => return Response::invalid_params("did is required"),
@@ -123,7 +123,7 @@ pub(crate) async fn add_source<H: AppHost>(host: &H, req: &Request) -> Response 
     Response::ok(json!({ "source": row, "probe": probe_note }))
 }
 
-pub(crate) async fn remove_source<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(in crate::app) async fn remove_source<H: AppHost>(host: &H, req: &Request) -> Response {
     let did = match req.params.get("did").and_then(Value::as_str) {
         Some(d) => d.to_string(),
         None => return Response::invalid_params("did is required"),
@@ -141,7 +141,7 @@ pub(crate) async fn remove_source<H: AppHost>(host: &H, req: &Request) -> Respon
     Response::ok(json!({ "removed": existed }))
 }
 
-pub(crate) async fn sources<H: AppHost>(host: &H) -> Response {
+pub(in crate::app) async fn sources<H: AppHost>(host: &H) -> Response {
     if let Err(e) = ensure_coll(host, SOURCES, &[]).await {
         return Response::internal_error(e);
     }
@@ -163,7 +163,7 @@ pub(crate) async fn sources<H: AppHost>(host: &H) -> Response {
 /// nothing beyond one outbound call. The caller is already this node's
 /// own owner (the verb is local-only), and the envelope comes from the
 /// local catalog, so there is no third party to protect here.
-pub(crate) async fn publish_to_source<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(in crate::app) async fn publish_to_source<H: AppHost>(host: &H, req: &Request) -> Response {
     let source = match req.params.get("source").and_then(Value::as_str) {
         Some(s) => s.to_string(),
         None => return Response::invalid_params("source is required"),

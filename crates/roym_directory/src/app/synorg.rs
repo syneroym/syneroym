@@ -9,16 +9,17 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    MEMBERS, SETTINGS, SETTINGS_KEY, collect_raw, ensure_coll, get_json,
-    publication_ops::prune_expired_publications, put_json,
+    MEMBERS, SETTINGS, SETTINGS_KEY, collect_raw, ensure_coll, get_json, publication_ops, put_json,
 };
 
-pub(crate) async fn load_settings<H: AppHost>(host: &H) -> Result<Option<SynOrgSettings>, String> {
+pub(in crate::app) async fn load_settings<H: AppHost>(
+    host: &H,
+) -> Result<Option<SynOrgSettings>, String> {
     ensure_coll(host, SETTINGS, &[]).await?;
     get_json(host, SETTINGS, SETTINGS_KEY).await
 }
 
-pub(crate) async fn get_settings<H: AppHost>(host: &H) -> Response {
+pub(in crate::app) async fn get_settings<H: AppHost>(host: &H) -> Response {
     match load_settings(host).await {
         Ok(Some(s)) => Response::ok(json!(s)),
         Ok(None) => Response::ok(Value::Null),
@@ -26,7 +27,7 @@ pub(crate) async fn get_settings<H: AppHost>(host: &H) -> Response {
     }
 }
 
-pub(crate) async fn set_settings<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(in crate::app) async fn set_settings<H: AppHost>(host: &H, req: &Request) -> Response {
     let settings: SynOrgSettings = match serde_json::from_value(req.params.clone()) {
         Ok(s) => s,
         Err(e) => return Response::invalid_params(format!("invalid settings: {e}")),
@@ -43,12 +44,12 @@ pub(crate) async fn set_settings<H: AppHost>(host: &H, req: &Request) -> Respons
     Response::ok(json!(settings))
 }
 
-pub(crate) async fn member_count<H: AppHost>(host: &H) -> Result<u64, String> {
+async fn member_count<H: AppHost>(host: &H) -> Result<u64, String> {
     ensure_coll(host, MEMBERS, &[]).await?;
     Ok(collect_raw(host, MEMBERS).await?.len() as u64)
 }
 
-pub(crate) async fn info<H: AppHost>(host: &H) -> Response {
+pub(in crate::app) async fn info<H: AppHost>(host: &H) -> Response {
     let settings = match load_settings(host).await {
         Ok(s) => s,
         Err(e) => return Response::internal_error(e),
@@ -61,7 +62,7 @@ pub(crate) async fn info<H: AppHost>(host: &H) -> Response {
     };
     // Best-effort: a retention prune that fails must not fail the probe a
     // stranger makes while deciding whether to trust this group.
-    let _ = prune_expired_publications(host, settings.retention_secs).await;
+    let _ = publication_ops::prune_expired_publications(host, settings.retention_secs).await;
     let count = match member_count(host).await {
         Ok(c) => c,
         Err(e) => return Response::internal_error(e),
@@ -78,7 +79,7 @@ pub(crate) async fn info<H: AppHost>(host: &H) -> Response {
     }))
 }
 
-pub(crate) async fn member_add<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(in crate::app) async fn member_add<H: AppHost>(host: &H, req: &Request) -> Response {
     let did = match req.params.get("did").and_then(Value::as_str) {
         Some(d) if !d.is_empty() => d.to_string(),
         _ => return Response::invalid_params("did is required"),
@@ -94,7 +95,7 @@ pub(crate) async fn member_add<H: AppHost>(host: &H, req: &Request) -> Response 
     Response::ok(json!(member))
 }
 
-pub(crate) async fn member_remove<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(in crate::app) async fn member_remove<H: AppHost>(host: &H, req: &Request) -> Response {
     let did = match req.params.get("did").and_then(Value::as_str) {
         Some(d) => d.to_string(),
         None => return Response::invalid_params("did is required"),
@@ -112,7 +113,7 @@ pub(crate) async fn member_remove<H: AppHost>(host: &H, req: &Request) -> Respon
     Response::ok(json!({ "removed": existed }))
 }
 
-pub(crate) async fn member_list<H: AppHost>(host: &H) -> Response {
+pub(in crate::app) async fn member_list<H: AppHost>(host: &H) -> Response {
     if let Err(e) = ensure_coll(host, MEMBERS, &[]).await {
         return Response::internal_error(e);
     }

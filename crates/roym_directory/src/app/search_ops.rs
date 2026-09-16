@@ -18,61 +18,49 @@ use syneroym_roym_core::{
 
 use super::{
     PUBLICATIONS, SEARCH_INDEX, collect_raw, ensure_coll, get_json,
-    publication_ops::{PublicationRow, prune_expired_publications},
-    put_json,
-    synorg::load_settings,
+    publication_ops::{self, PublicationRow},
+    put_json, serde_str, synorg,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct SearchIndexRow {
-    pub(crate) listing_id: String,
-    pub(crate) record_id: String,
-    pub(crate) area_index: u32,
-    pub(crate) issuer: String,
-    pub(crate) status: String,
-    pub(crate) issued_at_secs: u64,
-    pub(crate) received_at_secs: u64,
-    pub(crate) categories: String,
-    pub(crate) text: String,
+pub(in crate::app) struct SearchIndexRow {
+    pub(in crate::app) listing_id: String,
+    record_id: String,
+    pub(in crate::app) area_index: u32,
+    issuer: String,
+    status: String,
+    issued_at_secs: u64,
+    received_at_secs: u64,
+    categories: String,
+    text: String,
     /// Case-folded, trimmed label of this row's named service area, if it
     /// has one. Lets a named-area query push a label equality down into
     /// the host filter, the way a geometric query pushes its bounding
     /// box -- without it the sieve keeps the alphabetically-first rows and
     /// a late-hashing label can be truncated away to zero hits.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) area_label: Option<String>,
+    area_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) open_to: Option<String>,
+    open_to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) booking_mode: Option<String>,
+    booking_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) min_lat_e6: Option<i64>,
+    min_lat_e6: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) max_lat_e6: Option<i64>,
+    max_lat_e6: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) min_lon_e6: Option<i64>,
+    min_lon_e6: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) max_lon_e6: Option<i64>,
+    max_lon_e6: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) area: Option<Area>,
+    area: Option<Area>,
 }
 
-pub(crate) fn search_index_key(listing_id: &str, area_index: u32) -> String {
+pub(in crate::app) fn search_index_key(listing_id: &str, area_index: u32) -> String {
     format!("{listing_id}#{area_index}")
 }
 
-/// A value's own serde wire spelling (e.g. `existing-customers`, not
-/// `Debug`'s `ExistingCustomers`) -- the shape every enum here declares
-/// with `#[serde(rename_all = "kebab-case")]`, and the shape a caller
-/// filters on. `{:?}` and `.to_lowercase()` agree only for single-word
-/// variants; a multi-word one indexes under a string nothing else in the
-/// product ever produces, and a query for the documented value silently
-/// matches nothing.
-pub(crate) fn serde_str<T: Serialize>(v: &T) -> String {
-    serde_json::to_value(v).ok().and_then(|j| j.as_str().map(str::to_string)).unwrap_or_default()
-}
-
-pub(crate) fn build_index_rows(
+pub(in crate::app) fn build_index_rows(
     payload: &listing::ListingPayload,
     record_id: &str,
     issuer: &str,
@@ -159,7 +147,7 @@ fn area_match_precedence(m: &AreaMatch) -> u8 {
     }
 }
 
-pub(crate) async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
     let query: SearchQuery = match serde_json::from_value(req.params.clone()) {
         Ok(q) => q,
         Err(e) => return Response::invalid_params(format!("invalid query: {e}")),
@@ -214,8 +202,8 @@ pub(crate) async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
     // so an anonymous stranger looping this verb pays one indexed marker
     // read, not a pair of delete scans, on all but one call per five
     // minutes -- and a directory nobody probes with `info` still ages out.
-    if let Ok(Some(settings)) = load_settings(host).await {
-        let _ = prune_expired_publications(host, settings.retention_secs).await;
+    if let Ok(Some(settings)) = synorg::load_settings(host).await {
+        let _ = publication_ops::prune_expired_publications(host, settings.retention_secs).await;
     }
 
     let mut and_clauses: Vec<Value> = vec![json!({ "status": "active" })];
@@ -403,7 +391,7 @@ pub(crate) async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
     }))
 }
 
-pub(crate) async fn reindex<H: AppHost>(host: &H) -> Response {
+pub(in crate::app) async fn reindex<H: AppHost>(host: &H) -> Response {
     match rebuild_search_index(host).await {
         Ok(rebuilt) => Response::ok(json!({ "rebuilt": rebuilt })),
         Err(e) => Response::internal_error(e),
@@ -416,7 +404,7 @@ pub(crate) async fn reindex<H: AppHost>(host: &H) -> Response {
 /// projection from it, so `directory.search` would answer zero hits for
 /// listings that are demonstrably present until an owner happened to
 /// notice and reindex by hand.
-pub(crate) async fn rebuild_search_index<H: AppHost>(host: &H) -> Result<u64, String> {
+pub(in crate::app) async fn rebuild_search_index<H: AppHost>(host: &H) -> Result<u64, String> {
     ensure_coll(host, SEARCH_INDEX, &[]).await?;
     AppDataLayer::delete_many(host, SEARCH_INDEX.to_string(), json!({}).to_string())
         .await

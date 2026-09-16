@@ -9,6 +9,7 @@
 //! verified.
 
 pub mod backup;
+pub mod client_merge;
 pub mod client_query;
 pub mod client_sources;
 pub mod publication_ops;
@@ -18,7 +19,7 @@ pub mod synorg;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use syneroym_app_host::{
-    AppDataLayer, AppHost,
+    AppDataLayer, AppHost, AppSigning,
     types::data_layer::{
         CollectionSchema, IndexDefinition, IndexType, QueryOptions, RecordWriteValue,
     },
@@ -46,7 +47,7 @@ pub const RUNS: &str = "runs";
 /// would skew the importing node's prune schedule.
 pub const NODE_STATE: &str = "node_state";
 
-pub(crate) const SETTINGS_KEY: &str = "synorg";
+pub(in crate::app) const SETTINGS_KEY: &str = "synorg";
 
 /// The three methods a foreign node may reach. `directory.search` and
 /// `directory.info` admit a stranger with no identity at all -- reading
@@ -67,7 +68,7 @@ pub async fn status<H: AppHost>(_host: &H) -> Result<String, String> {
     .to_string())
 }
 
-pub(crate) async fn ensure_coll<H: AppHost>(
+pub(in crate::app) async fn ensure_coll<H: AppHost>(
     host: &H,
     name: &str,
     indexes: &[IndexDefinition],
@@ -80,7 +81,7 @@ pub(crate) async fn ensure_coll<H: AppHost>(
     .map_err(|e| e.to_string())
 }
 
-pub(crate) fn idx(field: &str, ty: IndexType) -> IndexDefinition {
+pub(in crate::app) fn idx(field: &str, ty: IndexType) -> IndexDefinition {
     IndexDefinition { field_name: field.to_string(), type_: ty }
 }
 
@@ -88,13 +89,13 @@ pub(crate) fn idx(field: &str, ty: IndexType) -> IndexDefinition {
 /// `merge` and `run-envelope` narrow on; `at_secs` is the field
 /// `start-run` prunes by. Both halves of the service that touch this
 /// collection create it with the same indexes.
-pub(crate) fn search_runs_indexes() -> [IndexDefinition; 2] {
+pub(in crate::app) fn search_runs_indexes() -> [IndexDefinition; 2] {
     [idx("run_id", IndexType::String), idx("at_secs", IndexType::Numeric)]
 }
 
 /// Every row of `collection`, oldest write order, paging until the
 /// data-layer's own cursor answers `None`.
-pub(crate) async fn collect_raw<H: AppHost>(
+pub(in crate::app) async fn collect_raw<H: AppHost>(
     host: &H,
     collection: &str,
 ) -> Result<Vec<(String, Value)>, String> {
@@ -124,7 +125,7 @@ pub(crate) async fn collect_raw<H: AppHost>(
 /// Every row of `collection` whose stored JSON matches `filter`, paging
 /// the data-layer cursor. The filter runs at the host, so a large
 /// collection is never materialized whole in guest memory.
-pub(crate) async fn collect_raw_where<H: AppHost>(
+pub(in crate::app) async fn collect_raw_where<H: AppHost>(
     host: &H,
     collection: &str,
     filter: &Value,
@@ -156,7 +157,10 @@ pub(crate) async fn collect_raw_where<H: AppHost>(
     Ok(out)
 }
 
-pub(crate) async fn collect<H: AppHost>(host: &H, collection: &str) -> Result<Vec<Value>, String> {
+pub(in crate::app) async fn collect<H: AppHost>(
+    host: &H,
+    collection: &str,
+) -> Result<Vec<Value>, String> {
     Ok(collect_raw(host, collection)
         .await?
         .into_iter()
@@ -164,7 +168,7 @@ pub(crate) async fn collect<H: AppHost>(host: &H, collection: &str) -> Result<Ve
         .collect())
 }
 
-pub(crate) async fn put_json<H: AppHost>(
+pub(in crate::app) async fn put_json<H: AppHost>(
     host: &H,
     collection: &str,
     id: &str,
@@ -180,7 +184,7 @@ pub(crate) async fn put_json<H: AppHost>(
     .map_err(|e| e.to_string())
 }
 
-pub(crate) async fn get_json<H: AppHost, T: for<'de> Deserialize<'de>>(
+pub(in crate::app) async fn get_json<H: AppHost, T: for<'de> Deserialize<'de>>(
     host: &H,
     collection: &str,
     id: &str,
@@ -192,6 +196,24 @@ pub(crate) async fn get_json<H: AppHost, T: for<'de> Deserialize<'de>>(
         Some(r) => serde_json::from_slice(&r.payload).map(Some).map_err(|e| e.to_string()),
         None => Ok(None),
     }
+}
+
+pub(in crate::app) async fn owner_did_or_node<H: AppHost>(host: &H) -> String {
+    match AppSigning::signing_identity(host).await {
+        Ok(id) => id.owner_did.unwrap_or(id.signing_did),
+        Err(_) => String::new(),
+    }
+}
+
+/// A value's own serde wire spelling (e.g. `existing-customers`, not
+/// `Debug`'s `ExistingCustomers`) -- the shape every enum here declares
+/// with `#[serde(rename_all = "kebab-case")]`, and the shape a caller
+/// filters on. `{:?}` and `.to_lowercase()` agree only for single-word
+/// variants; a multi-word one indexes under a string nothing else in the
+/// product ever produces, and a query for the documented value silently
+/// matches nothing.
+pub(in crate::app) fn serde_str<T: Serialize>(v: &T) -> String {
+    serde_json::to_value(v).ok().and_then(|j| j.as_str().map(str::to_string)).unwrap_or_default()
 }
 
 pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
@@ -228,8 +250,12 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
         "directory.sources" => client_sources::sources(host).await,
         "directory.start-run" => client_query::start_run(host).await,
         "directory.query-source" => client_query::query_source(host, &req).await,
-        "directory.merge" => client_query::merge(host, &req).await,
-        "directory.run-envelope" => client_query::run_envelope(host, &req).await,
+        "directory.merge" => client_merge::merge(host, &req).await,
+        "directory.run-envelope" => client_merge::run_envelope(host, &req).await,
+        // Not `publication_ops::publish` -- this fetches one of this
+        // node's own catalog listings and calls `directory.publish` on a
+        // remote source; `publication_ops::publish` is the inbound side
+        // that remote call lands on.
         "directory.publish-to-source" => client_sources::publish_to_source(host, &req).await,
         other => Response::method_not_found(other),
     }

@@ -15,25 +15,22 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    NODE_STATE, PUBLICATION_LOG, PUBLICATIONS, SEARCH_INDEX, SETTINGS, SETTINGS_KEY,
-    backup::owner_did_or_node,
-    collect_raw, ensure_coll, get_json, idx, put_json,
-    search_ops::{build_index_rows, search_index_key},
-    synorg::load_settings,
+    NODE_STATE, PUBLICATION_LOG, PUBLICATIONS, SEARCH_INDEX, SETTINGS, SETTINGS_KEY, collect_raw,
+    ensure_coll, get_json, idx, owner_did_or_node, put_json, search_ops, synorg,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct PublicationRow {
-    pub(crate) envelope: String,
-    pub(crate) record_id: String,
-    pub(crate) listing_id: String,
-    pub(crate) issuer: String,
-    pub(crate) published_by: String,
+pub(in crate::app) struct PublicationRow {
+    pub(in crate::app) envelope: String,
+    pub(in crate::app) record_id: String,
+    pub(in crate::app) listing_id: String,
+    pub(in crate::app) issuer: String,
+    pub(in crate::app) published_by: String,
     /// The envelope's own signed clock -- never the directory's
     /// `received_at_secs` -- so a later publish can tell whether an
     /// incoming envelope is actually newer.
-    pub(crate) issued_at_secs: u64,
-    pub(crate) received_at_secs: u64,
+    pub(in crate::app) issued_at_secs: u64,
+    pub(in crate::app) received_at_secs: u64,
 }
 
 const PRUNE_MARKER_KEY: &str = "prune_marker";
@@ -43,10 +40,10 @@ const PRUNE_MARKER_KEY: &str = "prune_marker";
 /// cannot turn every call into a pair of unindexed delete scans.
 const PRUNE_MIN_INTERVAL_SECS: u64 = 300;
 
-pub(crate) async fn load_publication_limits<H: AppHost>(
+pub(in crate::app) async fn load_publication_limits<H: AppHost>(
     host: &H,
 ) -> Result<PublicationLimits, String> {
-    match load_settings(host).await? {
+    match synorg::load_settings(host).await? {
         Some(s) => Ok(s.publication_limits),
         None => Ok(PublicationLimits::default()),
     }
@@ -103,10 +100,7 @@ async fn publication_secs_in_window<H: AppHost>(
 /// Deletes every `search_index` row for `listing_id`, whatever `area_index`
 /// values it holds -- the fix for the stale-row bug a republish with fewer
 /// areas would otherwise leave behind.
-pub(crate) async fn delete_search_index_for<H: AppHost>(
-    host: &H,
-    listing_id: &str,
-) -> Result<(), String> {
+async fn delete_search_index_for<H: AppHost>(host: &H, listing_id: &str) -> Result<(), String> {
     ensure_coll(host, SEARCH_INDEX, &[]).await?;
     AppDataLayer::delete_many(
         host,
@@ -118,7 +112,11 @@ pub(crate) async fn delete_search_index_for<H: AppHost>(
     .map_err(|e| e.to_string())
 }
 
-pub(crate) async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller) -> Response {
+pub(in crate::app) async fn publish<H: AppHost>(
+    host: &H,
+    req: &Request,
+    caller: Caller,
+) -> Response {
     // A local dispatch (this node's own owner, through the Hub or
     // `roymctl`, or a same-node `directory.publish-to-source` loopback)
     // arrives `Caller::Internal` -- `admit()` short-circuits to it
@@ -175,7 +173,7 @@ pub(crate) async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller)
     // `directory.publish` must refuse rather than silently accept a
     // stranger's bytes onto a disk with no stated retention policy to
     // bound them.
-    let settings = match load_settings(host).await {
+    let settings = match synorg::load_settings(host).await {
         Ok(Some(s)) => s,
         Ok(None) => {
             return Response::invalid_params("this installation runs no SynOrg yet");
@@ -346,8 +344,8 @@ pub(crate) async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller)
     if let Err(e) = delete_search_index_for(host, &payload.listing_id).await {
         return Response::internal_error(e);
     }
-    for row in build_index_rows(&payload, &record_id, &issuer, issued_at_secs, now) {
-        let key = search_index_key(&row.listing_id, row.area_index);
+    for row in search_ops::build_index_rows(&payload, &record_id, &issuer, issued_at_secs, now) {
+        let key = search_ops::search_index_key(&row.listing_id, row.area_index);
         if let Err(e) = put_json(host, SEARCH_INDEX, &key, &row).await {
             return Response::internal_error(e);
         }
@@ -363,7 +361,7 @@ pub(crate) async fn publish<H: AppHost>(host: &H, req: &Request, caller: Caller)
 /// anonymous-reachable ones and a quiet directory still ages its rows
 /// out. `publish` prunes unconditionally instead: that path is
 /// owner-gated and already writing.
-pub(crate) async fn prune_expired_publications<H: AppHost>(
+pub(in crate::app) async fn prune_expired_publications<H: AppHost>(
     host: &H,
     retention_secs: u64,
 ) -> Result<(), String> {
@@ -384,7 +382,7 @@ pub(crate) async fn prune_expired_publications<H: AppHost>(
 
 /// The prune itself, with no rate gate -- the publish path calls this
 /// directly in the pass that already touches these collections.
-pub(crate) async fn prune_expired_publications_now<H: AppHost>(
+async fn prune_expired_publications_now<H: AppHost>(
     host: &H,
     retention_secs: u64,
     now: u64,
@@ -424,7 +422,7 @@ async fn load_publication_for_listing<H: AppHost>(
     Ok(None)
 }
 
-pub(crate) async fn unpublish<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(in crate::app) async fn unpublish<H: AppHost>(host: &H, req: &Request) -> Response {
     let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
         Some(id) => id.to_string(),
         None => return Response::invalid_params("listing_id is required"),
@@ -447,11 +445,11 @@ pub(crate) async fn unpublish<H: AppHost>(host: &H, req: &Request) -> Response {
     Response::ok(json!({ "listing_id": listing_id, "unpublished": true }))
 }
 
-pub(crate) async fn publications<H: AppHost>(host: &H) -> Response {
+pub(in crate::app) async fn publications<H: AppHost>(host: &H) -> Response {
     if let Err(e) = ensure_coll(host, PUBLICATIONS, &[]).await {
         return Response::internal_error(e);
     }
-    if let Ok(Some(settings)) = load_settings(host).await {
+    if let Ok(Some(settings)) = synorg::load_settings(host).await {
         let _ = prune_expired_publications(host, settings.retention_secs).await;
     }
     match collect_raw(host, PUBLICATIONS).await {
@@ -462,7 +460,7 @@ pub(crate) async fn publications<H: AppHost>(host: &H) -> Response {
     }
 }
 
-pub(crate) async fn set_limits<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(in crate::app) async fn set_limits<H: AppHost>(host: &H, req: &Request) -> Response {
     let window_secs = match req.params.get("window_secs").and_then(Value::as_u64) {
         Some(w) => w,
         None => return Response::invalid_params("window_secs is required"),
@@ -475,7 +473,7 @@ pub(crate) async fn set_limits<H: AppHost>(host: &H, req: &Request) -> Response 
     if let Err(e) = limits.validate() {
         return Response::invalid_params(e.to_string());
     }
-    let mut settings = match load_settings(host).await {
+    let mut settings = match synorg::load_settings(host).await {
         Ok(Some(s)) => s,
         Ok(None) => return Response::invalid_params("this installation runs no SynOrg yet"),
         Err(e) => return Response::internal_error(e),

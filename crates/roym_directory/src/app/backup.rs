@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
 use syneroym_app_host::{
-    AppDataLayer, AppHost, AppSigning,
+    AppDataLayer, AppHost,
     types::data_layer::{Mutation, RecordWriteValue},
 };
 use syneroym_roym_core::{
@@ -19,17 +19,10 @@ use syneroym_roym_core::{
 
 use super::{
     MEMBERS, PUBLICATION_LOG, PUBLICATIONS, SCHEMA_VERSION, SETTINGS, SOURCES, collect,
-    ensure_coll, search_ops::rebuild_search_index,
+    ensure_coll, owner_did_or_node, search_ops,
 };
 
-pub(crate) async fn owner_did_or_node<H: AppHost>(host: &H) -> String {
-    match AppSigning::signing_identity(host).await {
-        Ok(id) => id.owner_did.unwrap_or(id.signing_did),
-        Err(_) => String::new(),
-    }
-}
-
-pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
+pub(in crate::app) async fn export<H: AppHost>(host: &H) -> Response {
     let subject = owner_did_or_node(host).await;
     let now = clock::now_secs();
     for c in [SETTINGS, MEMBERS, PUBLICATIONS, PUBLICATION_LOG, SOURCES] {
@@ -88,7 +81,7 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     }
 }
 
-pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(in crate::app) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
     let bundle_val = match req.params.get("bundle").cloned().or_else(|| Some(req.params.clone())) {
         Some(v) => v,
         None => return Response::invalid_params("bundle is required"),
@@ -173,7 +166,7 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
     // `search_index` is derived from `publications`, and nothing else
     // populates it -- an import that skipped this would leave a fresh
     // node answering zero hits for listings it demonstrably holds.
-    let rebuilt = match rebuild_search_index(host).await {
+    let rebuilt = match search_ops::rebuild_search_index(host).await {
         Ok(n) => n,
         Err(e) => return Response::internal_error(e),
     };
