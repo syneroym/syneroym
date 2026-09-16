@@ -17,7 +17,7 @@ fn slot_id(listing_id: &str, start_secs: u64, end_secs: u64) -> Result<String, S
     .map_err(|e| e.to_string())
 }
 
-pub(super) async fn availability_set<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn availability_set<H: AppHost>(host: &H, req: &Request) -> Response {
     let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
         Some(id) => id.to_string(),
         None => return Response::invalid_params("listing_id is required"),
@@ -65,7 +65,7 @@ pub(super) async fn availability_set<H: AppHost>(host: &H, req: &Request) -> Res
     Response::ok(json!({ "listing_id": listing_id, "slot_ids": ids }))
 }
 
-pub(super) async fn availability_list<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn availability_list<H: AppHost>(host: &H, req: &Request) -> Response {
     let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
         Some(id) => id.to_string(),
         None => return Response::invalid_params("listing_id is required"),
@@ -92,7 +92,7 @@ pub(super) async fn availability_list<H: AppHost>(host: &H, req: &Request) -> Re
     Response::ok(json!({ "slots": slots }))
 }
 
-pub(super) async fn availability_remove<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn availability_remove<H: AppHost>(host: &H, req: &Request) -> Response {
     let slot_id = match req.params.get("slot_id").and_then(Value::as_str) {
         Some(id) => id.to_string(),
         None => return Response::invalid_params("slot_id is required"),

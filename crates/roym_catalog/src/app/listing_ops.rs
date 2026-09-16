@@ -341,7 +341,7 @@ async fn build_payload<H: AppHost>(
     })
 }
 
-pub(super) async fn set_listing<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn set_listing<H: AppHost>(host: &H, req: &Request) -> Response {
     let now = clock::now_secs();
     let params: SetListingParams = match serde_json::from_value(req.params.clone()) {
         Ok(p) => p,
@@ -361,7 +361,7 @@ pub(super) async fn set_listing<H: AppHost>(host: &H, req: &Request) -> Response
     write_version(host, payload, true, now).await
 }
 
-pub(super) async fn withdraw_listing<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn withdraw_listing<H: AppHost>(host: &H, req: &Request) -> Response {
     let now = clock::now_secs();
     let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
         Some(id) => id.to_string(),
@@ -383,7 +383,7 @@ pub(super) async fn withdraw_listing<H: AppHost>(host: &H, req: &Request) -> Res
     write_version(host, payload, false, now).await
 }
 
-pub(super) async fn get_listing<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn get_listing<H: AppHost>(host: &H, req: &Request) -> Response {
     let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
         Some(id) => id,
         None => return Response::invalid_params("listing_id is required"),
@@ -401,7 +401,7 @@ pub(super) async fn get_listing<H: AppHost>(host: &H, req: &Request) -> Response
     }
 }
 
-pub(super) async fn list_listings<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn list_listings<H: AppHost>(host: &H, req: &Request) -> Response {
     if let Err(e) = ensure_listings(host).await {
         return Response::internal_error(e);
     }
@@ -461,7 +461,7 @@ pub(super) async fn list_listings<H: AppHost>(host: &H, req: &Request) -> Respon
     Response::ok(json!({ "listings": out }))
 }
 
-pub(super) async fn listing_history<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn listing_history<H: AppHost>(host: &H, req: &Request) -> Response {
     let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
         Some(id) => id.to_string(),
         None => return Response::invalid_params("listing_id is required"),
@@ -528,7 +528,7 @@ pub(super) async fn listing_history<H: AppHost>(host: &H, req: &Request) -> Resp
 /// `ListingVerdict` (record id, revocation status, issued-at, supersedes
 /// and the full payload), not a five-field subset; an underivable
 /// listing_id comes back as `verified: false`, not an internal error.
-pub(super) async fn verify_listing<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn verify_listing<H: AppHost>(host: &H, req: &Request) -> Response {
     let _ = host;
     let now = clock::now_secs();
     let env_val = match req.params.get("envelope") {

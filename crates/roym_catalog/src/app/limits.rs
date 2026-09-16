@@ -54,7 +54,7 @@ pub(crate) async fn publication_secs_in_window<H: AppHost>(
     Ok(out)
 }
 
-pub(super) async fn set_limits<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn set_limits<H: AppHost>(host: &H, req: &Request) -> Response {
     let window_secs = match req.params.get("window_secs").and_then(Value::as_u64) {
         Some(w) => w,
         None => return Response::invalid_params("window_secs is required"),

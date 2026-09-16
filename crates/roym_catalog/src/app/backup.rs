@@ -26,7 +26,7 @@ pub(crate) async fn collect<H: AppHost>(host: &H, collection: &str) -> Result<Ve
     Ok(out)
 }
 
-pub(super) async fn export<H: AppHost>(host: &H) -> Response {
+pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
         Err(e) => return Response::internal_error(e.to_string()),
@@ -74,7 +74,7 @@ pub(super) async fn export<H: AppHost>(host: &H) -> Response {
     }
 }
 
-pub(super) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
     let bundle_val = match req.params.get("bundle").cloned().or_else(|| Some(req.params.clone())) {
         Some(v) => v,
         None => return Response::invalid_params("bundle is required"),
