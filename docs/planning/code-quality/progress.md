@@ -59,7 +59,7 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/router` | 120 | 27 | 5 | 12 | done | done | |
 | `crates/substrate` | 110 | 28 | 1 | 29 | done | done | |
 | `crates/sdk` | 101 | 47 | 4 | 3 | done | done | |
-| `crates/sandbox_wasm` | 90 | 16 | 3 | 6 | done | | |
+| `crates/sandbox_wasm` | 90 | 16 | 3 | 6 | done | done | |
 | `crates/core` | 75 | 37 | 3 | 0 | done | done | |
 | `apps/roymctl` | 69 | 37 | 4 | 9 | done | done | |
 | `crates/app_orchestration` | 49 | 22 | 2 | 2 | done | done | |
@@ -81,7 +81,7 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/auth` | 0 | 0 | 1 | 3 | n/a | | |
 | `crates/roym_core` | 0 | 0 | 2 | 0 | n/a | done | n/a |
 | `crates/roym_catalog` | 0 | 0 | 1 | 1 | n/a | done | |
-| `crates/roym_profile` | 0 | 0 | 1 | 1 | n/a | | |
+| `crates/roym_profile` | 0 | 0 | 1 | 1 | n/a | done | |
 | `crates/roym_conversation` | 0 | 0 | 1 | 0 | n/a | | n/a |
 | `crates/client_gateway` | 0 | 0 | 1 | 1 | n/a | | |
 | `crates/app_host_native` | 1 | 0 | 1 | 1 | done | | |
