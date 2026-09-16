@@ -195,30 +195,12 @@ async fn file_incoming_card<H: AppHost>(
 
     let body = match m.get("body").and_then(Value::as_str) {
         Some(b) => b,
-        None => {
-            row.reason = Some("no body".to_string());
-            put_row(host, CARDS, &msg_id, &row).await?;
-            return Ok(FileCardResult {
-                filed: true,
-                refused: true,
-                unknown: false,
-                countersigned: false,
-            });
-        }
+        None => return refuse_card(host, &msg_id, row, "no body").await,
     };
 
     let card = match card::parse_card(body) {
         Ok(c) => c,
-        Err(e) => {
-            row.reason = Some(e.to_string());
-            put_row(host, CARDS, &msg_id, &row).await?;
-            return Ok(FileCardResult {
-                filed: true,
-                refused: true,
-                unknown: false,
-                countersigned: false,
-            });
-        }
+        Err(e) => return refuse_card(host, &msg_id, row, e.to_string()).await,
     };
 
     row.card_type = card.card_type.clone();
@@ -236,307 +218,213 @@ async fn file_incoming_card<H: AppHost>(
 
     match card.card_type.as_str() {
         "request" => {
-            let v = transaction::verify_request(&card.envelope, now);
-            if !v.verified {
-                row.reason = v.reason.or_else(|| Some("request does not verify".to_string()));
-                put_row(host, CARDS, &msg_id, &row).await?;
-                return Ok(FileCardResult {
-                    filed: true,
-                    refused: true,
-                    unknown: false,
-                    countersigned: false,
-                });
-            }
-            let payload = match v.payload.as_ref() {
-                Some(p) => p,
-                None => {
-                    row.reason = Some("missing payload".to_string());
-                    put_row(host, CARDS, &msg_id, &row).await?;
-                    return Ok(FileCardResult {
-                        filed: true,
-                        refused: true,
-                        unknown: false,
-                        countersigned: false,
-                    });
-                }
-            };
-            if payload.conversation != conversation {
-                row.reason = Some("card names another conversation".to_string());
-                put_row(host, CARDS, &msg_id, &row).await?;
-                return Ok(FileCardResult {
-                    filed: true,
-                    refused: true,
-                    unknown: false,
-                    countersigned: false,
-                });
-            }
-            let version_count =
-                match store_received_request(host, &card.envelope, &v, payload, now, owner).await {
-                    Ok(vc) => vc,
-                    Err(e) => {
-                        row.reason = Some(e);
-                        put_row(host, CARDS, &msg_id, &row).await?;
-                        return Ok(FileCardResult {
-                            filed: true,
-                            refused: true,
-                            unknown: false,
-                            countersigned: false,
-                        });
-                    }
-                };
-            row.verified = true;
-            row.version_count = Some(version_count);
-            row.data = Some(serde_json::to_value(payload).unwrap_or(Value::Null));
-            row.issuer = v.issuer;
-            row.record_id = v.record_id;
-            row.revocation_status = v.revocation_status;
-            put_row(host, CARDS, &msg_id, &row).await?;
-            Ok(FileCardResult { filed: true, refused: false, unknown: false, countersigned: false })
+            file_request_card(host, &msg_id, row, &card.envelope, conversation, now, owner).await
         }
         "quote" => {
-            let v = transaction::verify_quote(&card.envelope, now);
-            if !v.verified {
-                row.reason = v.reason.or_else(|| Some("quote does not verify".to_string()));
-                put_row(host, CARDS, &msg_id, &row).await?;
-                return Ok(FileCardResult {
-                    filed: true,
-                    refused: true,
-                    unknown: false,
-                    countersigned: false,
-                });
-            }
-            let payload = match v.payload.as_ref() {
-                Some(p) => p,
-                None => {
-                    row.reason = Some("missing payload".to_string());
-                    put_row(host, CARDS, &msg_id, &row).await?;
-                    return Ok(FileCardResult {
-                        filed: true,
-                        refused: true,
-                        unknown: false,
-                        countersigned: false,
-                    });
-                }
-            };
-            if payload.conversation != conversation {
-                row.reason = Some("card names another conversation".to_string());
-                put_row(host, CARDS, &msg_id, &row).await?;
-                return Ok(FileCardResult {
-                    filed: true,
-                    refused: true,
-                    unknown: false,
-                    countersigned: false,
-                });
-            }
-            let req_bytes =
-                match get_bytes(host, REQUEST_HISTORY, &payload.request_record_id).await? {
-                    Some(b) => b,
-                    None => {
-                        row.reason = Some("answers a request this node does not hold".to_string());
-                        put_row(host, CARDS, &msg_id, &row).await?;
-                        return Ok(FileCardResult {
-                            filed: true,
-                            refused: true,
-                            unknown: false,
-                            countersigned: false,
-                        });
-                    }
-                };
-            let req_str = match String::from_utf8(req_bytes) {
-                Ok(s) => s,
-                Err(_) => {
-                    row.reason = Some("stored request envelope is invalid utf8".to_string());
-                    put_row(host, CARDS, &msg_id, &row).await?;
-                    return Ok(FileCardResult {
-                        filed: true,
-                        refused: true,
-                        unknown: false,
-                        countersigned: false,
-                    });
-                }
-            };
-            let req_v = transaction::verify_request(&req_str, now);
-            if !req_v.verified || req_v.issuer.as_deref() != Some(payload.consumer_did.as_str()) {
-                row.reason = Some("quote consumer_did does not match request issuer".to_string());
-                put_row(host, CARDS, &msg_id, &row).await?;
-                return Ok(FileCardResult {
-                    filed: true,
-                    refused: true,
-                    unknown: false,
-                    countersigned: false,
-                });
-            }
-            let version_count =
-                match store_received_quote(host, &card.envelope, &v, payload, now, owner).await {
-                    Ok(vc) => vc,
-                    Err(e) => {
-                        row.reason = Some(e);
-                        put_row(host, CARDS, &msg_id, &row).await?;
-                        return Ok(FileCardResult {
-                            filed: true,
-                            refused: true,
-                            unknown: false,
-                            countersigned: false,
-                        });
-                    }
-                };
-            row.verified = true;
-            row.expired = v.expired;
-            row.version_count = Some(version_count);
-            row.data = Some(serde_json::to_value(payload).unwrap_or(Value::Null));
-            row.issuer = v.issuer;
-            row.record_id = v.record_id;
-            row.revocation_status = v.revocation_status;
-            put_row(host, CARDS, &msg_id, &row).await?;
-            Ok(FileCardResult { filed: true, refused: false, unknown: false, countersigned: false })
+            file_quote_card(host, &msg_id, row, &card.envelope, conversation, now, owner).await
         }
         "agreement-receipt" => {
-            let v = transaction::verify_agreement_receipt(&card.envelope, now);
-            if !v.verified {
-                row.reason =
-                    v.reason.or_else(|| Some("agreement receipt does not verify".to_string()));
-                put_row(host, CARDS, &msg_id, &row).await?;
-                return Ok(FileCardResult {
-                    filed: true,
-                    refused: true,
-                    unknown: false,
-                    countersigned: false,
-                });
-            }
-            let payload = match v.payload.as_ref() {
-                Some(p) => p,
-                None => {
-                    row.reason = Some("missing payload".to_string());
-                    put_row(host, CARDS, &msg_id, &row).await?;
-                    return Ok(FileCardResult {
-                        filed: true,
-                        refused: true,
-                        unknown: false,
-                        countersigned: false,
-                    });
-                }
-            };
-            let q_bytes = match get_bytes(host, QUOTE_HISTORY, &payload.quote_record_id).await? {
-                Some(b) => b,
-                None => {
-                    row.reason = Some("attests a quote this node does not hold".to_string());
-                    put_row(host, CARDS, &msg_id, &row).await?;
-                    return Ok(FileCardResult {
-                        filed: true,
-                        refused: true,
-                        unknown: false,
-                        countersigned: false,
-                    });
-                }
-            };
-            let q_str = match String::from_utf8(q_bytes) {
-                Ok(s) => s,
-                Err(_) => {
-                    row.reason = Some("stored quote envelope is invalid utf8".to_string());
-                    put_row(host, CARDS, &msg_id, &row).await?;
-                    return Ok(FileCardResult {
-                        filed: true,
-                        refused: true,
-                        unknown: false,
-                        countersigned: false,
-                    });
-                }
-            };
-            let qv = transaction::verify_quote(&q_str, now);
-            if !qv.verified {
-                row.reason = Some("the quote it attests does not verify".to_string());
-                put_row(host, CARDS, &msg_id, &row).await?;
-                return Ok(FileCardResult {
-                    filed: true,
-                    refused: true,
-                    unknown: false,
-                    countersigned: false,
-                });
-            }
-            let q_payload = match qv.payload.as_ref() {
-                Some(qp) => qp,
-                None => {
-                    row.reason = Some("quote missing payload".to_string());
-                    put_row(host, CARDS, &msg_id, &row).await?;
-                    return Ok(FileCardResult {
-                        filed: true,
-                        refused: true,
-                        unknown: false,
-                        countersigned: false,
-                    });
-                }
-            };
-            if q_payload.terms != payload.terms {
-                row.reason = Some("terms differ from the quote".to_string());
-                put_row(host, CARDS, &msg_id, &row).await?;
-                return Ok(FileCardResult {
-                    filed: true,
-                    refused: true,
-                    unknown: false,
-                    countersigned: false,
-                });
-            }
-            if payload.consumer_did != q_payload.consumer_did
-                || payload.provider_did != qv.issuer.as_deref().unwrap_or("")
-            {
-                row.reason = Some("names the wrong parties".to_string());
-                put_row(host, CARDS, &msg_id, &row).await?;
-                return Ok(FileCardResult {
-                    filed: true,
-                    refused: true,
-                    unknown: false,
-                    countersigned: false,
-                });
-            }
-            let issued_at = v.issued_at_secs.unwrap_or(0);
-            if issued_at >= payload.terms.quote_expires_at_secs {
-                row.reason = Some("accepted after the quote expired".to_string());
-                put_row(host, CARDS, &msg_id, &row).await?;
-                return Ok(FileCardResult {
-                    filed: true,
-                    refused: true,
-                    unknown: false,
-                    countersigned: false,
-                });
-            }
-            let mut row_agr: AgreementRow =
-                match get_row(host, AGREEMENTS, &payload.quote_record_id).await? {
-                    Some(r) => r,
-                    None => AgreementRow {
-                        quote_record_id: payload.quote_record_id.clone(),
-                        conversation: conversation.to_string(),
-                        consumer_did: payload.consumer_did.clone(),
-                        provider_did: payload.provider_did.clone(),
-                        terms: q_payload.terms.clone(),
-                        consumer: None,
-                        provider: None,
-                        updated_at_secs: now,
-                    },
-                };
-            if row_agr.half(payload.role).is_none() {
-                let half = ReceiptHalf {
-                    envelope: card.envelope.clone(),
-                    record_id: v.record_id.clone().unwrap_or_default(),
-                    issuer: v.issuer.clone().unwrap_or_default(),
-                    issued_at_secs: issued_at,
-                };
-                row_agr.set_half(payload.role, half);
-                row_agr.updated_at_secs = now;
-                put_row(host, AGREEMENTS, &payload.quote_record_id, &row_agr).await?;
-            }
-            row.verified = true;
-            row.data = Some(serde_json::to_value(payload).unwrap_or(Value::Null));
-            row.issuer = v.issuer;
-            row.record_id = v.record_id;
-            row.revocation_status = v.revocation_status;
-            put_row(host, CARDS, &msg_id, &row).await?;
-            let countersigned = maybe_countersign(host, &mut row_agr, &qv, now, owner).await?;
-            Ok(FileCardResult { filed: true, refused: false, unknown: false, countersigned })
+            file_agreement_receipt_card(
+                host,
+                &msg_id,
+                row,
+                &card.envelope,
+                conversation,
+                now,
+                owner,
+            )
+            .await
         }
         _ => {
-            row.reason = Some("a known card type with no producer in this build".to_string());
-            put_row(host, CARDS, &msg_id, &row).await?;
-            Ok(FileCardResult { filed: true, refused: true, unknown: false, countersigned: false })
+            refuse_card(host, &msg_id, row, "a known card type with no producer in this build")
+                .await
         }
     }
+}
+
+/// Stores `row` with `reason` and reports it as filed-but-refused.
+async fn refuse_card<H: AppHost>(
+    host: &H,
+    msg_id: &str,
+    mut row: CardRow,
+    reason: impl Into<String>,
+) -> Result<FileCardResult, String> {
+    row.reason = Some(reason.into());
+    put_row(host, CARDS, msg_id, &row).await?;
+    Ok(FileCardResult { filed: true, refused: true, unknown: false, countersigned: false })
+}
+
+async fn file_request_card<H: AppHost>(
+    host: &H,
+    msg_id: &str,
+    mut row: CardRow,
+    envelope: &str,
+    conversation: &str,
+    now: u64,
+    owner: &str,
+) -> Result<FileCardResult, String> {
+    let v = transaction::verify_request(envelope, now);
+    if !v.verified {
+        let reason = v.reason.unwrap_or_else(|| "request does not verify".to_string());
+        return refuse_card(host, msg_id, row, reason).await;
+    }
+    let payload = match v.payload.as_ref() {
+        Some(p) => p,
+        None => return refuse_card(host, msg_id, row, "missing payload").await,
+    };
+    if payload.conversation != conversation {
+        return refuse_card(host, msg_id, row, "card names another conversation").await;
+    }
+    let version_count = match store_received_request(host, envelope, &v, payload, now, owner).await
+    {
+        Ok(vc) => vc,
+        Err(e) => return refuse_card(host, msg_id, row, e).await,
+    };
+    row.verified = true;
+    row.version_count = Some(version_count);
+    row.data = Some(serde_json::to_value(payload).unwrap_or(Value::Null));
+    row.issuer = v.issuer;
+    row.record_id = v.record_id;
+    row.revocation_status = v.revocation_status;
+    put_row(host, CARDS, msg_id, &row).await?;
+    Ok(FileCardResult { filed: true, refused: false, unknown: false, countersigned: false })
+}
+
+async fn file_quote_card<H: AppHost>(
+    host: &H,
+    msg_id: &str,
+    mut row: CardRow,
+    envelope: &str,
+    conversation: &str,
+    now: u64,
+    owner: &str,
+) -> Result<FileCardResult, String> {
+    let v = transaction::verify_quote(envelope, now);
+    if !v.verified {
+        let reason = v.reason.unwrap_or_else(|| "quote does not verify".to_string());
+        return refuse_card(host, msg_id, row, reason).await;
+    }
+    let payload = match v.payload.as_ref() {
+        Some(p) => p,
+        None => return refuse_card(host, msg_id, row, "missing payload").await,
+    };
+    if payload.conversation != conversation {
+        return refuse_card(host, msg_id, row, "card names another conversation").await;
+    }
+    let req_bytes = match get_bytes(host, REQUEST_HISTORY, &payload.request_record_id).await? {
+        Some(b) => b,
+        None => {
+            return refuse_card(host, msg_id, row, "answers a request this node does not hold")
+                .await;
+        }
+    };
+    let req_str = match String::from_utf8(req_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            return refuse_card(host, msg_id, row, "stored request envelope is invalid utf8").await;
+        }
+    };
+    let req_v = transaction::verify_request(&req_str, now);
+    if !req_v.verified || req_v.issuer.as_deref() != Some(payload.consumer_did.as_str()) {
+        return refuse_card(host, msg_id, row, "quote consumer_did does not match request issuer")
+            .await;
+    }
+    let version_count = match store_received_quote(host, envelope, &v, payload, now, owner).await {
+        Ok(vc) => vc,
+        Err(e) => return refuse_card(host, msg_id, row, e).await,
+    };
+    row.verified = true;
+    row.expired = v.expired;
+    row.version_count = Some(version_count);
+    row.data = Some(serde_json::to_value(payload).unwrap_or(Value::Null));
+    row.issuer = v.issuer;
+    row.record_id = v.record_id;
+    row.revocation_status = v.revocation_status;
+    put_row(host, CARDS, msg_id, &row).await?;
+    Ok(FileCardResult { filed: true, refused: false, unknown: false, countersigned: false })
+}
+
+async fn file_agreement_receipt_card<H: AppHost>(
+    host: &H,
+    msg_id: &str,
+    mut row: CardRow,
+    envelope: &str,
+    conversation: &str,
+    now: u64,
+    owner: &str,
+) -> Result<FileCardResult, String> {
+    let v = transaction::verify_agreement_receipt(envelope, now);
+    if !v.verified {
+        let reason = v.reason.unwrap_or_else(|| "agreement receipt does not verify".to_string());
+        return refuse_card(host, msg_id, row, reason).await;
+    }
+    let payload = match v.payload.as_ref() {
+        Some(p) => p,
+        None => return refuse_card(host, msg_id, row, "missing payload").await,
+    };
+    let q_bytes = match get_bytes(host, QUOTE_HISTORY, &payload.quote_record_id).await? {
+        Some(b) => b,
+        None => {
+            return refuse_card(host, msg_id, row, "attests a quote this node does not hold").await;
+        }
+    };
+    let q_str = match String::from_utf8(q_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            return refuse_card(host, msg_id, row, "stored quote envelope is invalid utf8").await;
+        }
+    };
+    let qv = transaction::verify_quote(&q_str, now);
+    if !qv.verified {
+        return refuse_card(host, msg_id, row, "the quote it attests does not verify").await;
+    }
+    let q_payload = match qv.payload.as_ref() {
+        Some(qp) => qp,
+        None => return refuse_card(host, msg_id, row, "quote missing payload").await,
+    };
+    if q_payload.terms != payload.terms {
+        return refuse_card(host, msg_id, row, "terms differ from the quote").await;
+    }
+    if payload.consumer_did != q_payload.consumer_did
+        || payload.provider_did != qv.issuer.as_deref().unwrap_or("")
+    {
+        return refuse_card(host, msg_id, row, "names the wrong parties").await;
+    }
+    let issued_at = v.issued_at_secs.unwrap_or(0);
+    if issued_at >= payload.terms.quote_expires_at_secs {
+        return refuse_card(host, msg_id, row, "accepted after the quote expired").await;
+    }
+    let mut row_agr: AgreementRow =
+        match get_row(host, AGREEMENTS, &payload.quote_record_id).await? {
+            Some(r) => r,
+            None => AgreementRow {
+                quote_record_id: payload.quote_record_id.clone(),
+                conversation: conversation.to_string(),
+                consumer_did: payload.consumer_did.clone(),
+                provider_did: payload.provider_did.clone(),
+                terms: q_payload.terms.clone(),
+                consumer: None,
+                provider: None,
+                updated_at_secs: now,
+            },
+        };
+    if row_agr.half(payload.role).is_none() {
+        let half = ReceiptHalf {
+            envelope: envelope.to_string(),
+            record_id: v.record_id.clone().unwrap_or_default(),
+            issuer: v.issuer.clone().unwrap_or_default(),
+            issued_at_secs: issued_at,
+        };
+        row_agr.set_half(payload.role, half);
+        row_agr.updated_at_secs = now;
+        put_row(host, AGREEMENTS, &payload.quote_record_id, &row_agr).await?;
+    }
+    row.verified = true;
+    row.data = Some(serde_json::to_value(payload).unwrap_or(Value::Null));
+    row.issuer = v.issuer;
+    row.record_id = v.record_id;
+    row.revocation_status = v.revocation_status;
+    put_row(host, CARDS, msg_id, &row).await?;
+    let countersigned = maybe_countersign(host, &mut row_agr, &qv, now, owner).await?;
+    Ok(FileCardResult { filed: true, refused: false, unknown: false, countersigned })
 }

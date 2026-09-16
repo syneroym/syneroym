@@ -8,7 +8,7 @@ pub mod sync;
 pub mod thread;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost,
     types::{
@@ -21,15 +21,15 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     admit,
+    card::{self, CARD_CONTENT_TYPE},
+    clock,
     conversation::Direction,
     envelope::{Request, Response},
     record::Envelope,
     services,
     signing::{self, CertificateError},
-    transaction::{AgreedTerms, ReceiptHalf, Role},
+    transaction::{self, AgreedTerms, ReceiptHalf, Role},
 };
-
-use self::agreement_ops::RecordKind;
 
 // Schema version 2: the service gains its first state.
 pub const SCHEMA_VERSION: u32 = 2;
@@ -169,21 +169,19 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
         "request.get" => request_ops::request_get(host, &req).await,
         "request.list" => request_ops::request_list(host, &req).await,
         "request.history" => request_ops::request_history(host, &req).await,
-        "request.verify" => agreement_ops::verify_verb(host, &req, RecordKind::Request).await,
+        "request.verify" => verify_verb(host, &req, RecordKind::Request).await,
 
         "quote.set" => quote_ops::quote_set(host, &req).await,
         "quote.get" => quote_ops::quote_get(host, &req).await,
         "quote.list" => quote_ops::quote_list(host, &req).await,
         "quote.history" => quote_ops::quote_history(host, &req).await,
-        "quote.verify" => agreement_ops::verify_verb(host, &req, RecordKind::Quote).await,
+        "quote.verify" => verify_verb(host, &req, RecordKind::Quote).await,
         "quote.decline" => quote_ops::quote_decline(host, &req).await,
 
         "agreement.accept" => agreement_ops::agreement_accept(host, &req).await,
         "agreement.get" => agreement_ops::agreement_get(host, &req).await,
         "agreement.list" => agreement_ops::agreement_list(host, &req).await,
-        "agreement.verify" => {
-            agreement_ops::verify_verb(host, &req, RecordKind::AgreementReceipt).await
-        }
+        "agreement.verify" => verify_verb(host, &req, RecordKind::AgreementReceipt).await,
 
         "transaction.sync" => sync::sync(host, &req).await,
         "transaction.thread" => thread::thread(host, &req).await,
@@ -220,6 +218,33 @@ pub(crate) async fn resolve_principal_and_owner<H: AppHost>(
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     Ok((principal, owner))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecordKind {
+    Request,
+    Quote,
+    AgreementReceipt,
+}
+
+async fn verify_verb<H: AppHost>(host: &H, req: &Request, kind: RecordKind) -> Response {
+    let _ = host;
+    let now = clock::now_secs();
+    let env_val = match req.params.get("envelope") {
+        Some(v) => v,
+        None => return Response::invalid_params("envelope is required"),
+    };
+    let env_str = match env_val {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    match kind {
+        RecordKind::Request => Response::ok(json!(transaction::verify_request(&env_str, now))),
+        RecordKind::Quote => Response::ok(json!(transaction::verify_quote(&env_str, now))),
+        RecordKind::AgreementReceipt => {
+            Response::ok(json!(transaction::verify_agreement_receipt(&env_str, now)))
+        }
+    }
 }
 
 async fn ensure_coll<H: AppHost>(
@@ -452,4 +477,168 @@ pub(crate) async fn file_own_card<H: AppHost>(
         version_count,
     };
     put_row(host, CARDS, message_id, &card_row).await
+}
+
+/// Sends a record as a card on `conversation`, then files this node's own
+/// copy of that card under the message id the send returned. A send or
+/// file-own-card failure is reported back as `send_error` rather than
+/// aborting: the signed record is already durably stored by the caller, so
+/// the record exists here either way and only the notification/own-card
+/// bookkeeping is at risk.
+pub(crate) async fn send_card_and_file<H: AppHost>(
+    host: &H,
+    conversation: &str,
+    card_type: &str,
+    version: u32,
+    envelope_json: &str,
+    now: u64,
+    version_count: Option<u64>,
+) -> (String, String, Option<String>) {
+    let body = match card::card_body(card_type, version, envelope_json) {
+        Ok(b) => b,
+        Err(e) => return (String::new(), "not-sent".to_string(), Some(e.to_string())),
+    };
+
+    let send_resp = conversation_call(
+        host,
+        "conversation.send",
+        json!({ "conversation": conversation, "body": body, "content_type": CARD_CONTENT_TYPE }),
+    )
+    .await;
+
+    let (message_id, state, sender_timestamp_ms, mut send_error) = match send_resp {
+        Ok(r) if r.error.is_none() => {
+            let res = r.result.unwrap_or(Value::Null);
+            let mid = res.get("message_id").and_then(Value::as_str).unwrap_or("").to_string();
+            let st = res.get("state").and_then(Value::as_str).unwrap_or("").to_string();
+            let ts =
+                res.get("sender_timestamp_ms").and_then(Value::as_i64).unwrap_or(now as i64 * 1000);
+            (mid, st, ts, None)
+        }
+        Ok(r) => {
+            let err_msg = r.error.map(|e| e.message).unwrap_or_else(|| "send error".to_string());
+            (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(err_msg))
+        }
+        Err(e) => (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(e)),
+    };
+
+    if !message_id.is_empty()
+        && let Err(e) = file_own_card(
+            host,
+            &message_id,
+            conversation,
+            card_type,
+            version,
+            envelope_json,
+            sender_timestamp_ms,
+            now,
+            version_count,
+        )
+        .await
+    {
+        send_error = send_error.or(Some(format!("file own card failed: {e}")));
+    }
+
+    (message_id, state, send_error)
+}
+
+/// Builds a `{"conversation": ..., "mine": ...}`-shaped filter from whichever
+/// of the two a list endpoint's params supplied, or no filter at all.
+pub(crate) fn conversation_mine_filter(
+    conversation: Option<&str>,
+    mine: Option<bool>,
+) -> Option<String> {
+    let mut filter_obj = Map::new();
+    if let Some(c) = conversation {
+        filter_obj.insert("conversation".to_string(), json!(c));
+    }
+    if let Some(m) = mine {
+        filter_obj.insert("mine".to_string(), json!(m));
+    }
+    if filter_obj.is_empty() { None } else { Some(Value::Object(filter_obj).to_string()) }
+}
+
+/// Pages through `collection` under `filter`, deserializing every record as
+/// `T` and skipping any that fail to parse.
+pub(crate) async fn collect_typed<H: AppHost, T: for<'a> Deserialize<'a>>(
+    host: &H,
+    collection: &str,
+    filter: Option<String>,
+) -> Result<Vec<T>, Response> {
+    let mut rows = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = match AppDataLayer::query(
+            host,
+            collection.to_string(),
+            QueryOptions { filter: filter.clone(), limit: Some(500), cursor: cursor.clone() },
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => return Err(Response::internal_error(e.to_string())),
+        };
+        for r in page.records {
+            if let Ok(row) = serde_json::from_slice::<T>(&r.payload) {
+                rows.push(row);
+            }
+        }
+        if page.next_cursor.is_none() || page.next_cursor == cursor {
+            break;
+        }
+        cursor = page.next_cursor;
+    }
+    Ok(rows)
+}
+
+/// Pages through `collection`, keeping every envelope whose payload's
+/// `id_field` equals `id_value`, sorted oldest to newest.
+pub(crate) async fn collect_record_history<H: AppHost>(
+    host: &H,
+    collection: &str,
+    id_field: &str,
+    id_value: &str,
+) -> Result<Vec<Value>, Response> {
+    let mut filter_obj = Map::new();
+    filter_obj.insert(format!("payload.{id_field}"), json!(id_value));
+    let history_filter = Value::Object(filter_obj).to_string();
+
+    let mut envelopes: Vec<(u64, String)> = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = match AppDataLayer::query(
+            host,
+            collection.to_string(),
+            QueryOptions {
+                filter: Some(history_filter.clone()),
+                limit: Some(500),
+                cursor: cursor.clone(),
+            },
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => return Err(Response::internal_error(e.to_string())),
+        };
+        for r in page.records {
+            let env_str = String::from_utf8_lossy(&r.payload).into_owned();
+            if let Ok(env) = Envelope::from_json(&env_str) {
+                let matches = env
+                    .payload
+                    .get(id_field)
+                    .and_then(Value::as_str)
+                    .map(|id| id == id_value)
+                    .unwrap_or(false);
+                if matches {
+                    envelopes.push((env.issued_at_secs, env_str));
+                }
+            }
+        }
+        if page.next_cursor.is_none() || page.next_cursor == cursor {
+            break;
+        }
+        cursor = page.next_cursor;
+    }
+    envelopes.sort_by_key(|(t, _)| *t);
+    Ok(envelopes.into_iter().map(|(_, e)| Value::String(e)).collect())
 }
