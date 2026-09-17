@@ -32,9 +32,9 @@ mod upload_session;
 // Real service ids are DIDs (e.g. `did:key:...`), which contain colons;
 // `:` is not a path separator on any Rust-supported OS. Mirrors the same
 // fix already applied to `SqliteStorageProvider::SERVICE_ID_REGEX` in
-// `crates/data_db/src/sqlite.rs` (discovered as a latent bug in Slice
-// 3A). Neither this charset nor the hash charset below permits `.` or `/`,
-// so path traversal is structurally impossible from validated input --
+// `crates/data_db/src/sqlite.rs`. Neither this charset nor the hash charset
+// below permits `.` or `/`, so path traversal is structurally impossible
+// from validated input --
 // stronger than a runtime `Path::join` + `starts_with` check (which is
 // still applied for the `LocalFileSystem` backend below as defense in
 // depth, but is not the primary guard).
