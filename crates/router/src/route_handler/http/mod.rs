@@ -30,7 +30,7 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
-use futures::{TryStreamExt, stream};
+use futures::{SinkExt, Stream, StreamExt, TryStreamExt, stream};
 use http_body_util::{
     BodyExt, Full, LengthLimitError, Limited, StreamBody, combinators::UnsyncBoxBody,
 };
@@ -41,7 +41,8 @@ use hyper::{
         ACCEPT, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderName, HeaderValue,
         IF_NONE_MATCH, RETRY_AFTER, X_CONTENT_TYPE_OPTIONS,
     },
-    service,
+    service, upgrade,
+    upgrade::Upgraded,
 };
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},
@@ -58,17 +59,19 @@ use syneroym_data_blob::{
     crypto,
     native_types::{OpenDownloadResponse, ReadChunkResponse},
 };
-use syneroym_mqtt_broker::namespace_topic;
+use syneroym_mqtt_broker::{SubscriptionHandle, namespace_topic};
 use syneroym_rpc::{
     AuthLevel, CallerContext, JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest,
-    PROXY_TRANSPORT_RPC_CODE, UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
+    NativeHttpService, PROXY_TRANSPORT_RPC_CODE, UNSUPPORTED_PROTOCOL_RPC_CODE,
+    UNSUPPORTED_TARGET_RPC_CODE, WebSocketReceiver, WebSocketSenders,
 };
 use syneroym_sandbox_wasm::{
     AppSandboxEngine, FrameKind, GuestHttpFailure, GuestHttpOutcome, StreamRequestOutcome,
 };
 use tokio::{
     io::{self as tokio_io, AsyncRead, AsyncReadExt, AsyncWrite},
-    sync::{Semaphore, oneshot},
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
+    task::JoinHandle,
 };
 use tokio_tungstenite::{
     WebSocketStream,

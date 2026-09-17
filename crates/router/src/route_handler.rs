@@ -234,37 +234,19 @@ impl Debug for RouteHandlerDeps {
 }
 
 impl RouteHandler {
-    pub async fn init(
-        service_id: String,
+    /// Builds the Universal Proxy and the per-service call-dedup fence it
+    /// is wired with. The outbox and saga store it also wires in
+    /// (`with_outbox`/`with_sagas`) are not returned -- `init` never reads
+    /// them again once `proxy` exists, they only need to be reachable
+    /// through the proxy's own dispatch.
+    fn build_proxy(
         config: &SubstrateConfig,
-        registry: EndpointRegistry,
-        secret_key: [u8; 32],
-        iroh_endpoint: Option<Endpoint>,
-        deps: RouteHandlerDeps,
-    ) -> Result<Self> {
-        let identity = Arc::new(Identity::from_bytes(&secret_key));
-
-        let parent_coordinator_url =
-            config.parent_coordinator.iroh.as_ref().map(|cfg| cfg.url.clone());
-
-        let registry_client = Arc::new(RegistryClient::new(
-            config.substrate.enable_bep0044_dht,
-            config.substrate.registry_url.clone(),
-        ));
-
-        let max_connections = config
-            .roles
-            .coordinator
-            .as_ref()
-            .and_then(|c| c.iroh.as_ref())
-            .and_then(|i| i.max_connections);
-
-        // The Universal Proxy. Built here, before `inner`,
-        // so its `Weak` handles can be downgraded from the still-owned
-        // `deps.native_dispatch`/`deps.app_sandbox_engine` Arcs -- `Weak`,
-        // never a second strong ref, matching the `RouteHandlerInner ->
-        // ProxyRouter -> AppSandboxEngine -> ProxyRouter` cycle avoidance
-        // documented on `RouteHandlerInner::proxy`.
+        registry: &EndpointRegistry,
+        registry_client: &Arc<RegistryClient>,
+        identity: &Arc<Identity>,
+        iroh_endpoint: Option<&Endpoint>,
+        deps: &RouteHandlerDeps,
+    ) -> (Arc<ProxyRouter>, Arc<CallDedupGuard>) {
         // The fence a keyed call meets, whichever entry point it arrives
         // through. Its windows are derived from the outbox's own retry
         // budget rather than separately configured: a TTL shorter than the
@@ -307,7 +289,7 @@ impl RouteHandler {
                 registry_client.clone(),
                 Arc::downgrade(&deps.native_dispatch),
                 Arc::downgrade(&deps.app_sandbox_engine),
-                Arc::new(IrohHop::new(iroh_endpoint.clone(), config.retry.clone())),
+                Arc::new(IrohHop::new(iroh_endpoint.cloned(), config.retry.clone())),
                 identity.clone(),
                 config.retry.clone(),
             )
@@ -315,62 +297,111 @@ impl RouteHandler {
             .with_outbox(outbox.clone())
             .with_sagas(sagas.clone()),
         );
+
+        (proxy, dedup_guard)
+    }
+
+    /// Wires `AppSandboxEngine` as the row-authorizer `ControlPlaneService`'s
+    /// stage-4 ABAC after-step needs (ADR-0017 §7) -- `AppSandboxEngine` is
+    /// the sole `RowAuthorizer` implementation. Same two-phase `OnceLock`
+    /// wiring as `service_proxy` (the engine already exists by construction
+    /// time; only the native-dispatch side needs the handle threaded in
+    /// post-construction). A no-op when there is no real control plane
+    /// (e.g. a test harness with a fake `control_plane_service`).
+    fn wire_row_authorizer(
+        control_plane: Option<&Arc<ControlPlaneService>>,
+        app_sandbox_engine: &Arc<AppSandboxEngine>,
+    ) -> Result<()> {
+        let Some(control_plane) = control_plane else { return Ok(()) };
+        control_plane
+            .row_authorizer
+            .set(Arc::downgrade(app_sandbox_engine) as Weak<dyn RowAuthorizer>)
+            .map_err(|_| anyhow::anyhow!("ControlPlaneService::row_authorizer set more than once"))
+    }
+
+    /// Wires `ControlPlaneService`'s own proxy handle (its cross-service
+    /// relationship-proof fetch needs it at deploy time) and the
+    /// `proxy-*`/`sagas`/`saga-compensate` operator verbs' combined queue
+    /// state -- same two-phase wiring as `AppSandboxEngine`'s in
+    /// `wire_row_authorizer`, for the identical ordering reason
+    /// (`ProxyRouter` doesn't exist yet when either service is
+    /// constructed). A no-op when there is no real control plane (e.g. a
+    /// test harness with a fake `control_plane_service` that never deploys
+    /// a real FDAE-policy service through it).
+    fn wire_control_plane_proxy(
+        control_plane: Option<&Arc<ControlPlaneService>>,
+        proxy: &Arc<ProxyRouter>,
+    ) -> Result<()> {
+        let Some(control_plane) = control_plane else { return Ok(()) };
+        control_plane.service_proxy.set(Arc::downgrade(proxy) as Weak<dyn ServiceProxy>).map_err(
+            |_| anyhow::anyhow!("ControlPlaneService::service_proxy set more than once"),
+        )?;
+        // The `proxy-*`/`sagas`/`saga-compensate` operator verbs read the
+        // outbox and saga store the router owns, bundled behind one
+        // `ProxyState` -- downgraded from the `Arc` `proxy` itself now
+        // holds, which is what keeps this `Weak` valid for as long as the
+        // router is. `proxy_state()` is `Some` only once both
+        // `with_outbox` and `with_sagas` have been called; `build_proxy`
+        // calls both, in that order, so the `ok_or_else` below can never
+        // actually fire on the production wiring -- it exists because a
+        // future caller of this function that constructs `proxy` with only
+        // one of the two would otherwise fail confusingly deep inside
+        // `proxy_queues.set`.
+        let proxy_state = proxy
+            .proxy_state()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("ProxyRouter has no combined proxy state"))?;
+        control_plane
+            .proxy_queues
+            .set(Arc::downgrade(&proxy_state) as Weak<dyn ProxyQueueInspector>)
+            .map_err(|_| anyhow::anyhow!("ControlPlaneService::proxy_queues set more than once"))
+    }
+
+    pub async fn init(
+        service_id: String,
+        config: &SubstrateConfig,
+        registry: EndpointRegistry,
+        secret_key: [u8; 32],
+        iroh_endpoint: Option<Endpoint>,
+        deps: RouteHandlerDeps,
+    ) -> Result<Self> {
+        let identity = Arc::new(Identity::from_bytes(&secret_key));
+
+        let parent_coordinator_url =
+            config.parent_coordinator.iroh.as_ref().map(|cfg| cfg.url.clone());
+
+        let registry_client = Arc::new(RegistryClient::new(
+            config.substrate.enable_bep0044_dht,
+            config.substrate.registry_url.clone(),
+        ));
+
+        let max_connections = config
+            .roles
+            .coordinator
+            .as_ref()
+            .and_then(|c| c.iroh.as_ref())
+            .and_then(|i| i.max_connections);
+
+        // The Universal Proxy. Built here, before `inner`,
+        // so its `Weak` handles can be downgraded from the still-owned
+        // `deps.native_dispatch`/`deps.app_sandbox_engine` Arcs -- `Weak`,
+        // never a second strong ref, matching the `RouteHandlerInner ->
+        // ProxyRouter -> AppSandboxEngine -> ProxyRouter` cycle avoidance
+        // documented on `RouteHandlerInner::proxy`.
+        let (proxy, dedup_guard) = Self::build_proxy(
+            config,
+            &registry,
+            &registry_client,
+            &identity,
+            iroh_endpoint.as_ref(),
+            &deps,
+        );
         deps.app_sandbox_engine
             .service_proxy
             .set(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>)
             .map_err(|_| anyhow::anyhow!("AppSandboxEngine::service_proxy set more than once"))?;
-        // `SynSvcNativeService`'s stage-4 ABAC after-step
-        // (ADR-0017 §7) needs a handle to the same engine -- `AppSandboxEngine`
-        // is the sole `RowAuthorizer` implementation. Threaded through
-        // `ControlPlaneService.row_authorizer` below, same two-phase
-        // `OnceLock` wiring as `service_proxy` (this engine already exists
-        // by construction time; only the *native-dispatch* side needs the
-        // handle threaded in post-construction).
-        if let Some(control_plane) = &deps.control_plane {
-            control_plane
-                .row_authorizer
-                .set(Arc::downgrade(&deps.app_sandbox_engine) as Weak<dyn RowAuthorizer>)
-                .map_err(|_| {
-                    anyhow::anyhow!("ControlPlaneService::row_authorizer set more than once")
-                })?;
-        }
-        // `SynSvcNativeService`'s cross-service
-        // relationship-proof fetch needs the same proxy handle, threaded
-        // through `ControlPlaneService` at deploy time -- same two-phase
-        // wiring as `AppSandboxEngine`'s above, for the identical ordering
-        // reason (`ProxyRouter` doesn't exist yet when either service is
-        // constructed). `None` only for a test harness that substitutes a
-        // fake `control_plane_service` and never deploys a real FDAE-policy
-        // service through it.
-        if let Some(control_plane) = &deps.control_plane {
-            control_plane
-                .service_proxy
-                .set(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>)
-                .map_err(|_| {
-                    anyhow::anyhow!("ControlPlaneService::service_proxy set more than once")
-                })?;
-            // The `proxy-*`/`sagas`/`saga-compensate` operator verbs read
-            // the outbox and saga store the router owns, bundled behind
-            // one `ProxyState` -- downgraded from the `Arc` `proxy` itself
-            // now holds, which is what keeps this `Weak` valid for as long
-            // as the router is. `proxy_state()` is `Some` only once both
-            // `with_outbox` and `with_sagas` have been called; this path
-            // calls both a few lines above, in that order, so the `ok_or`
-            // below can never actually fire on the production wiring --
-            // it exists because a future caller of this function that
-            // constructs `proxy` with only one of the two would otherwise
-            // fail confusingly deep inside `proxy_queues.set`.
-            let proxy_state = proxy
-                .proxy_state()
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("ProxyRouter has no combined proxy state"))?;
-            control_plane
-                .proxy_queues
-                .set(Arc::downgrade(&proxy_state) as Weak<dyn ProxyQueueInspector>)
-                .map_err(|_| {
-                    anyhow::anyhow!("ControlPlaneService::proxy_queues set more than once")
-                })?;
-        }
+        Self::wire_row_authorizer(deps.control_plane.as_ref(), &deps.app_sandbox_engine)?;
+        Self::wire_control_plane_proxy(deps.control_plane.as_ref(), &proxy)?;
 
         let inner = Arc::new(RouteHandlerInner {
             registry,
