@@ -20,8 +20,8 @@ use syneroym_core::{
     config::{SubstrateConfig, WebRtcParentConfig},
     local_registry::EndpointRegistry,
 };
-use tokio::time;
-use tokio_tungstenite::tungstenite::Message;
+use tokio::{net::TcpStream, time};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
 use tracing::{debug, error, info};
 use webrtc::{
     api::{
@@ -254,6 +254,13 @@ impl ConnectionRouter {
     }
 }
 
+/// The signaling WebSocket's write half, as returned by
+/// `tokio_tungstenite::connect_async` for a plain (non-TLS-wrapped) client
+/// request -- named here so the offer handler below can take it as a
+/// parameter without repeating the full generic type.
+type SignalingSink =
+    futures::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
+
 async fn connect_signaling(
     peer_id: String,
     url: &String,
@@ -295,85 +302,8 @@ async fn connect_signaling(
 
             match type_str {
                 "offer" => {
-                    debug!("Received Offer from {:?}", v["sender"]);
-                    let sdp = match v["sdp"].as_str() {
-                        Some(s) => s,
-                        None => continue,
-                    };
-
-                    let sender_id = v["sender"].as_str().unwrap_or("unknown").to_string();
-                    let peer_id = peer_id.clone();
-                    let api = api.clone();
-                    let config = config.clone();
-                    let route_handler = route_handler.clone();
-
-                    // Check connection limit
-                    let slot = match route_handler.acquire_connection_slot() {
-                        Some(s) => s,
-                        None => {
-                            tracing::warn!(
-                                "[WebRTC] Rejecting connection from {} due to connection cap",
-                                sender_id
-                            );
-                            continue;
-                        }
-                    };
-                    let slot_holder = Arc::new(Mutex::new(Some(slot)));
-
-                    // Create new PeerConnection
-                    let pc = Arc::new(api.new_peer_connection(config.clone()).await?);
-
-                    // Set Data Channel handler
-                    let rh = route_handler.clone();
-                    pc.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
-                        let rh = rh.clone();
-                        Box::pin(async move {
-                            handle_data_channel(d, rh).await;
-                        })
-                    }));
-
-                    let pc_clone = pc.clone();
-                    let slot_holder_clone = slot_holder.clone();
-                    pc.on_peer_connection_state_change(Box::new(
-                        move |s: RTCPeerConnectionState| {
-                            info!("WebRTC Peer Connection State has changed: {}", s);
-                            if s == RTCPeerConnectionState::Failed
-                                || s == RTCPeerConnectionState::Disconnected
-                                || s == RTCPeerConnectionState::Closed
-                            {
-                                // Explicitly release the connection slot
-                                if let Ok(mut guard) = slot_holder_clone.lock() {
-                                    guard.take();
-                                }
-                                let pc = pc_clone.clone();
-                                Box::pin(async move {
-                                    if let Err(e) = pc.close().await {
-                                        error!("Failed to close PeerConnection: {}", e);
-                                    }
-                                })
-                            } else {
-                                Box::pin(async {})
-                            }
-                        },
-                    ));
-
-                    // Set Remote Description
-                    let desc = RTCSessionDescription::offer(sdp.to_string())?;
-                    pc.set_remote_description(desc).await?;
-
-                    // Create Answer
-                    let answer = pc.create_answer(None).await?;
-                    pc.set_local_description(answer.clone()).await?;
-
-                    // Send Answer back
-                    let answer_msg = serde_json::json!({
-                        "type": "answer",
-                        "target": sender_id,
-                        "sender": peer_id,
-                        "sdp": answer.sdp
-                    });
-                    write.send(Message::Text(answer_msg.to_string().into())).await?;
-                    info!("Sent Answer to {}", sender_id);
+                    handle_offer_message(&v, &peer_id, &api, &config, &route_handler, &mut write)
+                        .await?;
                 }
                 _ => {
                     debug!("Unhandled signaling message: {}", type_str);
@@ -382,6 +312,94 @@ async fn connect_signaling(
         }
     }
 
+    Ok(())
+}
+
+/// Handles one `"offer"` signaling message: builds the `RTCPeerConnection`,
+/// wires its data-channel and connection-state callbacks, answers the
+/// offer, and sends the answer back over `write`. A missing `sdp` field or
+/// an exhausted connection-slot cap is not an error -- both just skip this
+/// message, the same as the `continue` they replaced in the caller's
+/// message loop (there is nothing left in that loop iteration after this
+/// call either way, so returning `Ok(())` early here is equivalent). Any
+/// other error still propagates via `?`, ending the signaling connection
+/// exactly as it did when this code lived inline.
+async fn handle_offer_message(
+    v: &serde_json::Value,
+    peer_id: &str,
+    api: &Arc<API>,
+    config: &RTCConfiguration,
+    route_handler: &RouteHandler,
+    write: &mut SignalingSink,
+) -> Result<()> {
+    debug!("Received Offer from {:?}", v["sender"]);
+    let Some(sdp) = v["sdp"].as_str() else {
+        return Ok(());
+    };
+
+    let sender_id = v["sender"].as_str().unwrap_or("unknown").to_string();
+    let peer_id = peer_id.to_string();
+    let route_handler = route_handler.clone();
+
+    // Check connection limit
+    let Some(slot) = route_handler.acquire_connection_slot() else {
+        tracing::warn!("[WebRTC] Rejecting connection from {} due to connection cap", sender_id);
+        return Ok(());
+    };
+    let slot_holder = Arc::new(Mutex::new(Some(slot)));
+
+    // Create new PeerConnection
+    let pc = Arc::new(api.new_peer_connection(config.clone()).await?);
+
+    // Set Data Channel handler
+    let rh = route_handler.clone();
+    pc.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
+        let rh = rh.clone();
+        Box::pin(async move {
+            handle_data_channel(d, rh).await;
+        })
+    }));
+
+    let pc_clone = pc.clone();
+    let slot_holder_clone = slot_holder.clone();
+    pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
+        info!("WebRTC Peer Connection State has changed: {}", s);
+        if s == RTCPeerConnectionState::Failed
+            || s == RTCPeerConnectionState::Disconnected
+            || s == RTCPeerConnectionState::Closed
+        {
+            // Explicitly release the connection slot
+            if let Ok(mut guard) = slot_holder_clone.lock() {
+                guard.take();
+            }
+            let pc = pc_clone.clone();
+            Box::pin(async move {
+                if let Err(e) = pc.close().await {
+                    error!("Failed to close PeerConnection: {}", e);
+                }
+            })
+        } else {
+            Box::pin(async {})
+        }
+    }));
+
+    // Set Remote Description
+    let desc = RTCSessionDescription::offer(sdp.to_string())?;
+    pc.set_remote_description(desc).await?;
+
+    // Create Answer
+    let answer = pc.create_answer(None).await?;
+    pc.set_local_description(answer.clone()).await?;
+
+    // Send Answer back
+    let answer_msg = serde_json::json!({
+        "type": "answer",
+        "target": sender_id,
+        "sender": peer_id,
+        "sdp": answer.sdp
+    });
+    write.send(Message::Text(answer_msg.to_string().into())).await?;
+    info!("Sent Answer to {}", sender_id);
     Ok(())
 }
 
