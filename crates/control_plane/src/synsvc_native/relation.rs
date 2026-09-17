@@ -44,6 +44,28 @@ fn extract_id_column(result: RawQueryResult) -> RpcResult<Vec<String>> {
 }
 
 impl SynSvcNativeService {
+    /// Builds the `QueryAuth` for the current invocation from `fdae_policy`
+    /// and the invocation's `caller.session`, mirroring `HostState::
+    /// query_auth`. Runs `syneroym_fdae::plan_read` itself (rather than
+    /// letting `data_db` call the local-only `compile_read` internally),
+    /// and when the policy's selected paths need a remote relationship
+    /// fetch (pipeline stage 2), resolves it via `syneroym_rpc::
+    /// resolve_fetches` and `syneroym_fdae::finalize` before ever reaching
+    /// the store. Mirrors `sandbox_wasm::host_capabilities::HostState::
+    /// resolve_query_auth`; see that doc comment for the fail-closed
+    /// contract (a fetch error maps to `DataLayerError::PermissionDenied`).
+    ///
+    /// **No `AuthLevel` carve-out.** This deliberately does not branch on
+    /// `AuthLevel::System` (or a `"system:"`-prefixed `caller_did`) to fall
+    /// back to `auth = None`. Doing so would make a guest's self-proxy
+    /// route (`ProxyRouter::invoke_local`'s `NativeHostChannel` branch,
+    /// which synthesizes `CallerContext::service_system` for a guest
+    /// calling its own service) *more* permissive than its direct WIT
+    /// `store::Host` route under the same policy -- i.e. a guest under a
+    /// policy could proxy to itself to escape it. The synthesized-identity
+    /// ingress returning empty is over-restriction, which is correct; a
+    /// carve-out here would be a bypass. Do not "simplify" this away -- it
+    /// is a deliberate decision.
     pub(super) async fn resolve_query_auth<'a>(
         &'a self,
         invocation: &'a NativeInvocation,

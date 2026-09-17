@@ -10,6 +10,70 @@ impl ControlPlaneService {
         write: BindingWrite,
         caller: &CallerContext,
     ) -> Result<Vec<BindingWriteOutcomeWire>, String> {
+        self.validate_and_stamp_binding_write(&write, caller).await?;
+
+        // Validate every binding before applying any of it (both
+        // `prepare_binding` and the `binding_of` existence check are pure
+        // reads, so the whole list can be checked up front). Without this,
+        // a refusal partway through (a malformed member DID, an undeclared
+        // dependency) would leave earlier bindings already applied with no
+        // way for the caller to know which ones landed -- the WIT
+        // contract's "one outcome per binding, in the order sent" reads as
+        // all-or-nothing.
+        let prepared = self.prepare_write_bindings(&write).await?;
+
+        let mut outcomes = Vec::with_capacity(prepared.len());
+        let mut any_applied = false;
+        for (raw_dependency_name, dependency_name, entry, outcome) in prepared {
+            if outcome == BindingWriteOutcome::Applied {
+                any_applied = true;
+                let entry_json = serde_json::to_string(&entry).map_err(|e| e.to_string())?;
+                self.registry
+                    .save_binding(
+                        &write.service_id,
+                        &write.app_instance_id,
+                        &raw_dependency_name,
+                        &entry_json,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                // `NoOp`/`Stale`/`Conflict` write nothing. `NoOp` in
+                // particular must not re-register: re-registering evicts
+                // the resolver cache for an unchanged entry, turning the
+                // ordinary retry into cache churn on the hot path.
+                //
+                // `try_new`, not `new`: `write.app_instance_id` is
+                // caller-supplied wire input. Not reachable today -- the
+                // `app_context_of` equality check in `validate_and_stamp_
+                // binding_write` already guarantees it equals a stored id
+                // validated at deploy -- but that is a non-local invariant
+                // to depend on for a panic, and `prepare_binding`'s own doc
+                // calls out this exact hazard.
+                let app_instance_id =
+                    AppInstanceId::try_new(&write.app_instance_id).map_err(|e| e.to_string())?;
+                self.logical_resolver
+                    .register(TopologyKey::local(app_instance_id, dependency_name), entry);
+            }
+            outcomes.push(wire_binding_outcome(&outcome));
+        }
+
+        if any_applied {
+            self.clear_deploy_hash_after_binding_push(&write.service_id).await?;
+        }
+
+        Ok(outcomes)
+    }
+
+    /// The write-bindings capability/ownership/app-context gates, plus the
+    /// ADR-0021 §4 generation-gate stamp -- persisted immediately, before
+    /// any binding is examined, the same rule every other gate site
+    /// follows (deploy, restart, undeploy, claim). A mid-validation refusal
+    /// later must not leave the accepting generation unrecorded.
+    async fn validate_and_stamp_binding_write(
+        &self,
+        write: &BindingWrite,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
         // Same gate `deploy_with_context` applies, for the same reason: a
         // binding write changes what a service calls, which is a
         // deploy-class change to that service, not a read.
@@ -42,20 +106,18 @@ impl ControlPlaneService {
             Some(_) => {}
         }
 
-        // The same app-instance-owner gate `deploy_with_context` applies
-        // (orchestration.rs's deploy ownership check), for the same reason:
-        // `write.service_id` genuinely belonging to `write.app_instance_id`
-        // (just checked above) proves the write targets its own service's
-        // app, not that the caller may manage that app instance as a
-        // whole. Without this, an app-scoped `orchestrator/deploy` grant on
-        // one service of an instance -- not its owner, not node-wide --
-        // could push a binding change that, through the shared resolver
-        // entry `write-bindings` writes into, affects every other service
-        // of that instance too. `check_generation` below is not a
-        // substitute: it is a tiebreaker among already-authorized writers,
-        // not an authorization check, and an unmanaged instance's
-        // generation-0 gate now correctly accepts any authorized writer --
-        // "authorized" has to be decided here, same as `deploy`.
+        // The same app-instance-owner gate `deploy_with_context` applies,
+        // for the same reason: `write.service_id` genuinely belonging to
+        // `write.app_instance_id` (just checked above) proves the write
+        // targets its own service's app, not that the caller may manage
+        // that app instance as a whole. Without this, an app-scoped
+        // `orchestrator/deploy` grant on one service of an instance --
+        // not its owner, not node-wide -- could push a binding change
+        // that, through the shared resolver entry `write-bindings` writes
+        // into, affects every other service of that instance too.
+        // `check_generation` below is not a substitute: it is a
+        // tiebreaker among already-authorized writers, not an
+        // authorization check.
         if let Some(existing) =
             self.registry.app_instance_management_of(&write.app_instance_id).map(|m| m.owner_did)
             && existing != caller.caller_did
@@ -68,30 +130,29 @@ impl ControlPlaneService {
             ));
         }
 
-        // Persisted immediately, before any binding is examined
-        // -- the same rule every other gate site follows (deploy, restart,
-        // undeploy, claim). A mid-validation refusal below must not leave
-        // the accepting generation unrecorded.
         let management = self.check_generation(&write.app_instance_id, caller, write.generation)?;
         self.registry
             .set_app_instance_management(write.app_instance_id.clone(), management)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
+    }
 
-        // Validate every binding before applying any of it: `prepare_binding`
-        // and the `binding_of` existence check are both pure reads, so the
-        // whole list can be checked up front. Without this, a refusal partway
-        // through (a malformed member DID, an undeclared dependency) would
-        // leave earlier bindings already applied with no way for the caller
-        // to know which ones landed -- the WIT contract's "one outcome per
-        // binding, in the order sent" reads as all-or-nothing.
+    /// Validates and classifies every binding in `write`, without applying
+    /// any of it -- the caller applies `Applied` outcomes itself, in wire
+    /// order. Returns each binding's raw wire dependency name (for the
+    /// `save_binding` call), its validated `LogicalServiceName`, its
+    /// resolved `TopologyEntry`, and its classified `BindingWriteOutcome`.
+    async fn prepare_write_bindings(
+        &self,
+        write: &BindingWrite,
+    ) -> Result<Vec<(String, LogicalServiceName, TopologyEntry, BindingWriteOutcome)>, String> {
         let mut prepared = Vec::with_capacity(write.bindings.len());
         for binding in &write.bindings {
             let (dependency_name, entry) = prepare_binding(binding, &write.app_instance_id)?;
 
-            // Update-only: a push may not introduce a dependency the
-            // guest never declared at deploy -- a new dependency changes
-            // the guest's contract and needs a redeploy, not a push.
+            // Update-only: a push may not introduce a dependency the guest
+            // never declared at deploy -- a new dependency changes the
+            // guest's contract and needs a redeploy, not a push.
             let held_json = self
                 .registry
                 .binding_of(&write.service_id, &binding.dependency_name)
@@ -112,68 +173,53 @@ impl ControlPlaneService {
             })?;
 
             let outcome = classify_binding_write(Some(&held), &entry);
-            prepared.push((binding, dependency_name, entry, outcome));
+            prepared.push((binding.dependency_name.clone(), dependency_name, entry, outcome));
         }
+        Ok(prepared)
+    }
 
-        let mut outcomes = Vec::with_capacity(prepared.len());
-        let mut any_applied = false;
-        for (binding, dependency_name, entry, outcome) in prepared {
-            if outcome == BindingWriteOutcome::Applied {
-                any_applied = true;
-                let entry_json = serde_json::to_string(&entry).map_err(|e| e.to_string())?;
-                self.registry
-                    .save_binding(
-                        &write.service_id,
-                        &write.app_instance_id,
-                        &binding.dependency_name,
-                        &entry_json,
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                // `NoOp`/`Stale`/`Conflict` write nothing. `NoOp` in
-                // particular must not re-register: re-registering evicts
-                // the resolver cache for an unchanged entry, turning the
-                // ordinary retry into cache churn on the hot path.
-                //
-                // `try_new`, not `new`: `write.app_instance_id` is
-                // caller-supplied wire input. Not reachable today -- the
-                // `app_context_of` equality check above already guarantees
-                // it equals a stored id validated at deploy -- but that is
-                // a non-local invariant to depend on for a panic, and
-                // `prepare_binding`'s own doc calls out this exact hazard.
-                let app_instance_id =
-                    AppInstanceId::try_new(&write.app_instance_id).map_err(|e| e.to_string())?;
-                self.logical_resolver
-                    .register(TopologyKey::local(app_instance_id, dependency_name), entry);
-            }
-            outcomes.push(wire_binding_outcome(&outcome));
-        }
+    /// The deploy dedup key hashes what a deploy *sends*, not what is
+    /// currently installed, so it cannot see a push that happened since
+    /// the last deploy. Without this, a repair redeploy of byte-identical
+    /// content after a push would match the stale hash and take the no-op
+    /// path, silently leaving the pushed (not the redeployed) bindings in
+    /// place -- exactly the "restart is the cheap path, deploy is the
+    /// repair path" case. Clearing the hash here forces that redeploy
+    /// through the full reinstall instead.
+    async fn clear_deploy_hash_after_binding_push(&self, service_id: &str) -> Result<(), String> {
+        let Some((service_type, health_check_json, _, visibility)) =
+            self.registry.deploy_facts(service_id)
+        else {
+            return Ok(());
+        };
+        self.registry
+            .set_deploy_facts(
+                service_id.to_string(),
+                service_type,
+                health_check_json,
+                None,
+                visibility,
+            )
+            .await
+            .map_err(|e| e.to_string())
+    }
 
-        // The deploy dedup key hashes what a deploy *sends*, not what is
-        // currently installed, so it cannot see a push that happened since
-        // the last deploy. Without this, a repair redeploy of byte-identical
-        // content after a push would match the stale hash and take the
-        // no-op path, silently leaving the pushed (not the redeployed)
-        // bindings in place -- exactly the "restart is the cheap path,
-        // deploy is the repair path" case. Clearing the hash here forces
-        // that redeploy through the full reinstall instead.
-        if any_applied
-            && let Some((service_type, health_check_json, _, visibility)) =
-                self.registry.deploy_facts(&write.service_id)
-        {
-            self.registry
-                .set_deploy_facts(
-                    write.service_id.clone(),
-                    service_type,
-                    health_check_json,
-                    None,
-                    visibility,
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-
-        Ok(outcomes)
+    /// The ADR-0021 §4 generation-gate stamp, applied only when
+    /// `service_id` belongs to an app instance -- ungated for a standalone
+    /// service, the rule `undeploy_impl`/`restart_impl`/`run_scheduled_
+    /// impl` all follow identically.
+    async fn stamp_generation_if_managed(
+        &self,
+        service_id: &str,
+        generation: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        let Some((instance, _)) = self.registry.app_context_of(service_id) else { return Ok(()) };
+        let management = self.check_generation(&instance, caller, generation)?;
+        self.registry
+            .set_app_instance_management(instance, management)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Gates on ownership before tearing anything down
@@ -203,17 +249,39 @@ impl ControlPlaneService {
         generation: u64,
         caller: &CallerContext,
     ) -> Result<(), String> {
-        // Same reason and same placement as `deploy_with_context`'s
-        // equivalent check: `service_id` is joined verbatim into
-        // `hosted_apps_dir/<service_id>.json` below and then deleted,
-        // before anything else runs against it.
-        if !is_safe_service_id_for_path(&service_id) {
+        self.validate_undeploy_admission(&service_id, caller)?;
+        self.stamp_generation_if_managed(&service_id, generation, caller).await?;
+
+        info!("Undeploying service: {}", service_id);
+
+        self.remove_registry_cert_file(&service_id);
+
+        let (is_wasm, is_container) = self.remove_endpoints_and_classify(&service_id).await;
+        self.stop_and_remove_engine(&service_id, is_wasm, is_container).await;
+        self.teardown_messaging_and_dispatch(&service_id, is_wasm).await;
+        self.remove_assets_for_undeploy(&service_id).await;
+        self.remove_deploy_registry_rows(&service_id).await;
+        self.remove_app_context_and_management(&service_id).await;
+
+        Ok(())
+    }
+
+    /// Same reason and same placement as `deploy_with_context`'s
+    /// equivalent check: `service_id` is joined verbatim into
+    /// `hosted_apps_dir/<service_id>.json` and then deleted, before
+    /// anything else runs against it.
+    fn validate_undeploy_admission(
+        &self,
+        service_id: &str,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        if !is_safe_service_id_for_path(service_id) {
             return Err(format!(
                 "service_id '{service_id}' is not a valid undeploy target: it must be non-empty \
                  and contain no '/', '\\\\', or '..' -- it is joined into a stored-record filename"
             ));
         }
-        if let Some(owner) = self.registry.owner_of(&service_id)
+        if let Some(owner) = self.registry.owner_of(service_id)
             && owner != caller.caller_did
             && !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_UNDEPLOY)
         {
@@ -223,28 +291,21 @@ impl ControlPlaneService {
             ));
         }
 
-        // Tier-1 undeploy admission, the same shape
-        // as `deploy`'s -- the caller must hold `orchestrator/undeploy`
-        // covering this app.
+        // Tier-1 undeploy admission, the same shape as `deploy`'s -- the
+        // caller must hold `orchestrator/undeploy` covering this app.
         //
-        // Interaction with `deploy`'s own rollback path: `deploy`
-        // calls `self.undeploy(service_id.clone(), caller)` with the *same*
+        // Interaction with `deploy`'s own rollback path: `deploy` calls
+        // `self.undeploy(service_id.clone(), caller)` with the *same*
         // `caller` on two failure paths. Abilities are deliberately flat
-        // and independently grantable, so "deploy but not
-        // undeploy" is a real, supported shape -- a deploy-only grantee
-        // (`roymctl identity issue-grant --can orchestrator/deploy`, no
+        // and independently grantable, so "deploy but not undeploy" is a
+        // real, supported shape -- a deploy-only grantee (`roymctl
+        // identity issue-grant --can orchestrator/deploy`, no
         // `orchestrator/undeploy`) whose deploy fails partway would be
         // rejected *again* by this check on the rollback attempt, on a
-        // confusing second error. This was inert before anything could
-        // create a `ControllerAgreement`, when every substrate was unowned
-        // and every verified caller held all three abilities together for
-        // free -- now that `ControllerAgreement`, and so real app-scoped
-        // grants, are live: a grant meant to let its holder
-        // deploy reliably should include `orchestrator/undeploy` alongside
+        // confusing second error. A grant meant to let its holder deploy
+        // reliably should include `orchestrator/undeploy` alongside
         // `orchestrator/deploy` so a failed deploy can clean up after
-        // itself. `deploy_grant.rs` documents the partial-grant shapes;
-        // this comment records the specific rollback interaction so a
-        // future grant-issuing tool does not reintroduce it silently.
+        // itself; `deploy_grant.rs` documents the partial-grant shapes.
         let undeploy_resource =
             ResourceUri(format!("substrate:{}/app/{service_id}", self.node_did));
         if !caller.has_capability(
@@ -257,39 +318,33 @@ impl ControlPlaneService {
                 caller.caller_did
             ));
         }
+        Ok(())
+    }
 
-        // `undeploy` is a lifecycle action, gated the same
-        // as `deploy`/`restart` -- a superseded supervisor must not be
-        // able to tear down services it no longer manages. Ungated for a
-        // standalone service with no app context, same as `restart`.
-        if let Some((instance, _)) = self.registry.app_context_of(&service_id) {
-            let management = self.check_generation(&instance, caller, generation)?;
-            self.registry
-                .set_app_instance_management(instance, management)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-
-        info!("Undeploying service: {}", service_id);
-
+    fn remove_registry_cert_file(&self, service_id: &str) {
         let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
         if cert_path.exists()
             && let Err(e) = fs::remove_file(&cert_path)
         {
             tracing::warn!("Failed to remove registry certificate for {}: {}", service_id, e);
         }
+    }
 
-        let endpoints = self.registry.lookup_by_service(&service_id);
+    /// Removes every registered endpoint for `service_id`, classifying it
+    /// as WASM/container/neither along the way -- the same `lookup_by_
+    /// service` pass already has to look at each endpoint's kind, so the
+    /// classification and the removal share one loop rather than two.
+    async fn remove_endpoints_and_classify(&self, service_id: &str) -> (bool, bool) {
+        let endpoints = self.registry.lookup_by_service(service_id);
         let mut is_wasm = false;
         let mut is_container = false;
-
         for (interface_name, endpoint) in endpoints {
             if matches!(endpoint, SubstrateEndpoint::WasmChannel { .. }) {
                 is_wasm = true;
             } else if matches!(endpoint, SubstrateEndpoint::TcpHostPort { .. }) {
                 is_container = true;
             }
-            if let Err(e) = self.registry.remove(&service_id, &interface_name).await {
+            if let Err(e) = self.registry.remove(service_id, &interface_name).await {
                 tracing::warn!(
                     "Failed to remove endpoint {} for service {}: {}",
                     interface_name,
@@ -298,32 +353,40 @@ impl ControlPlaneService {
                 );
             }
         }
+        (is_wasm, is_container)
+    }
 
+    async fn stop_and_remove_engine(&self, service_id: &str, is_wasm: bool, is_container: bool) {
         if is_wasm {
-            if let Err(e) = self.app_sandbox_engine.stop_wasm(&service_id).await {
+            if let Err(e) = self.app_sandbox_engine.stop_wasm(service_id).await {
                 tracing::warn!("Failed to stop WASM engine for service {}: {}", service_id, e);
             }
-            if let Err(e) = self.app_sandbox_engine.remove_wasm(&service_id).await {
+            if let Err(e) = self.app_sandbox_engine.remove_wasm(service_id).await {
                 tracing::warn!("Failed to remove WASM file for service {}: {}", service_id, e);
             }
         }
-
         if is_container {
-            if let Err(e) = self.podman_sandbox_engine.stop(&service_id).await {
+            if let Err(e) = self.podman_sandbox_engine.stop(service_id).await {
                 tracing::warn!("Failed to stop Container engine for service {}: {}", service_id, e);
             }
-            if let Err(e) = self.podman_sandbox_engine.remove(&service_id).await {
+            if let Err(e) = self.podman_sandbox_engine.remove(service_id).await {
                 tracing::warn!("Failed to remove Container for service {}: {}", service_id, e);
             }
         }
+    }
 
-        // Messaging subscriptions have no analogue among the other 4 native
-        // capabilities: they're a long-lived stateful subsystem (persisted
-        // rows plus live broker registrations), not pure request/response,
-        // so they need an explicit "forget this service" step the
-        // endpoint-registry loop above doesn't cover.
+    /// Messaging subscriptions have no analogue among the other native
+    /// capabilities: they're a long-lived stateful subsystem (persisted
+    /// rows plus live broker registrations), not pure request/response, so
+    /// they need an explicit "forget this service" step the endpoint-
+    /// registry loop does not cover. `fdae_policies` needs the same kind of
+    /// explicit removal: `stop_wasm` only evicts the WASM engine's *cache*
+    /// of it, so without this a later re-deploy of the same `service_id`
+    /// with no `fdae` block would still have `AppSandboxEngine::resolve_
+    /// fdae_policy` resurrect the row from storage on its next cache miss.
+    async fn teardown_messaging_and_dispatch(&self, service_id: &str, is_wasm: bool) {
         if let Err(e) =
-            self.storage_provider.delete_all_messaging_subscriptions_for_service(&service_id).await
+            self.storage_provider.delete_all_messaging_subscriptions_for_service(service_id).await
         {
             tracing::warn!(
                 "Failed to remove messaging subscriptions for service {}: {}",
@@ -332,29 +395,22 @@ impl ControlPlaneService {
             );
         }
         if is_wasm {
-            self.app_sandbox_engine.unsubscribe_all(&service_id);
-            self.app_sandbox_engine.forget_guest_http_permits(&service_id);
-            self.app_sandbox_engine.forget_websocket_senders(&service_id);
+            self.app_sandbox_engine.unsubscribe_all(service_id);
+            self.app_sandbox_engine.forget_guest_http_permits(service_id);
+            self.app_sandbox_engine.forget_websocket_senders(service_id);
         }
-        self.sse_permits.remove(&service_id);
+        self.sse_permits.remove(service_id);
 
-        // An `fdae_policies` row has no in-memory analogue that gets torn
-        // down for free elsewhere in this function -- `stop_wasm` above only
-        // evicts the WASM engine's *cache* of it, and native dispatch's copy
-        // dies with the `SynSvcNativeService` removed below. Without this, a
-        // later re-deploy of the same `service_id` with no `fdae` block
-        // would still have `AppSandboxEngine::resolve_fdae_policy` resurrect
-        // this row from storage on its next cache miss.
-        if let Err(e) = self.storage_provider.delete_fdae_policy(&service_id).await {
+        if let Err(e) = self.storage_provider.delete_fdae_policy(service_id).await {
             tracing::warn!("Failed to remove FDAE policy for service {}: {}", service_id, e);
         }
 
-        // The endpoint-registry loop above already removed the 6 native
-        // capability interfaces generically (it iterates every registered
-        // interface for this service_id); just drop the in-memory dispatch
-        // entry too.
+        // The endpoint-registry loop already removed the native capability
+        // interfaces generically (it iterates every registered interface
+        // for this service_id); just drop the in-memory dispatch entry
+        // too.
         if let Some(native_dispatch) = self.native_dispatch.upgrade() {
-            native_dispatch.remove(&service_id);
+            native_dispatch.remove(service_id);
         } else {
             tracing::error!(
                 "Native dispatch registry unavailable while undeploying service {}: its in-memory \
@@ -362,79 +418,72 @@ impl ControlPlaneService {
                 service_id
             );
         }
-        self.http_routes.remove(&service_id);
-        self.full_deploy_completed.remove(&service_id);
+        self.http_routes.remove(service_id);
+        self.full_deploy_completed.remove(service_id);
+    }
 
-        // Nothing survives an undeploy, so there is nothing to
-        // keep -- unlike the deploy-time forward cleanup, which diffs
-        // against a still-live new generation.
-        if let Some((_, old)) = self.assets.remove(&service_id) {
-            let remove = assets::hashes_of(&old.manifest, Some(&old.manifest_hash));
-            if let Err(e) =
-                assets::delete_hashes(&service_id, &remove, &BTreeSet::new(), &self.blob_provider)
-                    .await
-            {
-                tracing::warn!(
-                    "Failed to remove asset bundle blobs for service {}: {}",
-                    service_id,
-                    e
-                );
-            }
+    /// Nothing survives an undeploy, so there is nothing to keep -- unlike
+    /// the deploy-time forward cleanup, which diffs against a still-live
+    /// new generation.
+    async fn remove_assets_for_undeploy(&self, service_id: &str) {
+        let Some((_, old)) = self.assets.remove(service_id) else { return };
+        let remove = assets::hashes_of(&old.manifest, Some(&old.manifest_hash));
+        if let Err(e) =
+            assets::delete_hashes(service_id, &remove, &BTreeSet::new(), &self.blob_provider).await
+        {
+            tracing::warn!("Failed to remove asset bundle blobs for service {}: {}", service_id, e);
         }
+    }
 
-        // Warn-not-fail, matching every other teardown step above (endpoints,
-        // subscriptions, http_routes are all best-effort).
-        if let Err(e) = self.registry.remove_owner(&service_id).await {
+    /// Warn-not-fail, matching every other teardown step in `undeploy_impl`.
+    async fn remove_deploy_registry_rows(&self, service_id: &str) {
+        if let Err(e) = self.registry.remove_owner(service_id).await {
             tracing::warn!("Failed to remove owner record for service {}: {}", service_id, e);
         }
-        if let Err(e) = self.registry.remove_instance_cert(&service_id).await {
+        if let Err(e) = self.registry.remove_instance_cert(service_id).await {
             tracing::warn!(
                 "Failed to remove instance certificate for service {}: {}",
                 service_id,
                 e
             );
         }
-        if let Err(e) = self.registry.remove_deploy_facts(&service_id).await {
+        if let Err(e) = self.registry.remove_deploy_facts(service_id).await {
             tracing::warn!("Failed to remove deploy facts for {}: {}", service_id, e);
         }
-        self.probe_cache.remove(&service_id);
-        // Persisted rows only -- the in-memory `StaticInventory` entry
-        // stays. A `TopologyEntry` is an app-scoped fact ("where
-        // does `backend` live in instance X"), not a per-dependent one;
-        // removing it when one of several dependents goes away would break
-        // the others.
-        //
-        // Same call, same reasoning, on `install_app_context`'s redeploy
-        // path: a redeploy that drops a dependency from its manifest calls
-        // this exact method, and the entry it wrote into `StaticInventory`
-        // stays too -- decided here explicitly, not inherited by accident,
-        // because the "app-scoped, not per-dependent" argument above holds
-        // just as much for a redeploy that stops declaring a dependency as
-        // it does for an undeploy that removes the dependent entirely. The
-        // two do diverge across a restart: `replay_persisted_bindings`
-        // rebuilds `StaticInventory` from `service_bindings` alone, so an
-        // entry no longer backed by any persisted row silently drops out on
-        // restart even though it kept resolving right up to that point.
-        // That is `StaticInventory`'s memory-vs-storage split working as
-        // designed (deferred-backlog.md), not a new gap this call opens.
+        self.probe_cache.remove(service_id);
+    }
+
+    /// Persisted rows only -- the in-memory `StaticInventory` entry stays.
+    /// A `TopologyEntry` is an app-scoped fact ("where does `backend` live
+    /// in instance X"), not a per-dependent one; removing it when one of
+    /// several dependents goes away would break the others.
+    ///
+    /// Same call, same reasoning, on `install_app_context`'s redeploy
+    /// path: a redeploy that drops a dependency from its manifest calls
+    /// this exact method, and the entry it wrote into `StaticInventory`
+    /// stays too. The two do diverge across a restart: `replay_persisted_
+    /// bindings` rebuilds `StaticInventory` from `service_bindings` alone,
+    /// so an entry no longer backed by any persisted row silently drops
+    /// out on restart even though it kept resolving right up to that
+    /// point -- `StaticInventory`'s memory-vs-storage split working as
+    /// designed (deferred-backlog.md), not a new gap this call opens.
+    ///
+    /// Without the app-instance-management cleanup below, `app_instance_
+    /// owners` rows never get forgotten: once no service on this node
+    /// names the instance any more, its management row is dead weight and
+    /// its id can never be reclaimed by another caller without this.
+    async fn remove_app_context_and_management(&self, service_id: &str) {
         let app_instance_id =
-            self.registry.app_context_of(&service_id).map(|(instance, _)| instance);
-        if let Err(e) = self.registry.remove_app_context(&service_id).await {
+            self.registry.app_context_of(service_id).map(|(instance, _)| instance);
+        if let Err(e) = self.registry.remove_app_context(service_id).await {
             tracing::warn!("Failed to remove app context for service {}: {}", service_id, e);
         }
-
-        // Without this, `app_instance_owners` rows never get forgotten.
-        // Once no service on this node names the
-        // instance any more, its management row is dead weight and its id
-        // can never be reclaimed by another caller without this.
         if let Some(instance_id) = app_instance_id
             && self.registry.app_context_of_any(&instance_id).is_none()
             && let Err(e) = self.registry.remove_app_instance_management(&instance_id).await
         {
             tracing::warn!("Failed to remove app instance management for {}: {}", instance_id, e);
         }
-
-        Ok(())
     }
 
     /// Restart a deployed service in place (ADR-0021 §4's
@@ -474,15 +523,7 @@ impl ControlPlaneService {
             ));
         }
 
-        // Generation gate, only where an app instance exists --
-        // ungated for a standalone service, same as `undeploy`.
-        if let Some((instance, _)) = self.registry.app_context_of(&service_id) {
-            let management = self.check_generation(&instance, caller, generation)?;
-            self.registry
-                .set_app_instance_management(instance, management)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
+        self.stamp_generation_if_managed(&service_id, generation, caller).await?;
 
         let Some((recorded_type, ..)) = self.registry.deploy_facts(&service_id) else {
             return Err(format!(
@@ -549,16 +590,7 @@ impl ControlPlaneService {
             ));
         }
 
-        // Generation gate, only where an app instance exists -- the same
-        // rule `restart_impl` follows, so a superseded supervisor cannot
-        // keep firing ticks at an instance another one now manages.
-        if let Some((instance, _)) = self.registry.app_context_of(&service_id) {
-            let management = self.check_generation(&instance, caller, generation)?;
-            self.registry
-                .set_app_instance_management(instance, management)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
+        self.stamp_generation_if_managed(&service_id, generation, caller).await?;
 
         let params = match params_json {
             Some(text) => {

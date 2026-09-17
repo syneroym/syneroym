@@ -42,12 +42,12 @@ use syneroym_rpc::{
     ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCallInfo, ResourceUri, SagaInfo,
 };
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    AppContext, AppInstanceManagement as AppInstanceManagementWire, ArtifactSource, BindingWrite,
-    BindingWriteOutcome as BindingWriteOutcomeWire, ContainerManifest, DependencyBinding,
-    DeployManifest, DeployedService, DeploymentPlan, DocumentSource, HealthCheck as WitHealthCheck,
-    InstanceIdentity, InstancePhase, NodeFacts, ProbeStatus, ServiceStatus,
-    ServiceType as WitServiceType, SubstrateStatus, TcpManifest, TopologyMode as WitTopologyMode,
-    Visibility as WitVisibility, WasmManifest,
+    AppContext, AppInstanceManagement as AppInstanceManagementWire, ArtifactSource, AssetBundle,
+    BindingWrite, BindingWriteOutcome as BindingWriteOutcomeWire, ContainerManifest,
+    DependencyBinding, DeployManifest, DeployedService, DeploymentPlan, DocumentSource,
+    HealthCheck as WitHealthCheck, InstanceIdentity, InstancePhase, NodeFacts, ProbeStatus,
+    ServiceStatus, ServiceType as WitServiceType, SubstrateStatus, TcpManifest,
+    TopologyMode as WitTopologyMode, Visibility as WitVisibility, WasmManifest,
 };
 use tokio::task;
 use tracing::info;
