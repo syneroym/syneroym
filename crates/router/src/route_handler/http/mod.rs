@@ -23,7 +23,9 @@
 use std::{
     collections::HashMap,
     convert::Infallible,
-    io, result,
+    io,
+    ops::ControlFlow,
+    result,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -218,6 +220,11 @@ enum BodyRead {
     Rejected(Response<HttpBody>),
 }
 
+/// `resolve_dispatch_target`'s resolved pair: the natively linked service
+/// claiming the route (if any) and the WASM sandbox engine to dispatch to
+/// otherwise (if any) -- exactly one is ever `Some` on the `Continue` path.
+type DispatchTarget = (Option<Arc<dyn NativeHttpService>>, Option<Arc<AppSandboxEngine>>);
+
 /// Recognizes the fixed `GET /blobs/{hash}` prefix -- extracted as a pure
 /// function so the "always intercepted before the per-service route table"
 /// rule is unit-testable without a live `HttpHandler`.
@@ -234,6 +241,50 @@ impl HttpHandler {
             http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         });
         Ok(response)
+    }
+
+    /// Picks the route's native-vs-WASM dispatch target, shared by the
+    /// `guest` and `websocket` route handlers: looks up a natively linked
+    /// service for this connection's `service_id`, and otherwise resolves
+    /// the deployed WASM component. A native service shadowing a deployed
+    /// component is only logged, never used -- the native service always
+    /// wins when both exist. `Break` carries the response to return
+    /// immediately: no sandbox engine at all (coordinator mode), or no
+    /// component deployed for this service. `Continue` carries the native
+    /// service (`Some` iff it claims the route) and the sandbox engine to
+    /// dispatch to otherwise (`Some` iff the native service does not).
+    fn resolve_dispatch_target(&self) -> ControlFlow<Response<HttpBody>, DispatchTarget> {
+        let native = self
+            .route_handler
+            .inner
+            .native_http
+            .get(&self.preamble.service_id)
+            .map(|e| e.value().clone());
+
+        if native.is_some() {
+            if let Some(engine) = &self.route_handler.inner.app_sandbox_engine
+                && engine.is_deployed(&self.preamble.service_id)
+            {
+                warn!(
+                    service_id = %self.preamble.service_id,
+                    "native_http service shadows deployed WASM component"
+                );
+            }
+            return ControlFlow::Continue((native, None));
+        }
+        let Some(engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
+            return ControlFlow::Break(http_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "app sandbox engine not available (coordinator mode)".into(),
+            ));
+        };
+        if !engine.is_deployed(&self.preamble.service_id) {
+            return ControlFlow::Break(http_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service has no deployed WASM component".into(),
+            ));
+        }
+        ControlFlow::Continue((None, Some(engine)))
     }
 
     async fn try_handle_http_request(&self, req: Request<Incoming>) -> Result<Response<HttpBody>> {

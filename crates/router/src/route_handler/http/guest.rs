@@ -46,16 +46,9 @@ impl HttpHandler {
             ));
         }
 
-        let native = self
-            .route_handler
-            .inner
-            .native_http
-            .get(&self.preamble.service_id)
-            .map(|e| e.value().clone());
-
-        let app_sandbox_engine = match self.resolve_guest_engine(native.is_some()) {
+        let (native, app_sandbox_engine) = match self.resolve_dispatch_target() {
             ControlFlow::Break(resp) => return Ok(resp),
-            ControlFlow::Continue(engine) => engine,
+            ControlFlow::Continue(target) => target,
         };
 
         // Every rejection above happens before any engine call, so each
@@ -101,44 +94,6 @@ impl HttpHandler {
         } else {
             Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, "no HTTP handler available".into()))
         }
-    }
-
-    /// Picks the guest HTTP target. `native_present` true means a natively
-    /// linked service already claims the route -- a deployed WASM
-    /// component underneath it, if any, is only logged as shadowed, never
-    /// used, so this returns `Continue(None)`. Otherwise a deployed
-    /// component must serve it: `Break` carries the response to return
-    /// immediately when there is no sandbox engine at all (coordinator
-    /// mode) or no component deployed for this service, the same as the
-    /// early `return Ok(...)` this replaces.
-    fn resolve_guest_engine(
-        &self,
-        native_present: bool,
-    ) -> ControlFlow<Response<HttpBody>, Option<Arc<AppSandboxEngine>>> {
-        if native_present {
-            if let Some(engine) = &self.route_handler.inner.app_sandbox_engine
-                && engine.is_deployed(&self.preamble.service_id)
-            {
-                warn!(
-                    service_id = %self.preamble.service_id,
-                    "native_http service shadows deployed WASM component"
-                );
-            }
-            return ControlFlow::Continue(None);
-        }
-        let Some(engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
-            return ControlFlow::Break(http_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "app sandbox engine not available (coordinator mode)".into(),
-            ));
-        };
-        if !engine.is_deployed(&self.preamble.service_id) {
-            return ControlFlow::Break(http_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "service has no deployed WASM component".into(),
-            ));
-        }
-        ControlFlow::Continue(Some(engine))
     }
 
     /// Reads and size-limits the guest request body. `Break` carries the
