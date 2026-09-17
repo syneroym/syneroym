@@ -92,7 +92,7 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/smoke-tests` | 0 | 0 | 0 | 1 | n/a | n/a | |
 | `tests/perf` | 1 | 1 | 0 | 4 | done | n/a | |
 | `xtask/src` | 0 | 0 | 0 | 2 | n/a | n/a | |
-| `test-components/*` | 13 | 1 | 1 | 1 | done | | |
+| `test-components/*` | 13 | 1 | 1 | 1 | done | done | |
 | **total** | **1,222** | **342** | **55** | **125** | | | |
 
 The four Roym service crates (`roym_transaction` 2,944 lines / 21 arms,
