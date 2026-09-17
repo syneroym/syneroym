@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
-use reqwest::Client;
+use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use syneroym_core::protocol_utils::{SESSION_COOKIE_NAME, gateway_session_assertion};
@@ -146,11 +146,11 @@ fn session_file_path(dir: &Path, run_as: Option<&str>, gateway_url: &str) -> Pat
     }
 }
 
-fn save_session_file(path: &Path, session: &StoredSession) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let data = serde_json::to_string_pretty(session)?;
+/// Write `contents` to `path`, creating it mode `0600` on Unix so a
+/// freshly written session credential is never briefly world- or
+/// group-readable. `what` names the file in the error context if the open
+/// fails. Non-Unix has no equivalent permission bit to set.
+fn write_secret_file(path: &Path, contents: &[u8], what: &str) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -160,14 +160,22 @@ fn save_session_file(path: &Path, session: &StoredSession) -> Result<()> {
             .truncate(true)
             .mode(0o600)
             .open(path)
-            .with_context(|| format!("failed to create session file at {}", path.display()))?;
-        file.write_all(data.as_bytes())?;
+            .with_context(|| format!("failed to create {what} at {}", path.display()))?;
+        file.write_all(contents)?;
     }
     #[cfg(not(unix))]
     {
-        fs::write(path, data)?;
+        fs::write(path, contents)?;
     }
     Ok(())
+}
+
+fn save_session_file(path: &Path, session: &StoredSession) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let data = serde_json::to_string_pretty(session)?;
+    write_secret_file(path, data.as_bytes(), "session file")
 }
 
 fn persist_session(
@@ -187,67 +195,355 @@ fn load_session_file(path: &Path) -> Result<StoredSession> {
         .with_context(|| format!("invalid session JSON at {}", path.display()))
 }
 
+/// Bails with `{what} failed ({status}): {body}` when `resp` is not 2xx,
+/// else passes it through unchanged.
+async fn ensure_success(resp: Response, what: &str) -> Result<Response> {
+    if resp.status().is_success() {
+        return Ok(resp);
+    }
+    let status = resp.status();
+    let err_text = resp.text().await.unwrap_or_default();
+    bail!("{what} failed ({status}): {err_text}");
+}
+
+/// Like [`ensure_success`], but for the login endpoints' richer error
+/// shape: when the body is a JSON object carrying an `error` string, that
+/// string is used instead of the raw body.
+async fn ensure_login_success(resp: Response, what: &str) -> Result<Response> {
+    if resp.status().is_success() {
+        return Ok(resp);
+    }
+    let status = resp.status();
+    let err_text = resp.text().await.unwrap_or_default();
+    if let Ok(val) = serde_json::from_str::<Value>(&err_text)
+        && let Some(err_msg) = val.get("error").and_then(|v| v.as_str())
+    {
+        bail!("{what} failed ({status}): {err_msg}");
+    }
+    bail!("{what} failed ({status}): {err_text}");
+}
+
+async fn handle_delegate(
+    dir: &Path,
+    run_as: Option<&str>,
+    expires_hours: u64,
+    out: &Path,
+    registry_url: Option<&str>,
+) -> Result<()> {
+    let identity_name =
+        run_as.context("session delegate requires --as <name> for the master identity")?;
+    let key_path = dir.join("identities").join(format!("{identity_name}.key"));
+    if !key_path.exists() {
+        bail!("Identity '{}' not found at {}", identity_name, key_path.display());
+    }
+    let master_identity = Identity::load_from_path(&key_path)?;
+
+    // Publish/refresh anchor on registry
+    member_identity::refresh_anchor_or_warn(registry_url, &master_identity).await?;
+
+    let temp_identity = Identity::generate()?;
+    let temp_did = substrate::derive_did_key(&temp_identity.public_key());
+
+    let cert = DelegationCertificate::issue(
+        &master_identity,
+        temp_identity.public_key(),
+        expires_hours.saturating_mul(3600),
+        SCOPE_SESSION_AUTH.to_string(),
+    )?;
+
+    let bundle = SessionKeyBundle {
+        temp_secret_key_hex: hex::encode(temp_identity.to_bytes()),
+        temp_did: temp_did.clone(),
+        certificate: cert,
+    };
+
+    if let Some(parent) = out.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let data = serde_json::to_string_pretty(&bundle)?;
+    write_secret_file(out, data.as_bytes(), "session key file")?;
+
+    println!(
+        "Minted session delegation certificate for temporary DID {} -> {}",
+        temp_did,
+        out.display()
+    );
+    Ok(())
+}
+
+async fn login_local(
+    dir: &Path,
+    run_as: Option<&str>,
+    gateway_url: &str,
+    identity: Option<&str>,
+) -> Result<()> {
+    let local_identity =
+        identity.or(run_as).context("local login requires --identity <name> or --as <name>")?;
+
+    let client = Client::new();
+    let base_url = gateway_url.trim_end_matches('/');
+    let login_url = format!("{base_url}/_syneroym/session/login");
+    let login_req = LoginRequest {
+        method: "local".to_string(),
+        temp_did: None,
+        delegation: None,
+        nonce: None,
+        signature: None,
+        identity: Some(local_identity.to_string()),
+    };
+
+    let resp = client
+        .post(&login_url)
+        .json(&login_req)
+        .send()
+        .await
+        .with_context(|| format!("failed to connect to auth service at {login_url}"))?;
+    let resp = ensure_login_success(resp, "login").await?;
+
+    let grant: LoginResponse = resp.json().await?;
+    let stored = StoredSession {
+        gateway_url: gateway_url.to_string(),
+        node_did: "local".to_string(),
+        person_did: grant.person_did.clone(),
+        token: grant.token,
+        expires_at_secs: grant.expires_at_secs,
+    };
+    persist_session(dir, run_as, gateway_url, &stored)?;
+
+    println!(
+        "Logged in locally as {} (session expires at {})",
+        grant.person_did, grant.expires_at_secs
+    );
+    Ok(())
+}
+
+/// Resolve the temporary identity and delegation certificate a
+/// delegated-key login presents: read them from `session_key_file` if
+/// given, else mint a fresh certificate under the master identity named
+/// by `--as`, publishing its anchor first.
+async fn resolve_delegated_session_key(
+    dir: &Path,
+    run_as: Option<&str>,
+    session_key_file: Option<&Path>,
+    registry_url: Option<&str>,
+    expires_hours: u64,
+) -> Result<(Identity, DelegationCertificate)> {
+    if let Some(key_path) = session_key_file {
+        let raw = fs::read_to_string(key_path).with_context(|| {
+            format!("failed to read session key file at {}", key_path.display())
+        })?;
+        let bundle: SessionKeyBundle = serde_json::from_str(&raw).with_context(|| {
+            format!("invalid session key bundle JSON at {}", key_path.display())
+        })?;
+        let secret_bytes: [u8; 32] = hex::decode(&bundle.temp_secret_key_hex)
+            .context("invalid hex secret key in session key bundle")?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("secret key must be 32 bytes"))?;
+        let temp_id = Identity::from_bytes(&secret_bytes);
+        return Ok((temp_id, bundle.certificate));
+    }
+
+    let identity_name =
+        run_as.context("delegated-key login requires --as <name> or --session-key-file <path>")?;
+    let key_path = dir.join("identities").join(format!("{identity_name}.key"));
+    if !key_path.exists() {
+        bail!("Identity '{}' not found at {}", identity_name, key_path.display());
+    }
+    let master_identity = Identity::load_from_path(&key_path)?;
+
+    // Publish/refresh anchor before login
+    member_identity::refresh_anchor_or_warn(registry_url, &master_identity).await?;
+
+    let temp_id = Identity::generate()?;
+    let cert = DelegationCertificate::issue(
+        &master_identity,
+        temp_id.public_key(),
+        expires_hours.saturating_mul(3600),
+        SCOPE_SESSION_AUTH.to_string(),
+    )?;
+    Ok((temp_id, cert))
+}
+
+async fn login_delegated_key(
+    dir: &Path,
+    run_as: Option<&str>,
+    gateway_url: &str,
+    session_key_file: Option<&Path>,
+    registry_url: Option<&str>,
+    expires_hours: u64,
+) -> Result<()> {
+    let (temp_identity, cert) =
+        resolve_delegated_session_key(dir, run_as, session_key_file, registry_url, expires_hours)
+            .await?;
+    let temp_did = substrate::derive_did_key(&temp_identity.public_key());
+
+    let client = Client::new();
+    let base_url = gateway_url.trim_end_matches('/');
+
+    // 1. Fetch challenge
+    let challenge_url = format!("{base_url}/_syneroym/session/challenge");
+    let resp = client
+        .post(&challenge_url)
+        .send()
+        .await
+        .with_context(|| format!("failed to connect to auth service at {challenge_url}"))?;
+    let resp = ensure_success(resp, "challenge request").await?;
+    let ch: ChallengeResponse = resp.json().await?;
+
+    // 2. Sign assertion
+    let assertion = gateway_session_assertion(&ch.node_did, &ch.nonce, &cert.master_did);
+    let signature = temp_identity.sign_json(&assertion)?;
+
+    // 3. POST login
+    let login_url = format!("{base_url}/_syneroym/session/login");
+    let login_req = LoginRequest {
+        method: "delegated-key".to_string(),
+        temp_did: Some(temp_did),
+        delegation: Some(cert.clone()),
+        nonce: Some(ch.nonce),
+        signature: Some(signature),
+        identity: None,
+    };
+    let resp = client
+        .post(&login_url)
+        .json(&login_req)
+        .send()
+        .await
+        .with_context(|| format!("failed to connect to auth service at {login_url}"))?;
+    let resp = ensure_login_success(resp, "auth service login").await?;
+    let grant: LoginResponse = resp.json().await?;
+
+    // 4. Persist session
+    let stored = StoredSession {
+        gateway_url: gateway_url.to_string(),
+        node_did: ch.node_did.clone(),
+        person_did: grant.person_did.clone(),
+        token: grant.token,
+        expires_at_secs: grant.expires_at_secs,
+    };
+    persist_session(dir, run_as, gateway_url, &stored)?;
+
+    println!(
+        "Logged in as {} to node {} (session expires at {})",
+        grant.person_did, ch.node_did, grant.expires_at_secs
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_login(
+    dir: &Path,
+    run_as: Option<&str>,
+    gateway_url: &str,
+    method: &str,
+    session_key_file: Option<&Path>,
+    identity: Option<&str>,
+    registry_url: Option<&str>,
+    expires_hours: u64,
+) -> Result<()> {
+    if method == "local" {
+        return login_local(dir, run_as, gateway_url, identity).await;
+    }
+    if method != "delegated-key" {
+        bail!("unknown login method '{method}', supported methods are 'delegated-key' and 'local'");
+    }
+    login_delegated_key(dir, run_as, gateway_url, session_key_file, registry_url, expires_hours)
+        .await
+}
+
+async fn handle_status(dir: &Path, run_as: Option<&str>, gateway_url: &str) -> Result<()> {
+    let session_path = session_file_path(dir, run_as, gateway_url);
+    if !session_path.exists() {
+        bail!("no active session for {gateway_url}");
+    }
+    let session = load_session_file(&session_path)?;
+
+    let client = Client::new();
+    let base_url = gateway_url.trim_end_matches('/');
+    let whoami_url = format!("{base_url}/_syneroym/session/whoami");
+    let resp = client
+        .get(&whoami_url)
+        .header("Authorization", format!("Bearer {}", session.token))
+        .header("Cookie", format!("{}={}", SESSION_COOKIE_NAME, session.token))
+        .send()
+        .await
+        .with_context(|| format!("failed to connect to auth service at {whoami_url}"))?;
+    let resp = ensure_success(resp, "session status check").await?;
+    let whoami: WhoamiResponse = resp.json().await?;
+    println!("Person DID: {}", whoami.person_did);
+    println!("Auth: {}", whoami.auth);
+    println!("Expires at: {}", whoami.expires_at_secs);
+    Ok(())
+}
+
+fn handle_token(dir: &Path, run_as: Option<&str>, gateway_url: &str) -> Result<()> {
+    let session_path = session_file_path(dir, run_as, gateway_url);
+    if !session_path.exists() {
+        bail!("no active session for {gateway_url}");
+    }
+    let session = load_session_file(&session_path)?;
+    println!("{}", session.token);
+    Ok(())
+}
+
+async fn handle_refresh(dir: &Path, run_as: Option<&str>, gateway_url: &str) -> Result<()> {
+    let session_path = session_file_path(dir, run_as, gateway_url);
+    if !session_path.exists() {
+        bail!("no active session for {gateway_url}");
+    }
+    let session = load_session_file(&session_path)?;
+
+    let client = Client::new();
+    let base_url = gateway_url.trim_end_matches('/');
+    let refresh_url = format!("{base_url}/_syneroym/session/refresh");
+    let resp = client
+        .post(&refresh_url)
+        .header("Authorization", format!("Bearer {}", session.token))
+        .header("Cookie", format!("{}={}", SESSION_COOKIE_NAME, session.token))
+        .send()
+        .await
+        .with_context(|| format!("failed to connect to auth service at {refresh_url}"))?;
+    let resp = ensure_success(resp, "session refresh").await?;
+    let grant: LoginResponse = resp.json().await?;
+    let stored = StoredSession {
+        gateway_url: gateway_url.to_string(),
+        node_did: session.node_did,
+        person_did: grant.person_did.clone(),
+        token: grant.token,
+        expires_at_secs: grant.expires_at_secs,
+    };
+    persist_session(dir, run_as, gateway_url, &stored)?;
+
+    println!("Refreshed session for {} (expires at {})", stored.person_did, stored.expires_at_secs);
+    Ok(())
+}
+
+async fn handle_logout(dir: &Path, run_as: Option<&str>, gateway_url: &str) -> Result<()> {
+    let session_path = session_file_path(dir, run_as, gateway_url);
+    if session_path.exists() {
+        if let Ok(session) = load_session_file(&session_path) {
+            let client = Client::new();
+            let base_url = gateway_url.trim_end_matches('/');
+            let logout_url = format!("{base_url}/_syneroym/session/logout");
+            let _ = client
+                .post(&logout_url)
+                .header("Authorization", format!("Bearer {}", session.token))
+                .header("Cookie", format!("{}={}", SESSION_COOKIE_NAME, session.token))
+                .send()
+                .await;
+        }
+        let _ = fs::remove_file(&session_path);
+    }
+    println!("Logged out of {gateway_url}");
+    Ok(())
+}
+
 pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>) -> Result<()> {
     match command {
         SessionCommands::Delegate { expires_hours, out, registry_url } => {
-            let identity_name =
-                run_as.context("session delegate requires --as <name> for the master identity")?;
-            let key_path = dir.join("identities").join(format!("{identity_name}.key"));
-            if !key_path.exists() {
-                bail!("Identity '{}' not found at {}", identity_name, key_path.display());
-            }
-            let master_identity = Identity::load_from_path(&key_path)?;
-
-            // Publish/refresh anchor on registry
-            member_identity::refresh_anchor_or_warn(registry_url.as_deref(), &master_identity)
-                .await?;
-
-            let temp_identity = Identity::generate()?;
-            let temp_did = substrate::derive_did_key(&temp_identity.public_key());
-
-            let cert = DelegationCertificate::issue(
-                &master_identity,
-                temp_identity.public_key(),
-                expires_hours.saturating_mul(3600),
-                SCOPE_SESSION_AUTH.to_string(),
-            )?;
-
-            let bundle = SessionKeyBundle {
-                temp_secret_key_hex: hex::encode(temp_identity.to_bytes()),
-                temp_did: temp_did.clone(),
-                certificate: cert,
-            };
-
-            if let Some(parent) = out.parent()
-                && !parent.as_os_str().is_empty()
-            {
-                fs::create_dir_all(parent)?;
-            }
-            let data = serde_json::to_string_pretty(&bundle)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                let mut file = fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(out)
-                    .with_context(|| {
-                        format!("failed to create session key file at {}", out.display())
-                    })?;
-                file.write_all(data.as_bytes())?;
-            }
-            #[cfg(not(unix))]
-            {
-                fs::write(out, data)?;
-            }
-
-            println!(
-                "Minted session delegation certificate for temporary DID {} -> {}",
-                temp_did,
-                out.display()
-            );
+            handle_delegate(dir, run_as, *expires_hours, out, registry_url.as_deref()).await
         }
         SessionCommands::Login {
             gateway_url,
@@ -257,260 +553,23 @@ pub async fn handle(command: &SessionCommands, dir: &Path, run_as: Option<&str>)
             registry_url,
             expires_hours,
         } => {
-            let client = Client::new();
-            let base_url = gateway_url.trim_end_matches('/');
-
-            if method == "local" {
-                let local_identity = identity
-                    .as_deref()
-                    .or(run_as)
-                    .context("local login requires --identity <name> or --as <name>")?;
-
-                let login_url = format!("{base_url}/_syneroym/session/login");
-                let login_req = LoginRequest {
-                    method: "local".to_string(),
-                    temp_did: None,
-                    delegation: None,
-                    nonce: None,
-                    signature: None,
-                    identity: Some(local_identity.to_string()),
-                };
-
-                let resp =
-                    client.post(&login_url).json(&login_req).send().await.with_context(|| {
-                        format!("failed to connect to auth service at {login_url}")
-                    })?;
-
-                if !resp.status().is_success() {
-                    let status = resp.status();
-                    let err_text = resp.text().await.unwrap_or_default();
-                    if let Ok(val) = serde_json::from_str::<Value>(&err_text)
-                        && let Some(err_msg) = val.get("error").and_then(|v| v.as_str())
-                    {
-                        bail!("login failed ({status}): {err_msg}");
-                    }
-                    bail!("login failed ({status}): {err_text}");
-                }
-
-                let grant: LoginResponse = resp.json().await?;
-                let stored = StoredSession {
-                    gateway_url: gateway_url.clone(),
-                    node_did: "local".to_string(),
-                    person_did: grant.person_did.clone(),
-                    token: grant.token,
-                    expires_at_secs: grant.expires_at_secs,
-                };
-                persist_session(dir, run_as, gateway_url, &stored)?;
-
-                println!(
-                    "Logged in locally as {} (session expires at {})",
-                    grant.person_did, grant.expires_at_secs
-                );
-                return Ok(());
-            }
-
-            if method != "delegated-key" {
-                bail!(
-                    "unknown login method '{method}', supported methods are 'delegated-key' and \
-                     'local'"
-                );
-            }
-
-            // Delegated key flow
-            let (temp_identity, cert) = if let Some(key_path) = session_key_file {
-                let raw = fs::read_to_string(key_path).with_context(|| {
-                    format!("failed to read session key file at {}", key_path.display())
-                })?;
-                let bundle: SessionKeyBundle = serde_json::from_str(&raw).with_context(|| {
-                    format!("invalid session key bundle JSON at {}", key_path.display())
-                })?;
-                let secret_bytes: [u8; 32] = hex::decode(&bundle.temp_secret_key_hex)
-                    .context("invalid hex secret key in session key bundle")?
-                    .try_into()
-                    .map_err(|_| anyhow::anyhow!("secret key must be 32 bytes"))?;
-                let temp_id = Identity::from_bytes(&secret_bytes);
-                (temp_id, bundle.certificate)
-            } else {
-                let identity_name = run_as.context(
-                    "delegated-key login requires --as <name> or --session-key-file <path>",
-                )?;
-                let key_path = dir.join("identities").join(format!("{identity_name}.key"));
-                if !key_path.exists() {
-                    bail!("Identity '{}' not found at {}", identity_name, key_path.display());
-                }
-                let master_identity = Identity::load_from_path(&key_path)?;
-
-                // Publish/refresh anchor before login
-                member_identity::refresh_anchor_or_warn(registry_url.as_deref(), &master_identity)
-                    .await?;
-
-                let temp_id = Identity::generate()?;
-                let cert = DelegationCertificate::issue(
-                    &master_identity,
-                    temp_id.public_key(),
-                    expires_hours.saturating_mul(3600),
-                    SCOPE_SESSION_AUTH.to_string(),
-                )?;
-                (temp_id, cert)
-            };
-
-            let temp_did = substrate::derive_did_key(&temp_identity.public_key());
-
-            // 1. Fetch challenge
-            let challenge_url = format!("{base_url}/_syneroym/session/challenge");
-            let resp =
-                client.post(&challenge_url).send().await.with_context(|| {
-                    format!("failed to connect to auth service at {challenge_url}")
-                })?;
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let err_text = resp.text().await.unwrap_or_default();
-                bail!("challenge request failed ({status}): {err_text}");
-            }
-            let ch: ChallengeResponse = resp.json().await?;
-
-            // 2. Sign assertion
-            let assertion = gateway_session_assertion(&ch.node_did, &ch.nonce, &cert.master_did);
-            let signature = temp_identity.sign_json(&assertion)?;
-
-            // 3. POST login
-            let login_url = format!("{base_url}/_syneroym/session/login");
-            let login_req = LoginRequest {
-                method: "delegated-key".to_string(),
-                temp_did: Some(temp_did),
-                delegation: Some(cert.clone()),
-                nonce: Some(ch.nonce),
-                signature: Some(signature),
-                identity: None,
-            };
-            let resp = client
-                .post(&login_url)
-                .json(&login_req)
-                .send()
-                .await
-                .with_context(|| format!("failed to connect to auth service at {login_url}"))?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let err_text = resp.text().await.unwrap_or_default();
-                if let Ok(val) = serde_json::from_str::<Value>(&err_text)
-                    && let Some(err_msg) = val.get("error").and_then(|v| v.as_str())
-                {
-                    bail!("auth service login failed ({status}): {err_msg}");
-                }
-                bail!("auth service login failed ({status}): {err_text}");
-            }
-            let grant: LoginResponse = resp.json().await?;
-
-            // 4. Persist session
-            let stored = StoredSession {
-                gateway_url: gateway_url.clone(),
-                node_did: ch.node_did.clone(),
-                person_did: grant.person_did.clone(),
-                token: grant.token,
-                expires_at_secs: grant.expires_at_secs,
-            };
-            persist_session(dir, run_as, gateway_url, &stored)?;
-
-            println!(
-                "Logged in as {} to node {} (session expires at {})",
-                grant.person_did, ch.node_did, grant.expires_at_secs
-            );
+            handle_login(
+                dir,
+                run_as,
+                gateway_url,
+                method,
+                session_key_file.as_deref(),
+                identity.as_deref(),
+                registry_url.as_deref(),
+                *expires_hours,
+            )
+            .await
         }
-        SessionCommands::Status { gateway_url } => {
-            let session_path = session_file_path(dir, run_as, gateway_url);
-            if !session_path.exists() {
-                bail!("no active session for {gateway_url}");
-            }
-            let session = load_session_file(&session_path)?;
-
-            let client = Client::new();
-            let base_url = gateway_url.trim_end_matches('/');
-            let whoami_url = format!("{base_url}/_syneroym/session/whoami");
-            let resp = client
-                .get(&whoami_url)
-                .header("Authorization", format!("Bearer {}", session.token))
-                .header("Cookie", format!("{}={}", SESSION_COOKIE_NAME, session.token))
-                .send()
-                .await
-                .with_context(|| format!("failed to connect to auth service at {whoami_url}"))?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let err_text = resp.text().await.unwrap_or_default();
-                bail!("session status check failed ({status}): {err_text}");
-            }
-            let whoami: WhoamiResponse = resp.json().await?;
-            println!("Person DID: {}", whoami.person_did);
-            println!("Auth: {}", whoami.auth);
-            println!("Expires at: {}", whoami.expires_at_secs);
-        }
-        SessionCommands::Token { gateway_url } => {
-            let session_path = session_file_path(dir, run_as, gateway_url);
-            if !session_path.exists() {
-                bail!("no active session for {gateway_url}");
-            }
-            let session = load_session_file(&session_path)?;
-            println!("{}", session.token);
-        }
-        SessionCommands::Refresh { gateway_url } => {
-            let session_path = session_file_path(dir, run_as, gateway_url);
-            if !session_path.exists() {
-                bail!("no active session for {gateway_url}");
-            }
-            let session = load_session_file(&session_path)?;
-
-            let client = Client::new();
-            let base_url = gateway_url.trim_end_matches('/');
-            let refresh_url = format!("{base_url}/_syneroym/session/refresh");
-            let resp = client
-                .post(&refresh_url)
-                .header("Authorization", format!("Bearer {}", session.token))
-                .header("Cookie", format!("{}={}", SESSION_COOKIE_NAME, session.token))
-                .send()
-                .await
-                .with_context(|| format!("failed to connect to auth service at {refresh_url}"))?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let err_text = resp.text().await.unwrap_or_default();
-                bail!("session refresh failed ({status}): {err_text}");
-            }
-            let grant: LoginResponse = resp.json().await?;
-            let stored = StoredSession {
-                gateway_url: gateway_url.clone(),
-                node_did: session.node_did,
-                person_did: grant.person_did.clone(),
-                token: grant.token,
-                expires_at_secs: grant.expires_at_secs,
-            };
-            persist_session(dir, run_as, gateway_url, &stored)?;
-
-            println!(
-                "Refreshed session for {} (expires at {})",
-                stored.person_did, stored.expires_at_secs
-            );
-        }
-        SessionCommands::Logout { gateway_url } => {
-            let session_path = session_file_path(dir, run_as, gateway_url);
-            if session_path.exists() {
-                if let Ok(session) = load_session_file(&session_path) {
-                    let client = Client::new();
-                    let base_url = gateway_url.trim_end_matches('/');
-                    let logout_url = format!("{base_url}/_syneroym/session/logout");
-                    let _ = client
-                        .post(&logout_url)
-                        .header("Authorization", format!("Bearer {}", session.token))
-                        .header("Cookie", format!("{}={}", SESSION_COOKIE_NAME, session.token))
-                        .send()
-                        .await;
-                }
-                let _ = fs::remove_file(&session_path);
-            }
-            println!("Logged out of {gateway_url}");
-        }
+        SessionCommands::Status { gateway_url } => handle_status(dir, run_as, gateway_url).await,
+        SessionCommands::Token { gateway_url } => handle_token(dir, run_as, gateway_url),
+        SessionCommands::Refresh { gateway_url } => handle_refresh(dir, run_as, gateway_url).await,
+        SessionCommands::Logout { gateway_url } => handle_logout(dir, run_as, gateway_url).await,
     }
-    Ok(())
 }
 
 pub async fn rpc_call(

@@ -14,7 +14,7 @@ use syneroym_app_orchestration::{
     ActionRecord, AppInstanceId, DeploymentJournal, DeploymentPlan, DeploymentState,
     LocalFilesystemCatalog, SynAppManifest, compile,
     models::{
-        AppBlueprintId, LogicalServiceName, PlannedService, ServiceConfig, ServiceSpec,
+        AppBlueprintId, LogicalServiceName, PlannedService, ServiceConfig, ServiceId, ServiceSpec,
         ServiceType, SubstrateAlias,
     },
     substrate_inventory::{SubstrateInventory, check_placement, placement_demand},
@@ -22,7 +22,7 @@ use syneroym_app_orchestration::{
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_sdk::{
     SyneroymClient,
-    deploy::{self, ApplyRequest, DeployTarget},
+    deploy::{self, ApplyReport, ApplyRequest, DeployTarget},
 };
 
 use super::{PREFLIGHT_TIMEOUT, resolve_credentials};
@@ -208,23 +208,11 @@ pub(crate) fn plan_declares_a_schedule(plan: &DeploymentPlan) -> bool {
     plan.services.iter().any(|s| s.schedule.is_some())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn handle_deploy(
-    instance_id: String,
-    manifest_path: PathBuf,
-    journal_path: PathBuf,
-    mint_masters: bool,
-    registry_url: Option<String>,
-    inventory: Option<PathBuf>,
-    api_url: &str,
-    substrate_opt: Option<String>,
-    dir: &Path,
-    run_as: Option<&str>,
-    ucan_path: Option<&Path>,
-) -> anyhow::Result<()> {
-    let instance_id = AppInstanceId::try_new(instance_id.clone())?;
-
-    let manifest = if manifest_path.extension().and_then(|s| s.to_str()) == Some("wasm") {
+/// Build the `SynAppManifest` `handle_deploy` compiles: a raw `.wasm` path
+/// is wrapped as an auto-generated single-service manifest, everything else
+/// is read and parsed as a manifest TOML.
+fn resolve_manifest(manifest_path: &Path) -> anyhow::Result<SynAppManifest> {
+    if manifest_path.extension().and_then(|s| s.to_str()) == Some("wasm") {
         let mut services = BTreeMap::new();
         services.insert(
             LogicalServiceName::new("main"),
@@ -253,57 +241,58 @@ pub(super) async fn handle_deploy(
                 topology_visibility: Default::default(),
             },
         );
-        SynAppManifest {
+        Ok(SynAppManifest {
             id: AppBlueprintId::new("legacy-wasm-app"),
             version: Version::new(0, 1, 0),
             description: Some("Auto-generated legacy wrapper".to_string()),
             placement: None,
             services,
             dependencies: BTreeMap::new(),
-        }
+        })
     } else {
-        let toml_str = fs::read_to_string(&manifest_path)?;
-        SynAppManifest::from_toml(&toml_str)?
-    };
+        let toml_str = fs::read_to_string(manifest_path)?;
+        SynAppManifest::from_toml(&toml_str)
+    }
+}
 
+/// Compile `manifest` and return its last (target) deployment plan.
+async fn compile_target_plan(
+    instance_id: &AppInstanceId,
+    manifest: &SynAppManifest,
+    manifest_path: &Path,
+) -> anyhow::Result<DeploymentPlan> {
     let catalog =
         LocalFilesystemCatalog::new(manifest_path.parent().unwrap_or(Path::new(".")).to_path_buf());
-
-    let compiled = compile(instance_id.clone(), &manifest, &catalog).await?;
-    let target_plan = compiled
+    let compiled = compile(instance_id.clone(), manifest, &catalog).await?;
+    compiled
         .plans
         .last()
-        .ok_or_else(|| anyhow::anyhow!("Compiled deployment contains no plans"))?;
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Compiled deployment contains no plans"))
+}
 
-    // `app deploy` has no supervisor behind it, and
-    // the supervisor is the scheduler (ADR-0023 §6) -- a schedule
-    // deployed this way validates and deploys, and then nothing
-    // ever runs it. A warning rather than a refusal, matching the
-    // posture already taken for a registry that does not resolve
-    // every member: the deploy is valid, one declared behaviour
-    // just will not happen.
-    if plan_declares_a_schedule(target_plan) {
-        eprintln!(
-            "warning: this plan declares a schedule, but `app deploy` has no supervisor behind it \
-             to run one. Use `roymctl supervisor submit` if the schedule should actually fire."
-        );
-    }
+/// Everything `handle_deploy`'s preflight learns about the substrates a
+/// plan is placed on: a ready client per alias, the API URL used to reach
+/// it, and the registry/DHT facts each reachable node reported.
+struct PlacementPreflight {
+    demand: BTreeMap<SubstrateAlias, BTreeSet<ServiceType>>,
+    clients: BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+    client_urls: BTreeMap<SubstrateAlias, String>,
+    registry_facts: BTreeMap<SubstrateAlias, (Option<String>, bool)>,
+}
 
-    let parent_dir = journal_path.parent().unwrap_or(Path::new("."));
-    let db_name = journal_path
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("Invalid journal path"))?
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid journal path characters"))?;
-    let journal = DeploymentJournal::open(parent_dir, db_name)?;
-
-    // ================================================================
-    // Everything that can bail runs BEFORE the journal is written.
-    // A record created ahead of a refusal becomes the next run's
-    // resume target and a fake recovery plan for `app reconcile`.
-    // ================================================================
-
-    // --- inventory + preflight -------------------------------------
+/// For every substrate alias `target_plan` demands, build a ready client and
+/// probe how that substrate is configured (its published registry, whether
+/// the DHT is on, and its declared service-type capabilities), so the
+/// checks that follow can run before anything is written.
+async fn build_placement_clients(
+    target_plan: &DeploymentPlan,
+    inventory: Option<PathBuf>,
+    api_url: &str,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<PlacementPreflight> {
     let demand = placement_demand(target_plan);
     let mut clients: BTreeMap<SubstrateAlias, Arc<SyneroymClient>> = BTreeMap::new();
     let mut client_urls: BTreeMap<SubstrateAlias, String> = BTreeMap::new();
@@ -311,113 +300,135 @@ pub(super) async fn handle_deploy(
     // read node facts; the registry-namespace check below fires only
     // when every placed alias is covered.
     let mut registry_facts: BTreeMap<SubstrateAlias, (Option<String>, bool)> = BTreeMap::new();
-    if !demand.is_empty() {
-        let inv_path = inventory.clone().unwrap_or_else(|| dir.join("substrates.toml"));
-        let inv = SubstrateInventory::load(&inv_path)?;
-        check_placement(&inv, &demand, &inv_path)?;
-        for alias in demand.keys() {
-            let entry = inv.get(alias, &inv_path)?;
-            let entry_api_url = entry.api_url.as_deref().unwrap_or(api_url);
-            let (entry_identity, entry_ucan) =
-                resolve_credentials(alias, entry, &inv_path, dir, run_as, ucan_path)?;
-            let mut c = crate::commands::client_for(
-                entry.did.clone(),
-                entry_api_url,
-                dir,
-                entry_identity,
-                entry_ucan.as_deref(),
-            )?;
-            c.wait_for_ready(PREFLIGHT_TIMEOUT)
-                .await
-                .with_context(|| format!("substrate '{alias}' ({}) is not reachable", entry.did))?;
+    if demand.is_empty() {
+        return Ok(PlacementPreflight { demand, clients, client_urls, registry_facts });
+    }
+    let inv_path = inventory.unwrap_or_else(|| dir.join("substrates.toml"));
+    let inv = SubstrateInventory::load(&inv_path)?;
+    check_placement(&inv, &demand, &inv_path)?;
+    for alias in demand.keys() {
+        let entry = inv.get(alias, &inv_path)?;
+        let entry_api_url = entry.api_url.as_deref().unwrap_or(api_url);
+        let (entry_identity, entry_ucan) =
+            resolve_credentials(alias, entry, &inv_path, dir, run_as, ucan_path)?;
+        let mut c = crate::commands::client_for(
+            entry.did.clone(),
+            entry_api_url,
+            dir,
+            entry_identity,
+            entry_ucan.as_deref(),
+        )?;
+        c.wait_for_ready(PREFLIGHT_TIMEOUT)
+            .await
+            .with_context(|| format!("substrate '{alias}' ({}) is not reachable", entry.did))?;
 
-            // `node_facts()` alone, not `status(vec![])` --
-            // an empty `service_ids` means "every service this
-            // caller may see", so for the node-wide owner credential
-            // that call would derive a phase and run a probe for
-            // every service the node hosts, just to read these four
-            // fields.
-            match c.node_facts().await.ok().flatten() {
-                None => {
-                    // Node facts need node-wide
-                    // orchestrator/status. A deploy-only or
-                    // app-scoped credential legitimately cannot
-                    // read them, and this must say so rather than
-                    // pass silently.
-                    eprintln!(
-                        "note: cannot verify substrate '{alias}''s capabilities or registry \
-                         configuration with this credential (needs node-wide \
-                         orchestrator/status); falling back to the post-apply probe."
-                    );
-                }
-                Some(facts) => {
-                    if let Some(declared) = &entry.capabilities {
-                        let reported: BTreeSet<String> =
-                            facts.service_types.iter().cloned().collect();
-                        for t in declared {
-                            let name = match t {
-                                ServiceType::Wasm => "wasm",
-                                ServiceType::Container => "container",
-                                ServiceType::Tcp => "tcp",
-                                ServiceType::NativeHost => "nativehost",
-                            };
-                            if !reported.contains(name) {
-                                eprintln!(
-                                    "warning: substrate '{alias}' declares '{t:?}' in {} but \
-                                     reports it cannot run it",
-                                    inv_path.display()
-                                );
-                            }
+        // `node_facts()` alone, not `status(vec![])` --
+        // an empty `service_ids` means "every service this
+        // caller may see", so for the node-wide owner credential
+        // that call would derive a phase and run a probe for
+        // every service the node hosts, just to read these four
+        // fields.
+        match c.node_facts().await.ok().flatten() {
+            None => {
+                // Node facts need node-wide
+                // orchestrator/status. A deploy-only or
+                // app-scoped credential legitimately cannot
+                // read them, and this must say so rather than
+                // pass silently.
+                eprintln!(
+                    "note: cannot verify substrate '{alias}''s capabilities or registry \
+                     configuration with this credential (needs node-wide orchestrator/status); \
+                     falling back to the post-apply probe."
+                );
+            }
+            Some(facts) => {
+                if let Some(declared) = &entry.capabilities {
+                    let reported: BTreeSet<String> = facts.service_types.iter().cloned().collect();
+                    for t in declared {
+                        let name = match t {
+                            ServiceType::Wasm => "wasm",
+                            ServiceType::Container => "container",
+                            ServiceType::Tcp => "tcp",
+                            ServiceType::NativeHost => "nativehost",
+                        };
+                        if !reported.contains(name) {
+                            eprintln!(
+                                "warning: substrate '{alias}' declares '{t:?}' in {} but reports \
+                                 it cannot run it",
+                                inv_path.display()
+                            );
                         }
                     }
-                    registry_facts.insert(alias.clone(), (facts.registry_url, facts.dht_enabled));
                 }
+                registry_facts.insert(alias.clone(), (facts.registry_url, facts.dht_enabled));
             }
-
-            client_urls.insert(alias.clone(), entry_api_url.to_string());
-            clients.insert(alias.clone(), Arc::new(c));
         }
-    }
 
-    if target_plan
+        client_urls.insert(alias.clone(), entry_api_url.to_string());
+        clients.insert(alias.clone(), Arc::new(c));
+    }
+    Ok(PlacementPreflight { demand, clients, client_urls, registry_facts })
+}
+
+/// Bails when `target_plan` places services across more than one substrate
+/// and, among the aliases whose credential could report it, they publish
+/// into more than one registry namespace with the DHT not universally
+/// enabled -- cross-substrate dependency calls could never resolve in that
+/// state.
+fn check_registry_namespace_consistency(
+    target_plan: &DeploymentPlan,
+    demand: &BTreeMap<SubstrateAlias, BTreeSet<ServiceType>>,
+    registry_facts: &BTreeMap<SubstrateAlias, (Option<String>, bool)>,
+) -> anyhow::Result<()> {
+    let multi_substrate = target_plan
         .services
         .iter()
         .filter_map(|s| s.substrate.as_ref())
         .collect::<BTreeSet<_>>()
         .len()
-        > 1
-        && demand.keys().all(|a| registry_facts.contains_key(a))
-    {
-        let urls: BTreeSet<Option<String>> =
-            registry_facts.values().map(|(url, _)| url.clone()).collect();
-        let all_dht = registry_facts.values().all(|(_, dht)| *dht);
-        if urls.len() > 1 && !all_dht {
-            let described: Vec<String> = registry_facts
-                .iter()
-                .map(|(a, (url, _))| format!("{a}: {}", url.as_deref().unwrap_or("(none)")))
-                .collect();
-            anyhow::bail!(
-                "substrates publish endpoint records into different registries ({}) and not every \
-                 substrate has the DHT enabled. Cross-substrate dependency calls cannot resolve. \
-                 Point them at one registry, or enable BEP0044 on all of them.",
-                described.join(", ")
-            );
-        }
+        > 1;
+    if !multi_substrate || !demand.keys().all(|a| registry_facts.contains_key(a)) {
+        return Ok(());
     }
+    let urls: BTreeSet<Option<String>> =
+        registry_facts.values().map(|(url, _)| url.clone()).collect();
+    let all_dht = registry_facts.values().all(|(_, dht)| *dht);
+    if urls.len() > 1 && !all_dht {
+        let described: Vec<String> = registry_facts
+            .iter()
+            .map(|(a, (url, _))| format!("{a}: {}", url.as_deref().unwrap_or("(none)")))
+            .collect();
+        anyhow::bail!(
+            "substrates publish endpoint records into different registries ({}) and not every \
+             substrate has the DHT enabled. Cross-substrate dependency calls cannot resolve. \
+             Point them at one registry, or enable BEP0044 on all of them.",
+            described.join(", ")
+        );
+    }
+    Ok(())
+}
 
-    // --- the fallback target, built lazily ------------------------
-    // Only a service with no placement needs it: a fully-placed app
-    // must not require a default substrate it never touches.
+/// Build the fallback deploy target for any service in `target_plan` with no
+/// explicit placement, resolving and readying its client lazily -- only a
+/// service with no placement needs it, since a fully-placed app must not
+/// require a default substrate it never touches.
+async fn build_fallback_target(
+    target_plan: &DeploymentPlan,
+    substrate_opt: Option<String>,
+    api_url: &str,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<(Option<Arc<SyneroymClient>>, Option<DeployTarget>)> {
     let needs_fallback = target_plan.services.iter().any(|s| s.substrate.is_none());
-    let fallback_client: Option<Arc<SyneroymClient>> = if needs_fallback {
-        let did = crate::commands::get_substrate_did(substrate_opt.clone(), dir)?;
-        let mut fb = crate::commands::client_for(did, api_url, dir, run_as, ucan_path)?;
-        fb.wait_for_ready(PREFLIGHT_TIMEOUT).await?;
-        Some(Arc::new(fb))
-    } else {
-        None
-    };
-    let fallback_target = fallback_client.as_ref().map(|fb| DeployTarget {
+    if !needs_fallback {
+        return Ok((None, None));
+    }
+    let did = crate::commands::get_substrate_did(substrate_opt, dir)?;
+    let mut fb = crate::commands::client_for(did, api_url, dir, run_as, ucan_path)?;
+    fb.wait_for_ready(PREFLIGHT_TIMEOUT).await?;
+    let fb = Arc::new(fb);
+    let target = DeployTarget {
         alias: None,
         substrate_did: fb.service_id().to_string(),
         // `roymctl` deliberately keeps the undurable actor:
@@ -425,9 +436,15 @@ pub(super) async fn handle_deploy(
         // durable queue behind it would be written and never
         // drained.
         actor: deploy::build_actor(fb.clone()),
-    });
+    };
+    Ok((Some(fb), Some(target)))
+}
 
-    let targets: BTreeMap<SubstrateAlias, DeployTarget> = clients
+/// Build one `DeployTarget` per client, keyed the same way.
+fn build_deploy_targets(
+    clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+) -> BTreeMap<SubstrateAlias, DeployTarget> {
+    clients
         .iter()
         .map(|(alias, c)| {
             (
@@ -439,42 +456,50 @@ pub(super) async fn handle_deploy(
                 },
             )
         })
-        .collect();
+        .collect()
+}
 
-    // --- placement change refusal --------------------------------
-    let placed = deploy::resolve_targets(target_plan, &targets, fallback_target.as_ref())?;
-    let landed = journal.get_completed_actions_for_instance(&instance_id)?;
-    check_no_placement_change(dir, &placed, &landed)?;
-
-    // --- masters -------------------------------------------------
-    // Still before the journal record is created: certification can
-    // bail on its own (an unreachable instance-identity call, a
-    // master-DID mismatch, a missing master file). Running it *after*
-    // the record existed used to leave an `Applying` record with zero
-    // action rows on exactly that bail -- a phantom record that
-    // `recover_applying` would then hand `app reconcile` as a recovery
-    // plan for a deploy that never started.
+/// Certify member identities when `--mint-masters` is set, else pass
+/// `target_plan` through unmodified with no certificates. Still before the
+/// journal record exists: certification can bail on its own (an
+/// unreachable instance-identity call, a master-DID mismatch, a missing
+/// master file), and running it after the record existed used to leave an
+/// `Applying` record with zero action rows on exactly that bail -- a
+/// phantom record `app reconcile` would then treat as a recovery plan for a
+/// deploy that never started.
+#[allow(clippy::too_many_arguments)]
+async fn build_deploy_plan(
+    dir: &Path,
+    target_plan: &DeploymentPlan,
+    clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+    fallback_client: Option<&Arc<SyneroymClient>>,
+    registry_url: Option<&str>,
+    mint_masters: bool,
+) -> anyhow::Result<(DeploymentPlan, BTreeMap<ServiceId, String>, BTreeMap<ServiceId, String>)> {
     let (deploy_plan, instance_certs, registry_certs) = if mint_masters {
         member_identity::substitute_and_certify_members(
             dir,
             target_plan,
-            &clients,
-            fallback_client.as_ref(),
-            registry_url.as_deref(),
+            clients,
+            fallback_client,
+            registry_url,
         )
         .await?
     } else {
         (target_plan.clone(), BTreeMap::new(), BTreeMap::new())
     };
-
     refuse_unmastered_dependencies(&deploy_plan, mint_masters)?;
+    Ok((deploy_plan, instance_certs, registry_certs))
+}
 
-    // ================================================================
-    // Past this point nothing bails before the journal is consistent.
-    // ================================================================
-
-    // --- resume --------------------------------------------------
-    let record_id = match journal.get_latest(&instance_id)? {
+/// Resume the in-flight record for `target_plan` if one is `Applying` or
+/// `Degraded` with an unchanged plan, else start a new one.
+fn resume_or_create_record(
+    journal: &DeploymentJournal,
+    instance_id: &AppInstanceId,
+    target_plan: &DeploymentPlan,
+) -> anyhow::Result<i64> {
+    Ok(match journal.get_latest(instance_id)? {
         Some(rec)
             if matches!(rec.state, DeploymentState::Applying | DeploymentState::Degraded)
                 && &rec.plan == target_plan =>
@@ -486,7 +511,165 @@ pub(super) async fn handle_deploy(
             journal.update_state(id, DeploymentState::Applying)?;
             id
         }
-    };
+    })
+}
+
+/// After `apply_plan` runs, probe whether every registry a placed service
+/// landed on can actually resolve it. Only when master minting is in play
+/// (an unminted deploy never published a registry record to test), and only
+/// for services that landed this run: a failed service was never deployed,
+/// so the registry cannot resolve it for that reason, not a topology fault.
+#[allow(clippy::too_many_arguments)]
+async fn verify_registry_after_apply(
+    deploy_plan: &DeploymentPlan,
+    targets: &BTreeMap<SubstrateAlias, DeployTarget>,
+    fallback_target: Option<&DeployTarget>,
+    placed: &[(&PlannedService, &DeployTarget)],
+    client_urls: &BTreeMap<SubstrateAlias, String>,
+    fallback_client: Option<&Arc<SyneroymClient>>,
+    api_url: &str,
+    mint_masters: bool,
+    report: &ApplyReport,
+) {
+    let distinct_dids: BTreeSet<&str> =
+        placed.iter().map(|(_, t)| t.substrate_did.as_str()).collect();
+    if !mint_masters || distinct_dids.len() <= 1 {
+        return;
+    }
+    let mut urls: BTreeSet<String> = client_urls.values().cloned().collect();
+    if fallback_client.is_some() {
+        urls.insert(api_url.to_string());
+    }
+    if let Ok(deployed_placed) = deploy::resolve_targets(deploy_plan, targets, fallback_target) {
+        // Only the members that actually landed this run. A
+        // failed service was never deployed at all -- the
+        // registry cannot resolve it for that reason, not a
+        // topology fault, and probing it anyway spends two full
+        // retry budgets per failure to report a warning that
+        // blames the wrong thing.
+        let deployed: BTreeSet<String> = report.deployed.iter().map(ToString::to_string).collect();
+        let succeeded: Vec<_> = deployed_placed
+            .into_iter()
+            .filter(|(svc, _)| deployed.contains(&svc.member_ref().to_string()))
+            .collect();
+        probe_registry_reachability(&succeeded, &urls).await;
+    }
+}
+
+/// Record the terminal state and report the deploy outcome. A `Degraded`
+/// state bails without rolling anything back -- the same command re-run
+/// retries only the failed services.
+fn report_deploy_outcome(
+    journal: &DeploymentJournal,
+    record_id: i64,
+    instance_id: &AppInstanceId,
+    report: &ApplyReport,
+) -> anyhow::Result<()> {
+    if report.is_complete() {
+        journal.update_state(record_id, DeploymentState::Active)?;
+        println!(
+            "Successfully deployed {} service(s) for {} ({} already applied, skipped)",
+            report.deployed.len(),
+            instance_id,
+            report.skipped.len()
+        );
+        return Ok(());
+    }
+    journal.update_state(record_id, DeploymentState::Degraded)?;
+    for failure in &report.failures {
+        eprintln!(
+            "  {} on {} ({}): {}",
+            failure.member_ref,
+            failure.alias.as_ref().map(SubstrateAlias::as_str).unwrap_or("--substrate"),
+            failure.substrate_did,
+            failure.error
+        );
+    }
+    anyhow::bail!(
+        "{} of {} services failed to deploy; the app instance is DEGRADED. Nothing was rolled \
+         back. Re-run the same command to retry only the failed services.",
+        report.failures.len(),
+        report.deployed.len() + report.failures.len() + report.skipped.len()
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn handle_deploy(
+    instance_id: String,
+    manifest_path: PathBuf,
+    journal_path: PathBuf,
+    mint_masters: bool,
+    registry_url: Option<String>,
+    inventory: Option<PathBuf>,
+    api_url: &str,
+    substrate_opt: Option<String>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let instance_id = AppInstanceId::try_new(instance_id.clone())?;
+
+    let manifest = resolve_manifest(&manifest_path)?;
+    let target_plan = compile_target_plan(&instance_id, &manifest, &manifest_path).await?;
+
+    // `app deploy` has no supervisor behind it, and
+    // the supervisor is the scheduler (ADR-0023 §6) -- a schedule
+    // deployed this way validates and deploys, and then nothing
+    // ever runs it. A warning rather than a refusal, matching the
+    // posture already taken for a registry that does not resolve
+    // every member: the deploy is valid, one declared behaviour
+    // just will not happen.
+    if plan_declares_a_schedule(&target_plan) {
+        eprintln!(
+            "warning: this plan declares a schedule, but `app deploy` has no supervisor behind it \
+             to run one. Use `roymctl supervisor submit` if the schedule should actually fire."
+        );
+    }
+
+    let journal = super::open_journal(&journal_path)?;
+
+    // ================================================================
+    // Everything that can bail runs BEFORE the journal is written.
+    // A record created ahead of a refusal becomes the next run's
+    // resume target and a fake recovery plan for `app reconcile`.
+    // ================================================================
+
+    // --- inventory + preflight -------------------------------------
+    let preflight =
+        build_placement_clients(&target_plan, inventory, api_url, dir, run_as, ucan_path).await?;
+    check_registry_namespace_consistency(
+        &target_plan,
+        &preflight.demand,
+        &preflight.registry_facts,
+    )?;
+
+    // --- the fallback target, built lazily ------------------------
+    let (fallback_client, fallback_target) =
+        build_fallback_target(&target_plan, substrate_opt, api_url, dir, run_as, ucan_path).await?;
+    let targets = build_deploy_targets(&preflight.clients);
+
+    // --- placement change refusal --------------------------------
+    let placed = deploy::resolve_targets(&target_plan, &targets, fallback_target.as_ref())?;
+    let landed = journal.get_completed_actions_for_instance(&instance_id)?;
+    check_no_placement_change(dir, &placed, &landed)?;
+
+    // --- masters -------------------------------------------------
+    let (deploy_plan, instance_certs, registry_certs) = build_deploy_plan(
+        dir,
+        &target_plan,
+        &preflight.clients,
+        fallback_client.as_ref(),
+        registry_url.as_deref(),
+        mint_masters,
+    )
+    .await?;
+
+    // ================================================================
+    // Past this point nothing bails before the journal is consistent.
+    // ================================================================
+
+    // --- resume --------------------------------------------------
+    let record_id = resume_or_create_record(&journal, &instance_id, &target_plan)?;
 
     // --- apply -------------------------------------------------------
     let report = deploy::apply_plan(
@@ -513,58 +696,18 @@ pub(super) async fn handle_deploy(
     .await?;
 
     // --- post-apply registry verification ------------------------
-    let distinct_dids: BTreeSet<&str> =
-        placed.iter().map(|(_, t)| t.substrate_did.as_str()).collect();
-    if mint_masters && distinct_dids.len() > 1 {
-        let mut urls: BTreeSet<String> = client_urls.values().cloned().collect();
-        if fallback_client.is_some() {
-            urls.insert(api_url.to_string());
-        }
-        if let Ok(deployed_placed) =
-            deploy::resolve_targets(&deploy_plan, &targets, fallback_target.as_ref())
-        {
-            // Only the members that actually landed this run. A
-            // failed service was never deployed at all -- the
-            // registry cannot resolve it for that reason, not a
-            // topology fault, and probing it anyway spends two full
-            // retry budgets per failure to report a warning that
-            // blames the wrong thing.
-            let deployed: BTreeSet<String> =
-                report.deployed.iter().map(ToString::to_string).collect();
-            let succeeded: Vec<_> = deployed_placed
-                .into_iter()
-                .filter(|(svc, _)| deployed.contains(&svc.member_ref().to_string()))
-                .collect();
-            probe_registry_reachability(&succeeded, &urls).await;
-        }
-    }
+    verify_registry_after_apply(
+        &deploy_plan,
+        &targets,
+        fallback_target.as_ref(),
+        &placed,
+        &preflight.client_urls,
+        fallback_client.as_ref(),
+        api_url,
+        mint_masters,
+        &report,
+    )
+    .await;
 
-    if report.is_complete() {
-        journal.update_state(record_id, DeploymentState::Active)?;
-        println!(
-            "Successfully deployed {} service(s) for {} ({} already applied, skipped)",
-            report.deployed.len(),
-            instance_id,
-            report.skipped.len()
-        );
-    } else {
-        journal.update_state(record_id, DeploymentState::Degraded)?;
-        for failure in &report.failures {
-            eprintln!(
-                "  {} on {} ({}): {}",
-                failure.member_ref,
-                failure.alias.as_ref().map(SubstrateAlias::as_str).unwrap_or("--substrate"),
-                failure.substrate_did,
-                failure.error
-            );
-        }
-        anyhow::bail!(
-            "{} of {} services failed to deploy; the app instance is DEGRADED. Nothing was rolled \
-             back. Re-run the same command to retry only the failed services.",
-            report.failures.len(),
-            report.deployed.len() + report.failures.len() + report.skipped.len()
-        );
-    }
-
-    Ok(())
+    report_deploy_outcome(&journal, record_id, &instance_id, &report)
 }

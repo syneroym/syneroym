@@ -12,13 +12,15 @@ use std::{
 
 use clap::Subcommand;
 use syneroym_app_orchestration::{
-    AppInstanceId, LocalFilesystemCatalog, SynAppManifest, compile,
+    AppInstanceId, DeploymentPlan, LocalFilesystemCatalog, SynAppManifest, compile,
     models::{ServiceType, SubstrateAlias},
     substrate_inventory::{SubstrateInventory, placement_demand},
 };
 use syneroym_app_supervisor::inventory::SupervisorInventoryEntry;
-use syneroym_sdk::mapper::INLINE_ARTIFACT_PREFIX;
+use syneroym_sdk::{SyneroymClient, mapper::INLINE_ARTIFACT_PREFIX};
 use syneroym_ucan::CapabilityToken;
+
+use super::app::resolve_under;
 
 /// Matches `app.rs`'s own preflight budget.
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -129,10 +131,6 @@ pub enum SupervisorCommands {
     },
 }
 
-fn resolve_under(dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() { path.to_path_buf() } else { dir.join(path) }
-}
-
 /// `release`/`retire` act on every placed substrate they *can* reach
 /// rather than failing the whole call the moment one is down -- this
 /// surfaces which ones, if any, still hold a stale generation stamp and
@@ -188,6 +186,238 @@ fn build_supervisor_inventory(
     Ok(out)
 }
 
+/// Inline every Wasm service's local artifact and every declared asset
+/// bundle's local archive as inline hex-encoded data, in place -- a
+/// submitted plan runs on a remote substrate with no access to
+/// `manifest_dir`.
+fn inline_local_artifacts(
+    target_plan: &mut DeploymentPlan,
+    manifest_dir: &Path,
+) -> anyhow::Result<()> {
+    for svc in &mut target_plan.services {
+        if svc.config.service_type == ServiceType::Wasm
+            && !svc.config.source.starts_with("http://")
+            && !svc.config.source.starts_with("https://")
+            && !svc.config.source.starts_with(INLINE_ARTIFACT_PREFIX)
+        {
+            let path = resolve_under(manifest_dir, Path::new(&svc.config.source));
+            let bytes = fs::read(&path).map_err(|e| {
+                anyhow::anyhow!("failed to read Wasm artifact at {}: {e}", path.display())
+            })?;
+            svc.config.source = format!("{INLINE_ARTIFACT_PREFIX}{}", hex::encode(bytes));
+        }
+    }
+
+    // Same treatment for a declared asset bundle's archive: resolved
+    // against `manifest_dir`, not this process's cwd, and inlined for the
+    // same reason as `source` above -- otherwise a remote submit reaches a
+    // substrate that cannot read the path.
+    for svc in &mut target_plan.services {
+        if let Some(assets) = &mut svc.config.assets
+            && !assets.archive.starts_with("http://")
+            && !assets.archive.starts_with("https://")
+            && !assets.archive.starts_with(INLINE_ARTIFACT_PREFIX)
+        {
+            let path = resolve_under(manifest_dir, Path::new(&assets.archive));
+            let bytes = fs::read(&path).map_err(|e| {
+                anyhow::anyhow!("failed to read asset bundle archive at {}: {e}", path.display())
+            })?;
+            assets.archive = format!("{INLINE_ARTIFACT_PREFIX}{}", hex::encode(bytes));
+        }
+    }
+    Ok(())
+}
+
+/// Compile `manifest_path` for `instance_id`, and inline every local
+/// artifact it references (see [`inline_local_artifacts`]). Refuses a
+/// manifest that compiles to more than one plan (a Spawn dependency):
+/// `supervisor submit` sends exactly one and would silently drop the
+/// others.
+async fn build_submit_plan(
+    instance_id: &str,
+    manifest_path: &Path,
+) -> anyhow::Result<DeploymentPlan> {
+    let instance_id_typed = AppInstanceId::try_new(instance_id.to_string())?;
+    let toml_str = fs::read_to_string(manifest_path)?;
+    let manifest = SynAppManifest::from_toml(&toml_str)?;
+    let manifest_dir = manifest_path.parent().unwrap_or(Path::new("."));
+    let catalog = LocalFilesystemCatalog::new(manifest_dir.to_path_buf());
+
+    let compiled = compile(instance_id_typed, &manifest, &catalog).await?;
+    if compiled.plans.len() > 1 {
+        anyhow::bail!(
+            "manifest '{}' declares a Spawn dependency, which compiles to more than one \
+             deployment plan; `supervisor submit` sends exactly one plan and would silently drop \
+             the others. Spawn dependencies are not yet supported here.",
+            manifest_path.display()
+        );
+    }
+    let mut target_plan = compiled
+        .plans
+        .last()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("compiled deployment contains no plans"))?;
+
+    inline_local_artifacts(&mut target_plan, manifest_dir)?;
+    Ok(target_plan)
+}
+
+/// Build the plan/inventory JSON payload and effective generation, call
+/// `supervisor.submit`, and print the result -- including a line per newly
+/// minted master, since a mint-in-place credential the operator has not
+/// backed up yet is exactly the state `export-master` exists to close.
+async fn handle_submit(
+    client: &SyneroymClient,
+    instance_id: &str,
+    manifest_path: &Path,
+    inventory: Option<&Path>,
+    generation: Option<u64>,
+    dir: &Path,
+) -> anyhow::Result<()> {
+    let target_plan = build_submit_plan(instance_id, manifest_path).await?;
+
+    let demand = placement_demand(&target_plan);
+    let inv_path = inventory.map(Path::to_path_buf).unwrap_or_else(|| dir.join("substrates.toml"));
+    let supervisor_inventory = if demand.is_empty() {
+        BTreeMap::new()
+    } else {
+        let inv = SubstrateInventory::load(&inv_path)?;
+        build_supervisor_inventory(&demand, &inv_path, &inv)?
+    };
+
+    let plan_json = target_plan.to_json()?;
+    let inventory_json = serde_json::to_string(&supervisor_inventory)?;
+
+    // "Omit to reuse the one `adopt` last minted for this
+    // instance" is this flag's own help text, but the generation
+    // this supervisor already holds is server state `roymctl`
+    // does not otherwise track -- reading it back from `status`
+    // is what makes the documented default true rather than
+    // silently presenting 0 against an adopted instance. A lookup
+    // failure just means "no prior desired state", i.e. a genuine
+    // first submission at 0, not an error worth surfacing here.
+    let effective_generation = match generation {
+        Some(g) => g,
+        None => client
+            .request("supervisor", "status", serde_json::to_value([instance_id])?)
+            .await
+            .ok()
+            .and_then(|res| res.result.get("generation").and_then(|v| v.as_u64()))
+            .unwrap_or(0),
+    };
+
+    let res = client
+        .request(
+            "supervisor",
+            "submit",
+            serde_json::to_value([serde_json::json!({
+                "app_instance_id": instance_id,
+                "plan_json": plan_json,
+                "inventory_json": inventory_json,
+                "generation": effective_generation,
+            })])?,
+        )
+        .await?;
+
+    println!("Submitted desired state for app instance '{instance_id}'.");
+    if let Some(masters) = res.result.get("masters").and_then(|m| m.as_array()) {
+        for m in masters {
+            let service_name = m.get("service_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let master_did = m.get("master_did").and_then(|v| v.as_str()).unwrap_or("?");
+            // The vault key `export-master` actually takes, not the
+            // bare logical name above -- printing `service_name`
+            // here produced a command that always failed with "no
+            // master named '<service_name>' in this vault".
+            let vault_name = m.get("vault_name").and_then(|v| v.as_str()).unwrap_or(service_name);
+            println!(
+                "  {service_name}: {master_did} -- back it up with `roymctl supervisor \
+                 export-master {vault_name}`"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn handle_adopt(client: &SyneroymClient, instance_id: &str) -> anyhow::Result<()> {
+    let res = client.request("supervisor", "adopt", serde_json::to_value([instance_id])?).await?;
+    let generation = res.result.get("generation").and_then(|v| v.as_u64()).unwrap_or(0);
+    println!("Adopted '{instance_id}' at generation {generation}.");
+    // The app master DID is told at the moment the key exists, the
+    // same rule `submit`'s own `minted-master` rows already encode
+    // -- not left to a follow-up `status` call.
+    let app_master_did = res.result.get("app_master_did").and_then(|v| v.as_str()).unwrap_or("?");
+    let vault_name = res.result.get("vault_name").and_then(|v| v.as_str()).unwrap_or("?");
+    println!(
+        "  app master: {app_master_did} -- back it up with `roymctl supervisor export-master \
+         {vault_name}`"
+    );
+    Ok(())
+}
+
+/// Call `method` (`release`/`retire`), print `message`, then warn about any
+/// substrate whose generation stamp could not be released -- both commands
+/// act on every placed substrate they *can* reach rather than failing the
+/// whole call the moment one is down.
+async fn call_and_report_unreleased(
+    client: &SyneroymClient,
+    method: &str,
+    instance_id: &str,
+    message: &str,
+) -> anyhow::Result<()> {
+    let res = client.request("supervisor", method, serde_json::to_value([instance_id])?).await?;
+    println!("{message}");
+    print_unreleased_substrates(&res.result);
+    Ok(())
+}
+
+async fn handle_pause(client: &SyneroymClient, instance_id: &str) -> anyhow::Result<()> {
+    let res = client.request("supervisor", "pause", serde_json::to_value([instance_id])?).await?;
+    println!("Paused '{instance_id}'.");
+    // ADR-0022 §2: a paused instance gets zero write-phase work,
+    // so its Tier-1 registry record stops refreshing along with
+    // everything else -- surfaced here rather than left to a
+    // follow-up `status` call, the same rule `adopt`'s own
+    // printed line already follows for the app master DID.
+    if let Some(expires_at) = res.result.get("app_record_expires_at").and_then(|v| v.as_u64()) {
+        println!(
+            "  its Tier-1 registry record stops refreshing while paused, and expires at Unix time \
+             {expires_at} unless resumed before then"
+        );
+    }
+    Ok(())
+}
+
+/// Call `method` on the `supervisor` interface with `params`, and
+/// pretty-print the JSON result -- the shape `status`/`alerts`/`outbox`/
+/// `dead-letters`/`schedules` all follow.
+async fn call_and_print_json(
+    client: &SyneroymClient,
+    method: &str,
+    params: serde_json::Value,
+) -> anyhow::Result<()> {
+    let res = client.request("supervisor", method, params).await?;
+    println!("{}", serde_json::to_string_pretty(&res.result)?);
+    Ok(())
+}
+
+async fn handle_revoke_instance(
+    client: &SyneroymClient,
+    instance_id: &str,
+    logical_ref: &str,
+) -> anyhow::Result<()> {
+    let result = client
+        .request("supervisor", "revoke-instance", serde_json::to_value((instance_id, logical_ref))?)
+        .await?;
+    let instance_did = result.result.get("instance_did").and_then(|v| v.as_str()).unwrap_or("?");
+    println!("Revoked the instance key for '{logical_ref}' ({instance_did}).");
+    println!(
+        "  Nothing will re-certify this member: not the resident loop, not `submit`, not \
+         `reconcile`."
+    );
+    println!("  Its process is still running -- remove it separately if that is intended.");
+    Ok(())
+}
+
 pub async fn handle(
     command: &SupervisorCommands,
     api_url: &str,
@@ -202,261 +432,85 @@ pub async fn handle(
 
     match command {
         SupervisorCommands::Submit { instance_id, manifest_path, inventory, generation } => {
-            let instance_id_typed = AppInstanceId::try_new(instance_id.clone())?;
-            let toml_str = fs::read_to_string(manifest_path)?;
-            let manifest = SynAppManifest::from_toml(&toml_str)?;
-            let manifest_dir = manifest_path.parent().unwrap_or(Path::new("."));
-            let catalog = LocalFilesystemCatalog::new(manifest_dir.to_path_buf());
-
-            let compiled = compile(instance_id_typed, &manifest, &catalog).await?;
-            if compiled.plans.len() > 1 {
-                anyhow::bail!(
-                    "manifest '{}' declares a Spawn dependency, which compiles to more than one \
-                     deployment plan; `supervisor submit` sends exactly one plan and would \
-                     silently drop the others. Spawn dependencies are not yet supported here.",
-                    manifest_path.display()
-                );
-            }
-            let mut target_plan = compiled
-                .plans
-                .last()
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("compiled deployment contains no plans"))?;
-
-            // Inline every Wasm artifact: the supervisor applies this plan
-            // on a remote substrate with no access to this machine's
-            // filesystem.
-            for svc in &mut target_plan.services {
-                if svc.config.service_type == ServiceType::Wasm
-                    && !svc.config.source.starts_with("http://")
-                    && !svc.config.source.starts_with("https://")
-                    && !svc.config.source.starts_with(INLINE_ARTIFACT_PREFIX)
-                {
-                    let path = resolve_under(manifest_dir, Path::new(&svc.config.source));
-                    let bytes = fs::read(&path).map_err(|e| {
-                        anyhow::anyhow!("failed to read Wasm artifact at {}: {e}", path.display())
-                    })?;
-                    svc.config.source = format!("{INLINE_ARTIFACT_PREFIX}{}", hex::encode(bytes));
-                }
-            }
-
-            // Same treatment for a declared asset bundle's archive:
-            // resolved against `manifest_dir`, not this process's cwd, and
-            // inlined for the same reason as `source` above -- otherwise a
-            // remote submit reaches a substrate that cannot read the path.
-            for svc in &mut target_plan.services {
-                if let Some(assets) = &mut svc.config.assets
-                    && !assets.archive.starts_with("http://")
-                    && !assets.archive.starts_with("https://")
-                    && !assets.archive.starts_with(INLINE_ARTIFACT_PREFIX)
-                {
-                    let path = resolve_under(manifest_dir, Path::new(&assets.archive));
-                    let bytes = fs::read(&path).map_err(|e| {
-                        anyhow::anyhow!(
-                            "failed to read asset bundle archive at {}: {e}",
-                            path.display()
-                        )
-                    })?;
-                    assets.archive = format!("{INLINE_ARTIFACT_PREFIX}{}", hex::encode(bytes));
-                }
-            }
-
-            let demand = placement_demand(&target_plan);
-            let inv_path = inventory.clone().unwrap_or_else(|| dir.join("substrates.toml"));
-            let supervisor_inventory = if demand.is_empty() {
-                BTreeMap::new()
-            } else {
-                let inv = SubstrateInventory::load(&inv_path)?;
-                build_supervisor_inventory(&demand, &inv_path, &inv)?
-            };
-
-            let plan_json = target_plan.to_json()?;
-            let inventory_json = serde_json::to_string(&supervisor_inventory)?;
-
-            // "Omit to reuse the one `adopt` last minted for this
-            // instance" is this flag's own help text, but the generation
-            // this supervisor already holds is server state `roymctl`
-            // does not otherwise track -- reading it back from `status`
-            // is what makes the documented default true rather than
-            // silently presenting 0 against an adopted instance. A lookup
-            // failure just means "no prior desired state", i.e. a genuine
-            // first submission at 0, not an error worth surfacing here.
-            let effective_generation = match generation {
-                Some(g) => *g,
-                None => client
-                    .request("supervisor", "status", serde_json::to_value([instance_id.clone()])?)
-                    .await
-                    .ok()
-                    .and_then(|res| res.result.get("generation").and_then(|v| v.as_u64()))
-                    .unwrap_or(0),
-            };
-
-            let res = client
-                .request(
-                    "supervisor",
-                    "submit",
-                    serde_json::to_value([serde_json::json!({
-                        "app_instance_id": instance_id,
-                        "plan_json": plan_json,
-                        "inventory_json": inventory_json,
-                        "generation": effective_generation,
-                    })])?,
-                )
-                .await?;
-
-            println!("Submitted desired state for app instance '{instance_id}'.");
-            if let Some(masters) = res.result.get("masters").and_then(|m| m.as_array()) {
-                for m in masters {
-                    let service_name =
-                        m.get("service_name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let master_did = m.get("master_did").and_then(|v| v.as_str()).unwrap_or("?");
-                    // The vault key `export-master` actually takes, not the
-                    // bare logical name above -- printing `service_name`
-                    // here produced a command that always failed with "no
-                    // master named '<service_name>' in this vault".
-                    let vault_name =
-                        m.get("vault_name").and_then(|v| v.as_str()).unwrap_or(service_name);
-                    println!(
-                        "  {service_name}: {master_did} -- back it up with `roymctl supervisor \
-                         export-master {vault_name}`"
-                    );
-                }
-            }
+            handle_submit(
+                &client,
+                instance_id,
+                manifest_path,
+                inventory.as_deref(),
+                *generation,
+                dir,
+            )
+            .await?;
         }
-        SupervisorCommands::Adopt { instance_id } => {
-            let res = client
-                .request("supervisor", "adopt", serde_json::to_value([instance_id.clone()])?)
-                .await?;
-            let generation = res.result.get("generation").and_then(|v| v.as_u64()).unwrap_or(0);
-            println!("Adopted '{instance_id}' at generation {generation}.");
-            // The app master DID is told at the moment the key exists, the
-            // same rule `submit`'s own `minted-master` rows already encode
-            // -- not left to a follow-up `status` call.
-            let app_master_did =
-                res.result.get("app_master_did").and_then(|v| v.as_str()).unwrap_or("?");
-            let vault_name = res.result.get("vault_name").and_then(|v| v.as_str()).unwrap_or("?");
-            println!(
-                "  app master: {app_master_did} -- back it up with `roymctl supervisor \
-                 export-master {vault_name}`"
-            );
-        }
+        SupervisorCommands::Adopt { instance_id } => handle_adopt(&client, instance_id).await?,
         SupervisorCommands::Release { instance_id } => {
-            let res = client
-                .request("supervisor", "release", serde_json::to_value([instance_id.clone()])?)
-                .await?;
-            println!("Released '{instance_id}' back to manual operation.");
-            print_unreleased_substrates(&res.result);
+            call_and_report_unreleased(
+                &client,
+                "release",
+                instance_id,
+                &format!("Released '{instance_id}' back to manual operation."),
+            )
+            .await?;
         }
-        SupervisorCommands::Pause { instance_id } => {
-            let res = client
-                .request("supervisor", "pause", serde_json::to_value([instance_id.clone()])?)
-                .await?;
-            println!("Paused '{instance_id}'.");
-            // ADR-0022 §2: a paused instance gets zero write-phase work,
-            // so its Tier-1 registry record stops refreshing along with
-            // everything else -- surfaced here rather than left to a
-            // follow-up `status` call, the same rule `adopt`'s own
-            // printed line already follows for the app master DID.
-            if let Some(expires_at) =
-                res.result.get("app_record_expires_at").and_then(|v| v.as_u64())
-            {
-                println!(
-                    "  its Tier-1 registry record stops refreshing while paused, and expires at \
-                     Unix time {expires_at} unless resumed before then"
-                );
-            }
-        }
+        SupervisorCommands::Pause { instance_id } => handle_pause(&client, instance_id).await?,
         SupervisorCommands::Resume { instance_id } => {
-            client
-                .request("supervisor", "resume", serde_json::to_value([instance_id.clone()])?)
-                .await?;
+            client.request("supervisor", "resume", serde_json::to_value([instance_id])?).await?;
             println!("Resumed '{instance_id}'.");
         }
         SupervisorCommands::Retire { instance_id } => {
-            let res = client
-                .request("supervisor", "retire", serde_json::to_value([instance_id.clone()])?)
-                .await?;
-            println!("Retired '{instance_id}'.");
-            print_unreleased_substrates(&res.result);
+            call_and_report_unreleased(
+                &client,
+                "retire",
+                instance_id,
+                &format!("Retired '{instance_id}'."),
+            )
+            .await?;
         }
         SupervisorCommands::Reconcile { instance_id } => {
             client
-                .request(
-                    "supervisor",
-                    "force-reconcile",
-                    serde_json::to_value([instance_id.clone()])?,
-                )
+                .request("supervisor", "force-reconcile", serde_json::to_value([instance_id])?)
                 .await?;
             println!("Reconciled '{instance_id}'.");
         }
         SupervisorCommands::Status { instance_id } => {
-            let res = client
-                .request("supervisor", "status", serde_json::to_value([instance_id.clone()])?)
-                .await?;
-            println!("{}", serde_json::to_string_pretty(&res.result)?);
+            call_and_print_json(&client, "status", serde_json::to_value([instance_id])?).await?;
         }
         SupervisorCommands::Alerts { instance_id, all } => {
-            let res = client
-                .request("supervisor", "alerts", serde_json::to_value((instance_id.clone(), *all))?)
+            call_and_print_json(&client, "alerts", serde_json::to_value((instance_id, *all))?)
                 .await?;
-            println!("{}", serde_json::to_string_pretty(&res.result)?);
         }
         SupervisorCommands::ExportMaster { name } => {
             let res = client
-                .request("supervisor", "export-master", serde_json::to_value([name.clone()])?)
+                .request("supervisor", "export-master", serde_json::to_value([name])?)
                 .await?;
             println!("Wrote master '{name}' to {}", res.result);
         }
         SupervisorCommands::ImportMaster { name } => {
-            client
-                .request("supervisor", "import-master", serde_json::to_value([name.clone()])?)
-                .await?;
+            client.request("supervisor", "import-master", serde_json::to_value([name])?).await?;
             println!("Imported master '{name}' into the vault.");
         }
         SupervisorCommands::RevokeInstance { instance_id, logical_ref } => {
-            let result = client
-                .request(
-                    "supervisor",
-                    "revoke-instance",
-                    serde_json::to_value((instance_id.clone(), logical_ref.clone()))?,
-                )
-                .await?;
-            let instance_did =
-                result.result.get("instance_did").and_then(|v| v.as_str()).unwrap_or("?");
-            println!("Revoked the instance key for '{logical_ref}' ({instance_did}).");
-            println!(
-                "  Nothing will re-certify this member: not the resident loop, not `submit`, not \
-                 `reconcile`."
-            );
-            println!("  Its process is still running -- remove it separately if that is intended.");
+            handle_revoke_instance(&client, instance_id, logical_ref).await?;
         }
         SupervisorCommands::Outbox { instance_id } => {
-            let res = client
-                .request("supervisor", "outbox", serde_json::to_value([instance_id.clone()])?)
-                .await?;
-            println!("{}", serde_json::to_string_pretty(&res.result)?);
+            call_and_print_json(&client, "outbox", serde_json::to_value([instance_id])?).await?;
         }
         SupervisorCommands::DeadLetters { instance_id } => {
-            let res = client
-                .request("supervisor", "dead-letters", serde_json::to_value([instance_id.clone()])?)
+            call_and_print_json(&client, "dead-letters", serde_json::to_value([instance_id])?)
                 .await?;
-            println!("{}", serde_json::to_string_pretty(&res.result)?);
         }
         SupervisorCommands::Replay { instance_id, dead_letter_id } => {
             client
                 .request(
                     "supervisor",
                     "replay",
-                    serde_json::to_value((instance_id.clone(), *dead_letter_id))?,
+                    serde_json::to_value((instance_id, *dead_letter_id))?,
                 )
                 .await?;
             println!("Replayed dead letter {dead_letter_id} for '{instance_id}'.");
         }
         SupervisorCommands::Schedules { instance_id } => {
-            let res = client
-                .request("supervisor", "schedules", serde_json::to_value([instance_id.clone()])?)
-                .await?;
-            println!("{}", serde_json::to_string_pretty(&res.result)?);
+            call_and_print_json(&client, "schedules", serde_json::to_value([instance_id])?).await?;
         }
     }
     Ok(())

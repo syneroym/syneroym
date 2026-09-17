@@ -6,7 +6,9 @@ use std::{
 };
 
 use clap::Subcommand;
-use syneroym_app_orchestration::{models::SubstrateAlias, substrate_inventory::SubstrateEntry};
+use syneroym_app_orchestration::{
+    AlertStore, DeploymentJournal, models::SubstrateAlias, substrate_inventory::SubstrateEntry,
+};
 
 pub mod deploy;
 pub mod health;
@@ -27,7 +29,7 @@ pub(crate) use deploy::{
 pub(crate) use semver::Version;
 #[cfg(test)]
 pub(crate) use syneroym_app_orchestration::{
-    ActionRecord, ActionState, AppInstanceId, DeploymentJournal, DeploymentPlan, DeploymentState,
+    ActionRecord, ActionState, AppInstanceId, DeploymentPlan, DeploymentState,
     models::{
         AppBlueprintId, LogicalServiceName, LogicalServiceRef, PlannedService, ServiceConfig,
         ServiceType,
@@ -86,6 +88,41 @@ pub(crate) fn resolve_credentials<'a>(
     } else {
         Ok((run_as, ucan_path.map(Path::to_path_buf)))
     }
+}
+
+/// Splits `path` into the parent directory and file name that
+/// `DeploymentJournal::open`/`AlertStore::open` take separately. `what`
+/// names the kind of path in the error message (e.g. "journal", "alerts").
+fn split_store_path(path: &Path, what: &str) -> anyhow::Result<(PathBuf, String)> {
+    Ok((
+        path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        path.file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid {what} path"))?
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid {what} path characters"))?
+            .to_string(),
+    ))
+}
+
+/// Opens the deployment journal at `journal_path`. Shared by every `app`
+/// subcommand that reads or writes it, so the path-splitting error message
+/// stays worded the same way everywhere.
+pub(crate) fn open_journal(journal_path: &Path) -> anyhow::Result<DeploymentJournal> {
+    let (dir, name) = split_store_path(journal_path, "journal")?;
+    DeploymentJournal::open(&dir, &name)
+}
+
+/// Opens the alert store at `alerts_path`, or `alerts.db` beside
+/// `parent_dir` (the journal's own directory) when not given.
+pub(crate) fn open_alert_store(
+    alerts_path: Option<&Path>,
+    parent_dir: &Path,
+) -> anyhow::Result<AlertStore> {
+    let (dir, name) = match alerts_path {
+        Some(p) => split_store_path(p, "alerts")?,
+        None => (parent_dir.to_path_buf(), "alerts.db".to_string()),
+    };
+    AlertStore::open(&dir, &name)
 }
 
 #[derive(Subcommand, Debug, Clone)]

@@ -8,8 +8,8 @@ use std::{
 };
 
 use syneroym_app_orchestration::{
-    ActionState, AppInstanceId, DeploymentJournal, DeploymentState, LocalFilesystemCatalog,
-    Reconciler, SynAppManifest, compile,
+    ActionState, AppInstanceId, DeploymentState, LocalFilesystemCatalog, Reconciler,
+    SynAppManifest, compile,
     models::{LogicalServiceName, LogicalServiceRef, MemberRef},
 };
 use syneroym_sdk::deploy;
@@ -21,14 +21,7 @@ pub(super) async fn handle_reconcile(
 ) -> anyhow::Result<()> {
     let instance_id = AppInstanceId::try_new(instance_id.clone())?;
 
-    let parent_dir = journal_path.parent().unwrap_or(Path::new("."));
-    let db_name = journal_path
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("Invalid journal path"))?
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid journal path characters"))?;
-
-    let journal = DeploymentJournal::open(parent_dir, db_name)?;
+    let journal = super::open_journal(&journal_path)?;
     let reconciler = Reconciler::new(&journal);
 
     if let Some(recovery_plan) = reconciler.recover_applying(&instance_id)? {
@@ -100,13 +93,7 @@ pub(super) fn handle_forget(
     // on member 0 alone while its siblings stay tracked.
     let l_ref = (MemberRef { logical_ref: logical_ref.clone(), index: 0 }).to_string();
 
-    let parent_dir = journal_path.parent().unwrap_or(Path::new("."));
-    let db_name = journal_path
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("Invalid journal path"))?
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid journal path characters"))?;
-    let journal = DeploymentJournal::open(parent_dir, db_name)?;
+    let journal = super::open_journal(&journal_path)?;
 
     let landed = journal.get_completed_actions_for_instance(&instance_id)?;
 

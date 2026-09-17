@@ -61,7 +61,7 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/sdk` | 101 | 47 | 4 | 3 | done | done | |
 | `crates/sandbox_wasm` | 90 | 16 | 3 | 6 | done | done | |
 | `crates/core` | 75 | 37 | 3 | 0 | done | done | |
-| `apps/roymctl` | 69 | 37 | 4 | 9 | done | done | |
+| `apps/roymctl` | 69 | 37 | 4 | 9 | done | done | done |
 | `crates/app_orchestration` | 49 | 22 | 2 | 2 | done | done | |
 | `crates/async_queue` | 34 | 12 | 2 | 0 | done | done | |
 | `crates/data_db` | 34 | 9 | 4 | 0 | done | done | |
