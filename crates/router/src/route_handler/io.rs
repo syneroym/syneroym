@@ -305,7 +305,73 @@ impl RouteHandler {
         let mut writer = write_half;
 
         debug!("[Router] Reading preamble from incoming stream");
-        let mut preamble = time::timeout(PRE_AUTH_READ_TIMEOUT, read_preamble(&mut reader))
+        let (mut preamble, caller) =
+            self.read_and_verify_preamble(&mut reader, &mut writer).await?;
+
+        // 2. Registry lookup & normalization
+        self.rewrite_empty_http_interface(&mut preamble);
+        let lookup_result = self.inner.registry.lookup(&preamble.service_id, &preamble.interface);
+
+        let (endpoint, canonical_interface) = match lookup_result {
+            Some(res) => res,
+            None => return self.relay_to_next_hop(preamble, reader, writer).await,
+        };
+
+        preamble.interface = canonical_interface;
+        debug!("[Router] Registry lookup complete: endpoint={:?}", endpoint);
+
+        // 3. Plan the pipeline stages
+        let pipeline = self.plan_pipeline(&preamble, &endpoint);
+        dispatch::log_pipeline(&preamble, &pipeline, &endpoint);
+
+        // 4. Apply encryption stage -> OwnedStream
+        let stream = apply_encryption_stage(
+            reader,
+            writer,
+            &pipeline.encryption,
+            &preamble,
+            &self.inner.identity,
+        )
+        .await?;
+
+        // 5. Dispatch by transport stage
+        match pipeline.transport {
+            TransportStage::Raw => self.handle_raw_stream(stream, &preamble, &pipeline).await,
+            TransportStage::Http => {
+                let io = TokioIo::new(stream);
+                self.handle_http_stream(io, preamble, pipeline, caller).await
+            }
+            TransportStage::Binary => {
+                let (r, w) = (stream.reader, stream.writer);
+                self.handle_binary_stream(
+                    BufReader::new(r),
+                    w,
+                    &preamble,
+                    &pipeline,
+                    caller,
+                    stop_signal,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Step 1 of `handle_stream`: reads the route preamble off the wire and
+    /// runs handshake verification. `Ok(None)` for the caller identity means
+    /// "no verifiable identity", tolerated only by the passthrough/relay
+    /// paths that never reach native dispatch (the native dispatch arm in
+    /// `dispatch.rs` rejects `None`, ADR-0016 §3). A *malformed* delegation
+    /// -- a certificate whose `temporary_did` doesn't match the preamble's
+    /// own pubkey, that's expired, revoked, or carries a scope outside
+    /// `TRANSPORT_SCOPES` -- is a hard reject: this writes `Unauthorized`
+    /// back to the peer and returns `Err`, which `handle_stream` propagates
+    /// via `?`, exactly as the inline `return Err(e)` this replaces did.
+    async fn read_and_verify_preamble(
+        &self,
+        reader: &mut BufReader<impl AsyncRead + Unpin>,
+        writer: &mut (impl AsyncWrite + Unpin),
+    ) -> Result<(RoutePreamble, Option<CallerContext>)> {
+        let preamble = time::timeout(PRE_AUTH_READ_TIMEOUT, read_preamble(reader))
             .await
             .map_err(|_| anyhow!("timed out reading route preamble"))??;
         debug!(
@@ -359,122 +425,92 @@ impl RouteHandler {
             }
         };
 
-        // 2. Registry lookup & normalization
-        //
-        // An HTTP request with no interface hint (ADR-0022 §7's hostname omits
-        // `-i`) must reach the inbound HTTP bridge when the service declares
-        // guest routes or a static asset bundle: the bridge serves those, and
-        // serving an asset dispatches `blob-store/open-download` -- a
-        // native-capability interface, so the connection has to land on the
-        // service's `http-native` `NativeHostChannel`. `resolve_interface`'s
-        // empty case filters every native-capability name out, so left alone it
-        // picks the app-declared WASM channel and the asset dispatch is
-        // misrouted into the component (which imports, but never exports,
-        // `blob-store`). Prefer `http-native` here -- but only when the empty
-        // interface would otherwise resolve to a `WasmChannel`. A node-level
-        // native service such as the auth service resolves its empty interface
-        // to its own `NativeHostChannel` and must be left alone.
-        if preamble.transport == RouteTransport::Http && preamble.interface.is_empty() {
-            let service_id = preamble.service_id.as_str();
-            let has_routes_or_assets = self.inner.http_routes.contains_key(service_id)
-                || self.inner.assets.contains_key(service_id);
-            if has_routes_or_assets {
-                let empty_ep = self.inner.registry.lookup(service_id, "").map(|(ep, _)| ep);
-                maybe_rewrite_http_native_interface(
-                    preamble.transport,
-                    &mut preamble.interface,
-                    has_routes_or_assets,
-                    empty_ep.as_ref(),
-                );
-            }
+        Ok((preamble, caller))
+    }
+
+    /// Step 2's interface normalization: an HTTP request with no interface
+    /// hint (ADR-0022 §7's hostname omits `-i`) must reach the inbound HTTP
+    /// bridge when the service declares guest routes or a static asset
+    /// bundle -- the bridge serves those, and serving an asset dispatches
+    /// `blob-store/open-download`, a native-capability interface, so the
+    /// connection has to land on the service's `http-native`
+    /// `NativeHostChannel`. `resolve_interface`'s empty case filters every
+    /// native-capability name out, so left alone it picks the app-declared
+    /// WASM channel and the asset dispatch is misrouted into the component
+    /// (which imports, but never exports, `blob-store`). Prefer
+    /// `http-native` here -- but only when the empty interface would
+    /// otherwise resolve to a `WasmChannel`. A node-level native service
+    /// such as the auth service resolves its empty interface to its own
+    /// `NativeHostChannel` and must be left alone.
+    fn rewrite_empty_http_interface(&self, preamble: &mut RoutePreamble) {
+        if preamble.transport != RouteTransport::Http || !preamble.interface.is_empty() {
+            return;
         }
+        let service_id = preamble.service_id.as_str();
+        let has_routes_or_assets = self.inner.http_routes.contains_key(service_id)
+            || self.inner.assets.contains_key(service_id);
+        if !has_routes_or_assets {
+            return;
+        }
+        let empty_ep = self.inner.registry.lookup(service_id, "").map(|(ep, _)| ep);
+        maybe_rewrite_http_native_interface(
+            preamble.transport,
+            &mut preamble.interface,
+            has_routes_or_assets,
+            empty_ep.as_ref(),
+        );
+    }
 
-        let lookup_result = self.inner.registry.lookup(&preamble.service_id, &preamble.interface);
+    /// Step 2's registry-miss fallback: resolves the next relay hop over
+    /// Iroh, forwards the original preamble, and blindly pipes bytes both
+    /// ways until the tunnel closes. Always terminal for `handle_stream` --
+    /// every path through this, success or failure, is exactly what the
+    /// caller should return, so `handle_stream` calls this as `return
+    /// self.relay_to_next_hop(...).await;`, the same as the inline `return
+    /// Ok(())` / `return Err(...)` this replaces.
+    async fn relay_to_next_hop(
+        &self,
+        preamble: RoutePreamble,
+        reader: BufReader<impl AsyncRead + Unpin + Send + 'static>,
+        writer: impl AsyncWrite + Unpin + Send + 'static,
+    ) -> Result<()> {
+        // Community registry / DHT lookup
+        debug!(
+            "[Router] Local miss for service '{}'. Falling back to community registry / DHT.",
+            preamble.service_id
+        );
 
-        let (endpoint, canonical_interface) = if let Some(res) = lookup_result {
-            res
-        } else {
-            // Community registry / DHT lookup
-            debug!(
-                "[Router] Local miss for service '{}'. Falling back to community registry / DHT.",
-                preamble.service_id
-            );
+        let next_hop_addr =
+            net_iroh::resolve_iroh_addr(&self.inner.registry_client, &preamble.service_id).await?;
 
-            let next_hop_addr =
-                net_iroh::resolve_iroh_addr(&self.inner.registry_client, &preamble.service_id)
-                    .await?;
+        // 3. Connect outbound to next hop
+        let ep = self
+            .inner
+            .iroh_endpoint
+            .as_ref()
+            .ok_or_else(|| anyhow!("No Iroh endpoint configured for relay forwarding"))?;
+        debug!("[Router] Relay connecting to next hop: {:?}", next_hop_addr.id);
+        let conn =
+            connect_with_retry(ep, next_hop_addr, SYNEROYM_ALPN, &self.inner.retry_policy).await?;
+        let (mut out_send, out_recv) = conn.open_bi().await?;
 
-            // 3. Connect outbound to next hop
-            let ep = self
-                .inner
-                .iroh_endpoint
-                .as_ref()
-                .ok_or_else(|| anyhow!("No Iroh endpoint configured for relay forwarding"))?;
-            debug!("[Router] Relay connecting to next hop: {:?}", next_hop_addr.id);
-            let conn =
-                connect_with_retry(ep, next_hop_addr, SYNEROYM_ALPN, &self.inner.retry_policy)
-                    .await?;
-            let (mut out_send, out_recv) = conn.open_bi().await?;
+        // 4. Send original preamble
+        debug!("[Router] Forwarding original preamble: {}", preamble.to_string());
+        out_send.write_all(preamble.to_preamble_line().as_bytes()).await?;
 
-            // 4. Send original preamble
-            debug!("[Router] Forwarding original preamble: {}", preamble.to_string());
-            out_send.write_all(preamble.to_preamble_line().as_bytes()).await?;
-
-            // 5. Blind bidirectional pipe
-            let mut inbound = ReaderWriter { reader, writer };
-            let mut outbound = IrohStream::new(out_send, out_recv).with_conn(conn);
-            if let Err(e) = io::copy_bidirectional(&mut inbound, &mut outbound).await {
-                if super::is_expected_disconnect(&e) {
-                    debug!(
-                        "[Router] Relay tunnel for {} closed by peer ({e})",
-                        preamble.service_id
-                    );
-                } else {
-                    return Err(anyhow!("Error in relay copy for {}: {e}", preamble.service_id));
-                }
+        // 5. Blind bidirectional pipe
+        let mut inbound = ReaderWriter { reader, writer };
+        let mut outbound = IrohStream::new(out_send, out_recv).with_conn(conn);
+        if let Err(e) = io::copy_bidirectional(&mut inbound, &mut outbound).await {
+            if super::is_expected_disconnect(&e) {
+                debug!("[Router] Relay tunnel for {} closed by peer ({e})", preamble.service_id);
             } else {
-                debug!("[Router] Relay copy completed successfully");
+                return Err(anyhow!("Error in relay copy for {}: {e}", preamble.service_id));
             }
-            return Ok(());
-        };
-
-        preamble.interface = canonical_interface;
-        debug!("[Router] Registry lookup complete: endpoint={:?}", endpoint);
-
-        // 3. Plan the pipeline stages
-        let pipeline = self.plan_pipeline(&preamble, &endpoint);
-        dispatch::log_pipeline(&preamble, &pipeline, &endpoint);
-
-        // 4. Apply encryption stage -> OwnedStream
-        let stream = apply_encryption_stage(
-            reader,
-            writer,
-            &pipeline.encryption,
-            &preamble,
-            &self.inner.identity,
-        )
-        .await?;
-
-        // 5. Dispatch by transport stage
-        match pipeline.transport {
-            TransportStage::Raw => self.handle_raw_stream(stream, &preamble, &pipeline).await,
-            TransportStage::Http => {
-                let io = TokioIo::new(stream);
-                self.handle_http_stream(io, preamble, pipeline, caller).await
-            }
-            TransportStage::Binary => {
-                let (r, w) = (stream.reader, stream.writer);
-                self.handle_binary_stream(
-                    BufReader::new(r),
-                    w,
-                    &preamble,
-                    &pipeline,
-                    caller,
-                    stop_signal,
-                )
-                .await
-            }
+        } else {
+            debug!("[Router] Relay copy completed successfully");
         }
+        Ok(())
     }
 
     /// Handles a raw bidirectional stream passthrough to a `ServiceStage`.
