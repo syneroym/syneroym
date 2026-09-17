@@ -8,7 +8,8 @@ use std::{
 };
 
 use syneroym_app_orchestration::{
-    AlertStore, AppInstanceId, DeploymentJournal, models::SubstrateAlias,
+    ActionRecord, AlertStore, AppInstanceId,
+    models::{PlannedService, SubstrateAlias},
     substrate_inventory::SubstrateInventory,
 };
 use syneroym_sdk::{SubstrateStatus, deploy, health};
@@ -16,52 +17,23 @@ use syneroym_sdk::{SubstrateStatus, deploy, health};
 use super::{PREFLIGHT_TIMEOUT, resolve_credentials};
 use crate::commands::member_identity;
 
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn handle_health(
-    instance_id: String,
-    journal_path: PathBuf,
-    alerts_path: Option<PathBuf>,
-    inventory: Option<PathBuf>,
-    watch: Option<u64>,
-    no_record: bool,
-    strict: bool,
-    api_url: &str,
+/// The substrate alias (if any) each substrate DID discovered while
+/// polling health maps back to.
+type DidAliases = BTreeMap<String, Option<SubstrateAlias>>;
+
+/// Build each service's expected identity for the poll (the substrate DID
+/// from its most recent completed placement, and the real service id
+/// re-derived since the plan may hold the compiler's fabricated one), and
+/// the substrate alias each landed-on DID maps back to.
+fn build_expected_and_aliases(
     dir: &Path,
-    run_as: Option<&str>,
-    ucan_path: Option<&Path>,
-) -> anyhow::Result<()> {
-    let instance_id = AppInstanceId::try_new(instance_id.clone())?;
-
-    let parent_dir = journal_path.parent().unwrap_or(Path::new("."));
-    let db_name = journal_path
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("Invalid journal path"))?
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid journal path characters"))?;
-    let journal = DeploymentJournal::open(parent_dir, db_name)?;
-
-    let (alerts_dir, alerts_name) = match alerts_path {
-        Some(p) => (
-            p.parent().unwrap_or(Path::new(".")).to_path_buf(),
-            p.file_name()
-                .ok_or_else(|| anyhow::anyhow!("Invalid alerts path"))?
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("Invalid alerts path characters"))?
-                .to_string(),
-        ),
-        None => (parent_dir.to_path_buf(), "alerts.db".to_string()),
-    };
-    let alerts = AlertStore::open(&alerts_dir, &alerts_name)?;
-
-    let record = journal
-        .get_latest(&instance_id)?
-        .ok_or_else(|| anyhow::anyhow!("no deployment record for {instance_id}"))?;
-    let landed = journal.get_completed_actions_for_instance(&instance_id)?;
-
+    plan_services: &[PlannedService],
+    landed: &[ActionRecord],
+) -> anyhow::Result<(Vec<health::ExpectedService>, DidAliases)> {
     let mut expected = Vec::new();
-    let mut aliases: BTreeMap<String, Option<SubstrateAlias>> = BTreeMap::new();
-    for svc in &record.plan.services {
-        match deploy::current_placement(&landed, &svc.member_ref().to_string()) {
+    let mut aliases: DidAliases = BTreeMap::new();
+    for svc in plan_services {
+        match deploy::current_placement(landed, &svc.member_ref().to_string()) {
             None => expected.push(health::ExpectedService {
                 logical_ref: svc.logical_ref.clone(),
                 service_id: String::new(),
@@ -86,11 +58,23 @@ pub(super) async fn handle_health(
             }
         }
     }
+    Ok((expected, aliases))
+}
 
-    // Aliased substrates resolve through the inventory exactly as
-    // `app deploy` does, including `resolve_credentials`' both-or-
-    // neither rule.
-    let inv_path = inventory.clone().unwrap_or_else(|| dir.join("substrates.toml"));
+/// Build a ready `HealthTarget` per substrate DID discovered in `aliases`,
+/// resolving aliased substrates through the inventory exactly as `app
+/// deploy` does, including `resolve_credentials`'s both-or-neither rule.
+/// Unreachable is NOT fatal here, unlike `app deploy`'s preflight: an
+/// unreachable substrate is the exact thing this command exists to report.
+async fn build_health_targets(
+    aliases: &DidAliases,
+    inventory: Option<PathBuf>,
+    api_url: &str,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<BTreeMap<String, health::HealthTarget>> {
+    let inv_path = inventory.unwrap_or_else(|| dir.join("substrates.toml"));
     let inv = if aliases.values().any(Option::is_some) {
         Some(SubstrateInventory::load(&inv_path)?)
     } else {
@@ -98,7 +82,7 @@ pub(super) async fn handle_health(
     };
 
     let mut targets: BTreeMap<String, health::HealthTarget> = BTreeMap::new();
-    for (did, alias) in &aliases {
+    for (did, alias) in aliases {
         let (entry_api_url, entry_identity, entry_ucan) = match (alias, &inv) {
             (Some(a), Some(inv)) => {
                 let entry = inv.get(a, &inv_path)?;
@@ -131,10 +115,23 @@ pub(super) async fn handle_health(
             health::HealthTarget { alias: alias.clone(), substrate_did: did.clone(), query },
         );
     }
+    Ok(targets)
+}
 
-    let mut report;
+/// Poll `targets`/`expected` once, or repeatedly every `watch` seconds,
+/// printing the health table and any undetermined services each round and
+/// recording alerts unless `no_record`. Returns the last sweep's report, so
+/// the caller's exit code always agrees with what was just printed.
+async fn run_health_poll(
+    targets: &BTreeMap<String, health::HealthTarget>,
+    expected: &[health::ExpectedService],
+    alerts: &AlertStore,
+    instance_id: &AppInstanceId,
+    no_record: bool,
+    watch: Option<u64>,
+) -> anyhow::Result<health::HealthReport> {
     loop {
-        report = health::poll_once(&targets, &expected).await;
+        let report = health::poll_once(targets, expected).await;
         print_health_table(&report);
         for u in report.unknowns() {
             eprintln!("undetermined: {} on {}: {:?}", u.logical_ref, u.substrate_did, u.signal);
@@ -145,8 +142,8 @@ pub(super) async fn handle_health(
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             for (kind, subject) in health::record_report(
-                &alerts,
-                &instance_id,
+                alerts,
+                instance_id,
                 &report,
                 now,
                 &[],
@@ -156,10 +153,47 @@ pub(super) async fn handle_health(
             }
         }
         match watch {
-            None => break,
+            None => return Ok(report),
             Some(secs) => tokio::time::sleep(Duration::from_secs(secs)).await,
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn handle_health(
+    instance_id: String,
+    journal_path: PathBuf,
+    alerts_path: Option<PathBuf>,
+    inventory: Option<PathBuf>,
+    watch: Option<u64>,
+    no_record: bool,
+    strict: bool,
+    api_url: &str,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let instance_id = AppInstanceId::try_new(instance_id.clone())?;
+
+    let parent_dir = journal_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let journal = super::open_journal(&journal_path)?;
+    let alerts = super::open_alert_store(alerts_path.as_deref(), &parent_dir)?;
+
+    let record = journal
+        .get_latest(&instance_id)?
+        .ok_or_else(|| anyhow::anyhow!("no deployment record for {instance_id}"))?;
+    let landed = journal.get_completed_actions_for_instance(&instance_id)?;
+
+    let (expected, aliases) = build_expected_and_aliases(dir, &record.plan.services, &landed)?;
+
+    // Aliased substrates resolve through the inventory exactly as
+    // `app deploy` does, including `resolve_credentials`' both-or-
+    // neither rule.
+    let targets =
+        build_health_targets(&aliases, inventory, api_url, dir, run_as, ucan_path).await?;
+
+    let report =
+        run_health_poll(&targets, &expected, &alerts, &instance_id, no_record, watch).await?;
 
     // Faults are fatal; "cannot tell" is not, unless --strict.
     // A `tcp` service that declared no probe is
@@ -182,18 +216,7 @@ pub(super) fn handle_alerts(
 ) -> anyhow::Result<()> {
     let instance_id = AppInstanceId::try_new(instance_id.clone())?;
     let parent_dir = journal_path.parent().unwrap_or(Path::new("."));
-    let (alerts_dir, alerts_name) = match alerts_path {
-        Some(p) => (
-            p.parent().unwrap_or(Path::new(".")).to_path_buf(),
-            p.file_name()
-                .ok_or_else(|| anyhow::anyhow!("Invalid alerts path"))?
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("Invalid alerts path characters"))?
-                .to_string(),
-        ),
-        None => (parent_dir.to_path_buf(), "alerts.db".to_string()),
-    };
-    let alerts = AlertStore::open(&alerts_dir, &alerts_name)?;
+    let alerts = super::open_alert_store(alerts_path.as_deref(), parent_dir)?;
     let rows = if all { alerts.all(&instance_id)? } else { alerts.active(&instance_id)? };
     if rows.is_empty() {
         println!("no {}alerts for {instance_id}", if all { "" } else { "active " });

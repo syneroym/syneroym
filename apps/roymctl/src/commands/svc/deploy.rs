@@ -24,6 +24,274 @@ use crate::commands::member_identity;
 /// is the dedicated renewal command for a longer- or shorter-lived one.
 const DEFAULT_INSTANCE_CERT_EXPIRES_HOURS: u64 = 24;
 
+/// Resolve `--identity`/`--master` into the (at most one relevant) local
+/// keys `svc deploy` may need to sign an endpoint record: `--identity`
+/// must resolve to `svc_id` itself, since the registry derives a record's
+/// signing key from its own service_id, and `--master` is resolved by name
+/// via the member-master vault.
+fn resolve_deploy_identities(
+    dir: &Path,
+    identity: Option<&str>,
+    svc_id: &str,
+    master: Option<&str>,
+) -> anyhow::Result<(Option<Identity>, Option<Identity>)> {
+    let named_identity = match identity {
+        Some(name) => {
+            let id = load_identity(dir, name)?;
+            let did = substrate::derive_did_key(&id.public_key());
+            if did != svc_id {
+                anyhow::bail!(
+                    "--identity resolves to {did}, which is not --svc-id {svc_id}; the registry \
+                     resolves a record's signing key from its own service_id, so this record \
+                     could never be admitted"
+                );
+            }
+            Some(id)
+        }
+        None => None,
+    };
+    let master_identity = match master {
+        Some(name) => Some(member_identity::resolve_member_master(dir, name)?),
+        None => None,
+    };
+    Ok((named_identity, master_identity))
+}
+
+/// ADR-0018 §5: a deploy that *can* sign a record but was not told whether
+/// to publish it must fail loudly, not fall back to `private` and succeed
+/// having published nothing. Silence is only safe when there is no signing
+/// identity to publish with in the first place. Also warns when
+/// `--nickname` was given with nothing to sign with -- it is silently
+/// dropped, and a deploy that still succeeds should say why the flag had
+/// no effect.
+fn require_stated_visibility_if_signable(
+    signing_identity: Option<&Identity>,
+    stated_visibility: Option<Visibility>,
+    nickname: Option<&str>,
+) -> anyhow::Result<Visibility> {
+    if signing_identity.is_some() && stated_visibility.is_none() {
+        anyhow::bail!(
+            "--identity/--master can sign a published endpoint record, so --visibility must be \
+             given explicitly (\"public\", \"internal\", or \"private\") -- it no longer defaults \
+             silently to private"
+        );
+    }
+    if nickname.is_some() && signing_identity.is_none() {
+        eprintln!(
+            "Warning: --nickname has no effect without --identity or --master -- it will not be \
+             published."
+        );
+    }
+    Ok(stated_visibility.unwrap_or(Visibility::Private))
+}
+
+/// Write `record` to `--record-out`'s path, if given, and print
+/// confirmation -- shared by both signable arms of [`build_publication`].
+fn write_record_out(record_out: Option<&Path>, record: &SignedEndpointInfo) -> anyhow::Result<()> {
+    let Some(path) = record_out else { return Ok(()) };
+    fs::write(path, serde_json::to_string_pretty(record)?)
+        .map_err(|e| anyhow::anyhow!("failed to write --record-out at {}: {e}", path.display()))?;
+    println!("Wrote the signed endpoint record to {}", path.display());
+    Ok(())
+}
+
+/// Builds the `Publication` a deploy call presents, signing and (if
+/// `--record-out` is given) exporting an endpoint record whenever there is
+/// a key to sign one with.
+#[allow(clippy::too_many_arguments)]
+fn build_publication(
+    parsed_visibility: Visibility,
+    signing_identity: Option<&Identity>,
+    svc_id: &str,
+    substrate_did: &str,
+    nickname: Option<String>,
+    not_after: u64,
+    record_out: Option<&Path>,
+) -> anyhow::Result<Publication> {
+    match (parsed_visibility, signing_identity) {
+        (Visibility::Private, Some(id)) if record_out.is_some() => {
+            let record = signed_export_record(
+                Visibility::Private,
+                svc_id,
+                substrate_did,
+                nickname,
+                not_after,
+                id,
+            )?;
+            write_record_out(record_out, &record)?;
+            Ok(Publication::Private)
+        }
+        (Visibility::Private, _) => {
+            if record_out.is_some() {
+                eprintln!("Warning: --record-out has no effect without --identity or --master");
+            }
+            Ok(Publication::Private)
+        }
+        (v, None) => {
+            let v_str = v.as_str();
+            anyhow::bail!(
+                "--visibility '{v_str}' needs --identity or --master: only the service's own key \
+                 can sign a record the registry will admit"
+            );
+        }
+        (v, Some(id)) => {
+            let record = signed_export_record(v, svc_id, substrate_did, nickname, not_after, id)?;
+            write_record_out(record_out, &record)?;
+            Ok(if v == Visibility::Public {
+                Publication::Public(record)
+            } else {
+                Publication::Internal(record)
+            })
+        }
+    }
+}
+
+/// Resolve the instance certificate a deploy call presents: certify a
+/// fresh one against `--master` (also refreshing its registry anchor), or
+/// read one already minted from `--instance-certificate`, or none at all.
+async fn resolve_instance_cert(
+    client: &SyneroymClient,
+    master: Option<&str>,
+    master_identity: Option<&Identity>,
+    svc_id: &str,
+    instance_certificate: Option<&Path>,
+    registry_url: Option<&str>,
+) -> anyhow::Result<Option<DelegationCertificate>> {
+    match (master_identity, instance_certificate) {
+        (Some(resolved_master), _) => {
+            let master_did = substrate::derive_did_key(&resolved_master.public_key());
+            if master_did != svc_id {
+                anyhow::bail!(
+                    "--master '{}' resolves to {master_did}, which does not match --svc-id \
+                     {svc_id} -- an install-time certificate for this pair would be rejected",
+                    master.unwrap_or("?")
+                );
+            }
+            let cert = deploy::certify_instance(
+                client,
+                resolved_master,
+                svc_id,
+                DEFAULT_INSTANCE_CERT_EXPIRES_HOURS,
+            )
+            .await?;
+            member_identity::refresh_anchor_or_warn(registry_url, resolved_master).await?;
+            Ok(Some(cert))
+        }
+        (None, Some(path)) => {
+            let cert_json = fs::read_to_string(path).map_err(|e| {
+                anyhow::anyhow!("failed to read --instance-certificate at {}: {e}", path.display())
+            })?;
+            Ok(Some(DelegationCertificate::from_json(&cert_json)?))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn deploy_wasm(
+    client: &SyneroymClient,
+    svc_id: &str,
+    ifaces: Vec<String>,
+    wasm_path: &Path,
+    assets: Option<&Path>,
+    asset_visibility: &str,
+    custom_config: Option<&Path>,
+    publication: Publication,
+    instance_cert: Option<DelegationCertificate>,
+) -> anyhow::Result<()> {
+    let wasm_bytes = fs::read(wasm_path)?;
+    let asset_bundle = match assets {
+        Some(assets_path) => {
+            let archive = fs::read(assets_path).map_err(|e| {
+                anyhow::anyhow!("failed to read --assets at {}: {e}", assets_path.display())
+            })?;
+            Some(AssetBundle {
+                archive: ArtifactSource::Binary(archive),
+                hash: None,
+                visibility: Some(parse_visibility(asset_visibility, "--asset-visibility")?),
+            })
+        }
+        None => None,
+    };
+    let custom_config_json = match custom_config {
+        Some(path) => Some(fs::read_to_string(path).map_err(|e| {
+            anyhow::anyhow!("failed to read --custom-config at {}: {e}", path.display())
+        })?),
+        None => None,
+    };
+    client
+        .deploy_svc_wasm_with_options(
+            svc_id.to_string(),
+            ifaces,
+            wasm_bytes,
+            DeploySvcOptions {
+                publication,
+                instance_certificate: instance_cert,
+                assets: asset_bundle,
+                custom_config: custom_config_json,
+            },
+        )
+        .await?;
+    println!("Successfully deployed WASM svc {svc_id}");
+    Ok(())
+}
+
+async fn deploy_tcp(
+    client: &SyneroymClient,
+    svc_id: &str,
+    ifaces: Vec<String>,
+    tcp_addr: &str,
+    publication: Publication,
+    instance_cert: Option<DelegationCertificate>,
+) -> anyhow::Result<()> {
+    let (host, port) = get_host_port_from_tcp_addr(tcp_addr)?;
+    // One `NetworkEndpoint` per declared interface, all naming
+    // the same backend: a TCP passthrough has nothing to
+    // dispatch on, so every declared interface is just another
+    // registered name for the identical `(host, port)`.
+    let endpoints = ifaces
+        .into_iter()
+        .map(|interface_name| NetworkEndpoint { interface_name, host: host.clone(), port })
+        .collect();
+    client.deploy_svc_tcp(svc_id.to_string(), endpoints, publication, instance_cert).await?;
+    println!("Successfully deployed TCP service {svc_id}");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn deploy_container(
+    client: &SyneroymClient,
+    svc_id: &str,
+    ifaces: &[String],
+    image: &str,
+    ports: &[String],
+    volumes: &[String],
+    publication: Publication,
+    instance_cert: Option<DelegationCertificate>,
+) -> anyhow::Result<()> {
+    let port_mappings = ports
+        .iter()
+        .map(|p| parse_container_port_mapping(p))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    validate_container_ports(ifaces, &port_mappings)?;
+    let volume_mappings = volumes
+        .iter()
+        .map(|v| parse_container_volume_mapping(v))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    client
+        .deploy_container(
+            svc_id.to_string(),
+            image.to_string(),
+            port_mappings,
+            volume_mappings,
+            publication,
+            instance_cert,
+        )
+        .await?;
+    println!("Successfully deployed container service {svc_id}");
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_deploy(
     client: &mut SyneroymClient,
@@ -60,28 +328,8 @@ pub(super) async fn handle_deploy(
     // when a nickname is given -- unlike an earlier design, where the
     // substrate re-signed with a delegated instance key and this
     // blob's own signature was never trusted.
-    //
-    // Bound owned, chosen by reference: `Identity` is not `Clone`,
-    // and the `--master` arm below needs the same key again.
-    let named_identity = match identity {
-        Some(name) => {
-            let id = load_identity(dir, name)?;
-            let did = substrate::derive_did_key(&id.public_key());
-            if did != svc_id {
-                anyhow::bail!(
-                    "--identity resolves to {did}, which is not --svc-id {svc_id}; the registry \
-                     resolves a record's signing key from its own service_id, so this record \
-                     could never be admitted"
-                );
-            }
-            Some(id)
-        }
-        None => None,
-    };
-    let master_identity = match master {
-        Some(name) => Some(member_identity::resolve_member_master(dir, name)?),
-        None => None,
-    };
+    let (named_identity, master_identity) =
+        resolve_deploy_identities(dir, identity.as_deref(), svc_id, master.as_deref())?;
 
     // `--identity` wins if both are somehow given (clap does not
     // forbid it, since neither conflicts with the other); otherwise
@@ -91,30 +339,11 @@ pub(super) async fn handle_deploy(
     // deploy proceeds without one.
     let signing_identity: Option<&Identity> = named_identity.as_ref().or(master_identity.as_ref());
 
-    // ADR-0018 §5: a deploy that *can* sign a record but was not
-    // told whether to publish it must fail loudly, not fall back to
-    // `private` and succeed having published nothing. Silence is
-    // only safe when there is no signing identity to publish with
-    // in the first place.
-    if signing_identity.is_some() && stated_visibility.is_none() {
-        anyhow::bail!(
-            "--identity/--master can sign a published endpoint record, so --visibility must be \
-             given explicitly (\"public\", \"internal\", or \"private\") -- it no longer defaults \
-             silently to private"
-        );
-    }
-    let parsed_visibility = stated_visibility.unwrap_or(Visibility::Private);
-
-    // Nothing to sign with, but a nickname was given: it is silently
-    // dropped (unchanged from before this flag existed). Warn rather
-    // than fail: the deploy itself still succeeds, and a
-    // silently-lost nickname is confusing to debug.
-    if nickname.is_some() && signing_identity.is_none() {
-        eprintln!(
-            "Warning: --nickname has no effect without --identity or --master -- it will not be \
-             published."
-        );
-    }
+    let parsed_visibility = require_stated_visibility_if_signable(
+        signing_identity,
+        stated_visibility,
+        nickname.as_deref(),
+    )?;
 
     let not_after = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -122,152 +351,53 @@ pub(super) async fn handle_deploy(
         .unwrap_or(0)
         .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
 
-    let publication = match (parsed_visibility, signing_identity) {
-        (Visibility::Private, Some(id)) if record_out.is_some() => {
-            let record = signed_export_record(
-                Visibility::Private,
-                svc_id,
-                substrate_did,
-                nickname.clone(),
-                not_after,
-                id,
-            )?;
-            if let Some(path) = record_out {
-                fs::write(path, serde_json::to_string_pretty(&record)?).map_err(|e| {
-                    anyhow::anyhow!("failed to write --record-out at {}: {e}", path.display())
-                })?;
-                println!("Wrote the signed endpoint record to {}", path.display());
-            }
-            Publication::Private
-        }
-        (Visibility::Private, _) => {
-            if record_out.is_some() {
-                eprintln!("Warning: --record-out has no effect without --identity or --master");
-            }
-            Publication::Private
-        }
-        (v, None) => {
-            let v_str = v.as_str();
-            anyhow::bail!(
-                "--visibility '{v_str}' needs --identity or --master: only the service's own key \
-                 can sign a record the registry will admit"
-            );
-        }
-        (v, Some(id)) => {
-            let record =
-                signed_export_record(v, svc_id, substrate_did, nickname.clone(), not_after, id)?;
-            if let Some(path) = record_out {
-                fs::write(path, serde_json::to_string_pretty(&record)?).map_err(|e| {
-                    anyhow::anyhow!("failed to write --record-out at {}: {e}", path.display())
-                })?;
-                println!("Wrote the signed endpoint record to {}", path.display());
-            }
-            if v == Visibility::Public {
-                Publication::Public(record)
-            } else {
-                Publication::Internal(record)
-            }
-        }
-    };
+    let publication = build_publication(
+        parsed_visibility,
+        signing_identity,
+        svc_id,
+        substrate_did,
+        nickname.clone(),
+        not_after,
+        record_out.as_deref(),
+    )?;
 
-    let instance_cert = match (&master_identity, instance_certificate) {
-        (Some(resolved_master), _) => {
-            let master_did = substrate::derive_did_key(&resolved_master.public_key());
-            if master_did != svc_id {
-                anyhow::bail!(
-                    "--master '{}' resolves to {master_did}, which does not match --svc-id \
-                     {svc_id} -- an install-time certificate for this pair would be rejected",
-                    master.as_deref().unwrap_or("?")
-                );
-            }
-            let cert = deploy::certify_instance(
-                client,
-                resolved_master,
-                svc_id,
-                DEFAULT_INSTANCE_CERT_EXPIRES_HOURS,
-            )
-            .await?;
-            member_identity::refresh_anchor_or_warn(registry_url.as_deref(), resolved_master)
-                .await?;
-            Some(cert)
-        }
-        (None, Some(path)) => {
-            let cert_json = fs::read_to_string(path).map_err(|e| {
-                anyhow::anyhow!("failed to read --instance-certificate at {}: {e}", path.display())
-            })?;
-            Some(DelegationCertificate::from_json(&cert_json)?)
-        }
-        (None, None) => None,
-    };
+    let instance_cert = resolve_instance_cert(
+        client,
+        master.as_deref(),
+        master_identity.as_ref(),
+        svc_id,
+        instance_certificate.as_deref(),
+        registry_url.as_deref(),
+    )
+    .await?;
 
     if let Some(wasm_path) = wasm {
-        let wasm_bytes = fs::read(wasm_path)?;
-        let asset_bundle = match assets {
-            Some(assets_path) => {
-                let archive = fs::read(assets_path).map_err(|e| {
-                    anyhow::anyhow!("failed to read --assets at {}: {e}", assets_path.display())
-                })?;
-                Some(AssetBundle {
-                    archive: ArtifactSource::Binary(archive),
-                    hash: None,
-                    visibility: Some(parse_visibility(asset_visibility, "--asset-visibility")?),
-                })
-            }
-            None => None,
-        };
-        let custom_config_json = match custom_config {
-            Some(path) => Some(fs::read_to_string(path).map_err(|e| {
-                anyhow::anyhow!("failed to read --custom-config at {}: {e}", path.display())
-            })?),
-            None => None,
-        };
-        client
-            .deploy_svc_wasm_with_options(
-                svc_id.to_string(),
-                ifaces,
-                wasm_bytes,
-                DeploySvcOptions {
-                    publication,
-                    instance_certificate: instance_cert,
-                    assets: asset_bundle,
-                    custom_config: custom_config_json,
-                },
-            )
-            .await?;
-        println!("Successfully deployed WASM svc {svc_id}");
+        deploy_wasm(
+            client,
+            svc_id,
+            ifaces,
+            wasm_path,
+            assets.as_deref(),
+            asset_visibility,
+            custom_config.as_deref(),
+            publication,
+            instance_cert,
+        )
+        .await?;
     } else if let Some(tcp_addr) = tcp {
-        let (host, port) = get_host_port_from_tcp_addr(tcp_addr)?;
-        // One `NetworkEndpoint` per declared interface, all naming
-        // the same backend: a TCP passthrough has nothing to
-        // dispatch on, so every declared interface is just another
-        // registered name for the identical `(host, port)`.
-        let endpoints = ifaces
-            .into_iter()
-            .map(|interface_name| NetworkEndpoint { interface_name, host: host.clone(), port })
-            .collect();
-        client.deploy_svc_tcp(svc_id.to_string(), endpoints, publication, instance_cert).await?;
-        println!("Successfully deployed TCP service {svc_id}");
+        deploy_tcp(client, svc_id, ifaces, tcp_addr, publication, instance_cert).await?;
     } else if let Some(image) = image {
-        let port_mappings = ports
-            .iter()
-            .map(|p| parse_container_port_mapping(p))
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        validate_container_ports(&ifaces, &port_mappings)?;
-        let volume_mappings = volumes
-            .iter()
-            .map(|v| parse_container_volume_mapping(v))
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        client
-            .deploy_container(
-                svc_id.to_string(),
-                image.clone(),
-                port_mappings,
-                volume_mappings,
-                publication,
-                instance_cert,
-            )
-            .await?;
-        println!("Successfully deployed container service {svc_id}");
+        deploy_container(
+            client,
+            svc_id,
+            &ifaces,
+            image,
+            ports,
+            volumes,
+            publication,
+            instance_cert,
+        )
+        .await?;
     } else {
         anyhow::bail!("Either --wasm, --tcp, or --image must be provided for deployment");
     }

@@ -133,81 +133,94 @@ pub enum MemberCommands {
     },
 }
 
+/// The identity/gateway parameters shared by every subcommand call within
+/// one `handle_directory`/`handle_member`/`handle_transaction` invocation
+/// -- bundled so a call site names only what actually varies (the URL,
+/// method, and params) instead of repeating all three on every line. Plain
+/// `Copy` references, so passing it by value never fights the borrow
+/// checker across an `.await`.
+#[derive(Clone, Copy)]
+pub(super) struct RpcCtx<'a> {
+    pub(super) run_as: Option<&'a str>,
+    pub(super) ucan_path: Option<&'a Path>,
+    pub(super) dir: &'a Path,
+}
+
+/// Call `method` over the client gateway with `params`, and pretty-print
+/// the JSON result -- the shape most `directory`/`member`/`transaction`
+/// subcommands follow, `find` (which streams its own summary) and
+/// `thread`/`quote` (which build a non-trivial params object or report
+/// beyond one pretty-printed blob) aside.
+pub(super) async fn call_and_print(
+    ctx: RpcCtx<'_>,
+    gateway_url: &str,
+    host: Option<&str>,
+    method: &str,
+    params: Value,
+) -> Result<()> {
+    let v = crate::commands::session::rpc_call(
+        gateway_url,
+        host,
+        ctx.run_as,
+        ctx.ucan_path,
+        ctx.dir,
+        method,
+        params,
+    )
+    .await?;
+    println!("{}", serde_json::to_string_pretty(&v)?);
+    Ok(())
+}
+
 pub(super) async fn handle_directory(
     command: &DirectoryCommands,
     dir: &Path,
     run_as: Option<&str>,
     ucan_path: Option<&Path>,
 ) -> Result<()> {
+    let ctx = RpcCtx { run_as, ucan_path, dir };
     match command {
         DirectoryCommands::Sources { gateway_url, host } => {
-            let v = crate::commands::session::rpc_call(
-                gateway_url,
-                host.as_deref(),
-                run_as,
-                ucan_path,
-                dir,
-                "directory.sources",
-                json!({}),
-            )
-            .await?;
-            println!("{}", serde_json::to_string_pretty(&v)?);
+            call_and_print(ctx, gateway_url, host.as_deref(), "directory.sources", json!({}))
+                .await?;
         }
         DirectoryCommands::Add { did, label, gateway_url, host } => {
             let mut params = json!({ "did": did });
             if let Some(l) = label {
                 params["label"] = json!(l);
             }
-            let v = crate::commands::session::rpc_call(
-                gateway_url,
-                host.as_deref(),
-                run_as,
-                ucan_path,
-                dir,
-                "directory.add-source",
-                params,
-            )
-            .await?;
-            println!("{}", serde_json::to_string_pretty(&v)?);
+            call_and_print(ctx, gateway_url, host.as_deref(), "directory.add-source", params)
+                .await?;
         }
         DirectoryCommands::Remove { did, gateway_url, host } => {
-            let v = crate::commands::session::rpc_call(
+            call_and_print(
+                ctx,
                 gateway_url,
                 host.as_deref(),
-                run_as,
-                ucan_path,
-                dir,
                 "directory.remove-source",
                 json!({ "did": did }),
             )
             .await?;
-            println!("{}", serde_json::to_string_pretty(&v)?);
         }
         DirectoryCommands::Publish { listing_id, to, gateway_url, host } => {
-            let v = crate::commands::session::rpc_call(
+            call_and_print(
+                ctx,
                 gateway_url,
                 host.as_deref(),
-                run_as,
-                ucan_path,
-                dir,
                 "directory.publish-to-source",
                 json!({ "listing_id": listing_id, "source": to }),
             )
             .await?;
-            println!("{}", serde_json::to_string_pretty(&v)?);
         }
         DirectoryCommands::Info { did, gateway_url, host } => {
-            let v = crate::commands::session::rpc_call(
+            call_and_print(
+                ctx,
                 gateway_url,
                 host.as_deref(),
-                run_as,
-                ucan_path,
-                dir,
                 "directory.probe-info",
                 json!({ "did": did }),
             )
             .await?;
-            println!("{}", serde_json::to_string_pretty(&v)?);
         }
         DirectoryCommands::Serve {
             name,
@@ -231,17 +244,8 @@ pub(super) async fn handle_directory(
                 "retention_secs": retention_days * 24 * 3600,
                 "publication_limits": { "window_secs": 24 * 3600, "max_per_window": 20 },
             });
-            let v = crate::commands::session::rpc_call(
-                gateway_url,
-                host.as_deref(),
-                run_as,
-                ucan_path,
-                dir,
-                "directory.set-settings",
-                params,
-            )
-            .await?;
-            println!("{}", serde_json::to_string_pretty(&v)?);
+            call_and_print(ctx, gateway_url, host.as_deref(), "directory.set-settings", params)
+                .await?;
         }
         DirectoryCommands::Member { command } => {
             handle_member(command, dir, run_as, ucan_path).await?
@@ -270,45 +274,30 @@ async fn handle_member(
     run_as: Option<&str>,
     ucan_path: Option<&Path>,
 ) -> Result<()> {
+    let ctx = RpcCtx { run_as, ucan_path, dir };
     match command {
         MemberCommands::Add { did, note, gateway_url, host } => {
-            let v = crate::commands::session::rpc_call(
+            call_and_print(
+                ctx,
                 gateway_url,
                 host.as_deref(),
-                run_as,
-                ucan_path,
-                dir,
                 "member.add",
                 json!({ "did": did, "note": note }),
             )
             .await?;
-            println!("{}", serde_json::to_string_pretty(&v)?);
         }
         MemberCommands::Remove { did, gateway_url, host } => {
-            let v = crate::commands::session::rpc_call(
+            call_and_print(
+                ctx,
                 gateway_url,
                 host.as_deref(),
-                run_as,
-                ucan_path,
-                dir,
                 "member.remove",
                 json!({ "did": did }),
             )
             .await?;
-            println!("{}", serde_json::to_string_pretty(&v)?);
         }
         MemberCommands::List { gateway_url, host } => {
-            let v = crate::commands::session::rpc_call(
-                gateway_url,
-                host.as_deref(),
-                run_as,
-                ucan_path,
-                dir,
-                "member.list",
-                json!({}),
-            )
-            .await?;
-            println!("{}", serde_json::to_string_pretty(&v)?);
+            call_and_print(ctx, gateway_url, host.as_deref(), "member.list", json!({})).await?;
         }
     }
     Ok(())
@@ -389,18 +378,16 @@ fn source_error_words(kind: &str) -> &'static str {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn find(
+/// Build the JSON-RPC query object `directory.query-source` and
+/// `directory.merge` expect: `--text`/`--category`/`--near` folded into
+/// one object, `near` converted to integer micro-degrees at this boundary,
+/// never signed as a decimal.
+fn build_find_query(
     text: Option<&str>,
     categories: &[String],
     near: Option<&str>,
     limit: u32,
-    gateway_url: &str,
-    host: Option<&str>,
-    dir: &Path,
-    run_as: Option<&str>,
-    ucan_path: Option<&Path>,
-) -> Result<()> {
+) -> Result<Value> {
     let mut query = json!({ "categories": categories, "limit": limit });
     if let Some(t) = text {
         query["text"] = json!(t);
@@ -408,7 +395,18 @@ async fn find(
     if let Some(n) = near {
         query["area"] = parse_near(n)?;
     }
+    Ok(query)
+}
 
+/// Start a directory search run and return its id, the sources to fan out
+/// to, and the server's advertised concurrency cap (at least 1).
+async fn start_find_run(
+    gateway_url: &str,
+    host: Option<&str>,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+    dir: &Path,
+) -> Result<(String, Vec<String>, usize)> {
     let start = crate::commands::session::rpc_call(
         gateway_url,
         host,
@@ -428,46 +426,71 @@ async fn find(
         .unwrap_or_default();
     let max_concurrency =
         start.get("max_concurrency").and_then(|v| v.as_u64()).unwrap_or(1).max(1) as usize;
+    Ok((run_id, sources, max_concurrency))
+}
 
-    if sources.is_empty() {
-        println!("No directories added. Add one with `roymctl roym directory add <did>`,");
-        println!("or reach a provider directly by link -- a directory is optional.");
-    }
+/// Query one source for `run_id`/`query`, mapping a reachable-but-failed
+/// answer, or an `Err` (a local 503 admission refusal), onto a
+/// `SourceOutcome`. Takes every connection parameter owned so the future
+/// satisfies `JoinSet::spawn`'s `'static` bound.
+#[allow(clippy::too_many_arguments)]
+async fn query_source(
+    gateway_url: String,
+    host: Option<String>,
+    run_as: Option<String>,
+    ucan_path: Option<PathBuf>,
+    dir: PathBuf,
+    run_id: String,
+    query: Value,
+    source: String,
+) -> (String, SourceOutcome) {
+    let result = crate::commands::session::rpc_call(
+        &gateway_url,
+        host.as_deref(),
+        run_as.as_deref(),
+        ucan_path.as_deref(),
+        &dir,
+        "directory.query-source",
+        json!({ "run_id": run_id, "source": source, "query": query }),
+    )
+    .await;
+    (source, SourceOutcome::from_reply(result))
+}
 
-    // A continuous worker pool capped at `max_concurrency`, the same
-    // shape the Hub's fan-out uses -- not a per-chunk barrier that idles
-    // the pool while the slowest source in a chunk finishes.
-    let query_one = |source: String| {
-        let gateway_url = gateway_url.to_string();
-        let host = host.map(str::to_string);
-        let dir = dir.to_path_buf();
-        let run_as = run_as.map(str::to_string);
-        let ucan_path = ucan_path.map(|p| p.to_path_buf());
-        let query = query.clone();
-        let run_id = run_id.clone();
-        async move {
-            let result = crate::commands::session::rpc_call(
-                &gateway_url,
-                host.as_deref(),
-                run_as.as_deref(),
-                ucan_path.as_deref(),
-                &dir,
-                "directory.query-source",
-                json!({ "run_id": run_id, "source": source, "query": query }),
-            )
-            .await;
-            (source, SourceOutcome::from_reply(result))
-        }
-    };
-
+/// Query every source with at most `max_concurrency` in flight at once (a
+/// continuous worker pool, not a per-chunk barrier that idles while the
+/// slowest source in a chunk finishes), then retry once, serially, any
+/// source this node refused to start (a local 503 admission refusal) --
+/// the same single retry the Hub does.
+#[allow(clippy::too_many_arguments)]
+async fn run_source_queries(
+    sources: &[String],
+    gateway_url: &str,
+    host: Option<&str>,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+    dir: &Path,
+    run_id: &str,
+    query: &Value,
+    max_concurrency: usize,
+) -> Vec<(String, SourceOutcome)> {
     let permits = Arc::new(Semaphore::new(max_concurrency.max(1)));
     let mut set = JoinSet::new();
-    for source in &sources {
+    for source in sources {
         // The semaphore is never closed, so acquire only ever succeeds;
         // if it somehow did not, running the source unbounded is a safe
         // fallback.
         let permit = permits.clone().acquire_owned().await.ok();
-        let fut = query_one(source.clone());
+        let fut = query_source(
+            gateway_url.to_string(),
+            host.map(str::to_string),
+            run_as.map(str::to_string),
+            ucan_path.map(Path::to_path_buf),
+            dir.to_path_buf(),
+            run_id.to_string(),
+            query.clone(),
+            source.clone(),
+        );
         set.spawn(async move {
             let out = fut.await;
             drop(permit);
@@ -490,13 +513,37 @@ async fn find(
         .map(|(s, _)| s.clone())
         .collect();
     for source in retry {
-        let (_, again) = query_one(source.clone()).await;
+        let again = query_source(
+            gateway_url.to_string(),
+            host.map(str::to_string),
+            run_as.map(str::to_string),
+            ucan_path.map(Path::to_path_buf),
+            dir.to_path_buf(),
+            run_id.to_string(),
+            query.clone(),
+            source.clone(),
+        )
+        .await;
         if let Some(slot) = outcomes.iter_mut().find(|(s, _)| *s == source) {
-            slot.1 = again;
+            slot.1 = again.1;
         }
     }
+    outcomes
+}
 
-    for (source, outcome) in &outcomes {
+/// Print each source's one-line note (if any), merge the run's results,
+/// and print the verified hits and any refused evidence -- the "print only
+/// the good news" failure mode this command exists to avoid.
+async fn print_find_results(
+    outcomes: &[(String, SourceOutcome)],
+    gateway_url: &str,
+    host: Option<&str>,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+    dir: &Path,
+    run_id: &str,
+) -> Result<()> {
+    for (source, outcome) in outcomes {
         if let Some(line) = outcome.note() {
             println!("source {source}: {line}");
         }
@@ -547,4 +594,42 @@ async fn find(
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn find(
+    text: Option<&str>,
+    categories: &[String],
+    near: Option<&str>,
+    limit: u32,
+    gateway_url: &str,
+    host: Option<&str>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> Result<()> {
+    let query = build_find_query(text, categories, near, limit)?;
+
+    let (run_id, sources, max_concurrency) =
+        start_find_run(gateway_url, host, run_as, ucan_path, dir).await?;
+
+    if sources.is_empty() {
+        println!("No directories added. Add one with `roymctl roym directory add <did>`,");
+        println!("or reach a provider directly by link -- a directory is optional.");
+    }
+
+    let outcomes = run_source_queries(
+        &sources,
+        gateway_url,
+        host,
+        run_as,
+        ucan_path,
+        dir,
+        &run_id,
+        &query,
+        max_concurrency,
+    )
+    .await;
+
+    print_find_results(&outcomes, gateway_url, host, run_as, ucan_path, dir, &run_id).await
 }

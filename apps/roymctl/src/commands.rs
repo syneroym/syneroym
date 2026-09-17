@@ -193,6 +193,68 @@ pub(crate) fn client_for(
     }
 }
 
+/// Resolve `substrate_opt` to a DID, then run a `svc` subcommand against it.
+async fn dispatch_svc(
+    command: SvcCommands,
+    api_url: &str,
+    substrate_opt: Option<String>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let substrate_did = get_substrate_did(substrate_opt, dir)?;
+    svc::handle(&command, api_url, substrate_did, dir, run_as, ucan_path).await
+}
+
+/// Print the gateway host for `roymctl alias`, either the plain-service form
+/// or, with `--service`, the app-instance form (ADR-0022 §7).
+fn handle_alias(
+    service_id: &str,
+    nickname: Option<&str>,
+    interface: Option<&str>,
+    service: Option<&str>,
+    domain: &str,
+) -> anyhow::Result<()> {
+    let host = if let Some(service_name) = service {
+        // `nickname` is guaranteed `Some` here -- clap's own
+        // `requires = "nickname"` on `--service` refuses the
+        // command otherwise, naming the missing flag.
+        let nickname =
+            nickname.context("--service requires --nickname (the app's AppInstanceId)")?;
+        util::generate_app_host(nickname, service_id, service_name, interface, domain)?
+    } else {
+        util::generate_service_host(nickname, service_id, interface, domain)?
+    };
+    println!("{host}");
+    Ok(())
+}
+
+/// Resolve `substrate_opt` to a DID, then run a `kek` subcommand against it.
+async fn dispatch_kek(
+    command: KekCommands,
+    api_url: &str,
+    substrate_opt: Option<String>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let substrate_did = get_substrate_did(substrate_opt, dir)?;
+    security::handle_kek(&command, api_url, substrate_did, dir, run_as, ucan_path).await
+}
+
+/// Resolve `substrate_opt` to a DID, then run a `secret` subcommand against it.
+async fn dispatch_secret(
+    command: SecretCommands,
+    api_url: &str,
+    substrate_opt: Option<String>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let substrate_did = get_substrate_did(substrate_opt, dir)?;
+    security::handle_secret(&command, api_url, substrate_did, dir, run_as, ucan_path).await
+}
+
 /// Execute the subcommands
 pub async fn run(
     command: Commands,
@@ -207,11 +269,10 @@ pub async fn run(
             substrate::handle(&command, &dir).await?;
         }
         Commands::Svc { command } => {
-            let substrate_did = get_substrate_did(substrate_opt, &dir)?;
-            svc::handle(
-                &command,
+            dispatch_svc(
+                command,
                 &api_url,
-                substrate_did,
+                substrate_opt,
                 &dir,
                 run_as.as_deref(),
                 ucan_path.as_deref(),
@@ -242,40 +303,22 @@ pub async fn run(
             println!("{hash}");
         }
         Commands::Alias { service_id, nickname, interface, service, domain } => {
-            if let Some(service_name) = service {
-                // `nickname` is guaranteed `Some` here -- clap's own
-                // `requires = "nickname"` on `--service` refuses the
-                // command otherwise, naming the missing flag.
-                let nickname = nickname
-                    .as_deref()
-                    .context("--service requires --nickname (the app's AppInstanceId)")?;
-                let host = util::generate_app_host(
-                    nickname,
-                    &service_id,
-                    &service_name,
-                    interface.as_deref(),
-                    &domain,
-                )?;
-                println!("{host}");
-            } else {
-                let host = util::generate_service_host(
-                    nickname.as_deref(),
-                    &service_id,
-                    interface.as_deref(),
-                    &domain,
-                )?;
-                println!("{host}");
-            }
+            handle_alias(
+                &service_id,
+                nickname.as_deref(),
+                interface.as_deref(),
+                service.as_deref(),
+                &domain,
+            )?;
         }
         Commands::Registry { command } => {
             registry::handle(&command, &api_url, &dir).await?;
         }
         Commands::Kek { command } => {
-            let substrate_did = get_substrate_did(substrate_opt, &dir)?;
-            security::handle_kek(
-                &command,
+            dispatch_kek(
+                command,
                 &api_url,
-                substrate_did,
+                substrate_opt,
                 &dir,
                 run_as.as_deref(),
                 ucan_path.as_deref(),
@@ -283,11 +326,10 @@ pub async fn run(
             .await?;
         }
         Commands::Secret { command } => {
-            let substrate_did = get_substrate_did(substrate_opt, &dir)?;
-            security::handle_secret(
-                &command,
+            dispatch_secret(
+                command,
                 &api_url,
-                substrate_did,
+                substrate_opt,
                 &dir,
                 run_as.as_deref(),
                 ucan_path.as_deref(),

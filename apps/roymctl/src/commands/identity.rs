@@ -3,7 +3,11 @@
 //! Commands to generate node keypairs, create agreements, and inspect node
 //! DIDs.
 
-use std::{fs, path::Path, time::Duration};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::Context;
 use clap::Subcommand;
@@ -129,23 +133,278 @@ pub enum IdentityCommands {
         #[arg(long)]
         name: String,
         #[arg(long, default_value = "identity-backup.json")]
-        out: std::path::PathBuf,
+        out: PathBuf,
         /// Optional path to write the recovery key to. Store this file in a
         /// different location than the encrypted backup — keeping both in the
         /// same directory defeats the encryption if that directory is copied.
         #[arg(long, value_name = "PATH")]
-        recovery_key_out: Option<std::path::PathBuf>,
+        recovery_key_out: Option<PathBuf>,
     },
     /// Restore an identity from `identity export`'s output.
     Import {
         #[arg(long)]
         name: String,
         #[arg(long, value_name = "PATH")]
-        r#in: std::path::PathBuf,
+        r#in: PathBuf,
         /// The recovery key printed by `identity export`.
         #[arg(long)]
         recovery_key: String,
     },
+}
+
+/// The on-disk path a local identity named `name` is stored at.
+fn identity_key_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join("identities").join(format!("{name}.key"))
+}
+
+/// Resolves `name`'s key path, bailing with a `{what} '{name}' already
+/// exists` error if it is already taken -- shared by every command that
+/// creates or restores an identity under a fresh name.
+fn require_key_absent(dir: &Path, name: &str, what: &str) -> anyhow::Result<PathBuf> {
+    let path = identity_key_path(dir, name);
+    if path.exists() {
+        anyhow::bail!("{what} '{}' already exists at {}", name, path.display());
+    }
+    Ok(path)
+}
+
+/// Resolves `name`'s key path, bailing with a `{what} '{name}' not found`
+/// error if it does not exist -- shared by every command that reads an
+/// already-created identity.
+fn require_key_present(dir: &Path, name: &str, what: &str) -> anyhow::Result<PathBuf> {
+    let path = identity_key_path(dir, name);
+    if !path.exists() {
+        anyhow::bail!("{what} '{}' not found at {}", name, path.display());
+    }
+    Ok(path)
+}
+
+/// Write `contents` to `path`, creating it mode `0600` on Unix so a
+/// freshly exported secret is never briefly world- or group-readable.
+/// Non-Unix has no equivalent permission bit to set.
+fn write_secret_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::{io::Write, os::unix::fs::OpenOptionsExt};
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(contents)?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, contents)?;
+    }
+    Ok(())
+}
+
+fn handle_create(dir: &Path, name: &str) -> anyhow::Result<()> {
+    let identities_dir = dir.join("identities");
+    if !identities_dir.exists() {
+        fs::create_dir_all(&identities_dir)?;
+    }
+    let key_path = require_key_absent(dir, name, "Identity")?;
+
+    let identity = Identity::generate()?;
+    identity.save_to_path(&key_path)?;
+
+    let did = substrate::derive_did_key(&identity.public_key());
+
+    println!("Created new local identity: {name}");
+    println!("DID: {did}");
+    println!("Key stored at: {}", key_path.display());
+    Ok(())
+}
+
+fn handle_list(dir: &Path) -> anyhow::Result<()> {
+    let identities_dir = dir.join("identities");
+    if !identities_dir.exists() {
+        println!("No identities found (directory {} does not exist)", identities_dir.display());
+        return Ok(());
+    }
+
+    println!("{:<20} {:<60}", "NAME", "DID");
+    println!("{:-<80}", "");
+
+    for entry in fs::read_dir(identities_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "key")
+            && let Some(name) = path.file_stem().and_then(|s| s.to_str())
+        {
+            if let Ok(identity) = Identity::load_from_path(&path) {
+                let did = substrate::derive_did_key(&identity.public_key());
+                println!("{name:<20} {did:<60}");
+            } else {
+                println!("{:<20} {:<60}", name, "[Invalid Key File]");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn handle_show(dir: &Path, name: &str) -> anyhow::Result<()> {
+    let key_path = require_key_present(dir, name, "Identity")?;
+    let identity = Identity::load_from_path(&key_path)?;
+    let did = substrate::derive_did_key(&identity.public_key());
+
+    println!("Identity: {name}");
+    println!("DID:      {did}");
+    println!("Path:     {}", key_path.display());
+    Ok(())
+}
+
+fn handle_delegate(
+    dir: &Path,
+    master: &str,
+    temp_did: &str,
+    expires_days: u64,
+    scope: &str,
+) -> anyhow::Result<()> {
+    let key_path = require_key_present(dir, master, "Master identity")?;
+    let identity = Identity::load_from_path(&key_path)?;
+
+    let temp_pubkey =
+        substrate::resolve_did_key(temp_did).context("Failed to resolve temporary DID")?;
+
+    let cert = DelegationCertificate::issue(
+        &identity,
+        temp_pubkey,
+        expires_days * 24 * 3600,
+        scope.to_string(),
+    )?;
+    println!("{}", cert.to_json()?);
+    Ok(())
+}
+
+async fn handle_publish_anchor(dir: &Path, master: &str, registry_url: &str) -> anyhow::Result<()> {
+    let key_path = require_key_present(dir, master, "Master identity")?;
+    let identity = Identity::load_from_path(&key_path)?;
+
+    let client = RegistryClient::new(true, Some(registry_url.to_string()));
+    let master_id = substrate::derive_did_key(&identity.public_key());
+
+    client.publish_master_anchor(&master_id, vec![], None, &identity, true).await?;
+    println!("Successfully published MasterAnchorPayload to {registry_url}");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_issue_grant(
+    dir: &Path,
+    from: &str,
+    to: &str,
+    can: &str,
+    with: &str,
+    expires_days: u64,
+    no_delegate: bool,
+) -> anyhow::Result<()> {
+    let key_path = require_key_present(dir, from, "Identity")?;
+    let issuer = Identity::load_from_path(&key_path)?;
+
+    let caveats = no_delegate.then(|| serde_json::json!({"can_delegate": false}));
+    let capability =
+        Capability { with: ResourceUri(with.to_string()), can: Ability(can.to_string()), caveats };
+
+    let token = CapabilityToken::issue(
+        &issuer,
+        to,
+        vec![capability],
+        serde_json::Map::new(),
+        expires_days * 24 * 3600,
+        vec![],
+    )?;
+    println!("{}", serde_json::to_string_pretty(&token)?);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_certify_instance(
+    api_url: &str,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+    master: &str,
+    substrate_did: &str,
+    expires_hours: u64,
+    registry_url: Option<&str>,
+) -> anyhow::Result<()> {
+    let master_identity = member_identity::resolve_member_master(dir, master)?;
+    let service_id = substrate::derive_did_key(&master_identity.public_key());
+
+    let mut client = super::client_for(substrate_did.to_string(), api_url, dir, run_as, ucan_path)?;
+    client.wait_for_ready(Duration::from_secs(5)).await?;
+
+    let cert =
+        deploy::certify_instance(&client, &master_identity, &service_id, expires_hours).await?;
+    member_identity::refresh_anchor_or_warn(registry_url, &master_identity).await?;
+    println!("{}", cert.to_json()?);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_certify_signing(
+    api_url: &str,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+    master: &str,
+    substrate_did: &str,
+    service: &str,
+    expires_hours: u64,
+) -> anyhow::Result<()> {
+    let master_identity = member_identity::resolve_member_master(dir, master)?;
+
+    let mut client = super::client_for(substrate_did.to_string(), api_url, dir, run_as, ucan_path)?;
+    client.wait_for_ready(Duration::from_secs(5)).await?;
+
+    let cert =
+        deploy::certify_record_signing(&client, &master_identity, service, expires_hours).await?;
+    println!("{}", cert.to_json()?);
+    Ok(())
+}
+
+fn handle_export(
+    dir: &Path,
+    name: &str,
+    out: &Path,
+    recovery_key_out: Option<&Path>,
+) -> anyhow::Result<()> {
+    let key_path = require_key_present(dir, name, "Identity")?;
+    let identity = Identity::load_from_path(&key_path)?;
+    let recovery_key = syneroym_identity::backup::generate_recovery_key()?;
+    let backup = syneroym_identity::backup::export(&identity, &recovery_key)?;
+    let json_str = serde_json::to_string_pretty(&backup)?;
+    write_secret_file(out, json_str.as_bytes())?;
+
+    let encoded = syneroym_identity::backup::encode_recovery_key(&recovery_key);
+    if let Some(rk_out) = recovery_key_out {
+        write_secret_file(rk_out, encoded.as_bytes())?;
+    }
+    println!("Identity '{}' exported to {}", name, out.display());
+    println!("Recovery key (save this now; it is shown once and cannot be recovered):");
+    println!("{encoded}");
+    Ok(())
+}
+
+fn handle_import(dir: &Path, name: &str, in_path: &Path, recovery_key: &str) -> anyhow::Result<()> {
+    let key_path = require_key_absent(dir, name, "Identity")?;
+    let json_str = fs::read_to_string(in_path)?;
+    let backup: syneroym_identity::backup::IdentityBackup = serde_json::from_str(&json_str)?;
+    let key_bytes = syneroym_identity::backup::decode_recovery_key(recovery_key)?;
+    let identity = syneroym_identity::backup::import(&backup, &key_bytes)?;
+
+    let identities_dir = dir.join("identities");
+    if !identities_dir.exists() {
+        fs::create_dir_all(&identities_dir)?;
+    }
+    identity.save_to_path(&key_path)?;
+    let did = substrate::derive_did_key(&identity.public_key());
+    println!("Restored identity '{name}' with DID: {did}");
+    Ok(())
 }
 
 /// Handle local identity subcommands
@@ -157,117 +416,17 @@ pub async fn handle(
     ucan_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     match command {
-        IdentityCommands::Create { name } => {
-            let identities_dir = dir.join("identities");
-            if !identities_dir.exists() {
-                fs::create_dir_all(&identities_dir)?;
-            }
-            let key_path = identities_dir.join(format!("{name}.key"));
-            if key_path.exists() {
-                anyhow::bail!("Identity '{}' already exists at {}", name, key_path.display());
-            }
-
-            let identity = Identity::generate()?;
-            identity.save_to_path(&key_path)?;
-
-            let did = substrate::derive_did_key(&identity.public_key());
-
-            println!("Created new local identity: {name}");
-            println!("DID: {did}");
-            println!("Key stored at: {}", key_path.display());
-        }
-        IdentityCommands::List => {
-            let identities_dir = dir.join("identities");
-            if !identities_dir.exists() {
-                println!(
-                    "No identities found (directory {} does not exist)",
-                    identities_dir.display()
-                );
-                return Ok(());
-            }
-
-            println!("{:<20} {:<60}", "NAME", "DID");
-            println!("{:-<80}", "");
-
-            for entry in fs::read_dir(identities_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "key")
-                    && let Some(name) = path.file_stem().and_then(|s| s.to_str())
-                {
-                    if let Ok(identity) = Identity::load_from_path(&path) {
-                        let did = substrate::derive_did_key(&identity.public_key());
-                        println!("{name:<20} {did:<60}");
-                    } else {
-                        println!("{:<20} {:<60}", name, "[Invalid Key File]");
-                    }
-                }
-            }
-        }
-        IdentityCommands::Show { name } => {
-            let key_path = dir.join("identities").join(format!("{name}.key"));
-            if !key_path.exists() {
-                anyhow::bail!("Identity '{}' not found at {}", name, key_path.display());
-            }
-
-            let identity = Identity::load_from_path(&key_path)?;
-            let did = substrate::derive_did_key(&identity.public_key());
-
-            println!("Identity: {name}");
-            println!("DID:      {did}");
-            println!("Path:     {}", key_path.display());
-        }
+        IdentityCommands::Create { name } => handle_create(dir, name)?,
+        IdentityCommands::List => handle_list(dir)?,
+        IdentityCommands::Show { name } => handle_show(dir, name)?,
         IdentityCommands::Delegate { master, temp_did, expires_days, scope } => {
-            let key_path = dir.join("identities").join(format!("{master}.key"));
-            if !key_path.exists() {
-                anyhow::bail!("Master identity '{}' not found at {}", master, key_path.display());
-            }
-            let identity = Identity::load_from_path(&key_path)?;
-
-            let temp_pubkey =
-                substrate::resolve_did_key(temp_did).context("Failed to resolve temporary DID")?;
-
-            let cert = DelegationCertificate::issue(
-                &identity,
-                temp_pubkey,
-                expires_days * 24 * 3600,
-                scope.clone(),
-            )?;
-            println!("{}", cert.to_json()?);
+            handle_delegate(dir, master, temp_did, *expires_days, scope)?;
         }
         IdentityCommands::PublishAnchor { master, registry_url } => {
-            let key_path = dir.join("identities").join(format!("{master}.key"));
-            if !key_path.exists() {
-                anyhow::bail!("Master identity '{}' not found at {}", master, key_path.display());
-            }
-            let identity = Identity::load_from_path(&key_path)?;
-
-            let client = RegistryClient::new(true, Some(registry_url.clone()));
-            let master_id = substrate::derive_did_key(&identity.public_key());
-
-            client.publish_master_anchor(&master_id, vec![], None, &identity, true).await?;
-            println!("Successfully published MasterAnchorPayload to {registry_url}");
+            handle_publish_anchor(dir, master, registry_url).await?;
         }
         IdentityCommands::IssueGrant { from, to, can, with, expires_days, no_delegate } => {
-            let key_path = dir.join("identities").join(format!("{from}.key"));
-            if !key_path.exists() {
-                anyhow::bail!("Identity '{}' not found at {}", from, key_path.display());
-            }
-            let issuer = Identity::load_from_path(&key_path)?;
-
-            let caveats = no_delegate.then(|| serde_json::json!({"can_delegate": false}));
-            let capability =
-                Capability { with: ResourceUri(with.clone()), can: Ability(can.clone()), caveats };
-
-            let token = CapabilityToken::issue(
-                &issuer,
-                to,
-                vec![capability],
-                serde_json::Map::new(),
-                expires_days * 24 * 3600,
-                vec![],
-            )?;
-            println!("{}", serde_json::to_string_pretty(&token)?);
+            handle_issue_grant(dir, from, to, can, with, *expires_days, *no_delegate)?;
         }
         IdentityCommands::CertifyInstance {
             master,
@@ -275,19 +434,17 @@ pub async fn handle(
             expires_hours,
             registry_url,
         } => {
-            let master_identity = member_identity::resolve_member_master(dir, master)?;
-            let service_id = substrate::derive_did_key(&master_identity.public_key());
-
-            let mut client =
-                super::client_for(substrate_did.clone(), api_url, dir, run_as, ucan_path)?;
-            client.wait_for_ready(Duration::from_secs(5)).await?;
-
-            let cert =
-                deploy::certify_instance(&client, &master_identity, &service_id, *expires_hours)
-                    .await?;
-            member_identity::refresh_anchor_or_warn(registry_url.as_deref(), &master_identity)
-                .await?;
-            println!("{}", cert.to_json()?);
+            handle_certify_instance(
+                api_url,
+                dir,
+                run_as,
+                ucan_path,
+                master,
+                substrate_did,
+                *expires_hours,
+                registry_url.as_deref(),
+            )
+            .await?;
         }
         IdentityCommands::CertifySigning {
             master,
@@ -295,82 +452,23 @@ pub async fn handle(
             service,
             expires_hours,
         } => {
-            let master_identity = member_identity::resolve_member_master(dir, master)?;
-
-            let mut client =
-                super::client_for(substrate_did.clone(), api_url, dir, run_as, ucan_path)?;
-            client.wait_for_ready(Duration::from_secs(5)).await?;
-
-            let cert =
-                deploy::certify_record_signing(&client, &master_identity, service, *expires_hours)
-                    .await?;
-            println!("{}", cert.to_json()?);
+            handle_certify_signing(
+                api_url,
+                dir,
+                run_as,
+                ucan_path,
+                master,
+                substrate_did,
+                service,
+                *expires_hours,
+            )
+            .await?;
         }
         IdentityCommands::Export { name, out, recovery_key_out } => {
-            let key_path = dir.join("identities").join(format!("{name}.key"));
-            if !key_path.exists() {
-                anyhow::bail!("Identity '{}' not found at {}", name, key_path.display());
-            }
-            let identity = Identity::load_from_path(&key_path)?;
-            let recovery_key = syneroym_identity::backup::generate_recovery_key()?;
-            let backup = syneroym_identity::backup::export(&identity, &recovery_key)?;
-            let json_str = serde_json::to_string_pretty(&backup)?;
-            #[cfg(unix)]
-            {
-                use std::{io::Write, os::unix::fs::OpenOptionsExt};
-                let mut file = fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(out)?;
-                file.write_all(json_str.as_bytes())?;
-            }
-            #[cfg(not(unix))]
-            {
-                fs::write(out, json_str)?;
-            }
-
-            let encoded = syneroym_identity::backup::encode_recovery_key(&recovery_key);
-            if let Some(rk_out) = recovery_key_out {
-                #[cfg(unix)]
-                {
-                    use std::{io::Write, os::unix::fs::OpenOptionsExt};
-                    let mut file = fs::OpenOptions::new()
-                        .write(true)
-                        .create(true)
-                        .truncate(true)
-                        .mode(0o600)
-                        .open(rk_out)?;
-                    file.write_all(encoded.as_bytes())?;
-                }
-                #[cfg(not(unix))]
-                {
-                    fs::write(rk_out, &encoded)?;
-                }
-            }
-            println!("Identity '{}' exported to {}", name, out.display());
-            println!("Recovery key (save this now; it is shown once and cannot be recovered):");
-            println!("{encoded}");
+            handle_export(dir, name, out, recovery_key_out.as_deref())?;
         }
         IdentityCommands::Import { name, r#in: in_path, recovery_key } => {
-            let key_path = dir.join("identities").join(format!("{name}.key"));
-            if key_path.exists() {
-                anyhow::bail!("Identity '{}' already exists at {}", name, key_path.display());
-            }
-            let json_str = fs::read_to_string(in_path)?;
-            let backup: syneroym_identity::backup::IdentityBackup =
-                serde_json::from_str(&json_str)?;
-            let key_bytes = syneroym_identity::backup::decode_recovery_key(recovery_key)?;
-            let identity = syneroym_identity::backup::import(&backup, &key_bytes)?;
-
-            let identities_dir = dir.join("identities");
-            if !identities_dir.exists() {
-                fs::create_dir_all(&identities_dir)?;
-            }
-            identity.save_to_path(&key_path)?;
-            let did = substrate::derive_did_key(&identity.public_key());
-            println!("Restored identity '{name}' with DID: {did}");
+            handle_import(dir, name, in_path, recovery_key)?;
         }
     }
     Ok(())
