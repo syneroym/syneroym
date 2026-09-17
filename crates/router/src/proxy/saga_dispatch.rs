@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use super::*;
 
 fn no_saga_store_error() -> ProxyError {
@@ -439,32 +441,56 @@ impl ProxyRouter {
         head: &SagaHead,
     ) -> usize {
         let now = proxy_outbox::now_ms();
+        let step = match self.next_undo_step(log, head, now).await {
+            ControlFlow::Break(settled) => return settled,
+            ControlFlow::Continue(step) => step,
+        };
+        let req = match self.resolve_undo_request(log, head, &step, service_id, now).await {
+            ControlFlow::Break(settled) => return settled,
+            ControlFlow::Continue(req) => req,
+        };
+        self.dispatch_undo_step(log, head, &step, req, now).await
+    }
+
+    /// Claims the next uncompensated step and gates it on the retry budget.
+    /// `Break(n)` is this tick's final settled count -- nothing left to
+    /// compensate, the log call itself failed, or the step has already
+    /// exhausted its undo attempts -- and the caller must return it
+    /// immediately, the same as the `return` this replaces. `Continue`
+    /// carries the step on to dispatch.
+    ///
+    /// Before dispatch, not after: a crash inside the call must cost an
+    /// attempt, or a poison step is retried forever. Safe only because the
+    /// idempotency key `resolve_undo_request` builds lets the receiver
+    /// answer a duplicate from its own record.
+    async fn next_undo_step(
+        &self,
+        log: &SagaLog,
+        head: &SagaHead,
+        now: i64,
+    ) -> ControlFlow<usize, StepRow> {
         let saga_id = head.saga_id.clone();
         let step = {
             let log = log.clone();
             task::spawn_blocking(move || log.next_uncompensated_step(&saga_id)).await
         };
-        let Ok(Ok(step)) = step else { return 0 };
+        let Ok(Ok(step)) = step else { return ControlFlow::Break(0) };
         let Some(step) = step else {
             // Nothing left to compensate: done.
             let saga_id = head.saga_id.clone();
             let log = log.clone();
             let _ = task::spawn_blocking(move || log.finish_compensation(&saga_id, now)).await;
             metrics::counter!("substrate.proxy.saga.compensated").increment(1);
-            return 1;
+            return ControlFlow::Break(1);
         };
 
-        // Before dispatch, not after: a crash inside the call must cost an
-        // attempt, or a poison step is retried forever. Safe only because
-        // the idempotency key below lets the receiver answer a duplicate
-        // from its own record.
         let idx = step.idx;
         let saga_id = head.saga_id.clone();
         let attempts = {
             let log = log.clone();
             task::spawn_blocking(move || log.begin_undo_attempt(&saga_id, idx, now)).await
         };
-        let Ok(Ok(attempts)) = attempts else { return 0 };
+        let Ok(Ok(attempts)) = attempts else { return ControlFlow::Break(0) };
         if attempts > u32::from(log.max_attempts()) {
             let saga_id = head.saga_id.clone();
             let log = log.clone();
@@ -479,10 +505,28 @@ impl ProxyRouter {
             })
             .await;
             metrics::counter!("substrate.proxy.saga.failed").increment(1);
-            return 1;
+            return ControlFlow::Break(1);
         }
 
-        let Some(sagas) = &self.sagas else { return 0 };
+        ControlFlow::Continue(step)
+    }
+
+    /// Resolves the undo's target and builds the `ProxyRequest` for it.
+    /// `Break(1)` means an unreadable stored target or an unresolvable
+    /// dependency was recorded as a terminal step failure already -- the
+    /// caller's tick has settled this step and must return that count
+    /// immediately, the same as the `return` this replaces. `Break(0)`
+    /// means this node keeps no saga queue at all, so nothing was recorded.
+    async fn resolve_undo_request(
+        &self,
+        log: &SagaLog,
+        head: &SagaHead,
+        step: &StepRow,
+        service_id: &str,
+        now: i64,
+    ) -> ControlFlow<usize, ProxyRequest> {
+        let idx = step.idx;
+        let Some(sagas) = &self.sagas else { return ControlFlow::Break(0) };
         let target_value: QueuedTarget = match serde_json::from_str(&step.target) {
             Ok(t) => t,
             Err(e) => {
@@ -494,7 +538,7 @@ impl ProxyRouter {
                     &format!("stored saga step target is unreadable: {e}"),
                 )
                 .await;
-                return 1;
+                return ControlFlow::Break(1);
             }
         };
         // A dependency name bound to nobody is not a failed delivery, it is
@@ -508,7 +552,7 @@ impl ProxyRouter {
             Ok(t) => t,
             Err(e) => {
                 self.fail_terminal_saga_step(log, &head.saga_id, idx, now, &e.to_string()).await;
-                return 1;
+                return ControlFlow::Break(1);
             }
         };
 
@@ -517,7 +561,7 @@ impl ProxyRouter {
             step.result.as_deref().and_then(|bytes| serde_json::from_slice(bytes).ok());
         let params = merge_forward_result(&params_value, result_value.as_ref());
 
-        let req = ProxyRequest {
+        ControlFlow::Continue(ProxyRequest {
             target_service: target,
             interface: step.interface.clone(),
             method: saga_undo_name(&step.method),
@@ -528,8 +572,21 @@ impl ProxyRouter {
             idempotent: true,
             idempotency_key: Some(format!("saga:{}:{}", head.saga_id, idx)),
             timeout: Some(SAGA_UNDO_CALL_BUDGET),
-        };
+        })
+    }
 
+    /// Sends the undo call and records its outcome. Always settles exactly
+    /// one step, so it always returns `1` -- the caller has nothing left to
+    /// branch on once dispatch has happened.
+    async fn dispatch_undo_step(
+        &self,
+        log: &SagaLog,
+        head: &SagaHead,
+        step: &StepRow,
+        req: ProxyRequest,
+        now: i64,
+    ) -> usize {
+        let idx = step.idx;
         // `invoke_inner`, not `invoke`: an undo has no live caller holding
         // the error, so writing a second, un-repliable proxy dead letter
         // for it would only add noise -- the saga's own `fail_compensation`
@@ -558,7 +615,7 @@ impl ProxyRouter {
                         &head.saga_id,
                         idx,
                         now,
-                        &explain_undo_error(&e, &step),
+                        &explain_undo_error(&e, step),
                     )
                     .await;
                 }
@@ -568,7 +625,7 @@ impl ProxyRouter {
                         &head.saga_id,
                         idx,
                         now,
-                        &explain_undo_error(&e, &step),
+                        &explain_undo_error(&e, step),
                     )
                     .await;
                 }

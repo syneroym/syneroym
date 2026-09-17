@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use super::*;
 
 impl HttpHandler {
@@ -133,165 +135,225 @@ impl HttpHandler {
 
         match route.operation.as_str() {
             "accept-upload" => {
-                let body_stream = req.into_body().into_data_stream().map_err(io::Error::other);
-                let reader: Box<dyn AsyncRead + Unpin + Send> =
-                    Box::new(StreamReader::new(body_stream));
-                let writer: Box<dyn AsyncWrite + Unpin + Send> = Box::new(tokio_io::sink());
-
-                match app_sandbox_engine
-                    .handle_stream_protocol_request(
-                        &self.preamble.service_id,
-                        &protocol,
-                        &peer_id,
-                        StreamDirection::Upload,
-                        initial_payload,
-                        reader,
-                        writer,
-                    )
-                    .await
-                {
-                    Ok(StreamRequestOutcome::Completed) => Ok(json_response(
-                        StatusCode::OK,
-                        &serde_json::json!({"status": "uploaded"}),
-                    )),
-                    Ok(StreamRequestOutcome::Declined) => {
-                        Ok(http_error(StatusCode::FORBIDDEN, "upload declined by guest".into()))
-                    }
-                    Err(e) => {
-                        error!(
-                            service_id = %self.preamble.service_id,
-                            protocol = %protocol,
-                            error = %e,
-                            "accept-upload failed"
-                        );
-                        Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
-                    }
-                }
+                self.handle_stream_upload(
+                    app_sandbox_engine,
+                    protocol,
+                    peer_id,
+                    initial_payload,
+                    req,
+                )
+                .await
             }
             "accept-download" => {
-                let (duplex_writer, mut duplex_reader) = tokio_io::duplex(64 * 1024);
-                let reader: Box<dyn AsyncRead + Unpin + Send> = Box::new(tokio_io::empty());
-                let writer: Box<dyn AsyncWrite + Unpin + Send> = Box::new(duplex_writer);
-
-                let service_id = self.preamble.service_id.clone();
-                let engine = app_sandbox_engine.clone();
-                let proto = protocol.clone();
-                let peer = peer_id.clone();
-
-                let join_handle = tokio::spawn(async move {
-                    engine
-                        .handle_stream_protocol_request(
-                            &service_id,
-                            &proto,
-                            &peer,
-                            StreamDirection::Download,
-                            initial_payload,
-                            reader,
-                            writer,
-                        )
-                        .await
-                });
-
-                let mut first_buf = vec![0u8; 64 * 1024];
-                let first_chunk = match duplex_reader.read(&mut first_buf).await {
-                    Ok(0) => match join_handle.await {
-                        Ok(Ok(StreamRequestOutcome::Declined)) => {
-                            return Ok(http_error(
-                                StatusCode::NOT_FOUND,
-                                "stream download declined or file not found".into(),
-                            ));
-                        }
-                        Ok(Err(e)) => {
-                            return Ok(http_error(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                e.to_string(),
-                            ));
-                        }
-                        _ => {
-                            return Ok(http_error(
-                                StatusCode::NOT_FOUND,
-                                "stream download produced no data".into(),
-                            ));
-                        }
-                    },
-                    Ok(n) => {
-                        first_buf.truncate(n);
-                        Some(Bytes::from(first_buf))
-                    }
-                    Err(e) => {
-                        return Ok(http_error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("failed to read stream download: {e}"),
-                        ));
-                    }
-                };
-
-                let stream = stream::unfold(
-                    (duplex_reader, first_chunk, Some(join_handle)),
-                    |(mut reader, first, mut handle)| async move {
-                        if let Some(chunk) = first {
-                            return Some((
-                                Ok::<_, Infallible>(Frame::data(chunk)),
-                                (reader, None, handle),
-                            ));
-                        }
-                        let mut buf = vec![0u8; 64 * 1024];
-                        match reader.read(&mut buf).await {
-                            Ok(0) => {
-                                if let Some(h) = handle.take() {
-                                    match h.await {
-                                        Ok(Ok(StreamRequestOutcome::Completed)) => {}
-                                        Ok(Ok(StreamRequestOutcome::Declined)) => {
-                                            warn!(
-                                                "stream download declined by guest after partial \
-                                                 transfer"
-                                            );
-                                        }
-                                        Ok(Err(e)) => {
-                                            error!(
-                                                "stream download task failed after partial \
-                                                 transfer: {e}"
-                                            );
-                                        }
-                                        Err(e) => {
-                                            error!("stream download task panicked: {e}");
-                                        }
-                                    }
-                                }
-                                None
-                            }
-                            Ok(n) => {
-                                buf.truncate(n);
-                                Some((
-                                    Ok::<_, Infallible>(Frame::data(Bytes::from(buf))),
-                                    (reader, None, handle),
-                                ))
-                            }
-                            Err(e) => {
-                                error!("stream download read error: {e}");
-                                None
-                            }
-                        }
-                    },
-                );
-
-                let body = StreamBody::new(stream).boxed_unsync();
-                let mut resp_builder = Response::builder().status(StatusCode::OK);
-                if let Some(filename) = path_param.as_deref() {
-                    let mime = mime_guess::from_path(filename).first_or_octet_stream();
-                    resp_builder = resp_builder.header(CONTENT_TYPE, mime.as_ref());
-                } else {
-                    resp_builder = resp_builder.header(CONTENT_TYPE, "application/octet-stream");
-                }
-                resp_builder
-                    .body(body)
-                    .map_err(|e| anyhow!("failed to build download response: {e}"))
+                self.handle_stream_download(
+                    app_sandbox_engine,
+                    protocol,
+                    peer_id,
+                    initial_payload,
+                    path_param,
+                )
+                .await
             }
             other => Ok(http_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("unsupported stream operation: {other}"),
             )),
         }
+    }
+
+    /// The `"accept-upload"` stream-route arm: pipes the request body into
+    /// the guest's `accept-stream-upload` export and turns the outcome into
+    /// a response.
+    async fn handle_stream_upload(
+        &self,
+        app_sandbox_engine: Arc<AppSandboxEngine>,
+        protocol: String,
+        peer_id: String,
+        initial_payload: Vec<u8>,
+        req: Request<Incoming>,
+    ) -> Result<Response<HttpBody>> {
+        let body_stream = req.into_body().into_data_stream().map_err(io::Error::other);
+        let reader: Box<dyn AsyncRead + Unpin + Send> = Box::new(StreamReader::new(body_stream));
+        let writer: Box<dyn AsyncWrite + Unpin + Send> = Box::new(tokio_io::sink());
+
+        match app_sandbox_engine
+            .handle_stream_protocol_request(
+                &self.preamble.service_id,
+                &protocol,
+                &peer_id,
+                StreamDirection::Upload,
+                initial_payload,
+                reader,
+                writer,
+            )
+            .await
+        {
+            Ok(StreamRequestOutcome::Completed) => {
+                Ok(json_response(StatusCode::OK, &serde_json::json!({"status": "uploaded"})))
+            }
+            Ok(StreamRequestOutcome::Declined) => {
+                Ok(http_error(StatusCode::FORBIDDEN, "upload declined by guest".into()))
+            }
+            Err(e) => {
+                error!(
+                    service_id = %self.preamble.service_id,
+                    protocol = %protocol,
+                    error = %e,
+                    "accept-upload failed"
+                );
+                Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+            }
+        }
+    }
+
+    /// The `"accept-download"` stream-route arm: runs the guest's
+    /// `handle-stream-request` download export on a duplex pipe and streams
+    /// its output back as the response body.
+    async fn handle_stream_download(
+        &self,
+        app_sandbox_engine: Arc<AppSandboxEngine>,
+        protocol: String,
+        peer_id: String,
+        initial_payload: Vec<u8>,
+        path_param: Option<String>,
+    ) -> Result<Response<HttpBody>> {
+        let (reader, first_chunk, join_handle) = match self
+            .start_stream_download(app_sandbox_engine, protocol, peer_id, initial_payload)
+            .await
+        {
+            ControlFlow::Break(resp) => return Ok(resp),
+            ControlFlow::Continue(parts) => parts,
+        };
+
+        let stream = Self::stream_download_body(reader, first_chunk, join_handle);
+        let body = StreamBody::new(stream).boxed_unsync();
+        let mut resp_builder = Response::builder().status(StatusCode::OK);
+        if let Some(filename) = path_param.as_deref() {
+            let mime = mime_guess::from_path(filename).first_or_octet_stream();
+            resp_builder = resp_builder.header(CONTENT_TYPE, mime.as_ref());
+        } else {
+            resp_builder = resp_builder.header(CONTENT_TYPE, "application/octet-stream");
+        }
+        resp_builder.body(body).map_err(|e| anyhow!("failed to build download response: {e}"))
+    }
+
+    /// Starts the guest's download task on a duplex pipe and reads its
+    /// first chunk, so a guest that produces no data at all (declined,
+    /// failed, or genuinely empty) can still answer with a normal status
+    /// code instead of a response that started streaming and then stopped.
+    /// `Break` carries the response to return immediately, the same as the
+    /// early `return Ok(...)` this replaces. `Continue` carries the duplex
+    /// reader, the chunk already read off it, and the task's `JoinHandle`
+    /// for `stream_download_body` to keep draining.
+    async fn start_stream_download(
+        &self,
+        app_sandbox_engine: Arc<AppSandboxEngine>,
+        protocol: String,
+        peer_id: String,
+        initial_payload: Vec<u8>,
+    ) -> ControlFlow<
+        Response<HttpBody>,
+        (tokio_io::DuplexStream, Option<Bytes>, JoinHandle<Result<StreamRequestOutcome>>),
+    > {
+        let (duplex_writer, mut duplex_reader) = tokio_io::duplex(64 * 1024);
+        let reader: Box<dyn AsyncRead + Unpin + Send> = Box::new(tokio_io::empty());
+        let writer: Box<dyn AsyncWrite + Unpin + Send> = Box::new(duplex_writer);
+
+        let service_id = self.preamble.service_id.clone();
+
+        let join_handle = tokio::spawn(async move {
+            app_sandbox_engine
+                .handle_stream_protocol_request(
+                    &service_id,
+                    &protocol,
+                    &peer_id,
+                    StreamDirection::Download,
+                    initial_payload,
+                    reader,
+                    writer,
+                )
+                .await
+        });
+
+        let mut first_buf = vec![0u8; 64 * 1024];
+        match duplex_reader.read(&mut first_buf).await {
+            Ok(0) => match join_handle.await {
+                Ok(Ok(StreamRequestOutcome::Declined)) => ControlFlow::Break(http_error(
+                    StatusCode::NOT_FOUND,
+                    "stream download declined or file not found".into(),
+                )),
+                Ok(Err(e)) => {
+                    ControlFlow::Break(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+                }
+                _ => ControlFlow::Break(http_error(
+                    StatusCode::NOT_FOUND,
+                    "stream download produced no data".into(),
+                )),
+            },
+            Ok(n) => {
+                first_buf.truncate(n);
+                ControlFlow::Continue((duplex_reader, Some(Bytes::from(first_buf)), join_handle))
+            }
+            Err(e) => ControlFlow::Break(http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to read stream download: {e}"),
+            )),
+        }
+    }
+
+    /// Builds the streaming download response body from the duplex reader
+    /// and first chunk `start_stream_download` already produced, plus its
+    /// task's handle -- joined and logged, never surfaced to the client,
+    /// once the pipe goes dry: a partial transfer has already started, so
+    /// nothing but a log line is left to report a late guest failure.
+    fn stream_download_body(
+        reader: tokio_io::DuplexStream,
+        first_chunk: Option<Bytes>,
+        join_handle: JoinHandle<Result<StreamRequestOutcome>>,
+    ) -> impl Stream<Item = result::Result<Frame<Bytes>, Infallible>> {
+        stream::unfold(
+            (reader, first_chunk, Some(join_handle)),
+            |(mut reader, first, mut handle)| async move {
+                if let Some(chunk) = first {
+                    return Some((Ok::<_, Infallible>(Frame::data(chunk)), (reader, None, handle)));
+                }
+                let mut buf = vec![0u8; 64 * 1024];
+                match reader.read(&mut buf).await {
+                    Ok(0) => {
+                        if let Some(h) = handle.take() {
+                            match h.await {
+                                Ok(Ok(StreamRequestOutcome::Completed)) => {}
+                                Ok(Ok(StreamRequestOutcome::Declined)) => {
+                                    warn!(
+                                        "stream download declined by guest after partial transfer"
+                                    );
+                                }
+                                Ok(Err(e)) => {
+                                    error!(
+                                        "stream download task failed after partial transfer: {e}"
+                                    );
+                                }
+                                Err(e) => {
+                                    error!("stream download task panicked: {e}");
+                                }
+                            }
+                        }
+                        None
+                    }
+                    Ok(n) => {
+                        buf.truncate(n);
+                        Some((
+                            Ok::<_, Infallible>(Frame::data(Bytes::from(buf))),
+                            (reader, None, handle),
+                        ))
+                    }
+                    Err(e) => {
+                        error!("stream download read error: {e}");
+                        None
+                    }
+                }
+            },
+        )
     }
 
     // -- signed-URL blob GET ---------------------------------------------
