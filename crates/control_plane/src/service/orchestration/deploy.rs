@@ -133,7 +133,6 @@ impl ControlPlaneService {
             &previous_fdae_policy,
             installed_instance_cert,
             &manifest,
-            service_type,
             &incoming_hash,
             validated_visibility,
         )
@@ -635,10 +634,10 @@ impl ControlPlaneService {
         previous_fdae_policy: &Option<String>,
         installed_instance_cert: Option<DelegationCertificate>,
         manifest: &DeployManifest,
-        service_type: AppServiceType,
         incoming_hash: &str,
         validated_visibility: AppVisibility,
     ) -> Result<(), String> {
+        let service_type = app_service_type(&manifest.service_type);
         if let Err(e) =
             self.registry.set_owner(service_id.to_string(), caller.caller_did.clone()).await
         {

@@ -32,7 +32,7 @@ impl ControlPlaneService {
                     .save_binding(
                         &write.service_id,
                         &write.app_instance_id,
-                        &raw_dependency_name,
+                        raw_dependency_name,
                         &entry_json,
                     )
                     .await
@@ -140,12 +140,15 @@ impl ControlPlaneService {
     /// Validates and classifies every binding in `write`, without applying
     /// any of it -- the caller applies `Applied` outcomes itself, in wire
     /// order. Returns each binding's raw wire dependency name (for the
-    /// `save_binding` call), its validated `LogicalServiceName`, its
-    /// resolved `TopologyEntry`, and its classified `BindingWriteOutcome`.
-    async fn prepare_write_bindings(
+    /// `save_binding` call, borrowed from `write` rather than cloned --
+    /// `write` outlives every use of the returned list in the caller), its
+    /// validated `LogicalServiceName`, its resolved `TopologyEntry`, and
+    /// its classified `BindingWriteOutcome`.
+    async fn prepare_write_bindings<'a>(
         &self,
-        write: &BindingWrite,
-    ) -> Result<Vec<(String, LogicalServiceName, TopologyEntry, BindingWriteOutcome)>, String> {
+        write: &'a BindingWrite,
+    ) -> Result<Vec<(&'a str, LogicalServiceName, TopologyEntry, BindingWriteOutcome)>, String>
+    {
         let mut prepared = Vec::with_capacity(write.bindings.len());
         for binding in &write.bindings {
             let (dependency_name, entry) = prepare_binding(binding, &write.app_instance_id)?;
@@ -173,7 +176,7 @@ impl ControlPlaneService {
             })?;
 
             let outcome = classify_binding_write(Some(&held), &entry);
-            prepared.push((binding.dependency_name.clone(), dependency_name, entry, outcome));
+            prepared.push((binding.dependency_name.as_str(), dependency_name, entry, outcome));
         }
         Ok(prepared)
     }

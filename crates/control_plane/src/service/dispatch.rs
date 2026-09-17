@@ -1,4 +1,5 @@
 use super::*;
+use crate::synsvc_native;
 
 #[async_trait::async_trait]
 impl NativeService for ControlPlaneService {
@@ -161,9 +162,8 @@ impl ControlPlaneService {
                         "signing identity expects optional service_id string parameter".to_string(),
                     ));
                 };
-                let id = signer
-                    .identity(&target_service_id)
-                    .map_err(crate::synsvc_native::signing_error)?;
+                let id =
+                    signer.identity(&target_service_id).map_err(synsvc_native::signing_error)?;
                 Ok(NativeResponse {
                     payload: serde_json::json!({
                         "signing_did": id.signing_did,
