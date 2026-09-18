@@ -152,46 +152,10 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
         Ok(q) => q,
         Err(e) => return Response::invalid_params(format!("invalid query: {e}")),
     };
-    // This is the one query shape an anonymous stranger controls end to
-    // end, so every field gets checked before it reaches arithmetic or a
-    // filter document: an unvalidated `Area` can drive `bounding_box`/
-    // `areas_intersect` into overflow, an unbounded category list turns
-    // into an unbounded `$and`, and unbounded text turns into an unbounded
-    // bound-parameter list.
-    if let Some(q_area) = &query.area
-        && let Err(e) = q_area.validate()
-    {
-        return Response::invalid_params(e.to_string());
-    }
-    if query.categories.len() > MAX_CATEGORIES {
-        return Response::invalid_params(format!(
-            "more than {MAX_CATEGORIES} categories in a query"
-        ));
-    }
-    if let Some(text) = &query.text
-        && text.len() > MAX_QUERY_TEXT_LEN
-    {
-        return Response::invalid_params(format!(
-            "query text is longer than {MAX_QUERY_TEXT_LEN} bytes"
-        ));
-    }
-    // The text index is ASCII-folded (see `normalize_text`). A query in a
-    // script that folds to nothing -- Kannada, Devanagari, CJK -- must be
-    // refused, not quietly dropped: dropping the clause returns every
-    // active listing, the opposite of what the person asked for. Widening
-    // the index alphabet is a projection change, tracked in the backlog.
-    let normalized_text = query.text.as_deref().map(normalize_text);
-    if let (Some(raw), Some(norm)) = (query.text.as_deref(), normalized_text.as_deref())
-        && !raw.trim().is_empty()
-        && norm.is_empty()
-    {
-        return Response::err(
-            -32602,
-            "the directory's text index holds only ASCII letters, digits, spaces and hyphens; \
-             this query has no searchable characters"
-                .to_string(),
-        );
-    }
+    let normalized_text = match validate_search_query(&query) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
     if let Err(e) = ensure_coll(host, SEARCH_INDEX, &[]).await {
         return Response::internal_error(e);
     }
@@ -206,12 +170,96 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
         let _ = publication_ops::prune_expired_publications(host, settings.retention_secs).await;
     }
 
+    let filter = match build_search_filter(&query, normalized_text.as_deref()) {
+        Ok(f) => f,
+        Err(resp) => return resp,
+    };
+
+    // The ceiling counts *distinct listings*, not index rows: one listing
+    // holds up to `MAX_AREAS` rows, so a row count would let a page of
+    // multi-area listings starve the limit.
+    let ceiling = (MAX_HITS_PER_QUERY as usize) * 4;
+    let (candidates, truncated) = match collect_search_candidates(host, &filter, ceiling).await {
+        Ok(v) => v,
+        Err(e) => return Response::internal_error(e),
+    };
+
+    let by_listing = refine_by_listing(candidates, query.area.as_ref());
+    let mut hits: Vec<(SearchIndexRow, AreaMatch)> = by_listing.into_values().collect();
+    hits.sort_by(|a, b| {
+        b.0.issued_at_secs.cmp(&a.0.issued_at_secs).then(a.0.listing_id.cmp(&b.0.listing_id))
+    });
+    let limit = query.limit.unwrap_or(MAX_HITS_PER_QUERY).min(MAX_HITS_PER_QUERY) as usize;
+    hits.truncate(limit);
+    let out = hits_with_envelopes(host, hits).await;
+
+    let directory_did = match AppSigning::signing_identity(host).await {
+        Ok(id) => id.signing_did,
+        Err(_) => String::new(),
+    };
+    Response::ok(json!({
+        "hits": out,
+        "truncated": truncated,
+        "directory": directory_did,
+        "answered_at_secs": clock::now_secs(),
+    }))
+}
+
+/// This is the one query shape an anonymous stranger controls end to
+/// end, so every field gets checked before it reaches arithmetic or a
+/// filter document: an unvalidated `Area` can drive `bounding_box`/
+/// `areas_intersect` into overflow, an unbounded category list turns
+/// into an unbounded `$and`, and unbounded text turns into an unbounded
+/// bound-parameter list. Returns the ASCII-folded query text (see
+/// `normalize_text`), so `build_search_filter` never re-derives it.
+fn validate_search_query(query: &SearchQuery) -> Result<Option<String>, Response> {
+    if let Some(q_area) = &query.area
+        && let Err(e) = q_area.validate()
+    {
+        return Err(Response::invalid_params(e.to_string()));
+    }
+    if query.categories.len() > MAX_CATEGORIES {
+        return Err(Response::invalid_params(format!(
+            "more than {MAX_CATEGORIES} categories in a query"
+        )));
+    }
+    if let Some(text) = &query.text
+        && text.len() > MAX_QUERY_TEXT_LEN
+    {
+        return Err(Response::invalid_params(format!(
+            "query text is longer than {MAX_QUERY_TEXT_LEN} bytes"
+        )));
+    }
+    // The text index is ASCII-folded (see `normalize_text`). A query in a
+    // script that folds to nothing -- Kannada, Devanagari, CJK -- must be
+    // refused, not quietly dropped: dropping the clause returns every
+    // active listing, the opposite of what the person asked for. Widening
+    // the index alphabet is a projection change, tracked in the backlog.
+    let normalized_text = query.text.as_deref().map(normalize_text);
+    if let (Some(raw), Some(norm)) = (query.text.as_deref(), normalized_text.as_deref())
+        && !raw.trim().is_empty()
+        && norm.is_empty()
+    {
+        return Err(Response::err(
+            -32602,
+            "the directory's text index holds only ASCII letters, digits, spaces and hyphens; \
+             this query has no searchable characters"
+                .to_string(),
+        ));
+    }
+    Ok(normalized_text)
+}
+
+fn build_search_filter(
+    query: &SearchQuery,
+    normalized_text: Option<&str>,
+) -> Result<Value, Response> {
     let mut and_clauses: Vec<Value> = vec![json!({ "status": "active" })];
     for cat in &query.categories {
         let normalized = normalize_category(cat);
         and_clauses.push(json!({ "categories": { "$regex": category_tokens(&[normalized]) } }));
     }
-    if let Some(normalized) = normalized_text.as_deref().filter(|n| !n.is_empty()) {
+    if let Some(normalized) = normalized_text.filter(|n| !n.is_empty()) {
         and_clauses.push(json!({ "text": { "$regex": normalized } }));
     }
     // The index stores the enum's serde spelling (`existing-customers`,
@@ -223,11 +271,11 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
         match serde_json::from_value::<listing::OpenTo>(json!(open_to)) {
             Ok(v) => and_clauses.push(json!({ "open_to": serde_str(&v) })),
             Err(_) => {
-                return Response::err(
+                return Err(Response::err(
                     -32602,
                     "open_to must be one of: anyone, members, referral, existing-customers"
                         .to_string(),
-                );
+                ));
             }
         }
     }
@@ -235,10 +283,10 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
         match serde_json::from_value::<listing::BookingMode>(json!(booking_mode)) {
             Ok(v) => and_clauses.push(json!({ "booking_mode": serde_str(&v) })),
             Err(_) => {
-                return Response::err(
+                return Err(Response::err(
                     -32602,
                     "booking_mode must be one of: slots, order, enquiry".to_string(),
-                );
+                ));
             }
         }
     }
@@ -259,18 +307,23 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
     if let Some(Area::Named { label, .. }) = &query.area {
         and_clauses.push(json!({ "area_label": area::normalize_label(label) }));
     }
-    let filter = json!({ "$and": and_clauses });
+    Ok(json!({ "$and": and_clauses }))
+}
 
-    // The ceiling counts *distinct listings*, not index rows: one listing
-    // holds up to `MAX_AREAS` rows, so a row count would let a page of
-    // multi-area listings starve the limit.
-    let ceiling = (MAX_HITS_PER_QUERY as usize) * 4;
+/// Pages through `search_index` rows matching `filter` until either the
+/// host runs out of pages or the number of distinct listings seen
+/// reaches `ceiling`.
+async fn collect_search_candidates<H: AppHost>(
+    host: &H,
+    filter: &Value,
+    ceiling: usize,
+) -> Result<(Vec<SearchIndexRow>, bool), String> {
     let mut candidates: Vec<SearchIndexRow> = Vec::new();
     let mut distinct_listings: BTreeSet<String> = BTreeSet::new();
     let mut truncated = false;
     let mut cursor = None;
     loop {
-        let page = match AppDataLayer::query(
+        let page = AppDataLayer::query(
             host,
             SEARCH_INDEX.to_string(),
             QueryOptions {
@@ -280,10 +333,7 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
             },
         )
         .await
-        {
-            Ok(p) => p,
-            Err(e) => return Response::internal_error(e.to_string()),
-        };
+        .map_err(|e| e.to_string())?;
         for r in page.records {
             if let Ok(row) = serde_json::from_slice::<SearchIndexRow>(&r.payload) {
                 distinct_listings.insert(row.listing_id.clone());
@@ -299,14 +349,22 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
         }
         cursor = page.next_cursor;
     }
+    Ok((candidates, truncated))
+}
 
-    // Refine exactly and compute each row's AreaMatch. A geometric query
-    // keeps only rows whose stored area actually intersects; a named-area
-    // query keeps only matching labels; no area at all keeps everything
-    // the filter already admitted.
+/// Refines candidates to exactly one row per listing and computes each
+/// one's `AreaMatch`. A geometric query keeps only rows whose stored area
+/// actually intersects; a named-area query keeps only matching labels; no
+/// area at all keeps everything the filter already admitted. Among a
+/// listing's several rows the more specific `AreaMatch` wins (see
+/// `area_match_precedence`).
+fn refine_by_listing(
+    candidates: Vec<SearchIndexRow>,
+    query_area: Option<&Area>,
+) -> BTreeMap<String, (SearchIndexRow, AreaMatch)> {
     let mut by_listing: BTreeMap<String, (SearchIndexRow, AreaMatch)> = BTreeMap::new();
     for row in candidates {
-        let area_match = match &query.area {
+        let area_match = match query_area {
             None => AreaMatch::NotQueried,
             Some(Area::Named { label, .. }) => match &row.area {
                 Some(row_area @ Area::Named { .. })
@@ -330,7 +388,7 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
         // A listing with no location block at all, under a query with no
         // area, is reported honestly as `NoAreaStated` rather than as
         // `NotQueried`.
-        let effective = if query.area.is_none() && row.area.is_none() {
+        let effective = if query_area.is_none() && row.area.is_none() {
             AreaMatch::NoAreaStated
         } else {
             area_match
@@ -347,23 +405,21 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
             }
         }
     }
+    by_listing
+}
 
-    let mut hits: Vec<(SearchIndexRow, AreaMatch)> = by_listing.into_values().collect();
-    hits.sort_by(|a, b| {
-        b.0.issued_at_secs.cmp(&a.0.issued_at_secs).then(a.0.listing_id.cmp(&b.0.listing_id))
-    });
-    let limit = query.limit.unwrap_or(MAX_HITS_PER_QUERY).min(MAX_HITS_PER_QUERY) as usize;
-    hits.truncate(limit);
-
+/// Attaches each hit's stored envelope, keyed by `record_id` -- a direct
+/// get, not the full-collection scan `load_publication_for_listing` does
+/// for the (rare, owner-only) withdrawal/republish path. A row this node
+/// cannot itself parse (e.g. an older schema left over from before a
+/// field was added) drops that one hit rather than failing the whole
+/// anonymous-reachable search.
+async fn hits_with_envelopes<H: AppHost>(
+    host: &H,
+    hits: Vec<(SearchIndexRow, AreaMatch)>,
+) -> Vec<SearchHit> {
     let mut out = Vec::with_capacity(hits.len());
     for (row, area_match) in hits {
-        // `publications` is keyed by `record_id`, which the index row
-        // already carries -- a direct get, not the full-collection scan
-        // `load_publication_for_listing` does for the (rare, owner-only)
-        // withdrawal/republish path.
-        // A row this node cannot itself parse (e.g. an older schema left
-        // over from before a field was added) drops that one hit rather
-        // than failing the whole anonymous-reachable search.
         let envelope = match get_json::<H, PublicationRow>(host, PUBLICATIONS, &row.record_id).await
         {
             Ok(Some(p)) => p.envelope,
@@ -378,17 +434,7 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
             area_match,
         });
     }
-
-    let directory_did = match AppSigning::signing_identity(host).await {
-        Ok(id) => id.signing_did,
-        Err(_) => String::new(),
-    };
-    Response::ok(json!({
-        "hits": out,
-        "truncated": truncated,
-        "directory": directory_did,
-        "answered_at_secs": clock::now_secs(),
-    }))
+    out
 }
 
 pub(in crate::app) async fn reindex<H: AppHost>(host: &H) -> Response {
