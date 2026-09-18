@@ -92,45 +92,27 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
     for m in messages {
         offset += 1;
         scanned += 1;
-        let content_type = m.get("content_type").and_then(Value::as_str).unwrap_or("");
-        if content_type != CARD_CONTENT_TYPE {
-            continue;
-        }
-        if m.get("deleted_at_secs").and_then(Value::as_u64).is_some() {
-            continue;
-        }
-        let msg_id = match m.get("id").and_then(Value::as_str) {
-            Some(id) => id,
-            None => continue,
-        };
-        let exists = match AppDataLayer::get(host, CARDS.to_string(), msg_id.to_string()).await {
-            Ok(o) => o.is_some(),
-            Err(e) => return Response::internal_error(e.to_string()),
-        };
-        if exists {
-            continue;
-        }
-        if card_count >= MAX_CARDS_PER_CONVERSATION {
-            first_declined = first_declined.or(Some(offset - 1));
-            continue;
-        }
-
-        let file_res = match file_incoming_card(host, &m, &params.conversation, now, &owner).await {
-            Ok(res) => res,
+        match classify_sync_message(host, &m, &params.conversation, now, &owner, card_count).await {
+            Ok(SyncOutcome::Skip) => {}
+            Ok(SyncOutcome::Declined) => {
+                first_declined = first_declined.or(Some(offset - 1));
+            }
+            Ok(SyncOutcome::Filed(file_res)) => {
+                card_count += 1;
+                if file_res.filed {
+                    filed += 1;
+                }
+                if file_res.refused {
+                    refused += 1;
+                }
+                if file_res.unknown {
+                    unknown += 1;
+                }
+                if file_res.countersigned {
+                    countersigned += 1;
+                }
+            }
             Err(e) => return Response::internal_error(e),
-        };
-        card_count += 1;
-        if file_res.filed {
-            filed += 1;
-        }
-        if file_res.refused {
-            refused += 1;
-        }
-        if file_res.unknown {
-            unknown += 1;
-        }
-        if file_res.countersigned {
-            countersigned += 1;
         }
     }
 
@@ -157,6 +139,53 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
         "countersigned": countersigned,
         "scanned_count": new_scanned_count,
     }))
+}
+
+/// What a single history message meant for sync, once it has been classified.
+enum SyncOutcome {
+    /// Not a card, deleted, missing an id, or already filed -- nothing to do.
+    Skip,
+    /// A card this node would otherwise file, but the conversation is at its
+    /// card-count cap.
+    Declined,
+    /// Filed (successfully or as a refusal); carries the counters to fold in.
+    Filed(FileCardResult),
+}
+
+/// Decides what to do with one history message: skip it, decline it for
+/// being over the per-conversation card cap, or file it as a card.
+async fn classify_sync_message<H: AppHost>(
+    host: &H,
+    m: &Value,
+    conversation: &str,
+    now: u64,
+    owner: &str,
+    card_count: usize,
+) -> Result<SyncOutcome, String> {
+    let content_type = m.get("content_type").and_then(Value::as_str).unwrap_or("");
+    if content_type != CARD_CONTENT_TYPE {
+        return Ok(SyncOutcome::Skip);
+    }
+    if m.get("deleted_at_secs").and_then(Value::as_u64).is_some() {
+        return Ok(SyncOutcome::Skip);
+    }
+    let msg_id = match m.get("id").and_then(Value::as_str) {
+        Some(id) => id,
+        None => return Ok(SyncOutcome::Skip),
+    };
+    let exists = match AppDataLayer::get(host, CARDS.to_string(), msg_id.to_string()).await {
+        Ok(o) => o.is_some(),
+        Err(e) => return Err(e.to_string()),
+    };
+    if exists {
+        return Ok(SyncOutcome::Skip);
+    }
+    if card_count >= MAX_CARDS_PER_CONVERSATION {
+        return Ok(SyncOutcome::Declined);
+    }
+
+    let file_res = file_incoming_card(host, m, conversation, now, owner).await?;
+    Ok(SyncOutcome::Filed(file_res))
 }
 
 async fn file_incoming_card<H: AppHost>(
