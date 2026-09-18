@@ -162,91 +162,17 @@ fn parse_and_validate_entries(
                 .path()
                 .map_err(|e| format!("failed to read asset bundle entry path: {e}"))?
                 .into_owned();
-            let accepted = reject_archive_entry_path(&raw_path, "assets archive entry")?;
-            let key = normalize_asset_path(&accepted);
-
-            // Two entries normalising to the same key would otherwise both
-            // `put_blob`, with the second silently winning the manifest
-            // slot -- the first entry's hash stays in `written` (correctly
-            // surviving rollback) but no manifest entry ever points to it,
-            // orphaning that blob forever (no boot-time loader, no GC).
-            // Rejected at deploy time instead, before either is written.
-            if !seen_keys.insert(key.clone()) {
-                return Err(format!("asset bundle contains a duplicate path {key:?}"));
-            }
-
-            if key.starts_with(RESERVED_BLOBS_PREFIX) {
-                return Err(format!(
-                    "asset path {key:?} collides with the reserved {RESERVED_BLOBS_PREFIX} prefix"
-                ));
-            }
-            if key.starts_with(GATEWAY_RESERVED_PATH_PREFIX) {
-                return Err(format!(
-                    "asset path {key:?} is under the reserved {GATEWAY_RESERVED_PATH_PREFIX} \
-                     prefix, which the client gateway answers itself and never proxies"
-                ));
-            }
-            // The directory-index rewrite makes an `.../index.html`
-            // entry also answerable at the directory path itself
-            // (`/docs/index.html` for `GET /docs/`, `/index.html` for
-            // `GET /`) -- a route pattern that only collides with that
-            // directory form, not the literal manifest key, would
-            // otherwise deploy clean and then split one logical resource
-            // across two handlers depending on a trailing slash.
-            // `strip_suffix("/index.html")` (rather than "index.html")
-            // deliberately requires the path separator, so a file that
-            // merely ends in those letters (`/myindex.html`) is not
-            // misread as a directory index.
-            let directory_form = key.strip_suffix("/index.html").map(|prefix| format!("{prefix}/"));
-            for route in get_head_routes {
-                if match_path(&route.path, &key).is_some() {
-                    return Err(format!(
-                        "asset path {key:?} collides with declared route {} {}",
-                        route.method, route.path
-                    ));
-                }
-                if let Some(dir) = &directory_form
-                    && match_path(&route.path, dir).is_some()
-                {
-                    return Err(format!(
-                        "asset path {key:?} collides with declared route {} {} as directory index \
-                         {dir:?}",
-                        route.method, route.path
-                    ));
-                }
-            }
-            if collected.len() + 1 > MAX_ASSET_FILE_COUNT {
-                return Err(format!(
-                    "asset bundle contains more than {MAX_ASSET_FILE_COUNT} files"
-                ));
-            }
-            Some(key)
+            Some(accept_file_entry_key(
+                &raw_path,
+                &mut seen_keys,
+                get_head_routes,
+                collected.len(),
+            )?)
         } else {
             None
         };
 
-        let mut content = Vec::new();
-        let mut buf = [0u8; UNPACK_READ_CHUNK_BYTES];
-        loop {
-            let n = entry.read(&mut buf).map_err(|e| {
-                format!(
-                    "failed to read asset bundle entry {:?}: {e}",
-                    accepted_key.as_deref().unwrap_or("<non-file entry>")
-                )
-            })?;
-            if n == 0 {
-                break;
-            }
-            total += n as u64;
-            if total > MAX_ASSET_UNPACKED_BYTES {
-                return Err(format!(
-                    "asset bundle unpacks to more than {MAX_ASSET_UNPACKED_BYTES} bytes"
-                ));
-            }
-            if is_file {
-                content.extend_from_slice(&buf[..n]);
-            }
-        }
+        let content = read_entry_content(&mut entry, is_file, accepted_key.as_deref(), &mut total)?;
 
         if let Some(key) = accepted_key {
             let content_type = mime_guess::from_path(&key).first_or_octet_stream().to_string();
@@ -255,6 +181,115 @@ fn parse_and_validate_entries(
     }
 
     Ok(collected)
+}
+
+/// Validates and normalizes one file entry's raw archive path into its
+/// accepted manifest key -- everything `parse_and_validate_entries` needs
+/// to decide before it is willing to keep a file entry: no duplicate key,
+/// no collision with a reserved prefix, and no collision with a declared
+/// `GET`/`HEAD` route (including that route's directory-index form).
+/// `seen_keys` accumulates across the whole archive so a later entry can
+/// detect a collision with an earlier one; `collected_len` is the running
+/// accepted-file count, checked against `MAX_ASSET_FILE_COUNT`.
+fn accept_file_entry_key(
+    raw_path: &Path,
+    seen_keys: &mut BTreeSet<String>,
+    get_head_routes: &[&HttpRoute],
+    collected_len: usize,
+) -> Result<String, String> {
+    let accepted = reject_archive_entry_path(raw_path, "assets archive entry")?;
+    let key = normalize_asset_path(&accepted);
+
+    // Two entries normalising to the same key would otherwise both
+    // `put_blob`, with the second silently winning the manifest slot --
+    // the first entry's hash stays in `written` (correctly surviving
+    // rollback) but no manifest entry ever points to it, orphaning that
+    // blob forever (no boot-time loader, no GC). Rejected at deploy time
+    // instead, before either is written.
+    if !seen_keys.insert(key.clone()) {
+        return Err(format!("asset bundle contains a duplicate path {key:?}"));
+    }
+
+    if key.starts_with(RESERVED_BLOBS_PREFIX) {
+        return Err(format!(
+            "asset path {key:?} collides with the reserved {RESERVED_BLOBS_PREFIX} prefix"
+        ));
+    }
+    if key.starts_with(GATEWAY_RESERVED_PATH_PREFIX) {
+        return Err(format!(
+            "asset path {key:?} is under the reserved {GATEWAY_RESERVED_PATH_PREFIX} prefix, \
+             which the client gateway answers itself and never proxies"
+        ));
+    }
+    // The directory-index rewrite makes an `.../index.html` entry also
+    // answerable at the directory path itself (`/docs/index.html` for
+    // `GET /docs/`, `/index.html` for `GET /`) -- a route pattern that
+    // only collides with that directory form, not the literal manifest
+    // key, would otherwise deploy clean and then split one logical
+    // resource across two handlers depending on a trailing slash.
+    // `strip_suffix("/index.html")` (rather than "index.html")
+    // deliberately requires the path separator, so a file that merely
+    // ends in those letters (`/myindex.html`) is not misread as a
+    // directory index.
+    let directory_form = key.strip_suffix("/index.html").map(|prefix| format!("{prefix}/"));
+    for route in get_head_routes {
+        if match_path(&route.path, &key).is_some() {
+            return Err(format!(
+                "asset path {key:?} collides with declared route {} {}",
+                route.method, route.path
+            ));
+        }
+        if let Some(dir) = &directory_form
+            && match_path(&route.path, dir).is_some()
+        {
+            return Err(format!(
+                "asset path {key:?} collides with declared route {} {} as directory index {dir:?}",
+                route.method, route.path
+            ));
+        }
+    }
+    if collected_len + 1 > MAX_ASSET_FILE_COUNT {
+        return Err(format!("asset bundle contains more than {MAX_ASSET_FILE_COUNT} files"));
+    }
+    Ok(key)
+}
+
+/// Reads one archive entry's content in `UNPACK_READ_CHUNK_BYTES` chunks,
+/// enforcing `MAX_ASSET_UNPACKED_BYTES` across the *whole* archive (via
+/// `total`, threaded through every call), not just this one entry. Called
+/// for every entry, `is_file` or not -- see `parse_and_validate_entries`'s
+/// own comment on why a skipped entry still has to be read through this
+/// same bounded loop. Returns the entry's bytes when `is_file`, empty
+/// otherwise (nothing is kept for a directory/symlink).
+fn read_entry_content<R: Read>(
+    entry: &mut tar::Entry<'_, R>,
+    is_file: bool,
+    accepted_key: Option<&str>,
+    total: &mut u64,
+) -> Result<Vec<u8>, String> {
+    let mut content = Vec::new();
+    let mut buf = [0u8; UNPACK_READ_CHUNK_BYTES];
+    loop {
+        let n = entry.read(&mut buf).map_err(|e| {
+            format!(
+                "failed to read asset bundle entry {:?}: {e}",
+                accepted_key.unwrap_or("<non-file entry>")
+            )
+        })?;
+        if n == 0 {
+            break;
+        }
+        *total += n as u64;
+        if *total > MAX_ASSET_UNPACKED_BYTES {
+            return Err(format!(
+                "asset bundle unpacks to more than {MAX_ASSET_UNPACKED_BYTES} bytes"
+            ));
+        }
+        if is_file {
+            content.extend_from_slice(&buf[..n]);
+        }
+    }
+    Ok(content)
 }
 
 /// Normalises an archive entry path already accepted by

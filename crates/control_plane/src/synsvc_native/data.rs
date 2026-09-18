@@ -378,7 +378,7 @@ impl SynSvcNativeService {
                     Some(sieve) if !sieve.abac_permissions.is_empty() => {
                         let session = &invocation.caller.session;
                         let candidate = to_candidate_row(&record);
-                        // Fail-closed, but distinguishably (B4-04): see
+                        // Fail-closed, but distinguishably: see
                         // `abac_error_to_data_layer_error`.
                         let kept = apply_stage4(
                             sieve,
@@ -453,7 +453,7 @@ impl SynSvcNativeService {
                         .map(|(row, extra)| (from_candidate_row(row), extra))
                         .collect(),
                     // Fail-closed, but as a distinguishable error, not a
-                    // silent empty-and-successful page (B4-04): resetting
+                    // silent empty-and-successful page: resetting
                     // `next_cursor` to `None` here is exactly "no more
                     // pages", which is the wrong signal for an after-step
                     // that couldn't run at all, as opposed to one that ran
