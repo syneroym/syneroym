@@ -14,7 +14,7 @@ use tracing::warn;
 use crate::{
     ConversationService,
     dag::EntryKind,
-    store::{ConversationStore, OutboxItem, now_ms},
+    store::{ConversationStore, OutboxItem, StoredMessage, now_ms},
     transport::Disposition,
 };
 
@@ -194,47 +194,8 @@ impl ConversationService {
 
         match delivery_result {
             Ok(()) | Err(Disposition::Delivered) => {
-                if is_group {
-                    let _ = store.set_recipient_state(
-                        &msg.id,
-                        &parsed.peer_address,
-                        ConversationDeliveryState::Delivered,
-                        None,
-                    );
-                    let _ = store.queue().complete(item.id);
-                    if store.recipients_remaining(&msg.id).unwrap_or(0) == 0 {
-                        if store.any_recipient_failed(&msg.id).unwrap_or(false) {
-                            let _ = store.set_state(
-                                &msg.id,
-                                ConversationDeliveryState::Failed,
-                                Some("one or more recipients failed"),
-                            );
-                            self.notify_state(
-                                svc,
-                                msg.id.clone(),
-                                ConversationDeliveryState::Failed,
-                            )
-                            .await;
-                        } else {
-                            let _ = store.set_state(
-                                &msg.id,
-                                ConversationDeliveryState::Delivered,
-                                None,
-                            );
-                            self.notify_state(
-                                svc,
-                                msg.id.clone(),
-                                ConversationDeliveryState::Delivered,
-                            )
-                            .await;
-                        }
-                    }
-                } else {
-                    let _ = store.set_state(&msg.id, ConversationDeliveryState::Delivered, None);
-                    self.notify_state(svc, msg.id.clone(), ConversationDeliveryState::Delivered)
-                        .await;
-                    let _ = store.queue().complete(item.id);
-                }
+                self.settle_delivered(svc, store, &item, &msg, is_group, &parsed.peer_address)
+                    .await;
             }
             Err(Disposition::Unreachable) => {
                 // `defer` un-counts the claim and does not advance
@@ -265,6 +226,48 @@ impl ConversationService {
                     Ok(FailOutcome::Retrying { .. }) | Err(_) => {}
                 }
             }
+        }
+    }
+
+    /// Settles one item whose delivery attempt reported success (or the
+    /// `Delivered`-via-error-channel case). For a group message this
+    /// completes the per-recipient row and only rolls the whole message's
+    /// state forward once every recipient has settled, one way or another.
+    async fn settle_delivered(
+        &self,
+        svc: &str,
+        store: &ConversationStore,
+        item: &QueueItem,
+        msg: &StoredMessage,
+        is_group: bool,
+        peer_address: &str,
+    ) {
+        if is_group {
+            let _ = store.set_recipient_state(
+                &msg.id,
+                peer_address,
+                ConversationDeliveryState::Delivered,
+                None,
+            );
+            let _ = store.queue().complete(item.id);
+            if store.recipients_remaining(&msg.id).unwrap_or(0) == 0 {
+                if store.any_recipient_failed(&msg.id).unwrap_or(false) {
+                    let _ = store.set_state(
+                        &msg.id,
+                        ConversationDeliveryState::Failed,
+                        Some("one or more recipients failed"),
+                    );
+                    self.notify_state(svc, msg.id.clone(), ConversationDeliveryState::Failed).await;
+                } else {
+                    let _ = store.set_state(&msg.id, ConversationDeliveryState::Delivered, None);
+                    self.notify_state(svc, msg.id.clone(), ConversationDeliveryState::Delivered)
+                        .await;
+                }
+            }
+        } else {
+            let _ = store.set_state(&msg.id, ConversationDeliveryState::Delivered, None);
+            self.notify_state(svc, msg.id.clone(), ConversationDeliveryState::Delivered).await;
+            let _ = store.queue().complete(item.id);
         }
     }
 

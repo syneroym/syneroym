@@ -3,16 +3,19 @@
 
 use std::time::Duration;
 
+use ed25519_dalek::{SigningKey, VerifyingKey};
+use rusqlite::Transaction;
 use syneroym_rpc::{
     CallOrigin, CallerContext, ConversationError, ProxyError, ProxyProtocol, ProxyRequest,
 };
 
 use crate::{
     ConversationService,
-    crypto::{Envelope, PrekeyBundle},
-    envelope::DeliveryPayload,
+    crypto::{self, Envelope, PrekeyBundle, Session},
+    dag::{GROUP_KEY_CONTENT_TYPE, GroupKeyPayload},
+    envelope::{self, DeliveryPayload},
     ids::derive_conversation_id,
-    store::{StoredMessage, now_ms},
+    store::{ConversationStore, StoreError, StoredMessage, now_ms},
 };
 
 mod group_sync;
@@ -180,26 +183,20 @@ impl ConversationService {
         Ok(())
     }
 
-    /// The receiving side — reached only from `dispatch_conversation`,
-    /// never from a guest.
-    pub(crate) async fn peer_deliver_impl(
+    /// Validates and decrypts an inbound `deliver` envelope, returning the
+    /// pinned session, the decrypted payload, and the verified author.
+    /// The message-count quota check runs before `session_for_envelope`
+    /// deliberately: on first contact that call durably spends a one-time
+    /// key in `local_identity`, so a failure after it would roll the
+    /// session back while leaving the key already spent, breaking retries
+    /// with `MissingOneTimeKey`.
+    async fn verify_incoming_envelope(
         &self,
         svc: &str,
-        requester_did: &str,
-        env: Envelope,
-    ) -> Result<DeliveryAck, ConversationError> {
-        if requester_did.is_empty() {
-            return Err(ConversationError::PermissionDenied);
-        }
-        let store =
-            self.store_for(svc).await.map_err(|e| ConversationError::Internal(e.to_string()))?;
-
-        // Pre-ratchet quota check: verify message limits BEFORE calling
-        // `session_for_envelope`. On first contact, `session_for_envelope`
-        // consumes and durably spends a one-time key in `local_identity`.
-        // If a quota check fails afterward, the session row is rolled back
-        // but the one-time key remains spent — causing future retries to
-        // fail with MissingOneTimeKey.
+        store: &ConversationStore,
+        env: &Envelope,
+        now: i64,
+    ) -> Result<(Session, DeliveryPayload, String), ConversationError> {
         let conv_id = derive_conversation_id(svc, &env.sender_address);
         let max_messages = store.config().max_messages_per_conversation;
         let count = store
@@ -211,12 +208,12 @@ impl ConversationService {
 
         let mut session = self
             .crypto
-            .session_for_envelope(&store, &env)
+            .session_for_envelope(store, env)
             .await
             .map_err(|_| ConversationError::PermissionDenied)?;
         let payload = self
             .crypto
-            .decrypt(&mut session, &env)
+            .decrypt(&mut session, env)
             .map_err(|_| ConversationError::PermissionDenied)?;
 
         let author = payload.author.clone();
@@ -238,14 +235,13 @@ impl ConversationService {
             return Err(ConversationError::PermissionDenied);
         }
 
-        if !crate::envelope::verify(
-            &ed25519_dalek::VerifyingKey::from_bytes(&session.peer_sig_key)
+        if !envelope::verify(
+            &VerifyingKey::from_bytes(&session.peer_sig_key)
                 .map_err(|_| ConversationError::PermissionDenied)?,
             &payload,
         ) {
             return Err(ConversationError::PermissionDenied);
         }
-        let now = now_ms();
         let max_skew_ms = (self.max_clock_skew_secs as i64).saturating_mul(1000);
         if payload.sender_timestamp_ms > now.saturating_add(max_skew_ms) {
             return Err(ConversationError::InvalidArgument(
@@ -259,6 +255,27 @@ impl ConversationService {
             ));
         }
 
+        Ok((session, payload, author))
+    }
+
+    /// The receiving side — reached only from `dispatch_conversation`,
+    /// never from a guest.
+    pub(crate) async fn peer_deliver_impl(
+        &self,
+        svc: &str,
+        requester_did: &str,
+        env: Envelope,
+    ) -> Result<DeliveryAck, ConversationError> {
+        if requester_did.is_empty() {
+            return Err(ConversationError::PermissionDenied);
+        }
+        let store =
+            self.store_for(svc).await.map_err(|e| ConversationError::Internal(e.to_string()))?;
+        let now = now_ms();
+
+        let (session, payload, author) =
+            self.verify_incoming_envelope(svc, &store, &env, now).await?;
+
         // Apply per-conversation bounds on the receive path. The same
         // limits `send` enforces for outgoing messages must hold for
         // incoming ones — an unchecked peer can otherwise write unbounded
@@ -268,121 +285,28 @@ impl ConversationService {
             return Err(ConversationError::QuotaExceeded);
         }
 
-        let is_group_key = payload.content_type == crate::dag::GROUP_KEY_CONTENT_TYPE;
-        let mut group_id_to_apply = None;
+        let group_key = parse_and_validate_group_key(svc, &author, &payload)?;
+        let is_group_key = group_key.is_some();
 
-        let my_ident = store
-            .local_identity_or_generate(crate::crypto::generate_identity_bytes)
-            .map_err(internal)?;
+        let my_ident =
+            store.local_identity_or_generate(crypto::generate_identity_bytes).map_err(internal)?;
         let my_sig_key: [u8; 32] = my_ident.sig_secret.as_slice().try_into().unwrap_or([0u8; 32]);
-        let my_vk = ed25519_dalek::SigningKey::from_bytes(&my_sig_key).verifying_key().to_bytes();
+        let my_vk = SigningKey::from_bytes(&my_sig_key).verifying_key().to_bytes();
 
-        let parsed_group_key: Option<crate::dag::GroupKeyPayload> = if is_group_key {
-            let key_payload: crate::dag::GroupKeyPayload = serde_json::from_slice(&payload.body)
-                .map_err(|e| {
-                    ConversationError::InvalidArgument(format!("invalid group key payload: {e}"))
-                })?;
-            // Sender must be the owner of the group declared in the payload
-            if author != key_payload.owner {
-                return Err(ConversationError::PermissionDenied);
-            }
-            // Recipient (this service) must be in the member roster distributed by the
-            // owner
-            if !key_payload.members.contains(&svc.to_string()) {
-                return Err(ConversationError::PermissionDenied);
-            }
-            // Epoch must be >= 1
-            if key_payload.epoch == 0 {
-                return Err(ConversationError::InvalidArgument("invalid epoch".to_string()));
-            }
-            Some(key_payload)
-        } else {
-            None
-        };
-
+        let mut group_id_to_apply = None;
         store
             .queue()
             .transaction(|tx, _txq| {
-                if let Some(key_payload) = &parsed_group_key {
-                    let shell = crate::store::ConversationStore::get_or_create_group_shell(
+                if let Some(key_payload) = &group_key {
+                    group_id_to_apply = Some(apply_incoming_group_key(
                         tx,
-                        &key_payload.group_id,
-                        &key_payload.owner,
-                        key_payload.epoch,
+                        &author,
+                        svc,
+                        &session.peer_sig_key,
+                        my_vk,
+                        key_payload,
                         now,
-                    )?;
-                    // If group already existed, owner must match
-                    if shell.owner_address.as_deref() != Some(&key_payload.owner) {
-                        return Err(anyhow::anyhow!("group owner mismatch"));
-                    }
-                    // Epoch must not jump backwards or unreasonably ahead of shell's current epoch
-                    if key_payload.epoch > shell.current_epoch + 100 {
-                        return Err(anyhow::anyhow!("epoch jump too large"));
-                    }
-                    tx.execute(
-                        "INSERT INTO group_epochs (conversation_id, epoch, key, created_at) \
-                         VALUES (?1, ?2, ?3, ?4) ON CONFLICT(conversation_id, epoch) DO NOTHING",
-                        rusqlite::params![
-                            key_payload.group_id,
-                            key_payload.epoch as i64,
-                            key_payload.key.as_slice(),
-                            now,
-                        ],
-                    )?;
-                    // Seed `group_members` so this service can send/verify before the
-                    // corresponding membership DAG entries have synced — but with each
-                    // row's *real* `joined_epoch`, not a hardcoded 1. The owner is the
-                    // one exception: it is always the group's epoch-1 founder by
-                    // construction (`create_group_impl`), regardless of which key
-                    // message a receiver happens to learn it from. Getting another
-                    // member's `joined_epoch` wrong here is exactly what made a
-                    // genesis entry's `member_list_hash` disagree at every receiver
-                    // that had already seen a later epoch's key message — the seeded
-                    // row falsely counted as a member since epoch 1.
-                    for m in &key_payload.members {
-                        if m != svc && m != &author {
-                            tx.execute(
-                                "INSERT INTO group_members (conversation_id, member_address, \
-                                 sig_key, joined_epoch, removed_epoch) VALUES (?1, ?2, \
-                                 zeroblob(32), ?3, NULL) ON CONFLICT(conversation_id, \
-                                 member_address) DO NOTHING",
-                                rusqlite::params![
-                                    key_payload.group_id,
-                                    m,
-                                    key_payload.epoch as i64
-                                ],
-                            )?;
-                        }
-                    }
-                    tx.execute(
-                        "INSERT INTO group_members (conversation_id, member_address, sig_key, \
-                         joined_epoch, removed_epoch) VALUES (?1, ?2, ?3, 1, NULL) ON \
-                         CONFLICT(conversation_id, member_address) DO UPDATE SET sig_key = \
-                         excluded.sig_key",
-                        rusqlite::params![
-                            key_payload.group_id,
-                            author,
-                            session.peer_sig_key.as_slice(),
-                        ],
-                    )?;
-                    tx.execute(
-                        "INSERT INTO group_members (conversation_id, member_address, sig_key, \
-                         joined_epoch, removed_epoch) VALUES (?1, ?2, ?3, ?4, NULL) ON \
-                         CONFLICT(conversation_id, member_address) DO UPDATE SET sig_key = \
-                         excluded.sig_key",
-                        rusqlite::params![
-                            key_payload.group_id,
-                            svc,
-                            my_vk.as_slice(),
-                            key_payload.epoch as i64,
-                        ],
-                    )?;
-                    tx.execute(
-                        "UPDATE conversations SET current_epoch = MAX(current_epoch, ?1), \
-                         last_activity = ?2 WHERE id = ?3",
-                        rusqlite::params![key_payload.epoch as i64, now, key_payload.group_id],
-                    )?;
-                    group_id_to_apply = Some(key_payload.group_id.clone());
+                    )?);
                 }
 
                 store.insert_incoming_if_absent(
@@ -409,7 +333,7 @@ impl ConversationService {
                 Ok(())
             })
             .map_err(|e| {
-                if e.downcast_ref::<crate::store::StoreError>().is_some() {
+                if e.downcast_ref::<StoreError>().is_some() {
                     ConversationError::QuotaExceeded
                 } else {
                     ConversationError::Internal(e.to_string())
@@ -426,6 +350,116 @@ impl ConversationService {
 
         Ok(DeliveryAck { message_id: payload.message_id })
     }
+}
+
+/// Parses and validates a `deliver` payload's group-key envelope, if its
+/// content type marks it as one — `None` covers the (usual) plain-message
+/// case.
+fn parse_and_validate_group_key(
+    svc: &str,
+    author: &str,
+    payload: &DeliveryPayload,
+) -> Result<Option<GroupKeyPayload>, ConversationError> {
+    if payload.content_type != GROUP_KEY_CONTENT_TYPE {
+        return Ok(None);
+    }
+    let key_payload: GroupKeyPayload = serde_json::from_slice(&payload.body).map_err(|e| {
+        ConversationError::InvalidArgument(format!("invalid group key payload: {e}"))
+    })?;
+    // Sender must be the owner of the group declared in the payload
+    if author != key_payload.owner {
+        return Err(ConversationError::PermissionDenied);
+    }
+    // Recipient (this service) must be in the member roster distributed by the
+    // owner
+    if !key_payload.members.contains(&svc.to_string()) {
+        return Err(ConversationError::PermissionDenied);
+    }
+    // Epoch must be >= 1
+    if key_payload.epoch == 0 {
+        return Err(ConversationError::InvalidArgument("invalid epoch".to_string()));
+    }
+    Ok(Some(key_payload))
+}
+
+/// Applies one validated incoming group-key message inside the caller's
+/// transaction: records the epoch key, seeds `group_members` rows so this
+/// service can send/verify before the corresponding membership DAG entries
+/// have synced, and bumps the conversation's epoch floor. Returns the
+/// group id, for the caller to replay any DAG entries that were waiting on
+/// this epoch.
+fn apply_incoming_group_key(
+    tx: &Transaction<'_>,
+    author: &str,
+    svc: &str,
+    peer_sig_key: &[u8; 32],
+    my_vk: [u8; 32],
+    key_payload: &GroupKeyPayload,
+    now: i64,
+) -> anyhow::Result<String> {
+    let shell = ConversationStore::get_or_create_group_shell(
+        tx,
+        &key_payload.group_id,
+        &key_payload.owner,
+        key_payload.epoch,
+        now,
+    )?;
+    // If group already existed, owner must match
+    if shell.owner_address.as_deref() != Some(&key_payload.owner) {
+        return Err(anyhow::anyhow!("group owner mismatch"));
+    }
+    // Epoch must not jump backwards or unreasonably ahead of shell's current epoch
+    if key_payload.epoch > shell.current_epoch + 100 {
+        return Err(anyhow::anyhow!("epoch jump too large"));
+    }
+    tx.execute(
+        "INSERT INTO group_epochs (conversation_id, epoch, key, created_at) VALUES (?1, ?2, ?3, \
+         ?4) ON CONFLICT(conversation_id, epoch) DO NOTHING",
+        rusqlite::params![
+            key_payload.group_id,
+            key_payload.epoch as i64,
+            key_payload.key.as_slice(),
+            now,
+        ],
+    )?;
+    // Seed `group_members` so this service can send/verify before the
+    // corresponding membership DAG entries have synced — but with each
+    // row's *real* `joined_epoch`, not a hardcoded 1. The owner is the
+    // one exception: it is always the group's epoch-1 founder by
+    // construction (`create_group_impl`), regardless of which key
+    // message a receiver happens to learn it from. Getting another
+    // member's `joined_epoch` wrong here is exactly what made a
+    // genesis entry's `member_list_hash` disagree at every receiver
+    // that had already seen a later epoch's key message — the seeded
+    // row falsely counted as a member since epoch 1.
+    for m in &key_payload.members {
+        if m != svc && m != author {
+            tx.execute(
+                "INSERT INTO group_members (conversation_id, member_address, sig_key, \
+                 joined_epoch, removed_epoch) VALUES (?1, ?2, zeroblob(32), ?3, NULL) ON \
+                 CONFLICT(conversation_id, member_address) DO NOTHING",
+                rusqlite::params![key_payload.group_id, m, key_payload.epoch as i64],
+            )?;
+        }
+    }
+    tx.execute(
+        "INSERT INTO group_members (conversation_id, member_address, sig_key, joined_epoch, \
+         removed_epoch) VALUES (?1, ?2, ?3, 1, NULL) ON CONFLICT(conversation_id, member_address) \
+         DO UPDATE SET sig_key = excluded.sig_key",
+        rusqlite::params![key_payload.group_id, author, peer_sig_key.as_slice()],
+    )?;
+    tx.execute(
+        "INSERT INTO group_members (conversation_id, member_address, sig_key, joined_epoch, \
+         removed_epoch) VALUES (?1, ?2, ?3, ?4, NULL) ON CONFLICT(conversation_id, \
+         member_address) DO UPDATE SET sig_key = excluded.sig_key",
+        rusqlite::params![key_payload.group_id, svc, my_vk.as_slice(), key_payload.epoch as i64],
+    )?;
+    tx.execute(
+        "UPDATE conversations SET current_epoch = MAX(current_epoch, ?1), last_activity = ?2 \
+         WHERE id = ?3",
+        rusqlite::params![key_payload.epoch as i64, now, key_payload.group_id],
+    )?;
+    Ok(key_payload.group_id.clone())
 }
 
 /// Mirrors `syneroym_router::proxy_outbox::disposition_of`: not
