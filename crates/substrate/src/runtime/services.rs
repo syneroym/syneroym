@@ -161,25 +161,21 @@ impl RuntimeServices {
         }
     }
 
-    pub(super) async fn run_until_shutdown<F>(
+    /// Spawns every background worker task -- the supervisor's resident
+    /// loop, its queue worker, the guest proxy outbox worker, and the
+    /// conversation delivery worker -- storing each `JoinHandle` on `self`
+    /// so `run_until_shutdown`'s `select!` can race them. Extracted from
+    /// that function so it reads as sequential composition rather than one
+    /// large spawn block; still called from the top of `run_until_shutdown`,
+    /// so the ordering guarantee (spawn only after both composition calls
+    /// have already run) is unchanged.
+    fn spawn_background_workers(
         &mut self,
         config: &SubstrateConfig,
         connection_router: &ConnectionRouter,
-        endpoint_registry: &EndpointRegistry,
-        shutdown_signal: F,
-    ) where
-        F: Future<Output = ()>,
-    {
-        // Spawned here, at the top of this function rather than in `init`,
-        // so the loop's start still comes after both composition calls --
-        // and so it is a real `tokio::spawn`ed task by the time the
-        // `select!` below races its `JoinHandle`, not the
-        // pinned-and-dropped-on-exit future this used to be.
+    ) {
         self.supervisor_join = spawn_supervisor_role(&self.supervisor);
         self.queue_worker_join = spawn_queue_worker_role(&self.supervisor);
-        // Spawned here rather than in `init` for the same reason the two
-        // above are: the loop must start only after both composition calls
-        // have already run.
         self.proxy_outbox_join = connection_router.proxy().map(|proxy| {
             let tick = Duration::from_secs(
                 config.roles.app_sandbox.as_ref().map_or(5, |role| role.queue_tick_secs).max(1),
@@ -199,6 +195,23 @@ impl RuntimeServices {
             let cancel = self.conversation_worker_cancel.clone();
             tokio::spawn(async move { svc.run_worker(tick, cancel).await })
         });
+    }
+
+    pub(super) async fn run_until_shutdown<F>(
+        &mut self,
+        config: &SubstrateConfig,
+        connection_router: &ConnectionRouter,
+        endpoint_registry: &EndpointRegistry,
+        shutdown_signal: F,
+    ) where
+        F: Future<Output = ()>,
+    {
+        // Spawned here, at the top of this function rather than in `init`,
+        // so the loop's start still comes after both composition calls --
+        // and so it is a real `tokio::spawn`ed task by the time the
+        // `select!` below races its `JoinHandle`, not the
+        // pinned-and-dropped-on-exit future this used to be.
+        self.spawn_background_workers(config, connection_router);
 
         #[cfg(feature = "community_registry")]
         let mut registry_fut = pin::pin!(async {
@@ -230,67 +243,8 @@ impl RuntimeServices {
         #[cfg(not(feature = "client_gateway"))]
         let mut client_gateway_fut = pin::pin!(pending_component());
 
-        let mut health_fut = pin::pin!(async {
-            if let Some(obs) = &config.roles.observability
-                && let Some(health) = &obs.health
-                && health.enabled
-            {
-                let app = Router::new().route(&health.endpoint, routing::get(|| async { "OK" }));
-                match TcpListener::bind(&health.bind_address).await {
-                    Ok(listener) => {
-                        if let Ok(addr) = listener.local_addr() {
-                            info!("observability health endpoint listening on http://{}", addr);
-                        }
-                        let _ = axum::serve(listener, app).await;
-                    }
-                    Err(e) => {
-                        error!(
-                            "failed to bind health endpoint on {}: {:?}",
-                            health.bind_address, e
-                        );
-                    }
-                }
-            }
-            pending_component().await
-        });
-
-        let mut metrics_fut = pin::pin!(async {
-            if let Some(obs) = &config.roles.observability
-                && let Some(metrics_cfg) = &obs.metrics
-                && metrics_cfg.enabled
-            {
-                let app = Router::new().route(
-                    &metrics_cfg.endpoint,
-                    routing::get(|| async {
-                        if let Some(recorder) = MemoryRecorder::global() {
-                            let snapshot = recorder.snapshot();
-                            Json(snapshot)
-                        } else {
-                            Json(MetricsSnapshot {
-                                counters: HashMap::new(),
-                                gauges: HashMap::new(),
-                                histograms: HashMap::new(),
-                            })
-                        }
-                    }),
-                );
-                match TcpListener::bind(&metrics_cfg.bind_address).await {
-                    Ok(listener) => {
-                        if let Ok(addr) = listener.local_addr() {
-                            info!("observability metrics endpoint listening on http://{}", addr);
-                        }
-                        let _ = axum::serve(listener, app).await;
-                    }
-                    Err(e) => {
-                        error!(
-                            "failed to bind metrics endpoint on {}: {:?}",
-                            metrics_cfg.bind_address, e
-                        );
-                    }
-                }
-            }
-            pending_component().await
-        });
+        let mut health_fut = pin::pin!(run_health_endpoint(config));
+        let mut metrics_fut = pin::pin!(run_metrics_endpoint(config));
 
         let mut connection_router_fut = pin::pin!(connection_router.run());
         let mut expiry_sweep_fut = pin::pin!(instance_cert_expiry_sweep_loop(endpoint_registry));
@@ -299,57 +253,25 @@ impl RuntimeServices {
         // failing) still brings the substrate down, unchanged from before,
         // but the loop itself now survives past this `select!` returning
         // instead of being dropped mid-pass.
-        let mut supervisor_fut = pin::pin!(async {
-            match self.supervisor_join.as_mut() {
-                Some(handle) => match handle.await {
-                    Ok(res) => res,
-                    Err(join_err) => {
-                        Err(anyhow::anyhow!("supervisor loop task panicked: {join_err}"))
-                    }
-                },
-                None => pending_component().await,
-            }
-        });
+        let mut supervisor_fut =
+            pin::pin!(join_result_or_pending(self.supervisor_join.as_mut(), "supervisor loop"));
         // Raced the same way `supervisor_fut` is -- a panic in the queue
         // worker still brings the substrate down, but the task itself
         // outlives this `select!` returning. Its ordinary exit path
         // (cancellation) only fires from `shutdown`, at which point this
         // arm racing is moot; see `queue_worker_join`'s own doc for why
         // `shutdown` does not also await it.
-        let mut queue_worker_fut = pin::pin!(async {
-            match self.queue_worker_join.as_mut() {
-                Some(handle) => match handle.await {
-                    Ok(res) => res,
-                    Err(join_err) => Err(anyhow::anyhow!("queue worker task panicked: {join_err}")),
-                },
-                None => pending_component().await,
-            }
-        });
+        let mut queue_worker_fut =
+            pin::pin!(join_result_or_pending(self.queue_worker_join.as_mut(), "queue worker"));
         // Raced the same way the others are, so a panic in the outbox
         // worker still brings the substrate down rather than silently
         // stopping delivery.
-        let mut proxy_outbox_fut = pin::pin!(async {
-            match self.proxy_outbox_join.as_mut() {
-                Some(handle) => match handle.await {
-                    Ok(()) => Ok(()),
-                    Err(join_err) => {
-                        Err(anyhow::anyhow!("proxy outbox worker task panicked: {join_err}"))
-                    }
-                },
-                None => pending_component().await,
-            }
-        });
-        let mut conversation_outbox_fut = pin::pin!(async {
-            match self.conversation_worker_join.as_mut() {
-                Some(handle) => match handle.await {
-                    Ok(()) => Ok(()),
-                    Err(join_err) => {
-                        Err(anyhow::anyhow!("conversation outbox worker task panicked: {join_err}"))
-                    }
-                },
-                None => pending_component().await,
-            }
-        });
+        let mut proxy_outbox_fut =
+            pin::pin!(join_unit_or_pending(self.proxy_outbox_join.as_mut(), "proxy outbox worker"));
+        let mut conversation_outbox_fut = pin::pin!(join_unit_or_pending(
+            self.conversation_worker_join.as_mut(),
+            "conversation outbox worker"
+        ));
         let mut shutdown_signal = pin::pin!(shutdown_signal);
 
         info!(profile = %config.profile, "starting substrate components");
@@ -431,6 +353,109 @@ impl RuntimeServices {
 
 async fn pending_component() -> anyhow::Result<()> {
     future::pending().await
+}
+
+/// Serves the observability health endpoint (a plain `GET <path> -> "OK"`)
+/// on its own listener when configured and enabled, then blocks forever --
+/// same as every other `RuntimeServices` component future, so a `select!`
+/// arm racing it only fires on the config-disabled/bind-failed path, not on
+/// a normal request being served. Extracted from `run_until_shutdown` so
+/// that function reads as a list of components rather than their bodies.
+async fn run_health_endpoint(config: &SubstrateConfig) -> anyhow::Result<()> {
+    if let Some(obs) = &config.roles.observability
+        && let Some(health) = &obs.health
+        && health.enabled
+    {
+        let app = Router::new().route(&health.endpoint, routing::get(|| async { "OK" }));
+        match TcpListener::bind(&health.bind_address).await {
+            Ok(listener) => {
+                if let Ok(addr) = listener.local_addr() {
+                    info!("observability health endpoint listening on http://{}", addr);
+                }
+                let _ = axum::serve(listener, app).await;
+            }
+            Err(e) => {
+                error!("failed to bind health endpoint on {}: {:?}", health.bind_address, e);
+            }
+        }
+    }
+    pending_component().await
+}
+
+/// Serves the observability metrics endpoint (a `GET <path>` returning the
+/// process's `MemoryRecorder` snapshot as JSON, or an empty one if none was
+/// ever installed) on its own listener when configured and enabled, then
+/// blocks forever -- same shape as `run_health_endpoint`, extracted for the
+/// same reason.
+async fn run_metrics_endpoint(config: &SubstrateConfig) -> anyhow::Result<()> {
+    if let Some(obs) = &config.roles.observability
+        && let Some(metrics_cfg) = &obs.metrics
+        && metrics_cfg.enabled
+    {
+        let app = Router::new().route(
+            &metrics_cfg.endpoint,
+            routing::get(|| async {
+                if let Some(recorder) = MemoryRecorder::global() {
+                    let snapshot = recorder.snapshot();
+                    Json(snapshot)
+                } else {
+                    Json(MetricsSnapshot {
+                        counters: HashMap::new(),
+                        gauges: HashMap::new(),
+                        histograms: HashMap::new(),
+                    })
+                }
+            }),
+        );
+        match TcpListener::bind(&metrics_cfg.bind_address).await {
+            Ok(listener) => {
+                if let Ok(addr) = listener.local_addr() {
+                    info!("observability metrics endpoint listening on http://{}", addr);
+                }
+                let _ = axum::serve(listener, app).await;
+            }
+            Err(e) => {
+                error!("failed to bind metrics endpoint on {}: {:?}", metrics_cfg.bind_address, e);
+            }
+        }
+    }
+    pending_component().await
+}
+
+/// Awaits a worker task's `JoinHandle<anyhow::Result<()>>` and passes its
+/// result through, turning a join panic into an `Err` labeled with
+/// `component` rather than propagating the `JoinError`. Blocks forever on
+/// `None`, matching every other not-yet-spawned component's `select!` arm.
+/// Shared by `supervisor_fut` and `queue_worker_fut`, which differ only in
+/// which handle and label they pass.
+async fn join_result_or_pending(
+    handle: Option<&mut JoinHandle<anyhow::Result<()>>>,
+    component: &str,
+) -> anyhow::Result<()> {
+    match handle {
+        Some(handle) => match handle.await {
+            Ok(res) => res,
+            Err(join_err) => Err(anyhow::anyhow!("{component} task panicked: {join_err}")),
+        },
+        None => pending_component().await,
+    }
+}
+
+/// Same as `join_result_or_pending`, for a worker whose task returns `()`
+/// rather than a `Result` -- the outbox workers report failure only through
+/// a panicked join, never an `Err` of their own. Shared by
+/// `proxy_outbox_fut` and `conversation_outbox_fut`.
+async fn join_unit_or_pending(
+    handle: Option<&mut JoinHandle<()>>,
+    component: &str,
+) -> anyhow::Result<()> {
+    match handle {
+        Some(handle) => match handle.await {
+            Ok(()) => Ok(()),
+            Err(join_err) => Err(anyhow::anyhow!("{component} task panicked: {join_err}")),
+        },
+        None => pending_component().await,
+    }
 }
 
 /// Spawns the supervisor's resident loop so it outlives
