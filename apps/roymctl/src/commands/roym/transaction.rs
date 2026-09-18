@@ -14,7 +14,7 @@ use super::{
     directory::{RpcCtx, call_and_print},
     parse_near,
 };
-use crate::DEFAULT_GATEWAY_URL;
+use crate::{DEFAULT_GATEWAY_URL, commands::session};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum TransactionCommands {
@@ -342,7 +342,7 @@ async fn handle_thread(
     host: Option<&str>,
     ctx: RpcCtx<'_>,
 ) -> Result<()> {
-    let v = crate::commands::session::rpc_call(
+    let v = session::rpc_call(
         gateway_url,
         host,
         ctx.run_as,

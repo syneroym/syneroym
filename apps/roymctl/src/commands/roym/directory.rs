@@ -12,7 +12,13 @@ use serde_json::{Value, json};
 use tokio::{sync::Semaphore, task::JoinSet};
 
 use super::parse_near;
-use crate::DEFAULT_GATEWAY_URL;
+use crate::{
+    DEFAULT_GATEWAY_URL,
+    commands::{
+        self,
+        session::{self, RpcHttpError},
+    },
+};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum DirectoryCommands {
@@ -158,18 +164,10 @@ pub(super) async fn call_and_print(
     method: &str,
     params: Value,
 ) -> Result<()> {
-    let v = crate::commands::session::rpc_call(
-        gateway_url,
-        host,
-        ctx.run_as,
-        ctx.ucan_path,
-        ctx.dir,
-        method,
-        params,
-    )
-    .await?;
-    println!("{}", serde_json::to_string_pretty(&v)?);
-    Ok(())
+    let v =
+        session::rpc_call(gateway_url, host, ctx.run_as, ctx.ucan_path, ctx.dir, method, params)
+            .await?;
+    commands::print_json_result(&v)
 }
 
 pub(super) async fn handle_directory(
@@ -322,7 +320,7 @@ impl SourceOutcome {
                 // A 503 is this node's own guest-HTTP admission refusing
                 // to start the call -- matched on the typed status, not
                 // the error's Display text.
-                if let Some(http) = e.downcast_ref::<crate::commands::session::RpcHttpError>()
+                if let Some(http) = e.downcast_ref::<RpcHttpError>()
                     && http.status == 503
                 {
                     return SourceOutcome::NotStarted;
@@ -407,7 +405,7 @@ async fn start_find_run(
     ucan_path: Option<&Path>,
     dir: &Path,
 ) -> Result<(String, Vec<String>, usize)> {
-    let start = crate::commands::session::rpc_call(
+    let start = session::rpc_call(
         gateway_url,
         host,
         run_as,
@@ -444,7 +442,7 @@ async fn query_source(
     query: Value,
     source: String,
 ) -> (String, SourceOutcome) {
-    let result = crate::commands::session::rpc_call(
+    let result = session::rpc_call(
         &gateway_url,
         host.as_deref(),
         run_as.as_deref(),
@@ -549,7 +547,7 @@ async fn print_find_results(
         }
     }
 
-    let merged = crate::commands::session::rpc_call(
+    let merged = session::rpc_call(
         gateway_url,
         host,
         run_as,

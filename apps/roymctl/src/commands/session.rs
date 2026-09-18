@@ -6,13 +6,12 @@
 use std::{
     error::Error,
     fmt, fs,
-    io::Write,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
-use reqwest::{Client, Response};
+use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use syneroym_core::protocol_utils::{SESSION_COOKIE_NAME, gateway_session_assertion};
@@ -146,36 +145,12 @@ fn session_file_path(dir: &Path, run_as: Option<&str>, gateway_url: &str) -> Pat
     }
 }
 
-/// Write `contents` to `path`, creating it mode `0600` on Unix so a
-/// freshly written session credential is never briefly world- or
-/// group-readable. `what` names the file in the error context if the open
-/// fails. Non-Unix has no equivalent permission bit to set.
-fn write_secret_file(path: &Path, contents: &[u8], what: &str) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-            .with_context(|| format!("failed to create {what} at {}", path.display()))?;
-        file.write_all(contents)?;
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(path, contents)?;
-    }
-    Ok(())
-}
-
 fn save_session_file(path: &Path, session: &StoredSession) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let data = serde_json::to_string_pretty(session)?;
-    write_secret_file(path, data.as_bytes(), "session file")
+    super::write_secret_file(path, data.as_bytes(), "session file")
 }
 
 fn persist_session(
@@ -195,32 +170,43 @@ fn load_session_file(path: &Path) -> Result<StoredSession> {
         .with_context(|| format!("invalid session JSON at {}", path.display()))
 }
 
-/// Bails with `{what} failed ({status}): {body}` when `resp` is not 2xx,
-/// else passes it through unchanged.
-async fn ensure_success(resp: Response, what: &str) -> Result<Response> {
+/// Returns `resp` unchanged if it is 2xx, else captures its status and
+/// body -- the check-and-capture core shared by [`ensure_success`] and
+/// [`ensure_login_success`], which only differ in how they turn a captured
+/// failure into an error message.
+async fn capture_failure(resp: Response) -> Result<Response, (StatusCode, String)> {
     if resp.status().is_success() {
         return Ok(resp);
     }
     let status = resp.status();
-    let err_text = resp.text().await.unwrap_or_default();
-    bail!("{what} failed ({status}): {err_text}");
+    let body = resp.text().await.unwrap_or_default();
+    Err((status, body))
+}
+
+/// Bails with `{what} failed ({status}): {body}` when `resp` is not 2xx,
+/// else passes it through unchanged.
+async fn ensure_success(resp: Response, what: &str) -> Result<Response> {
+    match capture_failure(resp).await {
+        Ok(resp) => Ok(resp),
+        Err((status, body)) => bail!("{what} failed ({status}): {body}"),
+    }
 }
 
 /// Like [`ensure_success`], but for the login endpoints' richer error
 /// shape: when the body is a JSON object carrying an `error` string, that
 /// string is used instead of the raw body.
 async fn ensure_login_success(resp: Response, what: &str) -> Result<Response> {
-    if resp.status().is_success() {
-        return Ok(resp);
+    match capture_failure(resp).await {
+        Ok(resp) => Ok(resp),
+        Err((status, body)) => {
+            if let Ok(val) = serde_json::from_str::<Value>(&body)
+                && let Some(err_msg) = val.get("error").and_then(|v| v.as_str())
+            {
+                bail!("{what} failed ({status}): {err_msg}");
+            }
+            bail!("{what} failed ({status}): {body}");
+        }
     }
-    let status = resp.status();
-    let err_text = resp.text().await.unwrap_or_default();
-    if let Ok(val) = serde_json::from_str::<Value>(&err_text)
-        && let Some(err_msg) = val.get("error").and_then(|v| v.as_str())
-    {
-        bail!("{what} failed ({status}): {err_msg}");
-    }
-    bail!("{what} failed ({status}): {err_text}");
 }
 
 async fn handle_delegate(
@@ -263,7 +249,7 @@ async fn handle_delegate(
         fs::create_dir_all(parent)?;
     }
     let data = serde_json::to_string_pretty(&bundle)?;
-    write_secret_file(out, data.as_bytes(), "session key file")?;
+    super::write_secret_file(out, data.as_bytes(), "session key file")?;
 
     println!(
         "Minted session delegation certificate for temporary DID {} -> {}",
