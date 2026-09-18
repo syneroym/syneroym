@@ -1,6 +1,169 @@
 use super::*;
 
+/// Tuning knobs derived from `SubstrateConfig.roles.app_sandbox`, resolved
+/// once in `init` and then threaded through the pooling allocator, the
+/// per-call epoch budgets and the ABAC after-step. Bundled into a struct
+/// (rather than a same-typed tuple) because several fields share a type --
+/// `default_max_instructions`/`default_max_memory_bytes` are both
+/// `Option<u64>`, and the three `max_*_per_component` fields are all `u32`,
+/// so a positional tuple would let two of them swap silently.
+struct SandboxTuning {
+    max_instances: u32,
+    max_memory: usize,
+    max_core_instances_per_component: u32,
+    max_memories_per_component: u32,
+    max_tables_per_component: u32,
+    default_max_instructions: Option<u64>,
+    default_max_memory_bytes: Option<u64>,
+    dispatch_epoch_timeout_secs: u64,
+    lifecycle_hook_epoch_timeout_secs: u64,
+    abac_epoch_timeout_secs: u64,
+    abac_max_instructions: u64,
+    max_concurrent_guest_http_per_service: u32,
+}
+
+/// Cross-service instance-pool reservations derived from
+/// [`SandboxTuning::max_instances`] and the streaming role's own
+/// `max_concurrent_streams_per_service`. See `abac_instance_permits`'s and
+/// `stream_instance_permits`'s doc comments on [`AppSandboxEngine`] for what
+/// each budget guards.
+struct InstanceBudgets {
+    abac: u32,
+    stream: u32,
+}
+
 impl AppSandboxEngine {
+    /// Resolves the `app_sandbox` role config into concrete tuning values,
+    /// falling back to fixed defaults when no role section is configured at
+    /// all (embedding without one). A `0` guest-HTTP concurrency value is
+    /// clamped to 1 here, with a loud warning, rather than left to silently
+    /// 503 every guest HTTP request at admission time.
+    fn resolve_sandbox_tuning(config: &SubstrateConfig) -> SandboxTuning {
+        let tuning = if let Some(sandbox_config) = &config.roles.app_sandbox {
+            SandboxTuning {
+                max_instances: sandbox_config.max_concurrent_instances,
+                max_memory: sandbox_config.memory_limit_bytes() as usize,
+                max_core_instances_per_component: sandbox_config.max_core_instances_per_component,
+                max_memories_per_component: sandbox_config.max_memories_per_component,
+                max_tables_per_component: sandbox_config.max_tables_per_component,
+                default_max_instructions: sandbox_config.default_max_instructions,
+                default_max_memory_bytes: sandbox_config.default_max_memory_bytes,
+                dispatch_epoch_timeout_secs: sandbox_config.dispatch_epoch_timeout_secs,
+                lifecycle_hook_epoch_timeout_secs: sandbox_config.lifecycle_hook_epoch_timeout_secs,
+                abac_epoch_timeout_secs: sandbox_config.abac_epoch_timeout_secs,
+                abac_max_instructions: sandbox_config.abac_max_instructions,
+                max_concurrent_guest_http_per_service: sandbox_config
+                    .max_concurrent_guest_http_per_service,
+            }
+        } else {
+            // 100 * 10 == 1000, matching Wasmtime's own pool-wide
+            // default -- see `AppSandboxRole`'s
+            // `default_max_core_instances_per_component` doc comment.
+            SandboxTuning {
+                max_instances: 10,
+                max_memory: 128 * 1024 * 1024,
+                max_core_instances_per_component: 100,
+                max_memories_per_component: 100,
+                max_tables_per_component: 100,
+                default_max_instructions: Some(10_000_000_000),
+                default_max_memory_bytes: Some(256 * 1024 * 1024),
+                dispatch_epoch_timeout_secs: 5,
+                lifecycle_hook_epoch_timeout_secs: 30,
+                abac_epoch_timeout_secs: 2,
+                abac_max_instructions: 50_000_000,
+                max_concurrent_guest_http_per_service: 4,
+            }
+        };
+
+        // A `0` config value builds a zero-permit semaphore: every guest
+        // HTTP request then waits the full admission timeout and 503s, with
+        // nothing at startup to explain why. Clamp
+        // loudly rather than let that be silently discovered in the field.
+        if tuning.max_concurrent_guest_http_per_service == 0 {
+            warn!(
+                "max_concurrent_guest_http_per_service is 0, which would admit no guest HTTP \
+                 requests at all -- clamping to 1"
+            );
+            SandboxTuning { max_concurrent_guest_http_per_service: 1, ..tuning }
+        } else {
+            tuning
+        }
+    }
+
+    /// Fixed, not scaled by `max_instances`: an earlier version scaled this
+    /// and, computed independently of `stream_instance_budget`, let the two
+    /// jointly oversubscribe the pool (default tier 8 + 3 against 10 slots).
+    /// Each concurrent after-step call holds *two* pool slots at once
+    /// (itself, plus the live ordinary-dispatch instance it was invoked
+    /// from -- see `abac_instance_permits`'s doc comment), so this
+    /// reservation is doubled below. `STREAM_INSTANCE_POOL_HEADROOM` is the
+    /// existing, already-tested "slots reserved for ordinary calls
+    /// generally" budget (`stream_integration.rs::test_stream_instances_
+    /// across_services_bounded_by_shared_pool_budget` asserts its exact
+    /// arithmetic against a small `max_concurrent_instances`, so this
+    /// formula is intentionally left untouched); halving it is the largest
+    /// fixed value that still keeps `stream_instance_budget +
+    /// abac_instance_budget * 2 == max_concurrent_instances` for every pool
+    /// size, rather than only the default one.
+    fn resolve_instance_budgets(
+        max_instances: u32,
+        max_concurrent_streams_per_service: u32,
+    ) -> InstanceBudgets {
+        let abac = (STREAM_INSTANCE_POOL_HEADROOM / 2).max(1);
+        let stream = max_instances.saturating_sub(STREAM_INSTANCE_POOL_HEADROOM).max(1);
+        if max_concurrent_streams_per_service > stream {
+            warn!(
+                max_concurrent_streams_per_service,
+                max_concurrent_instances = max_instances,
+                stream_instance_budget = stream,
+                "a single service's stream cap alone can consume this engine's entire \
+                 cross-service stream-instance budget (max_concurrent_instances minus a \
+                 {STREAM_INSTANCE_POOL_HEADROOM}-slot reserve for ordinary calls); consider \
+                 raising max_concurrent_instances or lowering max_concurrent_streams_per_service"
+            );
+        }
+        InstanceBudgets { abac, stream }
+    }
+
+    /// Loads every already-deployed WASM endpoint into the component cache
+    /// at startup, so the first request against it does not pay a cold
+    /// compile. Best-effort: a single component failing to warm up is
+    /// logged, not fatal to substrate startup.
+    async fn warm_up_wasm_endpoints(&self, endpoints: Vec<(String, String, SubstrateEndpoint)>) {
+        for (service_id, _interface_name, endpoint) in endpoints {
+            if let SubstrateEndpoint::WasmChannel { service_id: channel_id } = endpoint {
+                info!(
+                    service_id = %service_id,
+                    channel_id = %channel_id,
+                    "Warming up WASM component"
+                );
+
+                if let Err(e) = self.load_cached_wasm(&service_id).await {
+                    error!("Failed to warm up WASM component {}: {}", service_id, e);
+                }
+            }
+        }
+    }
+
+    /// Spawns the background task that advances the Wasmtime engine's epoch
+    /// clock -- the tick every in-flight call's epoch-interruption deadline
+    /// is measured against. Exits once `shutdown_rx` fires.
+    fn spawn_epoch_ticker(engine: Engine, mut shutdown_rx: oneshot::Receiver<()>) {
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_millis(EPOCH_TICK_MS));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        engine.increment_epoch();
+                    }
+                    _ = &mut shutdown_rx => {
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
     /// Helper to validate service ID against path traversal and invalid
     /// characters
     pub fn validate_service_id(service_id: &str) -> Result<()> {
@@ -37,122 +200,32 @@ impl AppSandboxEngine {
         }
 
         // Read these limits from `config` based on the hardware tier
-        let (
-            max_instances,
-            max_memory,
-            max_core_instances_per_component,
-            max_memories_per_component,
-            max_tables_per_component,
-        ) = if let Some(sandbox_config) = &config.roles.app_sandbox {
-            (
-                sandbox_config.max_concurrent_instances,
-                sandbox_config.memory_limit_bytes() as usize,
-                sandbox_config.max_core_instances_per_component,
-                sandbox_config.max_memories_per_component,
-                sandbox_config.max_tables_per_component,
-            )
-        } else {
-            // 100 * 10 == 1000, matching Wasmtime's own pool-wide
-            // default -- see `AppSandboxRole`'s
-            // `default_max_core_instances_per_component` doc comment.
-            (10, 128 * 1024 * 1024, 100, 100, 100)
-        };
+        let tuning = Self::resolve_sandbox_tuning(config);
 
         let engine = Self::build_wasm_engine(
-            Some(max_instances),
-            Some(max_memory),
-            max_core_instances_per_component,
-            max_memories_per_component,
-            max_tables_per_component,
+            Some(tuning.max_instances),
+            Some(tuning.max_memory),
+            tuning.max_core_instances_per_component,
+            tuning.max_memories_per_component,
+            tuning.max_tables_per_component,
         )?;
         let linker = Self::build_wasm_linker(&engine)?;
 
         // Component cache
         let components = DashMap::new();
 
-        let (default_max_instructions, default_max_memory_bytes) =
-            if let Some(sandbox_config) = &config.roles.app_sandbox {
-                (sandbox_config.default_max_instructions, sandbox_config.default_max_memory_bytes)
-            } else {
-                (Some(10_000_000_000), Some(256 * 1024 * 1024))
-            };
+        let dispatch_epoch_ticks = ticks_for_secs(tuning.dispatch_epoch_timeout_secs);
+        let lifecycle_hook_epoch_ticks = ticks_for_secs(tuning.lifecycle_hook_epoch_timeout_secs);
+        let abac_epoch_ticks = ticks_for_secs(tuning.abac_epoch_timeout_secs);
 
-        let (dispatch_timeout_secs, lifecycle_hook_timeout_secs) =
-            if let Some(sandbox_config) = &config.roles.app_sandbox {
-                (
-                    sandbox_config.dispatch_epoch_timeout_secs,
-                    sandbox_config.lifecycle_hook_epoch_timeout_secs,
-                )
-            } else {
-                (5, 30)
-            };
-        let dispatch_epoch_ticks = ticks_for_secs(dispatch_timeout_secs);
-        let lifecycle_hook_epoch_ticks = ticks_for_secs(lifecycle_hook_timeout_secs);
-
-        let (abac_timeout_secs, abac_max_instructions) =
-            if let Some(sandbox_config) = &config.roles.app_sandbox {
-                (sandbox_config.abac_epoch_timeout_secs, sandbox_config.abac_max_instructions)
-            } else {
-                (2, 50_000_000)
-            };
-        let abac_epoch_ticks = ticks_for_secs(abac_timeout_secs);
-
-        let max_concurrent_guest_http_per_service =
-            if let Some(sandbox_config) = &config.roles.app_sandbox {
-                sandbox_config.max_concurrent_guest_http_per_service
-            } else {
-                4
-            };
-        // A `0` config value builds a zero-permit semaphore: every guest
-        // HTTP request then waits the full admission timeout and 503s, with
-        // nothing at startup to explain why. Clamp
-        // loudly rather than let that be silently discovered in the field.
-        let max_concurrent_guest_http_per_service = if max_concurrent_guest_http_per_service == 0 {
-            warn!(
-                "max_concurrent_guest_http_per_service is 0, which would admit no guest HTTP \
-                 requests at all -- clamping to 1"
-            );
-            1
-        } else {
-            max_concurrent_guest_http_per_service
-        };
-        // Fixed, not scaled by `max_concurrent_instances`: an earlier
-        // version scaled this and, computed independently of
-        // `stream_instance_budget`, let the two jointly oversubscribe the
-        // pool (default tier 8 + 3 against 10 slots). Each concurrent
-        // after-step call holds *two* pool slots at once (itself, plus the
-        // live ordinary-dispatch instance it was invoked from -- see
-        // `abac_instance_permits`'s doc comment), so this reservation is
-        // doubled below. `STREAM_INSTANCE_POOL_HEADROOM` is the existing,
-        // already-tested "slots reserved for ordinary calls generally"
-        // budget (`stream_integration.rs::test_stream_instances_across_
-        // services_bounded_by_shared_pool_budget` asserts its exact
-        // arithmetic against a small `max_concurrent_instances`, so
-        // `stream_instance_budget`'s own formula below is intentionally
-        // left untouched); halving it is the largest fixed value that
-        // still keeps `stream_instance_budget + abac_instance_budget * 2 ==
-        // max_concurrent_instances` for every pool size, rather than only
-        // the default one.
-        let abac_instance_budget = (STREAM_INSTANCE_POOL_HEADROOM / 2).max(1);
-
-        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         let max_concurrent_streams_per_service =
             config.streaming.max_concurrent_streams_per_service;
-
-        let stream_instance_budget =
-            max_instances.saturating_sub(STREAM_INSTANCE_POOL_HEADROOM).max(1);
-        if max_concurrent_streams_per_service > stream_instance_budget {
-            warn!(
-                max_concurrent_streams_per_service,
-                max_concurrent_instances = max_instances,
-                stream_instance_budget,
-                "a single service's stream cap alone can consume this engine's entire \
-                 cross-service stream-instance budget (max_concurrent_instances minus a \
-                 {STREAM_INSTANCE_POOL_HEADROOM}-slot reserve for ordinary calls); consider \
-                 raising max_concurrent_instances or lowering max_concurrent_streams_per_service"
-            );
-        }
+        let instance_budgets = Self::resolve_instance_budgets(
+            tuning.max_instances,
+            max_concurrent_streams_per_service,
+        );
 
         let app_engine = Self {
             blobs_dir: component_dir,
@@ -161,8 +234,8 @@ impl AppSandboxEngine {
             components,
             fdae_policies: DashMap::new(),
             fdae_policy_generation: DashMap::new(),
-            default_max_instructions,
-            default_max_memory_bytes,
+            default_max_instructions: tuning.default_max_instructions,
+            default_max_memory_bytes: tuning.default_max_memory_bytes,
             _shutdown_tx: Some(shutdown_tx),
             key_store,
             storage_provider,
@@ -177,18 +250,18 @@ impl AppSandboxEngine {
             logical_resolver,
             stream_registry: StreamRegistry::new(),
             max_concurrent_streams_per_service,
-            stream_instance_permits: Arc::new(Semaphore::new(stream_instance_budget as usize)),
-            abac_instance_permits: Arc::new(Semaphore::new(abac_instance_budget as usize)),
+            stream_instance_permits: Arc::new(Semaphore::new(instance_budgets.stream as usize)),
+            abac_instance_permits: Arc::new(Semaphore::new(instance_budgets.abac as usize)),
             probe_instance_permits: Arc::new(Semaphore::new(
                 STREAM_INSTANCE_POOL_HEADROOM as usize,
             )),
             dispatch_epoch_ticks,
             lifecycle_hook_epoch_ticks,
             abac_epoch_ticks,
-            abac_max_instructions,
+            abac_max_instructions: tuning.abac_max_instructions,
             instantiations: AtomicU64::new(0),
             guest_http_permits: Arc::new(DashMap::new()),
-            max_concurrent_guest_http_per_service,
+            max_concurrent_guest_http_per_service: tuning.max_concurrent_guest_http_per_service,
             websocket_senders: OnceLock::new(),
             guest_websocket_permits: Arc::new(DashMap::new()),
             max_concurrent_websockets_per_service: config
@@ -205,34 +278,8 @@ impl AppSandboxEngine {
                 .unwrap_or(100),
         };
 
-        for (service_id, _interface_name, endpoint) in endpoints {
-            if let SubstrateEndpoint::WasmChannel { service_id: channel_id } = endpoint {
-                info!(
-                    service_id = %service_id,
-                    channel_id = %channel_id,
-                    "Warming up WASM component"
-                );
-
-                if let Err(e) = app_engine.load_cached_wasm(&service_id).await {
-                    error!("Failed to warm up WASM component {}: {}", service_id, e);
-                }
-            }
-        }
-
-        let engine_clone = app_engine.engine.clone();
-        tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_millis(EPOCH_TICK_MS));
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        engine_clone.increment_epoch();
-                    }
-                    _ = &mut shutdown_rx => {
-                        break;
-                    }
-                }
-            }
-        });
+        app_engine.warm_up_wasm_endpoints(endpoints).await;
+        Self::spawn_epoch_ticker(app_engine.engine.clone(), shutdown_rx);
 
         Ok(app_engine)
     }

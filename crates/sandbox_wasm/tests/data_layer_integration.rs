@@ -11,7 +11,9 @@ use syneroym_core::{
     config::SubstrateConfig, local_registry::EndpointRegistry, storage::MockStorage, test_constants,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
-use syneroym_data_db::{SqliteStorageProvider, StorageProvider, host_store::RecordWriteValue};
+use syneroym_data_db::{
+    ServiceStore, SqliteStorageProvider, StorageProvider, host_store::RecordWriteValue,
+};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::{
@@ -156,6 +158,80 @@ async fn get_creator_id(engine: &AppSandboxEngine, id: &str) -> String {
     engine.execute_wasm(SERVICE_ID, TEST_DRIVER_INTERFACE, &request).await.unwrap()
 }
 
+/// Reads the data-layer-test WASM fixture, or logs why `test_name` is
+/// skipping and returns `None` if the fixture hasn't been built.
+fn load_data_layer_test_wasm(test_name: &str) -> Option<Vec<u8>> {
+    match fs::read(test_constants::data_layer_test_wasm_path()) {
+        Ok(bytes) => Some(bytes),
+        Err(_) => {
+            eprintln!(
+                "Skipping {test_name}: data-layer-test WASM artifact not found (run `cargo build \
+                 --target wasm32-wasip2 --release` in test-components/data-layer-test)"
+            );
+            None
+        }
+    }
+}
+
+/// Seeds `profiles` rows directly against the store, bypassing the guest's
+/// own `put` (whose host-stamped `creator_id` is always `SERVICE_ID`, never
+/// a real caller's DID): one row owned (per the policy) by `real_caller_did`,
+/// one owned by a different principal that must stay unreachable, and five
+/// unrelated rows carrying no `creator_uuid` at all -- mirroring
+/// `router/tests/proxy_dispatch.rs`'s ingress-(ii) test, which asserts both
+/// the reached row and the denied one.
+async fn seed_real_caller_query_fixture_rows(
+    store: &dyn ServiceStore,
+    real_caller_did: &str,
+    other_principal_did: &str,
+) {
+    store
+        .put(
+            "profiles",
+            &RecordWriteValue {
+                id: "seeded-by-real-caller".to_string(),
+                payload: format!(r#"{{"creator_uuid":"{real_caller_did}"}}"#).into_bytes(),
+            },
+            SERVICE_ID,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .put(
+            "profiles",
+            &RecordWriteValue {
+                id: "seeded-for-someone-else".to_string(),
+                payload: format!(r#"{{"creator_uuid":"{other_principal_did}"}}"#).into_bytes(),
+            },
+            SERVICE_ID,
+            None,
+        )
+        .await
+        .unwrap();
+    // Five more *unrelated* rows (`{"age": 0..5}`, no `creator_uuid`),
+    // seeded the same way -- standing in for what `run-crud-scenario`'s own
+    // write half used to contribute before writes were gated too. This
+    // policy declares no `data-layer/write` permission at all, so seeding
+    // these through the guest's own (now-gated) `put` would deny closed
+    // regardless of caller; seeding directly is what proves the *read* half
+    // in isolation.
+    for i in 0..5u32 {
+        store
+            .put(
+                "profiles",
+                &RecordWriteValue {
+                    id: format!("unrelated-{i}"),
+                    payload: format!(r#"{{"age": {i}}}"#).into_bytes(),
+                },
+                SERVICE_ID,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+}
+
 #[tokio::test]
 async fn test_deploy_init_crud_creator_id_and_migrate() {
     let Ok(wasm_bytes) = fs::read(test_constants::data_layer_test_wasm_path()) else {
@@ -289,13 +365,9 @@ async fn test_deployed_policy_yields_empty_guest_originated_query_d04_02_h() {
 /// than through the guest's own (unrelated, still-ungated) `put`.
 #[tokio::test]
 async fn test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d04_02_h_closed() {
-    let Ok(wasm_bytes) = fs::read(test_constants::data_layer_test_wasm_path()) else {
-        eprintln!(
-            "Skipping \
-             test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d04_02_h_closed: \
-             data-layer-test WASM artifact not found (run `cargo build --target wasm32-wasip2 \
-             --release` in test-components/data-layer-test)"
-        );
+    let Some(wasm_bytes) = load_data_layer_test_wasm(
+        "test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d04_02_h_closed",
+    ) else {
         return;
     };
 
@@ -344,56 +416,12 @@ async fn test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d
     // Seed two rows directly, bypassing the guest's own `put` (whose
     // host-stamped `creator_id` is always `SERVICE_ID`, never a real
     // caller's DID): one owned (per the policy) by the real caller, one
-    // owned by a *different* principal that must stay unreachable --
-    // mirroring `router/tests/proxy_dispatch.rs`'s ingress-(ii) test, which
-    // asserts both the reached row and the denied one.
+    // owned by a *different* principal that must stay unreachable, plus 5
+    // unrelated rows -- see `seed_real_caller_query_fixture_rows`'s doc
+    // comment.
     const OTHER_PRINCIPAL_DID: &str = "did:key:zSomeoneElseB35";
     let store = storage_provider.open_service_db(SERVICE_ID, &key_store).await.unwrap();
-    store
-        .put(
-            "profiles",
-            &RecordWriteValue {
-                id: "seeded-by-real-caller".to_string(),
-                payload: format!(r#"{{"creator_uuid":"{REAL_CALLER_DID}"}}"#).into_bytes(),
-            },
-            SERVICE_ID,
-            None,
-        )
-        .await
-        .unwrap();
-    store
-        .put(
-            "profiles",
-            &RecordWriteValue {
-                id: "seeded-for-someone-else".to_string(),
-                payload: format!(r#"{{"creator_uuid":"{OTHER_PRINCIPAL_DID}"}}"#).into_bytes(),
-            },
-            SERVICE_ID,
-            None,
-        )
-        .await
-        .unwrap();
-    // Five more *unrelated* rows (`{"age": 0..5}`, no `creator_uuid`),
-    // seeded the same way -- standing in for what `run-crud-scenario`'s own
-    // write half used to contribute before writes were gated too. This
-    // policy declares no `data-layer/write` permission at all, so seeding
-    // these through the guest's own (now-gated) `put` would deny closed
-    // regardless of caller; seeding directly is what proves the *read* half
-    // in isolation.
-    for i in 0..5u32 {
-        store
-            .put(
-                "profiles",
-                &RecordWriteValue {
-                    id: format!("unrelated-{i}"),
-                    payload: format!(r#"{{"age": {i}}}"#).into_bytes(),
-                },
-                SERVICE_ID,
-                None,
-            )
-            .await
-            .unwrap();
-    }
+    seed_real_caller_query_fixture_rows(store.as_ref(), REAL_CALLER_DID, OTHER_PRINCIPAL_DID).await;
     drop(store);
 
     // The table now holds 7 rows total (2 seeded-with-`creator_uuid` + 5

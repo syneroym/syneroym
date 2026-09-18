@@ -113,135 +113,137 @@ pub fn empty_service_proxy() -> Weak<dyn ServiceProxy> {
     Weak::<NeverConstructed>::new()
 }
 
+/// Marker type for [`empty_conversation_host`]'s always-empty `Weak`: never
+/// constructed (only its type is used, via unsized coercion), so every
+/// trait method below is unreachable by construction, not merely by
+/// convention.
+#[derive(Debug)]
+struct NeverConstructedConversationHost;
+
+#[async_trait::async_trait]
+impl syneroym_rpc::ConversationHost for NeverConstructedConversationHost {
+    async fn open_direct(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> Result<String, syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn conversations(
+        &self,
+        _: &str,
+    ) -> Result<Vec<syneroym_rpc::ConversationSummary>, syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn send(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: Vec<u8>,
+    ) -> Result<String, syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn history(
+        &self,
+        _: &str,
+        _: &str,
+        _: u32,
+        _: Option<String>,
+    ) -> Result<syneroym_rpc::ConversationHistoryPage, syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn delivery_status(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> Result<syneroym_rpc::ConversationDeliveryState, syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn outbox(
+        &self,
+        _: &str,
+    ) -> Result<Vec<syneroym_rpc::ConversationMessage>, syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn retry(&self, _: &str, _: &str) -> Result<(), syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn create_group(&self, _: &str) -> Result<String, syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn add_member(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> Result<(), syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn remove_member(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> Result<(), syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn members(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> Result<Vec<String>, syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn membership_history(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> Result<Vec<syneroym_rpc::ConversationMembershipEvent>, syneroym_rpc::ConversationError>
+    {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn sync_now(&self, _: &str, _: &str) -> Result<(), syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn group_push(
+        &self,
+        _: &str,
+        _: &str,
+        _: Vec<u8>,
+    ) -> Result<Vec<u8>, syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn group_sync(
+        &self,
+        _: &str,
+        _: &str,
+        _: Vec<u8>,
+    ) -> Result<Vec<u8>, syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn prekey_bundle(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> Result<Vec<u8>, syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn peer_deliver(
+        &self,
+        _: &str,
+        _: &str,
+        _: Vec<u8>,
+    ) -> Result<Vec<u8>, syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+}
+
 /// An always-empty `Weak<dyn ConversationHost>` -- mirrors
 /// [`empty_service_proxy`] exactly, for `HostState.conversation`'s default
 /// before [`HostState::with_conversation`] sets a real one.
 pub(crate) fn empty_conversation_host() -> Weak<dyn syneroym_rpc::ConversationHost> {
-    #[derive(Debug)]
-    struct NeverConstructed;
-    #[async_trait::async_trait]
-    impl syneroym_rpc::ConversationHost for NeverConstructed {
-        async fn open_direct(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> Result<String, syneroym_rpc::ConversationError> {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn conversations(
-            &self,
-            _: &str,
-        ) -> Result<Vec<syneroym_rpc::ConversationSummary>, syneroym_rpc::ConversationError>
-        {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn send(
-            &self,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: Vec<u8>,
-        ) -> Result<String, syneroym_rpc::ConversationError> {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn history(
-            &self,
-            _: &str,
-            _: &str,
-            _: u32,
-            _: Option<String>,
-        ) -> Result<syneroym_rpc::ConversationHistoryPage, syneroym_rpc::ConversationError>
-        {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn delivery_status(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> Result<syneroym_rpc::ConversationDeliveryState, syneroym_rpc::ConversationError>
-        {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn outbox(
-            &self,
-            _: &str,
-        ) -> Result<Vec<syneroym_rpc::ConversationMessage>, syneroym_rpc::ConversationError>
-        {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn retry(&self, _: &str, _: &str) -> Result<(), syneroym_rpc::ConversationError> {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn create_group(&self, _: &str) -> Result<String, syneroym_rpc::ConversationError> {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn add_member(
-            &self,
-            _: &str,
-            _: &str,
-            _: &str,
-        ) -> Result<(), syneroym_rpc::ConversationError> {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn remove_member(
-            &self,
-            _: &str,
-            _: &str,
-            _: &str,
-        ) -> Result<(), syneroym_rpc::ConversationError> {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn members(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> Result<Vec<String>, syneroym_rpc::ConversationError> {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn membership_history(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> Result<Vec<syneroym_rpc::ConversationMembershipEvent>, syneroym_rpc::ConversationError>
-        {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn sync_now(&self, _: &str, _: &str) -> Result<(), syneroym_rpc::ConversationError> {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn group_push(
-            &self,
-            _: &str,
-            _: &str,
-            _: Vec<u8>,
-        ) -> Result<Vec<u8>, syneroym_rpc::ConversationError> {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn group_sync(
-            &self,
-            _: &str,
-            _: &str,
-            _: Vec<u8>,
-        ) -> Result<Vec<u8>, syneroym_rpc::ConversationError> {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn prekey_bundle(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> Result<Vec<u8>, syneroym_rpc::ConversationError> {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-        async fn peer_deliver(
-            &self,
-            _: &str,
-            _: &str,
-            _: Vec<u8>,
-        ) -> Result<Vec<u8>, syneroym_rpc::ConversationError> {
-            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
-        }
-    }
-    Weak::<NeverConstructed>::new()
+    Weak::<NeverConstructedConversationHost>::new()
 }
 
 /// Host state instantiated per-request for WASM components
