@@ -72,227 +72,58 @@ pub(super) async fn init_auth_service(
 }
 
 /// The static HTTP route table the auth service exposes. All 21 routes share
-/// the same `guest`/`handle-request` target; only the method and path differ.
-/// Extracted so the route list is testable independently and
-/// `init_auth_service` reads as orchestration rather than a large literal
-/// block.
+/// the same `guest`/`handle-request` target and are public; only the method
+/// and path differ, so each is built through `auth_route` rather than
+/// repeating the other six fields 21 times. Extracted so the route list is
+/// testable independently and `init_auth_service` reads as orchestration
+/// rather than a large literal block.
 #[cfg(feature = "auth")]
 fn auth_http_routes() -> Vec<HttpRoute> {
     // Paired short paths (`/challenge`, `/login`, …) and their canonical
     // `/_syneroym/session/*` equivalents (some tooling targets only the
     // canonical form; both forms are kept for backward compatibility).
     vec![
-        HttpRoute {
-            method: "POST".into(),
-            path: "/challenge".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "POST".into(),
-            path: "/login".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "GET".into(),
-            path: "/methods".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "GET".into(),
-            path: "/whoami".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "POST".into(),
-            path: "/logout".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "POST".into(),
-            path: "/refresh".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "POST".into(),
-            path: "/_syneroym/session/challenge".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "POST".into(),
-            path: "/_syneroym/session/login".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "GET".into(),
-            path: "/_syneroym/session/methods".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "GET".into(),
-            path: "/_syneroym/session/whoami".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "POST".into(),
-            path: "/_syneroym/session/logout".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "POST".into(),
-            path: "/_syneroym/session/refresh".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "POST".into(),
-            path: "/_syneroym/session/{endpoint}".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "GET".into(),
-            path: "/_syneroym/session/{endpoint}".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "OPTIONS".into(),
-            path: "/challenge".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "OPTIONS".into(),
-            path: "/login".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "OPTIONS".into(),
-            path: "/methods".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "OPTIONS".into(),
-            path: "/whoami".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "OPTIONS".into(),
-            path: "/logout".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "OPTIONS".into(),
-            path: "/refresh".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "OPTIONS".into(),
-            path: "/_syneroym/session/{endpoint}".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
+        auth_route("POST", "/challenge"),
+        auth_route("POST", "/login"),
+        auth_route("GET", "/methods"),
+        auth_route("GET", "/whoami"),
+        auth_route("POST", "/logout"),
+        auth_route("POST", "/refresh"),
+        auth_route("POST", "/_syneroym/session/challenge"),
+        auth_route("POST", "/_syneroym/session/login"),
+        auth_route("GET", "/_syneroym/session/methods"),
+        auth_route("GET", "/_syneroym/session/whoami"),
+        auth_route("POST", "/_syneroym/session/logout"),
+        auth_route("POST", "/_syneroym/session/refresh"),
+        auth_route("POST", "/_syneroym/session/{endpoint}"),
+        auth_route("GET", "/_syneroym/session/{endpoint}"),
+        auth_route("OPTIONS", "/challenge"),
+        auth_route("OPTIONS", "/login"),
+        auth_route("OPTIONS", "/methods"),
+        auth_route("OPTIONS", "/whoami"),
+        auth_route("OPTIONS", "/logout"),
+        auth_route("OPTIONS", "/refresh"),
+        auth_route("OPTIONS", "/_syneroym/session/{endpoint}"),
     ]
+}
+
+/// Builds one auth-service route entry. Every entry targets the guest's
+/// `handle-request` export, is public (the auth handshake itself is how an
+/// otherwise-anonymous caller gets a session), and uses none of the
+/// `collection`/`topic`/`protocol` fields, so only `method` and `path` need
+/// to vary per call.
+#[cfg(feature = "auth")]
+fn auth_route(method: &str, path: &str) -> HttpRoute {
+    HttpRoute {
+        method: method.into(),
+        path: path.into(),
+        target: "guest".into(),
+        operation: "handle-request".into(),
+        collection: None,
+        topic: None,
+        protocol: None,
+        public: true,
+    }
 }
 
 /// Inserts the auth service's route table and registers its two endpoint

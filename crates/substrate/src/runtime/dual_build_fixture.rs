@@ -4,7 +4,10 @@
 use std::sync::Arc;
 
 #[cfg(feature = "dual_build_fixture")]
-use syneroym_core::local_registry::{EndpointRegistry, SubstrateEndpoint};
+use syneroym_core::{
+    http_routes::HttpRoute,
+    local_registry::{EndpointRegistry, SubstrateEndpoint},
+};
 #[cfg(feature = "dual_build_fixture")]
 use syneroym_rpc::NativeService;
 
@@ -46,7 +49,6 @@ pub(super) async fn init_dual_build_fixture(
     use syneroym_app_host_native::{
         HttpSink, MessageSink, NativeHostFactory, NativeHttpAdapter, WebSocketSink,
     };
-    use syneroym_core::http_routes::HttpRoute;
     use syneroym_rpc::NativeHttpService;
     use syneroym_test_dual_build_fixture::native::{FIXTURE_INTERFACE, NativeFixture};
 
@@ -92,58 +94,7 @@ pub(super) async fn init_dual_build_fixture(
         adapter.clone() as Arc<dyn NativeHttpService>,
     );
     shared.native_http().insert(node_service_id.to_string(), adapter as Arc<dyn NativeHttpService>);
-    let routes = vec![
-        HttpRoute {
-            method: "POST".into(),
-            path: "/run".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: false,
-        },
-        HttpRoute {
-            method: "POST".into(),
-            path: "/store".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: false,
-        },
-        HttpRoute {
-            method: "GET".into(),
-            path: "/whoami".into(),
-            target: "guest".into(),
-            operation: "handle-request".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-        HttpRoute {
-            method: "GET".into(),
-            path: "/ws".into(),
-            target: "websocket".into(),
-            operation: "handle-upgrade".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: false,
-        },
-        HttpRoute {
-            method: "GET".into(),
-            path: "/ws-public".into(),
-            target: "websocket".into(),
-            operation: "handle-upgrade".into(),
-            collection: None,
-            topic: None,
-            protocol: None,
-            public: true,
-        },
-    ];
+    let routes = dual_build_fixture_routes();
     shared.http_routes().insert(DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(), routes.clone());
     shared.http_routes().insert(node_service_id.to_string(), routes);
 
@@ -155,45 +106,73 @@ pub(super) async fn init_dual_build_fixture(
     // fixture needs nothing from that key: its `subscribe` is app-initiated
     // and its pump reads the broker directly, never through the router's
     // messaging path.
-    endpoint_registry
-        .register(
-            node_service_id.to_string(),
-            FIXTURE_INTERFACE.to_string(),
-            SubstrateEndpoint::NativeHostChannel {
-                service_id: DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
-            },
-        )
-        .await?;
-
-    endpoint_registry
-        .register(
-            node_service_id.to_string(),
-            "http".to_string(),
-            SubstrateEndpoint::NativeHostChannel {
-                service_id: DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
-            },
-        )
-        .await?;
-
-    endpoint_registry
-        .register(
-            node_service_id.to_string(),
-            "http-native".to_string(),
-            SubstrateEndpoint::NativeHostChannel {
-                service_id: DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
-            },
-        )
-        .await?;
-
-    endpoint_registry
-        .register(
-            DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
-            "http-native".to_string(),
-            SubstrateEndpoint::NativeHostChannel {
-                service_id: DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
-            },
-        )
+    register_fixture_endpoint(endpoint_registry, node_service_id, FIXTURE_INTERFACE).await?;
+    register_fixture_endpoint(endpoint_registry, node_service_id, "http").await?;
+    register_fixture_endpoint(endpoint_registry, node_service_id, "http-native").await?;
+    register_fixture_endpoint(endpoint_registry, DUAL_BUILD_FIXTURE_DISPATCH_ID, "http-native")
         .await?;
 
     Ok(Some(factory))
+}
+
+/// The fixture's five HTTP routes. `/run`/`/store` are private (only a
+/// caller with a verified identity may reach them), `/whoami` and both
+/// WebSocket upgrades are public — see `fixture_route`'s own doc for why
+/// `collection`/`topic`/`protocol` never vary here.
+#[cfg(feature = "dual_build_fixture")]
+fn dual_build_fixture_routes() -> Vec<HttpRoute> {
+    vec![
+        fixture_route("POST", "/run", "guest", "handle-request", false),
+        fixture_route("POST", "/store", "guest", "handle-request", false),
+        fixture_route("GET", "/whoami", "guest", "handle-request", true),
+        fixture_route("GET", "/ws", "websocket", "handle-upgrade", false),
+        fixture_route("GET", "/ws-public", "websocket", "handle-upgrade", true),
+    ]
+}
+
+/// Builds one fixture route entry. None of the five routes use
+/// `collection`/`topic`/`protocol` (those only apply to the `data-layer`/
+/// `messaging`/`stream` targets, and every fixture route targets `guest` or
+/// `websocket`), so only `method`, `path`, `target`, `operation`, and
+/// `public` need to vary per call.
+#[cfg(feature = "dual_build_fixture")]
+fn fixture_route(
+    method: &str,
+    path: &str,
+    target: &str,
+    operation: &str,
+    public: bool,
+) -> HttpRoute {
+    HttpRoute {
+        method: method.into(),
+        path: path.into(),
+        target: target.into(),
+        operation: operation.into(),
+        collection: None,
+        topic: None,
+        protocol: None,
+        public,
+    }
+}
+
+/// Registers one of the fixture's endpoint-registry entries. Every entry
+/// resolves to the same `NativeHostChannel` (the fixture's own dispatch id)
+/// — only the registering service id and interface name change per call, so
+/// this is a thin wrapper around `EndpointRegistry::register` rather than a
+/// copy of the same three-argument call four times.
+#[cfg(feature = "dual_build_fixture")]
+async fn register_fixture_endpoint(
+    endpoint_registry: &EndpointRegistry,
+    registrant: &str,
+    interface: &str,
+) -> anyhow::Result<()> {
+    endpoint_registry
+        .register(
+            registrant.to_string(),
+            interface.to_string(),
+            SubstrateEndpoint::NativeHostChannel {
+                service_id: DUAL_BUILD_FIXTURE_DISPATCH_ID.to_string(),
+            },
+        )
+        .await
 }

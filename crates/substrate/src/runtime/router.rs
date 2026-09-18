@@ -142,36 +142,7 @@ async fn setup_router(
         build_route_handler_deps(config, service_id, &endpoint_registry, secret_key).await?;
     let control_plane = route_handler_deps.control_plane.clone();
 
-    let supervisor = if config.roles.supervisor.is_some() {
-        let supervisor_endpoint =
-            SubstrateEndpoint::NativeHostChannel { service_id: SUPERVISOR_DISPATCH_ID.to_string() };
-        endpoint_registry
-            .register(service_id.to_string(), "supervisor".to_string(), supervisor_endpoint)
-            .await?;
-        // Gives the supervisor's own alert publication a `messaging`
-        // endpoint to publish under -- a supervisor role is not a deployed
-        // service, so without this registration nothing resolves
-        // `SUPERVISOR_DISPATCH_ID` for the
-        // `messaging` interface at all. **Deliberately** registered under
-        // the same reserved id every other supervisor verb uses: the
-        // router's own subscribe path (`dispatch.rs::handle_messaging_
-        // subscribe`) namespaces this one service id with the
-        // publish-side (unconditional-prefix) rule instead of the
-        // ordinary subscribe-side rule every deployed service's
-        // `messaging` endpoint gets -- see that function's own comment
-        // for why. Do not "correct" that divergence back to the ordinary
-        // rule: it is what keeps a caller's subscribe confined to
-        // `svc/supervisor/...` on a node that hosts no deployed services
-        // of its own to share the reach with.
-        let messaging_endpoint =
-            SubstrateEndpoint::NativeHostChannel { service_id: SUPERVISOR_DISPATCH_ID.to_string() };
-        endpoint_registry
-            .register(service_id.to_string(), "messaging".to_string(), messaging_endpoint)
-            .await?;
-        Some(init_supervisor(config, service_id, &shared).await?)
-    } else {
-        None
-    };
+    let supervisor = register_supervisor(config, service_id, &endpoint_registry, &shared).await?;
 
     #[cfg(feature = "dual_build_fixture")]
     let fixture_factory = init_dual_build_fixture(&shared, &endpoint_registry, service_id).await?;
@@ -267,6 +238,49 @@ async fn setup_router(
         .and_then(|svc| NativeHttpService::service_id(&**svc.value()).map(ToString::to_string));
 
     Ok((router, endpoint_registry, publisher, supervisor, shared.conversation().clone(), auth_did))
+}
+
+/// Registers the supervisor role's two reserved endpoints (`supervisor`,
+/// and the `messaging` endpoint its own alert publication needs) and starts
+/// it, or does nothing when the role isn't configured. Extracted from
+/// `setup_router` so that function reads as sequential composition rather
+/// than one large conditional block.
+async fn register_supervisor(
+    config: &SubstrateConfig,
+    service_id: &str,
+    endpoint_registry: &EndpointRegistry,
+    shared: &SharedNodeHandles,
+) -> anyhow::Result<Option<Arc<SupervisorHandle>>> {
+    if config.roles.supervisor.is_none() {
+        return Ok(None);
+    }
+
+    let supervisor_endpoint =
+        SubstrateEndpoint::NativeHostChannel { service_id: SUPERVISOR_DISPATCH_ID.to_string() };
+    endpoint_registry
+        .register(service_id.to_string(), "supervisor".to_string(), supervisor_endpoint)
+        .await?;
+    // Gives the supervisor's own alert publication a `messaging`
+    // endpoint to publish under -- a supervisor role is not a deployed
+    // service, so without this registration nothing resolves
+    // `SUPERVISOR_DISPATCH_ID` for the
+    // `messaging` interface at all. **Deliberately** registered under
+    // the same reserved id every other supervisor verb uses: the
+    // router's own subscribe path (`dispatch.rs::handle_messaging_
+    // subscribe`) namespaces this one service id with the
+    // publish-side (unconditional-prefix) rule instead of the
+    // ordinary subscribe-side rule every deployed service's
+    // `messaging` endpoint gets -- see that function's own comment
+    // for why. Do not "correct" that divergence back to the ordinary
+    // rule: it is what keeps a caller's subscribe confined to
+    // `svc/supervisor/...` on a node that hosts no deployed services
+    // of its own to share the reach with.
+    let messaging_endpoint =
+        SubstrateEndpoint::NativeHostChannel { service_id: SUPERVISOR_DISPATCH_ID.to_string() };
+    endpoint_registry
+        .register(service_id.to_string(), "messaging".to_string(), messaging_endpoint)
+        .await?;
+    Ok(Some(init_supervisor(config, service_id, shared).await?))
 }
 
 /// Rebuilds the in-memory `StaticInventory` from every dependency binding
