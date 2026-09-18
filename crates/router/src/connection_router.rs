@@ -11,7 +11,7 @@ use std::{
 };
 
 use anyhow::Result;
-use futures::{SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, stream::SplitSink};
 use iroh::{
     Endpoint, EndpointAddr, SecretKey,
     protocol::{Router, Router as IrohRouter},
@@ -258,8 +258,7 @@ impl ConnectionRouter {
 /// `tokio_tungstenite::connect_async` for a plain (non-TLS-wrapped) client
 /// request -- named here so the offer handler below can take it as a
 /// parameter without repeating the full generic type.
-type SignalingSink =
-    futures::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
+type SignalingSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 
 async fn connect_signaling(
     peer_id: String,
