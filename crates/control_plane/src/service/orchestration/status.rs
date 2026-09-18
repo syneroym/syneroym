@@ -355,86 +355,106 @@ impl ControlPlaneService {
 
         match check {
             WitHealthCheck::TcpConnect(p) => {
-                let SubstrateEndpoint::TcpHostPort { host, port } = endpoint else {
-                    return ProbeStatus::Failing(format!(
-                        "interface '{interface_name}' is not a TCP endpoint"
-                    ));
-                };
-                match tokio::time::timeout(
-                    Duration::from_millis(u64::from(p.timeout_ms)),
-                    tokio::net::TcpStream::connect((host.as_str(), port)),
-                )
-                .await
-                {
-                    Ok(Ok(_)) => ProbeStatus::Passing,
-                    Ok(Err(e)) => ProbeStatus::Failing(format!("connect failed: {e}")),
-                    Err(_) => {
-                        ProbeStatus::Failing(format!("connect timed out after {}ms", p.timeout_ms))
-                    }
-                }
+                self.run_tcp_connect_probe(&interface_name, endpoint, p.timeout_ms).await
             }
             WitHealthCheck::HttpGet(p) => {
-                let SubstrateEndpoint::TcpHostPort { host, port } = endpoint else {
-                    return ProbeStatus::Failing(format!(
-                        "interface '{interface_name}' is not a TCP endpoint"
-                    ));
-                };
-                let url = format!("http://{host}:{port}{}", p.path);
-                match tokio::time::timeout(
-                    Duration::from_millis(u64::from(p.timeout_ms)),
-                    self.http_probe_client.get(&url).send(),
+                self.run_http_get_probe(
+                    &interface_name,
+                    endpoint,
+                    &p.path,
+                    p.expect_status,
+                    p.timeout_ms,
                 )
                 .await
-                {
-                    Ok(Ok(resp)) if resp.status().as_u16() == p.expect_status => {
-                        ProbeStatus::Passing
-                    }
-                    Ok(Ok(resp)) => ProbeStatus::Failing(format!(
-                        "expected status {}, got {}",
-                        p.expect_status,
-                        resp.status().as_u16()
-                    )),
-                    Ok(Err(e)) => ProbeStatus::Failing(format!("http probe failed: {e}")),
-                    Err(_) => ProbeStatus::Failing(format!(
-                        "http probe timed out after {}ms",
-                        p.timeout_ms
-                    )),
-                }
             }
             WitHealthCheck::Rpc(p) => {
-                let request = JsonRpcRequest {
-                    jsonrpc: "2.0".to_string(),
-                    method: p.method.clone(),
-                    params: Value::Array(vec![]),
-                    id: Some(Value::from(1)),
-                    idempotency_key: None,
-                };
-                // `execute_probe_json`, not
-                // `execute_wasm_json` directly -- bounded by the engine's
-                // own `probe_instance_permits`, so a sweep with many
-                // `rpc`-probed wasm services cannot request more
-                // concurrent component instantiations than the pool can
-                // serve (`caller: None` is still a substrate-originated
-                // probe, the same choice `ProxyRouter::invoke_local` makes
-                // for a guest-to-guest call).
-                match tokio::time::timeout(
-                    Duration::from_millis(u64::from(p.timeout_ms)),
-                    self.app_sandbox_engine.execute_probe_json(
-                        service_id,
-                        &p.interface_name,
-                        &request,
-                    ),
-                )
-                .await
-                {
-                    Ok(Ok(_)) => ProbeStatus::Passing,
-                    Ok(Err(e)) => ProbeStatus::Failing(format!("rpc probe failed: {e}")),
-                    Err(_) => ProbeStatus::Failing(format!(
-                        "rpc probe timed out after {}ms",
-                        p.timeout_ms
-                    )),
-                }
+                self.run_rpc_probe(service_id, &interface_name, p.method, p.timeout_ms).await
             }
+        }
+    }
+
+    async fn run_tcp_connect_probe(
+        &self,
+        interface_name: &str,
+        endpoint: SubstrateEndpoint,
+        timeout_ms: u32,
+    ) -> ProbeStatus {
+        let SubstrateEndpoint::TcpHostPort { host, port } = endpoint else {
+            return ProbeStatus::Failing(format!(
+                "interface '{interface_name}' is not a TCP endpoint"
+            ));
+        };
+        match tokio::time::timeout(
+            Duration::from_millis(u64::from(timeout_ms)),
+            tokio::net::TcpStream::connect((host.as_str(), port)),
+        )
+        .await
+        {
+            Ok(Ok(_)) => ProbeStatus::Passing,
+            Ok(Err(e)) => ProbeStatus::Failing(format!("connect failed: {e}")),
+            Err(_) => ProbeStatus::Failing(format!("connect timed out after {timeout_ms}ms")),
+        }
+    }
+
+    async fn run_http_get_probe(
+        &self,
+        interface_name: &str,
+        endpoint: SubstrateEndpoint,
+        path: &str,
+        expect_status: u16,
+        timeout_ms: u32,
+    ) -> ProbeStatus {
+        let SubstrateEndpoint::TcpHostPort { host, port } = endpoint else {
+            return ProbeStatus::Failing(format!(
+                "interface '{interface_name}' is not a TCP endpoint"
+            ));
+        };
+        let url = format!("http://{host}:{port}{path}");
+        match tokio::time::timeout(
+            Duration::from_millis(u64::from(timeout_ms)),
+            self.http_probe_client.get(&url).send(),
+        )
+        .await
+        {
+            Ok(Ok(resp)) if resp.status().as_u16() == expect_status => ProbeStatus::Passing,
+            Ok(Ok(resp)) => ProbeStatus::Failing(format!(
+                "expected status {expect_status}, got {}",
+                resp.status().as_u16()
+            )),
+            Ok(Err(e)) => ProbeStatus::Failing(format!("http probe failed: {e}")),
+            Err(_) => ProbeStatus::Failing(format!("http probe timed out after {timeout_ms}ms")),
+        }
+    }
+
+    /// `execute_probe_json`, not `execute_wasm_json` directly -- bounded by
+    /// the engine's own `probe_instance_permits`, so a sweep with many
+    /// `rpc`-probed wasm services cannot request more concurrent component
+    /// instantiations than the pool can serve (`caller: None` is still a
+    /// substrate-originated probe, the same choice `ProxyRouter::
+    /// invoke_local` makes for a guest-to-guest call).
+    async fn run_rpc_probe(
+        &self,
+        service_id: &str,
+        interface_name: &str,
+        method: String,
+        timeout_ms: u32,
+    ) -> ProbeStatus {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method,
+            params: Value::Array(vec![]),
+            id: Some(Value::from(1)),
+            idempotency_key: None,
+        };
+        match tokio::time::timeout(
+            Duration::from_millis(u64::from(timeout_ms)),
+            self.app_sandbox_engine.execute_probe_json(service_id, interface_name, &request),
+        )
+        .await
+        {
+            Ok(Ok(_)) => ProbeStatus::Passing,
+            Ok(Err(e)) => ProbeStatus::Failing(format!("rpc probe failed: {e}")),
+            Err(_) => ProbeStatus::Failing(format!("rpc probe timed out after {timeout_ms}ms")),
         }
     }
 }
