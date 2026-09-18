@@ -74,7 +74,7 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/data_blob` | 5 | 0 | 1 | 0 | done | done | |
 | `crates/community_registry` | 5 | 0 | 0 | 0 | done | done | |
 | `crates/mqtt_broker` | 5 | 0 | 0 | 0 | done | n/a | |
-| `crates/conversation` | 4 | 0 | 4 | 6 | done | done | |
+| `crates/conversation` | 4 | 0 | 4 | 6 | done | done | done |
 | `crates/roym_transaction` | 0 | 0 | 1 | 7 | n/a | done | |
 | `crates/roym_directory` | 0 | 0 | 1 | 4 | n/a | done | |
 | `crates/roym_web` | 0 | 0 | 0 | 3 | n/a | n/a | |

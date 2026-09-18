@@ -118,130 +118,144 @@ pub fn apply_entry(
     now: i64,
 ) -> Result<(bool, Option<StoredMessage>)> {
     match entry.kind {
-        EntryKind::Membership => {
-            if let Some(payload) = &entry.payload {
-                ConversationStore::apply_membership(tx, conv_id, payload)?;
-                // Verify member_list_hash matches local calculation of members after
-                // application
-                let mut stmt = tx.prepare(
-                    "SELECT member_address FROM group_members WHERE conversation_id = ?1 AND \
-                     joined_epoch <= ?2 AND (removed_epoch IS NULL OR removed_epoch > ?2) ORDER \
-                     BY member_address ASC",
-                )?;
-                let mut rows = stmt.query(rusqlite::params![conv_id, payload.new_epoch as i64])?;
-                let mut current_members = Vec::new();
-                while let Some(r) = rows.next()? {
-                    current_members.push(r.get::<_, String>(0)?);
-                }
-                let calculated_hash = hash_members(&current_members);
-                if calculated_hash != payload.member_list_hash {
-                    return Err(anyhow::anyhow!(
-                        "member_list_hash mismatch: expected {}, calculated {}",
-                        payload.member_list_hash,
-                        calculated_hash
-                    ));
-                }
-
-                tx.execute(
-                    "UPDATE conversations SET current_epoch = MAX(current_epoch, ?1), \
-                     last_activity = ?2 WHERE id = ?3",
-                    rusqlite::params![payload.new_epoch as i64, now, conv_id],
-                )?;
-                ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
-            }
-            Ok((false, None))
-        }
-        EntryKind::Message => {
-            let msg_count: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
-                rusqlite::params![conv_id],
-                |r| r.get(0),
-            )?;
-            if msg_count as u32 >= config.max_messages_per_conversation {
-                return Ok((false, None));
-            }
-
-            let key = ConversationStore::epoch_key_in(tx, conv_id, entry.epoch)?;
-            let Some(key) = key else {
-                return Ok((false, None));
-            };
-            let prefix = canonical_entry_prefix(
-                conv_id,
-                &entry.author,
-                entry.sender_timestamp_ms,
-                entry.epoch,
-                entry.kind,
-                &entry.parents,
-            );
-            let ct = entry.ciphertext.as_deref().unwrap_or(&[]);
-            let Some(nonce) = &entry.nonce else {
-                return Ok((false, None));
-            };
-            let plaintext = match open(&key, &prefix, nonce, ct) {
-                Ok(p) => p,
-                Err(_) => return Ok((false, None)),
-            };
-            let (content_type, body) = match decode_body(&plaintext) {
-                Ok(b) => b,
-                Err(_) => return Ok((false, None)),
-            };
-            if body.len() as u32 > config.max_body_bytes {
-                return Ok((false, None));
-            }
-            let inserted = tx.execute(
-                "INSERT OR IGNORE INTO messages (id, conversation_id, author, sender_timestamp, \
-                 received_at, content_type, body, signature, outgoing, verified, state, \
-                 last_error, system, entry_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 1, \
-                 'delivered', NULL, 0, ?1)",
-                rusqlite::params![
-                    entry.entry_id,
-                    conv_id,
-                    entry.author,
-                    entry.sender_timestamp_ms,
-                    now,
-                    content_type,
-                    body,
-                    entry.signature.as_slice()
-                ],
-            )?;
-            ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
-            ConversationStore::touch_conversation(tx, conv_id, now)?;
-            if inserted > 0 {
-                let msg = StoredMessage {
-                    id: entry.entry_id.clone(),
-                    conversation_id: conv_id.to_string(),
-                    author: entry.author.clone(),
-                    sender_timestamp_ms: entry.sender_timestamp_ms,
-                    received_at_ms: now,
-                    content_type,
-                    body,
-                    signature: entry.signature,
-                    outgoing: false,
-                    verified: true,
-                    state: ConversationDeliveryState::Delivered,
-                    last_error: None,
-                    system: false,
-                    entry_id: Some(entry.entry_id.clone()),
-                };
-                Ok((true, Some(msg)))
-            } else {
-                Ok((false, None))
-            }
-        }
+        EntryKind::Membership => apply_membership_entry(tx, conv_id, entry, now),
+        EntryKind::Message => apply_message_entry(tx, conv_id, entry, config, now),
     }
 }
 
-pub fn validate_and_insert(
-    store: &ConversationStore,
-    svc: &str,
-    conv: &ConversationRow,
-    entry: &WireEntry,
-) -> Result<(bool, Option<StoredMessage>), ConversationError> {
-    let header = canonical_entry_bytes(entry);
-    if derive_entry_id(&header) != entry.entry_id {
-        return Err(ConversationError::InvalidArgument("mismatched entry id".to_string()));
+fn apply_membership_entry(
+    tx: &Transaction<'_>,
+    conv_id: &str,
+    entry: &StoredDagEntry,
+    now: i64,
+) -> Result<(bool, Option<StoredMessage>)> {
+    if let Some(payload) = &entry.payload {
+        ConversationStore::apply_membership(tx, conv_id, payload)?;
+        // Verify member_list_hash matches local calculation of members after
+        // application
+        let mut stmt = tx.prepare(
+            "SELECT member_address FROM group_members WHERE conversation_id = ?1 AND joined_epoch \
+             <= ?2 AND (removed_epoch IS NULL OR removed_epoch > ?2) ORDER BY member_address ASC",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![conv_id, payload.new_epoch as i64])?;
+        let mut current_members = Vec::new();
+        while let Some(r) = rows.next()? {
+            current_members.push(r.get::<_, String>(0)?);
+        }
+        let calculated_hash = hash_members(&current_members);
+        if calculated_hash != payload.member_list_hash {
+            return Err(anyhow::anyhow!(
+                "member_list_hash mismatch: expected {}, calculated {}",
+                payload.member_list_hash,
+                calculated_hash
+            ));
+        }
+
+        tx.execute(
+            "UPDATE conversations SET current_epoch = MAX(current_epoch, ?1), last_activity = ?2 \
+             WHERE id = ?3",
+            rusqlite::params![payload.new_epoch as i64, now, conv_id],
+        )?;
+        ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
+    }
+    Ok((false, None))
+}
+
+fn apply_message_entry(
+    tx: &Transaction<'_>,
+    conv_id: &str,
+    entry: &StoredDagEntry,
+    config: &ConversationConfig,
+    now: i64,
+) -> Result<(bool, Option<StoredMessage>)> {
+    let msg_count: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+        rusqlite::params![conv_id],
+        |r| r.get(0),
+    )?;
+    if msg_count as u32 >= config.max_messages_per_conversation {
+        return Ok((false, None));
     }
 
+    let key = ConversationStore::epoch_key_in(tx, conv_id, entry.epoch)?;
+    let Some(key) = key else {
+        return Ok((false, None));
+    };
+    let prefix = canonical_entry_prefix(
+        conv_id,
+        &entry.author,
+        entry.sender_timestamp_ms,
+        entry.epoch,
+        entry.kind,
+        &entry.parents,
+    );
+    let ct = entry.ciphertext.as_deref().unwrap_or(&[]);
+    let Some(nonce) = &entry.nonce else {
+        return Ok((false, None));
+    };
+    let plaintext = match open(&key, &prefix, nonce, ct) {
+        Ok(p) => p,
+        Err(_) => return Ok((false, None)),
+    };
+    let (content_type, body) = match decode_body(&plaintext) {
+        Ok(b) => b,
+        Err(_) => return Ok((false, None)),
+    };
+    if body.len() as u32 > config.max_body_bytes {
+        return Ok((false, None));
+    }
+    let inserted = tx.execute(
+        "INSERT OR IGNORE INTO messages (id, conversation_id, author, sender_timestamp, \
+         received_at, content_type, body, signature, outgoing, verified, state, last_error, \
+         system, entry_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 1, 'delivered', NULL, 0, ?1)",
+        rusqlite::params![
+            entry.entry_id,
+            conv_id,
+            entry.author,
+            entry.sender_timestamp_ms,
+            now,
+            content_type,
+            body,
+            entry.signature.as_slice()
+        ],
+    )?;
+    ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
+    ConversationStore::touch_conversation(tx, conv_id, now)?;
+    if inserted > 0 {
+        let msg = StoredMessage {
+            id: entry.entry_id.clone(),
+            conversation_id: conv_id.to_string(),
+            author: entry.author.clone(),
+            sender_timestamp_ms: entry.sender_timestamp_ms,
+            received_at_ms: now,
+            content_type,
+            body,
+            signature: entry.signature,
+            outgoing: false,
+            verified: true,
+            state: ConversationDeliveryState::Delivered,
+            last_error: None,
+            system: false,
+            entry_id: Some(entry.entry_id.clone()),
+        };
+        Ok((true, Some(msg)))
+    } else {
+        Ok((false, None))
+    }
+}
+
+/// Resolves the signing key that should have produced `entry`'s signature.
+/// A membership entry must be authored by the conversation owner, and may
+/// additionally trust the subject's own claimed key or a pinned session
+/// key (the owner does not yet have a `group_members` row for a brand new
+/// subject). Any other entry kind trusts only an existing member's key or
+/// a pinned session key — never the entry's own claimed key, which an
+/// outsider could set to anything.
+fn resolve_entry_sig_key(
+    store: &ConversationStore,
+    conv: &ConversationRow,
+    entry: &WireEntry,
+) -> Result<[u8; 32], ConversationError> {
     let sig_key = if entry.kind == EntryKind::Membership {
         if conv.owner_address.as_deref() != Some(&entry.author) {
             return Err(ConversationError::PermissionDenied);
@@ -302,7 +316,21 @@ pub fn validate_and_insert(
     } else {
         return Err(ConversationError::PermissionDenied);
     };
+    Ok(sig_key)
+}
 
+pub fn validate_and_insert(
+    store: &ConversationStore,
+    svc: &str,
+    conv: &ConversationRow,
+    entry: &WireEntry,
+) -> Result<(bool, Option<StoredMessage>), ConversationError> {
+    let header = canonical_entry_bytes(entry);
+    if derive_entry_id(&header) != entry.entry_id {
+        return Err(ConversationError::InvalidArgument("mismatched entry id".to_string()));
+    }
+
+    let sig_key = resolve_entry_sig_key(store, conv, entry)?;
     let vk = VerifyingKey::from_bytes(&sig_key).map_err(internal)?;
     if !verify_entry(&vk, &header, &entry.signature) {
         return Err(ConversationError::PermissionDenied);
@@ -379,19 +407,28 @@ pub fn validate_and_insert(
     Ok((inserted, newly_stored_msg))
 }
 
+/// Loads this node's local signing key, generating one on first use.
+/// Shared by every group operation that must sign a DAG entry — a
+/// membership genesis, a membership change, or a message — so the
+/// generate-or-load-then-decode sequence lives in exactly one place.
+fn load_signing_key(store: &ConversationStore) -> Result<SigningKey, ConversationError> {
+    let ident =
+        store.local_identity_or_generate(crypto::generate_identity_bytes).map_err(internal)?;
+    let sig_bytes: [u8; 32] = ident
+        .sig_secret
+        .as_slice()
+        .try_into()
+        .map_err(|_| ConversationError::Internal("corrupt local signing key".to_string()))?;
+    Ok(SigningKey::from_bytes(&sig_bytes))
+}
+
 impl ConversationService {
     pub(crate) async fn create_group_impl(
         &self,
         service_id: &str,
     ) -> Result<String, ConversationError> {
         let store = self.store_for(service_id).await.map_err(internal)?;
-        let ident =
-            store.local_identity_or_generate(crypto::generate_identity_bytes).map_err(internal)?;
-        let sig_bytes: [u8; 32] =
-            ident.sig_secret.as_slice().try_into().map_err(|_| {
-                ConversationError::Internal("corrupt local signing key".to_string())
-            })?;
-        let sk = SigningKey::from_bytes(&sig_bytes);
+        let sk = load_signing_key(&store)?;
         let my_vk = sk.verifying_key().to_bytes();
 
         let now = now_ms();
@@ -446,6 +483,45 @@ impl ConversationService {
         Ok(group_id)
     }
 
+    /// Works out what an `add`/`remove` membership action changes: the
+    /// subject's signing key and the resulting member list. Returns `None`
+    /// when the action is already the current state (already a member for
+    /// `add`, already absent for `remove`) — the caller turns that into a
+    /// no-op success instead of minting a pointless new epoch.
+    async fn resolve_membership_change(
+        &self,
+        service_id: &str,
+        conversation: &str,
+        member_address: &str,
+        action: &str,
+        store: &ConversationStore,
+        members: Vec<String>,
+    ) -> Result<Option<([u8; 32], Vec<String>)>, ConversationError> {
+        if action == "add" {
+            if members.contains(&member_address.to_string()) {
+                return Ok(None);
+            }
+            if members.len() as u32 >= store.config().conversation_max_group_members {
+                return Err(ConversationError::QuotaExceeded);
+            }
+            let bundle = self.fetch_prekey_bundle(service_id, member_address).await?;
+            let mut nm = members.clone();
+            nm.push(member_address.to_string());
+            nm.sort();
+            Ok(Some((bundle.sig_key, nm)))
+        } else {
+            if !members.contains(&member_address.to_string()) {
+                return Ok(None);
+            }
+            let sig_key = store
+                .member_sig_key(conversation, member_address)
+                .map_err(internal)?
+                .ok_or_else(|| ConversationError::Internal("missing member sig key".to_string()))?;
+            let nm: Vec<String> = members.into_iter().filter(|m| m != member_address).collect();
+            Ok(Some((sig_key, nm)))
+        }
+    }
+
     pub(crate) async fn change_membership_impl(
         &self,
         service_id: &str,
@@ -471,39 +547,23 @@ impl ConversationService {
         }
 
         let members = store.current_members(conversation).map_err(internal)?;
-        let (subject_sig_key, next_members) = if action == "add" {
-            if members.contains(&member_address.to_string()) {
-                return Ok(());
-            }
-            if members.len() as u32 >= store.config().conversation_max_group_members {
-                return Err(ConversationError::QuotaExceeded);
-            }
-            let bundle = self.fetch_prekey_bundle(service_id, member_address).await?;
-            let mut nm = members.clone();
-            nm.push(member_address.to_string());
-            nm.sort();
-            (bundle.sig_key, nm)
-        } else {
-            if !members.contains(&member_address.to_string()) {
-                return Ok(());
-            }
-            let sig_key = store
-                .member_sig_key(conversation, member_address)
-                .map_err(internal)?
-                .ok_or_else(|| ConversationError::Internal("missing member sig key".to_string()))?;
-            let nm: Vec<String> = members.into_iter().filter(|m| m != member_address).collect();
-            (sig_key, nm)
+        let Some((subject_sig_key, next_members)) = self
+            .resolve_membership_change(
+                service_id,
+                conversation,
+                member_address,
+                action,
+                &store,
+                members,
+            )
+            .await?
+        else {
+            return Ok(());
         };
 
         let now = now_ms();
         let heads = store.heads(conversation).map_err(internal)?;
-        let ident =
-            store.local_identity_or_generate(crypto::generate_identity_bytes).map_err(internal)?;
-        let sig_bytes: [u8; 32] =
-            ident.sig_secret.as_slice().try_into().map_err(|_| {
-                ConversationError::Internal("corrupt local signing key".to_string())
-            })?;
-        let sk = SigningKey::from_bytes(&sig_bytes);
+        let sk = load_signing_key(&store)?;
 
         let mut new_key = [0u8; 32];
         rand::rng().fill_bytes(&mut new_key);
@@ -598,13 +658,7 @@ impl ConversationService {
 
         let now = now_ms();
         let heads = store.heads(&conv.id).map_err(internal)?;
-        let ident =
-            store.local_identity_or_generate(crypto::generate_identity_bytes).map_err(internal)?;
-        let sig_bytes: [u8; 32] =
-            ident.sig_secret.as_slice().try_into().map_err(|_| {
-                ConversationError::Internal("corrupt local signing key".to_string())
-            })?;
-        let sk = SigningKey::from_bytes(&sig_bytes);
+        let sk = load_signing_key(store)?;
 
         let plaintext = encode_body(content_type, body);
         let entry =
