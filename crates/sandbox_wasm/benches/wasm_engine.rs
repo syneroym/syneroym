@@ -38,21 +38,56 @@ fn test_streaming_context() -> StreamContext {
     }
 }
 
-fn bench_wasm_engine(c: &mut Criterion) {
-    let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-
+/// Reads the greeter test fixture's compiled WASM bytes, warning and
+/// returning `None` if the fixture hasn't been built -- this skips the
+/// instantiation benchmarks rather than failing the whole binary.
+fn load_greeter_wasm_bytes() -> Option<Vec<u8>> {
     let component_path = test_constants::greeter_wasm_path();
-    let wasm_bytes = match fs::read(&component_path) {
-        Ok(bytes) => bytes,
+    match fs::read(&component_path) {
+        Ok(bytes) => Some(bytes),
         Err(_) => {
             println!(
                 "Warning: syneroym_test_greeter.wasm not found at {}, skipping instantiation \
                  benchmarks",
                 component_path.display()
             );
-            return;
+            None
         }
-    };
+    }
+}
+
+/// Builds the `HostState` shared by every benchmark below -- identical
+/// arguments except `service_id`, which the store-creation benchmark wraps
+/// in `black_box` to keep the compiler from constant-folding it away.
+fn bench_host_state(
+    service_id: String,
+    key_store: &Arc<KeyStore>,
+    storage_provider: &Arc<dyn StorageProvider>,
+    blob_provider: &Arc<dyn BlobProvider>,
+) -> HostState {
+    HostState::new(
+        service_id,
+        None,
+        key_store.clone(),
+        storage_provider.clone(),
+        blob_provider.clone(),
+        CallerContext::service_system("test_component"),
+        0,
+        test_messaging_context(),
+        test_streaming_context(),
+        empty_service_proxy(),
+        None,
+        false,
+        syneroym_rpc::empty_row_authorizer(),
+        None,
+        syneroym_app_orchestration::empty_resolver(),
+    )
+}
+
+fn bench_wasm_engine(c: &mut Criterion) {
+    let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+
+    let Some(wasm_bytes) = load_greeter_wasm_bytes() else { return };
 
     let key_store = Arc::new(KeyStore::new());
     let temp_dir = tempfile::tempdir().unwrap();
@@ -69,22 +104,11 @@ fn bench_wasm_engine(c: &mut Criterion) {
     // Benchmark 1: Wasm Store & HostState Creation
     c.bench_function("wasm_store_creation", |b| {
         b.iter(|| {
-            let host_state = HostState::new(
+            let host_state = bench_host_state(
                 black_box("test_component".to_string()),
-                None,
-                key_store.clone(),
-                storage_provider.clone(),
-                blob_provider.clone(),
-                CallerContext::service_system("test_component"),
-                0,
-                test_messaging_context(),
-                test_streaming_context(),
-                empty_service_proxy(),
-                None,
-                false,
-                syneroym_rpc::empty_row_authorizer(),
-                None,
-                syneroym_app_orchestration::empty_resolver(),
+                &key_store,
+                &storage_provider,
+                &blob_provider,
             );
             let _store = Store::new(&engine, host_state);
         });
@@ -93,22 +117,11 @@ fn bench_wasm_engine(c: &mut Criterion) {
     // Benchmark 2: Wasm Instantiation (cached component)
     c.bench_function("wasm_cached_instantiation", |b| {
         b.to_async(&runtime).iter(|| async {
-            let host_state = HostState::new(
+            let host_state = bench_host_state(
                 "test_component".to_string(),
-                None,
-                key_store.clone(),
-                storage_provider.clone(),
-                blob_provider.clone(),
-                CallerContext::service_system("test_component"),
-                0,
-                test_messaging_context(),
-                test_streaming_context(),
-                empty_service_proxy(),
-                None,
-                false,
-                syneroym_rpc::empty_row_authorizer(),
-                None,
-                syneroym_app_orchestration::empty_resolver(),
+                &key_store,
+                &storage_provider,
+                &blob_provider,
             );
             let mut store: Store<HostState> = Store::new(&engine, host_state);
             store.set_fuel(1_000_000).unwrap();
@@ -119,22 +132,11 @@ fn bench_wasm_engine(c: &mut Criterion) {
     });
 
     // Extract type info for JSON parameter conversion benchmark
-    let host_state = HostState::new(
+    let host_state = bench_host_state(
         "test_component".to_string(),
-        None,
-        key_store.clone(),
-        storage_provider.clone(),
-        blob_provider.clone(),
-        CallerContext::service_system("test_component"),
-        0,
-        test_messaging_context(),
-        test_streaming_context(),
-        empty_service_proxy(),
-        None,
-        false,
-        syneroym_rpc::empty_row_authorizer(),
-        None,
-        syneroym_app_orchestration::empty_resolver(),
+        &key_store,
+        &storage_provider,
+        &blob_provider,
     );
     let mut store: Store<HostState> = Store::new(&engine, host_state);
 
