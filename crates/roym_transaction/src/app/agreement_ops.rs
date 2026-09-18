@@ -4,7 +4,10 @@ use std::cmp::Reverse;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use syneroym_app_host::{AppHost, AppSigning, types::signing::RecordDraft};
+use syneroym_app_host::{
+    AppHost, AppSigning,
+    types::signing::{Principal, RecordDraft},
+};
 use syneroym_roym_core::{
     card::{self, CARD_CONTENT_TYPE},
     clock,
@@ -44,126 +47,39 @@ pub(crate) async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Res
         return Response::internal_error(e);
     }
 
-    let quote_envelope_bytes = match get_bytes(host, QUOTE_HISTORY, &params.quote_record_id).await {
-        Ok(Some(b)) => b,
-        Ok(None) => return Response::invalid_params("no such quote"),
-        Err(e) => return Response::internal_error(e),
+    let (quote_payload, provider_did, role) =
+        match load_verified_quote_and_role(host, &params.quote_record_id, now, &owner).await {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
+
+    let mut row = match load_or_init_agreement_row(
+        host,
+        &params.quote_record_id,
+        &quote_payload,
+        &provider_did,
+        now,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(resp) => return resp,
     };
 
-    let quote_envelope_str = match String::from_utf8(quote_envelope_bytes) {
-        Ok(s) => s,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    let verdict = transaction::verify_quote(&quote_envelope_str, now);
-    if !verdict.verified {
-        return Response::invalid_params(format!(
-            "the quote does not verify: {}",
-            verdict.reason.as_deref().unwrap_or("unknown")
-        ));
-    }
-    if verdict.expired {
-        return Response::invalid_params("quote-expired");
-    }
-
-    let quote_payload = match verdict.payload {
-        Some(p) => p,
-        None => return Response::internal_error("missing quote payload"),
-    };
-    let provider_did = match verdict.issuer {
-        Some(i) => i,
-        None => return Response::internal_error("missing quote issuer"),
-    };
-    let consumer_did = quote_payload.consumer_did;
-
-    let role = if owner == consumer_did {
-        Role::Consumer
-    } else if owner == provider_did {
-        Role::Provider
-    } else {
-        return Response::invalid_params("this installation is neither party to that quote");
-    };
-
-    let mut row: AgreementRow = match get_row(host, AGREEMENTS, &params.quote_record_id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => AgreementRow {
-            quote_record_id: params.quote_record_id.clone(),
-            conversation: quote_payload.conversation.clone(),
-            consumer_did: consumer_did.clone(),
-            provider_did: provider_did.clone(),
-            terms: quote_payload.terms.clone(),
-            consumer: None,
-            provider: None,
-            updated_at_secs: now,
-        },
-        Err(e) => return Response::internal_error(e),
-    };
-
-    if let Some(existing) = row.half(role) {
-        let pair = pair_state(row.consumer.as_ref(), row.provider.as_ref());
-        return Response::ok(json!({
-            "quote_record_id": params.quote_record_id,
-            "role": role,
-            "record_id": existing.record_id,
-            "pair": pair,
-            "message_id": "",
-            "state": "already-accepted",
-        }));
+    if let Some(resp) = already_accepted_response(&row, role, &params.quote_record_id) {
+        return resp;
     }
 
-    let payload = AgreementReceiptPayload {
-        quote_record_id: params.quote_record_id.clone(),
-        consumer_did: consumer_did.clone(),
-        provider_did: provider_did.clone(),
-        role,
-        terms: quote_payload.terms.clone(),
-    };
-    if let Err(e) = payload.validate() {
-        return Response::invalid_params(e.to_string());
-    }
+    let half =
+        match sign_agreement_receipt(host, principal, &params.quote_record_id, &row, &owner, role)
+            .await
+        {
+            Ok(h) => h,
+            Err(resp) => return resp,
+        };
 
-    let payload_str = match serde_json::to_string(&payload) {
-        Ok(s) => s,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    let draft = RecordDraft {
-        version: AGREEMENT_RECEIPT_VERSION,
-        record_type: RECORD_AGREEMENT_RECEIPT.to_string(),
-        subject: params.quote_record_id.clone(),
-        payload: payload_str,
-        expires_at_secs: None,
-        supersedes: None,
-    };
-
-    let envelope_json = match AppSigning::sign_record(host, draft, principal).await {
-        Ok(json) => json,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    let envelope = match Envelope::from_json(&envelope_json) {
-        Ok(env) => env,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    if envelope.issuer != owner {
-        return Response::internal_error(
-            "the host signed under an issuer this service did not ask for",
-        );
-    }
-
-    let record_id = match envelope.record_id() {
-        Ok(id) => id,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    let half = ReceiptHalf {
-        envelope: envelope_json.clone(),
-        record_id: record_id.clone(),
-        issuer: owner.clone(),
-        issued_at_secs: envelope.issued_at_secs,
-    };
-
+    let envelope_json = half.envelope.clone();
+    let record_id = half.record_id.clone();
     row.set_half(role, half);
     row.updated_at_secs = now;
     if let Err(e) = put_row(host, AGREEMENTS, &params.quote_record_id, &row).await {
@@ -194,6 +110,165 @@ pub(crate) async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Res
         out["send_error"] = json!(err);
     }
     Response::ok(out)
+}
+
+/// Fetches and verifies the quote a caller wants to accept, and works out
+/// which side of it (consumer or provider) this installation's owner is.
+async fn load_verified_quote_and_role<H: AppHost>(
+    host: &H,
+    quote_record_id: &str,
+    now: u64,
+    owner: &str,
+) -> Result<(QuotePayload, String, Role), Response> {
+    let quote_envelope_bytes = match get_bytes(host, QUOTE_HISTORY, quote_record_id).await {
+        Ok(Some(b)) => b,
+        Ok(None) => return Err(Response::invalid_params("no such quote")),
+        Err(e) => return Err(Response::internal_error(e)),
+    };
+
+    let quote_envelope_str = match String::from_utf8(quote_envelope_bytes) {
+        Ok(s) => s,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    let verdict = transaction::verify_quote(&quote_envelope_str, now);
+    if !verdict.verified {
+        return Err(Response::invalid_params(format!(
+            "the quote does not verify: {}",
+            verdict.reason.as_deref().unwrap_or("unknown")
+        )));
+    }
+    if verdict.expired {
+        return Err(Response::invalid_params("quote-expired"));
+    }
+
+    let quote_payload = match verdict.payload {
+        Some(p) => p,
+        None => return Err(Response::internal_error("missing quote payload")),
+    };
+    let provider_did = match verdict.issuer {
+        Some(i) => i,
+        None => return Err(Response::internal_error("missing quote issuer")),
+    };
+
+    let role = if owner == quote_payload.consumer_did {
+        Role::Consumer
+    } else if owner == provider_did {
+        Role::Provider
+    } else {
+        return Err(Response::invalid_params("this installation is neither party to that quote"));
+    };
+
+    Ok((quote_payload, provider_did, role))
+}
+
+/// Loads the agreement row this quote already has, or seeds a fresh one from
+/// the quote's own payload when this is the first half either party files.
+async fn load_or_init_agreement_row<H: AppHost>(
+    host: &H,
+    quote_record_id: &str,
+    quote_payload: &QuotePayload,
+    provider_did: &str,
+    now: u64,
+) -> Result<AgreementRow, Response> {
+    match get_row(host, AGREEMENTS, quote_record_id).await {
+        Ok(Some(r)) => Ok(r),
+        Ok(None) => Ok(AgreementRow {
+            quote_record_id: quote_record_id.to_string(),
+            conversation: quote_payload.conversation.clone(),
+            consumer_did: quote_payload.consumer_did.clone(),
+            provider_did: provider_did.to_string(),
+            terms: quote_payload.terms.clone(),
+            consumer: None,
+            provider: None,
+            updated_at_secs: now,
+        }),
+        Err(e) => Err(Response::internal_error(e)),
+    }
+}
+
+/// Some(response) when this role already has a half on file for this
+/// agreement, so the caller can return the idempotent "already-accepted"
+/// reply instead of signing a second one.
+fn already_accepted_response(
+    row: &AgreementRow,
+    role: Role,
+    quote_record_id: &str,
+) -> Option<Response> {
+    let existing = row.half(role)?;
+    let pair = pair_state(row.consumer.as_ref(), row.provider.as_ref());
+    Some(Response::ok(json!({
+        "quote_record_id": quote_record_id,
+        "role": role,
+        "record_id": existing.record_id,
+        "pair": pair,
+        "message_id": "",
+        "state": "already-accepted",
+    })))
+}
+
+/// Builds, validates and signs this role's half of the agreement receipt,
+/// and checks the host signed it under the issuer this service asked for.
+async fn sign_agreement_receipt<H: AppHost>(
+    host: &H,
+    principal: Principal,
+    quote_record_id: &str,
+    row: &AgreementRow,
+    owner: &str,
+    role: Role,
+) -> Result<ReceiptHalf, Response> {
+    let payload = AgreementReceiptPayload {
+        quote_record_id: quote_record_id.to_string(),
+        consumer_did: row.consumer_did.clone(),
+        provider_did: row.provider_did.clone(),
+        role,
+        terms: row.terms.clone(),
+    };
+    if let Err(e) = payload.validate() {
+        return Err(Response::invalid_params(e.to_string()));
+    }
+
+    let payload_str = match serde_json::to_string(&payload) {
+        Ok(s) => s,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    let draft = RecordDraft {
+        version: AGREEMENT_RECEIPT_VERSION,
+        record_type: RECORD_AGREEMENT_RECEIPT.to_string(),
+        subject: quote_record_id.to_string(),
+        payload: payload_str,
+        expires_at_secs: None,
+        supersedes: None,
+    };
+
+    let envelope_json = match AppSigning::sign_record(host, draft, principal).await {
+        Ok(json) => json,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    let envelope = match Envelope::from_json(&envelope_json) {
+        Ok(env) => env,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    if envelope.issuer != owner {
+        return Err(Response::internal_error(
+            "the host signed under an issuer this service did not ask for",
+        ));
+    }
+
+    let record_id = match envelope.record_id() {
+        Ok(id) => id,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    Ok(ReceiptHalf {
+        envelope: envelope_json,
+        record_id,
+        issuer: owner.to_string(),
+        issued_at_secs: envelope.issued_at_secs,
+    })
 }
 
 #[derive(Debug, Deserialize)]

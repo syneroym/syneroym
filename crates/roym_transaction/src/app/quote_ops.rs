@@ -4,7 +4,10 @@ use std::cmp::Reverse;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use syneroym_app_host::{AppHost, AppSigning, types::signing::RecordDraft};
+use syneroym_app_host::{
+    AppHost, AppSigning,
+    types::signing::{Principal, RecordDraft},
+};
 use syneroym_roym_core::{
     clock,
     envelope::{Request, Response},
@@ -12,7 +15,7 @@ use syneroym_roym_core::{
     signing::{self, CertificateError},
     transaction::{
         self, AgreedTerms, MAX_QUOTE_LIFETIME_SECS, MIN_QUOTE_LIFETIME_SECS, QUOTE_VERSION,
-        QuotePayload, RecordVerdict,
+        QuotePayload, RecordVerdict, RequestPayload,
     },
 };
 
@@ -57,61 +60,18 @@ pub(crate) async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
         return Response::internal_error(e);
     }
 
-    let req_envelope_bytes = match get_bytes(host, REQUEST_HISTORY, &params.request_record_id).await
-    {
-        Ok(Some(b)) => b,
-        Ok(None) => return Response::invalid_params("no such request"),
-        Err(e) => return Response::internal_error(e),
-    };
-
-    let req_envelope_str = match String::from_utf8(req_envelope_bytes) {
-        Ok(s) => s,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    let req_verdict = transaction::verify_request(&req_envelope_str, now);
-    if !req_verdict.verified {
-        return Response::invalid_params(format!(
-            "the request this quote answers does not verify: {}",
-            req_verdict.reason.as_deref().unwrap_or("unknown")
-        ));
-    }
-    let req_payload = match req_verdict.payload {
-        Some(p) => p,
-        None => return Response::internal_error("missing request payload"),
-    };
-    let consumer_did = match req_verdict.issuer {
-        Some(i) => i,
-        None => return Response::internal_error("missing request issuer"),
-    };
-    if consumer_did == owner {
-        return Response::invalid_params("a request cannot be quoted by the person who made it");
-    }
+    let (req_payload, consumer_did) =
+        match load_verified_request(host, &params.request_record_id, now, &owner).await {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
     let conversation = req_payload.conversation;
 
-    let (sequence, supersedes, next_count) = if let Some(ref id) = params.quote_id {
-        let prior: RecordPointerRow = match get_row(host, QUOTES, id).await {
-            Ok(Some(p)) => p,
-            Ok(None) => return Response::invalid_params("no such quote"),
-            Err(e) => return Response::internal_error(e),
+    let (sequence, supersedes, next_count) =
+        match resolve_quote_sequence(host, &params, &conversation, &owner).await {
+            Ok(v) => v,
+            Err(resp) => return resp,
         };
-        if !prior.mine {
-            return Response::invalid_params("this quote is not yours to revise");
-        }
-        if prior.conversation != conversation {
-            return Response::invalid_params("quote belongs to another conversation");
-        }
-        if prior.request_record_id.as_deref() != Some(&params.request_record_id) {
-            return Response::invalid_params("a new version of a quote answers the same request");
-        }
-        (prior.sequence, Some(prior.record_id), prior.version_count + 1)
-    } else {
-        let count = match count_mine(host, QUOTES, &conversation, &owner).await {
-            Ok(c) => c,
-            Err(e) => return Response::internal_error(e),
-        };
-        (count + 1, None, 1)
-    };
 
     let expires_at_secs = now + params.expires_in_secs;
     let quote_id = match transaction::derive_quote_id(&conversation, &owner, sequence) {
@@ -119,14 +79,9 @@ pub(crate) async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
         Err(e) => return Response::internal_error(e.to_string()),
     };
 
-    let mut terms_map = match params.terms {
-        Value::Object(m) => m,
-        _ => return Response::invalid_params("terms must be an object"),
-    };
-    terms_map.insert("quote_expires_at_secs".to_string(), json!(expires_at_secs));
-    let terms: AgreedTerms = match serde_json::from_value(Value::Object(terms_map)) {
+    let terms = match parse_quote_terms(params.terms, expires_at_secs) {
         Ok(t) => t,
-        Err(e) => return Response::invalid_params(format!("invalid terms: {e}")),
+        Err(resp) => return resp,
     };
 
     let payload = QuotePayload {
@@ -142,61 +97,15 @@ pub(crate) async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
         return Response::invalid_params(e.to_string());
     }
 
-    let payload_str = match serde_json::to_string(&payload) {
-        Ok(s) => s,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
+    let signed =
+        match sign_and_store_quote(host, principal, &owner, &payload, expires_at_secs, supersedes)
+            .await
+        {
+            Ok(s) => s,
+            Err(resp) => return resp,
+        };
 
-    let draft = RecordDraft {
-        version: QUOTE_VERSION,
-        record_type: RECORD_QUOTE.to_string(),
-        subject: quote_id.clone(),
-        payload: payload_str,
-        expires_at_secs: Some(expires_at_secs),
-        supersedes,
-    };
-
-    let envelope_json = match AppSigning::sign_record(host, draft, principal).await {
-        Ok(json) => json,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    let envelope = match Envelope::from_json(&envelope_json) {
-        Ok(env) => env,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    if envelope.issuer != owner {
-        return Response::internal_error(
-            "the host signed under an issuer this service did not ask for",
-        );
-    }
-
-    let record_id = match envelope.record_id() {
-        Ok(id) => id,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    if let Err(e) = put_bytes(host, QUOTE_HISTORY, &record_id, envelope_json.as_bytes()).await {
-        return Response::internal_error(e);
-    }
-
-    let pointer = RecordPointerRow {
-        envelope: envelope_json.clone(),
-        record_id: record_id.clone(),
-        id: quote_id.clone(),
-        conversation: conversation.clone(),
-        sequence,
-        issuer: owner.clone(),
-        mine: true,
-        updated_at_secs: now,
-        version_count: next_count,
-        issued_at_secs: now,
-        request_record_id: Some(params.request_record_id),
-        consumer_did: Some(consumer_did),
-        declined_at_secs: None,
-        decline_note: None,
-    };
+    let pointer = build_quote_pointer(&payload, &signed, &owner, next_count, now);
     if let Err(e) = put_row(host, QUOTES, &quote_id, &pointer).await {
         return Response::internal_error(e);
     }
@@ -206,7 +115,7 @@ pub(crate) async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
         &conversation,
         RECORD_QUOTE,
         QUOTE_VERSION,
-        &envelope_json,
+        &signed.envelope_json,
         now,
         Some(next_count),
     )
@@ -214,7 +123,7 @@ pub(crate) async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
 
     let mut out = json!({
         "quote_id": quote_id,
-        "record_id": record_id,
+        "record_id": signed.record_id,
         "version_count": next_count,
         "expires_at_secs": expires_at_secs,
         "message_id": message_id,
@@ -224,6 +133,182 @@ pub(crate) async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
         out["send_error"] = json!(err);
     }
     Response::ok(out)
+}
+
+/// Fetches and verifies the request this quote answers, and checks the
+/// caller is not the same party that made the request.
+async fn load_verified_request<H: AppHost>(
+    host: &H,
+    request_record_id: &str,
+    now: u64,
+    owner: &str,
+) -> Result<(RequestPayload, String), Response> {
+    let req_envelope_bytes = match get_bytes(host, REQUEST_HISTORY, request_record_id).await {
+        Ok(Some(b)) => b,
+        Ok(None) => return Err(Response::invalid_params("no such request")),
+        Err(e) => return Err(Response::internal_error(e)),
+    };
+
+    let req_envelope_str = match String::from_utf8(req_envelope_bytes) {
+        Ok(s) => s,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    let req_verdict = transaction::verify_request(&req_envelope_str, now);
+    if !req_verdict.verified {
+        return Err(Response::invalid_params(format!(
+            "the request this quote answers does not verify: {}",
+            req_verdict.reason.as_deref().unwrap_or("unknown")
+        )));
+    }
+    let req_payload = match req_verdict.payload {
+        Some(p) => p,
+        None => return Err(Response::internal_error("missing request payload")),
+    };
+    let consumer_did = match req_verdict.issuer {
+        Some(i) => i,
+        None => return Err(Response::internal_error("missing request issuer")),
+    };
+    if consumer_did == owner {
+        return Err(Response::invalid_params(
+            "a request cannot be quoted by the person who made it",
+        ));
+    }
+    Ok((req_payload, consumer_did))
+}
+
+/// Works out this quote's sequence number and, when it revises an earlier
+/// quote, which record it supersedes.
+async fn resolve_quote_sequence<H: AppHost>(
+    host: &H,
+    params: &QuoteSetParams,
+    conversation: &str,
+    owner: &str,
+) -> Result<(u32, Option<String>, u64), Response> {
+    if let Some(ref id) = params.quote_id {
+        let prior: RecordPointerRow = match get_row(host, QUOTES, id).await {
+            Ok(Some(p)) => p,
+            Ok(None) => return Err(Response::invalid_params("no such quote")),
+            Err(e) => return Err(Response::internal_error(e)),
+        };
+        if !prior.mine {
+            return Err(Response::invalid_params("this quote is not yours to revise"));
+        }
+        if prior.conversation != conversation {
+            return Err(Response::invalid_params("quote belongs to another conversation"));
+        }
+        if prior.request_record_id.as_deref() != Some(&params.request_record_id) {
+            return Err(Response::invalid_params(
+                "a new version of a quote answers the same request",
+            ));
+        }
+        Ok((prior.sequence, Some(prior.record_id), prior.version_count + 1))
+    } else {
+        let count = match count_mine(host, QUOTES, conversation, owner).await {
+            Ok(c) => c,
+            Err(e) => return Err(Response::internal_error(e)),
+        };
+        Ok((count + 1, None, 1))
+    }
+}
+
+/// Applies the caller-supplied expiry to the raw `terms` JSON and parses it.
+fn parse_quote_terms(terms: Value, expires_at_secs: u64) -> Result<AgreedTerms, Response> {
+    let mut terms_map = match terms {
+        Value::Object(m) => m,
+        _ => return Err(Response::invalid_params("terms must be an object")),
+    };
+    terms_map.insert("quote_expires_at_secs".to_string(), json!(expires_at_secs));
+    serde_json::from_value(Value::Object(terms_map))
+        .map_err(|e| Response::invalid_params(format!("invalid terms: {e}")))
+}
+
+/// A freshly signed quote envelope, plus the identifiers callers need to
+/// reference it: kept as a struct rather than a `(String, String)` tuple so
+/// the two values can't be swapped at a call site.
+struct SignedQuote {
+    record_id: String,
+    envelope_json: String,
+}
+
+/// Serializes and signs `payload`, checks the host signed it under the
+/// issuer this service asked for, and stores the envelope by its record id.
+async fn sign_and_store_quote<H: AppHost>(
+    host: &H,
+    principal: Principal,
+    owner: &str,
+    payload: &QuotePayload,
+    expires_at_secs: u64,
+    supersedes: Option<String>,
+) -> Result<SignedQuote, Response> {
+    let payload_str = match serde_json::to_string(payload) {
+        Ok(s) => s,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    let draft = RecordDraft {
+        version: QUOTE_VERSION,
+        record_type: RECORD_QUOTE.to_string(),
+        subject: payload.quote_id.clone(),
+        payload: payload_str,
+        expires_at_secs: Some(expires_at_secs),
+        supersedes,
+    };
+
+    let envelope_json = match AppSigning::sign_record(host, draft, principal).await {
+        Ok(json) => json,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    let envelope = match Envelope::from_json(&envelope_json) {
+        Ok(env) => env,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    if envelope.issuer != owner {
+        return Err(Response::internal_error(
+            "the host signed under an issuer this service did not ask for",
+        ));
+    }
+
+    let record_id = match envelope.record_id() {
+        Ok(id) => id,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    if let Err(e) = put_bytes(host, QUOTE_HISTORY, &record_id, envelope_json.as_bytes()).await {
+        return Err(Response::internal_error(e));
+    }
+
+    Ok(SignedQuote { record_id, envelope_json })
+}
+
+/// Builds the pointer row this node keeps to find the quote again, deriving
+/// the identity fields from `payload` so they can't drift from the record
+/// that was actually signed.
+fn build_quote_pointer(
+    payload: &QuotePayload,
+    signed: &SignedQuote,
+    owner: &str,
+    next_count: u64,
+    now: u64,
+) -> RecordPointerRow {
+    RecordPointerRow {
+        envelope: signed.envelope_json.clone(),
+        record_id: signed.record_id.clone(),
+        id: payload.quote_id.clone(),
+        conversation: payload.conversation.clone(),
+        sequence: payload.sequence,
+        issuer: owner.to_string(),
+        mine: true,
+        updated_at_secs: now,
+        version_count: next_count,
+        issued_at_secs: now,
+        request_record_id: Some(payload.request_record_id.clone()),
+        consumer_did: Some(payload.consumer_did.clone()),
+        declined_at_secs: None,
+        decline_note: None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
