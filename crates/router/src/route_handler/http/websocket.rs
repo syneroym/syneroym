@@ -62,9 +62,12 @@ type WsSink = stream::SplitSink<WebSocketStream<WsIo>, Message>;
 type WsStream = stream::SplitStream<WebSocketStream<WsIo>>;
 
 /// One connection's identity and cleanup handles, threaded through
-/// `run_websocket_session`/`run_websocket_connection`/`run_ws_read_loop` as
-/// a single value -- grouped so those functions stay under clippy's
-/// argument-count lint instead of taking each field separately.
+/// `run_websocket_session`/`run_websocket_connection` as a single value --
+/// grouped so those two functions stay under clippy's argument-count lint
+/// instead of taking each field separately. `run_ws_read_loop` stays under
+/// the limit on its own with the individual fields it needs (`ws_target`,
+/// `service_id`, `conn_id`, `caller`), so it takes those directly rather
+/// than the whole context.
 struct WsConnectionCtx {
     ws_target: WsTarget,
     service_id: String,
@@ -183,46 +186,34 @@ impl HttpHandler {
         Ok(response)
     }
 
-    /// Picks the WebSocket target the same way `resolve_guest_engine`
-    /// (the `guest` route's analogue) does: a natively linked service
-    /// shadows a deployed WASM component (only logged, never used), and
-    /// otherwise a deployed component must exist. `Break` carries the
-    /// response to return immediately -- no sandbox engine at all
-    /// (coordinator mode), or no component deployed for this service --
-    /// the same as the early `return Ok(...)` this replaces.
+    /// Picks the WebSocket target on top of the shared
+    /// `resolve_dispatch_target`, then derives the sender-registry key: a
+    /// natively linked service registers under its own `service_id()` when
+    /// it names one, so a native app can push frames onto the same
+    /// connection table the router registered; a WASM target always
+    /// registers under this connection's own `service_id`.
     fn resolve_ws_target(&self) -> ControlFlow<Response<HttpBody>, (WsTarget, String)> {
-        let native = self
-            .route_handler
-            .inner
-            .native_http
-            .get(&self.preamble.service_id)
-            .map(|e| e.value().clone());
-
-        if let Some(svc) = native {
-            if let Some(engine) = &self.route_handler.inner.app_sandbox_engine
-                && engine.is_deployed(&self.preamble.service_id)
-            {
-                warn!(
-                    service_id = %self.preamble.service_id,
-                    "native_http service shadows deployed WASM component"
-                );
+        match self.resolve_dispatch_target() {
+            ControlFlow::Break(resp) => ControlFlow::Break(resp),
+            ControlFlow::Continue((Some(svc), _)) => {
+                let ws_id = svc.service_id().unwrap_or(&self.preamble.service_id).to_string();
+                ControlFlow::Continue((WsTarget::Native(svc), ws_id))
             }
-            let ws_id = svc.service_id().unwrap_or(&self.preamble.service_id).to_string();
-            return ControlFlow::Continue((WsTarget::Native(svc), ws_id));
+            ControlFlow::Continue((None, Some(engine))) => {
+                ControlFlow::Continue((WsTarget::Wasm(engine), self.preamble.service_id.clone()))
+            }
+            // `resolve_dispatch_target` never returns `Continue((None,
+            // None))` -- the WASM branch only reaches `Continue` after
+            // confirming `engine.is_deployed(..)`, so this is unreachable
+            // in practice. `INTERNAL_SERVER_ERROR` rather than a panic:
+            // this runs on a live connection, and this whole function's
+            // contract is "return a response", not "trust an invariant
+            // that a future edit to the shared helper could quietly break".
+            ControlFlow::Continue((None, None)) => ControlFlow::Break(http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "no websocket handler available".into(),
+            )),
         }
-        let Some(engine) = self.route_handler.inner.app_sandbox_engine.clone() else {
-            return ControlFlow::Break(http_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "app sandbox engine not available (coordinator mode)".into(),
-            ));
-        };
-        if !engine.is_deployed(&self.preamble.service_id) {
-            return ControlFlow::Break(http_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "service has no deployed WASM component".into(),
-            ));
-        }
-        ControlFlow::Continue((WsTarget::Wasm(engine), self.preamble.service_id.clone()))
     }
 
     /// Subscribes to `route.topic`'s broker topic when the route declares
@@ -338,7 +329,7 @@ impl HttpHandler {
             &ctx.ws_target,
             &ctx.service_id,
             &ctx.conn_id,
-            ctx.caller.clone(),
+            &ctx.caller,
         )
         .await;
 
@@ -422,7 +413,7 @@ impl HttpHandler {
         ws_target: &WsTarget,
         service_id: &str,
         conn_id: &str,
-        caller: Option<CallerContext>,
+        caller: &Option<CallerContext>,
     ) {
         loop {
             tokio::select! {
