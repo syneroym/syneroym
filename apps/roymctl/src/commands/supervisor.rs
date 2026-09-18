@@ -396,8 +396,7 @@ async fn call_and_print_json(
     params: serde_json::Value,
 ) -> anyhow::Result<()> {
     let res = client.request("supervisor", method, params).await?;
-    println!("{}", serde_json::to_string_pretty(&res.result)?);
-    Ok(())
+    super::print_json_result(&res.result)
 }
 
 async fn handle_revoke_instance(

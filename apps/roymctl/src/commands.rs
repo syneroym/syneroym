@@ -12,6 +12,7 @@ use app::AppCommands;
 use clap::Subcommand;
 use identity::IdentityCommands;
 use registry::RegistryCommands;
+use serde_json::Value;
 use substrate::SubstrateCommands;
 use svc::SvcCommands;
 use syneroym_core::util;
@@ -191,6 +192,39 @@ pub(crate) fn client_for(
             Ok(client.with_ucan(token))
         }
     }
+}
+
+/// Write `contents` to `path`, creating it mode `0600` on Unix so a freshly
+/// written secret (an exported identity backup, a session credential) is
+/// never briefly world- or group-readable. `what` names the file in the
+/// error context if the open fails. Non-Unix has no equivalent permission
+/// bit to set.
+pub(crate) fn write_secret_file(path: &Path, contents: &[u8], what: &str) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::{io::Write, os::unix::fs::OpenOptionsExt};
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .with_context(|| format!("failed to create {what} at {}", path.display()))?;
+        file.write_all(contents)?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, contents)?;
+    }
+    Ok(())
+}
+
+/// Pretty-print `v` as JSON to stdout -- the shared tail every
+/// `directory`/`member`/`transaction`/`supervisor` subcommand that just
+/// echoes its server response back verbatim ends with.
+pub(crate) fn print_json_result(v: &Value) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string_pretty(v)?);
+    Ok(())
 }
 
 /// Resolve `substrate_opt` to a DID, then run a `svc` subcommand against it.

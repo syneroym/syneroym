@@ -12,7 +12,11 @@ use std::{
 use anyhow::Context;
 use clap::Subcommand;
 use syneroym_core::dht_registry::RegistryClient;
-use syneroym_identity::{DelegationCertificate, Identity, substrate};
+use syneroym_identity::{
+    DelegationCertificate, Identity,
+    backup::{self, IdentityBackup},
+    substrate,
+};
 use syneroym_sdk::deploy;
 use syneroym_ucan::{Ability, Capability, CapabilityToken, ResourceUri};
 
@@ -177,28 +181,6 @@ fn require_key_present(dir: &Path, name: &str, what: &str) -> anyhow::Result<Pat
         anyhow::bail!("{what} '{}' not found at {}", name, path.display());
     }
     Ok(path)
-}
-
-/// Write `contents` to `path`, creating it mode `0600` on Unix so a
-/// freshly exported secret is never briefly world- or group-readable.
-/// Non-Unix has no equivalent permission bit to set.
-fn write_secret_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::{io::Write, os::unix::fs::OpenOptionsExt};
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        file.write_all(contents)?;
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(path, contents)?;
-    }
-    Ok(())
 }
 
 fn handle_create(dir: &Path, name: &str) -> anyhow::Result<()> {
@@ -375,14 +357,14 @@ fn handle_export(
 ) -> anyhow::Result<()> {
     let key_path = require_key_present(dir, name, "Identity")?;
     let identity = Identity::load_from_path(&key_path)?;
-    let recovery_key = syneroym_identity::backup::generate_recovery_key()?;
-    let backup = syneroym_identity::backup::export(&identity, &recovery_key)?;
-    let json_str = serde_json::to_string_pretty(&backup)?;
-    write_secret_file(out, json_str.as_bytes())?;
+    let recovery_key = backup::generate_recovery_key()?;
+    let exported = backup::export(&identity, &recovery_key)?;
+    let json_str = serde_json::to_string_pretty(&exported)?;
+    super::write_secret_file(out, json_str.as_bytes(), "identity backup")?;
 
-    let encoded = syneroym_identity::backup::encode_recovery_key(&recovery_key);
+    let encoded = backup::encode_recovery_key(&recovery_key);
     if let Some(rk_out) = recovery_key_out {
-        write_secret_file(rk_out, encoded.as_bytes())?;
+        super::write_secret_file(rk_out, encoded.as_bytes(), "recovery key file")?;
     }
     println!("Identity '{}' exported to {}", name, out.display());
     println!("Recovery key (save this now; it is shown once and cannot be recovered):");
@@ -393,9 +375,9 @@ fn handle_export(
 fn handle_import(dir: &Path, name: &str, in_path: &Path, recovery_key: &str) -> anyhow::Result<()> {
     let key_path = require_key_absent(dir, name, "Identity")?;
     let json_str = fs::read_to_string(in_path)?;
-    let backup: syneroym_identity::backup::IdentityBackup = serde_json::from_str(&json_str)?;
-    let key_bytes = syneroym_identity::backup::decode_recovery_key(recovery_key)?;
-    let identity = syneroym_identity::backup::import(&backup, &key_bytes)?;
+    let imported: IdentityBackup = serde_json::from_str(&json_str)?;
+    let key_bytes = backup::decode_recovery_key(recovery_key)?;
+    let identity = backup::import(&imported, &key_bytes)?;
 
     let identities_dir = dir.join("identities");
     if !identities_dir.exists() {

@@ -104,7 +104,7 @@ fn build_publication(
     signing_identity: Option<&Identity>,
     svc_id: &str,
     substrate_did: &str,
-    nickname: Option<String>,
+    nickname: Option<&str>,
     not_after: u64,
     record_out: Option<&Path>,
 ) -> anyhow::Result<Publication> {
@@ -114,7 +114,7 @@ fn build_publication(
                 Visibility::Private,
                 svc_id,
                 substrate_did,
-                nickname,
+                nickname.map(str::to_string),
                 not_after,
                 id,
             )?;
@@ -135,7 +135,14 @@ fn build_publication(
             );
         }
         (v, Some(id)) => {
-            let record = signed_export_record(v, svc_id, substrate_did, nickname, not_after, id)?;
+            let record = signed_export_record(
+                v,
+                svc_id,
+                substrate_did,
+                nickname.map(str::to_string),
+                not_after,
+                id,
+            )?;
             write_record_out(record_out, &record)?;
             Ok(if v == Visibility::Public {
                 Publication::Public(record)
@@ -356,7 +363,7 @@ pub(super) async fn handle_deploy(
         signing_identity,
         svc_id,
         substrate_did,
-        nickname.clone(),
+        nickname.as_deref(),
         not_after,
         record_out.as_deref(),
     )?;

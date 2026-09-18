@@ -26,7 +26,7 @@ use syneroym_sdk::{
 };
 
 use super::{PREFLIGHT_TIMEOUT, resolve_credentials};
-use crate::commands::member_identity;
+use crate::commands::{self, member_identity};
 
 /// Retries `f` until it succeeds or `budget` elapses, returning the last
 /// error. Used only for the post-apply registry probe, which tolerates a
@@ -281,6 +281,33 @@ struct PlacementPreflight {
     registry_facts: BTreeMap<SubstrateAlias, (Option<String>, bool)>,
 }
 
+/// Warn about any capability `declared` in the inventory that the
+/// substrate's own `reported_service_types` says it cannot actually run --
+/// an inventory entry drifting from what the substrate was actually built
+/// with.
+fn warn_unsupported_capabilities(
+    alias: &SubstrateAlias,
+    declared: &BTreeSet<ServiceType>,
+    reported_service_types: &[String],
+    inv_path: &Path,
+) {
+    let reported: BTreeSet<String> = reported_service_types.iter().cloned().collect();
+    for t in declared {
+        let name = match t {
+            ServiceType::Wasm => "wasm",
+            ServiceType::Container => "container",
+            ServiceType::Tcp => "tcp",
+            ServiceType::NativeHost => "nativehost",
+        };
+        if !reported.contains(name) {
+            eprintln!(
+                "warning: substrate '{alias}' declares '{t:?}' in {} but reports it cannot run it",
+                inv_path.display()
+            );
+        }
+    }
+}
+
 /// For every substrate alias `target_plan` demands, build a ready client and
 /// probe how that substrate is configured (its published registry, whether
 /// the DHT is on, and its declared service-type capabilities), so the
@@ -311,7 +338,7 @@ async fn build_placement_clients(
         let entry_api_url = entry.api_url.as_deref().unwrap_or(api_url);
         let (entry_identity, entry_ucan) =
             resolve_credentials(alias, entry, &inv_path, dir, run_as, ucan_path)?;
-        let mut c = crate::commands::client_for(
+        let mut c = commands::client_for(
             entry.did.clone(),
             entry_api_url,
             dir,
@@ -343,22 +370,7 @@ async fn build_placement_clients(
             }
             Some(facts) => {
                 if let Some(declared) = &entry.capabilities {
-                    let reported: BTreeSet<String> = facts.service_types.iter().cloned().collect();
-                    for t in declared {
-                        let name = match t {
-                            ServiceType::Wasm => "wasm",
-                            ServiceType::Container => "container",
-                            ServiceType::Tcp => "tcp",
-                            ServiceType::NativeHost => "nativehost",
-                        };
-                        if !reported.contains(name) {
-                            eprintln!(
-                                "warning: substrate '{alias}' declares '{t:?}' in {} but reports \
-                                 it cannot run it",
-                                inv_path.display()
-                            );
-                        }
-                    }
+                    warn_unsupported_capabilities(alias, declared, &facts.service_types, &inv_path);
                 }
                 registry_facts.insert(alias.clone(), (facts.registry_url, facts.dht_enabled));
             }
@@ -424,8 +436,8 @@ async fn build_fallback_target(
     if !needs_fallback {
         return Ok((None, None));
     }
-    let did = crate::commands::get_substrate_did(substrate_opt, dir)?;
-    let mut fb = crate::commands::client_for(did, api_url, dir, run_as, ucan_path)?;
+    let did = commands::get_substrate_did(substrate_opt, dir)?;
+    let mut fb = commands::client_for(did, api_url, dir, run_as, ucan_path)?;
     fb.wait_for_ready(PREFLIGHT_TIMEOUT).await?;
     let fb = Arc::new(fb);
     let target = DeployTarget {

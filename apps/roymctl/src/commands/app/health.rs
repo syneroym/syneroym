@@ -15,7 +15,7 @@ use syneroym_app_orchestration::{
 use syneroym_sdk::{SubstrateStatus, deploy, health};
 
 use super::{PREFLIGHT_TIMEOUT, resolve_credentials};
-use crate::commands::member_identity;
+use crate::commands::{self, member_identity};
 
 /// The substrate alias (if any) each substrate DID discovered while
 /// polling health maps back to.
@@ -91,7 +91,7 @@ async fn build_health_targets(
             }
             _ => (api_url.to_string(), run_as, ucan_path.map(Path::to_path_buf)),
         };
-        let client_result = crate::commands::client_for(
+        let client_result = commands::client_for(
             did.clone(),
             &entry_api_url,
             dir,
