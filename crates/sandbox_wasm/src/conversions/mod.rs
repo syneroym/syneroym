@@ -85,7 +85,10 @@ use std::fmt;
 
 use anyhow::Result;
 use serde_json::{Map, Number, Value};
-use wasmtime::component::{Val, types::Type};
+use wasmtime::component::{
+    Val,
+    types::{self, Enum, Flags, List, OptionType, Record, ResultType, Tuple, Type, Variant},
+};
 
 /// Convert a wasmtime component [`Val`] to a JSON [`Value`].
 ///
@@ -168,164 +171,21 @@ pub fn json_to_val(json: &Value, ty: &Type) -> Result<Val> {
         Type::U32 => Val::U32(json_to_unsigned(json, "u32")?),
         Type::S64 => Val::S64(json.as_i64().ok_or_else(|| type_error("s64", json))?),
         Type::U64 => Val::U64(json.as_u64().ok_or_else(|| type_error("u64", json))?),
-        Type::Float32 => {
-            let original = json.as_f64().ok_or_else(|| type_error("float32", json))?;
-            let f = original as f32;
-            // Reject both overflow (finite f64 casts to ±inf) and underflow
-            // (nonzero finite f64 casts to 0.0) — either silently changes the
-            // value's meaning rather than losing only unrepresentable precision.
-            if !f.is_finite() || (f == 0.0 && original != 0.0) {
-                return Err(anyhow::anyhow!("float32 value is out of range: {json}"));
-            }
-            Val::Float32(f)
-        }
-        Type::Float64 => {
-            // A JSON number is always finite, but guard the invariant explicitly.
-            let f = json.as_f64().ok_or_else(|| type_error("float64", json))?;
-            if !f.is_finite() {
-                return Err(anyhow::anyhow!("float64 value is non-finite: {json}"));
-            }
-            Val::Float64(f)
-        }
-        Type::Char => {
-            let s = json.as_str().ok_or_else(|| type_error("char", json))?;
-            let mut chars = s.chars();
-            match (chars.next(), chars.next()) {
-                (Some(c), None) => Val::Char(c),
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "char must be a single-character string, got {s:?}"
-                    ));
-                }
-            }
-        }
+        Type::Float32 => decode_float32(json)?,
+        Type::Float64 => decode_float64(json)?,
+        Type::Char => decode_char(json)?,
         Type::String => {
             Val::String(json.as_str().ok_or_else(|| type_error("string", json))?.to_string())
         }
-        Type::List(list) => {
-            let arr = json.as_array().ok_or_else(|| type_error("list", json))?;
-            let elem_ty = list.ty();
-            Val::List(arr.iter().map(|v| json_to_val(v, &elem_ty)).collect::<Result<_>>()?)
-        }
-        Type::Tuple(tuple) => {
-            let arr = json.as_array().ok_or_else(|| type_error("tuple", json))?;
-            let types: Vec<Type> = tuple.types().collect();
-            if arr.len() != types.len() {
-                return Err(anyhow::anyhow!(
-                    "tuple expects {} elements, got {}",
-                    types.len(),
-                    arr.len()
-                ));
-            }
-            Val::Tuple(
-                arr.iter().zip(&types).map(|(v, ty)| json_to_val(v, ty)).collect::<Result<_>>()?,
-            )
-        }
-        Type::Record(record) => {
-            let obj = json.as_object().ok_or_else(|| type_error("record", json))?;
-            let mut fields = Vec::new();
-            for field in record.fields() {
-                let value = match obj.get(field.name) {
-                    Some(v) => json_to_val(v, &field.ty)?,
-                    None if matches!(field.ty, Type::Option(_)) => Val::Option(None),
-                    None => {
-                        return Err(anyhow::anyhow!(
-                            "missing required record field '{}'",
-                            field.name
-                        ));
-                    }
-                };
-                fields.push((field.name.to_string(), value));
-            }
-            Val::Record(fields)
-        }
-        Type::Variant(variant) => {
-            let obj = json.as_object().ok_or_else(|| type_error("variant", json))?;
-            let tag = obj
-                .get("tag")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("variant requires a string 'tag' field: {json}"))?;
-            let case = variant
-                .cases()
-                .find(|c| c.name == tag)
-                .ok_or_else(|| anyhow::anyhow!("unknown variant case '{tag}'"))?;
-            let payload = match case.ty {
-                Some(payload_ty) => {
-                    let inner = obj.get("val").ok_or_else(|| {
-                        anyhow::anyhow!("variant case '{tag}' requires a 'val' payload")
-                    })?;
-                    Some(Box::new(json_to_val(inner, &payload_ty)?))
-                }
-                None => None,
-            };
-            Val::Variant(tag.to_string(), payload)
-        }
-        Type::Enum(en) => {
-            let s = json.as_str().ok_or_else(|| type_error("enum", json))?;
-            if en.names().any(|n| n == s) {
-                Val::Enum(s.to_string())
-            } else {
-                return Err(anyhow::anyhow!("unknown enum case '{s}'"));
-            }
-        }
-        Type::Option(opt) => match json {
-            Value::Null => Val::Option(None),
-            other => Val::Option(Some(Box::new(json_to_val(other, &opt.ty())?))),
-        },
-        Type::Result(result) => {
-            let obj = json.as_object().ok_or_else(|| type_error("result", json))?;
-            match (obj.get("ok"), obj.get("err")) {
-                (Some(ok), None) => Val::Result(Ok(decode_result_arm(ok, result.ok())?)),
-                (None, Some(err)) => Val::Result(Err(decode_result_arm(err, result.err())?)),
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "result must have exactly one of 'ok' or 'err': {json}"
-                    ));
-                }
-            }
-        }
-        Type::Flags(flags) => {
-            let arr = json.as_array().ok_or_else(|| type_error("flags", json))?;
-            let declared: Vec<&str> = flags.names().collect();
-            let mut set: Vec<String> = Vec::new();
-            for entry in arr {
-                let name = entry
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("flags entries must be strings"))?;
-                if !declared.contains(&name) {
-                    return Err(anyhow::anyhow!("unknown flag '{name}'"));
-                }
-                if !set.iter().any(|n| n == name) {
-                    set.push(name.to_string());
-                }
-            }
-            Val::Flags(set)
-        }
-        Type::Map(map_ty) => {
-            let key_ty = map_ty.key();
-            let value_ty = map_ty.value();
-            let entries = match json {
-                Value::Object(obj) => obj
-                    .iter()
-                    .map(|(k, v)| {
-                        let key = json_to_val(&Value::String(k.clone()), &key_ty)?;
-                        Ok((key, json_to_val(v, &value_ty)?))
-                    })
-                    .collect::<Result<Vec<_>>>()?,
-                Value::Array(arr) => arr
-                    .iter()
-                    .map(|pair| {
-                        let elems = pair
-                            .as_array()
-                            .filter(|p| p.len() == 2)
-                            .ok_or_else(|| anyhow::anyhow!("map entries must be [key, value]"))?;
-                        Ok((json_to_val(&elems[0], &key_ty)?, json_to_val(&elems[1], &value_ty)?))
-                    })
-                    .collect::<Result<Vec<_>>>()?,
-                _ => return Err(type_error("map", json)),
-            };
-            Val::Map(entries)
-        }
+        Type::List(list) => decode_list(json, list)?,
+        Type::Tuple(tuple) => decode_tuple(json, tuple)?,
+        Type::Record(record) => decode_record(json, record)?,
+        Type::Variant(variant) => decode_variant(json, variant)?,
+        Type::Enum(en) => decode_enum(json, en)?,
+        Type::Option(opt) => decode_option(json, opt)?,
+        Type::Result(result) => decode_result_type(json, result)?,
+        Type::Flags(flags) => decode_flags(json, flags)?,
+        Type::Map(map_ty) => decode_map(json, map_ty)?,
         Type::Own(_) | Type::Borrow(_) | Type::Future(_) | Type::Stream(_) | Type::ErrorContext => {
             return Err(anyhow::anyhow!(
                 "WIT resource/future/stream/error-context cannot be decoded from JSON"
@@ -333,6 +193,157 @@ pub fn json_to_val(json: &Value, ty: &Type) -> Result<Val> {
         }
     };
     Ok(val)
+}
+
+/// Rejects both overflow (a finite `f64` casting to `±inf`) and underflow (a
+/// nonzero finite `f64` casting to `0.0`) — either would silently change the
+/// value's meaning rather than merely losing unrepresentable precision.
+fn decode_float32(json: &Value) -> Result<Val> {
+    let original = json.as_f64().ok_or_else(|| type_error("float32", json))?;
+    let f = original as f32;
+    if !f.is_finite() || (f == 0.0 && original != 0.0) {
+        return Err(anyhow::anyhow!("float32 value is out of range: {json}"));
+    }
+    Ok(Val::Float32(f))
+}
+
+/// A JSON number is always finite, but the invariant is guarded explicitly.
+fn decode_float64(json: &Value) -> Result<Val> {
+    let f = json.as_f64().ok_or_else(|| type_error("float64", json))?;
+    if !f.is_finite() {
+        return Err(anyhow::anyhow!("float64 value is non-finite: {json}"));
+    }
+    Ok(Val::Float64(f))
+}
+
+fn decode_char(json: &Value) -> Result<Val> {
+    let s = json.as_str().ok_or_else(|| type_error("char", json))?;
+    let mut chars = s.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Ok(Val::Char(c)),
+        _ => Err(anyhow::anyhow!("char must be a single-character string, got {s:?}")),
+    }
+}
+
+fn decode_list(json: &Value, list: &List) -> Result<Val> {
+    let arr = json.as_array().ok_or_else(|| type_error("list", json))?;
+    let elem_ty = list.ty();
+    Ok(Val::List(arr.iter().map(|v| json_to_val(v, &elem_ty)).collect::<Result<_>>()?))
+}
+
+fn decode_tuple(json: &Value, tuple: &Tuple) -> Result<Val> {
+    let arr = json.as_array().ok_or_else(|| type_error("tuple", json))?;
+    let types: Vec<Type> = tuple.types().collect();
+    if arr.len() != types.len() {
+        return Err(anyhow::anyhow!("tuple expects {} elements, got {}", types.len(), arr.len()));
+    }
+    Ok(Val::Tuple(arr.iter().zip(&types).map(|(v, ty)| json_to_val(v, ty)).collect::<Result<_>>()?))
+}
+
+fn decode_record(json: &Value, record: &Record) -> Result<Val> {
+    let obj = json.as_object().ok_or_else(|| type_error("record", json))?;
+    let mut fields = Vec::new();
+    for field in record.fields() {
+        let value = match obj.get(field.name) {
+            Some(v) => json_to_val(v, &field.ty)?,
+            None if matches!(field.ty, Type::Option(_)) => Val::Option(None),
+            None => {
+                return Err(anyhow::anyhow!("missing required record field '{}'", field.name));
+            }
+        };
+        fields.push((field.name.to_string(), value));
+    }
+    Ok(Val::Record(fields))
+}
+
+fn decode_variant(json: &Value, variant: &Variant) -> Result<Val> {
+    let obj = json.as_object().ok_or_else(|| type_error("variant", json))?;
+    let tag = obj
+        .get("tag")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("variant requires a string 'tag' field: {json}"))?;
+    let case = variant
+        .cases()
+        .find(|c| c.name == tag)
+        .ok_or_else(|| anyhow::anyhow!("unknown variant case '{tag}'"))?;
+    let payload = match case.ty {
+        Some(payload_ty) => {
+            let inner = obj
+                .get("val")
+                .ok_or_else(|| anyhow::anyhow!("variant case '{tag}' requires a 'val' payload"))?;
+            Some(Box::new(json_to_val(inner, &payload_ty)?))
+        }
+        None => None,
+    };
+    Ok(Val::Variant(tag.to_string(), payload))
+}
+
+fn decode_enum(json: &Value, en: &Enum) -> Result<Val> {
+    let s = json.as_str().ok_or_else(|| type_error("enum", json))?;
+    if en.names().any(|n| n == s) {
+        Ok(Val::Enum(s.to_string()))
+    } else {
+        Err(anyhow::anyhow!("unknown enum case '{s}'"))
+    }
+}
+
+fn decode_option(json: &Value, opt: &OptionType) -> Result<Val> {
+    match json {
+        Value::Null => Ok(Val::Option(None)),
+        other => Ok(Val::Option(Some(Box::new(json_to_val(other, &opt.ty())?)))),
+    }
+}
+
+fn decode_result_type(json: &Value, result: &ResultType) -> Result<Val> {
+    let obj = json.as_object().ok_or_else(|| type_error("result", json))?;
+    match (obj.get("ok"), obj.get("err")) {
+        (Some(ok), None) => Ok(Val::Result(Ok(decode_result_arm(ok, result.ok())?))),
+        (None, Some(err)) => Ok(Val::Result(Err(decode_result_arm(err, result.err())?))),
+        _ => Err(anyhow::anyhow!("result must have exactly one of 'ok' or 'err': {json}")),
+    }
+}
+
+fn decode_flags(json: &Value, flags: &Flags) -> Result<Val> {
+    let arr = json.as_array().ok_or_else(|| type_error("flags", json))?;
+    let declared: Vec<&str> = flags.names().collect();
+    let mut set: Vec<String> = Vec::new();
+    for entry in arr {
+        let name =
+            entry.as_str().ok_or_else(|| anyhow::anyhow!("flags entries must be strings"))?;
+        if !declared.contains(&name) {
+            return Err(anyhow::anyhow!("unknown flag '{name}'"));
+        }
+        if !set.iter().any(|n| n == name) {
+            set.push(name.to_string());
+        }
+    }
+    Ok(Val::Flags(set))
+}
+
+fn decode_map(json: &Value, map_ty: &types::Map) -> Result<Val> {
+    let key_ty = map_ty.key();
+    let value_ty = map_ty.value();
+    let entries = match json {
+        Value::Object(obj) => obj
+            .iter()
+            .map(|(k, v)| {
+                let key = json_to_val(&Value::String(k.clone()), &key_ty)?;
+                Ok((key, json_to_val(v, &value_ty)?))
+            })
+            .collect::<Result<Vec<_>>>()?,
+        Value::Array(arr) => arr
+            .iter()
+            .map(|pair| {
+                let elems = pair
+                    .as_array()
+                    .filter(|p| p.len() == 2)
+                    .ok_or_else(|| anyhow::anyhow!("map entries must be [key, value]"))?;
+                Ok((json_to_val(&elems[0], &key_ty)?, json_to_val(&elems[1], &value_ty)?))
+            })
+            .collect::<Result<Vec<_>>>()?,
+        _ => return Err(type_error("map", json)),
+    };
+    Ok(Val::Map(entries))
 }
 
 /// Bind a JSON-RPC `params` payload to a function's typed parameter list.

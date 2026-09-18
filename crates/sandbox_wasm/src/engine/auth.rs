@@ -471,7 +471,26 @@ impl AppSandboxEngine {
         )
         .map_err(|_| AbacError::MissingExport(service_id.to_string()))?;
 
-        let ctx_val = Val::Record(vec![
+        let ctx_val = Self::abac_ctx_to_val(ctx);
+        let rows_val = Self::candidate_rows_to_val(rows);
+
+        let mut results = vec![Val::Bool(false); results_len];
+        let call_result = func.call_async(&mut store, &[ctx_val, rows_val], &mut results).await;
+        Self::map_abac_call_error(service_id, call_result)?;
+
+        let decisions = Self::decode_row_decisions(service_id, &results)?;
+        let denied = decisions.iter().filter(|d| matches!(d, RowDecision::Deny)).count() as u64;
+        if denied > 0 {
+            metrics::counter!("substrate.fdae.abac_rows_denied").increment(denied);
+        }
+        Ok(decisions)
+    }
+
+    /// `AbacAuthContext` as the WIT `abac-auth-context` record `Val` --
+    /// field names are the WIT identifiers verbatim (kebab-case), matching
+    /// the wasm component ABI, not Rust's `snake_case`.
+    fn abac_ctx_to_val(ctx: &AbacAuthContext) -> Val {
+        Val::Record(vec![
             ("collection".to_string(), Val::String(ctx.collection.clone())),
             (
                 "permissions".to_string(),
@@ -487,8 +506,13 @@ impl AppSandboxEngine {
                 Val::List(ctx.capabilities.iter().cloned().map(Val::String).collect()),
             ),
             ("claims-json".to_string(), Val::String(ctx.claims_json.clone())),
-        ]);
-        let rows_val = Val::List(
+        ])
+    }
+
+    /// `rows` as the WIT `list<candidate-row>` `Val` -- same field-naming
+    /// note as [`Self::abac_ctx_to_val`].
+    fn candidate_rows_to_val(rows: &[CandidateRow]) -> Val {
+        Val::List(
             rows.iter()
                 .map(|r| {
                     Val::Record(vec![
@@ -503,34 +527,43 @@ impl AppSandboxEngine {
                     ])
                 })
                 .collect(),
-        );
+        )
+    }
 
-        let mut results = vec![Val::Bool(false); results_len];
-        let call_result = func.call_async(&mut store, &[ctx_val, rows_val], &mut results).await;
-
+    /// Maps a failed `authorize-rows` call into the matching `AbacError`.
+    /// `classify_call_failure` replaces this site's own hand-rolled copy of
+    /// the trap taxonomy: this site has (and had) no memory-fault arm, so a
+    /// memory fault still becomes `Trap`, not a budget error. The
+    /// classifier does not distinguish a downcast `Trap::OutOfFuel` from a
+    /// string-matched fuel error, so both now carry the real Wasmtime
+    /// message (`err_str`) instead of the pre-refactor downcast arm's fixed
+    /// `"exceeded its fuel budget"` -- a deliberate simplification, not a
+    /// behaviour this site's callers depend on.
+    fn map_abac_call_error(
+        service_id: &str,
+        call_result: wasmtime::Result<()>,
+    ) -> Result<(), AbacError> {
+        let Err(e) = call_result else { return Ok(()) };
         let service = service_id.to_string();
-        if let Err(e) = call_result {
-            // `classify_call_failure` replaces this site's own
-            // hand-rolled copy of the trap taxonomy: this site has (and had)
-            // no memory-fault arm, so a memory fault still becomes `Trap`,
-            // not a budget error. The classifier does not distinguish a
-            // downcast `Trap::OutOfFuel` from a string-matched fuel error,
-            // so both now carry the real Wasmtime message (`err_str`)
-            // instead of the pre-refactor downcast arm's fixed
-            // `"exceeded its fuel budget"` -- a deliberate simplification,
-            // not a behaviour this site's callers depend on.
-            let err_str = truncate_detail(e.root_cause().to_string());
-            return Err(match classify_call_failure(&e) {
-                CallFailure::OutOfFuel | CallFailure::Deadline => {
-                    AbacError::BudgetExceeded { service, detail: err_str }
-                }
-                CallFailure::MemoryFault | CallFailure::Other => {
-                    AbacError::Trap { service, detail: err_str }
-                }
-            });
-        }
+        let err_str = truncate_detail(e.root_cause().to_string());
+        Err(match classify_call_failure(&e) {
+            CallFailure::OutOfFuel | CallFailure::Deadline => {
+                AbacError::BudgetExceeded { service, detail: err_str }
+            }
+            CallFailure::MemoryFault | CallFailure::Other => {
+                AbacError::Trap { service, detail: err_str }
+            }
+        })
+    }
 
-        let [result_val] = results.as_slice() else {
+    /// Turns the wasm call's raw `results` (`result<list<row-decision>,
+    /// string>`) into row decisions, or the matching `AbacError` for any
+    /// shape wasmtime's dynamic `Val` does not already guarantee.
+    fn decode_row_decisions(
+        service_id: &str,
+        results: &[Val],
+    ) -> Result<Vec<RowDecision>, AbacError> {
+        let [result_val] = results else {
             return Err(AbacError::Malformed(format!(
                 "expected exactly 1 result<_, string> return value, got {}",
                 results.len()
@@ -548,7 +581,7 @@ impl AppSandboxEngine {
                     Some(other) => truncate_detail(format!("{other:?}")),
                     None => "guest declined the request".to_string(),
                 };
-                return Err(AbacError::Trap { service, detail: msg });
+                return Err(AbacError::Trap { service: service_id.to_string(), detail: msg });
             }
             other => {
                 return Err(AbacError::Malformed(truncate_detail(format!(
@@ -563,14 +596,10 @@ impl AppSandboxEngine {
         };
 
         let mut decisions = Vec::with_capacity(items.len());
-        let mut denied = 0u64;
         for item in items {
             let decision = match item {
                 Val::Variant(tag, None) if tag == "allow" => RowDecision::Allow,
-                Val::Variant(tag, None) if tag == "deny" => {
-                    denied += 1;
-                    RowDecision::Deny
-                }
+                Val::Variant(tag, None) if tag == "deny" => RowDecision::Deny,
                 Val::Variant(tag, Some(boxed)) if tag == "redact" => {
                     let Val::List(fields) = boxed.as_ref() else {
                         return Err(AbacError::Malformed(truncate_detail(format!(
@@ -595,9 +624,6 @@ impl AppSandboxEngine {
                 }
             };
             decisions.push(decision);
-        }
-        if denied > 0 {
-            metrics::counter!("substrate.fdae.abac_rows_denied").increment(denied);
         }
         Ok(decisions)
     }
