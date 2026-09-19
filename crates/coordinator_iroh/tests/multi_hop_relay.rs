@@ -6,6 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::{
     collections::BTreeSet,
+    path::Path,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -42,7 +43,8 @@ use syneroym_router::{
 };
 use syneroym_rpc::{
     AuthLevel, CallOrigin, CallerContext, CallerProof, NativeDispatchRegistry, NativeInvocation,
-    NativeResponse, NativeService, ProxyProtocol, ProxyRequest, RpcResult, SessionContext,
+    NativeResponse, NativeService, ProxyProtocol, ProxyRequest, RpcResult, ServiceProxy,
+    SessionContext,
 };
 use syneroym_sandbox_podman::ContainerEngine;
 use syneroym_sandbox_wasm::AppSandboxEngine;
@@ -270,6 +272,225 @@ fn create_signed_info(
     info.sign(identity).unwrap()
 }
 
+/// Spawns registry R exactly as every test in this file does: a lightweight
+/// HTTP community registry (no DHT), reachable at the returned URL.
+async fn spawn_global_registry(base_path: &Path) -> Result<(EcosystemRegistry, String)> {
+    let mut config_r = SubstrateConfig {
+        app_local_data_dir: base_path.join("data_r"),
+        app_data_dir: base_path.join("user_data_r"),
+        ..Default::default()
+    };
+    config_r.substrate.enable_bep0044_dht = false;
+    config_r.roles.community_registry = Some(ServiceRegistryRole {
+        access: AccessControl::String("everyone".to_string()),
+        http_bind_address: "127.0.0.1:0".to_string(),
+        parent_registry_url: None,
+    });
+    let mut registry_r = EcosystemRegistry::init(&config_r).await?;
+    let r_url = registry_r.bind().await?;
+    registry_r.spawn().await?;
+    Ok((registry_r, r_url))
+}
+
+/// Spawns global Coordinator C exactly as `test_inbound_relay` and
+/// `test_outbound_relay` both do: registered with registry R, with relay and
+/// signalling enabled.
+async fn spawn_global_coordinator(
+    base_path: &Path,
+    r_url: &str,
+    info_client: &Client,
+) -> Result<(CoordinatorIroh, CoordinatorInfo, String)> {
+    let mut config_c = SubstrateConfig {
+        app_local_data_dir: base_path.join("data_c"),
+        app_data_dir: base_path.join("user_data_c"),
+        ..Default::default()
+    };
+    config_c.substrate.enable_bep0044_dht = false;
+    config_c.roles.coordinator = Some(CoordinatorRole {
+        iroh: Some(CoordinatorIrohConfig {
+            enable_signalling: true,
+            enable_relay: true,
+            http_bind_address: "127.0.0.1:0".to_string(),
+            quic_bind_address: "127.0.0.1:0".to_string(),
+            community_registry_url: Some(r_url.to_string()),
+            idle_timeout_secs: None,
+            share_in_registry: true,
+            max_connections: None,
+        }),
+        ..Default::default()
+    });
+    let c = CoordinatorIroh::init(&config_c).await?;
+    let c_info_addr = c.info_addr().unwrap();
+
+    let c_info: CoordinatorInfo =
+        info_client.get(format!("http://{c_info_addr}/v1/info")).send().await?.json().await?;
+    let c_relay_url = c_info.relay_url.clone().unwrap();
+
+    Ok((c, c_info, c_relay_url))
+}
+
+/// Spawns private Coordinator Cp pointing at global Coordinator C, exactly as
+/// `test_inbound_relay` and `test_outbound_relay` both do.
+async fn spawn_private_coordinator(
+    base_path: &Path,
+    r_url: &str,
+    c_relay_url: &str,
+    info_client: &Client,
+) -> Result<(CoordinatorIroh, CoordinatorInfo)> {
+    let mut config_cp = SubstrateConfig {
+        app_local_data_dir: base_path.join("data_cp"),
+        app_data_dir: base_path.join("user_data_cp"),
+        ..Default::default()
+    };
+    config_cp.substrate.enable_bep0044_dht = false;
+    config_cp.roles.coordinator = Some(CoordinatorRole {
+        iroh: Some(CoordinatorIrohConfig {
+            enable_signalling: true,
+            enable_relay: true,
+            http_bind_address: "127.0.0.1:0".to_string(),
+            quic_bind_address: "127.0.0.1:0".to_string(),
+            community_registry_url: Some(r_url.to_string()),
+            idle_timeout_secs: None,
+            share_in_registry: true,
+            max_connections: None,
+        }),
+        ..Default::default()
+    });
+    config_cp.parent_coordinator.iroh = Some(IrohParentConfig { url: c_relay_url.to_string() });
+    let cp = CoordinatorIroh::init(&config_cp).await?;
+    let cp_info_addr = cp.info_addr().unwrap();
+
+    let cp_info: CoordinatorInfo =
+        info_client.get(format!("http://{cp_info_addr}/v1/info")).send().await?.json().await?;
+
+    Ok((cp, cp_info))
+}
+
+/// What `test_inbound_relay`/`test_outbound_relay` still need of their target
+/// substrate node after it is up, bound to Iroh, and registered in R.
+struct TargetSubstrate {
+    did: String,
+    router: Router,
+}
+
+/// Spawns target substrate Sz in the private network under Cp, exactly as
+/// `test_inbound_relay` does: bound to Cp's relay (when Cp reports one), then
+/// registered in registry R.
+async fn spawn_z_target_substrate(
+    base_path: &Path,
+    r_url: &str,
+    cp_relay_url: Option<String>,
+    info_client: &Client,
+) -> Result<TargetSubstrate> {
+    let identity_z = Identity::generate()?;
+    let secret_z_bytes = identity_z.to_bytes();
+    let did_z = derive_did_key(&identity_z.public_key());
+
+    let mut config_z = SubstrateConfig {
+        app_local_data_dir: base_path.join("data_z"),
+        app_data_dir: base_path.join("user_data_z"),
+        ..Default::default()
+    };
+    config_z.substrate.enable_bep0044_dht = false;
+    config_z.resolve_paths();
+    let data_store_z = registry_store::init_store(&config_z).await?;
+    let endpoint_registry_z = EndpointRegistry::new(data_store_z).await?;
+
+    let endpoint_z = SubstrateEndpoint::NativeHostChannel { service_id: did_z.clone() };
+    endpoint_registry_z.register(did_z.clone(), "orchestrator".to_string(), endpoint_z).await?;
+
+    // Bind Sz to Iroh so Cp can connect to it (Sz uses Cp's relay url). Built
+    // *before* `RouteHandler::init`: the Universal Proxy's outbound remote hop
+    // needs a live Iroh endpoint, which `RouteHandler::init` wires into its
+    // `ProxyRouter`.
+    let mut ep_z_bldr = Endpoint::empty_builder();
+    if let Some(relay_url) = cp_relay_url.as_ref().and_then(|r| r.parse::<RelayUrl>().ok()) {
+        ep_z_bldr = ep_z_bldr.relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
+    }
+    let secret_key_z = SecretKey::generate(&mut rand::rng());
+    let ep_z = ep_z_bldr.secret_key(secret_key_z).bind().await?;
+    ep_z.online().await;
+
+    let deps_z = build_test_route_handler_deps(&config_z, &did_z, &endpoint_registry_z).await?;
+    let route_handler_z = RouteHandler::init(
+        did_z.clone(),
+        &config_z,
+        endpoint_registry_z,
+        secret_z_bytes,
+        Some(ep_z.clone()),
+        deps_z,
+    )
+    .await?;
+
+    let ep_z_addr = ep_z.addr();
+    let router_z = Router::builder(ep_z).accept(SYNEROYM_ALPN, route_handler_z).spawn();
+
+    // Register Sz in community registry R
+    let signed_info_z = create_signed_info(&identity_z, &did_z, &ep_z_addr, cp_relay_url);
+    let res = info_client.post(format!("{r_url}/register")).json(&signed_info_z).send().await?;
+    assert!(res.status().is_success());
+
+    Ok(TargetSubstrate { did: did_z, router: router_z })
+}
+
+/// Spawns target substrate Sx in the public network under C, exactly as
+/// `test_outbound_relay` does: bound directly to C's relay, then registered
+/// in registry R.
+async fn spawn_x_target_substrate(
+    base_path: &Path,
+    r_url: &str,
+    c_relay_url: &str,
+    info_client: &Client,
+) -> Result<TargetSubstrate> {
+    let identity_x = Identity::generate()?;
+    let secret_x_bytes = identity_x.to_bytes();
+    let did_x = derive_did_key(&identity_x.public_key());
+
+    let mut config_x = SubstrateConfig {
+        app_local_data_dir: base_path.join("data_x"),
+        app_data_dir: base_path.join("user_data_x"),
+        ..Default::default()
+    };
+    config_x.substrate.enable_bep0044_dht = false;
+    config_x.resolve_paths();
+    let data_store_x = registry_store::init_store(&config_x).await?;
+    let endpoint_registry_x = EndpointRegistry::new(data_store_x).await?;
+
+    let endpoint_x = SubstrateEndpoint::NativeHostChannel { service_id: did_x.clone() };
+    endpoint_registry_x.register(did_x.clone(), "orchestrator".to_string(), endpoint_x).await?;
+
+    // Bind Sx to Iroh so C can connect to it (Sx uses C's relay url). Built
+    // *before* `RouteHandler::init` -- see the matching comment on Sz above.
+    let mut ep_x_bldr = Endpoint::empty_builder();
+    ep_x_bldr = ep_x_bldr
+        .relay_mode(RelayMode::Custom(RelayMap::from(c_relay_url.parse::<RelayUrl>().unwrap())));
+    let secret_key_x = SecretKey::generate(&mut rand::rng());
+    let ep_x = ep_x_bldr.secret_key(secret_key_x).bind().await?;
+    ep_x.online().await;
+
+    let deps_x = build_test_route_handler_deps(&config_x, &did_x, &endpoint_registry_x).await?;
+    let route_handler_x = RouteHandler::init(
+        did_x.clone(),
+        &config_x,
+        endpoint_registry_x,
+        secret_x_bytes,
+        Some(ep_x.clone()),
+        deps_x,
+    )
+    .await?;
+
+    let ep_x_addr = ep_x.addr();
+    let router_x = Router::builder(ep_x).accept(SYNEROYM_ALPN, route_handler_x).spawn();
+
+    // Register Sx in community registry R
+    let signed_info_x =
+        create_signed_info(&identity_x, &did_x, &ep_x_addr, Some(c_relay_url.to_string()));
+    let res = info_client.post(format!("{r_url}/register")).json(&signed_info_x).send().await?;
+    assert!(res.status().is_success());
+
+    Ok(TargetSubstrate { did: did_x, router: router_x })
+}
+
 #[tokio::test]
 async fn test_registry_propagation() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
@@ -342,131 +563,27 @@ async fn test_registry_propagation() -> Result<()> {
 async fn test_inbound_relay() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
     let base_path = temp_dir.path();
+    let info_client = Client::new();
 
     // 1. Spawn global registry R
-    let mut config_r = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_r"),
-        app_data_dir: base_path.join("user_data_r"),
-        ..Default::default()
-    };
-    config_r.substrate.enable_bep0044_dht = false;
-    config_r.roles.community_registry = Some(ServiceRegistryRole {
-        access: AccessControl::String("everyone".to_string()),
-        http_bind_address: "127.0.0.1:0".to_string(),
-        parent_registry_url: None,
-    });
-    let mut registry_r = EcosystemRegistry::init(&config_r).await?;
-    let r_url = registry_r.bind().await?;
-    registry_r.spawn().await?;
+    let (mut registry_r, r_url) = spawn_global_registry(base_path).await?;
 
     // 2. Spawn Global Coordinator C
-    let mut config_c = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_c"),
-        app_data_dir: base_path.join("user_data_c"),
-        ..Default::default()
-    };
-    config_c.substrate.enable_bep0044_dht = false;
-    config_c.roles.coordinator = Some(CoordinatorRole {
-        iroh: Some(CoordinatorIrohConfig {
-            enable_signalling: true,
-            enable_relay: true,
-            http_bind_address: "127.0.0.1:0".to_string(),
-            quic_bind_address: "127.0.0.1:0".to_string(),
-            community_registry_url: Some(r_url.clone()),
-            idle_timeout_secs: None,
-            share_in_registry: true,
-            max_connections: None,
-        }),
-        ..Default::default()
-    });
-    let mut c = CoordinatorIroh::init(&config_c).await?;
-    let c_info_addr = c.info_addr().unwrap();
-
-    let info_client = Client::new();
-    let c_info: CoordinatorInfo =
-        info_client.get(format!("http://{c_info_addr}/v1/info")).send().await?.json().await?;
-    let c_relay_url = c_info.relay_url.clone().unwrap();
+    let (mut c, c_info, c_relay_url) =
+        spawn_global_coordinator(base_path, &r_url, &info_client).await?;
 
     // 3. Spawn Private Coordinator Cp pointing to C
-    let mut config_cp = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_cp"),
-        app_data_dir: base_path.join("user_data_cp"),
-        ..Default::default()
-    };
-    config_cp.substrate.enable_bep0044_dht = false;
-    config_cp.roles.coordinator = Some(CoordinatorRole {
-        iroh: Some(CoordinatorIrohConfig {
-            enable_signalling: true,
-            enable_relay: true,
-            http_bind_address: "127.0.0.1:0".to_string(),
-            quic_bind_address: "127.0.0.1:0".to_string(),
-            community_registry_url: Some(r_url.clone()),
-            idle_timeout_secs: None,
-            share_in_registry: true,
-            max_connections: None,
-        }),
-        ..Default::default()
-    });
-    config_cp.parent_coordinator.iroh = Some(IrohParentConfig { url: c_relay_url.clone() });
-    let mut cp = CoordinatorIroh::init(&config_cp).await?;
-    let cp_info_addr = cp.info_addr().unwrap();
-
-    let cp_info: CoordinatorInfo =
-        info_client.get(format!("http://{cp_info_addr}/v1/info")).send().await?.json().await?;
+    let (mut cp, cp_info) =
+        spawn_private_coordinator(base_path, &r_url, &c_relay_url, &info_client).await?;
 
     // 4. Spawn target substrate Sz in private network under Cp
-    let identity_z = Identity::generate()?;
-    let secret_z_bytes = identity_z.to_bytes();
-    let did_z = derive_did_key(&identity_z.public_key());
-
-    let mut config_z = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_z"),
-        app_data_dir: base_path.join("user_data_z"),
-        ..Default::default()
-    };
-    config_z.substrate.enable_bep0044_dht = false;
-    config_z.resolve_paths();
-    let data_store_z = registry_store::init_store(&config_z).await?;
-    let endpoint_registry_z = EndpointRegistry::new(data_store_z).await?;
-
-    let endpoint_z = SubstrateEndpoint::NativeHostChannel { service_id: did_z.clone() };
-    endpoint_registry_z.register(did_z.clone(), "orchestrator".to_string(), endpoint_z).await?;
-
-    // Bind Sz to Iroh so Cp can connect to it (Sz uses Cp's relay url). Built
-    // *before* `RouteHandler::init`: the Universal Proxy's outbound remote hop
-    // needs a live Iroh endpoint, which `RouteHandler::init` wires into its
-    // `ProxyRouter`.
-    let mut ep_z_bldr = Endpoint::empty_builder();
-    if let Some(relay_url) = cp_info.relay_url.as_ref().and_then(|r| r.parse::<RelayUrl>().ok()) {
-        ep_z_bldr = ep_z_bldr.relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
-    }
-    let secret_key_z = SecretKey::generate(&mut rand::rng());
-    let ep_z = ep_z_bldr.secret_key(secret_key_z).bind().await?;
-    ep_z.online().await;
-
-    let deps_z = build_test_route_handler_deps(&config_z, &did_z, &endpoint_registry_z).await?;
-    let route_handler_z = RouteHandler::init(
-        did_z.clone(),
-        &config_z,
-        endpoint_registry_z,
-        secret_z_bytes,
-        Some(ep_z.clone()),
-        deps_z,
-    )
-    .await?;
-
-    let ep_z_addr = ep_z.addr();
-    let router_z = Router::builder(ep_z).accept(SYNEROYM_ALPN, route_handler_z).spawn();
-
-    // Register Sz in community registry R
-    let signed_info_z =
-        create_signed_info(&identity_z, &did_z, &ep_z_addr, cp_info.relay_url.clone());
-    let res = info_client.post(format!("{r_url}/register")).json(&signed_info_z).send().await?;
-    assert!(res.status().is_success());
+    let target_z =
+        spawn_z_target_substrate(base_path, &r_url, cp_info.relay_url.clone(), &info_client)
+            .await?;
 
     // 5. Connect from a client in public network (under C) to Sz via C -> Cp
     let mut sdk_client = SyneroymClient::new_with_mechanisms(
-        did_z.clone(),
+        target_z.did.clone(),
         vec![EndpointMechanism::Iroh {
             endpoint_addr_bytes: c_info.endpoint_addr_bytes,
             relay_url: c_info.relay_url,
@@ -480,7 +597,7 @@ async fn test_inbound_relay() -> Result<()> {
     assert_eq!(response.result, serde_json::json!({"status": "ok"}));
 
     sdk_client.shutdown().await?;
-    let _ = router_z.shutdown().await;
+    let _ = target_z.router.shutdown().await;
     cp.shutdown().await?;
     c.shutdown().await?;
     registry_r.shutdown().await?;
@@ -491,128 +608,25 @@ async fn test_inbound_relay() -> Result<()> {
 async fn test_outbound_relay() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
     let base_path = temp_dir.path();
+    let info_client = Client::new();
 
     // 1. Spawn global registry R
-    let mut config_r = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_r"),
-        app_data_dir: base_path.join("user_data_r"),
-        ..Default::default()
-    };
-    config_r.substrate.enable_bep0044_dht = false;
-    config_r.roles.community_registry = Some(ServiceRegistryRole {
-        access: AccessControl::String("everyone".to_string()),
-        http_bind_address: "127.0.0.1:0".to_string(),
-        parent_registry_url: None,
-    });
-    let mut registry_r = EcosystemRegistry::init(&config_r).await?;
-    let r_url = registry_r.bind().await?;
-    registry_r.spawn().await?;
+    let (mut registry_r, r_url) = spawn_global_registry(base_path).await?;
 
     // 2. Spawn Global Coordinator C
-    let mut config_c = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_c"),
-        app_data_dir: base_path.join("user_data_c"),
-        ..Default::default()
-    };
-    config_c.substrate.enable_bep0044_dht = false;
-    config_c.roles.coordinator = Some(CoordinatorRole {
-        iroh: Some(CoordinatorIrohConfig {
-            enable_signalling: true,
-            enable_relay: true,
-            http_bind_address: "127.0.0.1:0".to_string(),
-            quic_bind_address: "127.0.0.1:0".to_string(),
-            community_registry_url: Some(r_url.clone()),
-            idle_timeout_secs: None,
-            share_in_registry: true,
-            max_connections: None,
-        }),
-        ..Default::default()
-    });
-    let mut c = CoordinatorIroh::init(&config_c).await?;
-    let c_info_addr = c.info_addr().unwrap();
-
-    let info_client = Client::new();
-    let c_info: CoordinatorInfo =
-        info_client.get(format!("http://{c_info_addr}/v1/info")).send().await?.json().await?;
-    let c_relay_url = c_info.relay_url.clone().unwrap();
+    let (mut c, _c_info, c_relay_url) =
+        spawn_global_coordinator(base_path, &r_url, &info_client).await?;
 
     // 3. Spawn Private Coordinator Cp pointing to C
-    let mut config_cp = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_cp"),
-        app_data_dir: base_path.join("user_data_cp"),
-        ..Default::default()
-    };
-    config_cp.substrate.enable_bep0044_dht = false;
-    config_cp.roles.coordinator = Some(CoordinatorRole {
-        iroh: Some(CoordinatorIrohConfig {
-            enable_signalling: true,
-            enable_relay: true,
-            http_bind_address: "127.0.0.1:0".to_string(),
-            quic_bind_address: "127.0.0.1:0".to_string(),
-            community_registry_url: Some(r_url.clone()),
-            idle_timeout_secs: None,
-            share_in_registry: true,
-            max_connections: None,
-        }),
-        ..Default::default()
-    });
-    config_cp.parent_coordinator.iroh = Some(IrohParentConfig { url: c_relay_url.clone() });
-    let mut cp = CoordinatorIroh::init(&config_cp).await?;
-    let cp_info_addr = cp.info_addr().unwrap();
-
-    let cp_info: CoordinatorInfo =
-        info_client.get(format!("http://{cp_info_addr}/v1/info")).send().await?.json().await?;
+    let (mut cp, cp_info) =
+        spawn_private_coordinator(base_path, &r_url, &c_relay_url, &info_client).await?;
 
     // 4. Spawn target substrate Sx in public network under C
-    let identity_x = Identity::generate()?;
-    let secret_x_bytes = identity_x.to_bytes();
-    let did_x = derive_did_key(&identity_x.public_key());
-
-    let mut config_x = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_x"),
-        app_data_dir: base_path.join("user_data_x"),
-        ..Default::default()
-    };
-    config_x.substrate.enable_bep0044_dht = false;
-    config_x.resolve_paths();
-    let data_store_x = registry_store::init_store(&config_x).await?;
-    let endpoint_registry_x = EndpointRegistry::new(data_store_x).await?;
-
-    let endpoint_x = SubstrateEndpoint::NativeHostChannel { service_id: did_x.clone() };
-    endpoint_registry_x.register(did_x.clone(), "orchestrator".to_string(), endpoint_x).await?;
-
-    // Bind Sx to Iroh so C can connect to it (Sx uses C's relay url). Built
-    // *before* `RouteHandler::init` -- see the matching comment on Sz above.
-    let mut ep_x_bldr = Endpoint::empty_builder();
-    ep_x_bldr = ep_x_bldr
-        .relay_mode(RelayMode::Custom(RelayMap::from(c_relay_url.parse::<RelayUrl>().unwrap())));
-    let secret_key_x = SecretKey::generate(&mut rand::rng());
-    let ep_x = ep_x_bldr.secret_key(secret_key_x).bind().await?;
-    ep_x.online().await;
-
-    let deps_x = build_test_route_handler_deps(&config_x, &did_x, &endpoint_registry_x).await?;
-    let route_handler_x = RouteHandler::init(
-        did_x.clone(),
-        &config_x,
-        endpoint_registry_x,
-        secret_x_bytes,
-        Some(ep_x.clone()),
-        deps_x,
-    )
-    .await?;
-
-    let ep_x_addr = ep_x.addr();
-    let router_x = Router::builder(ep_x).accept(SYNEROYM_ALPN, route_handler_x).spawn();
-
-    // Register Sx in community registry R
-    let signed_info_x =
-        create_signed_info(&identity_x, &did_x, &ep_x_addr, Some(c_relay_url.clone()));
-    let res = info_client.post(format!("{r_url}/register")).json(&signed_info_x).send().await?;
-    assert!(res.status().is_success());
+    let target_x = spawn_x_target_substrate(base_path, &r_url, &c_relay_url, &info_client).await?;
 
     // 5. Connect from a client in private network (under Cp) to Sx via Cp -> C
     let mut sdk_client = SyneroymClient::new_with_mechanisms(
-        did_x.clone(),
+        target_x.did.clone(),
         vec![EndpointMechanism::Iroh {
             endpoint_addr_bytes: cp_info.endpoint_addr_bytes,
             relay_url: cp_info.relay_url,
@@ -626,7 +640,7 @@ async fn test_outbound_relay() -> Result<()> {
     assert_eq!(response.result, serde_json::json!({"status": "ok"}));
 
     sdk_client.shutdown().await?;
-    let _ = router_x.shutdown().await;
+    let _ = target_x.router.shutdown().await;
     cp.shutdown().await?;
     c.shutdown().await?;
     registry_r.shutdown().await?;
@@ -644,35 +658,28 @@ async fn test_outbound_relay() -> Result<()> {
 /// the `IrohHop`/retry loop, and proof/identity forwarding -- not just the
 /// in-process `ProxyRouter::invoke` unit tests (`crates/router/src/proxy.rs`)
 /// or the same-node guest-to-guest test (`proxy_dispatch.rs`).
-#[tokio::test]
-async fn test_cross_node_proxy_call() -> Result<()> {
-    let greeter_bytes =
-        std::fs::read(test_constants::greeter_wasm_path()).expect("wasm artifact not built");
-    let proxy_test_bytes =
-        std::fs::read(test_constants::proxy_test_wasm_path()).expect("wasm artifact not built");
+/// What `test_cross_node_proxy_call` needs of Sz (the greeter callee) after
+/// it is spawned, deployed, and registered in registry R.
+struct GreeterNode {
+    did: String,
+    router: Router,
+}
 
-    let temp_dir = tempfile::tempdir()?;
-    let base_path = temp_dir.path();
-
-    // 1. A lightweight HTTP community registry (no DHT) -- just enough for Sx's
-    //    ProxyRouter to resolve Sz's Iroh address.
-    let mut config_r = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_r"),
-        app_data_dir: base_path.join("user_data_r"),
-        ..Default::default()
-    };
-    config_r.substrate.enable_bep0044_dht = false;
-    config_r.roles.community_registry = Some(ServiceRegistryRole {
-        access: AccessControl::String("everyone".to_string()),
-        http_bind_address: "127.0.0.1:0".to_string(),
-        parent_registry_url: None,
-    });
-    let mut registry_r = EcosystemRegistry::init(&config_r).await?;
-    let r_url = registry_r.bind().await?;
-    registry_r.spawn().await?;
-
-    // 2. Node Sz: the greeter callee. Direct-address-only Iroh endpoint (no relay
-    //    -- both nodes are local, direct addresses suffice).
+/// Spawns Sz, deploys the greeter WASM component under its own DID, and
+/// registers both the component and Sz itself (via its full Iroh address) in
+/// registry R, exactly as `test_cross_node_proxy_call` did inline.
+///
+/// Deployed *under did_z itself*, not a separate service id: the proxy
+/// target (`service = did_z`) is what the community registry resolves to
+/// Sz's Iroh address, so it must also be the id Sz's own local
+/// `EndpointRegistry`/`AppSandboxEngine` resolve the WASM component under --
+/// otherwise Sz would successfully accept the connection but find no local
+/// route for it once it arrives.
+async fn spawn_greeter_node(
+    base_path: &Path,
+    r_url: &str,
+    greeter_bytes: Vec<u8>,
+) -> Result<GreeterNode> {
     let identity_z = Identity::generate()?;
     let secret_z_bytes = identity_z.to_bytes();
     let did_z = derive_did_key(&identity_z.public_key());
@@ -687,13 +694,12 @@ async fn test_cross_node_proxy_call() -> Result<()> {
     let data_store_z = registry_store::init_store(&config_z).await?;
     let endpoint_registry_z = EndpointRegistry::new(data_store_z).await?;
 
-    // No `.online()` wait here (unlike `test_inbound_relay`/`test_outbound_relay`
-    // above): those configure a relay and `.online()` waits for *both* a
-    // relay connection *and* a local address; these two endpoints have no
-    // relay at all (direct addresses only, same machine), so `.online()`
-    // would wait indefinitely for the relay half of that condition.
-    // `wait_for_local_addr` polls `.addr()` until it has at least one
-    // direct address instead.
+    // No `.online()` wait here (unlike `test_inbound_relay`/`test_outbound_relay`):
+    // those configure a relay and `.online()` waits for *both* a relay
+    // connection *and* a local address; this endpoint has no relay at all
+    // (direct addresses only, same machine), so `.online()` would wait
+    // indefinitely for the relay half of that condition. `wait_for_local_addr`
+    // polls `.addr()` until it has at least one direct address instead.
     let ep_z =
         Endpoint::empty_builder().secret_key(SecretKey::from_bytes(&secret_z_bytes)).bind().await?;
     let ep_z_addr = wait_for_local_addr(&ep_z).await;
@@ -711,12 +717,6 @@ async fn test_cross_node_proxy_call() -> Result<()> {
     .await?;
     let router_z = Router::builder(ep_z).accept(SYNEROYM_ALPN, route_handler_z).spawn();
 
-    // Deployed *under did_z itself*, not a separate service id: the proxy
-    // target (`service = did_z`) is what the community registry resolves to
-    // Sz's Iroh address, so it must also be the id Sz's own local
-    // `EndpointRegistry`/`AppSandboxEngine` resolve the WASM component
-    // under -- otherwise Sz would successfully accept the connection but
-    // find no local route for it once it arrives.
     app_sandbox_engine_z.deploy_wasm(&did_z, &wasm_deploy_manifest(greeter_bytes)).await.unwrap();
     endpoint_registry_z
         .register(
@@ -734,8 +734,26 @@ async fn test_cross_node_proxy_call() -> Result<()> {
     let res = info_client.post(format!("{r_url}/register")).json(&signed_info_z).send().await?;
     assert!(res.status().is_success());
 
-    // 3. Node Sx: the proxy-test caller. `registry_url` points at R so its
-    //    `ProxyRouter`'s outbound remote hop can resolve did_z.
+    Ok(GreeterNode { did: did_z, router: router_z })
+}
+
+/// What `test_cross_node_proxy_call` needs of Sx (the proxy-test caller)
+/// after it is spawned and the `proxy-caller` component is deployed. `ep` is
+/// kept only so the test can explicitly close it at the same point the
+/// original inline code did.
+struct ProxyCallerNode {
+    ep: Endpoint,
+    route_handler: RouteHandler,
+}
+
+/// Spawns Sx and deploys the `proxy-caller` WASM component, exactly as
+/// `test_cross_node_proxy_call` did inline. `registry_url` points at R so
+/// Sx's `ProxyRouter`'s outbound remote hop can resolve did_z.
+async fn spawn_proxy_caller_node(
+    base_path: &Path,
+    r_url: &str,
+    proxy_test_bytes: Vec<u8>,
+) -> Result<ProxyCallerNode> {
     let identity_x = Identity::generate()?;
     let secret_x_bytes = identity_x.to_bytes();
     let did_x = derive_did_key(&identity_x.public_key());
@@ -746,7 +764,7 @@ async fn test_cross_node_proxy_call() -> Result<()> {
         ..Default::default()
     };
     config_x.substrate.enable_bep0044_dht = false;
-    config_x.substrate.registry_url = Some(r_url.clone());
+    config_x.substrate.registry_url = Some(r_url.to_string());
     config_x.resolve_paths();
     let data_store_x = registry_store::init_store(&config_x).await?;
     let endpoint_registry_x = EndpointRegistry::new(data_store_x).await?;
@@ -778,10 +796,18 @@ async fn test_cross_node_proxy_call() -> Result<()> {
         )
         .await?;
 
-    // 4. Drive `call-peer` on Sx, targeting did_z's greeter -- this is the
-    //    cross-node hop: Sx's local registry has no entry for did_z, so
-    //    `ProxyRouter::invoke` falls to `invoke_remote`, resolves did_z via the
-    //    HTTP registry, and connects `ep_x` directly to `ep_z_addr`.
+    Ok(ProxyCallerNode { ep: ep_x, route_handler: route_handler_x })
+}
+
+/// Builds the `call-peer` JSON-RPC pipeline/preamble/body that drives Sx's
+/// `proxy-caller` component in `test_cross_node_proxy_call`, targeting
+/// `target_service_did`'s greeter -- this is the cross-node hop: Sx's local
+/// registry has no entry for the target, so `ProxyRouter::invoke` falls to
+/// `invoke_remote`, resolves it via the HTTP registry, and connects directly
+/// to its address.
+fn build_cross_node_call_peer_request(
+    target_service_did: &str,
+) -> Result<(RoutePipeline, RoutePreamble, Vec<u8>)> {
     let pipeline = RoutePipeline {
         encryption: EncryptionStage::None,
         transport: TransportStage::Binary,
@@ -803,7 +829,7 @@ async fn test_cross_node_proxy_call() -> Result<()> {
         "jsonrpc": "2.0",
         "method": "call-peer",
         "params": {
-            "service": did_z,
+            "service": target_service_did,
             "interface": test_constants::GREETER_INTERFACE_NAME,
             "method": "greet",
             "params": "[\"Cross-Node\"]",
@@ -811,9 +837,37 @@ async fn test_cross_node_proxy_call() -> Result<()> {
         },
         "id": 1,
     }))?;
+    Ok((pipeline, preamble, body))
+}
 
-    let response_bytes =
-        route_handler_x.dispatch_json_rpc_once(&pipeline, &preamble, None, &body).await?;
+#[tokio::test]
+async fn test_cross_node_proxy_call() -> Result<()> {
+    let greeter_bytes =
+        std::fs::read(test_constants::greeter_wasm_path()).expect("wasm artifact not built");
+    let proxy_test_bytes =
+        std::fs::read(test_constants::proxy_test_wasm_path()).expect("wasm artifact not built");
+
+    let temp_dir = tempfile::tempdir()?;
+    let base_path = temp_dir.path();
+
+    // 1. A lightweight HTTP community registry (no DHT) -- just enough for Sx's
+    //    ProxyRouter to resolve Sz's Iroh address.
+    let (mut registry_r, r_url) = spawn_global_registry(base_path).await?;
+
+    // 2. Node Sz: the greeter callee. Direct-address-only Iroh endpoint (no relay
+    //    -- both nodes are local, direct addresses suffice).
+    let greeter = spawn_greeter_node(base_path, &r_url, greeter_bytes).await?;
+
+    // 3. Node Sx: the proxy-test caller.
+    let proxy_caller = spawn_proxy_caller_node(base_path, &r_url, proxy_test_bytes).await?;
+
+    // 4. Drive `call-peer` on Sx, targeting Sz's greeter.
+    let (pipeline, preamble, body) = build_cross_node_call_peer_request(&greeter.did)?;
+
+    let response_bytes = proxy_caller
+        .route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, None, &body)
+        .await?;
     let response: serde_json::Value = serde_json::from_slice(&response_bytes)?;
     assert!(response.get("error").is_none(), "cross-node call-peer failed: {response:?}");
     let result = response.get("result").and_then(serde_json::Value::as_str).unwrap_or_default();
@@ -822,8 +876,8 @@ async fn test_cross_node_proxy_call() -> Result<()> {
         "expected did_z's greeter response, got: {response:?}"
     );
 
-    let _ = router_z.shutdown().await;
-    ep_x.close().await;
+    let _ = greeter.router.shutdown().await;
+    proxy_caller.ep.close().await;
     registry_r.shutdown().await?;
     Ok(())
 }
@@ -855,29 +909,26 @@ impl NativeService for CapturingNativeService {
 /// -- see `CallOrigin::Native` callers in `syneroym_router::proxy`) and
 /// asserts Sz's `NativeService` sees the re-verified master DID, not the
 /// temporary session key or the forwarding node's own identity.
-#[tokio::test]
-async fn test_cross_node_native_capability_identity_forwarding() -> Result<()> {
-    let temp_dir = tempfile::tempdir()?;
-    let base_path = temp_dir.path();
+/// What `test_cross_node_native_capability_identity_forwarding` needs of Sz
+/// (the native-capability callee) after it is spawned and registered.
+struct NativeCapabilityCalleeNode {
+    did: String,
+    router: Router,
+    capturing_service: Arc<CapturingNativeService>,
+}
 
-    // 1. Community registry -- also where Sz resolves the caller's master anchor to
-    //    re-verify the delegation certificate.
-    let mut config_r = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_r"),
-        app_data_dir: base_path.join("user_data_r"),
-        ..Default::default()
-    };
-    config_r.substrate.enable_bep0044_dht = false;
-    config_r.roles.community_registry = Some(ServiceRegistryRole {
-        access: AccessControl::String("everyone".to_string()),
-        http_bind_address: "127.0.0.1:0".to_string(),
-        parent_registry_url: None,
-    });
-    let mut registry_r = EcosystemRegistry::init(&config_r).await?;
-    let r_url = registry_r.bind().await?;
-    registry_r.spawn().await?;
-
-    // 2. Node Sz: the native-capability callee.
+/// Spawns Sz with a `CapturingNativeService` registered under
+/// `data-layer-svc-z`, and registers Sz in registry R, exactly as
+/// `test_cross_node_native_capability_identity_forwarding` did inline.
+///
+/// Sz's own `RegistryClient` (built inside `RouteHandler::init`) needs
+/// `registry_url` set to resolve the caller's master anchor during handshake
+/// verification -- unlike `spawn_greeter_node` above, this test's caller
+/// presents a real delegation cert, not a proof-less/self-signed key.
+async fn spawn_native_capability_callee_node(
+    base_path: &Path,
+    r_url: &str,
+) -> Result<NativeCapabilityCalleeNode> {
     let identity_z = Identity::generate()?;
     let secret_z_bytes = identity_z.to_bytes();
     let did_z = derive_did_key(&identity_z.public_key());
@@ -888,11 +939,7 @@ async fn test_cross_node_native_capability_identity_forwarding() -> Result<()> {
         ..Default::default()
     };
     config_z.substrate.enable_bep0044_dht = false;
-    // Sz's own `RegistryClient` (built inside `RouteHandler::init`) needs
-    // this to resolve the caller's master anchor during handshake
-    // verification -- unlike the greeter test above, this test's caller
-    // presents a real delegation cert, not a proof-less/self-signed key.
-    config_z.substrate.registry_url = Some(r_url.clone());
+    config_z.substrate.registry_url = Some(r_url.to_string());
     config_z.resolve_paths();
     let data_store_z = registry_store::init_store(&config_z).await?;
     let endpoint_registry_z = EndpointRegistry::new(data_store_z).await?;
@@ -936,10 +983,30 @@ async fn test_cross_node_native_capability_identity_forwarding() -> Result<()> {
     let res = info_client.post(format!("{r_url}/register")).json(&signed_info_z).send().await?;
     assert!(res.status().is_success());
 
-    // 3. Node Sx: the caller. It only needs `RouteHandler::init` to wire up a
-    //    `ProxyRouter` (reachable via `AppSandboxEngine::service_proxy`) -- it
-    //    never receives inbound connections in this test, so no accept loop is
-    //    spawned for it.
+    Ok(NativeCapabilityCalleeNode { did: did_z, router: router_z, capturing_service })
+}
+
+/// What `test_cross_node_native_capability_identity_forwarding` needs of Sx
+/// (the caller): `ep` and `route_handler` are kept only so the test can
+/// explicitly close/drop them at the same points the original inline code
+/// did -- `route_handler` in particular is `RouteHandlerInner`'s strong
+/// owner of the `ProxyRouter` behind `service_proxy`, so it must outlive
+/// every use of `service_proxy`.
+struct NativeCapabilityCallerNode {
+    ep: Endpoint,
+    route_handler: RouteHandler,
+    service_proxy: Arc<dyn ServiceProxy>,
+}
+
+/// Spawns Sx, exactly as
+/// `test_cross_node_native_capability_identity_forwarding` did inline. It
+/// only needs `RouteHandler::init` to wire up a `ProxyRouter` (reachable via
+/// `AppSandboxEngine::service_proxy`) -- it never receives inbound
+/// connections in this test, so no accept loop is spawned for it.
+async fn spawn_native_capability_caller_node(
+    base_path: &Path,
+    r_url: &str,
+) -> Result<NativeCapabilityCallerNode> {
     let identity_x = Identity::generate()?;
     let secret_x_bytes = identity_x.to_bytes();
     let did_x = derive_did_key(&identity_x.public_key());
@@ -950,7 +1017,7 @@ async fn test_cross_node_native_capability_identity_forwarding() -> Result<()> {
         ..Default::default()
     };
     config_x.substrate.enable_bep0044_dht = false;
-    config_x.substrate.registry_url = Some(r_url.clone());
+    config_x.substrate.registry_url = Some(r_url.to_string());
     config_x.resolve_paths();
     let data_store_x = registry_store::init_store(&config_x).await?;
     let endpoint_registry_x = EndpointRegistry::new(data_store_x).await?;
@@ -977,8 +1044,18 @@ async fn test_cross_node_native_capability_identity_forwarding() -> Result<()> {
         .upgrade()
         .expect("route_handler_x keeps the ProxyRouter alive");
 
-    // 4. A real caller proof: a temporary key delegated by a master identity, with
-    //    the master's anchor published to the same registry Sz resolves against.
+    Ok(NativeCapabilityCallerNode { ep: ep_x, route_handler: route_handler_x, service_proxy })
+}
+
+/// Issues a temporary key delegated by a freshly generated master identity,
+/// publishes the master's anchor to registry R (so Sz can resolve it while
+/// re-verifying the delegation certificate), and builds the `ProxyRequest`
+/// that `test_cross_node_native_capability_identity_forwarding` sends to
+/// `target_service_did`'s `data-layer` capability under that caller identity.
+async fn build_delegated_proxy_request(
+    r_url: &str,
+    target_service_did: &str,
+) -> Result<(String, ProxyRequest)> {
     let master = Identity::generate()?;
     let master_did = derive_did_key(&master.public_key());
     let temp = Identity::generate()?;
@@ -986,11 +1063,11 @@ async fn test_cross_node_native_capability_identity_forwarding() -> Result<()> {
     let cert =
         DelegationCertificate::issue(&master, temp.public_key(), 3600, "routing".to_string())?;
 
-    let registry_client = RegistryClient::new(false, Some(r_url.clone()));
+    let registry_client = RegistryClient::new(false, Some(r_url.to_string()));
     registry_client.publish_master_anchor(&master_did, vec![], None, &master, false).await?;
 
     let req = ProxyRequest {
-        target_service: did_z.clone(),
+        target_service: target_service_did.to_string(),
         interface: "data-layer".to_string(),
         method: "query".to_string(),
         params: serde_json::json!({}),
@@ -1011,18 +1088,44 @@ async fn test_cross_node_native_capability_identity_forwarding() -> Result<()> {
         timeout: Some(Duration::from_secs(5)),
     };
 
-    service_proxy.invoke(req).await.map_err(|e| anyhow::anyhow!("proxy call failed: {e}"))?;
+    Ok((master_did, req))
+}
+
+#[tokio::test]
+async fn test_cross_node_native_capability_identity_forwarding() -> Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let base_path = temp_dir.path();
+
+    // 1. Community registry -- also where Sz resolves the caller's master anchor to
+    //    re-verify the delegation certificate.
+    let (mut registry_r, r_url) = spawn_global_registry(base_path).await?;
+
+    // 2. Node Sz: the native-capability callee.
+    let callee = spawn_native_capability_callee_node(base_path, &r_url).await?;
+
+    // 3. Node Sx: the caller.
+    let caller = spawn_native_capability_caller_node(base_path, &r_url).await?;
+
+    // 4. A real caller proof: a temporary key delegated by a master identity, with
+    //    the master's anchor published to the same registry Sz resolves against.
+    let (master_did, req) = build_delegated_proxy_request(&r_url, &callee.did).await?;
+
+    caller
+        .service_proxy
+        .invoke(req)
+        .await
+        .map_err(|e| anyhow::anyhow!("proxy call failed: {e}"))?;
 
     assert_eq!(
-        capturing_service.captured_caller_did.lock().unwrap().as_deref(),
+        callee.capturing_service.captured_caller_did.lock().unwrap().as_deref(),
         Some(master_did.as_str()),
         "Sz's NativeService should see the re-verified master DID, not the temporary session key \
          or the forwarding node's own identity"
     );
 
-    let _ = route_handler_x;
-    let _ = router_z.shutdown().await;
-    ep_x.close().await;
+    let _ = caller.route_handler;
+    let _ = callee.router.shutdown().await;
+    caller.ep.close().await;
     registry_r.shutdown().await?;
     Ok(())
 }
