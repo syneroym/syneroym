@@ -149,6 +149,10 @@ fn strip_volatile(val: &mut Value) {
             map.remove("opened_at_secs");
             map.remove("updated_at_secs");
             map.remove("deleted_at_secs");
+            // Host wall-clock written at the moment the decline row is
+            // persisted — not derived from the pinned RecordClock, so it
+            // can differ by a second between WASM and native builds.
+            map.remove("declined_at_secs");
             map.remove("last_activity_ms");
             // A section digest folds in every row's bytes, including the
             // wall-clock fields removed above, so it is volatile too. The
