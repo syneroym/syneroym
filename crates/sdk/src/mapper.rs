@@ -159,6 +159,247 @@ fn map_health_check(check: &HealthCheck) -> WitHealthCheck {
     }
 }
 
+/// Builds the target-mode lookup a whole plan's `services` need: `mode`
+/// belongs to the *target* of a dependency, not the dependent, and a
+/// dependency may be placed on a different substrate and therefore absent
+/// from the subset being mapped. Deriving modes from that subset would
+/// silently default every cross-substrate dependency to `Singleton`, so this
+/// always walks the whole plan.
+fn build_target_modes(plan: &DeploymentPlan) -> BTreeMap<LogicalServiceName, TopologyMode> {
+    plan.services
+        .iter()
+        .map(|svc| (svc.logical_ref.service_name.clone(), svc.topology_mode))
+        .collect()
+}
+
+/// Maps one service's author-facing config to the wire `ServiceConfig`. Pure
+/// translation, except for the two document fields (`schema`, `fdae_policy`)
+/// and the asset bundle, which resolve local content and so can fail.
+fn map_service_config(svc: &PlannedService) -> anyhow::Result<WitServiceConfig> {
+    Ok(WitServiceConfig {
+        env: svc.config.env.clone().into_iter().collect(),
+        args: svc.config.args.clone(),
+        custom_config: svc.config.custom_config.clone(),
+        quota: svc.config.quota.clone().map(|q| ResourceQuota {
+            max_instructions: q.max_instructions,
+            max_memory_bytes: q.max_memory_bytes,
+        }),
+        schema: svc.config.schema.as_ref().map(|d| map_document_ref(d, "schema")).transpose()?,
+        rotation_policy: Some(match svc.config.rotation_policy {
+            RotationPolicy::RestartOnRotation => WitRotationPolicy::RestartOnRotation,
+            RotationPolicy::None => WitRotationPolicy::None,
+        }),
+        fdae_policy: svc
+            .config
+            .fdae
+            .as_ref()
+            .map(|f| map_document_ref(&f.policy, "fdae policy"))
+            .transpose()?,
+        health_check: svc.config.health_check.as_ref().map(map_health_check),
+        assets: svc
+            .config
+            .assets
+            .as_ref()
+            .map(|a| map_asset_bundle(a, &format!("asset bundle archive for {}", svc.service_id)))
+            .transpose()?,
+        visibility: Some(map_visibility(svc.config.visibility)),
+    })
+}
+
+/// Maps a `wasm`-typed service to its wire manifest.
+///
+/// A supervisor's `submit` runs on a remote substrate with no access to the
+/// operator's local filesystem, so `roymctl supervisor submit` inlines the
+/// artifact into `source` itself before sending the plan -- the
+/// `INLINE_ARTIFACT_PREFIX` arm inside `resolve_artifact_source` is what a
+/// *substrate-side* mapping call (the supervisor's own apply path) then
+/// decodes, never reading a local path at all.
+fn map_wasm_service_type(svc: &PlannedService) -> anyhow::Result<WitServiceType> {
+    let source = resolve_artifact_source(
+        &svc.config.source,
+        &format!("wasm artifact for {}", svc.service_id),
+    )?;
+    Ok(WitServiceType::Wasm(WasmManifest {
+        source,
+        hash: svc.config.hash.clone(),
+        interfaces: svc.config.interfaces.iter().map(|i| i.to_string()).collect(),
+    }))
+}
+
+/// Maps a `tcp`-typed service to its wire manifest: an explicit
+/// `custom_config` endpoint list wins, otherwise a single endpoint is
+/// derived from `host:port`-shaped `source`.
+fn map_tcp_service_type(svc: &PlannedService) -> WitServiceType {
+    let mut endpoints = vec![];
+    if let Some(custom) = &svc.config.custom_config
+        && let Ok(eps) = serde_json::from_str::<Vec<NetworkEndpoint>>(custom)
+    {
+        endpoints = eps;
+    }
+    if endpoints.is_empty() {
+        let parts: Vec<&str> = svc.config.source.split(':').collect();
+        if parts.len() == 2 {
+            let host = parts[0].to_string();
+            if let Ok(port) = parts[1].parse::<u16>() {
+                endpoints.push(NetworkEndpoint {
+                    interface_name: if svc.config.interfaces.is_empty() {
+                        DEFAULT_INTERFACE_NAME.to_string()
+                    } else {
+                        svc.config.interfaces[0].to_string()
+                    },
+                    host,
+                    port,
+                });
+            }
+        }
+    }
+    WitServiceType::Tcp(TcpManifest { endpoints })
+}
+
+/// Maps a `container`-typed service to its wire manifest. `image`/`ports`/
+/// `volumes` all come from `custom_config`, read strictly: a mistyped
+/// `ports` or `volumes` value fails here rather than silently deploying a
+/// container that is simply unreachable, with nothing anywhere saying why.
+fn map_container_service_type(svc: &PlannedService) -> anyhow::Result<WitServiceType> {
+    let mut image = svc.config.source.clone();
+    let mut ports = vec![];
+    let mut volumes = vec![];
+
+    if let Some(custom) = &svc.config.custom_config
+        && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(custom)
+    {
+        if let Some(img) = cfg.get("image").and_then(|v| v.as_str()) {
+            image = img.to_string();
+        }
+        if let Some(p) = cfg.get("ports") {
+            ports = serde_json::from_value::<Vec<ContainerPortMapping>>(p.clone())
+                .map_err(|e| anyhow::anyhow!("invalid container ports: {e}"))?;
+        }
+        if let Some(v) = cfg.get("volumes") {
+            let specs: Vec<VolumeSpec> = serde_json::from_value(v.clone())
+                .map_err(|e| anyhow::anyhow!("invalid container volumes: {e}"))?;
+            volumes = specs
+                .into_iter()
+                .map(|spec| {
+                    Ok(ContainerVolumeMapping {
+                        host_path: spec.host_path,
+                        container_path: spec.container_path,
+                        files: spec
+                            .files
+                            .iter()
+                            .map(|f| {
+                                Ok(ContainerVolumeFile {
+                                    relative_path: f.relative_path.clone(),
+                                    content: map_document_ref(&f.content, "volume file")?,
+                                })
+                            })
+                            .collect::<anyhow::Result<Vec<_>>>()?,
+                    })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+        }
+    }
+
+    Ok(WitServiceType::Container(ContainerManifest {
+        source: ArtifactSource::Binary(vec![]),
+        hash: svc.config.hash.clone(),
+        image,
+        ports,
+        volumes,
+    }))
+}
+
+/// Maps one service's `service_type` to its wire manifest variant, dispatching
+/// to the per-kind mapper below -- kept as a plain dispatch table rather than
+/// inline match arms doing the real work.
+fn map_service_type(svc: &PlannedService) -> anyhow::Result<WitServiceType> {
+    match svc.config.service_type {
+        ServiceType::Wasm => map_wasm_service_type(svc),
+        ServiceType::Tcp => Ok(map_tcp_service_type(svc)),
+        ServiceType::Container => map_container_service_type(svc),
+        ServiceType::NativeHost => {
+            Err(anyhow::anyhow!("NativeHost service type is not supported in deployment plans"))
+        }
+    }
+}
+
+/// Everything one `map_deployment_plan_to_wit` call maps every service
+/// against, unchanged across the per-service loop -- grouped so the
+/// per-service helpers below take one context argument instead of
+/// threading each field through separately.
+struct PlanMappingContext<'a> {
+    plan_instance_id: &'a str,
+    target_modes: &'a BTreeMap<LogicalServiceName, TopologyMode>,
+    instance_certificates: &'a BTreeMap<ServiceId, String>,
+    registry_certificates: &'a BTreeMap<ServiceId, String>,
+    emit_bindings: bool,
+    generation: u64,
+    binding_epochs: &'a BTreeMap<MemberRef, u64>,
+}
+
+/// Maps one service's app-declared dependencies plus its management
+/// generation into the wire `AppContext`.
+///
+/// Without member-master substitution these members are the compiler's
+/// fabricated `did:key:h...` ids, which resolve to no key. Publishing them
+/// would make `dependency(...)` resolve and then fail a layer down as
+/// `service-not-found`; an empty list gives the guest the true answer,
+/// `dependency-not-bound` -- so bindings are only emitted when the caller
+/// asks for them via `emit_bindings`.
+fn map_app_context(svc: &PlannedService, ctx: &PlanMappingContext<'_>) -> WitAppContext {
+    WitAppContext {
+        app_instance_id: ctx.plan_instance_id.to_string(),
+        service_name: svc.logical_ref.service_name.to_string(),
+        bindings: if ctx.emit_bindings {
+            svc.resolved_dependencies
+                .iter()
+                .map(|(name, members)| WitDependencyBinding {
+                    dependency_name: name.to_string(),
+                    // Intra-app only.
+                    app_instance_id: ctx.plan_instance_id.to_string(),
+                    mode: map_mode(ctx.target_modes.get(name).copied().unwrap_or_default()),
+                    members: members.iter().map(ToString::to_string).collect(),
+                    // The epoch belongs to the *dependent* service, not
+                    // the dependency -- one counter per (app_instance_id,
+                    // dependent logical_ref), shared by every one of that
+                    // service's bindings. `0` (an absent entry) means
+                    // "no supervisor has written here".
+                    epoch: ctx.binding_epochs.get(&svc.member_ref()).copied().unwrap_or(0),
+                    cache_ttl_ms: DEFAULT_BINDING_CACHE_TTL_MS,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
+        // ADR-0021 §4: the management generation this apply writes at,
+        // forwarded from the request unchanged.
+        generation: ctx.generation,
+    }
+}
+
+/// Maps one `PlannedService` to its wire `WitPlannedService`.
+fn map_planned_service(
+    svc: &PlannedService,
+    ctx: &PlanMappingContext<'_>,
+) -> anyhow::Result<WitPlannedService> {
+    let wit_config = map_service_config(svc)?;
+    let service_type = map_service_type(svc)?;
+    let instance_certificate = ctx.instance_certificates.get(&svc.service_id).cloned();
+    let registry_certificate = ctx.registry_certificates.get(&svc.service_id).cloned();
+    let app_context = Some(map_app_context(svc, ctx));
+    Ok(WitPlannedService {
+        service_id: svc.service_id.to_string(),
+        logical_ref: svc.logical_ref.to_string(),
+        manifest: DeployManifest {
+            config: wit_config,
+            service_type,
+            registry_certificate,
+            instance_certificate,
+        },
+        app_context,
+    })
+}
+
 /// Maps exactly the services in `services`, while computing every
 /// dependency's topology mode from the **whole** `plan`.
 ///
@@ -193,206 +434,20 @@ pub fn map_deployment_plan_to_wit(
     binding_epochs: &BTreeMap<MemberRef, u64>,
 ) -> anyhow::Result<WitDeploymentPlan> {
     let plan_instance_id = plan.app_instance_id.to_string();
-    // `mode` belongs to the *target* of a dependency, not the dependent --
-    // build the lookup once, over every service in the whole plan, before the
-    // per-service loop needs it. A dependency may be placed on a different
-    // substrate and therefore absent from `services`.
-    let target_modes: BTreeMap<LogicalServiceName, TopologyMode> = plan
-        .services
-        .iter()
-        .map(|svc| (svc.logical_ref.service_name.clone(), svc.topology_mode))
-        .collect();
+    let target_modes = build_target_modes(plan);
+    let ctx = PlanMappingContext {
+        plan_instance_id: &plan_instance_id,
+        target_modes: &target_modes,
+        instance_certificates,
+        registry_certificates,
+        emit_bindings,
+        generation,
+        binding_epochs,
+    };
 
     let mut wit_services = Vec::new();
     for svc in services {
-        let wit_config = WitServiceConfig {
-            env: svc.config.env.clone().into_iter().collect(),
-            args: svc.config.args.clone(),
-            custom_config: svc.config.custom_config.clone(),
-            quota: svc.config.quota.clone().map(|q| ResourceQuota {
-                max_instructions: q.max_instructions,
-                max_memory_bytes: q.max_memory_bytes,
-            }),
-            schema: svc
-                .config
-                .schema
-                .as_ref()
-                .map(|d| map_document_ref(d, "schema"))
-                .transpose()?,
-            rotation_policy: Some(match svc.config.rotation_policy {
-                RotationPolicy::RestartOnRotation => WitRotationPolicy::RestartOnRotation,
-                RotationPolicy::None => WitRotationPolicy::None,
-            }),
-            fdae_policy: svc
-                .config
-                .fdae
-                .as_ref()
-                .map(|f| map_document_ref(&f.policy, "fdae policy"))
-                .transpose()?,
-            health_check: svc.config.health_check.as_ref().map(map_health_check),
-            assets: svc
-                .config
-                .assets
-                .as_ref()
-                .map(|a| {
-                    map_asset_bundle(a, &format!("asset bundle archive for {}", svc.service_id))
-                })
-                .transpose()?,
-            visibility: Some(map_visibility(svc.config.visibility)),
-        };
-
-        let service_type = match svc.config.service_type {
-            ServiceType::Wasm => {
-                // A supervisor's `submit` runs on a remote substrate with no
-                // access to the operator's local filesystem, so
-                // `roymctl supervisor submit` inlines the artifact into
-                // `source` itself before sending the plan -- the
-                // `INLINE_ARTIFACT_PREFIX` arm below is what a
-                // *substrate-side* mapping call (the supervisor's own apply
-                // path) then decodes, never reading a local path at all.
-                let source = resolve_artifact_source(
-                    &svc.config.source,
-                    &format!("wasm artifact for {}", svc.service_id),
-                )?;
-                WitServiceType::Wasm(WasmManifest {
-                    source,
-                    hash: svc.config.hash.clone(),
-                    interfaces: svc.config.interfaces.iter().map(|i| i.to_string()).collect(),
-                })
-            }
-            ServiceType::Tcp => {
-                let mut endpoints = vec![];
-                if let Some(custom) = &svc.config.custom_config
-                    && let Ok(eps) = serde_json::from_str::<Vec<NetworkEndpoint>>(custom)
-                {
-                    endpoints = eps;
-                }
-                if endpoints.is_empty() {
-                    let parts: Vec<&str> = svc.config.source.split(':').collect();
-                    if parts.len() == 2 {
-                        let host = parts[0].to_string();
-                        if let Ok(port) = parts[1].parse::<u16>() {
-                            endpoints.push(NetworkEndpoint {
-                                interface_name: if svc.config.interfaces.is_empty() {
-                                    DEFAULT_INTERFACE_NAME.to_string()
-                                } else {
-                                    svc.config.interfaces[0].to_string()
-                                },
-                                host,
-                                port,
-                            });
-                        }
-                    }
-                }
-                WitServiceType::Tcp(TcpManifest { endpoints })
-            }
-            ServiceType::Container => {
-                let mut image = svc.config.source.clone();
-                let mut ports = vec![];
-                let mut volumes = vec![];
-
-                if let Some(custom) = &svc.config.custom_config
-                    && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(custom)
-                {
-                    if let Some(img) = cfg.get("image").and_then(|v| v.as_str()) {
-                        image = img.to_string();
-                    }
-                    // Strict, like `volumes` below: silently discarding a
-                    // mistyped port list deploys a container that is simply
-                    // unreachable, with nothing anywhere saying why.
-                    if let Some(p) = cfg.get("ports") {
-                        ports = serde_json::from_value::<Vec<ContainerPortMapping>>(p.clone())
-                            .map_err(|e| anyhow::anyhow!("invalid container ports: {e}"))?;
-                    }
-                    if let Some(v) = cfg.get("volumes") {
-                        let specs: Vec<VolumeSpec> = serde_json::from_value(v.clone())
-                            .map_err(|e| anyhow::anyhow!("invalid container volumes: {e}"))?;
-                        volumes = specs
-                            .into_iter()
-                            .map(|spec| {
-                                Ok(ContainerVolumeMapping {
-                                    host_path: spec.host_path,
-                                    container_path: spec.container_path,
-                                    files: spec
-                                        .files
-                                        .iter()
-                                        .map(|f| {
-                                            Ok(ContainerVolumeFile {
-                                                relative_path: f.relative_path.clone(),
-                                                content: map_document_ref(
-                                                    &f.content,
-                                                    "volume file",
-                                                )?,
-                                            })
-                                        })
-                                        .collect::<anyhow::Result<Vec<_>>>()?,
-                                })
-                            })
-                            .collect::<anyhow::Result<Vec<_>>>()?;
-                    }
-                }
-
-                WitServiceType::Container(ContainerManifest {
-                    source: ArtifactSource::Binary(vec![]),
-                    hash: svc.config.hash.clone(),
-                    image,
-                    ports,
-                    volumes,
-                })
-            }
-            ServiceType::NativeHost => {
-                return Err(anyhow::anyhow!(
-                    "NativeHost service type is not supported in deployment plans"
-                ));
-            }
-        };
-        let instance_certificate = instance_certificates.get(&svc.service_id).cloned();
-        let registry_certificate = registry_certificates.get(&svc.service_id).cloned();
-        let app_context = Some(WitAppContext {
-            app_instance_id: plan_instance_id.clone(),
-            service_name: svc.logical_ref.service_name.to_string(),
-            // Without member-master substitution these members are
-            // the compiler's fabricated `did:key:h...` ids, which resolve to
-            // no key. Publishing them would make `dependency(...)` resolve
-            // and then fail a layer down as `service-not-found`; an empty
-            // list gives the guest the true answer,
-            // `dependency-not-bound`.
-            bindings: if emit_bindings {
-                svc.resolved_dependencies
-                    .iter()
-                    .map(|(name, members)| WitDependencyBinding {
-                        dependency_name: name.to_string(),
-                        // Intra-app only.
-                        app_instance_id: plan_instance_id.clone(),
-                        mode: map_mode(target_modes.get(name).copied().unwrap_or_default()),
-                        members: members.iter().map(ToString::to_string).collect(),
-                        // The epoch belongs to the *dependent* service, not
-                        // the dependency -- one counter per (app_instance_id,
-                        // dependent logical_ref), shared by every one of that
-                        // service's bindings. `0` (an absent entry) means
-                        // "no supervisor has written here".
-                        epoch: binding_epochs.get(&svc.member_ref()).copied().unwrap_or(0),
-                        cache_ttl_ms: DEFAULT_BINDING_CACHE_TTL_MS,
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            },
-            // ADR-0021 §4: the management generation this apply writes at,
-            // forwarded from the request unchanged.
-            generation,
-        });
-        wit_services.push(WitPlannedService {
-            service_id: svc.service_id.to_string(),
-            logical_ref: svc.logical_ref.to_string(),
-            manifest: DeployManifest {
-                config: wit_config,
-                service_type,
-                registry_certificate,
-                instance_certificate,
-            },
-            app_context,
-        });
+        wit_services.push(map_planned_service(svc, &ctx)?);
     }
 
     Ok(WitDeploymentPlan {
