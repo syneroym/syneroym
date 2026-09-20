@@ -52,8 +52,7 @@ impl SynAppManifest {
             .map_err(|e| anyhow!("Failed to serialize to JSON manifest: {e}"))
     }
 
-    pub fn validate(&self) -> Result<()> {
-        // 1. Verify that depends_on references actual services within the manifest.
+    fn validate_dependencies(&self) -> Result<()> {
         for (name, spec) in &self.services {
             for dep in &spec.depends_on {
                 if !self.services.contains_key(dep) {
@@ -62,40 +61,11 @@ impl SynAppManifest {
             }
         }
 
-        // 2. Perform cycle detection.
         let mut visited = BTreeMap::new();
         let mut stack = BTreeMap::new();
         for name in self.services.keys() {
             visited.insert(name, false);
             stack.insert(name, false);
-        }
-
-        fn has_cycle<'a>(
-            node: &'a LogicalServiceName,
-            services: &'a BTreeMap<LogicalServiceName, ServiceSpec>,
-            visited: &mut BTreeMap<&'a LogicalServiceName, bool>,
-            stack: &mut BTreeMap<&'a LogicalServiceName, bool>,
-        ) -> bool {
-            if *stack.get(node).unwrap_or(&false) {
-                return true;
-            }
-            if *visited.get(node).unwrap_or(&false) {
-                return false;
-            }
-
-            visited.insert(node, true);
-            stack.insert(node, true);
-
-            if let Some(spec) = services.get(node) {
-                for dep in &spec.depends_on {
-                    if has_cycle(dep, services, visited, stack) {
-                        return true;
-                    }
-                }
-            }
-
-            stack.insert(node, false);
-            false
         }
 
         for name in self.services.keys() {
@@ -104,8 +74,10 @@ impl SynAppManifest {
             }
         }
 
-        // 3. `replicas`, all three rules in one place: `>= 1`,
-        // `<= MAX_REPLICAS`, and not alongside a declared `schema`.
+        Ok(())
+    }
+
+    fn validate_replicas(&self) -> Result<()> {
         for (name, spec) in &self.services {
             if spec.replicas < 1 {
                 return Err(anyhow!("Service '{name}' declares replicas = 0; the minimum is 1"));
@@ -144,15 +116,10 @@ impl SynAppManifest {
                 ));
             }
         }
+        Ok(())
+    }
 
-        // 4. `schedule`: the cron must parse, the named interface must be
-        // one the service actually declares, `method` must be non-empty,
-        // `params` (if present) must be JSON, `timeout_ms` must be a
-        // budget a run can actually finish inside, and the count of
-        // scheduled services must not exceed the cap. The last two are
-        // re-checked at `submit`, since that path takes an already-compiled
-        // plan and would otherwise apply neither
-        // (`refuse_unrunnable_schedules`, `syneroym-app-supervisor`).
+    fn validate_schedules(&self) -> Result<()> {
         let mut scheduled = 0usize;
         for (name, spec) in &self.services {
             let Some(sched) = &spec.schedule else { continue };
@@ -199,7 +166,41 @@ impl SynAppManifest {
                  {MAX_SCHEDULED_SERVICES}"
             ));
         }
-
         Ok(())
     }
+
+    pub fn validate(&self) -> Result<()> {
+        self.validate_dependencies()?;
+        self.validate_replicas()?;
+        self.validate_schedules()?;
+        Ok(())
+    }
+}
+
+fn has_cycle<'a>(
+    node: &'a LogicalServiceName,
+    services: &'a BTreeMap<LogicalServiceName, ServiceSpec>,
+    visited: &mut BTreeMap<&'a LogicalServiceName, bool>,
+    stack: &mut BTreeMap<&'a LogicalServiceName, bool>,
+) -> bool {
+    if *stack.get(node).unwrap_or(&false) {
+        return true;
+    }
+    if *visited.get(node).unwrap_or(&false) {
+        return false;
+    }
+
+    visited.insert(node, true);
+    stack.insert(node, true);
+
+    if let Some(spec) = services.get(node) {
+        for dep in &spec.depends_on {
+            if has_cycle(dep, services, visited, stack) {
+                return true;
+            }
+        }
+    }
+
+    stack.insert(node, false);
+    false
 }
