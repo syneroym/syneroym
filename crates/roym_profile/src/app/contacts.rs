@@ -91,6 +91,58 @@ pub(crate) async fn get<H: AppHost>(host: &H, req: &Request) -> Response {
     }
 }
 
+async fn process_profile_envelope<H: AppHost>(
+    host: &H,
+    json_str: &str,
+    person_did: &str,
+    now: u64,
+) -> Result<(Option<String>, String, Option<String>), Response> {
+    let v = match verify_json(json_str, &VerifyOptions::new(now).expecting(person_did)) {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(Response::invalid_params(format!("profile did not verify: {e}")));
+        }
+    };
+    if v.record_type != RECORD_PROFILE || v.version != 1 {
+        return Err(Response::invalid_params("not a profile record this build understands"));
+    }
+    if v.subject != person_did {
+        return Err(Response::invalid_params(format!(
+            "profile subject '{}' does not match contact DID '{person_did}'",
+            v.subject
+        )));
+    }
+    let p: ProfilePayload = match serde_json::from_value(v.payload.clone()) {
+        Ok(p) => p,
+        Err(e) => return Err(Response::invalid_params(format!("profile payload: {e}"))),
+    };
+    if let Err(e) = p.validate() {
+        return Err(Response::invalid_params(e.to_string()));
+    }
+    if let Err(e) = ensure_coll(host, PROFILES, &[]).await {
+        return Err(Response::internal_error(e));
+    }
+    let profile_row = json!({
+        "envelope": json_str,
+        "record_id": v.record_id,
+        "verified_at_secs": now,
+    });
+    let profile_payload = match serde_json::to_vec(&profile_row) {
+        Ok(b) => b,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+    if let Err(e) = AppDataLayer::put(
+        host,
+        PROFILES.to_string(),
+        RecordWriteValue { id: person_did.to_string(), payload: profile_payload },
+    )
+    .await
+    {
+        return Err(Response::internal_error(e.to_string()));
+    }
+    Ok((Some(p.display_name), p.conversation_address, Some(v.record_id)))
+}
+
 pub(crate) async fn upsert<H: AppHost>(host: &H, req: &Request) -> Response {
     let person_did = match req.params.get("person_did").and_then(|v| v.as_str()) {
         Some(d) => d.to_string(),
@@ -104,52 +156,10 @@ pub(crate) async fn upsert<H: AppHost>(host: &H, req: &Request) -> Response {
     let profile_env_option = req.params.get("profile_envelope").and_then(|v| v.as_str());
 
     let (display_name, address, from_record) = match profile_env_option {
-        Some(json_str) => {
-            let v = match verify_json(json_str, &VerifyOptions::new(now).expecting(&person_did)) {
-                Ok(v) => v,
-                Err(e) => {
-                    return Response::invalid_params(format!("profile did not verify: {e}"));
-                }
-            };
-            if v.record_type != RECORD_PROFILE || v.version != 1 {
-                return Response::invalid_params("not a profile record this build understands");
-            }
-            if v.subject != person_did {
-                return Response::invalid_params(format!(
-                    "profile subject '{}' does not match contact DID '{person_did}'",
-                    v.subject
-                ));
-            }
-            let p: ProfilePayload = match serde_json::from_value(v.payload.clone()) {
-                Ok(p) => p,
-                Err(e) => return Response::invalid_params(format!("profile payload: {e}")),
-            };
-            if let Err(e) = p.validate() {
-                return Response::invalid_params(e.to_string());
-            }
-            if let Err(e) = ensure_coll(host, PROFILES, &[]).await {
-                return Response::internal_error(e);
-            }
-            let profile_row = json!({
-                "envelope": json_str,
-                "record_id": v.record_id,
-                "verified_at_secs": now,
-            });
-            let profile_payload = match serde_json::to_vec(&profile_row) {
-                Ok(b) => b,
-                Err(e) => return Response::internal_error(e.to_string()),
-            };
-            if let Err(e) = AppDataLayer::put(
-                host,
-                PROFILES.to_string(),
-                RecordWriteValue { id: person_did.clone(), payload: profile_payload },
-            )
-            .await
-            {
-                return Response::internal_error(e.to_string());
-            }
-            (Some(p.display_name), p.conversation_address, Some(v.record_id))
-        }
+        Some(json_str) => match process_profile_envelope(host, json_str, &person_did, now).await {
+            Ok(res) => res,
+            Err(resp) => return resp,
+        },
         None => {
             let disp = req.params.get("display_name").and_then(|v| v.as_str()).map(String::from);
             let addr = match req.params.get("conversation_address").and_then(|v| v.as_str()) {
