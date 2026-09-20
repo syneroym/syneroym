@@ -117,26 +117,9 @@ pub(in crate::app) async fn publish<H: AppHost>(
     req: &Request,
     caller: Caller,
 ) -> Response {
-    // A local dispatch (this node's own owner, through the Hub or
-    // `roymctl`, or a same-node `directory.publish-to-source` loopback)
-    // arrives `Caller::Internal` -- `admit()` short-circuits to it
-    // regardless of the wire table, by design (a local dispatch is
-    // trusted for where it came from). It is a real, supported path, not
-    // a state that "never happens": it publishes under this
-    // installation's own recorded owner, never from a caller-supplied
-    // value. `Caller::Anonymous` cannot reach a `VerifiedOnly` method
-    // from the wire (`admit()` refuses it before this handler runs); the
-    // arm exists only so the match stays exhaustive against a future
-    // change to that contract.
-    let published_by = match caller {
-        Caller::Verified(did) => did,
-        Caller::Internal => owner_did_or_node(host).await,
-        Caller::Anonymous => {
-            return Response::internal_error(
-                "directory.publish reached with an anonymous caller, which admit() must never \
-                 allow",
-            );
-        }
+    let published_by = match resolve_published_by(caller, host).await {
+        Ok(did) => did,
+        Err(resp) => return resp,
     };
     let envelope = match req.params.get("envelope").and_then(Value::as_str) {
         Some(e) => e.to_string(),
@@ -158,14 +141,8 @@ pub(in crate::app) async fn publish<H: AppHost>(
     };
     let supersedes = verdict.supersedes;
 
-    match payload.status {
-        listing::ListingStatus::Draft => {
-            return Response::invalid_params("a draft listing may not be published");
-        }
-        listing::ListingStatus::Active | listing::ListingStatus::Withdrawn => {}
-    }
-    if payload.conversation_address.trim().is_empty() {
-        return Response::internal_error("a verified listing had an empty conversation_address");
+    if let Err(resp) = validate_publishable(&payload) {
+        return resp;
     }
 
     // A directory that has never declared itself (no `settings` row) is
@@ -194,138 +171,246 @@ pub(in crate::app) async fn publish<H: AppHost>(
         return Response::internal_error(e);
     }
 
-    // Freshness: refuse an envelope that is neither strictly newer than,
-    // nor a declared edit of, whatever this directory already holds for
-    // the listing. Without this, replaying an old signed envelope -- of
-    // any status, withdrawal included -- silently rewrites or deletes a
-    // provider's current, live listing. Strict `issued_at_secs` alone is
-    // not enough: the signing clock's resolution is one second, so a
-    // second, legitimate edit issued in the same second as the one it
-    // replaces would tie on timestamp -- `supersedes` naming the stored
-    // `record_id` is what tells the two cases apart.
     let existing_row = match load_publication_for_listing(host, &payload.listing_id).await {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
-    if let Some(existing) = &existing_row
-        && existing.record_id != record_id
-        && issued_at_secs <= existing.issued_at_secs
-        && supersedes.as_deref() != Some(existing.record_id.as_str())
+    if let Err(resp) =
+        check_not_stale(existing_row.as_ref(), &record_id, issued_at_secs, supersedes.as_deref())
     {
-        return Response::invalid_params(
-            "a newer or equal version of this listing is already published here",
-        );
+        return resp;
     }
 
-    // Withdrawal: remove the stored publication and its index rows, consume
-    // no budget.
     if matches!(payload.status, listing::ListingStatus::Withdrawn) {
-        if let Err(e) = AppDataLayer::delete_many(
-            host,
-            PUBLICATIONS.to_string(),
-            json!({ "listing_id": payload.listing_id }).to_string(),
-        )
-        .await
-        {
-            return Response::internal_error(e.to_string());
-        }
-        if let Err(e) = delete_search_index_for(host, &payload.listing_id).await {
-            return Response::internal_error(e);
-        }
-        return Response::ok(json!({ "listing_id": payload.listing_id, "withdrawn": true }));
+        return withdraw_publication(host, &payload.listing_id).await;
     }
 
     let limits = settings.publication_limits;
-    // Keyed on `published_by` -- the identity the router verified for
-    // this connection -- never on the envelope's own `issuer`. An issuer
-    // key is self-minted and rotatable by whoever holds it, and the
-    // envelope's bytes are served back verbatim by `directory.search`, so
-    // keying on `issuer` would let any caller either mint a fresh budget
-    // by rotating keys, or exhaust a stranger's budget by replaying a
-    // signed envelope that names them. `published_by` is stable per
-    // connection (a person's own owner DID locally, an instance DID over
-    // the wire) and is exactly the party a rate limit is supposed to
-    // bind.
-    let prior_secs =
-        match publication_secs_in_window(host, &published_by, limits.window_secs, now).await {
-            Ok(v) => v,
-            Err(e) => return Response::internal_error(e),
-        };
-    match safety::admit_publication(&prior_secs, &limits, now) {
-        Admission::Allow => {}
-        Admission::RateLimited { retry_after_secs } => {
-            return Response::err(
-                -32602,
-                format!("publication rate limit reached; retry in {retry_after_secs}s"),
-            )
-            .with_data(
-                json!({ "admission": "rate-limited", "retry_after_secs": retry_after_secs }),
-            );
-        }
-        Admission::Blocked => {
-            return Response::internal_error("admit_publication returned Blocked");
-        }
+    if let Err(resp) = check_rate_limit(host, &published_by, &limits, now).await {
+        return resp;
     }
 
-    // The ledger row is written immediately on admission, not after the
-    // several other awaited writes below: the read (above) and this
-    // write are still two separate host calls, not one atomic operation
-    // -- the data layer offers no compare-and-swap this call could use
-    // instead -- but writing right away narrows the window a second,
-    // concurrent `publish` could race through to the smallest span
-    // available rather than the whole rest of this function.
-    let log_key = format!("{published_by}:{now}:{record_id}");
-    if let Err(e) = put_json(
+    if let Err(e) = record_publication_and_prune(
         host,
-        PUBLICATION_LOG,
-        &log_key,
-        &json!({ "published_by": published_by, "at_secs": now }),
+        &published_by,
+        &record_id,
+        &limits,
+        settings.retention_secs,
+        now,
     )
     .await
     {
         return Response::internal_error(e);
     }
 
-    // Prune the limiter ledger and, per the SynOrg's own retention policy,
-    // publications and their index rows past their retention window --
-    // in the one pass that already touches this data. Unconditional here
-    // (owner-gated, already writing), unlike the rate-gated read paths.
-    let log_floor = now.saturating_sub(limits.window_secs);
+    if let Err(e) = store_publication_and_index(
+        host,
+        PublishedRecord { envelope, record_id: record_id.clone(), issuer, issued_at_secs },
+        &payload,
+        &published_by,
+        now,
+    )
+    .await
+    {
+        return Response::internal_error(e);
+    }
+
+    Response::ok(json!({ "listing_id": payload.listing_id, "record_id": record_id }))
+}
+
+/// A local dispatch (this node's own owner, through the Hub or
+/// `roymctl`, or a same-node `directory.publish-to-source` loopback)
+/// arrives `Caller::Internal` -- `admit()` short-circuits to it
+/// regardless of the wire table, by design (a local dispatch is
+/// trusted for where it came from). It is a real, supported path, not
+/// a state that "never happens": it publishes under this
+/// installation's own recorded owner, never from a caller-supplied
+/// value. `Caller::Anonymous` cannot reach a `VerifiedOnly` method
+/// from the wire (`admit()` refuses it before this handler runs); the
+/// arm exists only so the match stays exhaustive against a future
+/// change to that contract.
+async fn resolve_published_by<H: AppHost>(caller: Caller, host: &H) -> Result<String, Response> {
+    match caller {
+        Caller::Verified(did) => Ok(did),
+        Caller::Internal => Ok(owner_did_or_node(host).await),
+        Caller::Anonymous => Err(Response::internal_error(
+            "directory.publish reached with an anonymous caller, which admit() must never allow",
+        )),
+    }
+}
+
+fn validate_publishable(payload: &listing::ListingPayload) -> Result<(), Response> {
+    match payload.status {
+        listing::ListingStatus::Draft => {
+            return Err(Response::invalid_params("a draft listing may not be published"));
+        }
+        listing::ListingStatus::Active | listing::ListingStatus::Withdrawn => {}
+    }
+    if payload.conversation_address.trim().is_empty() {
+        return Err(Response::internal_error(
+            "a verified listing had an empty conversation_address",
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses an envelope that is neither strictly newer than, nor a
+/// declared edit of, whatever this directory already holds for the
+/// listing. Without this, replaying an old signed envelope -- of any
+/// status, withdrawal included -- silently rewrites or deletes a
+/// provider's current, live listing. Strict `issued_at_secs` alone is
+/// not enough: the signing clock's resolution is one second, so a
+/// second, legitimate edit issued in the same second as the one it
+/// replaces would tie on timestamp -- `supersedes` naming the stored
+/// `record_id` is what tells the two cases apart.
+fn check_not_stale(
+    existing: Option<&PublicationRow>,
+    record_id: &str,
+    issued_at_secs: u64,
+    supersedes: Option<&str>,
+) -> Result<(), Response> {
+    if let Some(existing) = existing
+        && existing.record_id != record_id
+        && issued_at_secs <= existing.issued_at_secs
+        && supersedes != Some(existing.record_id.as_str())
+    {
+        return Err(Response::invalid_params(
+            "a newer or equal version of this listing is already published here",
+        ));
+    }
+    Ok(())
+}
+
+/// Removes the stored publication and its index rows, consuming no rate
+/// budget. Called only when `payload.status` is `Withdrawn`.
+async fn withdraw_publication<H: AppHost>(host: &H, listing_id: &str) -> Response {
     if let Err(e) = AppDataLayer::delete_many(
         host,
-        PUBLICATION_LOG.to_string(),
-        json!({ "at_secs": { "$lte": log_floor } }).to_string(),
+        PUBLICATIONS.to_string(),
+        json!({ "listing_id": listing_id }).to_string(),
     )
     .await
     {
         return Response::internal_error(e.to_string());
     }
-    if let Err(e) = prune_expired_publications_now(host, settings.retention_secs, now).await {
+    if let Err(e) = delete_search_index_for(host, listing_id).await {
         return Response::internal_error(e);
     }
-    // Record this prune so a read verb in the next few minutes skips its
-    // own -- the marker means "last time any path pruned", not "last read".
+    Response::ok(json!({ "listing_id": listing_id, "withdrawn": true }))
+}
+
+/// Keyed on `published_by` -- the identity the router verified for this
+/// connection -- never on the envelope's own `issuer`. An issuer key is
+/// self-minted and rotatable by whoever holds it, and the envelope's
+/// bytes are served back verbatim by `directory.search`, so keying on
+/// `issuer` would let any caller either mint a fresh budget by rotating
+/// keys, or exhaust a stranger's budget by replaying a signed envelope
+/// that names them. `published_by` is stable per connection (a person's
+/// own owner DID locally, an instance DID over the wire) and is exactly
+/// the party a rate limit is supposed to bind.
+async fn check_rate_limit<H: AppHost>(
+    host: &H,
+    published_by: &str,
+    limits: &PublicationLimits,
+    now: u64,
+) -> Result<(), Response> {
+    let prior_secs =
+        match publication_secs_in_window(host, published_by, limits.window_secs, now).await {
+            Ok(v) => v,
+            Err(e) => return Err(Response::internal_error(e)),
+        };
+    match safety::admit_publication(&prior_secs, limits, now) {
+        Admission::Allow => Ok(()),
+        Admission::RateLimited { retry_after_secs } => Err(Response::err(
+            -32602,
+            format!("publication rate limit reached; retry in {retry_after_secs}s"),
+        )
+        .with_data(json!({ "admission": "rate-limited", "retry_after_secs": retry_after_secs }))),
+        Admission::Blocked => Err(Response::internal_error("admit_publication returned Blocked")),
+    }
+}
+
+/// The ledger row is written immediately on admission, not after the
+/// several other awaited writes that follow it: the caller's rate-limit
+/// read and this write are still two separate host calls, not one atomic
+/// operation -- the data layer offers no compare-and-swap this call
+/// could use instead -- but writing right away narrows the window a
+/// second, concurrent `publish` could race through to the smallest span
+/// available. Then prunes the limiter ledger and, per the SynOrg's own
+/// retention policy, publications and their index rows past their
+/// retention window -- in the one pass that already touches this data.
+/// Unconditional here (owner-gated, already writing), unlike the
+/// rate-gated read paths. Finally records this prune so a read verb in
+/// the next few minutes skips its own -- the marker means "last time any
+/// path pruned", not "last read".
+async fn record_publication_and_prune<H: AppHost>(
+    host: &H,
+    published_by: &str,
+    record_id: &str,
+    limits: &PublicationLimits,
+    retention_secs: u64,
+    now: u64,
+) -> Result<(), String> {
+    let log_key = format!("{published_by}:{now}:{record_id}");
+    put_json(
+        host,
+        PUBLICATION_LOG,
+        &log_key,
+        &json!({ "published_by": published_by, "at_secs": now }),
+    )
+    .await?;
+
+    let log_floor = now.saturating_sub(limits.window_secs);
+    AppDataLayer::delete_many(
+        host,
+        PUBLICATION_LOG.to_string(),
+        json!({ "at_secs": { "$lte": log_floor } }).to_string(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    prune_expired_publications_now(host, retention_secs, now).await?;
     let _ = ensure_coll(host, NODE_STATE, &[]).await;
     let _ = put_json(host, NODE_STATE, PRUNE_MARKER_KEY, &json!({ "at_secs": now })).await;
+    Ok(())
+}
 
-    // Replace the prior version, new row written before the old is
-    // deleted: a crash between the two steps then leaves both the old and
-    // the new publication briefly present (a later publish or `reindex`
-    // reconciles), never neither -- losing the row outright would also
-    // have spent one of the provider's daily publications on nothing.
+/// The verified envelope's own identity fields, kept together so
+/// `store_publication_and_index` takes one struct instead of four
+/// same-shaped `String` parameters a caller could transpose.
+struct PublishedRecord {
+    envelope: String,
+    record_id: String,
+    issuer: String,
+    issued_at_secs: u64,
+}
+
+/// Replaces the prior stored version, new row written before the old is
+/// deleted: a crash between the two steps then leaves both the old and
+/// the new publication briefly present (a later publish or `reindex`
+/// reconciles), never neither -- losing the row outright would also have
+/// spent one of the provider's daily publications on nothing. Then
+/// rebuilds this listing's search-index rows -- deleted before the
+/// rebuild so a republish with fewer areas never leaves an orphaned row
+/// behind.
+async fn store_publication_and_index<H: AppHost>(
+    host: &H,
+    record: PublishedRecord,
+    payload: &listing::ListingPayload,
+    published_by: &str,
+    now: u64,
+) -> Result<(), String> {
+    let PublishedRecord { envelope, record_id, issuer, issued_at_secs } = record;
     let pub_row = PublicationRow {
-        envelope: envelope.clone(),
+        envelope,
         record_id: record_id.clone(),
         listing_id: payload.listing_id.clone(),
         issuer: issuer.clone(),
-        published_by: published_by.clone(),
+        published_by: published_by.to_string(),
         issued_at_secs,
         received_at_secs: now,
     };
-    if let Err(e) = put_json(host, PUBLICATIONS, &record_id, &pub_row).await {
-        return Response::internal_error(e);
-    }
-    if let Err(e) = AppDataLayer::delete_many(
+    put_json(host, PUBLICATIONS, &record_id, &pub_row).await?;
+    AppDataLayer::delete_many(
         host,
         PUBLICATIONS.to_string(),
         json!({ "$and": [
@@ -335,23 +420,14 @@ pub(in crate::app) async fn publish<H: AppHost>(
         .to_string(),
     )
     .await
-    {
-        return Response::internal_error(e.to_string());
-    }
+    .map_err(|e| e.to_string())?;
 
-    // Index rows deleted before the rebuild, so a republish with fewer
-    // areas never leaves an orphaned row behind.
-    if let Err(e) = delete_search_index_for(host, &payload.listing_id).await {
-        return Response::internal_error(e);
-    }
-    for row in search_ops::build_index_rows(&payload, &record_id, &issuer, issued_at_secs, now) {
+    delete_search_index_for(host, &payload.listing_id).await?;
+    for row in search_ops::build_index_rows(payload, &record_id, &issuer, issued_at_secs, now) {
         let key = search_ops::search_index_key(&row.listing_id, row.area_index);
-        if let Err(e) = put_json(host, SEARCH_INDEX, &key, &row).await {
-            return Response::internal_error(e);
-        }
+        put_json(host, SEARCH_INDEX, &key, &row).await?;
     }
-
-    Response::ok(json!({ "listing_id": payload.listing_id, "record_id": record_id }))
+    Ok(())
 }
 
 /// Deletes publications and their index rows past the SynOrg's stated
