@@ -17,7 +17,8 @@ use serde_json::Value;
 use syneroym_core::deploy_docs;
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ContainerVolumeFile, DeployManifest, DocumentSource, ServiceType,
+    ContainerPortMapping, ContainerVolumeFile, ContainerVolumeMapping, DeployManifest,
+    DocumentSource, ServiceType,
 };
 use tokio::task;
 use tracing::{error, info, warn};
@@ -241,11 +242,50 @@ impl ContainerEngine {
         };
 
         let sanitized_id = sanitize_id(service_id);
+        let volume_args = self.prepare_volume_args(service_id, &container_manifest.volumes).await?;
+        let port_args = Self::prepare_port_args(&container_manifest.ports);
+        let env_args = self.prepare_env_args(service_id, manifest).await;
 
-        // 1. Volumes setup
+        let mut run_args = vec![
+            "run".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            sanitized_id,
+            "--network".to_string(),
+            "bridge".to_string(),
+        ];
+        run_args.extend(volume_args);
+        run_args.extend(port_args);
+        run_args.extend(env_args);
+        run_args.push(container_manifest.image.clone());
+
+        for arg in &manifest.config.args {
+            run_args.push(arg.clone());
+        }
+
+        info!(service_id = %service_id, args = ?run_args, "Running podman command");
+
+        let output = Command::new(&self.podman_path)
+            .args(&run_args)
+            .output()
+            .context("Failed to execute podman command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("podman run failed: {stderr}"));
+        }
+
+        self.resolve_actual_ports(service_id, &container_manifest.ports).await
+    }
+
+    async fn prepare_volume_args(
+        &self,
+        service_id: &str,
+        volumes: &[ContainerVolumeMapping],
+    ) -> Result<Vec<String>> {
         let mut volume_args = Vec::new();
         let mut volume_budget = deploy_docs::MAX_DEPLOY_VOLUME_BYTES;
-        for vol in &container_manifest.volumes {
+        for vol in volumes {
             let host_path = self.resolve_host_path(service_id, &vol.host_path);
             fs::create_dir_all(&host_path)
                 .with_context(|| format!("Failed to create host path directory {host_path:?}"))?;
@@ -278,10 +318,12 @@ impl ContainerEngine {
                 !vol.files.is_empty(),
             ));
         }
+        Ok(volume_args)
+    }
 
-        // 2. Ports mapping
+    fn prepare_port_args(ports: &[ContainerPortMapping]) -> Vec<String> {
         let mut port_args = Vec::new();
-        for port_map in &container_manifest.ports {
+        for port_map in ports {
             let protocol = if port_map.protocol.is_empty() { "tcp" } else { &port_map.protocol };
             if let Some(host_port) = port_map.host_port {
                 port_args.push("-p".to_string());
@@ -291,10 +333,10 @@ impl ContainerEngine {
                 port_args.push(format!("{}/{}", port_map.container_port, protocol));
             }
         }
+        port_args
+    }
 
-        // 3. Environment variables
-        let mut env_args = Vec::new();
-
+    async fn prepare_env_args(&self, service_id: &str, manifest: &DeployManifest) -> Vec<String> {
         let mut config_map = BTreeMap::new();
         #[allow(clippy::collapsible_if)]
         if let Some(sp) = &self.storage_provider {
@@ -322,46 +364,21 @@ impl ContainerEngine {
             config_map.insert(k.clone(), v.clone());
         }
 
+        let mut env_args = Vec::new();
         for (key, val) in &config_map {
             env_args.push("-e".to_string());
             env_args.push(format!("{key}={val}"));
         }
+        env_args
+    }
 
-        // 4. Command arguments
-        let mut run_args = vec![
-            "run".to_string(),
-            "-d".to_string(),
-            "--name".to_string(),
-            sanitized_id.clone(),
-            "--network".to_string(),
-            "bridge".to_string(),
-        ];
-
-        run_args.extend(volume_args);
-        run_args.extend(port_args);
-        run_args.extend(env_args);
-        run_args.push(container_manifest.image.clone());
-
-        // Append args if provided
-        for arg in &manifest.config.args {
-            run_args.push(arg.clone());
-        }
-
-        info!(service_id = %service_id, args = ?run_args, "Running podman command");
-
-        let output = Command::new(&self.podman_path)
-            .args(&run_args)
-            .output()
-            .context("Failed to execute podman command")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("podman run failed: {stderr}"));
-        }
-
-        // 5. Query and map dynamic ports or verify running ports
+    async fn resolve_actual_ports(
+        &self,
+        service_id: &str,
+        ports: &[ContainerPortMapping],
+    ) -> Result<Vec<(String, u16)>> {
         let mut actual_mappings = Vec::new();
-        for port_map in &container_manifest.ports {
+        for port_map in ports {
             let resolved_port = if let Some(host_port) = port_map.host_port {
                 host_port
             } else {
@@ -371,7 +388,6 @@ impl ContainerEngine {
             };
             actual_mappings.push((port_map.interface_name.clone(), resolved_port));
         }
-
         Ok(actual_mappings)
     }
 
