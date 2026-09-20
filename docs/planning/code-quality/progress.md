@@ -64,7 +64,7 @@ parenthetical that can be removed without rewriting the sentence.
 | `apps/roymctl` | 69 | 37 | 4 | 9 | done | done | done |
 | `crates/app_orchestration` | 49 | 22 | 2 | 2 | done | done | done |
 | `crates/async_queue` | 34 | 12 | 2 | 0 | done | done | |
-| `crates/data_db` | 34 | 9 | 4 | 0 | done | done | |
+| `crates/data_db` | 34 | 9 | 4 | 0 | done | done | done |
 | `crates/fdae` | 27 | 5 | 2 | 1 | done | done | done |
 | `crates/rpc` | 21 | 8 | 0 | 0 | done | n/a | |
 | `crates/ucan` | 14 | 0 | 0 | 0 | done | done | n/a |
@@ -85,7 +85,7 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/roym_conversation` | 0 | 0 | 1 | 0 | n/a | done | n/a |
 | `crates/client_gateway` | 0 | 0 | 1 | 1 | n/a | n/a | done |
 | `crates/app_host_native` | 1 | 0 | 1 | 1 | done | done | |
-| `crates/sandbox_podman` | 1 | 1 | 1 | 1 | done | n/a | |
+| `crates/sandbox_podman` | 1 | 1 | 1 | 1 | done | n/a | done |
 | `crates/identity` | 2 | 0 | 0 | 0 | done | n/a | n/a |
 | `crates/chunk_transfer` | 1 | 0 | 0 | 0 | done | n/a | n/a |
 | `crates/app_host` | 1 | 0 | 0 | 0 | done | n/a | n/a |
