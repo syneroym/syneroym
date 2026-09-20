@@ -167,6 +167,222 @@ pub fn compile_read(
     Ok(plan.local)
 }
 
+fn missing_definition_plan(
+    policy: &Policy,
+    collection: &str,
+    session: &SessionContext,
+    service_id: &str,
+    operation: &Ability,
+) -> ReadPlan {
+    if !policy.strict {
+        return ReadPlan { local: None, fetches: Vec::new(), pending: None };
+    }
+    let trace = DecisionTrace {
+        tier: 3,
+        collection: collection.to_string(),
+        service_id: service_id.to_string(),
+        subject_did: session.subject_did.clone(),
+        operation: operation.0.clone(),
+        operation_admitted: false,
+        path_failed: Some(format!(
+            "no policy definition matches collection '{collection}' and the policy is strict"
+        )),
+        compiled_predicate: Some("0=1".to_string()),
+        ..DecisionTrace::default()
+    };
+    trace.emit();
+    ReadPlan {
+        local: Some(CompiledSieve { trace, ..deny_all() }),
+        fetches: Vec::new(),
+        pending: None,
+    }
+}
+
+struct FallbackParams<'a> {
+    def: &'a Definition,
+    resource: &'a ResourceUri,
+    operation: &'a Ability,
+    session: &'a SessionContext,
+    collection: &'a str,
+    service_id: &'a str,
+}
+
+fn fallback_or_deny_applicable<'a>(
+    p: FallbackParams<'a>,
+    applicable: &mut BTreeSet<String>,
+    entitling_caps: &mut Vec<&'a Capability>,
+) -> Option<ReadPlan> {
+    let holding_caps: Vec<&Capability> =
+        p.session.capabilities.iter().filter(|cap| cap.grants(p.resource, p.operation)).collect();
+    let operation_admitted = !holding_caps.is_empty();
+    // The default permission is only a fallback *within the same
+    // grant-intersection contract* every other route obeys: its own
+    // `allows` must cover `operation`, or a caller holding an unrelated
+    // (e.g. write) capability could ride a read-only (or ability-less)
+    // default permission's paths straight through a write-mode check.
+    let default_covers_operation =
+        p.def.default.as_ref().and_then(|name| p.def.permissions.get(name)).is_some_and(|perm| {
+            perm.allows.iter().any(|a| Ability(a.clone()).entails(p.operation))
+        });
+    match &p.def.default {
+        Some(default_perm) if operation_admitted && default_covers_operation => {
+            applicable.insert(default_perm.clone());
+            for cap in holding_caps {
+                push_unique(entitling_caps, cap);
+            }
+            None
+        }
+        _ => {
+            let path_failed = if !operation_admitted {
+                format!("no held capability grants operation '{}' on this resource", p.operation.0)
+            } else {
+                "operation is granted by a held capability, but no permission's allows covers it \
+                 and no applicable default permission is configured"
+                    .to_string()
+            };
+            let trace = DecisionTrace {
+                tier: 3,
+                collection: p.collection.to_string(),
+                service_id: p.service_id.to_string(),
+                subject_did: p.session.subject_did.clone(),
+                held: describe_caps(&holding_caps),
+                operation: p.operation.0.clone(),
+                operation_admitted,
+                path_failed: Some(path_failed),
+                compiled_predicate: Some("0=1".to_string()),
+                ..DecisionTrace::default()
+            };
+            trace.emit();
+            Some(ReadPlan {
+                local: Some(CompiledSieve { trace, ..deny_all() }),
+                fetches: Vec::new(),
+                pending: None,
+            })
+        }
+    }
+}
+
+fn compile_clauses(
+    policy: &Policy,
+    object_type: &str,
+    def: &Definition,
+    applicable: &BTreeSet<String>,
+    session: &SessionContext,
+    params: &mut Vec<Value>,
+    fetch_ctx: &mut FetchCtx,
+) -> Result<(Vec<String>, Vec<String>), PolicyError> {
+    let mut clauses: Vec<String> = Vec::with_capacity(applicable.len());
+    let mut claim_absent_for: Vec<String> = Vec::new();
+    for pname in applicable {
+        let Some(perm) = def.permissions.get(pname) else {
+            // `default` is validated at parse time to name a real
+            // permission; every other member of `applicable` came from
+            // `def.permissions` directly. Unreachable in practice, but
+            // fail closed rather than panic.
+            return Err(PolicyError::Semantic(format!(
+                "permission '{pname}' not found on definition '{object_type}'"
+            )));
+        };
+        let clause = compile_permission(policy, object_type, perm, session, params, fetch_ctx)?;
+        // `compile_permission` returns exactly the literal string "0=1" in
+        // one place: a condition whose claim is absent from
+        // `session.claims`. Every other branch builds "1=1" or an `EXISTS`
+        // predicate, so this text match unambiguously identifies the
+        // claim-absent fail-closed case for the decision trace below.
+        if clause == "0=1" {
+            claim_absent_for.push(pname.clone());
+        }
+        clauses.push(clause);
+    }
+    Ok((clauses, claim_absent_for))
+}
+
+struct TraceParams<'a> {
+    collection: &'a str,
+    service_id: &'a str,
+    session: &'a SessionContext,
+    entitling_caps: &'a [&'a Capability],
+    operation: &'a Ability,
+    applicable: &'a BTreeSet<String>,
+    where_clause: &'a str,
+    claim_absent_for: &'a [String],
+    masked_fields: &'a [String],
+    where_caveats: &'a [Json],
+    abac_permissions: &'a [String],
+}
+
+fn build_decision_trace(p: TraceParams<'_>) -> DecisionTrace {
+    let path_failed = (p.claim_absent_for.len() == p.applicable.len()).then(|| {
+        format!("condition claim absent for permission(s): {}", p.claim_absent_for.join(", "))
+    });
+    let caveats_applied: Vec<String> = p
+        .masked_fields
+        .iter()
+        .map(|f| format!("fields.deny:{f}"))
+        .chain(p.where_caveats.iter().map(|c| format!("where.keys:[{}]", json_object_keys(c))))
+        .collect();
+    let trace = DecisionTrace {
+        tier: 3,
+        collection: p.collection.to_string(),
+        service_id: p.service_id.to_string(),
+        subject_did: p.session.subject_did.clone(),
+        anchor_did: p.session.anchor_did.clone(),
+        held: describe_caps(p.entitling_caps),
+        operation: p.operation.0.clone(),
+        operation_admitted: true,
+        applicable_permissions: p.applicable.iter().cloned().collect(),
+        compiled_predicate: Some(p.where_clause.to_string()),
+        rows_reached: None,
+        row_id: None,
+        write_phase: None,
+        path_failed,
+        caveats_applied,
+        remote_fetches: Vec::new(),
+        abac_permissions: p.abac_permissions.to_vec(),
+    };
+    trace.emit();
+    trace
+}
+
+fn assemble_read_plan(
+    fetch_ctx: FetchCtx,
+    where_clause: String,
+    params: Vec<Value>,
+    masked_fields: Vec<String>,
+    where_caveats: Vec<Json>,
+    trace: DecisionTrace,
+    abac_permissions: Vec<String>,
+) -> ReadPlan {
+    if fetch_ctx.fetches.is_empty() {
+        ReadPlan {
+            local: Some(CompiledSieve {
+                where_clause,
+                params,
+                masked_fields,
+                where_caveats,
+                trace,
+                abac_permissions,
+            }),
+            fetches: Vec::new(),
+            pending: None,
+        }
+    } else {
+        ReadPlan {
+            local: None,
+            fetches: fetch_ctx.fetches,
+            pending: Some(PendingSieve {
+                where_clause,
+                params,
+                masked_fields,
+                where_caveats,
+                trace,
+                markers: fetch_ctx.markers,
+                abac_permissions,
+            }),
+        }
+    }
+}
+
 /// The two-phase counterpart of [`compile_read`]: same
 /// inputs, but when a selected permission path needs a remote relation
 /// (`Relation.service.is_some()`), it is compiled with a placeholder `IN`
@@ -183,28 +399,7 @@ pub fn plan_read(
     mode: Mode,
 ) -> Result<ReadPlan, PolicyError> {
     let Some((object_type, def)) = find_definition(policy, collection) else {
-        if !policy.strict {
-            return Ok(ReadPlan { local: None, fetches: Vec::new(), pending: None });
-        }
-        let trace = DecisionTrace {
-            tier: 3,
-            collection: collection.to_string(),
-            service_id: service_id.to_string(),
-            subject_did: session.subject_did.clone(),
-            operation: operation.0.clone(),
-            operation_admitted: false,
-            path_failed: Some(format!(
-                "no policy definition matches collection '{collection}' and the policy is strict"
-            )),
-            compiled_predicate: Some("0=1".to_string()),
-            ..DecisionTrace::default()
-        };
-        trace.emit();
-        return Ok(ReadPlan {
-            local: Some(CompiledSieve { trace, ..deny_all() }),
-            fetches: Vec::new(),
-            pending: None,
-        });
+        return Ok(missing_definition_plan(policy, collection, session, service_id, operation));
     };
 
     let resource = ResourceUri(format!(
@@ -216,63 +411,16 @@ pub fn plan_read(
         applicable_permissions(def, object_type, &resource, operation, session);
     close_over_includes(&mut applicable, def, operation);
 
-    if applicable.is_empty() {
-        let holding_caps: Vec<&Capability> =
-            session.capabilities.iter().filter(|cap| cap.grants(&resource, operation)).collect();
-        let operation_admitted = !holding_caps.is_empty();
-        // The default permission is only a fallback *within the same
-        // grant-intersection contract* every other route obeys: its own
-        // `allows` must cover `operation`, or a caller holding an unrelated
-        // (e.g. write) capability could ride a read-only (or ability-less)
-        // default permission's paths straight through a write-mode check.
-        let default_covers_operation =
-            def.default.as_ref().and_then(|name| def.permissions.get(name)).is_some_and(|perm| {
-                perm.allows.iter().any(|a| Ability(a.clone()).entails(operation))
-            });
-        match &def.default {
-            Some(default_perm) if operation_admitted && default_covers_operation => {
-                applicable.insert(default_perm.clone());
-                for cap in holding_caps {
-                    push_unique(&mut entitling_caps, cap);
-                }
-            }
-            _ => {
-                let path_failed = if !operation_admitted {
-                    format!(
-                        "no held capability grants operation '{}' on this resource",
-                        operation.0
-                    )
-                } else {
-                    "operation is granted by a held capability, but no permission's allows covers \
-                     it and no applicable default permission is configured"
-                        .to_string()
-                };
-                let trace = DecisionTrace {
-                    tier: 3,
-                    collection: collection.to_string(),
-                    service_id: service_id.to_string(),
-                    subject_did: session.subject_did.clone(),
-                    held: describe_caps(&holding_caps),
-                    operation: operation.0.clone(),
-                    operation_admitted,
-                    path_failed: Some(path_failed),
-                    compiled_predicate: Some("0=1".to_string()),
-                    ..DecisionTrace::default()
-                };
-                trace.emit();
-                return Ok(ReadPlan {
-                    local: Some(CompiledSieve { trace, ..deny_all() }),
-                    fetches: Vec::new(),
-                    pending: None,
-                });
-            }
-        }
+    if applicable.is_empty()
+        && let Some(deny_plan) = fallback_or_deny_applicable(
+            FallbackParams { def, resource: &resource, operation, session, collection, service_id },
+            &mut applicable,
+            &mut entitling_caps,
+        )
+    {
+        return Ok(deny_plan);
     }
 
-    // Stage-4 ABAC opt-in (ADR-0017 §7): every applicable permission that set
-    // `authorize_rows: true`, including the `default` fallback if it was
-    // just folded into `applicable` above. Empty -- the overwhelmingly
-    // common case -- means no after-step.
     let abac_permissions: Vec<String> = applicable
         .iter()
         .filter(|name| def.permissions.get(*name).is_some_and(|p| p.authorize_rows))
@@ -281,30 +429,15 @@ pub fn plan_read(
 
     let mut params: Vec<Value> = Vec::new();
     let mut fetch_ctx = FetchCtx::default();
-    let mut clauses: Vec<String> = Vec::with_capacity(applicable.len());
-    let mut claim_absent_for: Vec<String> = Vec::new();
-    for pname in &applicable {
-        let Some(perm) = def.permissions.get(pname) else {
-            // `default` is validated at parse time to name a real
-            // permission; every other member of `applicable` came from
-            // `def.permissions` directly. Unreachable in practice, but
-            // fail closed rather than panic.
-            return Err(PolicyError::Semantic(format!(
-                "permission '{pname}' not found on definition '{object_type}'"
-            )));
-        };
-        let clause =
-            compile_permission(policy, object_type, perm, session, &mut params, &mut fetch_ctx)?;
-        // `compile_permission` returns exactly the literal string "0=1" in
-        // one place: a condition whose claim is absent from
-        // `session.claims`. Every other branch builds "1=1" or an `EXISTS`
-        // predicate, so this text match unambiguously identifies the
-        // claim-absent fail-closed case for the decision trace below.
-        if clause == "0=1" {
-            claim_absent_for.push(pname.clone());
-        }
-        clauses.push(clause);
-    }
+    let (clauses, claim_absent_for) = compile_clauses(
+        policy,
+        object_type,
+        def,
+        &applicable,
+        session,
+        &mut params,
+        &mut fetch_ctx,
+    )?;
     let mut where_clause = format!("({})", clauses.join(" OR "));
 
     if let Mode::PointInTime { id } = &mode {
@@ -318,74 +451,29 @@ pub fn plan_read(
         .filter_map(|cap| cap.caveats.as_ref()?.get("where").cloned())
         .collect();
 
-    // A deny is knowable at compile time only when *every* applicable
-    // permission's own clause denied via the claim-absent fail-closed path
-    // -- checking the *joined* string instead (e.g. `base_where_clause ==
-    // "(0=1)"`) would miss a multi-permission deny: two "0=1" clauses OR
-    // together as "(0=1 OR 0=1)", never as the literal "(0=1)" a naive
-    // string match expects. `claim_absent_for` only ever grows to
-    // `applicable.len()` (one push per clause, at most), so equality here
-    // is exactly "every clause was 0=1".
-    let path_failed = (claim_absent_for.len() == applicable.len()).then(|| {
-        format!("condition claim absent for permission(s): {}", claim_absent_for.join(", "))
+    let trace = build_decision_trace(TraceParams {
+        collection,
+        service_id,
+        session,
+        entitling_caps: &entitling_caps,
+        operation,
+        applicable: &applicable,
+        where_clause: &where_clause,
+        claim_absent_for: &claim_absent_for,
+        masked_fields: &masked_fields,
+        where_caveats: &where_caveats,
+        abac_permissions: &abac_permissions,
     });
-    // Field names and caveat-filter *keys* are policy/grant shape, safe to
-    // log; the caveat filter's *values* (DIDs, tenant ids, row predicates)
-    // are not, so only their keys are recorded here.
-    let caveats_applied: Vec<String> = masked_fields
-        .iter()
-        .map(|f| format!("fields.deny:{f}"))
-        .chain(where_caveats.iter().map(|c| format!("where.keys:[{}]", json_object_keys(c))))
-        .collect();
-    let trace = DecisionTrace {
-        tier: 3,
-        collection: collection.to_string(),
-        service_id: service_id.to_string(),
-        subject_did: session.subject_did.clone(),
-        anchor_did: session.anchor_did.clone(),
-        held: describe_caps(&entitling_caps),
-        operation: operation.0.clone(),
-        operation_admitted: true,
-        applicable_permissions: applicable.iter().cloned().collect(),
-        compiled_predicate: Some(where_clause.clone()),
-        rows_reached: None,
-        row_id: None,
-        write_phase: None,
-        path_failed,
-        caveats_applied,
-        remote_fetches: Vec::new(),
-        abac_permissions: abac_permissions.clone(),
-    };
-    trace.emit();
 
-    if fetch_ctx.fetches.is_empty() {
-        Ok(ReadPlan {
-            local: Some(CompiledSieve {
-                where_clause,
-                params,
-                masked_fields,
-                where_caveats,
-                trace,
-                abac_permissions,
-            }),
-            fetches: Vec::new(),
-            pending: None,
-        })
-    } else {
-        Ok(ReadPlan {
-            local: None,
-            fetches: fetch_ctx.fetches,
-            pending: Some(PendingSieve {
-                where_clause,
-                params,
-                masked_fields,
-                where_caveats,
-                trace,
-                markers: fetch_ctx.markers,
-                abac_permissions,
-            }),
-        })
-    }
+    Ok(assemble_read_plan(
+        fetch_ctx,
+        where_clause,
+        params,
+        masked_fields,
+        where_caveats,
+        trace,
+        abac_permissions,
+    ))
 }
 
 /// Comma-joined top-level keys of a caveat `where` document, for the
