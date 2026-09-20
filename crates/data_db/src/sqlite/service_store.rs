@@ -98,66 +98,10 @@ pub(super) fn run_writer_loop(
     while let Some(cmd) = rx.blocking_recv() {
         match cmd {
             DbCommand::WriteSecret { key, secret_bytes, resp } => {
-                // Encrypt secret bytes with DEK (AES-256-GCM)
-                let aes_key = Key::<Aes256Gcm>::from_slice(&*dek);
-                let cipher = Aes256Gcm::new(aes_key);
-
-                let mut nonce_bytes = [0u8; 12];
-                rand::rng().fill_bytes(&mut nonce_bytes);
-                let nonce = Nonce::from_slice(&nonce_bytes);
-
-                let ciphertext_res = cipher
-                    .encrypt(nonce, secret_bytes.as_slice())
-                    .map_err(|e| anyhow::anyhow!("Encryption failure: {e}"));
-
-                let res = match ciphertext_res {
-                    Ok(ciphertext) => {
-                        let now = Utc::now().timestamp_millis();
-                        conn.execute(
-                            &format!(
-                                "INSERT OR REPLACE INTO {VAULT_TABLE} (key, ciphertext, nonce, \
-                                 updated_at)
-                             VALUES (?1, ?2, ?3, ?4)"
-                            ),
-                            rusqlite::params![key, ciphertext, nonce_bytes.as_slice(), now],
-                        )
-                        .map(|_| ())
-                        .map_err(|e| e.into())
-                    }
-                    Err(e) => Err(e),
-                };
-                let _ = resp.send(res);
+                let _ = resp.send(do_write_secret(&conn, &dek, &key, &secret_bytes));
             }
             DbCommand::RevealSecret { key, resp } => {
-                let res = (|| -> anyhow::Result<Option<Vec<u8>>> {
-                    let mut stmt = conn.prepare(&format!(
-                        "SELECT ciphertext, nonce FROM {VAULT_TABLE} WHERE key = ?1"
-                    ))?;
-                    let mut rows = stmt.query(rusqlite::params![key])?;
-
-                    if let Some(row) = rows.next()? {
-                        let ciphertext: Vec<u8> = row.get(0)?;
-                        let nonce_bytes: Vec<u8> = row.get(1)?;
-
-                        if nonce_bytes.len() != 12 {
-                            return Err(anyhow::anyhow!("Invalid stored nonce length"));
-                        }
-
-                        // Decrypt
-                        let aes_key = Key::<Aes256Gcm>::from_slice(&*dek);
-                        let cipher = Aes256Gcm::new(aes_key);
-                        let nonce = Nonce::from_slice(&nonce_bytes);
-
-                        let decrypted = cipher
-                            .decrypt(nonce, ciphertext.as_slice())
-                            .map_err(|e| anyhow::anyhow!("Decryption failure: {e}"))?;
-
-                        Ok(Some(decrypted))
-                    } else {
-                        Ok(None)
-                    }
-                })();
-                let _ = resp.send(res);
+                let _ = resp.send(do_reveal_secret(&conn, &dek, &key));
             }
             DbCommand::CreateCollection { schema, resp } => {
                 let _ = resp.send(do_create_collection(&conn, &schema));
@@ -208,6 +152,67 @@ pub(super) fn run_writer_loop(
                 ));
             }
         }
+    }
+}
+
+fn do_write_secret(
+    conn: &Connection,
+    dek: &[u8; 32],
+    key: &str,
+    secret_bytes: &[u8],
+) -> anyhow::Result<()> {
+    // Encrypt secret bytes with DEK (AES-256-GCM)
+    let aes_key = Key::<Aes256Gcm>::from_slice(dek);
+    let cipher = Aes256Gcm::new(aes_key);
+
+    let mut nonce_bytes = [0u8; 12];
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher
+        .encrypt(nonce, secret_bytes)
+        .map_err(|e| anyhow::anyhow!("Encryption failure: {e}"))?;
+
+    let now = Utc::now().timestamp_millis();
+    conn.execute(
+        &format!(
+            "INSERT OR REPLACE INTO {VAULT_TABLE} (key, ciphertext, nonce, updated_at)
+         VALUES (?1, ?2, ?3, ?4)"
+        ),
+        rusqlite::params![key, ciphertext, nonce_bytes.as_slice(), now],
+    )?;
+    Ok(())
+}
+
+fn do_reveal_secret(
+    conn: &Connection,
+    dek: &[u8; 32],
+    key: &str,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let mut stmt =
+        conn.prepare(&format!("SELECT ciphertext, nonce FROM {VAULT_TABLE} WHERE key = ?1"))?;
+    let mut rows = stmt.query(rusqlite::params![key])?;
+
+    if let Some(row) = rows.next()? {
+        let ciphertext: Vec<u8> = row.get(0)?;
+        let nonce_bytes: Vec<u8> = row.get(1)?;
+
+        if nonce_bytes.len() != 12 {
+            return Err(anyhow::anyhow!("Invalid stored nonce length"));
+        }
+
+        // Decrypt
+        let aes_key = Key::<Aes256Gcm>::from_slice(dek);
+        let cipher = Aes256Gcm::new(aes_key);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let decrypted = cipher
+            .decrypt(nonce, ciphertext.as_slice())
+            .map_err(|e| anyhow::anyhow!("Decryption failure: {e}"))?;
+
+        Ok(Some(decrypted))
+    } else {
+        Ok(None)
     }
 }
 
