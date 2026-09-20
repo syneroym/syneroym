@@ -20,7 +20,9 @@ use syneroym_app_orchestration::{
 };
 use syneroym_identity::delegation::{is_expired_parts, is_near_expiry_parts};
 
-use crate::{InstancePhase, NodeFacts, ProbeStatus, SubstrateStatus, SyneroymClient};
+use crate::{
+    InstancePhase, NodeFacts, ProbeStatus, ServiceStatus, SubstrateStatus, SyneroymClient,
+};
 
 #[async_trait::async_trait]
 pub trait StatusQuery: fmt::Debug + Send + Sync {
@@ -176,14 +178,13 @@ impl HealthReport {
     }
 }
 
-/// Polls every distinct substrate `expected` names, and folds each answer
-/// into a per-service `Signal`.
-pub async fn poll_once(
-    targets: &BTreeMap<String, HealthTarget>,
+/// Groups `expected` by the substrate each service names. A service with no
+/// completed placement (an empty `substrate_did`) is left out here --
+/// `record_not_deployed` accounts for those separately, since grouping on an
+/// empty key would mix them into whichever substrate happens to sort first.
+fn group_expected_by_substrate(
     expected: &[ExpectedService],
-) -> HealthReport {
-    let mut report = HealthReport::default();
-
+) -> BTreeMap<&str, Vec<&ExpectedService>> {
     let mut by_substrate: BTreeMap<&str, Vec<&ExpectedService>> = BTreeMap::new();
     for svc in expected {
         if svc.substrate_did.is_empty() {
@@ -191,9 +192,18 @@ pub async fn poll_once(
         }
         by_substrate.entry(svc.substrate_did.as_str()).or_default().push(svc);
     }
+    by_substrate
+}
 
-    // Substrates with no target built at all need no network call, so they
-    // are resolved up front; everything else is queried below.
+/// Splits `by_substrate` into the substrates the caller built a
+/// [`HealthTarget`] for (returned, to be queried) and the ones it did not --
+/// the latter need no network call, so they are resolved straight into
+/// `report` here instead of the caller's query loop.
+fn split_targeted<'a>(
+    by_substrate: BTreeMap<&'a str, Vec<&'a ExpectedService>>,
+    targets: &'a BTreeMap<String, HealthTarget>,
+    report: &mut HealthReport,
+) -> Vec<(&'a str, &'a HealthTarget, Vec<&'a ExpectedService>)> {
     let mut targeted = Vec::new();
     for (did, services) in by_substrate {
         let Some(target) = targets.get(did) else {
@@ -225,101 +235,113 @@ pub async fn poll_once(
         };
         targeted.push((did, target, services));
     }
+    targeted
+}
 
-    // Every targeted substrate is queried concurrently, not one
-    // after another -- a sweep over n substrates otherwise costs the sum of
-    // their latencies, and one node sitting at its connect timeout would
-    // delay every node behind it in `by_substrate`'s (`BTreeMap`) order.
-    let results = futures::future::join_all(targeted.iter().map(|(_, target, services)| {
-        let ids: Vec<String> = services.iter().map(|s| s.service_id.clone()).collect();
-        target.query.status(ids)
-    }))
-    .await;
+/// Builds one expected service's [`ServiceHealth`] once its substrate
+/// answered: `Unknown` when the status carries no record for this id,
+/// otherwise the signal derived from its reported phase/probe.
+fn service_health_from_status(
+    s: &ExpectedService,
+    target: &HealthTarget,
+    did: &str,
+    by_id: &BTreeMap<&str, &ServiceStatus>,
+) -> ServiceHealth {
+    let Some(st) = by_id.get(s.service_id.as_str()) else {
+        return ServiceHealth {
+            logical_ref: s.logical_ref.clone(),
+            service_id: s.service_id.clone(),
+            alias: target.alias.clone(),
+            substrate_did: did.to_string(),
+            signal: Signal::Unknown("the substrate returned no status for this id".to_string()),
+            instance_certificate_issued_at: None,
+            instance_certificate_expires_at: None,
+            binding_epochs: Vec::new(),
+            member_index: s.member_index,
+        };
+    };
+    let signal = match (&st.phase, &st.probe) {
+        (InstancePhase::NotRunning(r), _) => Signal::InstanceNotRunning(r.clone()),
+        (InstancePhase::NotFound, _) => {
+            Signal::InstanceNotRunning("this substrate has no endpoints for the id".to_string())
+        }
+        // A failing probe is a fault whether or not the substrate could
+        // determine a phase -- for a `tcp` service it is the only signal
+        // there is.
+        (InstancePhase::Running | InstancePhase::Unknown(_), ProbeStatus::Failing(r)) => {
+            Signal::ProbeFailing(r.clone())
+        }
+        (InstancePhase::Running, _) => Signal::Healthy,
+        (InstancePhase::Unknown(_), ProbeStatus::Passing) => Signal::Healthy,
+        (InstancePhase::Unknown(r), ProbeStatus::NotDeclared) => Signal::Unknown(r.clone()),
+    };
+    ServiceHealth {
+        logical_ref: s.logical_ref.clone(),
+        service_id: s.service_id.clone(),
+        alias: target.alias.clone(),
+        substrate_did: did.to_string(),
+        signal,
+        instance_certificate_issued_at: st.instance_certificate_issued_at,
+        instance_certificate_expires_at: st.instance_certificate_expires_at,
+        binding_epochs: st.binding_epochs.clone(),
+        member_index: s.member_index,
+    }
+}
 
-    for ((did, target, services), result) in targeted.into_iter().zip(results) {
-        match result {
-            Err(e) => {
-                // One substrate-level fault, no per-service alerts.
-                report.substrates.push(SubstrateHealth {
+/// Folds one substrate's query outcome into `report`: an error becomes one
+/// substrate-level fault plus a matching per-service signal for every
+/// service named under it; a successful answer maps each service through
+/// [`service_health_from_status`].
+fn record_query_outcome(
+    report: &mut HealthReport,
+    did: &str,
+    target: &HealthTarget,
+    services: &[&ExpectedService],
+    result: Result<SubstrateStatus, String>,
+) {
+    match result {
+        Err(e) => {
+            // One substrate-level fault, no per-service alerts.
+            report.substrates.push(SubstrateHealth {
+                alias: target.alias.clone(),
+                substrate_did: did.to_string(),
+                node: None,
+                fault: Some(SubstrateFault::Unreachable(e.clone())),
+            });
+            for s in services {
+                report.services.push(ServiceHealth {
+                    logical_ref: s.logical_ref.clone(),
+                    service_id: s.service_id.clone(),
                     alias: target.alias.clone(),
                     substrate_did: did.to_string(),
-                    node: None,
-                    fault: Some(SubstrateFault::Unreachable(e.clone())),
+                    signal: Signal::SubstrateUnreachable(e.clone()),
+                    instance_certificate_issued_at: None,
+                    instance_certificate_expires_at: None,
+                    binding_epochs: Vec::new(),
+                    member_index: s.member_index,
                 });
-                for s in services {
-                    report.services.push(ServiceHealth {
-                        logical_ref: s.logical_ref.clone(),
-                        service_id: s.service_id.clone(),
-                        alias: target.alias.clone(),
-                        substrate_did: did.to_string(),
-                        signal: Signal::SubstrateUnreachable(e.clone()),
-                        instance_certificate_issued_at: None,
-                        instance_certificate_expires_at: None,
-                        binding_epochs: Vec::new(),
-                        member_index: s.member_index,
-                    });
-                }
             }
-            Ok(status) => {
-                report.substrates.push(SubstrateHealth {
-                    alias: target.alias.clone(),
-                    substrate_did: did.to_string(),
-                    node: status.node,
-                    fault: None,
-                });
-                let by_id: BTreeMap<&str, _> =
-                    status.services.iter().map(|s| (s.service_id.as_str(), s)).collect();
-                for s in services {
-                    let Some(st) = by_id.get(s.service_id.as_str()) else {
-                        report.services.push(ServiceHealth {
-                            logical_ref: s.logical_ref.clone(),
-                            service_id: s.service_id.clone(),
-                            alias: target.alias.clone(),
-                            substrate_did: did.to_string(),
-                            signal: Signal::Unknown(
-                                "the substrate returned no status for this id".to_string(),
-                            ),
-                            instance_certificate_issued_at: None,
-                            instance_certificate_expires_at: None,
-                            binding_epochs: Vec::new(),
-                            member_index: s.member_index,
-                        });
-                        continue;
-                    };
-                    let signal = match (&st.phase, &st.probe) {
-                        (InstancePhase::NotRunning(r), _) => Signal::InstanceNotRunning(r.clone()),
-                        (InstancePhase::NotFound, _) => Signal::InstanceNotRunning(
-                            "this substrate has no endpoints for the id".to_string(),
-                        ),
-                        // A failing probe is a fault whether or not the
-                        // substrate could determine a phase -- for a `tcp`
-                        // service it is the only signal there is.
-                        (
-                            InstancePhase::Running | InstancePhase::Unknown(_),
-                            ProbeStatus::Failing(r),
-                        ) => Signal::ProbeFailing(r.clone()),
-                        (InstancePhase::Running, _) => Signal::Healthy,
-                        (InstancePhase::Unknown(_), ProbeStatus::Passing) => Signal::Healthy,
-                        (InstancePhase::Unknown(r), ProbeStatus::NotDeclared) => {
-                            Signal::Unknown(r.clone())
-                        }
-                    };
-                    report.services.push(ServiceHealth {
-                        logical_ref: s.logical_ref.clone(),
-                        service_id: s.service_id.clone(),
-                        alias: target.alias.clone(),
-                        substrate_did: did.to_string(),
-                        signal,
-                        instance_certificate_issued_at: st.instance_certificate_issued_at,
-                        instance_certificate_expires_at: st.instance_certificate_expires_at,
-                        binding_epochs: st.binding_epochs.clone(),
-                        member_index: s.member_index,
-                    });
-                }
+        }
+        Ok(status) => {
+            report.substrates.push(SubstrateHealth {
+                alias: target.alias.clone(),
+                substrate_did: did.to_string(),
+                node: status.node,
+                fault: None,
+            });
+            let by_id: BTreeMap<&str, &ServiceStatus> =
+                status.services.iter().map(|s| (s.service_id.as_str(), s)).collect();
+            for s in services {
+                report.services.push(service_health_from_status(s, target, did, &by_id));
             }
         }
     }
+}
 
+/// Records every service the journal has no completed placement for as
+/// [`Signal::NotDeployed`] -- these never entered `by_substrate`, so they are
+/// swept separately here.
+fn record_not_deployed(report: &mut HealthReport, expected: &[ExpectedService]) {
     for s in expected.iter().filter(|s| s.substrate_did.is_empty()) {
         report.services.push(ServiceHealth {
             logical_ref: s.logical_ref.clone(),
@@ -333,6 +355,37 @@ pub async fn poll_once(
             binding_epochs: Vec::new(),
         });
     }
+}
+
+/// Polls every distinct substrate `expected` names, and folds each answer
+/// into a per-service `Signal`.
+pub async fn poll_once(
+    targets: &BTreeMap<String, HealthTarget>,
+    expected: &[ExpectedService],
+) -> HealthReport {
+    let mut report = HealthReport::default();
+
+    // Substrates with no target built at all need no network call, so they
+    // are resolved up front by `split_targeted`; everything else is queried
+    // below.
+    let by_substrate = group_expected_by_substrate(expected);
+    let targeted = split_targeted(by_substrate, targets, &mut report);
+
+    // Every targeted substrate is queried concurrently, not one
+    // after another -- a sweep over n substrates otherwise costs the sum of
+    // their latencies, and one node sitting at its connect timeout would
+    // delay every node behind it in `by_substrate`'s (`BTreeMap`) order.
+    let results = futures::future::join_all(targeted.iter().map(|(_, target, services)| {
+        let ids: Vec<String> = services.iter().map(|s| s.service_id.clone()).collect();
+        target.query.status(ids)
+    }))
+    .await;
+
+    for ((did, target, services), result) in targeted.into_iter().zip(results) {
+        record_query_outcome(&mut report, did, target, &services, result);
+    }
+
+    record_not_deployed(&mut report, expected);
 
     report.services.sort_by(|a, b| a.logical_ref.cmp(&b.logical_ref));
     report
@@ -363,6 +416,134 @@ pub enum CertAlertPolicy {
     ManagedElsewhere,
 }
 
+/// Raises or clears `SubstrateUnreachable` for one substrate row.
+/// `NoTargetBuilt` is a caller-side configuration gap (an inventory entry
+/// with no corresponding `HealthTarget`), not a live outage -- raising
+/// `SubstrateUnreachable` for it would make `app health`'s exit code and
+/// `app alerts`' active rows disagree with what the printed table (correctly
+/// `Unknown`, not a fault) already says.
+fn record_substrate_alert(
+    alerts: &AlertStore,
+    instance_id: &AppInstanceId,
+    sub: &SubstrateHealth,
+    opened: &mut Vec<(AlertKind, String)>,
+) -> Result<()> {
+    match &sub.fault {
+        Some(SubstrateFault::Unreachable(e)) => {
+            if alerts.raise(
+                instance_id,
+                None,
+                sub.alias.as_ref().map(SubstrateAlias::as_str),
+                &sub.substrate_did,
+                AlertKind::SubstrateUnreachable,
+                e,
+            )? {
+                opened.push((AlertKind::SubstrateUnreachable, sub.substrate_did.clone()));
+            }
+        }
+        Some(SubstrateFault::NoTargetBuilt(_)) | None => {
+            alerts.clear(instance_id, None, &sub.substrate_did, AlertKind::SubstrateUnreachable)?;
+        }
+    }
+    Ok(())
+}
+
+/// Raises or clears one service's `InstanceNotRunning`/`ProbeFailing` pair,
+/// plus its `CertificateExpired`/`CertificateNearExpiry` pair when
+/// `cert_alerts` asks this call to own them.
+fn record_service_alerts(
+    alerts: &AlertStore,
+    instance_id: &AppInstanceId,
+    svc: &ServiceHealth,
+    now: u64,
+    cert_alerts: CertAlertPolicy,
+    opened: &mut Vec<(AlertKind, String)>,
+) -> Result<()> {
+    let l_ref = svc.member_ref().to_string();
+    // Exactly one of the two service-level kinds can be active at a
+    // time; the other is cleared on every pass, so a service that moves
+    // from "not running" to "probe failing" does not leave a stale
+    // alert. `SubstrateUnreachable` is deliberately not re-raised per
+    // service -- it was already raised once above.
+    let active = match &svc.signal {
+        Signal::InstanceNotRunning(r) => Some((AlertKind::InstanceNotRunning, r.clone())),
+        Signal::ProbeFailing(r) => Some((AlertKind::ProbeFailing, r.clone())),
+        _ => None,
+    };
+    for kind in [AlertKind::InstanceNotRunning, AlertKind::ProbeFailing] {
+        match &active {
+            Some((k, detail)) if *k == kind => {
+                if alerts.raise(
+                    instance_id,
+                    Some(&l_ref),
+                    svc.alias.as_ref().map(SubstrateAlias::as_str),
+                    &svc.substrate_did,
+                    kind,
+                    detail,
+                )? {
+                    opened.push((kind, l_ref.clone()));
+                }
+            }
+            _ => {
+                alerts.clear(instance_id, Some(&l_ref), &svc.substrate_did, kind)?;
+            }
+        }
+    }
+
+    // Expired is checked before near-expiry and the two
+    // are mutually exclusive, the same shape as the fault pair above --
+    // `is_near_expiry_parts` alone saturates to "always near" once a
+    // certificate has actually expired, which would report a current
+    // outage with the wording of a renewal reminder.
+    //
+    // `ManagedElsewhere` skips this pair entirely, raise and clear
+    // alike -- the caller (`syneroym-app-supervisor`) is the sole
+    // producer for both kinds in that case, see `CertAlertPolicy`.
+    if cert_alerts == CertAlertPolicy::Reminder {
+        let cert_state =
+            match (svc.instance_certificate_issued_at, svc.instance_certificate_expires_at) {
+                (Some(_), Some(expires)) if is_expired_parts(expires, now) => {
+                    Some((AlertKind::CertificateExpired, expires))
+                }
+                (Some(issued), Some(expires)) if is_near_expiry_parts(issued, expires, now) => {
+                    Some((AlertKind::CertificateNearExpiry, expires))
+                }
+                _ => None,
+            };
+        for kind in [AlertKind::CertificateExpired, AlertKind::CertificateNearExpiry] {
+            match cert_state {
+                Some((k, expires)) if k == kind => {
+                    let detail = match kind {
+                        AlertKind::CertificateExpired => format!(
+                            "instance certificate expired at {expires}; this instance cannot \
+                             handshake until it is renewed with `roymctl identity \
+                             certify-instance`"
+                        ),
+                        _ => format!(
+                            "instance certificate expires at {expires}; renew with `roymctl \
+                             identity certify-instance`"
+                        ),
+                    };
+                    if alerts.raise(
+                        instance_id,
+                        Some(&l_ref),
+                        svc.alias.as_ref().map(SubstrateAlias::as_str),
+                        &svc.substrate_did,
+                        kind,
+                        &detail,
+                    )? {
+                        opened.push((kind, l_ref.clone()));
+                    }
+                }
+                _ => {
+                    alerts.clear(instance_id, Some(&l_ref), &svc.substrate_did, kind)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Folds a report into the alert store: raises what is now failing, clears
 /// what is no longer. Returns the alerts this sweep *opened*, so a caller
 /// prints transitions rather than re-printing the standing set every time.
@@ -387,119 +568,11 @@ pub fn record_report(
     let mut opened = Vec::new();
 
     for sub in &report.substrates {
-        // `NoTargetBuilt` is a caller-side configuration gap (an
-        // inventory entry with no corresponding `HealthTarget`), not a live
-        // outage -- raising `SubstrateUnreachable` for it would make
-        // `app health`'s exit code and `app alerts`' active rows disagree
-        // with what the printed table (correctly `Unknown`, not a fault)
-        // already says.
-        match &sub.fault {
-            Some(SubstrateFault::Unreachable(e)) => {
-                if alerts.raise(
-                    instance_id,
-                    None,
-                    sub.alias.as_ref().map(SubstrateAlias::as_str),
-                    &sub.substrate_did,
-                    AlertKind::SubstrateUnreachable,
-                    e,
-                )? {
-                    opened.push((AlertKind::SubstrateUnreachable, sub.substrate_did.clone()));
-                }
-            }
-            Some(SubstrateFault::NoTargetBuilt(_)) | None => {
-                alerts.clear(
-                    instance_id,
-                    None,
-                    &sub.substrate_did,
-                    AlertKind::SubstrateUnreachable,
-                )?;
-            }
-        }
+        record_substrate_alert(alerts, instance_id, sub, &mut opened)?;
     }
 
     for svc in &report.services {
-        let l_ref = svc.member_ref().to_string();
-        // Exactly one of the two service-level kinds can be active at a
-        // time; the other is cleared on every pass, so a service that moves
-        // from "not running" to "probe failing" does not leave a stale
-        // alert. `SubstrateUnreachable` is deliberately not re-raised per
-        // service -- it was already raised once above.
-        let active = match &svc.signal {
-            Signal::InstanceNotRunning(r) => Some((AlertKind::InstanceNotRunning, r.clone())),
-            Signal::ProbeFailing(r) => Some((AlertKind::ProbeFailing, r.clone())),
-            _ => None,
-        };
-        for kind in [AlertKind::InstanceNotRunning, AlertKind::ProbeFailing] {
-            match &active {
-                Some((k, detail)) if *k == kind => {
-                    if alerts.raise(
-                        instance_id,
-                        Some(&l_ref),
-                        svc.alias.as_ref().map(SubstrateAlias::as_str),
-                        &svc.substrate_did,
-                        kind,
-                        detail,
-                    )? {
-                        opened.push((kind, l_ref.clone()));
-                    }
-                }
-                _ => {
-                    alerts.clear(instance_id, Some(&l_ref), &svc.substrate_did, kind)?;
-                }
-            }
-        }
-
-        // Expired is checked before near-expiry and the two
-        // are mutually exclusive, the same shape as the fault pair above --
-        // `is_near_expiry_parts` alone saturates to "always near" once a
-        // certificate has actually expired, which would report a current
-        // outage with the wording of a renewal reminder.
-        //
-        // `ManagedElsewhere` skips this pair entirely, raise and clear
-        // alike -- the caller (`syneroym-app-supervisor`) is the sole
-        // producer for both kinds in that case, see `CertAlertPolicy`.
-        if cert_alerts == CertAlertPolicy::Reminder {
-            let cert_state =
-                match (svc.instance_certificate_issued_at, svc.instance_certificate_expires_at) {
-                    (Some(_), Some(expires)) if is_expired_parts(expires, now) => {
-                        Some((AlertKind::CertificateExpired, expires))
-                    }
-                    (Some(issued), Some(expires)) if is_near_expiry_parts(issued, expires, now) => {
-                        Some((AlertKind::CertificateNearExpiry, expires))
-                    }
-                    _ => None,
-                };
-            for kind in [AlertKind::CertificateExpired, AlertKind::CertificateNearExpiry] {
-                match cert_state {
-                    Some((k, expires)) if k == kind => {
-                        let detail = match kind {
-                            AlertKind::CertificateExpired => format!(
-                                "instance certificate expired at {expires}; this instance cannot \
-                                 handshake until it is renewed with `roymctl identity \
-                                 certify-instance`"
-                            ),
-                            _ => format!(
-                                "instance certificate expires at {expires}; renew with `roymctl \
-                                 identity certify-instance`"
-                            ),
-                        };
-                        if alerts.raise(
-                            instance_id,
-                            Some(&l_ref),
-                            svc.alias.as_ref().map(SubstrateAlias::as_str),
-                            &svc.substrate_did,
-                            kind,
-                            &detail,
-                        )? {
-                            opened.push((kind, l_ref.clone()));
-                        }
-                    }
-                    _ => {
-                        alerts.clear(instance_id, Some(&l_ref), &svc.substrate_did, kind)?;
-                    }
-                }
-            }
-        }
+        record_service_alerts(alerts, instance_id, svc, now, cert_alerts, &mut opened)?;
     }
 
     // A service or substrate that has left the sweep entirely --
