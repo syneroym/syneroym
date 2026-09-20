@@ -107,6 +107,176 @@ async fn resolve_principal_and_owner<H: AppHost>(
     Ok((principal, owner))
 }
 
+async fn check_and_prune_publication_limits<H: AppHost>(
+    host: &H,
+    now: u64,
+) -> Result<(), Response> {
+    let limits = match limits::load_publication_limits(host).await {
+        Ok(l) => l,
+        Err(e) => return Err(Response::internal_error(e)),
+    };
+    let prior_secs = match limits::publication_secs_in_window(host, &limits, now).await {
+        Ok(v) => v,
+        Err(e) => return Err(Response::internal_error(e)),
+    };
+    match safety::admit_publication(&prior_secs, &limits, now) {
+        Admission::Allow => {}
+        Admission::RateLimited { retry_after_secs } => {
+            return Err(Response::err(
+                -32602,
+                format!("publication rate limit reached; retry in {retry_after_secs}s"),
+            )
+            .with_data(json!({
+                "admission": "rate-limited",
+                "retry_after_secs": retry_after_secs,
+            })));
+        }
+        // `admit_publication` never blocks -- naming the arm rather
+        // than collapsing it into a catch-all.
+        Admission::Blocked => {
+            return Err(Response::internal_error("admit_publication returned Blocked"));
+        }
+    }
+    // Pruned in the same pass that already reads this collection --
+    // the ledger otherwise grows without bound (deferred-backlog's
+    // "publications never pruned" row).
+    let floor = now.saturating_sub(limits.window_secs);
+    if let Err(e) = AppDataLayer::delete_many(
+        host,
+        PUBLICATIONS.to_string(),
+        json!({ "at_secs": { "$lte": floor } }).to_string(),
+    )
+    .await
+    {
+        return Err(Response::internal_error(e.to_string()));
+    }
+    Ok(())
+}
+
+async fn sign_listing_draft<H: AppHost>(
+    host: &H,
+    payload: &ListingPayload,
+    supersedes: Option<String>,
+    principal: Principal,
+    owner: &str,
+) -> Result<(String, String), Response> {
+    let payload_json = match serde_json::to_string(payload) {
+        Ok(s) => s,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+    let draft = RecordDraft {
+        version: listing::LISTING_VERSION,
+        record_type: RECORD_LISTING.to_string(),
+        subject: payload.listing_id.clone(),
+        payload: payload_json,
+        expires_at_secs: None,
+        supersedes,
+    };
+    let envelope_json = match AppSigning::sign_record(host, draft, principal).await {
+        Ok(j) => j,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+    let envelope = match Envelope::from_json(&envelope_json) {
+        Ok(e) => e,
+        Err(e) => {
+            return Err(Response::internal_error(format!(
+                "the host returned an envelope this build cannot parse: {e}"
+            )));
+        }
+    };
+    if envelope.issuer != owner {
+        return Err(Response::internal_error(
+            "the host signed under an issuer this service did not ask for",
+        ));
+    }
+    let record_id = match envelope.record_id() {
+        Ok(id) => id,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+    Ok((envelope_json, record_id))
+}
+
+async fn persist_listing_records<H: AppHost>(
+    host: &H,
+    payload: &ListingPayload,
+    record_id: &str,
+    envelope_json: String,
+    next_count: u64,
+    count_publication: bool,
+    now: u64,
+) -> Result<(), Response> {
+    if let Err(e) = ensure_listings(host).await {
+        return Err(Response::internal_error(e));
+    }
+    if let Err(e) = ensure_coll(host, LISTING_HISTORY, &[]).await {
+        return Err(Response::internal_error(e));
+    }
+
+    let row = ListingRow {
+        envelope: envelope_json.clone(),
+        record_id: record_id.to_string(),
+        listing_id: payload.listing_id.clone(),
+        slug: payload.slug.clone(),
+        status: payload.status,
+        updated_at_secs: now,
+        version_count: next_count,
+    };
+    let row_bytes = match serde_json::to_vec(&row) {
+        Ok(b) => b,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    // The pointer first: a crash between the two writes leaves the pointer
+    // on the previous valid version, and an unreferenced history row is
+    // harmless -- `profile.set`'s own rule.
+    if let Err(e) = AppDataLayer::put(
+        host,
+        LISTINGS.to_string(),
+        RecordWriteValue { id: payload.listing_id.clone(), payload: row_bytes },
+    )
+    .await
+    {
+        return Err(Response::internal_error(e.to_string()));
+    }
+    if let Err(e) = AppDataLayer::put(
+        host,
+        LISTING_HISTORY.to_string(),
+        RecordWriteValue { id: record_id.to_string(), payload: envelope_json.into_bytes() },
+    )
+    .await
+    {
+        return Err(Response::internal_error(e.to_string()));
+    }
+
+    if count_publication {
+        if let Err(e) = ensure_coll(host, PUBLICATIONS, &[idx("at_secs", IndexType::Numeric)]).await
+        {
+            return Err(Response::internal_error(e));
+        }
+        // Keyed by `record_id` (unique per signed version), not by a
+        // counter: two concurrent `listing.set` calls both read the same
+        // `version_count`, so a `{listing_id}:{next_count}` key would let
+        // the second write overwrite the first's publication row and one
+        // unit of the flood budget would cover two published versions.
+        let pub_id = format!("{}:{}", payload.listing_id, record_id);
+        let pub_row = json!({ "listing_id": payload.listing_id, "at_secs": now });
+        if let Err(e) = AppDataLayer::put(
+            host,
+            PUBLICATIONS.to_string(),
+            RecordWriteValue {
+                id: pub_id,
+                payload: serde_json::to_vec(&pub_row).unwrap_or_default(),
+            },
+        )
+        .await
+        {
+            return Err(Response::internal_error(e.to_string()));
+        }
+    }
+
+    Ok(())
+}
+
 /// The shared body of `listing.set` and `listing.withdraw`. `withdraw`
 /// forces `status = withdrawn` and skips the publication limiter
 /// entirely: the limiter counts versions that put an offer *out*, and a
@@ -134,148 +304,30 @@ async fn write_version<H: AppHost>(
     let next_count = prior.as_ref().map(|r| r.version_count).unwrap_or(0) + 1;
 
     if count_publication {
-        let limits = match limits::load_publication_limits(host).await {
-            Ok(l) => l,
-            Err(e) => return Response::internal_error(e),
-        };
-        let prior_secs = match limits::publication_secs_in_window(host, &limits, now).await {
+        match check_and_prune_publication_limits(host, now).await {
+            Ok(()) => {}
+            Err(resp) => return resp,
+        }
+    }
+
+    let (envelope_json, record_id) =
+        match sign_listing_draft(host, &payload, supersedes, principal, &owner).await {
             Ok(v) => v,
-            Err(e) => return Response::internal_error(e),
+            Err(resp) => return resp,
         };
-        match safety::admit_publication(&prior_secs, &limits, now) {
-            Admission::Allow => {}
-            Admission::RateLimited { retry_after_secs } => {
-                return Response::err(
-                    -32602,
-                    format!("publication rate limit reached; retry in {retry_after_secs}s"),
-                )
-                .with_data(json!({
-                    "admission": "rate-limited",
-                    "retry_after_secs": retry_after_secs,
-                }));
-            }
-            // `admit_publication` never blocks -- naming the arm rather
-            // than collapsing it into a catch-all.
-            Admission::Blocked => {
-                return Response::internal_error("admit_publication returned Blocked");
-            }
-        }
-        // Pruned in the same pass that already reads this collection --
-        // the ledger otherwise grows without bound (deferred-backlog's
-        // "publications never pruned" row).
-        let floor = now.saturating_sub(limits.window_secs);
-        if let Err(e) = AppDataLayer::delete_many(
-            host,
-            PUBLICATIONS.to_string(),
-            json!({ "at_secs": { "$lte": floor } }).to_string(),
-        )
-        .await
-        {
-            return Response::internal_error(e.to_string());
-        }
-    }
 
-    let payload_json = match serde_json::to_string(&payload) {
-        Ok(s) => s,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-    let draft = RecordDraft {
-        version: listing::LISTING_VERSION,
-        record_type: RECORD_LISTING.to_string(),
-        subject: payload.listing_id.clone(),
-        payload: payload_json,
-        expires_at_secs: None,
-        supersedes,
-    };
-    let envelope_json = match AppSigning::sign_record(host, draft, principal).await {
-        Ok(j) => j,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-    let envelope = match Envelope::from_json(&envelope_json) {
-        Ok(e) => e,
-        Err(e) => {
-            return Response::internal_error(format!(
-                "the host returned an envelope this build cannot parse: {e}"
-            ));
-        }
-    };
-    if envelope.issuer != owner {
-        return Response::internal_error(
-            "the host signed under an issuer this service did not ask for",
-        );
-    }
-    let record_id = match envelope.record_id() {
-        Ok(id) => id,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    if let Err(e) = ensure_listings(host).await {
-        return Response::internal_error(e);
-    }
-    if let Err(e) = ensure_coll(host, LISTING_HISTORY, &[]).await {
-        return Response::internal_error(e);
-    }
-
-    let row = ListingRow {
-        envelope: envelope_json.clone(),
-        record_id: record_id.clone(),
-        listing_id: payload.listing_id.clone(),
-        slug: payload.slug.clone(),
-        status: payload.status,
-        updated_at_secs: now,
-        version_count: next_count,
-    };
-    let row_bytes = match serde_json::to_vec(&row) {
-        Ok(b) => b,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    // The pointer first: a crash between the two writes leaves the pointer
-    // on the previous valid version, and an unreferenced history row is
-    // harmless -- `profile.set`'s own rule.
-    if let Err(e) = AppDataLayer::put(
+    if let Err(resp) = persist_listing_records(
         host,
-        LISTINGS.to_string(),
-        RecordWriteValue { id: payload.listing_id.clone(), payload: row_bytes },
+        &payload,
+        &record_id,
+        envelope_json,
+        next_count,
+        count_publication,
+        now,
     )
     .await
     {
-        return Response::internal_error(e.to_string());
-    }
-    if let Err(e) = AppDataLayer::put(
-        host,
-        LISTING_HISTORY.to_string(),
-        RecordWriteValue { id: record_id.clone(), payload: envelope_json.into_bytes() },
-    )
-    .await
-    {
-        return Response::internal_error(e.to_string());
-    }
-
-    if count_publication {
-        if let Err(e) = ensure_coll(host, PUBLICATIONS, &[idx("at_secs", IndexType::Numeric)]).await
-        {
-            return Response::internal_error(e);
-        }
-        // Keyed by `record_id` (unique per signed version), not by a
-        // counter: two concurrent `listing.set` calls both read the same
-        // `version_count`, so a `{listing_id}:{next_count}` key would let
-        // the second write overwrite the first's publication row and one
-        // unit of the flood budget would cover two published versions.
-        let pub_id = format!("{}:{}", payload.listing_id, record_id);
-        let pub_row = json!({ "listing_id": payload.listing_id, "at_secs": now });
-        if let Err(e) = AppDataLayer::put(
-            host,
-            PUBLICATIONS.to_string(),
-            RecordWriteValue {
-                id: pub_id,
-                payload: serde_json::to_vec(&pub_row).unwrap_or_default(),
-            },
-        )
-        .await
-        {
-            return Response::internal_error(e.to_string());
-        }
+        return resp;
     }
 
     Response::ok(json!({
