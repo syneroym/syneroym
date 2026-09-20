@@ -312,9 +312,20 @@ struct TraceParams<'a> {
 }
 
 fn build_decision_trace(p: TraceParams<'_>) -> DecisionTrace {
+    // A deny is knowable at compile time only when *every* applicable
+    // permission's own clause denied via the claim-absent fail-closed path
+    // -- checking the *joined* string instead (e.g. `base_where_clause ==
+    // "(0=1)"`) would miss a multi-permission deny: two "0=1" clauses OR
+    // together as "(0=1 OR 0=1)", never as the literal "(0=1)" a naive
+    // string match expects. `claim_absent_for` only ever grows to
+    // `applicable.len()` (one push per clause, at most), so equality here
+    // is exactly "every clause was 0=1".
     let path_failed = (p.claim_absent_for.len() == p.applicable.len()).then(|| {
         format!("condition claim absent for permission(s): {}", p.claim_absent_for.join(", "))
     });
+    // Field names and caveat-filter *keys* are policy/grant shape, safe to
+    // log; the caveat filter's *values* (DIDs, tenant ids, row predicates)
+    // are not, so only their keys are recorded here.
     let caveats_applied: Vec<String> = p
         .masked_fields
         .iter()
