@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use dashmap::DashMap;
-use httparse::{EMPTY_HEADER, Request, Status};
+use httparse::{EMPTY_HEADER, Header, Request, Status};
 use syneroym_app_orchestration::{LogicalResolver, StaticInventory};
 use syneroym_core::{
     config::{IdentityMode, SubstrateConfig},
@@ -251,13 +251,18 @@ fn is_auth_service_alias(alias: &str, state: &GatewayState) -> bool {
 
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> Result<()> {
+enum HeaderReadResult {
+    Complete { bytes_read: usize },
+    HandledError,
+    Closed,
+}
+
+async fn read_http_headers(stream: &mut TcpStream, buf: &mut [u8]) -> Result<HeaderReadResult> {
     const MAX_HEADER_BYTES: usize = 8 * 1024;
-    let mut buf = [0u8; MAX_HEADER_BYTES];
     let mut bytes_read = 0;
 
     enum HeaderRead {
-        Complete(usize),
+        Complete,
         TooLarge,
         ParseError(String),
         Closed,
@@ -276,7 +281,7 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
                 let mut req = Request::new(&mut headers);
 
                 match req.parse(&buf[..bytes_read]) {
-                    Ok(Status::Complete(len)) => return Ok(HeaderRead::Complete(len)),
+                    Ok(Status::Complete(_)) => return Ok(HeaderRead::Complete),
                     Ok(Status::Partial) => {
                         if bytes_read >= MAX_HEADER_BYTES {
                             return Ok(HeaderRead::TooLarge);
@@ -288,25 +293,113 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
         })
         .await;
 
-    let _header_len = match read_res {
-        Ok(Ok(HeaderRead::Complete(len))) => len,
+    match read_res {
+        Ok(Ok(HeaderRead::Complete)) => Ok(HeaderReadResult::Complete { bytes_read }),
         Ok(Ok(HeaderRead::TooLarge)) => {
-            return write_json_rpc_error(&mut stream, 400, "Headers too large").await;
+            write_json_rpc_error(stream, 400, "Headers too large").await?;
+            Ok(HeaderReadResult::HandledError)
         }
         Ok(Ok(HeaderRead::ParseError(e))) => {
-            return write_json_rpc_error(&mut stream, 400, &format!("Invalid HTTP request: {e}"))
-                .await;
+            write_json_rpc_error(stream, 400, &format!("Invalid HTTP request: {e}")).await?;
+            Ok(HeaderReadResult::HandledError)
         }
-        Ok(Ok(HeaderRead::Closed)) => return Ok(()),
-        Ok(Err(e)) => return Err(e),
+        Ok(Ok(HeaderRead::Closed)) => Ok(HeaderReadResult::Closed),
+        Ok(Err(e)) => Err(e),
         Err(_) => {
-            return write_json_rpc_error(
-                &mut stream,
-                408,
-                "Timed out reading HTTP request headers",
-            )
-            .await;
+            write_json_rpc_error(stream, 408, "Timed out reading HTTP request headers").await?;
+            Ok(HeaderReadResult::HandledError)
         }
+    }
+}
+
+fn resolve_target_host(host_header: &str, path: &str) -> Option<TargetHost> {
+    if let Some(t) = parse_target_host(host_header) {
+        return Some(t);
+    }
+    let first_label = host_header.split('.').next().unwrap_or("").split(':').next().unwrap_or("");
+    if first_label == AUTH_SERVICE_ALIAS || path.starts_with("/_syneroym/session") {
+        Some(TargetHost::Service {
+            lookup_alias: AUTH_SERVICE_ALIAS.to_string(),
+            interface: String::new(),
+        })
+    } else {
+        None
+    }
+}
+
+async fn answer_fixed_whoami(stream: &mut TcpStream, state: &GatewayState) -> Result<()> {
+    let fixed_did = state.fixed_identity_did.clone().unwrap_or_default();
+    let resp = serde_json::json!({
+        "person_did": fixed_did,
+        "auth": "fixed",
+        "expires_at_secs": 9_999_999_999u64,
+        "facts": {
+            "auth_method": "fixed"
+        }
+    });
+    let body = serde_json::to_vec(&resp)?;
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: \
+         close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await?;
+    stream.write_all(&body).await?;
+    Ok(())
+}
+
+fn is_session_auth_valid(headers: &[Header<'_>], state: &GatewayState) -> bool {
+    let token_opt = headers.iter().find_map(|h| {
+        if h.name.eq_ignore_ascii_case("cookie") {
+            let v = str::from_utf8(h.value).unwrap_or("");
+            for pair in v.split(';') {
+                let mut parts = pair.splitn(2, '=');
+                if let (Some(k), Some(val)) = (parts.next(), parts.next())
+                    && k.trim() == SESSION_COOKIE_NAME
+                {
+                    return Some(val.trim().to_string());
+                }
+            }
+        } else if h.name.eq_ignore_ascii_case("authorization") {
+            let v = str::from_utf8(h.value).unwrap_or("");
+            let trimmed = v.trim();
+            if let Some(tok) = trimmed.strip_prefix("Bearer ") {
+                return Some(tok.trim().to_string());
+            }
+            if let Some(tok) = trimmed.strip_prefix("bearer ") {
+                return Some(tok.trim().to_string());
+            }
+        }
+        None
+    });
+
+    let expected_auth_did = state.auth_service_did.read().ok().and_then(|g| g.clone());
+    match (token_opt.as_deref(), expected_auth_did.as_deref()) {
+        (Some(tok), Some(did)) => SessionToken::verify(tok, did).is_ok(),
+        _ => false,
+    }
+}
+
+async fn write_unauthorized_response(stream: &mut TcpStream) -> Result<()> {
+    let body = serde_json::json!({"error": "unauthorized: valid session required"});
+    let body_bytes = serde_json::to_vec(&body)?;
+    let response = format!(
+        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: \
+         {}\r\nConnection: close\r\n\r\n",
+        body_bytes.len()
+    );
+    stream.write_all(response.as_bytes()).await?;
+    stream.write_all(&body_bytes).await?;
+    Ok(())
+}
+
+async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> Result<()> {
+    const MAX_HEADER_BYTES: usize = 8 * 1024;
+    let mut buf = [0u8; MAX_HEADER_BYTES];
+
+    let bytes_read = match read_http_headers(&mut stream, &mut buf).await? {
+        HeaderReadResult::Complete { bytes_read } => bytes_read,
+        HeaderReadResult::HandledError | HeaderReadResult::Closed => return Ok(()),
     };
 
     let mut headers = [EMPTY_HEADER; 64];
@@ -325,20 +418,10 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
         .find(|h| h.name.eq_ignore_ascii_case("host"))
         .map_or("", |h| str::from_utf8(h.value).unwrap_or(""));
 
-    let target = match parse_target_host(host_header) {
+    let target = match resolve_target_host(host_header, path) {
         Some(t) => t,
         None => {
-            let first_label =
-                host_header.split('.').next().unwrap_or("").split(':').next().unwrap_or("");
-            if first_label == AUTH_SERVICE_ALIAS || path.starts_with("/_syneroym/session") {
-                TargetHost::Service {
-                    lookup_alias: AUTH_SERVICE_ALIAS.to_string(),
-                    interface: String::new(),
-                }
-            } else {
-                return write_json_rpc_error(&mut stream, 400, "Missing or invalid Host header")
-                    .await;
-            }
+            return write_json_rpc_error(&mut stream, 400, "Missing or invalid Host header").await;
         }
     };
 
@@ -352,71 +435,17 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
         && is_auth_host
         && (path == "/_syneroym/session/whoami" || path == "/whoami")
     {
-        let fixed_did = state.fixed_identity_did.clone().unwrap_or_default();
-        let resp = serde_json::json!({
-            "person_did": fixed_did,
-            "auth": "fixed",
-            "expires_at_secs": 9_999_999_999u64,
-            "facts": {
-                "auth_method": "fixed"
-            }
-        });
-        let body = serde_json::to_vec(&resp)?;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
-             {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        stream.write_all(response.as_bytes()).await?;
-        stream.write_all(&body).await?;
-        return Ok(());
+        return answer_fixed_whoami(&mut stream, &state).await;
     }
 
     // Connection auth gate in login mode: if enabled and not visiting auth service,
     // verify presence of a valid, signed, unexpired session credential
-    if state.identity_mode == IdentityMode::Login && state.connection_auth_gate && !is_auth_host {
-        let token_opt = req.headers.iter().find_map(|h| {
-            if h.name.eq_ignore_ascii_case("cookie") {
-                let v = str::from_utf8(h.value).unwrap_or("");
-                for pair in v.split(';') {
-                    let mut parts = pair.splitn(2, '=');
-                    if let (Some(k), Some(val)) = (parts.next(), parts.next())
-                        && k.trim() == SESSION_COOKIE_NAME
-                    {
-                        return Some(val.trim().to_string());
-                    }
-                }
-            } else if h.name.eq_ignore_ascii_case("authorization") {
-                let v = str::from_utf8(h.value).unwrap_or("");
-                let trimmed = v.trim();
-                if let Some(tok) = trimmed.strip_prefix("Bearer ") {
-                    return Some(tok.trim().to_string());
-                }
-                if let Some(tok) = trimmed.strip_prefix("bearer ") {
-                    return Some(tok.trim().to_string());
-                }
-            }
-            None
-        });
-
-        let expected_auth_did = state.auth_service_did.read().ok().and_then(|g| g.clone());
-        let is_valid = match (token_opt.as_deref(), expected_auth_did.as_deref()) {
-            (Some(tok), Some(did)) => SessionToken::verify(tok, did).is_ok(),
-            _ => false,
-        };
-
-        if !is_valid {
-            let body = serde_json::json!({"error": "unauthorized: valid session required"});
-            let body_bytes = serde_json::to_vec(&body)?;
-            let response = format!(
-                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: \
-                 {}\r\nConnection: close\r\n\r\n",
-                body_bytes.len()
-            );
-            stream.write_all(response.as_bytes()).await?;
-            stream.write_all(&body_bytes).await?;
-            return Ok(());
-        }
+    if state.identity_mode == IdentityMode::Login
+        && state.connection_auth_gate
+        && !is_auth_host
+        && !is_session_auth_valid(req.headers, &state)
+    {
+        return write_unauthorized_response(&mut stream).await;
     }
 
     let routing_key: Option<Vec<u8>> = req
@@ -434,10 +463,29 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
         }
     };
 
+    forward_to_service(
+        &mut stream,
+        &state,
+        &service_id,
+        &interface,
+        is_auth_host,
+        &buf[..bytes_read],
+    )
+    .await
+}
+
+async fn forward_to_service(
+    stream: &mut TcpStream,
+    state: &GatewayState,
+    service_id: &str,
+    interface: &str,
+    is_auth_host: bool,
+    initial_bytes: &[u8],
+) -> Result<()> {
     debug!("Proxying to interface (hash): {}, service_id (alias): {}", interface, service_id);
 
     let node_did = substrate::derive_did_key(&state.identity.public_key());
-    let connect_service_id = if is_auth_host { node_did.clone() } else { service_id.clone() };
+    let connect_service_id = if is_auth_host { node_did } else { service_id.to_string() };
 
     let client_arc = state
         .clients
@@ -456,7 +504,7 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
         let mut client = client_arc.lock().await;
         if let Err(e) = client.connect().await {
             error!("Gateway failed to connect to service {}: {}", connect_service_id, e);
-            return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
+            return write_json_rpc_error(stream, 502, "Bad Gateway").await;
         }
         let resolved_id = if is_auth_host {
             AUTH_SERVICE_ALIAS.to_string()
@@ -476,9 +524,9 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
     SyneroymClient::passthrough_with_conn(
         conn,
         &target_service_id,
-        &interface,
-        &buf[..bytes_read],
-        &mut stream,
+        interface,
+        initial_bytes,
+        stream,
         &passthrough_identity,
         delegation,
     )
