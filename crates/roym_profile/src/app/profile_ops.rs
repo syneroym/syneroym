@@ -3,7 +3,10 @@
 use serde_json::{Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost, AppSigning,
-    types::{data_layer::RecordWriteValue, signing::RecordDraft},
+    types::{
+        data_layer::RecordWriteValue,
+        signing::{Principal, RecordDraft},
+    },
 };
 use syneroym_roym_core::{
     clock,
@@ -83,6 +86,138 @@ pub(crate) async fn get<H: AppHost>(host: &H, req: &Request) -> Response {
     }
 }
 
+async fn parse_and_validate_payload<H: AppHost>(
+    host: &H,
+    req: &Request,
+    owner: &str,
+) -> Result<ProfilePayload, Response> {
+    let display_name = match req.params.get("display_name").and_then(|v| v.as_str()) {
+        Some(n) => n.to_string(),
+        None => return Err(Response::invalid_params("display_name is required")),
+    };
+    let about = req.params.get("about").and_then(|v| v.as_str()).map(String::from);
+    let locale = req.params.get("locale").and_then(|v| v.as_str()).map(String::from);
+
+    let address = match req.params.get("conversation_address").and_then(|v| v.as_str()) {
+        Some(a) => a.to_string(),
+        None => match current_owner_profile_address(host, owner).await {
+            Ok(Some(existing)) => existing,
+            _ => {
+                return Err(Response::invalid_params(
+                    "conversation_address is required for the first profile",
+                ));
+            }
+        },
+    };
+
+    let payload = ProfilePayload { display_name, about, conversation_address: address, locale };
+    if let Err(e) = payload.validate() {
+        return Err(Response::invalid_params(e.to_string()));
+    }
+    Ok(payload)
+}
+
+async fn sign_profile_draft<H: AppHost>(
+    host: &H,
+    payload: &ProfilePayload,
+    owner: &str,
+    supersedes: Option<String>,
+    principal: Principal,
+) -> Result<(String, String), Response> {
+    let payload_json_str = match serde_json::to_string(payload) {
+        Ok(s) => s,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    let wit_draft = RecordDraft {
+        version: 1,
+        record_type: RECORD_PROFILE.to_string(),
+        subject: owner.to_string(),
+        payload: payload_json_str,
+        expires_at_secs: None,
+        supersedes,
+    };
+
+    let envelope_json = match AppSigning::sign_record(host, wit_draft, principal).await {
+        Ok(j) => j,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    let envelope = match Envelope::from_json(&envelope_json) {
+        Ok(e) => e,
+        Err(e) => {
+            return Err(Response::internal_error(format!(
+                "the host returned an envelope this build cannot parse: {e}"
+            )));
+        }
+    };
+
+    if envelope.issuer != owner {
+        return Err(Response::internal_error(
+            "the host signed under an issuer this service did not ask for",
+        ));
+    }
+
+    let record_id = match envelope.record_id() {
+        Ok(id) => id,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    Ok((envelope_json, record_id))
+}
+
+async fn persist_profile_records<H: AppHost>(
+    host: &H,
+    owner: String,
+    record_id: &str,
+    envelope_json: &str,
+    now: u64,
+) -> Result<(), Response> {
+    if let Err(e) = ensure_coll(host, PROFILE_HISTORY, &[]).await {
+        return Err(Response::internal_error(e));
+    }
+    if let Err(e) = ensure_coll(host, PROFILES, &[]).await {
+        return Err(Response::internal_error(e));
+    }
+
+    let profile_row = json!({
+        "envelope": envelope_json,
+        "record_id": record_id,
+        "verified_at_secs": now,
+    });
+
+    let profile_payload = match serde_json::to_vec(&profile_row) {
+        Ok(b) => b,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    // Write the pointer first. If the process crashes between these two writes,
+    // the pointer still points to the previous valid record — the supersedes chain
+    // stays intact. An orphaned history record (written second, never pointed to)
+    // is harmless.
+    if let Err(e) = AppDataLayer::put(
+        host,
+        PROFILES.to_string(),
+        RecordWriteValue { id: owner, payload: profile_payload },
+    )
+    .await
+    {
+        return Err(Response::internal_error(e.to_string()));
+    }
+
+    if let Err(e) = AppDataLayer::put(
+        host,
+        PROFILE_HISTORY.to_string(),
+        RecordWriteValue { id: record_id.to_string(), payload: envelope_json.as_bytes().to_vec() },
+    )
+    .await
+    {
+        return Err(Response::internal_error(e.to_string()));
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn set<H: AppHost>(host: &H, req: &Request) -> Response {
     let now = clock::now_secs();
     let owner = match signing::owner_did(host).await {
@@ -109,114 +244,24 @@ pub(crate) async fn set<H: AppHost>(host: &H, req: &Request) -> Response {
         Err(e) => return Response::internal_error(e.to_string()),
     };
 
-    let display_name = match req.params.get("display_name").and_then(|v| v.as_str()) {
-        Some(n) => n.to_string(),
-        None => return Response::invalid_params("display_name is required"),
+    let payload = match parse_and_validate_payload(host, req, &owner).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
     };
-    let about = req.params.get("about").and_then(|v| v.as_str()).map(String::from);
-    let locale = req.params.get("locale").and_then(|v| v.as_str()).map(String::from);
-
-    let address = match req.params.get("conversation_address").and_then(|v| v.as_str()) {
-        Some(a) => a.to_string(),
-        None => match current_owner_profile_address(host, &owner).await {
-            Ok(Some(existing)) => existing,
-            _ => {
-                return Response::invalid_params(
-                    "conversation_address is required for the first profile",
-                );
-            }
-        },
-    };
-
-    let payload = ProfilePayload { display_name, about, conversation_address: address, locale };
-    if let Err(e) = payload.validate() {
-        return Response::invalid_params(e.to_string());
-    }
 
     let supersedes = match current_owner_profile_record_id(host, &owner).await {
         Ok(s) => s,
         Err(e) => return Response::internal_error(e),
     };
 
-    let payload_json_str = match serde_json::to_string(&payload) {
-        Ok(s) => s,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
+    let (envelope_json, record_id) =
+        match sign_profile_draft(host, &payload, &owner, supersedes, principal).await {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
 
-    let wit_draft = RecordDraft {
-        version: 1,
-        record_type: RECORD_PROFILE.to_string(),
-        subject: owner.clone(),
-        payload: payload_json_str,
-        expires_at_secs: None,
-        supersedes,
-    };
-
-    let envelope_json = match AppSigning::sign_record(host, wit_draft, principal).await {
-        Ok(j) => j,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    let envelope = match Envelope::from_json(&envelope_json) {
-        Ok(e) => e,
-        Err(e) => {
-            return Response::internal_error(format!(
-                "the host returned an envelope this build cannot parse: {e}"
-            ));
-        }
-    };
-
-    if envelope.issuer != owner {
-        return Response::internal_error(
-            "the host signed under an issuer this service did not ask for",
-        );
-    }
-
-    let record_id = match envelope.record_id() {
-        Ok(id) => id,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    if let Err(e) = ensure_coll(host, PROFILE_HISTORY, &[]).await {
-        return Response::internal_error(e);
-    }
-    if let Err(e) = ensure_coll(host, PROFILES, &[]).await {
-        return Response::internal_error(e);
-    }
-
-    let profile_row = json!({
-        "envelope": envelope_json,
-        "record_id": record_id,
-        "verified_at_secs": now,
-    });
-
-    let profile_payload = match serde_json::to_vec(&profile_row) {
-        Ok(b) => b,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-
-    // Write the pointer first. If the process crashes between these two writes,
-    // the pointer still points to the previous valid record — the supersedes chain
-    // stays intact. An orphaned history record (written second, never pointed to)
-    // is harmless.
-    if let Err(e) = AppDataLayer::put(
-        host,
-        PROFILES.to_string(),
-        RecordWriteValue { id: owner, payload: profile_payload },
-    )
-    .await
-    {
-        return Response::internal_error(e.to_string());
-    }
-
-    if let Err(e) = AppDataLayer::put(
-        host,
-        PROFILE_HISTORY.to_string(),
-        RecordWriteValue { id: record_id.clone(), payload: envelope_json.as_bytes().to_vec() },
-    )
-    .await
-    {
-        return Response::internal_error(e.to_string());
+    if let Err(resp) = persist_profile_records(host, owner, &record_id, &envelope_json, now).await {
+        return resp;
     }
 
     Response::ok(json!({ "record_id": record_id, "envelope": envelope_json }))

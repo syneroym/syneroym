@@ -119,6 +119,91 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     }
 }
 
+fn validate_bundle_manifest(bundle: &Bundle, owner: &str) -> Result<(), Response> {
+    if bundle.manifest.subject_did != owner {
+        return Err(Response::invalid_params(format!(
+            "bundle belongs to '{}', this node holds '{}'",
+            bundle.manifest.subject_did, owner
+        )));
+    }
+
+    for (name, declared) in &bundle.manifest.sections {
+        if declared.schema_version != SCHEMA_VERSION {
+            return Err(Response::invalid_params(format!(
+                "section '{name}' has schema version {}, this node requires {SCHEMA_VERSION}",
+                declared.schema_version
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn prepare_section_record(section_name: &str, rec: &Value, now: u64) -> Result<Mutation, Response> {
+    let id = match rec.get("id").and_then(|v| v.as_str()) {
+        Some(i) => i.to_string(),
+        None => return Err(Response::invalid_params("record missing id")),
+    };
+    let mut payload_val = match rec.get("payload") {
+        Some(p) => p.clone(),
+        None => return Err(Response::invalid_params("record missing payload")),
+    };
+    if section_name == SECTION_PROFILE {
+        let env_str = match payload_val.get("envelope").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return Err(Response::invalid_params("profile record missing envelope"));
+            }
+        };
+        let verified_rec = match verify_json(env_str, &VerifyOptions::new(now).expecting(&id)) {
+            Ok(vr) => vr,
+            Err(e) => {
+                return Err(Response::invalid_params(format!(
+                    "profile record '{id}' failed verification: {e}"
+                )));
+            }
+        };
+        if verified_rec.record_type != RECORD_PROFILE {
+            return Err(Response::invalid_params("record is not a profile"));
+        }
+        if verified_rec.version != 1 {
+            return Err(Response::invalid_params("unsupported profile record version"));
+        }
+        if verified_rec.subject != id {
+            return Err(Response::invalid_params(format!(
+                "profile record subject '{}' does not match id '{id}'",
+                verified_rec.subject
+            )));
+        }
+        if let Some(obj) = payload_val.as_object_mut() {
+            obj.insert("verified_at_secs".to_string(), json!(now));
+        }
+    }
+    let payload_bytes = match serde_json::to_vec(&payload_val) {
+        Ok(b) => b,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+    Ok(Mutation::Put(RecordWriteValue { id, payload: payload_bytes }))
+}
+
+async fn apply_prepared_writes<H: AppHost>(
+    host: &H,
+    prepared_writes: Vec<(&'static str, Vec<Mutation>)>,
+) -> Result<(), Response> {
+    for (collection, muts) in prepared_writes {
+        if let Err(e) = ensure_coll(host, collection, &[]).await {
+            return Err(Response::internal_error(e));
+        }
+        for chunk in muts.chunks(100) {
+            if let Err(e) =
+                AppDataLayer::batch_mutate(host, collection.to_string(), chunk.to_vec()).await
+            {
+                return Err(Response::internal_error(e.to_string()));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
     let bundle_val = match req.params.get("bundle").cloned().or_else(|| Some(req.params.clone())) {
         Some(v) => v,
@@ -139,20 +224,8 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
         Err(e) => return Response::internal_error(e.to_string()),
     };
 
-    if bundle.manifest.subject_did != owner {
-        return Response::invalid_params(format!(
-            "bundle belongs to '{}', this node holds '{}'",
-            bundle.manifest.subject_did, owner
-        ));
-    }
-
-    for (name, declared) in &bundle.manifest.sections {
-        if declared.schema_version != SCHEMA_VERSION {
-            return Response::invalid_params(format!(
-                "section '{name}' has schema version {}, this node requires {SCHEMA_VERSION}",
-                declared.schema_version
-            ));
-        }
+    if let Err(resp) = validate_bundle_manifest(&bundle, &owner) {
+        return resp;
     }
 
     let now = clock::now_secs();
@@ -169,67 +242,17 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
 
         let mut section_muts = Vec::new();
         for rec in records {
-            let id = match rec.get("id").and_then(|v| v.as_str()) {
-                Some(i) => i.to_string(),
-                None => return Response::invalid_params("record missing id"),
-            };
-            let mut payload_val = match rec.get("payload") {
-                Some(p) => p.clone(),
-                None => return Response::invalid_params("record missing payload"),
-            };
-            if name == SECTION_PROFILE {
-                let env_str = match payload_val.get("envelope").and_then(|v| v.as_str()) {
-                    Some(s) => s,
-                    None => {
-                        return Response::invalid_params("profile record missing envelope");
-                    }
-                };
-                let verified_rec =
-                    match verify_json(env_str, &VerifyOptions::new(now).expecting(&id)) {
-                        Ok(vr) => vr,
-                        Err(e) => {
-                            return Response::invalid_params(format!(
-                                "profile record '{id}' failed verification: {e}"
-                            ));
-                        }
-                    };
-                if verified_rec.record_type != RECORD_PROFILE {
-                    return Response::invalid_params("record is not a profile");
-                }
-                if verified_rec.version != 1 {
-                    return Response::invalid_params("unsupported profile record version");
-                }
-                if verified_rec.subject != id {
-                    return Response::invalid_params(format!(
-                        "profile record subject '{}' does not match id '{id}'",
-                        verified_rec.subject
-                    ));
-                }
-                if let Some(obj) = payload_val.as_object_mut() {
-                    obj.insert("verified_at_secs".to_string(), json!(now));
-                }
+            match prepare_section_record(name, rec, now) {
+                Ok(mutation) => section_muts.push(mutation),
+                Err(resp) => return resp,
             }
-            let payload_bytes = match serde_json::to_vec(&payload_val) {
-                Ok(b) => b,
-                Err(e) => return Response::internal_error(e.to_string()),
-            };
-            section_muts.push(Mutation::Put(RecordWriteValue { id, payload: payload_bytes }));
         }
         prepared_writes.push((collection, section_muts));
     }
 
     // Phase 2: All records and sections verified clean -- apply mutations
-    for (collection, muts) in prepared_writes {
-        if let Err(e) = ensure_coll(host, collection, &[]).await {
-            return Response::internal_error(e);
-        }
-        for chunk in muts.chunks(100) {
-            if let Err(e) =
-                AppDataLayer::batch_mutate(host, collection.to_string(), chunk.to_vec()).await
-            {
-                return Response::internal_error(e.to_string());
-            }
-        }
+    if let Err(resp) = apply_prepared_writes(host, prepared_writes).await {
+        return resp;
     }
 
     let verified = match reverify_profiles(host, clock::now_secs()).await {

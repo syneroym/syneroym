@@ -81,7 +81,7 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/auth` | 0 | 0 | 1 | 3 | n/a | n/a | |
 | `crates/roym_core` | 0 | 0 | 2 | 0 | n/a | done | n/a |
 | `crates/roym_catalog` | 0 | 0 | 1 | 1 | n/a | done | |
-| `crates/roym_profile` | 0 | 0 | 1 | 1 | n/a | done | |
+| `crates/roym_profile` | 0 | 0 | 1 | 1 | n/a | done | done |
 | `crates/roym_conversation` | 0 | 0 | 1 | 0 | n/a | done | n/a |
 | `crates/client_gateway` | 0 | 0 | 1 | 1 | n/a | n/a | |
 | `crates/app_host_native` | 1 | 0 | 1 | 1 | done | done | |
