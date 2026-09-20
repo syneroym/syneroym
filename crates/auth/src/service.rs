@@ -551,6 +551,157 @@ impl AuthService {
     fn cookie_attribute(&self) -> &'static str {
         if self.secure_cookies { "; Secure" } else { "" }
     }
+
+    fn grant_response(
+        &self,
+        mut headers: Vec<(String, String)>,
+        grant: LoginResponse,
+    ) -> std::result::Result<HttpResponse, String> {
+        let now = now_secs();
+        let remaining_ttl = grant.expires_at_secs.saturating_sub(now);
+        let cookie = format!(
+            "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax{}",
+            SESSION_COOKIE_NAME,
+            grant.token,
+            remaining_ttl,
+            self.cookie_attribute()
+        );
+        headers.push(("set-cookie".to_string(), cookie));
+        let body = serde_json::to_vec(&grant).map_err(|e| e.to_string())?;
+        Ok(HttpResponse { status: 200, headers, body })
+    }
+
+    fn error_response(
+        headers: Vec<(String, String)>,
+        status: u16,
+        msg: &str,
+    ) -> std::result::Result<HttpResponse, String> {
+        let body =
+            serde_json::to_vec(&serde_json::json!({"error": msg})).map_err(|e| e.to_string())?;
+        Ok(HttpResponse { status, headers, body })
+    }
+
+    async fn handle_login(
+        &self,
+        request: &HttpRequest,
+        origin: Option<&str>,
+        headers: Vec<(String, String)>,
+    ) -> std::result::Result<HttpResponse, String> {
+        let req: LoginRequest = match serde_json::from_slice(&request.body) {
+            Ok(r) => r,
+            Err(_) => return Self::error_response(headers, 400, "malformed login request"),
+        };
+
+        let Some(req_method) = req.method else {
+            return Self::error_response(headers, 400, "missing required method parameter");
+        };
+
+        let res = match req_method.as_str() {
+            AUTH_METHOD_DELEGATED_KEY => {
+                let temp_did = req
+                    .temp_did
+                    .or_else(|| req.delegation.as_ref().map(|d| d.temporary_did.clone()));
+                let (Some(temp_did), Some(delegation), Some(nonce), Some(signature)) =
+                    (temp_did, req.delegation, req.nonce, req.signature)
+                else {
+                    return Self::error_response(
+                        headers,
+                        400,
+                        "missing parameters for delegated-key login (expected delegation, nonce, \
+                         signature)",
+                    );
+                };
+                self.login_delegated_key(&DelegatedKeyLoginParams {
+                    temp_did,
+                    delegation,
+                    nonce,
+                    signature,
+                })
+                .await
+            }
+            AUTH_METHOD_LOCAL => {
+                if origin.is_some() {
+                    return Self::error_response(
+                        headers,
+                        403,
+                        "local login method is not allowed from a browser origin",
+                    );
+                }
+                let Some(identity) = req.identity else {
+                    return Self::error_response(
+                        headers,
+                        400,
+                        "missing identity parameter for local login",
+                    );
+                };
+                self.login_local(&identity)
+            }
+            _ => {
+                return Self::error_response(
+                    headers,
+                    400,
+                    &format!("unknown login method: {req_method}"),
+                );
+            }
+        };
+
+        match res {
+            Ok(grant) => self.grant_response(headers, grant),
+            Err((status, msg)) => Self::error_response(headers, status, msg),
+        }
+    }
+
+    fn handle_whoami(
+        &self,
+        request: &HttpRequest,
+        headers: Vec<(String, String)>,
+    ) -> std::result::Result<HttpResponse, String> {
+        let Some(token) = self.extract_token(request) else {
+            return Self::error_response(headers, 401, "no session token provided");
+        };
+
+        match self.whoami(&token) {
+            Ok(resp) => {
+                let body = serde_json::to_vec(&resp).map_err(|e| e.to_string())?;
+                Ok(HttpResponse { status: 200, headers, body })
+            }
+            Err((status, msg)) => Self::error_response(headers, status, msg),
+        }
+    }
+
+    fn handle_logout(
+        &self,
+        request: &HttpRequest,
+        mut headers: Vec<(String, String)>,
+    ) -> std::result::Result<HttpResponse, String> {
+        if let Some(token) = self.extract_token(request) {
+            self.record_logout(&token);
+        }
+        let cookie = format!(
+            "{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax{}",
+            SESSION_COOKIE_NAME,
+            self.cookie_attribute()
+        );
+        headers.push(("set-cookie".to_string(), cookie));
+        let body = serde_json::to_vec(&serde_json::json!({"status": "ended"}))
+            .map_err(|e| e.to_string())?;
+        Ok(HttpResponse { status: 200, headers, body })
+    }
+
+    fn handle_refresh(
+        &self,
+        request: &HttpRequest,
+        headers: Vec<(String, String)>,
+    ) -> std::result::Result<HttpResponse, String> {
+        let Some(token) = self.extract_token(request) else {
+            return Self::error_response(headers, 401, "no session token provided");
+        };
+
+        match self.refresh(&token) {
+            Ok(grant) => self.grant_response(headers, grant),
+            Err((status, msg)) => Self::error_response(headers, status, msg),
+        }
+    }
 }
 
 impl SessionRevocationCheck for AuthService {
@@ -603,166 +754,22 @@ impl NativeHttpService for AuthService {
         }
 
         if method == "POST" && is_login {
-            let req: LoginRequest = match serde_json::from_slice(&request.body) {
-                Ok(r) => r,
-                Err(_) => {
-                    let body = serde_json::to_vec(
-                        &serde_json::json!({"error": "malformed login request"}),
-                    )
-                    .map_err(|e| e.to_string())?;
-                    return Ok(HttpResponse { status: 400, headers, body });
-                }
-            };
-
-            let Some(req_method) = req.method else {
-                let body = serde_json::to_vec(
-                    &serde_json::json!({"error": "missing required method parameter"}),
-                )
-                .map_err(|e| e.to_string())?;
-                return Ok(HttpResponse { status: 400, headers, body });
-            };
-
-            let res = match req_method.as_str() {
-                AUTH_METHOD_DELEGATED_KEY => {
-                    let temp_did = req
-                        .temp_did
-                        .or_else(|| req.delegation.as_ref().map(|d| d.temporary_did.clone()));
-                    let (Some(temp_did), Some(delegation), Some(nonce), Some(signature)) =
-                        (temp_did, req.delegation, req.nonce, req.signature)
-                    else {
-                        let body = serde_json::to_vec(&serde_json::json!({
-                            "error": "missing parameters for delegated-key login (expected delegation, nonce, signature)"
-                        }))
-                        .map_err(|e| e.to_string())?;
-                        return Ok(HttpResponse { status: 400, headers, body });
-                    };
-                    self.login_delegated_key(&DelegatedKeyLoginParams {
-                        temp_did,
-                        delegation,
-                        nonce,
-                        signature,
-                    })
-                    .await
-                }
-                AUTH_METHOD_LOCAL => {
-                    if origin.is_some() {
-                        let body = serde_json::to_vec(
-                            &serde_json::json!({"error": "local login method is not allowed from a browser origin"}),
-                        )
-                        .map_err(|e| e.to_string())?;
-                        return Ok(HttpResponse { status: 403, headers, body });
-                    }
-                    let Some(identity) = req.identity else {
-                        let body = serde_json::to_vec(
-                            &serde_json::json!({"error": "missing identity parameter for local login"}),
-                        )
-                        .map_err(|e| e.to_string())?;
-                        return Ok(HttpResponse { status: 400, headers, body });
-                    };
-                    self.login_local(&identity)
-                }
-                _ => {
-                    let body = serde_json::to_vec(
-                        &serde_json::json!({"error": format!("unknown login method: {}", req_method)}),
-                    )
-                    .map_err(|e| e.to_string())?;
-                    return Ok(HttpResponse { status: 400, headers, body });
-                }
-            };
-
-            return match res {
-                Ok(grant) => {
-                    let now = now_secs();
-                    let remaining_ttl = grant.expires_at_secs.saturating_sub(now);
-                    let cookie = format!(
-                        "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax{}",
-                        SESSION_COOKIE_NAME,
-                        grant.token,
-                        remaining_ttl,
-                        self.cookie_attribute()
-                    );
-                    headers.push(("set-cookie".to_string(), cookie));
-                    let body = serde_json::to_vec(&grant).map_err(|e| e.to_string())?;
-                    Ok(HttpResponse { status: 200, headers, body })
-                }
-                Err((status, msg)) => {
-                    let body = serde_json::to_vec(&serde_json::json!({"error": msg}))
-                        .map_err(|e| e.to_string())?;
-                    Ok(HttpResponse { status, headers, body })
-                }
-            };
+            return self.handle_login(&request, origin, headers).await;
         }
 
         if method == "GET" && is_whoami {
-            let Some(token) = self.extract_token(&request) else {
-                let body =
-                    serde_json::to_vec(&serde_json::json!({"error": "no session token provided"}))
-                        .map_err(|e| e.to_string())?;
-                return Ok(HttpResponse { status: 401, headers, body });
-            };
-
-            return match self.whoami(&token) {
-                Ok(resp) => {
-                    let body = serde_json::to_vec(&resp).map_err(|e| e.to_string())?;
-                    Ok(HttpResponse { status: 200, headers, body })
-                }
-                Err((status, msg)) => {
-                    let body = serde_json::to_vec(&serde_json::json!({"error": msg}))
-                        .map_err(|e| e.to_string())?;
-                    Ok(HttpResponse { status, headers, body })
-                }
-            };
+            return self.handle_whoami(&request, headers);
         }
 
         if method == "POST" && is_logout {
-            if let Some(token) = self.extract_token(&request) {
-                self.record_logout(&token);
-            }
-            let cookie = format!(
-                "{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax{}",
-                SESSION_COOKIE_NAME,
-                self.cookie_attribute()
-            );
-            headers.push(("set-cookie".to_string(), cookie));
-            let body = serde_json::to_vec(&serde_json::json!({"status": "ended"}))
-                .map_err(|e| e.to_string())?;
-            return Ok(HttpResponse { status: 200, headers, body });
+            return self.handle_logout(&request, headers);
         }
 
         if method == "POST" && is_refresh {
-            let Some(token) = self.extract_token(&request) else {
-                let body =
-                    serde_json::to_vec(&serde_json::json!({"error": "no session token provided"}))
-                        .map_err(|e| e.to_string())?;
-                return Ok(HttpResponse { status: 401, headers, body });
-            };
-
-            return match self.refresh(&token) {
-                Ok(grant) => {
-                    let now = now_secs();
-                    let remaining_ttl = grant.expires_at_secs.saturating_sub(now);
-                    let cookie = format!(
-                        "{}={}; Path=/; Max-Age={}; HttpOnly; SameSite=Lax{}",
-                        SESSION_COOKIE_NAME,
-                        grant.token,
-                        remaining_ttl,
-                        self.cookie_attribute()
-                    );
-                    headers.push(("set-cookie".to_string(), cookie));
-                    let body = serde_json::to_vec(&grant).map_err(|e| e.to_string())?;
-                    Ok(HttpResponse { status: 200, headers, body })
-                }
-                Err((status, msg)) => {
-                    let body = serde_json::to_vec(&serde_json::json!({"error": msg}))
-                        .map_err(|e| e.to_string())?;
-                    Ok(HttpResponse { status, headers, body })
-                }
-            };
+            return self.handle_refresh(&request, headers);
         }
 
-        let body = serde_json::to_vec(&serde_json::json!({"error": "unknown auth endpoint"}))
-            .map_err(|e| e.to_string())?;
-        Ok(HttpResponse { status: 404, headers, body })
+        Self::error_response(headers, 404, "unknown auth endpoint")
     }
 
     async fn on_websocket_open(&self, _conn: String, _caller: Option<CallerContext>) {}
