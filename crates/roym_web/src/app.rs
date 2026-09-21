@@ -58,6 +58,14 @@ fn json_rpc_error(id: Option<Value>, code: i64, message: impl Into<String>) -> V
     )
 }
 
+fn json_http_response(val: &Value) -> HttpResponse {
+    HttpResponse {
+        status: 200,
+        headers: vec![("content-type".into(), "application/json".into())],
+        body: serde_json::to_vec(val).unwrap_or_default(),
+    }
+}
+
 enum Admitted {
     Yes,
     NoSession,
@@ -106,11 +114,7 @@ pub async fn rpc<H: AppHost>(host: &H, request: HttpRequest) -> Result<HttpRespo
         Ok(r) => r,
         Err(e) => {
             let err_val = json_rpc_error(None, -32700, format!("Parse error: {e}"));
-            return Ok(HttpResponse {
-                status: 200,
-                headers: vec![("content-type".into(), "application/json".into())],
-                body: serde_json::to_vec(&err_val).unwrap_or_default(),
-            });
+            return Ok(json_http_response(&err_val));
         }
     };
 
@@ -119,67 +123,17 @@ pub async fn rpc<H: AppHost>(host: &H, request: HttpRequest) -> Result<HttpRespo
         Some(m) if !m.is_empty() => m,
         _ => {
             let err_val = json_rpc_error(id, -32600, "Invalid Request: missing method");
-            return Ok(HttpResponse {
-                status: 200,
-                headers: vec![("content-type".into(), "application/json".into())],
-                body: serde_json::to_vec(&err_val).unwrap_or_default(),
-            });
+            return Ok(json_http_response(&err_val));
         }
     };
 
     if method == "session.whoami" {
-        let result = if let Some(caller) = &request.caller {
-            let auth_str = match caller.auth {
-                CallerAuth::Delegated => "delegated",
-                CallerAuth::Ucan => "ucan",
-                CallerAuth::SelfAsserted => "self-asserted",
-            };
-            json!({
-                "did": caller.did,
-                "auth": auth_str,
-                "app_instance": caller.app_instance,
-            })
-        } else {
-            json!({
-                "did": Value::Null,
-                "auth": "anonymous",
-                "app_instance": Value::Null,
-            })
-        };
-        let resp_val = json_rpc_response(id, Some(result), None);
-        return Ok(HttpResponse {
-            status: 200,
-            headers: vec![("content-type".into(), "application/json".into())],
-            body: serde_json::to_vec(&resp_val).unwrap_or_default(),
-        });
+        return Ok(handle_whoami_rpc(id, request.caller.as_ref()));
     }
 
-    match admit(host, &method, request.caller.as_ref()).await {
-        Admitted::Yes => (),
-        Admitted::NoSession => {
-            let err_val = json_rpc_error(id, -32010, "not signed in");
-            return Ok(HttpResponse {
-                status: 200,
-                headers: vec![("content-type".into(), "application/json".into())],
-                body: serde_json::to_vec(&err_val).unwrap_or_default(),
-            });
-        }
-        Admitted::NotOwner => {
-            let err_val = json_rpc_error(id, -32011, "this installation belongs to another person");
-            return Ok(HttpResponse {
-                status: 200,
-                headers: vec![("content-type".into(), "application/json".into())],
-                body: serde_json::to_vec(&err_val).unwrap_or_default(),
-            });
-        }
-        Admitted::NoOwnerRecorded => {
-            let err_val = json_rpc_error(id, -32012, "this installation has no recorded owner");
-            return Ok(HttpResponse {
-                status: 200,
-                headers: vec![("content-type".into(), "application/json".into())],
-                body: serde_json::to_vec(&err_val).unwrap_or_default(),
-            });
-        }
+    let admitted = admit(host, &method, request.caller.as_ref()).await;
+    if !matches!(admitted, Admitted::Yes) {
+        return Ok(admittance_error_response(admitted, id));
     }
 
     let service = match router::route(&method) {
@@ -187,24 +141,60 @@ pub async fn rpc<H: AppHost>(host: &H, request: HttpRequest) -> Result<HttpRespo
         None => {
             let safe_method = envelope::truncate_method(&method);
             let err_val = json_rpc_error(id, -32601, format!("Method '{safe_method}' not found"));
-            return Ok(HttpResponse {
-                status: 200,
-                headers: vec![("content-type".into(), "application/json".into())],
-                body: serde_json::to_vec(&err_val).unwrap_or_default(),
-            });
+            return Ok(json_http_response(&err_val));
         }
     };
 
-    let payload = Request { method, params: rpc_req.params };
+    Ok(forward_rpc_call(host, &service, method, rpc_req.params, id).await)
+}
+
+fn handle_whoami_rpc(id: Option<Value>, caller: Option<&CallerIdentity>) -> HttpResponse {
+    let result = if let Some(caller) = caller {
+        let auth_str = match caller.auth {
+            CallerAuth::Delegated => "delegated",
+            CallerAuth::Ucan => "ucan",
+            CallerAuth::SelfAsserted => "self-asserted",
+        };
+        json!({
+            "did": caller.did,
+            "auth": auth_str,
+            "app_instance": caller.app_instance,
+        })
+    } else {
+        json!({
+            "did": Value::Null,
+            "auth": "anonymous",
+            "app_instance": Value::Null,
+        })
+    };
+    let resp_val = json_rpc_response(id, Some(result), None);
+    json_http_response(&resp_val)
+}
+
+fn admittance_error_response(admitted: Admitted, id: Option<Value>) -> HttpResponse {
+    let (code, msg) = match admitted {
+        Admitted::Yes => unreachable!("admittance succeeded"),
+        Admitted::NoSession => (-32010, "not signed in"),
+        Admitted::NotOwner => (-32011, "this installation belongs to another person"),
+        Admitted::NoOwnerRecorded => (-32012, "this installation has no recorded owner"),
+    };
+    let err_val = json_rpc_error(id, code, msg);
+    json_http_response(&err_val)
+}
+
+async fn forward_rpc_call<H: AppHost>(
+    host: &H,
+    service: &services::Service,
+    method: String,
+    params: Value,
+    id: Option<Value>,
+) -> HttpResponse {
+    let payload = Request { method, params };
     let payload_str = match serde_json::to_string(&payload) {
         Ok(s) => s,
         Err(e) => {
             let err_val = json_rpc_error(id, -32603, format!("Internal error: {e}"));
-            return Ok(HttpResponse {
-                status: 200,
-                headers: vec![("content-type".into(), "application/json".into())],
-                body: serde_json::to_vec(&err_val).unwrap_or_default(),
-            });
+            return json_http_response(&err_val);
         }
     };
 
@@ -239,11 +229,7 @@ pub async fn rpc<H: AppHost>(host: &H, request: HttpRequest) -> Result<HttpRespo
         }
     };
 
-    Ok(HttpResponse {
-        status: 200,
-        headers: vec![("content-type".into(), "application/json".into())],
-        body: serde_json::to_vec(&resp_val).unwrap_or_default(),
-    })
+    json_http_response(&resp_val)
 }
 
 pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
