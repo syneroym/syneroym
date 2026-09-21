@@ -47,85 +47,107 @@ async fn main() -> Result<()> {
     println!("Registry URL:    {}", args.registry_url);
 
     let http_client = Client::builder().timeout(Duration::from_secs(5)).build()?;
-    let mut info_url = format!("{}/v1/info", args.coordinator_url);
+    let (info_url, mut _registry_server, _coordinator_shutdown) =
+        setup_in_process_services(&http_client, &args.coordinator_url).await?;
 
-    let is_coordinator_running = http_client.get(&info_url).send().await.is_ok();
+    let info = test_coordinator_connectivity(&http_client, &info_url).await?;
+    test_registry_registration(&args.registry_url, &info).await?;
+    test_retry_mechanism(&info).await?;
+    test_quota_trapping().await?;
 
-    let mut _registry_server = None;
-    let mut _coordinator_shutdown = None;
-
-    if !is_coordinator_running {
-        println!(
-            "No running coordinator detected. Starting temporary in-process coordinator and \
-             registry..."
-        );
-
-        let mut reg_config = SubstrateConfig::default();
-        reg_config.roles.community_registry = Some(ServiceRegistryRole {
-            access: AccessControl::String("everyone".to_string()),
-            http_bind_address: "127.0.0.1:7961".to_string(),
-            parent_registry_url: None,
-        });
-        let mut registry = EcosystemRegistry::init(&reg_config)
-            .await
-            .context("Failed to init in-process registry")?;
-        registry.spawn().await.context("Failed to spawn in-process registry")?;
-        _registry_server = Some(registry);
-
-        let mut coord_config = SubstrateConfig::default();
-        coord_config.roles.coordinator = Some(CoordinatorRole {
-            access: AccessControl::String("everyone".to_string()),
-            tls: None,
-            iroh: Some(CoordinatorIrohConfig {
-                enable_signalling: false,
-                enable_relay: true,
-                http_bind_address: "127.0.0.1:7964".to_string(),
-                quic_bind_address: "127.0.0.1:7965".to_string(),
-                community_registry_url: Some("http://127.0.0.1:7961".to_string()),
-                share_in_registry: true,
-                idle_timeout_secs: Some(30),
-                max_connections: Some(100),
-            }),
-            webrtc: None,
-            transport_bridge: None,
-            resolve_ucan: None,
-        });
-
-        let coordinator = CoordinatorIroh::init(&coord_config)
-            .await
-            .context("Failed to init in-process coordinator")?;
-
-        let coord_info_addr =
-            coordinator.info_addr().context("Coordinator HTTP address not set")?;
-        println!("In-process coordinator listening on info: {coord_info_addr}");
-        info_url = format!("http://{coord_info_addr}/v1/info");
-
-        let (tx, mut rx) = oneshot::channel::<()>();
-        let mut coord_run = coordinator;
-        tokio::spawn(async move {
-            tokio::select! {
-                res = coord_run.run() => {
-                    if let Err(e) = res {
-                        eprintln!("In-process coordinator run loop error: {e:?}");
-                    }
-                }
-                _ = &mut rx => {
-                    if let Err(e) = coord_run.shutdown().await {
-                        eprintln!("In-process coordinator shutdown error: {e:?}");
-                    }
-                }
-            }
-        });
-
-        _coordinator_shutdown = Some(tx);
-
-        time::sleep(Duration::from_millis(1500)).await;
+    if let Some(mut registry) = _registry_server {
+        registry.shutdown().await.context("Failed to shutdown registry")?;
+    }
+    if let Some(tx) = _coordinator_shutdown {
+        let _ = tx.send(());
     }
 
-    // Test 1: Connectivity (Coordinator /v1/info)
+    println!("\nAll smoke tests passed successfully!");
+    Ok(())
+}
+
+async fn setup_in_process_services(
+    http_client: &Client,
+    coordinator_url: &str,
+) -> Result<(String, Option<EcosystemRegistry>, Option<oneshot::Sender<()>>)> {
+    let info_url = format!("{}/v1/info", coordinator_url);
+    let is_coordinator_running = http_client.get(&info_url).send().await.is_ok();
+
+    if is_coordinator_running {
+        return Ok((info_url, None, None));
+    }
+
+    println!(
+        "No running coordinator detected. Starting temporary in-process coordinator and \
+         registry..."
+    );
+
+    let mut reg_config = SubstrateConfig::default();
+    reg_config.roles.community_registry = Some(ServiceRegistryRole {
+        access: AccessControl::String("everyone".to_string()),
+        http_bind_address: "127.0.0.1:7961".to_string(),
+        parent_registry_url: None,
+    });
+    let mut registry =
+        EcosystemRegistry::init(&reg_config).await.context("Failed to init in-process registry")?;
+    registry.spawn().await.context("Failed to spawn in-process registry")?;
+
+    let mut coord_config = SubstrateConfig::default();
+    coord_config.roles.coordinator = Some(CoordinatorRole {
+        access: AccessControl::String("everyone".to_string()),
+        tls: None,
+        iroh: Some(CoordinatorIrohConfig {
+            enable_signalling: false,
+            enable_relay: true,
+            http_bind_address: "127.0.0.1:7964".to_string(),
+            quic_bind_address: "127.0.0.1:7965".to_string(),
+            community_registry_url: Some("http://127.0.0.1:7961".to_string()),
+            share_in_registry: true,
+            idle_timeout_secs: Some(30),
+            max_connections: Some(100),
+        }),
+        webrtc: None,
+        transport_bridge: None,
+        resolve_ucan: None,
+    });
+
+    let coordinator = CoordinatorIroh::init(&coord_config)
+        .await
+        .context("Failed to init in-process coordinator")?;
+
+    let coord_info_addr = coordinator.info_addr().context("Coordinator HTTP address not set")?;
+    println!("In-process coordinator listening on info: {coord_info_addr}");
+    let in_process_info_url = format!("http://{coord_info_addr}/v1/info");
+
+    let (tx, mut rx) = oneshot::channel::<()>();
+    let mut coord_run = coordinator;
+    tokio::spawn(async move {
+        tokio::select! {
+            res = coord_run.run() => {
+                if let Err(e) = res {
+                    eprintln!("In-process coordinator run loop error: {e:?}");
+                }
+            }
+            _ = &mut rx => {
+                if let Err(e) = coord_run.shutdown().await {
+                    eprintln!("In-process coordinator shutdown error: {e:?}");
+                }
+            }
+        }
+    });
+
+    time::sleep(Duration::from_millis(1500)).await;
+
+    Ok((in_process_info_url, Some(registry), Some(tx)))
+}
+
+async fn test_coordinator_connectivity(
+    http_client: &Client,
+    info_url: &str,
+) -> Result<CoordinatorInfo> {
     println!("\n[Test 1] Connectivity to coordinator...");
     let resp = http_client
-        .get(&info_url)
+        .get(info_url)
         .send()
         .await
         .context("Failed to connect to coordinator /v1/info")?;
@@ -147,8 +169,10 @@ async fn main() -> Result<()> {
     if let Some(tls) = &info.tls {
         println!("  TLS Cert Expiry Days: {:?}", tls.cert_expiry_days);
     }
+    Ok(info)
+}
 
-    // Test 2 & 3: Registry & Master Anchor
+async fn test_registry_registration(registry_url: &str, info: &CoordinatorInfo) -> Result<()> {
     println!("\n[Test 2 & 3] Registry registration and master anchor publication...");
     let identity = Identity::generate().context("Failed to generate identity")?;
     let did = derive_did_key(&identity.public_key());
@@ -171,7 +195,7 @@ async fn main() -> Result<()> {
 
     let signed_info = endpoint_info.sign(&identity).context("Failed to sign endpoint info")?;
 
-    let reg_client = RegistryClient::new(true, Some(args.registry_url.clone()));
+    let reg_client = RegistryClient::new(true, Some(registry_url.to_string()));
 
     println!("Registering endpoint in registry...");
     reg_client.register(&signed_info, true).await.context("Failed to publish to registry")?;
@@ -182,8 +206,10 @@ async fn main() -> Result<()> {
         reg_client.lookup(&did, false).await.context("Failed to resolve from registry")?;
     assert_eq!(resolved.info.service_id, did, "Service ID mismatch");
     println!("Endpoint resolved and verified successfully!");
+    Ok(())
+}
 
-    // Test 4: Retry mechanism
+async fn test_retry_mechanism(info: &CoordinatorInfo) -> Result<()> {
     println!("\n[Test 4] Inducing transient failure for Iroh QUIC transport retry logic...");
     let retry_policy = RetryPolicy {
         max_attempts: 3,
@@ -256,8 +282,10 @@ async fn main() -> Result<()> {
     .await;
     assert!(retry_res.is_ok(), "Retry logic should have succeeded on subsequent attempts");
     println!("Iroh QUIC transport retry mechanism verified successfully!");
+    Ok(())
+}
 
-    // Test 5: Quota trapping
+async fn test_quota_trapping() -> Result<()> {
     println!("\n[Test 5] WASM sandbox fuel and memory quota trapping...");
     let wat = r#"
 (component
@@ -355,14 +383,5 @@ async fn main() -> Result<()> {
         "Expected MemoryFault error, got: {err_msg}"
     );
     println!("Memory quota trapping works! (MemoryFault/failed to grow detected)");
-
-    if let Some(mut registry) = _registry_server {
-        registry.shutdown().await.context("Failed to shutdown registry")?;
-    }
-    if let Some(tx) = _coordinator_shutdown {
-        let _ = tx.send(());
-    }
-
-    println!("\nAll smoke tests passed successfully!");
     Ok(())
 }

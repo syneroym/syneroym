@@ -89,7 +89,7 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/identity` | 2 | 0 | 0 | 0 | done | n/a | n/a |
 | `crates/chunk_transfer` | 1 | 0 | 0 | 0 | done | n/a | n/a |
 | `crates/app_host` | 1 | 0 | 0 | 0 | done | n/a | n/a |
-| `crates/smoke-tests` | 0 | 0 | 0 | 1 | n/a | n/a | |
+| `crates/smoke-tests` | 0 | 0 | 0 | 1 | n/a | n/a | done |
 | `tests/perf` | 1 | 1 | 0 | 4 | done | n/a | |
 | `xtask/src` | 0 | 0 | 0 | 2 | n/a | n/a | |
 | `test-components/*` | 13 | 1 | 1 | 1 | done | done | |
