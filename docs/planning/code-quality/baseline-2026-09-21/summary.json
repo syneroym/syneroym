@@ -1,0 +1,66 @@
+{
+ "commit": "abfcb75c09980a139288a78af69b2ebd60698e1d",
+ "date": "2026-09-21",
+ "rust": {
+  "tracked_files": 579,
+  "total_lines": 207447,
+  "code": 159912,
+  "comment_lines": 29809
+ },
+ "duplication": {
+  "exact_pct": 9.286906353125968,
+  "near_pct": 3.6783640304176766,
+  "exact_groups": 448,
+  "subfunction_groups": 1018
+ },
+ "long_functions": {
+  "over_100": 0,
+  "tiers": {
+   "500": 0,
+   "400": 0,
+   "300": 0,
+   "250": 0,
+   "200": 0,
+   "150": 0,
+   "100": 0
+  },
+  "longest": null,
+  "_note": "0 clippy::too_many_lines findings workspace-wide (gated scope). 55 test-module/e2e/perf files carry a blanket #![allow(clippy::too_many_lines, clippy::cognitive_complexity)] (see deferred-backlog.md); inside that exempted scope real long functions still exist, e.g. tests/perf/src/scenarios/soak.rs:72 (573 lines, verified by hand). 'longest' is null because the gate's set of violations is empty, not because no long function exists anywhere in the tree."
+ },
+ "files": {
+  "over_300_prod_lines": 135,
+  "largest_source_file": "crates/auth/src/service.rs",
+  "largest_source_lines": 790,
+  "largest_test_file": "crates/control_plane/src/service/orchestration/tests.rs",
+  "largest_test_lines": 8595,
+  "size_distribution": {
+   "1500+": 0,
+   "1000-1499": 0,
+   "700-999": 6,
+   "500-699": 50,
+   "300-499": 79
+  }
+ },
+ "planning_refs": {
+  "total_comment_lines": 0,
+  "by_kind": {
+   "milestone": 0,
+   "design id": 0,
+   "slice/task id": 0,
+   "bare section ref": 0,
+   "review finding": 0,
+   "planning doc": 0,
+   "test or matrix row": 0
+  },
+  "top_crates": {}
+ },
+ "clippy_pedantic_nursery_findings": 3776,
+ "unused_dependencies": 0,
+ "allow_attributes": 150,
+ "todo_markers": 15,
+ "e2e_harness": {
+  "substrate_test_files": 38,
+  "with_own_node_struct": 0,
+  "using_tests_common": 38
+ }
+}

@@ -1,0 +1,8 @@
+{
+ "total": 0,
+ "by_kind": {},
+ "by_crate": {},
+ "by_file": {},
+ "_note": "Every comment line citing a planning document, across all seven families (README.md). ADR-anchored section refs are allowed and excluded.",
+ "hits": []
+}

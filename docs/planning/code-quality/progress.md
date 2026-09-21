@@ -24,7 +24,7 @@ git diff before-quality-round-2026-09-08 main
 | G5b | Planning refs outside .rs (.wit/.toml/.ts) | done | `chore/quality-refs-non-rust` |
 | G6 | `clippy.toml` threshold ratchet + `cargo dupes check` | done | [#262](https://github.com/syneroym/syneroym/pull/262) |
 | G6b | Full-tree planning-ref gate (waits for the count to reach zero) | not started | |
-| G7 | Closing measurement: re-run the pass, commit `baseline-<date>/`, compare | not started | |
+| G7 | Closing measurement: re-run the pass, commit `baseline-<date>/`, compare | done | `chore/quality-g7-baseline` |
 
 G5 depends on nothing and can run at any time, in parallel with everything else.
 G6 and G7 come last.
@@ -51,8 +51,17 @@ merge in any order; PR 5 last, since it ticks G4.
 For each crate, in this order: **comments → file split → long functions.**
 Comments go first so the later structural diffs are not mixed with prose churn.
 
-Counts are from the baseline. "Mechanical" is the subset where the citation is a
-parenthetical that can be removed without rewriting the sentence.
+Counts are from the baseline and are now historic: every row below is `done`,
+so the table's job (tracking which crate still needs comment/split/function
+work) is finished. Do not read the numbers as current. In particular the
+**total row predates two later additions** — the `test or matrix row` family
+(G3b) and the non-`.rs` sweep (G5b) — so it undercounts the true starting
+figure of 1,713 planning-ref citations (see README.md's "Finding planning
+references"). The actual before/after is in
+[`baseline-2026-09-08/summary.json`](baseline-2026-09-08/summary.json) versus
+[`baseline-2026-09-21/summary.json`](baseline-2026-09-21/summary.json) (G7).
+"Mechanical" is the subset where the citation is a parenthetical that can be
+removed without rewriting the sentence.
 
 | Crate | Comment blocks | mechanical | Files 500+ | Long fns | Comments | Split | Functions |
 | --- | ---: | ---: | ---: | ---: | --- | --- | --- |

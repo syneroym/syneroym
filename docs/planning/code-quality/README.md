@@ -4,8 +4,11 @@ This folder holds measured data about the health of the codebase. It exists so
 that a cleanup round can prove it worked: take a baseline, do the work, run the
 same commands again, compare the numbers.
 
-The current baseline is [`baseline-2026-09-08/`](baseline-2026-09-08/), measured
-on commit `8d0444a` (main, right after slice C7 merged).
+The starting baseline is [`baseline-2026-09-08/`](baseline-2026-09-08/), measured
+on commit `8d0444a` (main, right after slice C7 merged). The closing
+measurement, [`baseline-2026-09-21/`](baseline-2026-09-21/), re-runs the same
+commands after the round's work landed (G7); compare the two `summary.json`
+files for the before/after.
 
 The tag `before-quality-round-2026-09-08` marks the last commit before the
 cleanup started, so the whole round's effect is one command:

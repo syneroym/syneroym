@@ -1,0 +1,1267 @@
+[
+ {
+  "file": "docs/planning/milestones/M05A-app-supervisor/slice-a5-implementation-plan.md",
+  "words": 52270,
+  "avg_sent": 27.8,
+  "long_sent_pct": 52.5,
+  "jargon": 39,
+  "jargon_top": [
+   "by construction",
+   "load-bearing",
+   "for free",
+   "in flight",
+   "seam"
+  ]
+ },
+ {
+  "file": "docs/planning/deferred-backlog.md",
+  "words": 49053,
+  "avg_sent": 64.3,
+  "long_sent_pct": 84.5,
+  "jargon": 12,
+  "jargon_top": [
+   "canonical",
+   "seam",
+   "load-bearing"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04B-fdae-policy/status.md",
+  "words": 27249,
+  "avg_sent": 46.3,
+  "long_sent_pct": 64.4,
+  "jargon": 14,
+  "jargon_top": [
+   "seam",
+   "load-bearing",
+   "by construction",
+   "for free",
+   "orthogonal"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05A-app-supervisor/status.md",
+  "words": 23121,
+  "avg_sent": 51.9,
+  "long_sent_pct": 73.7,
+  "jargon": 15,
+  "jargon_top": [
+   "by construction",
+   "load-bearing",
+   "conflated",
+   "the shape of"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06C-roym-product/slice-c6-implementation-plan.md",
+  "words": 20270,
+  "avg_sent": 33.3,
+  "long_sent_pct": 56.1,
+  "jargon": 8,
+  "jargon_top": [
+   "load-bearing",
+   "in flight",
+   "by construction"
+  ]
+ },
+ {
+  "file": "docs/system-architecture.md",
+  "words": 18690,
+  "avg_sent": 27.2,
+  "long_sent_pct": 43.2,
+  "jargon": 6,
+  "jargon_top": [
+   "canonical",
+   "seamlessly",
+   "by construction",
+   "utilize"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04A-proxy-and-auth-foundation/status.md",
+  "words": 18620,
+  "avg_sent": 38.2,
+  "long_sent_pct": 62.8,
+  "jargon": 12,
+  "jargon_top": [
+   "seam",
+   "canonical",
+   "by construction",
+   "load-bearing"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06C-roym-product/status.md",
+  "words": 17120,
+  "avg_sent": 35.8,
+  "long_sent_pct": 60.3,
+  "jargon": 10,
+  "jargon_top": [
+   "canonical",
+   "by construction",
+   "load-bearing",
+   "for free",
+   "in flight"
+  ]
+ },
+ {
+  "file": "docs/system-requirements-spec.md",
+  "words": 14945,
+  "avg_sent": 28.0,
+  "long_sent_pct": 50.4,
+  "jargon": 11,
+  "jargon_top": [
+   "canonical",
+   "seamless",
+   "seamlessly",
+   "by construction",
+   "utilize"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05B-async-primitives/status.md",
+  "words": 13728,
+  "avg_sent": 43.0,
+  "long_sent_pct": 71.4,
+  "jargon": 4,
+  "jargon_top": [
+   "in flight",
+   "the shape of"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06C-roym-product/slice-c5-implementation-plan.md",
+  "words": 13172,
+  "avg_sent": 29.7,
+  "long_sent_pct": 48.8,
+  "jargon": 5,
+  "jargon_top": [
+   "canonical",
+   "by construction",
+   "load-bearing",
+   "in flight"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06C-roym-product/slice-c7-implementation-plan.md",
+  "words": 12972,
+  "avg_sent": 26.3,
+  "long_sent_pct": 43.8,
+  "jargon": 7,
+  "jargon_top": [
+   "canonical",
+   "load-bearing",
+   "the shape of",
+   "for free"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06C-roym-product/slice-c2-implementation-plan.md",
+  "words": 12184,
+  "avg_sent": 28.5,
+  "long_sent_pct": 51.2,
+  "jargon": 10,
+  "jargon_top": [
+   "canonical",
+   "by construction",
+   "load-bearing",
+   "conflated"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05A-app-supervisor/slice-a1-implementation-plan.md",
+  "words": 11805,
+  "avg_sent": 23.4,
+  "long_sent_pct": 42.7,
+  "jargon": 6,
+  "jargon_top": [
+   "load-bearing",
+   "by construction",
+   "orthogonal"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05B-async-primitives/slice-b2-implementation-plan.md",
+  "words": 11734,
+  "avg_sent": 31.8,
+  "long_sent_pct": 62.8,
+  "jargon": 12,
+  "jargon_top": [
+   "by construction",
+   "load-bearing",
+   "in flight",
+   "for free",
+   "the shape of"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05B-async-primitives/slice-b4-implementation-plan.md",
+  "words": 11079,
+  "avg_sent": 28.0,
+  "long_sent_pct": 50.9,
+  "jargon": 5,
+  "jargon_top": [
+   "load-bearing",
+   "for free",
+   "in flight"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06C-roym-product/task.md",
+  "words": 10655,
+  "avg_sent": 36.8,
+  "long_sent_pct": 67.8,
+  "jargon": 7,
+  "jargon_top": [
+   "by construction",
+   "canonical",
+   "the shape of"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04B-fdae-policy/task.md",
+  "words": 10626,
+  "avg_sent": 41.4,
+  "long_sent_pct": 66.0,
+  "jargon": 5,
+  "jargon_top": [
+   "seam",
+   "for free",
+   "in flight"
+  ]
+ },
+ {
+  "file": "docs/roym-integrated-experience-spec.md",
+  "words": 10462,
+  "avg_sent": 25.8,
+  "long_sent_pct": 40.2,
+  "jargon": 1,
+  "jargon_top": [
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06C-roym-product/slice-c3-implementation-plan.md",
+  "words": 10039,
+  "avg_sent": 27.3,
+  "long_sent_pct": 41.8,
+  "jargon": 16,
+  "jargon_top": [
+   "canonical",
+   "by construction",
+   "load-bearing",
+   "for free",
+   "the shape of"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06B-roym-substrate-foundations/slice-b4-implementation-plan.md",
+  "words": 9924,
+  "avg_sent": 22.8,
+  "long_sent_pct": 35.9,
+  "jargon": 13,
+  "jargon_top": [
+   "load-bearing",
+   "seam",
+   "by construction",
+   "canonical",
+   "in flight"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05C-logical-discovery-overlay/slice-s3-implementation-plan.md",
+  "words": 9876,
+  "avg_sent": 28.4,
+  "long_sent_pct": 52.0,
+  "jargon": 6,
+  "jargon_top": [
+   "load-bearing",
+   "canonical",
+   "for free"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06B-roym-substrate-foundations/slice-b2-implementation-plan.md",
+  "words": 9460,
+  "avg_sent": 25.8,
+  "long_sent_pct": 44.7,
+  "jargon": 7,
+  "jargon_top": [
+   "seam",
+   "by construction",
+   "load-bearing"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06C-roym-product/slice-c4-implementation-plan.md",
+  "words": 9281,
+  "avg_sent": 25.6,
+  "long_sent_pct": 41.1,
+  "jargon": 8,
+  "jargon_top": [
+   "by construction",
+   "load-bearing",
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06C-roym-product/slice-c1-implementation-plan.md",
+  "words": 9122,
+  "avg_sent": 27.1,
+  "long_sent_pct": 45.5,
+  "jargon": 4,
+  "jargon_top": [
+   "by construction",
+   "the shape of",
+   "for free",
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/developer-guide.md",
+  "words": 8889,
+  "avg_sent": 23.9,
+  "long_sent_pct": 45.8,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/planning/milestones/M05A-app-supervisor/task.md",
+  "words": 8879,
+  "avg_sent": 38.5,
+  "long_sent_pct": 64.3,
+  "jargon": 3,
+  "jargon_top": [
+   "load-bearing",
+   "by construction"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06B-roym-substrate-foundations/slice-b3-implementation-plan.md",
+  "words": 8878,
+  "avg_sent": 22.9,
+  "long_sent_pct": 37.8,
+  "jargon": 6,
+  "jargon_top": [
+   "by construction",
+   "load-bearing",
+   "for free"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06A-app-platform-surface/slice-a2-implementation-plan.md",
+  "words": 8655,
+  "avg_sent": 32.6,
+  "long_sent_pct": 50.9,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/planning/milestones/M05A-app-supervisor/slice-a7-implementation-plan.md",
+  "words": 8619,
+  "avg_sent": 28.0,
+  "long_sent_pct": 53.7,
+  "jargon": 5,
+  "jargon_top": [
+   "by construction",
+   "load-bearing"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/B7.md",
+  "words": 8599,
+  "avg_sent": 23.2,
+  "long_sent_pct": 41.6,
+  "jargon": 2,
+  "jargon_top": [
+   "by construction",
+   "seam"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05A-app-supervisor/slice-a3-implementation-plan.md",
+  "words": 8540,
+  "avg_sent": 23.4,
+  "long_sent_pct": 43.6,
+  "jargon": 4,
+  "jargon_top": [
+   "load-bearing",
+   "by construction",
+   "in flight"
+  ]
+ },
+ {
+  "file": "docs/planning/meta-implementation-plan.md",
+  "words": 8425,
+  "avg_sent": 28.7,
+  "long_sent_pct": 53.2,
+  "jargon": 2,
+  "jargon_top": [
+   "load-bearing",
+   "seam"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05C-logical-discovery-overlay/status.md",
+  "words": 8311,
+  "avg_sent": 34.9,
+  "long_sent_pct": 58.8,
+  "jargon": 2,
+  "jargon_top": [
+   "by construction",
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06B-roym-substrate-foundations/slice-b5-implementation-plan.md",
+  "words": 8302,
+  "avg_sent": 22.6,
+  "long_sent_pct": 40.0,
+  "jargon": 6,
+  "jargon_top": [
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M03B-messaging/task.md",
+  "words": 7877,
+  "avg_sent": 43.5,
+  "long_sent_pct": 59.4,
+  "jargon": 2,
+  "jargon_top": [
+   "for free"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05C-logical-discovery-overlay/slice-s2-implementation-plan.md",
+  "words": 7837,
+  "avg_sent": 27.6,
+  "long_sent_pct": 50.0,
+  "jargon": 7,
+  "jargon_top": [
+   "canonical",
+   "by construction",
+   "load-bearing",
+   "in flight"
+  ]
+ },
+ {
+  "file": "docs/planning/access-control-design.md",
+  "words": 7634,
+  "avg_sent": 21.3,
+  "long_sent_pct": 42.7,
+  "jargon": 8,
+  "jargon_top": [
+   "load-bearing",
+   "by construction",
+   "for free",
+   "seam"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05B-async-primitives/slice-b3-implementation-plan.md",
+  "words": 7546,
+  "avg_sent": 25.7,
+  "long_sent_pct": 52.7,
+  "jargon": 1,
+  "jargon_top": [
+   "for free"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06B-roym-substrate-foundations/status.md",
+  "words": 7342,
+  "avg_sent": 42.6,
+  "long_sent_pct": 59.6,
+  "jargon": 6,
+  "jargon_top": [
+   "canonical",
+   "by construction",
+   "seam"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06B-roym-substrate-foundations/slice-b1-implementation-plan.md",
+  "words": 7231,
+  "avg_sent": 25.1,
+  "long_sent_pct": 42.0,
+  "jargon": 2,
+  "jargon_top": [
+   "by construction",
+   "for free"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05A-app-supervisor/slice-a0-implementation-plan.md",
+  "words": 7152,
+  "avg_sent": 24.3,
+  "long_sent_pct": 44.0,
+  "jargon": 6,
+  "jargon_top": [
+   "load-bearing",
+   "by construction",
+   "orthogonal"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M03-sss/task.md",
+  "words": 6935,
+  "avg_sent": 27.4,
+  "long_sent_pct": 38.8,
+  "jargon": 2,
+  "jargon_top": [
+   "by construction",
+   "in flight"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05A-app-supervisor/slice-a4-implementation-plan.md",
+  "words": 6793,
+  "avg_sent": 21.0,
+  "long_sent_pct": 35.7,
+  "jargon": 4,
+  "jargon_top": [
+   "orthogonal",
+   "by construction",
+   "for free"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06C-roym-product/slice-c1.1-implementation-plan.md",
+  "words": 6610,
+  "avg_sent": 26.3,
+  "long_sent_pct": 48.0,
+  "jargon": 15,
+  "jargon_top": [
+   "seam",
+   "by construction",
+   "load-bearing",
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M03B-messaging/status.md",
+  "words": 6452,
+  "avg_sent": 42.4,
+  "long_sent_pct": 59.2,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0020-stable-logical-service-identity.md",
+  "words": 6190,
+  "avg_sent": 28.8,
+  "long_sent_pct": 59.8,
+  "jargon": 1,
+  "jargon_top": [
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05B-async-primitives/slice-b1-implementation-plan.md",
+  "words": 6120,
+  "avg_sent": 24.3,
+  "long_sent_pct": 48.2,
+  "jargon": 2,
+  "jargon_top": [
+   "load-bearing",
+   "in flight"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05A-app-supervisor/slice-a2-implementation-plan.md",
+  "words": 5971,
+  "avg_sent": 22.3,
+  "long_sent_pct": 42.9,
+  "jargon": 6,
+  "jargon_top": [
+   "load-bearing",
+   "by construction"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05A-app-supervisor/slice-p0-implementation-plan.md",
+  "words": 5597,
+  "avg_sent": 19.6,
+  "long_sent_pct": 34.5,
+  "jargon": 2,
+  "jargon_top": [
+   "load-bearing",
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06A-app-platform-surface/status.md",
+  "words": 5570,
+  "avg_sent": 41.2,
+  "long_sent_pct": 61.5,
+  "jargon": 1,
+  "jargon_top": [
+   "by construction"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04A-proxy-and-auth-foundation/task.md",
+  "words": 5509,
+  "avg_sent": 32.0,
+  "long_sent_pct": 46.8,
+  "jargon": 11,
+  "jargon_top": [
+   "seam",
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04B-fdae-policy/slice-b3-implementation-plan.md",
+  "words": 5304,
+  "avg_sent": 27.1,
+  "long_sent_pct": 53.8,
+  "jargon": 7,
+  "jargon_top": [
+   "seam",
+   "load-bearing",
+   "by construction",
+   "for free"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04B-fdae-policy/slice-b2-phase4-deploy-persist-plan.md",
+  "words": 4928,
+  "avg_sent": 29.4,
+  "long_sent_pct": 52.7,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/planning/milestones/M04B-fdae-policy/slice-b4-implementation-plan.md",
+  "words": 4696,
+  "avg_sent": 23.3,
+  "long_sent_pct": 43.0,
+  "jargon": 4,
+  "jargon_top": [
+   "load-bearing",
+   "canonical",
+   "seam"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06A-app-platform-surface/slice-a5-implementation-plan.md",
+  "words": 4681,
+  "avg_sent": 25.0,
+  "long_sent_pct": 38.7,
+  "jargon": 1,
+  "jargon_top": [
+   "load-bearing"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04B-fdae-policy/slice-b5-implementation-plan.md",
+  "words": 4375,
+  "avg_sent": 22.8,
+  "long_sent_pct": 42.6,
+  "jargon": 2,
+  "jargon_top": [
+   "load-bearing",
+   "in flight"
+  ]
+ },
+ {
+  "file": "docs/decisions/0024-client-gateway-identity-and-auth-service.md",
+  "words": 4337,
+  "avg_sent": 23.4,
+  "long_sent_pct": 43.2,
+  "jargon": 1,
+  "jargon_top": [
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04B-fdae-policy/slice-b2-implementation-plan.md",
+  "words": 4155,
+  "avg_sent": 19.5,
+  "long_sent_pct": 34.0,
+  "jargon": 3,
+  "jargon_top": [
+   "seam",
+   "load-bearing"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06B-roym-substrate-foundations/task.md",
+  "words": 4113,
+  "avg_sent": 29.1,
+  "long_sent_pct": 54.3,
+  "jargon": 3,
+  "jargon_top": [
+   "by construction",
+   "load-bearing",
+   "in flight"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06A-app-platform-surface/slice-a1-implementation-plan.md",
+  "words": 4100,
+  "avg_sent": 25.3,
+  "long_sent_pct": 41.6,
+  "jargon": 1,
+  "jargon_top": [
+   "orthogonal"
+  ]
+ },
+ {
+  "file": "docs/decisions/0017-fdae-policy-schema-and-compilation.md",
+  "words": 3952,
+  "avg_sent": 26.9,
+  "long_sent_pct": 50.7,
+  "jargon": 1,
+  "jargon_top": [
+   "in flight"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/B0.md",
+  "words": 3867,
+  "avg_sent": 21.5,
+  "long_sent_pct": 40.4,
+  "jargon": 6,
+  "jargon_top": [
+   "seam"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05B-async-primitives/implementation-plan.md",
+  "words": 3779,
+  "avg_sent": 24.9,
+  "long_sent_pct": 49.7,
+  "jargon": 2,
+  "jargon_top": [
+   "by construction"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05B-async-primitives/task.md",
+  "words": 3719,
+  "avg_sent": 28.9,
+  "long_sent_pct": 51.6,
+  "jargon": 1,
+  "jargon_top": [
+   "load-bearing"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/A1.md",
+  "words": 3686,
+  "avg_sent": 21.5,
+  "long_sent_pct": 46.5,
+  "jargon": 5,
+  "jargon_top": [
+   "seam"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/B4.md",
+  "words": 3598,
+  "avg_sent": 23.2,
+  "long_sent_pct": 44.8,
+  "jargon": 11,
+  "jargon_top": [
+   "seam",
+   "canonical",
+   "by construction"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/B6.md",
+  "words": 3594,
+  "avg_sent": 30.0,
+  "long_sent_pct": 50.4,
+  "jargon": 2,
+  "jargon_top": [
+   "load-bearing",
+   "seam"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M02-reliable-node/task.md",
+  "words": 3507,
+  "avg_sent": 27.7,
+  "long_sent_pct": 33.6,
+  "jargon": 1,
+  "jargon_top": [
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/reputation-design-note.md",
+  "words": 3485,
+  "avg_sent": 13.6,
+  "long_sent_pct": 15.3,
+  "jargon": 1,
+  "jargon_top": [
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/planning/traceability-matrix.md",
+  "words": 3481,
+  "avg_sent": 86.9,
+  "long_sent_pct": 80.0,
+  "jargon": 2,
+  "jargon_top": [
+   "by construction",
+   "seam"
+  ]
+ },
+ {
+  "file": "docs/decisions/0021-binding-propagation-and-app-supervisor.md",
+  "words": 3352,
+  "avg_sent": 26.1,
+  "long_sent_pct": 53.1,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/planning/milestones/M03-sss/status.md",
+  "words": 3167,
+  "avg_sent": 20.7,
+  "long_sent_pct": 34.9,
+  "jargon": 2,
+  "jargon_top": [
+   "by construction",
+   "orthogonal"
+  ]
+ },
+ {
+  "file": "docs/decisions/0022-two-tier-logical-service-discovery.md",
+  "words": 3124,
+  "avg_sent": 23.7,
+  "long_sent_pct": 51.9,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0023-durable-async-primitives.md",
+  "words": 3121,
+  "avg_sent": 26.1,
+  "long_sent_pct": 45.4,
+  "jargon": 1,
+  "jargon_top": [
+   "the shape of"
+  ]
+ },
+ {
+  "file": "docs/planning/wasm-elastic-memory-plan.md",
+  "words": 3115,
+  "avg_sent": 20.7,
+  "long_sent_pct": 35.1,
+  "jargon": 1,
+  "jargon_top": [
+   "load-bearing"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04B-fdae-policy/slice-b2-phase2-data-db-plan.md",
+  "words": 2911,
+  "avg_sent": 21.8,
+  "long_sent_pct": 40.9,
+  "jargon": 3,
+  "jargon_top": [
+   "by construction",
+   "load-bearing",
+   "seam"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06A-app-platform-surface/task.md",
+  "words": 2909,
+  "avg_sent": 33.5,
+  "long_sent_pct": 53.5,
+  "jargon": 1,
+  "jargon_top": [
+   "for free"
+  ]
+ },
+ {
+  "file": "docs/decisions/0015-ucan-capability-model.md",
+  "words": 2653,
+  "avg_sent": 25.8,
+  "long_sent_pct": 47.1,
+  "jargon": 10,
+  "jargon_top": [
+   "seam",
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05C-logical-discovery-overlay/implementation-plan.md",
+  "words": 2643,
+  "avg_sent": 23.5,
+  "long_sent_pct": 44.6,
+  "jargon": 2,
+  "jargon_top": [
+   "load-bearing",
+   "in flight"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/B1.md",
+  "words": 2385,
+  "avg_sent": 20.5,
+  "long_sent_pct": 37.4,
+  "jargon": 7,
+  "jargon_top": [
+   "seam",
+   "for free"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/A0-prime.md",
+  "words": 2217,
+  "avg_sent": 21.4,
+  "long_sent_pct": 29.4,
+  "jargon": 2,
+  "jargon_top": [
+   "canonical",
+   "seam"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M05C-logical-discovery-overlay/slice-s1-implementation-plan.md",
+  "words": 2133,
+  "avg_sent": 22.9,
+  "long_sent_pct": 48.9,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0013-p2p-messaging-architecture.md",
+  "words": 2109,
+  "avg_sent": 33.3,
+  "long_sent_pct": 61.9,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/planning/milestones/M05C-logical-discovery-overlay/task.md",
+  "words": 2095,
+  "avg_sent": 27.8,
+  "long_sent_pct": 52.7,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/planning/fnd-cfg-artifact-delivery-plan.md",
+  "words": 2058,
+  "avg_sent": 21.6,
+  "long_sent_pct": 35.1,
+  "jargon": 1,
+  "jargon_top": [
+   "load-bearing"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M06A-app-platform-surface/slice-a4-implementation-plan.md",
+  "words": 2058,
+  "avg_sent": 17.1,
+  "long_sent_pct": 19.5,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0018-service-record-visibility.md",
+  "words": 2053,
+  "avg_sent": 25.8,
+  "long_sent_pct": 46.8,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/B5.md",
+  "words": 1984,
+  "avg_sent": 19.5,
+  "long_sent_pct": 37.0,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0014-quic-stream-protocol-routing.md",
+  "words": 1818,
+  "avg_sent": 27.6,
+  "long_sent_pct": 52.3,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0019-deploy-time-artifact-delivery.md",
+  "words": 1787,
+  "avg_sent": 24.7,
+  "long_sent_pct": 50.0,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/planning/milestones/M06A-app-platform-surface/slice-a3-implementation-plan.md",
+  "words": 1776,
+  "avg_sent": 25.2,
+  "long_sent_pct": 37.1,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/mesh-transport-design.md",
+  "words": 1592,
+  "avg_sent": 23.2,
+  "long_sent_pct": 44.1,
+  "jargon": 1,
+  "jargon_top": [
+   "utilize"
+  ]
+ },
+ {
+  "file": "docs/planning/code-quality/progress.md",
+  "words": 1449,
+  "avg_sent": 44.9,
+  "long_sent_pct": 37.5,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/planning/session-strategy.md",
+  "words": 1443,
+  "avg_sent": 22.3,
+  "long_sent_pct": 42.2,
+  "jargon": 2,
+  "jargon_top": [
+   "canonical",
+   "leverage"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M04B-fdae-policy/slice-b2-phase3-plan.md",
+  "words": 1410,
+  "avg_sent": 24.5,
+  "long_sent_pct": 38.6,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0007-data-layer-wit-interface.md",
+  "words": 1390,
+  "avg_sent": 23.4,
+  "long_sent_pct": 39.0,
+  "jargon": 2,
+  "jargon_top": [
+   "seam"
+  ]
+ },
+ {
+  "file": "docs/decisions/0010-mqtt-broker-rumqttd.md",
+  "words": 1248,
+  "avg_sent": 20.8,
+  "long_sent_pct": 32.2,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0006-sqlite-encryption-sqlcipher.md",
+  "words": 1138,
+  "avg_sent": 26.1,
+  "long_sent_pct": 48.8,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0009-blob-storage-object-store.md",
+  "words": 1109,
+  "avg_sent": 21.4,
+  "long_sent_pct": 41.2,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0011-privileged-raw-sql-query.md",
+  "words": 1088,
+  "avg_sent": 29.1,
+  "long_sent_pct": 48.6,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0016-native-dispatch-identity-threading.md",
+  "words": 1050,
+  "avg_sent": 24.3,
+  "long_sent_pct": 51.2,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/planning/code-quality/README.md",
+  "words": 1025,
+  "avg_sent": 16.5,
+  "long_sent_pct": 27.4,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/TERMINOLOGY.md",
+  "words": 1012,
+  "avg_sent": 28.8,
+  "long_sent_pct": 57.1,
+  "jargon": 2,
+  "jargon_top": [
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/planning/crate-rename-refactor.md",
+  "words": 888,
+  "avg_sent": 19.6,
+  "long_sent_pct": 40.0,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/VISION.md",
+  "words": 768,
+  "avg_sent": 19.6,
+  "long_sent_pct": 23.1,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/planning/milestones/M01-local-app-model/task.md",
+  "words": 741,
+  "avg_sent": 23.7,
+  "long_sent_pct": 51.6,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/performance-and-robustness-spec.md",
+  "words": 576,
+  "avg_sent": 37.9,
+  "long_sent_pct": 53.3,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/planning/code-quality/comment-convention.md",
+  "words": 529,
+  "avg_sent": 11.6,
+  "long_sent_pct": 4.4,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0008-config-host-function.md",
+  "words": 509,
+  "avg_sent": 15.9,
+  "long_sent_pct": 25.8,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0012-crate-rename-refactor.md",
+  "words": 484,
+  "avg_sent": 19.1,
+  "long_sent_pct": 36.0,
+  "jargon": 2,
+  "jargon_top": [
+   "going forward"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/m0-task.md",
+  "words": 404,
+  "avg_sent": 17.3,
+  "long_sent_pct": 34.8,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/planning/milestones/M02-reliable-node/status.md",
+  "words": 402,
+  "avg_sent": 9.7,
+  "long_sent_pct": 12.2,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0001-delegation-certificate-format.md",
+  "words": 378,
+  "avg_sent": 18.9,
+  "long_sent_pct": 25.0,
+  "jargon": 2,
+  "jargon_top": [
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/planning/milestones/M01-local-app-model/status.md",
+  "words": 260,
+  "avg_sent": 15.9,
+  "long_sent_pct": 31.2,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0002-handshake-authorization-point.md",
+  "words": 198,
+  "avg_sent": 19.6,
+  "long_sent_pct": 40.0,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/planning/milestones/m0-status.md",
+  "words": 174,
+  "avg_sent": 17.4,
+  "long_sent_pct": 40.0,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0004-docker-image-scope.md",
+  "words": 148,
+  "avg_sent": 14.6,
+  "long_sent_pct": 20.0,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0005-wasm-fuel-quota-schema.md",
+  "words": 130,
+  "avg_sent": 14.2,
+  "long_sent_pct": 22.2,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/decisions/0003-retry-policy-ownership.md",
+  "words": 122,
+  "avg_sent": 15.0,
+  "long_sent_pct": 25.0,
+  "jargon": 1,
+  "jargon_top": [
+   "canonical"
+  ]
+ },
+ {
+  "file": "docs/ROADMAP.md",
+  "words": 90,
+  "avg_sent": 29.3,
+  "long_sent_pct": 66.7,
+  "jargon": 0,
+  "jargon_top": []
+ },
+ {
+  "file": "docs/STATUS.md",
+  "words": 54,
+  "avg_sent": 17.3,
+  "long_sent_pct": 33.3,
+  "jargon": 1,
+  "jargon_top": [
+   "canonical"
+  ]
+ }
+]
