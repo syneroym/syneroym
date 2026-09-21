@@ -99,7 +99,7 @@ how the drift happened, so do not add one here without an enforcement path.**
   *Checked by:* `cargo clippy --workspace --all-targets --all-features` (enforced via `clippy.toml` `too-many-lines-threshold = 100`).
 - **Match arms are not a place to put a function.** Match arms must not exceed ~10 lines. Extract complex match arm bodies into named helper functions or methods on the type they work with, so the `match` reads as a table of contents.
   *Checked by:* `clippy::too_many_lines`, `clippy::cognitive_complexity`, and review.
-- **File size.** Production source files must not exceed 800 lines; prefer new sibling files over expanding existing ones. Test modules over ~500 lines move to a sibling file under `tests/`.
+- **File size.** Production source files must not exceed 800 lines; prefer new sibling files over expanding existing ones. When splitting an oversized file `foo.rs`, keep `foo.rs` as the module entry and place submodules in `foo/` (e.g., `foo/bar.rs`). Test modules over ~500 lines move to a sibling file under `tests/`.
   *Checked by:* `cargo xtask check-file-lengths` (and `mise run check:file-lengths`), and review.
 - **Look for an existing helper before writing a new one.** Duplication here is
   rarely a literal copy — it is the same shape with different names and config
