@@ -8,6 +8,10 @@ rust = "stable"
 "cargo:cargo-deny" = "latest"
 "cargo:cargo-llvm-cov" = "latest"
 "cargo:cargo-sweep" = "latest"
+# Duplicate-code detector backing `check:duplication` / `xtask
+# check-duplication`. Not in `taiki-e/install-action`'s tool list, so CI
+# installs it with a plain `cargo install --locked` instead.
+"cargo:cargo-dupes" = "0.2.1"
 # Test runner. `cargo nextest run` replaces `cargo test` for the workspace
 # suite (see `test:rust`); it runs every test binary in one parallel pool
 # instead of one binary at a time, and honours `.config/nextest.toml` (the
@@ -77,6 +81,10 @@ run = "cargo xtask check-roym-deps"
 description = "Ensure no production source file exceeds 800 lines"
 run = "cargo xtask check-file-lengths"
 
+[tasks."check:duplication"]
+description = "Ensure exact-duplicate code stays under the ratchet ceiling"
+run = "cargo xtask check-duplication"
+
 [tasks."test:roym-ui"]
 description = "Run the Roym Hub UI's vitest suite"
 run = """
@@ -85,7 +93,7 @@ run = """
 
 [tasks."test:rust"]
 description = "Run all Rust unit and integration tests"
-depends = ["build:test-components", "build:roym", "check:roym-deps", "check:file-lengths", "test:roym-ui"]
+depends = ["build:test-components", "build:roym", "check:roym-deps", "check:file-lengths", "check:duplication", "test:roym-ui"]
 # nextest runs every test binary in one parallel pool (see .config/nextest.toml);
 # it does not run doctests, so those follow in a second `cargo test --doc` pass.
 run = [
