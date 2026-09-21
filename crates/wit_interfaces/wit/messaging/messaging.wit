@@ -13,7 +13,7 @@ interface host-api {
     unsubscribe: func(topic: string) -> result<_, messaging-error>;
 
     /// Registers this service as the handler for a named bidirectional
-    /// stream protocol (M3B Slice 6B, ADR-0014). A peer that opens a
+    /// stream protocol (ADR-0014). A peer that opens a
     /// `raw://<protocol>|<service_id>` stream is routed to
     /// `guest-api::handle-stream-request`/`accept-stream-upload` depending
     /// on direction. Idempotent: re-registering the same protocol is a
@@ -21,8 +21,8 @@ interface host-api {
     register-stream-protocol: func(protocol: string) -> result<_, messaging-error>;
 }
 
-/// Guest-implemented bidirectional streaming resources (M3B Slice 6B,
-/// ADR-0014). Unlike `blob-store`'s `blob-writer`/`blob-reader` (host-
+/// Guest-implemented bidirectional streaming resources (ADR-0014).
+/// Unlike `blob-store`'s `blob-writer`/`blob-reader` (host-
 /// implemented, guest calls into them), the host calls methods *on* an
 /// instance the guest returns -- see ADR-0014 "Resource Mechanics" for why
 /// this requires `stream-types` to be **exported**, not imported, by

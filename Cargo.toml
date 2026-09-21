@@ -155,7 +155,7 @@ thiserror = "2.0"
 aes-gcm = "0.10"
 p256 = { version = "0.13", features = ["ecdh", "pkcs8", "arithmetic", "ecdsa"] }
 rand = "0.9"
-# M06B B4b (`D-B4-7`): X3DH + Double Ratchet for `syneroym:conversation`.
+# X3DH + Double Ratchet for `syneroym:conversation`.
 # Apache-2.0, matrix-org's Rust reimplementation of libolm -- license and
 # API verified against the crate's own docs.rs pages before adoption, not
 # from memory (`ed25519-dalek ^2.1.1` matches this workspace's own pin).
@@ -167,7 +167,7 @@ jsonschema = { version = "0.46", default-features = false }
 hkdf = "0.12"
 hmac = "0.12"
 aead = "0.5"
-# M06A A1: asset-bundle unpacking (control-plane) and, pre-existing, the
+# Used for asset-bundle unpacking (control-plane) and, pre-existing, the
 # WebRTC signaling coordinator's own gzip use.
 tar = "0.4.46"
 flate2 = "1.1.9"
@@ -210,7 +210,7 @@ tokio-tungstenite = "0.29"
 futures-util = "0.3"
 futures = "0.3"
 tokio-util = "0.7"
-# Embedded MQTT broker for syneroym:messaging (M3B Slice 6A, ADR-0010).
+# Embedded MQTT broker for syneroym:messaging (ADR-0010).
 # 0.20 is the latest published release as of this pin (2026-07-09); no known
 # conflicts with other workspace deps yet, pinned per the iroh/sha2/object_store
 # convention above so a future `cargo update` doesn't silently drift the

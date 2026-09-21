@@ -26,12 +26,10 @@ interface supervisor {
         /// `service-name`: the vault keys on `member-<app-instance-id>#
         /// <service-name>-<index>`, so an operator who backs up under the
         /// bare logical name gets "no master named '<service-name>' in
-        /// this vault" (S1, Slice A5b review).
+        /// this vault".
         vault-name: string,
-        /// This member's ordinal (M05A A5e). `submit` returns N rows per
-        /// scaled service that are otherwise identical -- `service-name`
-        /// alone cannot distinguish them, only `vault-name` can, and an
-        /// operator should not have to parse it back out of that.
+        /// This member's ordinal. `submit` returns one row per member,
+        /// so this is what orders them.
         member-index: u32,
     }
 
@@ -42,7 +40,7 @@ interface supervisor {
     variant managed-state { applying, active, degraded, paused, retired, superseded }
 
     record managed-service {
-        /// The member's full `MemberRef` display string (M05A A5e):
+        /// The member's full `MemberRef` display string:
         /// `<app-instance-id>/<service-name>#<index>`. Two members of one
         /// scaled service report two distinct rows here.
         logical-ref: string,
@@ -61,7 +59,7 @@ interface supervisor {
     /// wrote versus what the hosting substrate reports serving *for that
     /// dependent*. Equal epochs mean converged.
     record binding-convergence {
-        /// The dependent member's `MemberRef` display string (M05A A5e):
+        /// The dependent member's `MemberRef` display string:
         /// each member of a scaled dependent holds its own epoch, and its
         /// own binding-write history, so this reports one row per member.
         dependent-logical-ref: string,
@@ -83,18 +81,18 @@ interface supervisor {
         /// implied, so an operator reading a converged status is not
         /// reading a guarantee this build cannot make.
         delivery-note: string,
-        /// Member refs (`MemberRef` display strings, M05A A5e)
+        /// Member refs (`MemberRef` display strings)
         /// `revoke-instance` has excluded from every write path. Otherwise
         /// invisible on this read surface until something else triggers a
         /// write pass that reaches the member and raises `InstanceRevoked`
         /// -- a state this permanent should not depend on that.
         revoked-placements: list<string>,
-        /// The app instance's own master DID (M05A A7, ADR-0022 §1),
-        /// minted or resolved at `adopt`. Absent means "never adopted
-        /// under A7" -- a genuinely different fact from "adopted", the
-        /// same option-not-sentinel choice `last-reconciled-at` already
-        /// makes. Read from the stored row only, never the vault, so it
-        /// stays reportable while the vault is locked.
+        /// The app instance's own master DID (ADR-0022 §1), minted or
+        /// resolved at `adopt`. Absent means "never adopted" -- a
+        /// genuinely different fact from "adopted", the same
+        /// option-not-sentinel choice `last-reconciled-at` already makes.
+        /// Read from the stored row only, never the vault, so it stays
+        /// reportable while the vault is locked.
         app-master-did: option<string>,
         /// Unix seconds at which the currently-published Tier-1 registry
         /// record (ADR-0022 §2) lapses if this supervisor stops refreshing
@@ -106,7 +104,7 @@ interface supervisor {
     }
 
     record alert {
-        /// The member's `MemberRef` display string (M05A A5e), or absent
+        /// The member's `MemberRef` display string, or absent
         /// for a substrate-level alert that belongs to no one member.
         logical-ref: option<string>,
         substrate-did: string,
@@ -117,14 +115,13 @@ interface supervisor {
         cleared-at: option<s64>,
     }
 
-    /// One terminally failed queued binding write (M05B B1, D-B1-6): the
-    /// supervisor's own delivery outbox gave up on it after exhausting its
-    /// attempt budget.
+    /// One terminally failed queued binding write: the supervisor's own
+    /// delivery outbox gave up on it after exhausting its attempt budget.
     record dead-letter {
         id: u64,
-        /// The member's `MemberRef` display string (M05A A5e) -- the same
-        /// key the standing `BindingConflict` alert this dead letter
-        /// raised groups by.
+        /// The member's `MemberRef` display string -- the same key the
+        /// standing `BindingConflict` alert this dead letter raised
+        /// groups by.
         logical-ref: string,
         substrate-did: string,
         attempts: u32,
@@ -134,10 +131,9 @@ interface supervisor {
 
     /// One binding write still waiting for delivery, or currently claimed
     /// by the worker -- the supervisor's own delivery outbox before it
-    /// either lands or exhausts its budget into `dead-letter` (M05B B1
-    /// review finding 13: the reference scenario's own steps 4/5/7 need to
-    /// assert the outbox directly, which nothing on this interface could
-    /// do until this verb existed).
+    /// either lands or exhausts its budget into `dead-letter`. A caller
+    /// that needs to assert the outbox directly had no way to until this
+    /// verb existed.
     record outbox-item {
         id: u64,
         logical-ref: string,
@@ -166,8 +162,8 @@ interface supervisor {
     submit:          func(s: submission)          -> result<submit-result, string>;
 
     /// `adopt`'s result: the claimed generation, plus the app instance's
-    /// own master (M05A A7) -- an operator who has just caused this key to
-    /// exist is told its backup command in the same call, the same rule
+    /// own master -- an operator who has just caused this key to exist is
+    /// told its backup command in the same call, the same rule
     /// `submit-result`'s `minted-master` rows already encode.
     record adopt-result {
         generation: u64,
@@ -179,11 +175,10 @@ interface supervisor {
 
     /// Mints the next generation: reads what the substrates report
     /// holding and writes `held + 1`. The only minter. Also resolves or
-    /// mints this app instance's own master (M05A A7, D-A7-1/D-A7-5) --
-    /// on *every* call, not only the first, so `adopt` after
-    /// `import-master` always agrees with whatever the vault now holds
-    /// rather than minting a second identity. Refuses outright, claiming
-    /// no generation, if the vault is locked.
+    /// mints this app instance's own master -- on *every* call, not only
+    /// the first, so `adopt` after `import-master` always agrees with
+    /// whatever the vault now holds rather than minting a second identity.
+    /// Refuses outright, claiming no generation, if the vault is locked.
     adopt:           func(app-instance-id: string) -> result<adopt-result, string>;
     /// Hand the instance back to manual operation: clears the stamp on
     /// every substrate it is placed on. Does **not** undeploy.
@@ -191,11 +186,10 @@ interface supervisor {
     /// Stops the resident loop from touching this instance automatically
     /// -- nothing else. Every other verb (`submit`/`force-reconcile`/
     /// `adopt`/`release`/`retire`) stays allowed while paused; pausing
-    /// automation to act by hand is the ordinary reason to pause (M05A
-    /// A5c D-A5c-14). Takes effect at the start of the loop's next
-    /// *write* phase, not mid-pass -- a pause landing during a pass's
-    /// health sweep does not abort writes already in flight for that
-    /// same pass.
+    /// automation to act by hand is the ordinary reason to pause. Takes
+    /// effect at the start of the loop's next *write* phase, not mid-pass
+    /// -- a pause landing during a pass's health sweep does not abort
+    /// writes already in flight for that same pass.
     pause:           func(app-instance-id: string) -> result<_, string>;
     %resume:         func(app-instance-id: string) -> result<_, string>;
     /// Stop managing and release. Deliberately not a teardown: retiring a
@@ -217,13 +211,12 @@ interface supervisor {
     /// Adopt a master already placed into `master_backup_dir` into the
     /// vault -- either a member master an operator already created (an
     /// A0-A4 deployment's `<dir>/identities/member-*.key`), or an app
-    /// instance's own master (M05A A7) carried over from another
-    /// supervisor by a prior `export-master`. Reads by name from that same
-    /// directory; takes no key material and no path. For an app master, a
-    /// handover's intended order is `import-master` before `adopt`:
-    /// adopting first mints a second app identity under the same name,
-    /// which a later `import-master`/`adopt` repairs but does not prevent
-    /// (D-A7-5).
+    /// instance's own master carried over from another supervisor by a
+    /// prior `export-master`. Reads by name from that same directory;
+    /// takes no key material and no path. For an app master, a handover's
+    /// intended order is `import-master` before `adopt`: adopting first
+    /// mints a second app identity under the same name, which a later
+    /// `import-master`/`adopt` repairs but does not prevent.
     import-master: func(name: string) -> result<_, string>;
 
     /// Revoke one placed member's derived instance key. Two writes in one
@@ -242,8 +235,8 @@ interface supervisor {
     /// running until an operator issues `undeploy`/`retire` separately.
     ///
     /// `logical-ref` is the member's full `MemberRef` display string, as
-    /// `status` reports it (`<app-instance-id>/<service-name>#<index>`,
-    /// M05A A5e) -- with two members of one scaled service, the bare
+    /// `status` reports it (`<app-instance-id>/<service-name>#<index>`)
+    /// -- with two members of one scaled service, the bare
     /// `<app-instance-id>/<service-name>` no longer names one of them.
     revoke-instance: func(app-instance-id: string, logical-ref: string) -> result<_, string>;
 
@@ -251,14 +244,13 @@ interface supervisor {
     alerts:  func(app-instance-id: string, all: bool) -> result<list<alert>, string>;
 
     /// Every item this instance's outbox currently holds -- pending or
-    /// claimed, not yet dead-lettered -- oldest first (M05B B1 review
-    /// finding 13).
+    /// claimed, not yet dead-lettered -- oldest first.
     outbox: func(app-instance-id: string) -> result<list<outbox-item>, string>;
     /// Every dead letter this instance's outbox currently holds, oldest
-    /// first (M05B B1, D-B1-6).
+    /// first.
     dead-letters: func(app-instance-id: string) -> result<list<dead-letter>, string>;
-    /// Re-enqueues a dead letter -- it never executes inline (D-B1-7). A
-    /// second failure returns it here with its attempt history intact.
+    /// Re-enqueues a dead letter -- it never executes inline. A second
+    /// failure returns it here with its attempt history intact.
     replay: func(app-instance-id: string, dead-letter-id: u64) -> result<_, string>;
 
     /// Every schedule this instance declares, in logical-ref order.
@@ -325,7 +317,7 @@ interface supervisor {
     /// the chain unfollowable.
     ///
     /// Answers the full member set and mode, or denies -- never a filtered
-    /// list (§5): rendezvous hashing over a partial set returns a
+    /// list (ADR-0022 §5): rendezvous hashing over a partial set returns a
     /// confident wrong answer with no error raised.
     ///
     /// An unknown app and an unauthorized caller are reported identically,
