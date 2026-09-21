@@ -14,7 +14,7 @@
 //! [`serial_guard`]. A test that needs two live nodes uses that; a
 //! single-node test can use either.
 
-#![allow(dead_code)]
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity, dead_code)]
 
 mod node;
 

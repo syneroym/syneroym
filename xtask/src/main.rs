@@ -134,6 +134,14 @@ fn check_crate_manifest_dependencies(
     Ok(())
 }
 
+fn get_workspace_root() -> PathBuf {
+    if Path::new("crates").exists() {
+        PathBuf::from(".")
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap_or(Path::new(".")).to_path_buf()
+    }
+}
+
 fn check_roym_deps() -> Result<()> {
     println!("Checking Roym service crate dependency hygiene...");
     let siblings = [
@@ -145,11 +153,7 @@ fn check_roym_deps() -> Result<()> {
         "syneroym-roym-directory",
     ];
 
-    let workspace_root = if Path::new("crates").exists() {
-        PathBuf::from(".")
-    } else {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap_or(Path::new(".")).to_path_buf()
-    };
+    let workspace_root = get_workspace_root();
 
     let mut crate_dirs = Vec::new();
     let crates_dir = workspace_root.join("crates");
@@ -403,10 +407,156 @@ fn perf_summary() -> Result<()> {
     append_perf_summary_sections("PERF_SUMMARY.md", &timestamp, &commit, &env_line, &results)
 }
 
+const GRANDFATHERED_OVERSIZED_FILES: &[&str] = &[
+    "crates/control_plane/src/service/orchestration/deploy.rs",
+    "crates/app_supervisor/src/store.rs",
+    "crates/app_supervisor/src/service/resident_loop.rs",
+    "crates/app_supervisor/src/service/verbs.rs",
+    "crates/conversation/src/group.rs",
+];
+
+fn is_test_path(path: &Path) -> bool {
+    for component in path.iter() {
+        if component == "tests" {
+            return true;
+        }
+    }
+    if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+        && (file_name.starts_with("tests_")
+            || file_name.ends_with("_tests.rs")
+            || file_name == "tests.rs")
+    {
+        return true;
+    }
+    false
+}
+
+fn count_production_lines(content: &str) -> usize {
+    let mut prod_lines = 0;
+    let mut in_test = false;
+    let mut test_depth = 0;
+    let mut brace_depth = 0;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("#[cfg(test)]") {
+            in_test = true;
+            test_depth = brace_depth;
+        }
+        let open_b = line.matches('{').count();
+        let close_b = line.matches('}').count();
+        if in_test {
+            brace_depth = brace_depth + open_b - close_b;
+            if (open_b == 0 && trimmed.starts_with("mod ") && trimmed.ends_with(';'))
+                || (brace_depth <= test_depth && close_b > 0)
+            {
+                in_test = false;
+            }
+        } else {
+            brace_depth = brace_depth + open_b - close_b;
+            prod_lines += 1;
+        }
+    }
+    prod_lines
+}
+
+fn is_grandfathered(rel_path: &str) -> bool {
+    GRANDFATHERED_OVERSIZED_FILES.iter().any(|&g| rel_path.ends_with(g) || rel_path == g)
+}
+
+fn check_file_lengths() -> Result<()> {
+    println!("Checking production source file lengths...");
+    let workspace_root = get_workspace_root();
+    let mut violations = Vec::new();
+    let mut checked = 0;
+
+    for base_dir_name in ["crates", "apps"] {
+        let base_dir = workspace_root.join(base_dir_name);
+        if !base_dir.exists() {
+            continue;
+        }
+        for entry in WalkDir::new(&base_dir).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_file()
+                || path.extension().and_then(|ext| ext.to_str()) != Some("rs")
+                || path.file_name().and_then(|n| n.to_str()) == Some("bindings.rs")
+                || !path.iter().any(|c| c == "src")
+                || is_test_path(path)
+            {
+                continue;
+            }
+
+            let rel_path =
+                path.strip_prefix(&workspace_root).unwrap_or(path).to_string_lossy().to_string();
+            let content = match fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            checked += 1;
+            let prod_lines = count_production_lines(&content);
+            if prod_lines > 800 {
+                if is_grandfathered(&rel_path) {
+                    println!("  [grandfathered] {rel_path}: {prod_lines} lines");
+                } else {
+                    violations.push(format!(
+                        "{rel_path}: {prod_lines} production lines (maximum allowed is 800)"
+                    ));
+                }
+            }
+        }
+    }
+
+    if !violations.is_empty() {
+        for v in &violations {
+            eprintln!("ERROR: {v}");
+        }
+        bail!("File length check failed with {} violation(s)", violations.len());
+    }
+
+    println!("All {checked} production source files adhere to the 800-line limit.");
+    Ok(())
+}
+
+const MAX_EXACT_DUPLICATE_PERCENT: &str = "9.5";
+
+fn check_duplication() -> Result<()> {
+    println!("Checking exact-duplicate code percentage (max {MAX_EXACT_DUPLICATE_PERCENT}%)...");
+    let workspace_root = get_workspace_root();
+    let status = Command::new("cargo")
+        .args([
+            "dupes",
+            "check",
+            "--max-exact-percent",
+            MAX_EXACT_DUPLICATE_PERCENT,
+            "--exclude",
+            "bindings.rs",
+            "--exclude",
+            "target",
+        ])
+        .current_dir(&workspace_root)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to run `cargo dupes check` -- is cargo-dupes installed? (`cargo install \
+                 cargo-dupes`): {e}"
+            )
+        })?;
+
+    if !status.success() {
+        bail!("Duplication check failed: exact duplication exceeds {MAX_EXACT_DUPLICATE_PERCENT}%");
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("check-roym-deps") => check_roym_deps(),
+        Some("check-file-lengths") => check_file_lengths(),
+        Some("check-duplication") => check_duplication(),
         Some("perf-summary") | None => perf_summary(),
         Some(other) => bail!("Unknown xtask command: {other}"),
     }

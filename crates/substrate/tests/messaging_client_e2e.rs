@@ -1,4 +1,12 @@
-#![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    unsafe_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    dead_code
+)]
 //! End-to-end test: a real `SyneroymClient` connects over a
 //! live substrate/Iroh connection and calls `SyneroymClient::subscribe` --
 //! the first test in the repo to exercise push delivery to a non-WASM

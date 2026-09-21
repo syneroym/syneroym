@@ -1,5 +1,11 @@
 #![cfg(feature = "dual_build_fixture")]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! Proves the `dual_build_fixture` feature's substrate wiring end to end --
 //! a real client reaching the linked-in native fixture through the router,
 //! over the same `SyneroymClient::request` path any other native or WASM

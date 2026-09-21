@@ -1,4 +1,12 @@
-#![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    unsafe_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    dead_code
+)]
 //! End-to-end test: blob-backed static asset serving, driven by
 //! hand-built raw HTTP/1.1 request/response bytes over a real Iroh QUIC
 //! bidi stream -- the same harness `http_passthrough_e2e.rs` uses for its

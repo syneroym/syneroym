@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+
 use std::sync::Arc;
 
 use syneroym_data_db::SqliteStorageProvider;

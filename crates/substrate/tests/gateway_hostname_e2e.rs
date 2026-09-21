@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! The logical discovery overlay (ADR-0022 §7): the gateway hostname scheme
 //! and the routing-key header, proven end to end against two real substrates
 //! and a real registry -- extended past the SDK/RPC layer to an ordinary

@@ -5,7 +5,7 @@
 //! Gated on the `supervisor` Cargo feature (in the default set) because the
 //! inventory type comes from the optional `syneroym-app-supervisor` crate.
 
-#![allow(dead_code)]
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity, dead_code)]
 
 use std::{collections::BTreeMap, path::PathBuf};
 

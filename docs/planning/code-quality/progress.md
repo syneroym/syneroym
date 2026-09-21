@@ -21,7 +21,8 @@ git diff before-quality-round-2026-09-08 main
 | G3b | Align the three ref-pattern sources; add the test-or-matrix-row family (gate union 1,564 → 1,713, +149 lines) | done | `chore/quality-align-ref-patterns` |
 | G4 | e2e harness: move 25 files onto `tests/common` | done | [#176](https://github.com/syneroym/syneroym/pull/176) |
 | G5 | Document rewrite (VISION, developer-guide, backlog, traceability, ADRs) | done | readability pass on `docs/quality-readability` worktree |
-| G6 | `clippy.toml` threshold ratchet + `cargo dupes check` + full-tree ref gate | not started | |
+| G6 | `clippy.toml` threshold ratchet + `cargo dupes check` | done | [#262](https://github.com/syneroym/syneroym/pull/262) |
+| G6b | Full-tree planning-ref gate (waits for the count to reach zero) | not started | |
 | G7 | Closing measurement: re-run the pass, commit `baseline-<date>/`, compare | not started | |
 
 G5 depends on nothing and can run at any time, in parallel with everything else.

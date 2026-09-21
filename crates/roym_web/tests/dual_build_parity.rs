@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! Integration suite driving the Roym SynApp through both builds -- the real
 //! `wasm32-wasip2` components via `AppSandboxEngine`, and the same sources
 //! linked in via `syneroym-app-host-native` -- and asserting the results

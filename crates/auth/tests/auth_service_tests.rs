@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used
+)]
 
 use std::{
     fs,

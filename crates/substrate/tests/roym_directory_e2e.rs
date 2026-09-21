@@ -1,4 +1,11 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    dead_code
+)]
 //! The Roym product's Directory service -- the search half -- end to end
 //! across three genuinely independent `syneroym-substrate` instances, each
 //! running the full Roym SynApp (the `wasm32-wasip2` build) under its own

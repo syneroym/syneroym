@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! Stable member identity (ADR-0020 §1-§5), proven across two genuinely
 //! independent `syneroym-substrate` instances rather than the in-process
 //! coverage `crates/control_plane/src/service/orchestration.rs`'s own tests

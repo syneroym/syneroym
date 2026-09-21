@@ -3,6 +3,7 @@
 //! real compiled [`Policy`] and hand-built `SessionContext`s -- asserting row
 //! *visibility*, not SQL string shape.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 
 use std::sync::Arc;
 

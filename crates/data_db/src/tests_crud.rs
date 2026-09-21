@@ -2,6 +2,7 @@
 //! against a real (unencrypted, for test speed) SQLite-backed
 //! `ServiceStore`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 
 use std::sync::Arc;
 

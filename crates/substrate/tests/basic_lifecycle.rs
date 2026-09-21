@@ -1,4 +1,11 @@
-#![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    unsafe_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! Integration tests for the Substrate core lifecycle
 //!
 //! Validates proper boot flow, identity checks, role starting,

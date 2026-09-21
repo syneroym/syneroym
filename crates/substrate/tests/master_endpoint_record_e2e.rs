@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! Endpoint records published under the member master DID (ADR-0020 §6),
 //! proven across two genuinely independent `syneroym-substrate` instances --
 //! the mapping this test exists to prove, since nothing else lets a

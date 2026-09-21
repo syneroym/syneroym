@@ -1,4 +1,12 @@
-#![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    unsafe_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    dead_code
+)]
 //! End-to-end tests for the guest HTTP route target
 //! (`syneroym:http/incoming-handler#handle-request`), driven by hand-built
 //! raw HTTP/1.1 request/response bytes over a real Iroh QUIC bidi stream --

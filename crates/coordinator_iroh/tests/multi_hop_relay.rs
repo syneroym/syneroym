@@ -3,7 +3,13 @@
 //! Simulates a scenario that organizes relays, registries, and substrates
 //! across network boundaries in a hierarchy and tests bidirectional e2e
 //! connectivity between clients and substrates across networks.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 use std::{
     collections::BTreeSet,
     path::Path,

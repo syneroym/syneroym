@@ -65,6 +65,12 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Check Roym Service Crate Dependency Hygiene
         run: cargo xtask check-roym-deps
+      - name: Check File Lengths
+        run: cargo xtask check-file-lengths
+      - name: Install cargo-dupes
+        run: cargo install cargo-dupes --version 0.2.1 --locked
+      - name: Check Duplication
+        run: cargo xtask check-duplication
       - name: Run Roym Hub UI Tests
         run: mise run test:roym-ui
       # Doctests are not partitioned and nextest does not run them; parking

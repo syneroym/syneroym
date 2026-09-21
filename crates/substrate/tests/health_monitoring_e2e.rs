@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! Health, read-only, proven across two genuinely independent
 //! `syneroym-substrate` instances -- the reference scenario's own two-node
 //! topology, this time polled rather than deployed.

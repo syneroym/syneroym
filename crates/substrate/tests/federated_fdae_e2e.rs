@@ -1,4 +1,11 @@
-#![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    unsafe_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! A ReBAC check requiring a remote relationship proof triggers a cross-service
 //! fetch via the Universal Proxy mid-query, proven across two genuinely
 //! independent `syneroym-substrate` instances -- distinct identities, distinct

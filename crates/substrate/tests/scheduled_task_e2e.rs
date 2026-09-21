@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! The reference scenario for scheduled tasks (ADR-0023 §6): one real
 //! substrate hosting a scheduled WASM service, one real supervisor evaluating
 //! and firing its schedule on its own reconcile pass. The restart test's

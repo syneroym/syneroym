@@ -1,4 +1,11 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    dead_code
+)]
 //! Substrate-level end-to-end integration tests for Roym identity enrolment
 //! and authorization.
 

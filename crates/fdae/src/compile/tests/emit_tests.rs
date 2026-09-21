@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+
 use super::*;
 
 fn resolvable_employee_policy(principal_col: &str) -> Policy {

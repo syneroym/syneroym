@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+
 use std::sync::Mutex;
 
 use syneroym_app_orchestration::models::{AppInstanceId, LogicalServiceName};

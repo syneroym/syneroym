@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! The durable-outbox reference scenario, end to end over two
 //! real `syneroym-substrate` instances: `backend` (the dependency) on
 //! `managed-a`, `frontend` (the dependent) on `managed-b`. Both plain TCP

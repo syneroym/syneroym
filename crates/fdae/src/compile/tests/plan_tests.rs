@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+
 use super::*;
 
 pub(super) fn remote_relation_policy() -> Policy {

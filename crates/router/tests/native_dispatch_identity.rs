@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! Native-dispatch identity threading -- one of the most
 //! important behaviours in the router. Drives
 //! `RouteHandler::dispatch_json_rpc_once`/`handle_http_stream` directly

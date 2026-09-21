@@ -1,4 +1,12 @@
-#![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    unsafe_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    dead_code
+)]
 //! End-to-end test (ADR-0014): a real `SyneroymClient` opens a
 //! direct raw QUIC stream against a deployed WASM service's registered
 //! stream protocol -- proving the initiator doesn't need to be another
