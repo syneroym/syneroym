@@ -517,11 +517,46 @@ fn check_file_lengths() -> Result<()> {
     Ok(())
 }
 
+const MAX_EXACT_DUPLICATE_PERCENT: &str = "9.5";
+
+fn check_duplication() -> Result<()> {
+    println!("Checking exact-duplicate code percentage (max {MAX_EXACT_DUPLICATE_PERCENT}%)...");
+    let workspace_root = get_workspace_root();
+    let status = Command::new("cargo")
+        .args([
+            "dupes",
+            "check",
+            "--max-exact-percent",
+            MAX_EXACT_DUPLICATE_PERCENT,
+            "--exclude",
+            "bindings.rs",
+            "--exclude",
+            "target",
+        ])
+        .current_dir(&workspace_root)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to run `cargo dupes check` -- is cargo-dupes installed? (`cargo install \
+                 cargo-dupes`): {e}"
+            )
+        })?;
+
+    if !status.success() {
+        bail!("Duplication check failed: exact duplication exceeds {MAX_EXACT_DUPLICATE_PERCENT}%");
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("check-roym-deps") => check_roym_deps(),
         Some("check-file-lengths") => check_file_lengths(),
+        Some("check-duplication") => check_duplication(),
         Some("perf-summary") | None => perf_summary(),
         Some(other) => bail!("Unknown xtask command: {other}"),
     }
