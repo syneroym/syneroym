@@ -408,7 +408,6 @@ fn perf_summary() -> Result<()> {
 }
 
 const GRANDFATHERED_OVERSIZED_FILES: &[&str] = &[
-    "crates/control_plane/src/service/orchestration/deploy.rs",
     "crates/app_supervisor/src/store.rs",
     "crates/app_supervisor/src/service/resident_loop.rs",
     "crates/app_supervisor/src/service/verbs.rs",
