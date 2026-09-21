@@ -407,12 +407,6 @@ fn perf_summary() -> Result<()> {
     append_perf_summary_sections("PERF_SUMMARY.md", &timestamp, &commit, &env_line, &results)
 }
 
-const GRANDFATHERED_OVERSIZED_FILES: &[&str] = &[
-    "crates/app_supervisor/src/store.rs",
-    "crates/app_supervisor/src/service/resident_loop.rs",
-    "crates/app_supervisor/src/service/verbs.rs",
-];
-
 fn is_test_path(path: &Path) -> bool {
     for component in path.iter() {
         if component == "tests" {
@@ -457,10 +451,6 @@ fn count_production_lines(content: &str) -> usize {
     prod_lines
 }
 
-fn is_grandfathered(rel_path: &str) -> bool {
-    GRANDFATHERED_OVERSIZED_FILES.iter().any(|&g| rel_path.ends_with(g) || rel_path == g)
-}
-
 fn check_file_lengths() -> Result<()> {
     println!("Checking production source file lengths...");
     let workspace_root = get_workspace_root();
@@ -493,13 +483,9 @@ fn check_file_lengths() -> Result<()> {
             checked += 1;
             let prod_lines = count_production_lines(&content);
             if prod_lines > 800 {
-                if is_grandfathered(&rel_path) {
-                    println!("  [grandfathered] {rel_path}: {prod_lines} lines");
-                } else {
-                    violations.push(format!(
-                        "{rel_path}: {prod_lines} production lines (maximum allowed is 800)"
-                    ));
-                }
+                violations.push(format!(
+                    "{rel_path}: {prod_lines} production lines (maximum allowed is 800)"
+                ));
             }
         }
     }
