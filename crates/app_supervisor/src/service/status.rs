@@ -59,99 +59,27 @@ impl SupervisorService {
         let PassPlacements { expected, missing_placement, did_to_alias } =
             Self::resolve_pass_placements(&landed, &plan);
 
-        // One client set for the whole call, shared by the health sweep
-        // and the generation read below -- `handle_status`
-        // used to connect to every substrate twice. The connected set is
-        // the union of every alias the plan declares (needed for the
-        // generation read, which must reach a substrate even before
-        // anything has landed there) and every alias a landed placement
-        // names (needed for the health sweep).
-        let plan_aliases: BTreeSet<String> =
-            Self::placed_aliases(&plan).unwrap_or_default().into_iter().collect();
-        let connect_aliases = Self::connect_aliases_for_pass(&plan_aliases, &did_to_alias);
-        let (clients, failed) = self.connect_best_effort(&connect_aliases, &inventory).await;
-        // These used to be discarded entirely. An unreachable substrate
-        // is already visible another way (the
-        // health sweep reports it as a fault for a service placed
-        // there), but an alias with no inventory entry or no credential
-        // is a configuration problem the health sweep cannot see at
-        // all, since it never gets far enough to try connecting.
-        for (alias, reason) in &failed {
-            tracing::warn!(
-                app_instance_id,
-                alias,
-                reason,
-                "failed to connect to a substrate this pass needs"
-            );
-        }
+        let (plan_aliases, clients, report) = self
+            .connect_and_poll_status_health(
+                &app_instance_id,
+                &plan,
+                &did_to_alias,
+                &inventory,
+                &expected,
+            )
+            .await;
 
-        let targets = Self::health_targets(&did_to_alias, &inventory, &clients);
-
-        let report = health::poll_once(&targets, &expected).await;
-        // Drops `targets`' `Arc<dyn StatusQuery>` clones so `clients`
-        // holds the sole remaining `Arc` to each client, which is what
-        // lets `shutdown_clients` reach `Arc::get_mut` below.
-        drop(targets);
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-
-        // A planned service the journal has never recorded landed is a
-        // deploy failure the sweep cannot see (it has no
-        // `service_id`/`substrate_did` to probe at all, reported as
-        // `NotDeployed`, deliberately not a fault).
-        // The supervisor holds the plan, so it knows the difference
-        // between "not in the plan" and "in the plan and missing" --
-        // reuses `InstanceNotRunning` rather than a fifth `AlertKind`,
-        // since the operator reads this as the same problem.
-        //
-        // Keyed on `NEVER_LANDED_SUBSTRATE_DID`, not the empty string:
-        // every planned-but-unlanded service also appears in `report.
-        // services` as `Signal::NotDeployed` with `substrate_did == ""`,
-        // and `record_report`'s own per-service loop unconditionally
-        // *clears* `(instance, logical_ref, "", InstanceNotRunning)` for
-        // exactly that case (no active fault to report) -- raising under
-        // that same empty-string key would have it cleared on every
-        // subsequent call, then re-raised here as a "new" incident every
-        // time. A distinct sentinel dodges that loop, but is then itself
-        // invisible to `record_report`'s *other* pass -- the "this
-        // (logical_ref, substrate_did) pair left the sweep entirely, so
-        // clear it" cleanup -- which would otherwise clear this alert
-        // every single call, for the identical reason in reverse.
-        // `extra_live_pairs` is exactly the exemption that cleanup needs.
-        let extra_live_pairs: Vec<(String, String)> = missing_placement
-            .iter()
-            .map(|l_ref| (l_ref.clone(), NEVER_LANDED_SUBSTRATE_DID.to_string()))
-            .collect();
-        // Same call, same constant, as the resident loop's own.
-        let mut opened = health::record_report(
-            &self.store.alerts,
+        self.record_and_publish_status_health(
             &instance_id,
+            &app_instance_id,
+            &plan,
             &report,
+            &missing_placement,
             now,
-            &extra_live_pairs,
-            SUPERVISOR_CERT_ALERT_POLICY,
         )
-        .map_err(|e| RpcError::InternalError(e.to_string()))?;
+        .await?;
 
-        // Folded into `opened` (not published separately) so the publish
-        // call below sees every alert this pass newly raised, not only
-        // the ones `record_report` itself knows about.
-        self.sync_never_landed_alerts(&instance_id, &plan, &missing_placement, &mut opened)?;
-
-        // Publication happens here, in `record_report`'s caller, over the
-        // newly-opened list above -- every store write
-        // that could add to it has already committed, so a publish
-        // failure below can never lose an alert by construction. Never
-        // propagated with `?`: an unreachable/slow MQTT broker must not
-        // fail the whole `status` call.
-        self.publish_opened_alerts(&app_instance_id, &opened).await;
-
-        // ADR-0021 §4: a substrate reporting a higher generation than this
-        // supervisor holds means a second supervisor
-        // has adopted the instance. Checked against every substrate the
-        // *plan* places a service on, not `did_to_alias` above (which only
-        // covers substrates this supervisor's own journal already shows a
-        // landed placement on, and is empty until the first one lands) --
-        // see `max_held_generation_from_clients`'s own doc.
         let held_max = Self::max_held_generation_from_clients(
             &app_instance_id,
             &plan_aliases,
@@ -162,8 +90,6 @@ impl SupervisorService {
             .update_superseded_alert(&instance_id, &app_instance_id, held_max, state.generation)
             .map_err(RpcError::InternalError)?;
 
-        // Closed once, at the end, now that both the health sweep and the
-        // generation read above are done with them.
         Self::shutdown_clients(clients.into_values()).await;
 
         let services = self.managed_services_from_report(&app_instance_id, &report);
@@ -176,60 +102,101 @@ impl SupervisorService {
             &missing_placement,
         )?;
 
-        // Computed before `state.app_master_did` is moved into the
-        // literal below -- keyed by the app master DID, not the instance
-        // id, so a handover's new DID starts at "never refreshed" rather
-        // than inheriting the old DID's stamp.
         let app_record_expires_at = (!state.app_master_did.is_empty())
             .then(|| self.store.last_tier1_refresh(&state.app_master_did).unwrap_or(None))
             .flatten()
             .map(|at| (at as u64).saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS));
 
+        let (bindings, revoked_placements) =
+            self.binding_and_revoked_placements(&app_instance_id, &plan, &report);
         let status = InstanceStatus {
             app_instance_id: app_instance_id.clone(),
             state: overall_state,
             generation: state.generation,
             supervisor_did: self.node_did.clone(),
-            // An earlier version ran no reconcile loop, so this used to be
-            // permanently `None`. It is not `Some(now)` either -- that
-            // reported every instance as having just reconciled, even one
-            // that never has. The loop now stamps `last_reconciled` at
-            // the end of every pass it actually runs for this instance;
-            // `status`'s own on-demand sweep, right here, deliberately
-            // does not count as one.
             last_reconciled_at: self.last_reconciled.get(&app_instance_id).map(|v| *v as u64),
             services,
-            // Read off the store's own written epoch and this pass's
-            // observed one, per declared dependency.
-            bindings: self.binding_convergence_rows(&app_instance_id, &plan, &report),
+            bindings,
             delivery_note: "delivery is best-effort synchronous; a converged status is not a \
                             durability guarantee"
                 .to_string(),
-            // Reads the same table `apply_with_clients`
-            // already consults on every write pass, so a revocation is
-            // visible here the moment it lands, not only once some other
-            // change triggers a write that reaches the member.
-            revoked_placements: self
-                .store
-                .revoked_placements(&app_instance_id)
-                .unwrap_or_default()
-                .into_iter()
-                .collect(),
-            // Read from the stored row only, never the vault -- a locked
-            // vault is the ordinary state of a
-            // freshly-booted supervisor, and this field must stay readable
-            // through it. Empty means "never adopted under A7", mapped to
-            // `None` here so a caller does not have to know `""` is a
-            // sentinel.
+            revoked_placements,
             app_master_did: (!state.app_master_did.is_empty()).then_some(state.app_master_did),
-            // ADR-0022 §2: derived from the last successful refresh this
-            // supervisor stamped, not read back from the
-            // registry -- the deadline an operator has before a locked
-            // vault (or a pause) costs this instance's cross-app
-            // discoverability, made visible here alongside `VaultLocked`.
             app_record_expires_at,
         };
         Ok(NativeResponse { payload: serde_json::to_value(status).unwrap_or(Value::Null) })
+    }
+
+    async fn connect_and_poll_status_health(
+        &self,
+        app_instance_id: &str,
+        plan: &DeploymentPlan,
+        did_to_alias: &BTreeMap<String, String>,
+        inventory: &SupervisorInventory,
+        expected: &[ExpectedService],
+    ) -> (BTreeSet<String>, BTreeMap<SubstrateAlias, Arc<SyneroymClient>>, health::HealthReport)
+    {
+        let plan_aliases: BTreeSet<String> =
+            Self::placed_aliases(plan).unwrap_or_default().into_iter().collect();
+        let connect_aliases = Self::connect_aliases_for_pass(&plan_aliases, did_to_alias);
+        let (clients, failed) = self.connect_best_effort(&connect_aliases, inventory).await;
+        for (alias, reason) in &failed {
+            tracing::warn!(
+                app_instance_id,
+                alias,
+                reason,
+                "failed to connect to a substrate this pass needs"
+            );
+        }
+
+        let targets = Self::health_targets(did_to_alias, inventory, &clients);
+        let report = health::poll_once(&targets, expected).await;
+        drop(targets);
+        (plan_aliases, clients, report)
+    }
+
+    async fn record_and_publish_status_health(
+        &self,
+        instance_id: &AppInstanceId,
+        app_instance_id: &str,
+        plan: &DeploymentPlan,
+        report: &health::HealthReport,
+        missing_placement: &BTreeSet<String>,
+        now: u64,
+    ) -> RpcResult<()> {
+        let extra_live_pairs: Vec<(String, String)> = missing_placement
+            .iter()
+            .map(|l_ref| (l_ref.clone(), NEVER_LANDED_SUBSTRATE_DID.to_string()))
+            .collect();
+        let mut opened = health::record_report(
+            &self.store.alerts,
+            instance_id,
+            report,
+            now,
+            &extra_live_pairs,
+            SUPERVISOR_CERT_ALERT_POLICY,
+        )
+        .map_err(|e| RpcError::InternalError(e.to_string()))?;
+
+        self.sync_never_landed_alerts(instance_id, plan, missing_placement, &mut opened)?;
+        self.publish_opened_alerts(app_instance_id, &opened).await;
+        Ok(())
+    }
+
+    fn binding_and_revoked_placements(
+        &self,
+        app_instance_id: &str,
+        plan: &DeploymentPlan,
+        report: &health::HealthReport,
+    ) -> (Vec<BindingConvergence>, Vec<String>) {
+        let bindings = self.binding_convergence_rows(app_instance_id, plan, report);
+        let revoked = self
+            .store
+            .revoked_placements(app_instance_id)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        (bindings, revoked)
     }
 
     /// Raises `InstanceNotRunning` for every planned service the journal
