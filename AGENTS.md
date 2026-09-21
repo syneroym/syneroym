@@ -2,7 +2,7 @@
 
 ## General Instructions
 - Focus religiously on these code aspects: Simplicity, performance, readability, testability, overall beauty, robustness, scalability, reliability.
-- Follow standard Rust `clippy` guidelines. Before completion, confirm that `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, `cargo nextest run --workspace` (plus `cargo test --workspace --doc` for doctests), `cargo audit`, `cargo deny check licenses`, and `mise run test:e2e` succeed. As part of the same completion pass, update [docs/planning/deferred-backlog.md](docs/planning/deferred-backlog.md) if the change deferred or shortcut anything (see the Mandatory Deferred-Backlog Update rule under AI Agent Guidelines).
+- Follow standard Rust `clippy` guidelines. Before completion, confirm that `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, `cargo xtask check-file-lengths`, `cargo xtask check-duplication`, `cargo nextest run --workspace` (plus `cargo test --workspace --doc` for doctests), `cargo audit`, `cargo deny check licenses`, and `mise run test:e2e` succeed. As part of the same completion pass, update [docs/planning/deferred-backlog.md](docs/planning/deferred-backlog.md) if the change deferred or shortcut anything (see the Mandatory Deferred-Backlog Update rule under AI Agent Guidelines).
 - Try to use the latest stable versions of any library added.
 - Have extensive integration and end to end tests for end user facing interfaces.
 - Have solid unit tests for internal code if it is complex and delicate, even if it is not user facing.
