@@ -15,7 +15,7 @@ pub use types::{
     Relation,
 };
 
-const FDAE_V1_SCHEMA: &str = include_str!("../../schema/fdae-v1.json");
+const FDAE_V1_SCHEMA: &str = include_str!("../schema/fdae-v1.json");
 
 /// Parses and fully validates an `fdae/v1` policy document: JSON-Schema
 /// validation, then typed deserialization, then the semantic checks the
