@@ -57,23 +57,23 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/app_supervisor` | 267 | 45 | 3 | 9 | done | done | done |
 | `crates/control_plane` | 151 | 40 | 3 | 14 | done | done | done |
 | `crates/router` | 120 | 27 | 5 | 12 | done | done | done |
-| `crates/substrate` | 110 | 28 | 1 | 29 | done | done | |
+| `crates/substrate` | 110 | 28 | 1 | 29 | done | done | done |
 | `crates/sdk` | 101 | 47 | 4 | 3 | done | done | done |
 | `crates/sandbox_wasm` | 90 | 16 | 3 | 6 | done | done | done |
-| `crates/core` | 75 | 37 | 3 | 0 | done | done | |
+| `crates/core` | 75 | 37 | 3 | 0 | done | done | n/a |
 | `apps/roymctl` | 69 | 37 | 4 | 9 | done | done | done |
 | `crates/app_orchestration` | 49 | 22 | 2 | 2 | done | done | done |
-| `crates/async_queue` | 34 | 12 | 2 | 0 | done | done | |
+| `crates/async_queue` | 34 | 12 | 2 | 0 | done | done | n/a |
 | `crates/data_db` | 34 | 9 | 4 | 0 | done | done | done |
 | `crates/fdae` | 27 | 5 | 2 | 1 | done | done | done |
-| `crates/rpc` | 21 | 8 | 0 | 0 | done | n/a | |
+| `crates/rpc` | 21 | 8 | 0 | 0 | done | n/a | n/a |
 | `crates/ucan` | 14 | 0 | 0 | 0 | done | done | n/a |
 | `crates/coordinator_iroh` | 7 | 2 | 1 | 4 | done | n/a | done |
-| `crates/coordinator_webrtc` | 7 | 2 | 1 | 0 | done | done | |
-| `crates/data_keystore` | 7 | 2 | 0 | 0 | done | n/a | |
-| `crates/data_blob` | 5 | 0 | 1 | 0 | done | done | |
-| `crates/community_registry` | 5 | 0 | 0 | 0 | done | done | |
-| `crates/mqtt_broker` | 5 | 0 | 0 | 0 | done | n/a | |
+| `crates/coordinator_webrtc` | 7 | 2 | 1 | 0 | done | done | n/a |
+| `crates/data_keystore` | 7 | 2 | 0 | 0 | done | n/a | n/a |
+| `crates/data_blob` | 5 | 0 | 1 | 0 | done | done | n/a |
+| `crates/community_registry` | 5 | 0 | 0 | 0 | done | done | n/a |
+| `crates/mqtt_broker` | 5 | 0 | 0 | 0 | done | n/a | n/a |
 | `crates/conversation` | 4 | 0 | 4 | 6 | done | done | done |
 | `crates/roym_transaction` | 0 | 0 | 1 | 7 | n/a | done | done |
 | `crates/roym_directory` | 0 | 0 | 1 | 4 | n/a | done | done |
@@ -84,15 +84,15 @@ parenthetical that can be removed without rewriting the sentence.
 | `crates/roym_profile` | 0 | 0 | 1 | 1 | n/a | done | done |
 | `crates/roym_conversation` | 0 | 0 | 1 | 0 | n/a | done | n/a |
 | `crates/client_gateway` | 0 | 0 | 1 | 1 | n/a | n/a | done |
-| `crates/app_host_native` | 1 | 0 | 1 | 1 | done | done | |
+| `crates/app_host_native` | 1 | 0 | 1 | 1 | done | done | done |
 | `crates/sandbox_podman` | 1 | 1 | 1 | 1 | done | n/a | done |
 | `crates/identity` | 2 | 0 | 0 | 0 | done | n/a | n/a |
 | `crates/chunk_transfer` | 1 | 0 | 0 | 0 | done | n/a | n/a |
 | `crates/app_host` | 1 | 0 | 0 | 0 | done | n/a | n/a |
 | `crates/smoke-tests` | 0 | 0 | 0 | 1 | n/a | n/a | done |
-| `tests/perf` | 1 | 1 | 0 | 4 | done | n/a | |
+| `tests/perf` | 1 | 1 | 0 | 4 | done | n/a | n/a |
 | `xtask/src` | 0 | 0 | 0 | 2 | n/a | n/a | done |
-| `test-components/*` | 13 | 1 | 1 | 1 | done | done | |
+| `test-components/*` | 13 | 1 | 1 | 1 | done | done | n/a |
 | **total** | **1,222** | **342** | **55** | **125** | | | |
 
 The four Roym service crates (`roym_transaction` 2,944 lines / 21 arms,
@@ -108,13 +108,13 @@ the per-crate rows above are where the work happens.
 
 | Threshold | Functions above it | Lines in them | Status |
 | ---: | ---: | ---: | --- |
-| 500 | 3 | 2,180 | not started |
-| 400 | 6 | 3,530 | |
-| 300 | 14 | 6,435 | |
-| 250 | 21 | 8,392 | |
-| 200 | 31 | 10,605 | |
-| 150 | 58 | 15,301 | |
-| 100 | 125 | 23,330 | |
+| 500 | 3 | 2,180 | done |
+| 400 | 6 | 3,530 | done |
+| 300 | 14 | 6,435 | done |
+| 250 | 21 | 8,392 | done |
+| 200 | 31 | 10,605 | done |
+| 150 | 58 | 15,301 | done |
+| 100 | 125 | 23,330 | done |
 
 ## Rules for every session
 
