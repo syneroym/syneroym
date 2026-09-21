@@ -36,6 +36,104 @@ fn get_sys_info() -> (String, String, String) {
     (os, cpu, memory)
 }
 
+struct AllowedDependencies<'a> {
+    siblings: &'a [&'a str],
+    target_independent: &'a [&'a str],
+    wasm32: &'a [&'a str],
+    native: &'a [&'a str],
+}
+
+fn check_crate_manifest_dependencies(
+    dir: &Path,
+    allowed: &AllowedDependencies,
+    violations: &mut Vec<String>,
+) -> Result<()> {
+    let manifest_path = dir.join("Cargo.toml");
+    let content = fs::read_to_string(&manifest_path)?;
+    let manifest: toml::Value = toml::from_str(&content)?;
+
+    let this_pkg = manifest
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or_else(|| dir.to_str().unwrap_or("unknown"));
+
+    // 1. Check target-independent [dependencies]
+    if let Some(deps) = manifest.get("dependencies").and_then(|d| d.as_table()) {
+        for dep in deps.keys() {
+            if allowed.siblings.contains(&dep.as_str()) {
+                violations.push(format!(
+                    "{this_pkg}: [dependencies] contains sibling crate dependency '{dep}'"
+                ));
+            } else if !allowed.target_independent.contains(&dep.as_str()) {
+                violations.push(format!(
+                    "{this_pkg}: [dependencies] contains unallowed dependency '{dep}'"
+                ));
+            }
+        }
+    }
+
+    // 2. Check [target.'cfg(target_arch = "wasm32")'.dependencies]
+    if let Some(target_wasm) = manifest
+        .get("target")
+        .and_then(|t| t.get("cfg(target_arch = \"wasm32\")"))
+        .and_then(|c| c.get("dependencies"))
+        .and_then(|d| d.as_table())
+    {
+        for dep in target_wasm.keys() {
+            if allowed.siblings.contains(&dep.as_str()) {
+                violations.push(format!(
+                    "{this_pkg}: wasm32 dependencies contains sibling crate '{dep}'"
+                ));
+            } else if !allowed.wasm32.contains(&dep.as_str()) {
+                violations.push(format!(
+                    "{this_pkg}: wasm32 dependencies contains unallowed dependency '{dep}'"
+                ));
+            }
+        }
+    }
+
+    // 3. Check [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+    if let Some(target_native) = manifest
+        .get("target")
+        .and_then(|t| t.get("cfg(not(target_arch = \"wasm32\"))"))
+        .and_then(|c| c.get("dependencies"))
+        .and_then(|d| d.as_table())
+    {
+        for dep in target_native.keys() {
+            if allowed.siblings.contains(&dep.as_str()) {
+                violations.push(format!(
+                    "{this_pkg}: native dependencies contains sibling crate '{dep}'"
+                ));
+            } else if !allowed.native.contains(&dep.as_str()) {
+                violations.push(format!(
+                    "{this_pkg}: native dependencies contains unallowed dependency '{dep}'"
+                ));
+            }
+        }
+    }
+
+    // 4. Check component metadata dependencies
+    if let Some(meta_deps) = manifest
+        .get("package")
+        .and_then(|p| p.get("metadata"))
+        .and_then(|m| m.get("component"))
+        .and_then(|c| c.get("target"))
+        .and_then(|t| t.get("dependencies"))
+        .and_then(|d| d.as_table())
+    {
+        for dep in meta_deps.keys() {
+            if allowed.siblings.contains(&dep.as_str()) {
+                violations.push(format!(
+                    "{this_pkg}: component metadata dependencies contains sibling crate '{dep}'"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn check_roym_deps() -> Result<()> {
     println!("Checking Roym service crate dependency hygiene...");
     let siblings = [
@@ -68,106 +166,25 @@ fn check_roym_deps() -> Result<()> {
     }
     crate_dirs.sort();
 
-    let allowed_target_independent = [
-        "syneroym-app-host",
-        "syneroym-roym-core",
-        "syneroym-signed-record",
-        "serde",
-        "serde_json",
-        "async-trait",
-        "thiserror",
-    ];
-
-    let allowed_wasm32 = ["wit-bindgen", "syneroym-wit-interfaces"];
-
-    let allowed_native = ["syneroym-rpc", "syneroym-app-host-native", "async-trait"];
+    let allowed = AllowedDependencies {
+        siblings: &siblings,
+        target_independent: &[
+            "syneroym-app-host",
+            "syneroym-roym-core",
+            "syneroym-signed-record",
+            "serde",
+            "serde_json",
+            "async-trait",
+            "thiserror",
+        ],
+        wasm32: &["wit-bindgen", "syneroym-wit-interfaces"],
+        native: &["syneroym-rpc", "syneroym-app-host-native", "async-trait"],
+    };
 
     let mut violations = Vec::new();
 
     for dir in &crate_dirs {
-        let manifest_path = dir.join("Cargo.toml");
-        let content = fs::read_to_string(&manifest_path)?;
-        let manifest: toml::Value = toml::from_str(&content)?;
-
-        let this_pkg = manifest
-            .get("package")
-            .and_then(|p| p.get("name"))
-            .and_then(|n| n.as_str())
-            .unwrap_or_else(|| dir.to_str().unwrap_or("unknown"));
-
-        // 1. Check target-independent [dependencies]
-        if let Some(deps) = manifest.get("dependencies").and_then(|d| d.as_table()) {
-            for dep in deps.keys() {
-                if siblings.contains(&dep.as_str()) {
-                    violations.push(format!(
-                        "{this_pkg}: [dependencies] contains sibling crate dependency '{dep}'"
-                    ));
-                } else if !allowed_target_independent.contains(&dep.as_str()) {
-                    violations.push(format!(
-                        "{this_pkg}: [dependencies] contains unallowed dependency '{dep}'"
-                    ));
-                }
-            }
-        }
-
-        // 2. Check [target.'cfg(target_arch = "wasm32")'.dependencies]
-        if let Some(target_wasm) = manifest
-            .get("target")
-            .and_then(|t| t.get("cfg(target_arch = \"wasm32\")"))
-            .and_then(|c| c.get("dependencies"))
-            .and_then(|d| d.as_table())
-        {
-            for dep in target_wasm.keys() {
-                if siblings.contains(&dep.as_str()) {
-                    violations.push(format!(
-                        "{this_pkg}: wasm32 dependencies contains sibling crate '{dep}'"
-                    ));
-                } else if !allowed_wasm32.contains(&dep.as_str()) {
-                    violations.push(format!(
-                        "{this_pkg}: wasm32 dependencies contains unallowed dependency '{dep}'"
-                    ));
-                }
-            }
-        }
-
-        // 3. Check [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-        if let Some(target_native) = manifest
-            .get("target")
-            .and_then(|t| t.get("cfg(not(target_arch = \"wasm32\"))"))
-            .and_then(|c| c.get("dependencies"))
-            .and_then(|d| d.as_table())
-        {
-            for dep in target_native.keys() {
-                if siblings.contains(&dep.as_str()) {
-                    violations.push(format!(
-                        "{this_pkg}: native dependencies contains sibling crate '{dep}'"
-                    ));
-                } else if !allowed_native.contains(&dep.as_str()) {
-                    violations.push(format!(
-                        "{this_pkg}: native dependencies contains unallowed dependency '{dep}'"
-                    ));
-                }
-            }
-        }
-
-        // 4. Check component metadata dependencies
-        if let Some(meta_deps) = manifest
-            .get("package")
-            .and_then(|p| p.get("metadata"))
-            .and_then(|m| m.get("component"))
-            .and_then(|c| c.get("target"))
-            .and_then(|t| t.get("dependencies"))
-            .and_then(|d| d.as_table())
-        {
-            for dep in meta_deps.keys() {
-                if siblings.contains(&dep.as_str()) {
-                    violations.push(format!(
-                        "{this_pkg}: component metadata dependencies contains sibling crate \
-                         '{dep}'"
-                    ));
-                }
-            }
-        }
+        check_crate_manifest_dependencies(dir, &allowed, &mut violations)?;
     }
 
     if !violations.is_empty() {
@@ -181,14 +198,14 @@ fn check_roym_deps() -> Result<()> {
     Ok(())
 }
 
-fn perf_summary() -> Result<()> {
-    println!("Gathering environment details...");
-    let commit = get_git_commit();
-    let (os, cpu, mem) = get_sys_info();
-    let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+struct PerfBenchmarkResults {
+    bench_rows: Vec<String>,
+    latency_rows: Vec<String>,
+    concurrency_rows: Vec<String>,
+    soak_rows: Vec<String>,
+}
 
-    let env_line = format!("| {commit} | {timestamp} | {os} | {cpu} | {mem} |");
-
+fn run_micro_benchmarks() -> Result<Vec<String>> {
     println!("Running cargo bench...");
     let status = Command::new("cargo")
         .args(["bench", "--workspace"])
@@ -200,7 +217,6 @@ fn perf_summary() -> Result<()> {
         println!("cargo bench failed, continuing anyway...");
     }
 
-    // Parse criterion results
     let mut bench_rows = Vec::new();
     let criterion_dir = Path::new("target/criterion");
     if criterion_dir.exists() {
@@ -219,7 +235,10 @@ fn perf_summary() -> Result<()> {
             }
         }
     }
+    Ok(bench_rows)
+}
 
+fn run_latency_benchmarks() -> Result<Vec<String>> {
     println!("Running syneroym-perf latency...");
     let latency_out = Command::new("cargo")
         .args(["run", "--release", "-p", "syneroym-perf", "--", "latency"])
@@ -239,7 +258,10 @@ fn perf_summary() -> Result<()> {
             }
         }
     }
+    Ok(latency_rows)
+}
 
+fn run_concurrency_benchmarks(perf_results: &Path) -> Result<Vec<String>> {
     println!("Running syneroym-perf concurrency...");
     Command::new("cargo")
         .args(["run", "--release", "-p", "syneroym-perf", "--", "concurrency"])
@@ -248,7 +270,6 @@ fn perf_summary() -> Result<()> {
         .status()?;
 
     let mut concurrency_rows = Vec::new();
-    let perf_results = Path::new("tests/perf/results");
     if perf_results.exists() {
         let mut concurrency_files: Vec<_> = fs::read_dir(perf_results)?
             .filter_map(|e| e.ok())
@@ -269,7 +290,10 @@ fn perf_summary() -> Result<()> {
             }
         }
     }
+    Ok(concurrency_rows)
+}
 
+fn run_soak_benchmarks(perf_results: &Path) -> Result<Vec<String>> {
     println!("Running syneroym-perf soak...");
     Command::new("cargo")
         .args(["run", "--release", "-p", "syneroym-perf", "--", "soak"])
@@ -296,9 +320,17 @@ fn perf_summary() -> Result<()> {
             soak_rows.push(format!("| {dur}s | {thr:.1} | {rss:.1} MB | {res} |"));
         }
     }
+    Ok(soak_rows)
+}
 
+fn append_perf_summary_sections(
+    summary_path: &str,
+    timestamp: &str,
+    commit: &str,
+    env_line: &str,
+    results: &PerfBenchmarkResults,
+) -> Result<()> {
     println!("Updating PERF_SUMMARY.md...");
-    let summary_path = "PERF_SUMMARY.md";
     let is_new = !Path::new(summary_path).exists();
     let mut file = OpenOptions::new().create(true).append(true).open(summary_path)?;
 
@@ -313,44 +345,62 @@ fn perf_summary() -> Result<()> {
     writeln!(file, "|--------|-----------|----|-----|--------|")?;
     writeln!(file, "{env_line}")?;
 
-    if !bench_rows.is_empty() {
+    if !results.bench_rows.is_empty() {
         writeln!(file, "\n### Criterion Micro-Benchmarks")?;
         writeln!(file, "| Benchmark | Mean Time (ms) |")?;
         writeln!(file, "|-----------|----------------|")?;
-        for row in bench_rows {
+        for row in &results.bench_rows {
             writeln!(file, "{row}")?;
         }
     }
 
-    if !latency_rows.is_empty() {
+    if !results.latency_rows.is_empty() {
         writeln!(file, "\n### Syneroym Perf: Latency")?;
         writeln!(file, "| Scenario | p50 | p95 |")?;
         writeln!(file, "|----------|-----|-----|")?;
-        for row in latency_rows {
+        for row in &results.latency_rows {
             writeln!(file, "{row}")?;
         }
     }
 
-    if !concurrency_rows.is_empty() {
+    if !results.concurrency_rows.is_empty() {
         writeln!(file, "\n### Syneroym Perf: Concurrency")?;
         writeln!(file, "| Scenario | Throughput (rps) | Error Rate | p95 Latency |")?;
         writeln!(file, "|----------|------------------|------------|-------------|")?;
-        for row in concurrency_rows {
+        for row in &results.concurrency_rows {
             writeln!(file, "{row}")?;
         }
     }
 
-    if !soak_rows.is_empty() {
+    if !results.soak_rows.is_empty() {
         writeln!(file, "\n### Syneroym Perf: Soak")?;
         writeln!(file, "| Duration | Throughput (rps) | Peak RSS | Result |")?;
         writeln!(file, "|----------|------------------|----------|--------|")?;
-        for row in soak_rows {
+        for row in &results.soak_rows {
             writeln!(file, "{row}")?;
         }
     }
 
     println!("Done! Results appended to PERF_SUMMARY.md");
     Ok(())
+}
+
+fn perf_summary() -> Result<()> {
+    println!("Gathering environment details...");
+    let commit = get_git_commit();
+    let (os, cpu, mem) = get_sys_info();
+    let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let env_line = format!("| {commit} | {timestamp} | {os} | {cpu} | {mem} |");
+
+    let perf_results = Path::new("tests/perf/results");
+    let results = PerfBenchmarkResults {
+        bench_rows: run_micro_benchmarks()?,
+        latency_rows: run_latency_benchmarks()?,
+        concurrency_rows: run_concurrency_benchmarks(perf_results)?,
+        soak_rows: run_soak_benchmarks(perf_results)?,
+    };
+
+    append_perf_summary_sections("PERF_SUMMARY.md", &timestamp, &commit, &env_line, &results)
 }
 
 fn main() -> Result<()> {
