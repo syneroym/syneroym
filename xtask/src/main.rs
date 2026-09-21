@@ -407,10 +407,7 @@ fn perf_summary() -> Result<()> {
     append_perf_summary_sections("PERF_SUMMARY.md", &timestamp, &commit, &env_line, &results)
 }
 
-const GRANDFATHERED_OVERSIZED_FILES: &[&str] = &[
-    "crates/control_plane/src/service/orchestration/deploy.rs",
-    "crates/conversation/src/group.rs",
-];
+const GRANDFATHERED_OVERSIZED_FILES: &[&str] = &[];
 
 fn is_test_path(path: &Path) -> bool {
     for component in path.iter() {
