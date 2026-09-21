@@ -412,7 +412,6 @@ const GRANDFATHERED_OVERSIZED_FILES: &[&str] = &[
     "crates/app_supervisor/src/store.rs",
     "crates/app_supervisor/src/service/resident_loop.rs",
     "crates/app_supervisor/src/service/verbs.rs",
-    "crates/conversation/src/group.rs",
 ];
 
 fn is_test_path(path: &Path) -> bool {

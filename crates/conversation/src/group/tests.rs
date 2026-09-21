@@ -4,6 +4,7 @@ use syneroym_async_queue::QueueConfig;
 use syneroym_core::config::RetryPolicy;
 
 use super::*;
+use crate::store::{ConversationConfig, StoredDagEntry};
 
 fn store() -> ConversationStore {
     let dir = tempfile::tempdir().unwrap();
