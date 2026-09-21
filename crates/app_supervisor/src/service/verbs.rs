@@ -219,38 +219,7 @@ impl SupervisorService {
         // refused to record it, making the supervisor immediately
         // superseded by its own write. One read covers both, so both are
         // checked before either has a chance to run.
-        if let Some(existing) = self
-            .store
-            .get(&s.app_instance_id)
-            .map_err(|e| RpcError::InternalError(e.to_string()))?
-        {
-            if existing.retired {
-                return Err(RpcError::InternalError(format!(
-                    "app instance '{}' is retired; run `supervisor adopt` to resume managing it \
-                     before submitting new desired state",
-                    s.app_instance_id
-                )));
-            }
-            if s.generation != existing.generation {
-                return Err(RpcError::InternalError(format!(
-                    "submit presented generation {}, but app instance '{}' is on record at \
-                     generation {}; only `adopt` mints a new one -- run `supervisor adopt`, or \
-                     omit --generation to resubmit at the current one",
-                    s.generation, s.app_instance_id, existing.generation
-                )));
-            }
-        }
-
-        // Checked in the same pre-flight as `retired`/`generation` above,
-        // before any deploy work runs -- a changed placement must be
-        // refused, not silently applied.
-        self.refuse_placement_change(&plan, &inventory).await.map_err(RpcError::InternalError)?;
-        // The manifest-time replica cap, re-checked at the interface that
-        // actually accepts a compiled plan.
-        Self::refuse_replicas_above_cap(&plan).map_err(RpcError::InternalError)?;
-        Self::refuse_unrunnable_schedules(&plan).map_err(RpcError::InternalError)?;
-        Self::refuse_unshardable_plan(&plan).map_err(RpcError::InternalError)?;
-        validate_plan_visibility(&plan).map_err(|errs| RpcError::InvalidParams(errs.join("; ")))?;
+        self.validate_submit_preflight(&s, &plan, &inventory).await?;
 
         // Mint before connecting anywhere -- a locked vault or a bad plan
         // must fail before anything is persisted or a network round trip
@@ -266,25 +235,7 @@ impl SupervisorService {
         let plan_json_substituted =
             plan.to_json().map_err(|e| RpcError::InternalError(e.to_string()))?;
 
-        // ADR-0022 §6/§3: a per-logical-service topology epoch for
-        // every service this plan names. Computed here, ahead of
-        // `store.submit`'s durable write, alongside everything else that
-        // can fail -- `service_topology` can refuse an inconsistent plan
-        // (a compiler bug), and that must refuse the submit with nothing
-        // written, not land a stored plan no later `resolve` can build a
-        // document from. Over `plan` post-`mint_and_substitute`, so the
-        // fingerprint is over the members a document will actually carry,
-        // not the compiler's fabricated ids.
-        let service_names: BTreeSet<_> =
-            plan.services.iter().map(|svc| svc.logical_ref.service_name.clone()).collect();
-        let mut topology_fingerprints = Vec::with_capacity(service_names.len());
-        for service_name in service_names {
-            let topo = topology::service_topology(&plan, &service_name)
-                .map_err(|e| RpcError::InternalError(e.to_string()))?;
-            let fingerprint =
-                topology_fingerprint(topo.mode, &topo.members, topo.sharding_strategy.as_ref());
-            topology_fingerprints.push((service_name, fingerprint));
-        }
+        let topology_fingerprints = Self::compute_topology_fingerprints(&plan)?;
 
         // Persisted here, before the deploy attempt below -- so a
         // substrate that is down or slow at this
@@ -305,35 +256,7 @@ impl SupervisorService {
             )
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
 
-        // Infallible in practice: a failure here is a stale epoch on an
-        // otherwise-correct stored plan, which `resolve`'s own insert-only
-        // backfill repairs on the next read. The cache eviction is
-        // belt-and-braces -- `handle_resolve` re-signs on an epoch
-        // mismatch anyway -- but removing it here means a scale-out is
-        // visible without waiting for that comparison.
-        for (service_name, fingerprint) in topology_fingerprints {
-            let before =
-                self.store.topology_epoch(&s.app_instance_id, service_name.as_str()).unwrap_or(0);
-            match self.store.record_topology_fingerprint(
-                &s.app_instance_id,
-                service_name.as_str(),
-                &fingerprint,
-            ) {
-                Ok(after) => {
-                    if after != before {
-                        self.signed_documents
-                            .remove(&(s.app_instance_id.clone(), service_name.to_string()));
-                    }
-                }
-                Err(e) => tracing::warn!(
-                    app_instance_id = %s.app_instance_id,
-                    %service_name,
-                    error = %e,
-                    "failed to record this submit's topology fingerprint; a later resolve will \
-                     repair it"
-                ),
-            }
-        }
+        self.record_and_evict_topology(&s.app_instance_id, &topology_fingerprints);
 
         // Best-effort immediate apply: still surfaced to the caller as an
         // error if it does not fully land (an operator's `submit` should
@@ -372,6 +295,88 @@ impl SupervisorService {
                 .collect(),
         };
         Ok(NativeResponse { payload: serde_json::to_value(result).unwrap_or(Value::Null) })
+    }
+
+    async fn validate_submit_preflight(
+        &self,
+        s: &Submission,
+        plan: &DeploymentPlan,
+        inventory: &SupervisorInventory,
+    ) -> RpcResult<()> {
+        if let Some(existing) = self
+            .store
+            .get(&s.app_instance_id)
+            .map_err(|e| RpcError::InternalError(e.to_string()))?
+        {
+            if existing.retired {
+                return Err(RpcError::InternalError(format!(
+                    "app instance '{}' is retired; run `supervisor adopt` to resume managing it \
+                     before submitting new desired state",
+                    s.app_instance_id
+                )));
+            }
+            if s.generation != existing.generation {
+                return Err(RpcError::InternalError(format!(
+                    "submit presented generation {}, but app instance '{}' is on record at \
+                     generation {}; only `adopt` mints a new one -- run `supervisor adopt`, or \
+                     omit --generation to resubmit at the current one",
+                    s.generation, s.app_instance_id, existing.generation
+                )));
+            }
+        }
+
+        self.refuse_placement_change(plan, inventory).await.map_err(RpcError::InternalError)?;
+        Self::refuse_replicas_above_cap(plan).map_err(RpcError::InternalError)?;
+        Self::refuse_unrunnable_schedules(plan).map_err(RpcError::InternalError)?;
+        Self::refuse_unshardable_plan(plan).map_err(RpcError::InternalError)?;
+        validate_plan_visibility(plan).map_err(|errs| RpcError::InvalidParams(errs.join("; ")))?;
+        Ok(())
+    }
+
+    fn compute_topology_fingerprints(
+        plan: &DeploymentPlan,
+    ) -> RpcResult<Vec<(LogicalServiceName, String)>> {
+        let service_names: BTreeSet<_> =
+            plan.services.iter().map(|svc| svc.logical_ref.service_name.clone()).collect();
+        let mut topology_fingerprints = Vec::with_capacity(service_names.len());
+        for service_name in service_names {
+            let topo = topology::service_topology(plan, &service_name)
+                .map_err(|e| RpcError::InternalError(e.to_string()))?;
+            let fingerprint =
+                topology_fingerprint(topo.mode, &topo.members, topo.sharding_strategy.as_ref());
+            topology_fingerprints.push((service_name, fingerprint));
+        }
+        Ok(topology_fingerprints)
+    }
+
+    fn record_and_evict_topology(
+        &self,
+        app_instance_id: &str,
+        topology_fingerprints: &[(LogicalServiceName, String)],
+    ) {
+        for (service_name, fingerprint) in topology_fingerprints {
+            let before =
+                self.store.topology_epoch(app_instance_id, service_name.as_str()).unwrap_or(0);
+            match self.store.record_topology_fingerprint(
+                app_instance_id,
+                service_name.as_str(),
+                fingerprint,
+            ) {
+                Ok(after) => {
+                    if after != before {
+                        self.signed_documents
+                            .remove(&(app_instance_id.to_string(), service_name.to_string()));
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    %app_instance_id,
+                    %service_name,
+                    error = %e,
+                    "failed to record this submit's topology fingerprint; a later resolve will \
+                     repair it"
+                ),
+            }
+        }
     }
 
     /// Reads the held generation across every given client and claims

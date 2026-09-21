@@ -72,31 +72,8 @@ impl SupervisorService {
         let landed =
             self.store.journal.get_completed_actions_for_instance(&instance_id).unwrap_or_default();
 
-        let PassPlacements { expected, missing_placement, did_to_alias } =
-            Self::resolve_pass_placements(&landed, &plan);
-
-        let plan_aliases: BTreeSet<String> =
-            Self::placed_aliases(&plan).unwrap_or_default().into_iter().collect();
-        let connect_aliases = Self::connect_aliases_for_pass(&plan_aliases, &did_to_alias);
-        let (clients, failed) = self.connect_best_effort(&connect_aliases, &inventory).await;
-        // These used to be discarded entirely. An unreachable substrate
-        // is already visible another way (the
-        // health sweep reports it as a fault for a service placed
-        // there), but an alias with no inventory entry or no credential
-        // is a configuration problem the health sweep cannot see at
-        // all, since it never gets far enough to try connecting.
-        for (alias, reason) in &failed {
-            tracing::warn!(
-                app_instance_id,
-                alias,
-                reason,
-                "failed to connect to a substrate this pass needs"
-            );
-        }
-
-        let targets = Self::health_targets(&did_to_alias, &inventory, &clients);
-        let report = health::poll_once(&targets, &expected).await;
-        drop(targets);
+        let (placements, plan_aliases, clients, report) =
+            self.connect_and_poll_health(app_instance_id, &landed, &plan, &inventory).await;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
 
         let mut opened = self.record_pass_health(
@@ -104,91 +81,26 @@ impl SupervisorService {
             app_instance_id,
             &plan,
             &report,
-            &missing_placement,
+            &placements.missing_placement,
             now,
         );
 
-        let diff = Reconciler::new(&self.store.journal).compute_diff(&plan);
-        // A dependent member whose diff against the last active plan
-        // changed *only* `resolved_dependencies` is a
-        // membership change in one of its dependencies -- pushed via
-        // `push_bindings`, not redeployed. Every other kind of change
-        // (config, placement, ...) still takes the redeploy path.
-        // A member whose diff changed *only* its
-        // `schedule` is excluded the same way, but pushes nothing.
-        // `classify_update_actions` is the same classifier an
-        // operator-triggered apply uses (`apply_with_membership_pushes`),
-        // so a loop pass and a `submit`/`force-reconcile` make the
-        // identical redeploy-vs-push-vs-exclude call for the identical
-        // diff.
-        let (redeploy_exclusions, push_candidates) = diff
-            .as_ref()
-            .map(|d| Self::classify_update_actions(&landed, &d.actions))
-            .unwrap_or_default();
-        let diff_actions = diff.as_ref().map(|d| d.actions.as_slice()).unwrap_or_default();
-        let needs_work =
-            Self::redeploy_work_list(&missing_placement, diff_actions, &redeploy_exclusions);
-        self.sync_orphaned_alerts(&instance_id, &plan, &landed, diff_actions, &mut opened);
+        let (needs_work, push_candidates) = self.compute_redeploy_and_sync(
+            &instance_id,
+            &plan,
+            &landed,
+            &placements.missing_placement,
+            &mut opened,
+        );
 
-        // Landed services the sweep just found `InstanceNotRunning` are
-        // restart
-        // candidates -- distinct from `needs_work` above, which never-
-        // landed or content-changed services feed into instead. A
-        // healthy service's own remediation bookkeeping resets here too,
-        // so the next fault starts counting from zero.
         let restart_candidates = Self::restart_candidates(&report);
         for svc in report.services.iter().filter(|s| s.signal == Signal::Healthy) {
             let _ = self.store.clear_remediation(app_instance_id, &svc.member_ref().to_string());
         }
 
-        // The fourth work-list. Its input is this pass's own health poll
-        // -- `ServiceHealth` already carries the certificate's
-        // issued/expires pair -- so renewal needs no poll and no cadence of
-        // its own. Deduped against `needs_work` (a service about to go
-        // through `apply_plan` gets a fresh certificate there, so renewing
-        // it here would certify it twice in one pass) but deliberately
-        // *not* against `restart_candidates`: a restart reloads the running
-        // instance and touches no certificate, so a service under
-        // remediation still needs its own renewal check.
-        let revoked = self.store.revoked_placements(app_instance_id).unwrap_or_default();
-        let renewal_candidates = Self::renewal_candidates(
-            &report,
-            &needs_work,
-            &revoked,
-            now,
-            self.max_renewals_per_pass,
-        );
-        // The fifth work-list (ADR-0023 §6): every schedule
-        // this instance's plan declares, evaluated against this pass's own
-        // health report, over the grace window `schedule_grace_secs`
-        // sizes from this supervisor's own sweep cadence.
-        let declared_schedules: BTreeSet<String> =
-            Self::declared_schedules(&plan).into_keys().collect();
-        if let Err(e) = self.store.prune_schedule_states(app_instance_id, &declared_schedules) {
-            tracing::warn!(
-                app_instance_id,
-                error = %e,
-                "failed to drop the state of a schedule the plan no longer declares"
-            );
-        }
-        let schedule_states = self.store.schedule_states(app_instance_id).unwrap_or_default();
-        let schedule_decisions = Self::schedule_decisions(
-            &plan,
-            &schedule_states,
-            &report,
-            now,
-            self.schedule_grace_secs(now),
-        );
-        // Members whose certificate renewed but whose
-        // `restart-on-rotation` restart then failed. Independent of the
-        // renewal work-list above -- these are no longer near-expiry, so
-        // `renewal_candidates` will never see them again.
-        let pending_rotation_restarts =
-            self.store.pending_rotation_restarts(app_instance_id).unwrap_or_default();
-        // D-A5d-9's clearing rule, the same recomputed-not-flagged shape
-        // `Superseded` and `remediation.terminal` already use: a member the
-        // substrate now reports with a healthy certificate window has no
-        // stalled renewal, whatever an earlier pass raised.
+        let (renewal_candidates, schedule_decisions, pending_rotation_restarts) =
+            self.prepare_renewal_and_schedules(app_instance_id, &plan, &report, &needs_work, now);
+
         self.clear_settled_renewal_alerts(&instance_id, &report, now);
         self.publish_opened_alerts(app_instance_id, &opened).await;
 
@@ -202,18 +114,12 @@ impl SupervisorService {
             .update_superseded_alert(&instance_id, app_instance_id, held_max, state.generation)
             .unwrap_or(false);
 
-        // D-A5c-11: a superseded instance is skipped for every write this
-        // pass (no deploy, no push, no restart) but was still polled for
-        // health above.
         if superseded {
             self.last_reconciled.insert(app_instance_id.to_string(), now as i64);
             Self::shutdown_clients(clients.into_values()).await;
             return;
         }
 
-        // The anchor refresh is evaluated every pass against a persisted
-        // fact rather than on a timer of its own, so it -- unlike the three
-        // work-lists -- always has something to check.
         if !needs_work.is_empty()
             || !restart_candidates.is_empty()
             || !renewal_candidates.is_empty()
@@ -233,7 +139,7 @@ impl SupervisorService {
                 pending_rotation_restarts: &pending_rotation_restarts,
                 push_candidates: &push_candidates,
                 schedule_decisions: &schedule_decisions,
-                did_to_alias: &did_to_alias,
+                did_to_alias: &placements.did_to_alias,
                 clients: &clients,
                 now,
             })
@@ -241,6 +147,92 @@ impl SupervisorService {
         }
         self.last_reconciled.insert(app_instance_id.to_string(), now as i64);
         Self::shutdown_clients(clients.into_values()).await;
+    }
+
+    async fn connect_and_poll_health(
+        &self,
+        app_instance_id: &str,
+        landed: &[ActionRecord],
+        plan: &DeploymentPlan,
+        inventory: &SupervisorInventory,
+    ) -> (
+        PassPlacements,
+        BTreeSet<String>,
+        BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+        health::HealthReport,
+    ) {
+        let placements = Self::resolve_pass_placements(landed, plan);
+        let plan_aliases: BTreeSet<String> =
+            Self::placed_aliases(plan).unwrap_or_default().into_iter().collect();
+        let connect_aliases =
+            Self::connect_aliases_for_pass(&plan_aliases, &placements.did_to_alias);
+        let (clients, failed) = self.connect_best_effort(&connect_aliases, inventory).await;
+        for (alias, reason) in &failed {
+            tracing::warn!(
+                app_instance_id,
+                alias,
+                reason,
+                "failed to connect to a substrate this pass needs"
+            );
+        }
+
+        let targets = Self::health_targets(&placements.did_to_alias, inventory, &clients);
+        let report = health::poll_once(&targets, &placements.expected).await;
+        drop(targets);
+        (placements, plan_aliases, clients, report)
+    }
+
+    fn compute_redeploy_and_sync(
+        &self,
+        instance_id: &AppInstanceId,
+        plan: &DeploymentPlan,
+        landed: &[ActionRecord],
+        missing_placement: &BTreeSet<String>,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) -> (BTreeSet<String>, Vec<(PlannedService, String)>) {
+        let diff = Reconciler::new(&self.store.journal).compute_diff(plan);
+        let (redeploy_exclusions, push_candidates) = diff
+            .as_ref()
+            .map(|d| Self::classify_update_actions(landed, &d.actions))
+            .unwrap_or_default();
+        let diff_actions = diff.as_ref().map(|d| d.actions.as_slice()).unwrap_or_default();
+        let needs_work =
+            Self::redeploy_work_list(missing_placement, diff_actions, &redeploy_exclusions);
+        self.sync_orphaned_alerts(instance_id, plan, landed, diff_actions, opened);
+        (needs_work, push_candidates)
+    }
+
+    fn prepare_renewal_and_schedules(
+        &self,
+        app_instance_id: &str,
+        plan: &DeploymentPlan,
+        report: &health::HealthReport,
+        needs_work: &BTreeSet<String>,
+        now: u64,
+    ) -> (Vec<RenewalCandidate>, Vec<ScheduleDecision>, BTreeSet<String>) {
+        let revoked = self.store.revoked_placements(app_instance_id).unwrap_or_default();
+        let renewal_candidates =
+            Self::renewal_candidates(report, needs_work, &revoked, now, self.max_renewals_per_pass);
+        let declared_schedules: BTreeSet<String> =
+            Self::declared_schedules(plan).into_keys().collect();
+        if let Err(e) = self.store.prune_schedule_states(app_instance_id, &declared_schedules) {
+            tracing::warn!(
+                app_instance_id,
+                error = %e,
+                "failed to drop the state of a schedule the plan no longer declares"
+            );
+        }
+        let schedule_states = self.store.schedule_states(app_instance_id).unwrap_or_default();
+        let schedule_decisions = Self::schedule_decisions(
+            plan,
+            &schedule_states,
+            report,
+            now,
+            self.schedule_grace_secs(now),
+        );
+        let pending_rotation_restarts =
+            self.store.pending_rotation_restarts(app_instance_id).unwrap_or_default();
+        (renewal_candidates, schedule_decisions, pending_rotation_restarts)
     }
 
     /// Reads and parses everything a pass needs about one instance, or
