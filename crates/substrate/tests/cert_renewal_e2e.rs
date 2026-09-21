@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! Unattended certificate renewal and instance-key revocation,
 //! proven against real, running `syneroym-substrate` instances rather than
 //! the in-process coverage `orchestration.rs` and `app_supervisor` already

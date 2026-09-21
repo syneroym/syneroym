@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! The reference scenario, end to
 //! end over two genuinely independent `syneroym-substrate` instances:
 //! `frontend` (a WASM `proxy-test` component) on `managed-a`, depending on

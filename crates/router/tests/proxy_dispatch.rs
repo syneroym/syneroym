@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! Universal Proxy dispatch integration tests -- drives the
 //! guest-facing `syneroym:proxy/proxy::call` host function end to end
 //! through a real `RouteHandler::init` composition (which wires

@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! One integration suite driving the dual-build-shim fixture through both
 //! builds -- the real `wasm32-wasip2` component via `AppSandboxEngine`, and
 //! the same source linked in via `syneroym-app-host-native` -- and

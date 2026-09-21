@@ -1,4 +1,11 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    dead_code
+)]
 //! ADR-0018's publication declaration, proven end to end against one live
 //! `syneroym-substrate` instance: the substrate refuses a mis-declared
 //! deploy, publishes exactly what was declared, clears a stale record on a

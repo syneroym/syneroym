@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! The app-instance master identity end to end, across two
 //! genuinely independent `syneroym-substrate` instances -- the operator's
 //! own sequence: `submit`, `adopt`, `status`, `export-master`, a second

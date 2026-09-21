@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+
 use scenarios::{concurrency, soak, tcp_proxy_latency, wasm_latency};
 use tracing_subscriber::fmt;
 pub mod orchestrator;

@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+
 use ed25519_dalek::SigningKey;
 use syneroym_async_queue::QueueConfig;
 use syneroym_core::config::RetryPolicy;

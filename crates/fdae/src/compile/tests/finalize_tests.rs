@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+
 use super::{plan_tests::remote_relation_policy, *};
 
 /// The same shape as

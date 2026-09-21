@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+
 use clap::{Parser, error::ErrorKind};
 use syneroym_sdk::SyneroymClient;
 

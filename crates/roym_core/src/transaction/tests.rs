@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+
 use syneroym_identity::{Identity, substrate};
 use syneroym_signed_record::{Envelope, RecordDraft};
 

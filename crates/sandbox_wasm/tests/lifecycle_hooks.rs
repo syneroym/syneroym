@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! Integration tests for schema lifecycle-hook gating: `execute-ddl`
 //! must be denied outside an `init`/`migrate` context, and deploying a
 //! component that doesn't export `init`/`migrate` at all must not error.

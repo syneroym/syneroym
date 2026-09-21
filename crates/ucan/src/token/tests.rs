@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+
 use syneroym_identity::substrate::derive_did_key;
 
 use super::*;

@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! The receiver-side idempotency fence at the *wire* entry point (see
 //! [ADR-0023](../../../docs/decisions/0023-durable-async-primitives.md),
 //! section 4).

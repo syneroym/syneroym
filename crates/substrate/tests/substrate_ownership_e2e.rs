@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! The operator-facing ownership path, over a real substrate: a
 //! `ControllerAgreement` (the artifact `roymctl substrate claim` writes)
 //! placed at `app_data_dir/agreement.json` *before* the substrate starts,

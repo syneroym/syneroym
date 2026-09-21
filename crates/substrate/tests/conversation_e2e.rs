@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! Durable 1:1 messaging, end to end across two real `syneroym-substrate`
 //! instances: A messages B while B is offline, the message stays `pending`
 //! in A's own outbox; A restarts and the same item is still there, not

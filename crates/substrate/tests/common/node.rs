@@ -30,7 +30,7 @@
 //! for its lifetime, which is why a test that needs two live nodes cannot
 //! use it and reaches for this builder instead.)
 
-#![allow(dead_code)]
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity, dead_code)]
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 

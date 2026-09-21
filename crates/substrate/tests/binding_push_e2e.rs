@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! The epoch-guarded binding write (ADR-0021), proven across two genuinely
 //! independent `syneroym-substrate` instances -- a `frontend`-on-A /
 //! `backend`-on-B topology, deployed once, then pushed to without a second

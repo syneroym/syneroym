@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! Guards the fix for the intermittent `AddrInUse` CI failure that started
 //! in `gateway_hostname_e2e.rs`: a hardcoded backend port (`42_600u16`) fell
 //! inside the OS's ephemeral port range (roughly 32768-60999 on Linux),

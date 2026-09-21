@@ -1,6 +1,12 @@
 //! `SyneroymClient::connect` must give up on an unreachable peer within its
 //! configured deadline rather than hanging indefinitely.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 use std::{
     net::UdpSocket,
     time::{Duration, Instant},

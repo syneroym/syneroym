@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+
 use std::{env, fs, sync::atomic::AtomicBool};
 
 use serde_json::Number;

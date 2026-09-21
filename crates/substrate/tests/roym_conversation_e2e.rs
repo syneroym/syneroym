@@ -1,4 +1,11 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    dead_code
+)]
 //! The Roym product's 1:1 conversation, end to end across two genuinely
 //! independent `syneroym-substrate` instances, each running the full Roym
 //! SynApp (the `wasm32-wasip2` build) under its own owner identity.

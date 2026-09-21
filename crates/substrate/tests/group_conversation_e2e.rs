@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 //! Group messaging across three real `syneroym-substrate` instances
 //! (Alice, Bob, Charlie) — testing group creation, key distribution,
 //! multi-peer delivery, DAG sync, epoch rekeying, and membership changes.
