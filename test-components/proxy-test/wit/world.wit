@@ -1,7 +1,7 @@
 package syneroym-test:proxy-test@0.1.0;
 
 interface test-driver {
-    /// Originates a Universal Proxy call (M04A Slice A1) at
+    /// Originates a Universal Proxy call at
     /// `syneroym:proxy/proxy::call` and returns the raw result string, or the
     /// `proxy-error` debug-formatted as a string on failure -- sufficient for
     /// integration tests to assert on without needing a typed WIT variant on

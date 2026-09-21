@@ -6,7 +6,7 @@ interface test-driver {
     /// caller), backed by `syneroym:data-layer/store` -- not in-guest
     /// memory, since `handle-request` gets a fresh instance and store on
     /// every call, so nothing kept in a `static`/`thread_local` would
-    /// survive to a later `last-request` call (M06A A2, mirrors
+    /// survive to a later `last-request` call (mirrors
     /// `stream-test`'s `get-uploaded-content`). Empty string if nothing has
     /// been received yet.
     last-request: func() -> result<string, string>;

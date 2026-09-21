@@ -7,8 +7,8 @@ const APP_URL = (forceTunnel: boolean) =>
   `http://${process.env.WASM_APP_ALIAS}:7662/?force_tunnel=${forceTunnel}`;
 
 // Opens a second, independent browser session on the same app and parks it on
-// the comments page -- exit criteria 7 and 8 both say "a different browser
-// session", which one page cannot demonstrate.
+// the comments page -- cross-session behavior needs a genuinely different
+// browser session, which one page cannot demonstrate.
 async function openSecondSession(browser: Browser, forceTunnel: boolean) {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -113,7 +113,7 @@ async function postComment(page: Page, text: string) {
       await expect(page.locator('h2')).toContainText('Comments', { timeout: 35000 });
 
       // 256 KiB: several data-channel messages on the way up and several
-      // `read-chunk` hops on the way down (exit criterion 6).
+      // `read-chunk` hops on the way down.
       const fileName = `wasm-upload-${Date.now()}.bin`;
       const filePath = path.join(os.tmpdir(), fileName);
       const bytes = Buffer.alloc(256 * 1024);

@@ -97,13 +97,13 @@ interface orchestrator {
         /// JSON Schema validating `custom-config`, applied at deploy.
         schema: option<document-source>,
         rotation-policy: option<rotation-policy>,
-        /// This service's declarative FDAE ReBAC policy document (ADR-0017
-        /// §1), read and validated at deploy. Absent = no row/column
-        /// filtering for this service.
+        /// This service's declarative FDAE ReBAC policy document
+        /// (ADR-0017 §1), read and validated at deploy. Absent = no
+        /// row/column filtering for this service.
         fdae-policy: option<document-source>,
-        /// Author-declared readiness probe (M05A A4). Absent = liveness only.
+        /// Author-declared readiness probe. Absent = liveness only.
         health-check: option<health-check>,
-        /// Static assets served directly from blob storage (M06A A1).
+        /// Static assets served directly from blob storage.
         assets: option<asset-bundle>,
         /// Whether this service's endpoint record is published, and how far
         /// it travels (ADR-0018). `public` requires a `registry-certificate`
@@ -239,14 +239,14 @@ interface orchestrator {
     /// no app context is ungated; send 0.
     undeploy: func(service-id: string, generation: u64) -> result<_, string>;
 
-    /// Restart a deployed service in place, without reinstalling it
-    /// (M05A A5's bounded remediation). Type-dispatched off the service
-    /// type recorded at deploy: a wasm component is evicted and
-    /// recompiled from the artifact the substrate already holds; a
-    /// container is stopped and started; a `tcp` service is **refused**,
-    /// because its process runs outside this substrate and there is
-    /// nothing here to restart -- an error the supervisor must see rather
-    /// than a silent success it would count as a remediation attempt.
+    /// Restart a deployed service in place, without reinstalling it.
+    /// Type-dispatched off the service type recorded at deploy: a wasm
+    /// component is evicted and recompiled from the artifact the
+    /// substrate already holds; a container is stopped and started; a
+    /// `tcp` service is **refused**, because its process runs outside
+    /// this substrate and there is nothing here to restart -- an error
+    /// the supervisor must see rather than a silent success it would
+    /// count as a remediation attempt.
     ///
     /// `generation` is checked against the app instance's recorded
     /// management stamp when the service has one, the same rule
@@ -314,9 +314,9 @@ interface orchestrator {
         -> result<_, string>;
 
     /// An app instance's management stamp, or `none` if no deploy has
-    /// ever named it here. `adopt`'s read half (M05A A5): a supervisor
-    /// must be able to learn the held generation before it can mint the
-    /// next one, and no service-level record carries it.
+    /// ever named it here. `adopt`'s read half: a supervisor must be able
+    /// to learn the held generation before it can mint the next one, and
+    /// no service-level record carries it.
     record app-instance-management {
         owner-did: string,
         supervisor-did: option<string>,
@@ -325,8 +325,8 @@ interface orchestrator {
     app-instance-management-of: func(app-instance-id: string)
         -> result<option<app-instance-management>, string>;
 
-    /// Claim management of an app instance at `generation` -- ADR-0021
-    /// §4's operator-minted adopt, made durable at the moment of the
+    /// Claim management of an app instance at `generation` -- ADR-0021 §4's
+    /// operator-minted adopt, made durable at the moment of the
     /// claim rather than on whatever write happens next. Subject to the
     /// same four-case rule as every other write, so two supervisors
     /// racing an adopt lose deterministically here instead of both
@@ -501,10 +501,10 @@ interface orchestrator {
         service-id: string,
         logical-ref: string,
         manifest: deploy-manifest,
-        /// This service's app instance and dependency bindings (ADR-0021
-        /// §2). Absent leaves the service unable to resolve a declared
-        /// dependency name -- it can still be called, and can still call
-        /// out by DID.
+        /// This service's app instance and dependency bindings
+        /// (ADR-0021 §2). Absent leaves the service unable to resolve a
+        /// declared dependency name -- it can still be called, and can
+        /// still call out by DID.
         app-context: option<app-context>,
     }
 
@@ -571,8 +571,8 @@ interface orchestrator {
         /// `checked-at` when a cached result was served.
         probe-checked-at: option<u64>,
         /// Per declared dependency of **this** service, the epoch this
-        /// substrate currently serves it (M05A A5a). Read from the
-        /// per-dependent binding row, not the shared resolver entry: the
+        /// substrate currently serves it. Read from the per-dependent
+        /// binding row, not the shared resolver entry: the
         /// resolver is keyed `(app-instance-id, service-name)` and is one
         /// value per node, so reading it would give every dependent the
         /// same answer and make "per-dependent convergence" unreadable.
