@@ -1,6 +1,13 @@
 import { test, expect, type Page } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
 
-const HUB_URL = process.env.ROYM_HUB_URL || 'http://127.0.0.1:7660';
+const portsPath = path.join(process.cwd(), '.e2e-data', 'ports.json');
+const ports = fs.existsSync(portsPath)
+  ? JSON.parse(fs.readFileSync(portsPath, 'utf8'))
+  : { gatewayPort: 0 };
+const HUB_URL = process.env.ROYM_HUB_URL || `http://127.0.0.1:${ports.gatewayPort}`;
+const AUTH_ORIGIN = `http://auth.localhost:${ports.gatewayPort}`;
 const SESSION_KEY_FILE = process.env.ROYM_SESSION_KEY_FILE;
 
 // Drive the real delegated-key login: hand the Hub the session-key.json that
@@ -106,7 +113,7 @@ test.describe('Roym Hub', () => {
   test('4. card safety: a malicious payload yields no script, no request, literal text', async ({ page }) => {
     const externalRequests: string[] = [];
     const hubOrigin = new URL(HUB_URL).origin;
-    const authOrigin = 'http://auth.localhost:7660';
+    const authOrigin = AUTH_ORIGIN;
     page.on('request', req => {
       const url = req.url();
       if (!url.startsWith(hubOrigin) && !url.startsWith(authOrigin)) {
@@ -309,7 +316,7 @@ test.describe('Roym Hub', () => {
   test('11. listings tab: a malicious listing title renders as literal text, no element, no request', async ({ page }) => {
     const externalRequests: string[] = [];
     const hubOrigin = new URL(HUB_URL).origin;
-    const authOrigin = 'http://auth.localhost:7660';
+    const authOrigin = AUTH_ORIGIN;
     page.on('request', (req) => {
       const url = req.url();
       if (!url.startsWith(hubOrigin) && !url.startsWith(authOrigin)) externalRequests.push(url);
@@ -479,7 +486,7 @@ test.describe('Roym Hub', () => {
     const hubOrigin = new URL(HUB_URL).origin;
     page.on('request', (req) => {
       const url = req.url();
-      if (!url.startsWith(hubOrigin) && !url.startsWith('http://auth.localhost:7660')) {
+      if (!url.startsWith(hubOrigin) && !url.startsWith(AUTH_ORIGIN)) {
         externalRequests.push(url);
       }
     });
@@ -807,7 +814,7 @@ test.describe('Roym Hub', () => {
   test('25. card safety on real templates: markup and javascript payee yield literal text, no element, no request', async ({ page }) => {
     const externalRequests: string[] = [];
     const hubOrigin = new URL(HUB_URL).origin;
-    const authOrigin = 'http://auth.localhost:7660';
+    const authOrigin = AUTH_ORIGIN;
     page.on('request', (req) => {
       const url = req.url();
       if (!url.startsWith(hubOrigin) && !url.startsWith(authOrigin)) {

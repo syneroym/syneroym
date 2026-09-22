@@ -199,6 +199,7 @@ async fn start_capped_coordinator(base_path: &Path) -> Result<CoordinatorIroh> {
             idle_timeout_secs: None,
             share_in_registry: false,
             max_connections: Some(CAP),
+            ..Default::default()
         }),
         ..Default::default()
     });

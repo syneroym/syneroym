@@ -3,8 +3,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+const portsPath = path.join(process.cwd(), '.e2e-data', 'ports.json');
+const ports = JSON.parse(fs.readFileSync(portsPath, 'utf8'));
 const APP_URL = (forceTunnel: boolean) =>
-  `http://${process.env.WASM_APP_ALIAS}:7662/?force_tunnel=${forceTunnel}`;
+  `http://${process.env.WASM_APP_ALIAS}:${ports.webrtcBootstrapPort}/?force_tunnel=${forceTunnel}`;
 
 // Opens a second, independent browser session on the same app and parks it on
 // the comments page -- cross-session behavior needs a genuinely different

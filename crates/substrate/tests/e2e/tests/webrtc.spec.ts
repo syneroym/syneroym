@@ -12,9 +12,11 @@ import * as path from 'path';
       const appAlias = process.env.APP_ALIAS;
       expect(appAlias).toBeDefined();
 
-      // The bootstrap page is served by the coordinator on port 7662.
+      const portsPath = path.join(process.cwd(), '.e2e-data', 'ports.json');
+      const ports = JSON.parse(fs.readFileSync(portsPath, 'utf8'));
+      // The bootstrap page is served by the coordinator on its dynamic bootstrap port.
       // We access it via the alias hostname to ensure the coordinator can resolve it.
-      const url = `http://${appAlias}:7662/?force_tunnel=${forceTunnel}`;
+      const url = `http://${appAlias}:${ports.webrtcBootstrapPort}/?force_tunnel=${forceTunnel}`;
       console.log('Navigating to bootstrap URL:', url);
 
       await page.goto(url);

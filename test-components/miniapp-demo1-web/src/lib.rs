@@ -55,7 +55,7 @@ pub struct Args {
     pub port: u16,
 
     /// HTTPS port to listen on
-    #[arg(long, default_value_t = 3001)]
+    #[arg(long, default_value_t = 0)]
     pub https_port: u16,
 
     /// Data directory

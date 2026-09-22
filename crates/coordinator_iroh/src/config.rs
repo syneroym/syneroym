@@ -131,6 +131,7 @@ mod tests {
                 idle_timeout_secs: None,
                 share_in_registry: false,
                 max_connections: None,
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -155,6 +156,7 @@ mod tests {
                 idle_timeout_secs: None,
                 share_in_registry: false,
                 max_connections: None,
+                ..Default::default()
             }),
             ..Default::default()
         };

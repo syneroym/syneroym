@@ -1,11 +1,15 @@
 import { test, expect } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
 
 test.describe('Gateway Keep-Alive Session Routing (P1 Regression)', () => {
   test('browser on deployed service host reaches auth service without keep-alive stream collision', async ({ page }) => {
     const appAlias = process.env.APP_ALIAS;
     expect(appAlias).toBeDefined();
 
-    const gatewayPort = 7660;
+    const portsPath = path.join(process.cwd(), '.e2e-data', 'ports.json');
+    const ports = JSON.parse(fs.readFileSync(portsPath, 'utf8'));
+    const gatewayPort = ports.gatewayPort;
     const appUrl = appAlias.includes(':')
       ? `http://${appAlias}`
       : appAlias.endsWith('.localhost')

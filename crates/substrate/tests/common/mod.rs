@@ -26,7 +26,10 @@ mod fixtures;
 
 use std::{
     net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
-    sync::atomic::{AtomicU16, Ordering},
+    sync::{
+        Mutex as StdMutex,
+        atomic::{AtomicU16, Ordering},
+    },
     time::Duration,
 };
 
@@ -134,13 +137,25 @@ pub fn alloc_ports<const N: usize>() -> [u16; N] {
             continue;
         }
 
-        let ports: Vec<u16> = listeners
-            .iter()
-            .take(N)
-            .map(|l| l.local_addr().expect("bound listener").port())
-            .collect();
-        drop(listeners);
+        let mut selected: Vec<StdTcpListener> = listeners.into_iter().take(N).collect();
+        let ports: Vec<u16> =
+            selected.iter().map(|l| l.local_addr().expect("bound listener").port()).collect();
+        if let Ok(mut held) = PROBE_LISTENERS.lock() {
+            held.append(&mut selected);
+        }
         return ports.try_into().expect("exactly N ports collected");
+    }
+}
+
+static PROBE_LISTENERS: StdMutex<Vec<StdTcpListener>> = StdMutex::new(Vec::new());
+
+/// Release any held probe listeners for the specified port numbers so the
+/// service can bind them.
+pub fn release_held_ports(ports: &[u16]) {
+    if let Ok(mut listeners) = PROBE_LISTENERS.lock() {
+        listeners.retain(|l| {
+            if let Ok(addr) = l.local_addr() { !ports.contains(&addr.port()) } else { false }
+        });
     }
 }
 
@@ -212,6 +227,7 @@ impl SubstrateTestContext {
                 enable_relay: true,
                 http_bind_address: format!("127.0.0.1:{iroh_port}"),
                 quic_bind_address: format!("127.0.0.1:{quic_port}"),
+                info_http_bind_address: Some("127.0.0.1:0".to_string()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -241,6 +257,7 @@ impl SubstrateTestContext {
         let substrate_service_id = substrate_identity_state.did.clone();
 
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        release_held_ports(&[iroh_port, registry_port, gateway_port, quic_port]);
         let runtime =
             syneroym_substrate::init(config.clone()).await.expect("Failed to initialize runtime");
 

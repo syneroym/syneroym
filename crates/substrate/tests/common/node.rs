@@ -230,6 +230,7 @@ impl NodeBuilder {
                 enable_relay: true,
                 http_bind_address: format!("127.0.0.1:{}", self.ports.iroh),
                 quic_bind_address: format!("127.0.0.1:{}", self.ports.quic),
+                info_http_bind_address: Some("127.0.0.1:0".to_string()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -297,6 +298,12 @@ impl NodeBuilder {
         let service_id = identity_state.did.clone();
 
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        crate::common::release_held_ports(&[
+            self.ports.iroh,
+            self.ports.registry,
+            self.ports.gateway,
+            self.ports.quic,
+        ]);
         let runtime =
             syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
         let run_config = config.clone();

@@ -36,7 +36,7 @@ use syneroym_sdk::{
 use tokio::time;
 
 mod common;
-use common::SubstrateTestContext;
+use common::{SubstrateTestContext, alloc_ports};
 
 const STREAM_TEST_DRIVER_INTERFACE: &str = test_constants::STREAM_TEST_DRIVER_INTERFACE;
 const STREAM_PROTOCOL: &str = "file-transfer";
@@ -278,7 +278,8 @@ fn connect_peer(app_service_id: &str, mechanisms: &[EndpointMechanism]) -> Syner
 #[tokio::test]
 async fn test_signed_url_blob_get_resolves_end_to_end_and_meets_performance_budget() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(7910, 7911, 7912).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     // Default `storage.encryption = true` requires a KEK before any
     // data-layer/blob-store access, native dispatch included.
     ctx.substrate_client.inject_kek("11".repeat(32)).await.expect("inject_kek failed");
@@ -341,7 +342,8 @@ async fn test_signed_url_blob_get_resolves_end_to_end_and_meets_performance_budg
 #[tokio::test]
 async fn test_tampered_and_expired_signed_urls_are_rejected() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(7913, 7914, 7915).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("12".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
@@ -402,7 +404,8 @@ async fn test_signed_url_rejected_when_svc_does_not_match_connected_service() {
     // previously had no test proving it actually rejects the case it was
     // built for.
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(7916, 7917, 7918).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("13".repeat(32)).await.expect("inject_kek failed");
 
     let service_a_identity = Identity::generate().unwrap();
@@ -454,7 +457,8 @@ async fn test_signed_url_rejected_when_svc_does_not_match_connected_service() {
 #[tokio::test]
 async fn test_data_layer_http_routes_error_mapping_and_fallthrough() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(7920, 7921, 7922).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("13".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
@@ -594,7 +598,8 @@ async fn test_data_layer_http_routes_error_mapping_and_fallthrough() {
 #[tokio::test]
 async fn test_sse_receives_message_published_via_http() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(7930, 7931, 7932).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
 
     let app_identity = Identity::generate().unwrap();
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
@@ -642,7 +647,8 @@ async fn test_sse_receives_message_published_via_http() {
 #[tokio::test]
 async fn test_sse_rejects_missing_accept_header() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(7943, 7944, 7945).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
 
     let app_identity = Identity::generate().unwrap();
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
@@ -673,7 +679,8 @@ async fn test_sse_rejects_missing_accept_header() {
 #[tokio::test]
 async fn test_sse_permit_exhaustion_returns_503_service_unavailable() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup_with(7946, 7947, 7948, |config| {
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup_with(iroh_port, registry_port, gateway_port, |config| {
         config.roles.app_sandbox =
             Some(AppSandboxRole { max_sse_subscribers_per_service: 1, ..Default::default() });
     })
@@ -741,7 +748,8 @@ async fn test_chunked_upload_decline_and_round_trip_meets_performance_budget() {
         return;
     };
 
-    let ctx = SubstrateTestContext::setup(7940, 7941, 7942).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     // The fixture's `init()` touches data-layer (creates the `uploads`
     // collection); this substrate instance runs with the default
     // `storage.encryption = true`, so a KEK must be injected first (same

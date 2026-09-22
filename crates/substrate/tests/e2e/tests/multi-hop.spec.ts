@@ -2,6 +2,9 @@ import { test, expect } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
+const portsPath = path.join(process.cwd(), '.e2e-data-multihop', 'ports.json');
+const ports = JSON.parse(fs.readFileSync(portsPath, 'utf8'));
+
 // Scenario 1: Inbound Path (Browser -> C -> Cp -> Sz)
 test.describe('WebRTC Multi-Hop Inbound (Browser -> C -> Cp -> Sz)', () => {
   const forceTunnel = true;
@@ -14,8 +17,8 @@ test.describe('WebRTC Multi-Hop Inbound (Browser -> C -> Cp -> Sz)', () => {
     const demo1Alias = process.env.DEMO1_ALIAS;
     expect(demo1Alias).toBeDefined();
 
-    // Access Global Coordinator C's bootstrap page (port 7662)
-    const url = `http://${demo1Alias}:7662/?force_tunnel=${forceTunnel}`;
+    // Access Global Coordinator C's bootstrap page
+    const url = `http://${demo1Alias}:${ports.cWebrtcBootPort}/?force_tunnel=${forceTunnel}`;
     console.log('Navigating to Inbound Bootstrap URL:', url);
 
     await page.goto(url);
@@ -55,8 +58,8 @@ test.describe('WebRTC Multi-Hop Reverse (Browser -> Cp -> C -> Sx)', () => {
     const demo2Alias = process.env.DEMO2_ALIAS;
     expect(demo2Alias).toBeDefined();
 
-    // Access Private Coordinator Cp's bootstrap page (port 7672)
-    const url = `http://${demo2Alias}:7672/?force_tunnel=${forceTunnel}`;
+    // Access Private Coordinator Cp's bootstrap page
+    const url = `http://${demo2Alias}:${ports.cpWebrtcBootPort}/?force_tunnel=${forceTunnel}`;
     console.log('Navigating to Reverse Bootstrap URL:', url);
 
     await page.goto(url);

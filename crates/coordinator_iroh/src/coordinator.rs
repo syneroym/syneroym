@@ -254,13 +254,16 @@ impl CoordinatorIroh {
         relay_server: &Option<Server>,
         active_connections: Arc<AtomicUsize>,
     ) -> Result<(JoinHandle<Result<()>>, SocketAddr)> {
-        let mut http_info_addr: SocketAddr =
-            iroh_cfg.http_bind_address.parse().context("invalid http_bind_address")?;
-        // Add 10 to the port to avoid conflict, or bind to port 0 for dynamic port in
-        // tests
-        if http_info_addr.port() != 0 {
-            http_info_addr.set_port(http_info_addr.port() + 10);
-        }
+        let http_info_addr: SocketAddr = if let Some(addr_str) = &iroh_cfg.info_http_bind_address {
+            addr_str.parse().context("invalid info_http_bind_address")?
+        } else {
+            let mut addr: SocketAddr =
+                iroh_cfg.http_bind_address.parse().context("invalid http_bind_address")?;
+            if addr.port() != 0 {
+                addr.set_port(addr.port() + 10);
+            }
+            addr
+        };
 
         let listener = TcpListener::bind(http_info_addr).await?;
         let local_addr = listener.local_addr()?;

@@ -31,7 +31,7 @@ use syneroym_sdk::{
 };
 
 mod common;
-use common::SubstrateTestContext;
+use common::{SubstrateTestContext, alloc_ports};
 
 fn wasm_asset_manifest(
     wasm_bytes: Vec<u8>,
@@ -222,7 +222,8 @@ fn counter_value(name: &str) -> u64 {
 #[tokio::test]
 async fn test_static_asset_serving_index_etag_and_directory_rewrite() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9100, 9101, 9102).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("21".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
@@ -309,7 +310,8 @@ async fn test_static_asset_serving_index_etag_and_directory_rewrite() {
 #[tokio::test]
 async fn test_static_asset_cross_service_isolation() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9103, 9104, 9105).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("22".repeat(32)).await.expect("inject_kek failed");
 
     let wasm_bytes = std::fs::read(test_constants::greeter_wasm_path()).unwrap();
@@ -363,7 +365,8 @@ async fn test_static_asset_cross_service_isolation() {
 #[tokio::test]
 async fn test_static_asset_private_visibility_matches_no_bundle() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9106, 9107, 9108).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("23".repeat(32)).await.expect("inject_kek failed");
 
     let wasm_bytes = std::fs::read(test_constants::greeter_wasm_path()).unwrap();
@@ -417,7 +420,8 @@ async fn test_static_asset_private_visibility_matches_no_bundle() {
 #[tokio::test]
 async fn test_static_asset_multi_chunk_round_trip() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9109, 9110, 9111).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("24".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
@@ -454,7 +458,8 @@ async fn test_static_asset_multi_chunk_round_trip() {
 #[tokio::test]
 async fn test_static_assets_and_http_routes_coexist() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9112, 9113, 9114).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("25".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();

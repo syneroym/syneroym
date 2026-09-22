@@ -1,6 +1,7 @@
 import { execSync, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { reserveTcpPort, reserveUdpPort } from './ports';
 
 const TEST_DIR = path.join(process.cwd(), '.e2e-data-multihop');
 
@@ -15,6 +16,39 @@ export default async function globalSetup() {
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
   }
   fs.mkdirSync(TEST_DIR, { recursive: true });
+
+  console.log('Allocating dynamic ports for Multi-Hop...');
+  const cRegistryPortRes = await reserveTcpPort();
+  const cIrohHttpPortRes = await reserveTcpPort();
+  const cIrohQuicPortRes = await reserveUdpPort();
+  const cWebrtcSigPortRes = await reserveTcpPort();
+  const cWebrtcBootPortRes = await reserveTcpPort();
+  const cGatewayPortRes = await reserveTcpPort();
+
+  const cpIrohHttpPortRes = await reserveTcpPort();
+  const cpIrohQuicPortRes = await reserveUdpPort();
+  const cpWebrtcSigPortRes = await reserveTcpPort();
+  const cpWebrtcBootPortRes = await reserveTcpPort();
+
+  const miniappPortRes = await reserveTcpPort();
+
+  const ports = {
+    cRegistryPort: cRegistryPortRes.port,
+    cIrohHttpPort: cIrohHttpPortRes.port,
+    cIrohQuicPort: cIrohQuicPortRes.port,
+    cWebrtcSigPort: cWebrtcSigPortRes.port,
+    cWebrtcBootPort: cWebrtcBootPortRes.port,
+    cGatewayPort: cGatewayPortRes.port,
+    cpIrohHttpPort: cpIrohHttpPortRes.port,
+    cpIrohQuicPort: cpIrohQuicPortRes.port,
+    cpWebrtcSigPort: cpWebrtcSigPortRes.port,
+    cpWebrtcBootPort: cpWebrtcBootPortRes.port,
+    miniappPort: miniappPortRes.port,
+  };
+
+  const portsJsonPath = path.join(TEST_DIR, 'ports.json');
+  fs.writeFileSync(portsJsonPath, JSON.stringify(ports, null, 2));
+  console.log('Allocated dynamic ports for Multi-Hop:', JSON.stringify(ports));
 
   const WORKSPACE_DIR = path.resolve(process.cwd(), '../../../../');
   const isRelease = process.env.CARGO_RELEASE_FLAG === '--release';
@@ -65,28 +99,29 @@ nickname = "c-global"
 
 [roles.community_registry]
 access = "everyone"
-http_bind_address = "0.0.0.0:7661"
+http_bind_address = "0.0.0.0:${ports.cRegistryPort}"
 
 [roles.coordinator.iroh]
 enable_signalling = true
 enable_relay = true
-http_bind_address = "0.0.0.0:7664"
-quic_bind_address = "0.0.0.0:7665"
-community_registry_url = "http://127.0.0.1:7661"
+http_bind_address = "0.0.0.0:${ports.cIrohHttpPort}"
+quic_bind_address = "0.0.0.0:${ports.cIrohQuicPort}"
+info_http_bind_address = "0.0.0.0:0"
+community_registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
 share_in_registry = true
 
 [roles.coordinator.webrtc]
 enable_signalling = true
 enable_relay = true
-signalling_bind_address = "0.0.0.0:7663"
-bootstrap_page_bind_address = "0.0.0.0:7662"
+signalling_bind_address = "0.0.0.0:${ports.cWebrtcSigPort}"
+bootstrap_page_bind_address = "0.0.0.0:${ports.cWebrtcBootPort}"
 
 [roles.client_gateway]
-http_port = 7660
+http_port = ${ports.cGatewayPort}
 
 [substrate]
 communication_interfaces = ["webrtc", "iroh"]
-registry_url = "http://127.0.0.1:7661"
+registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
 `;
   fs.writeFileSync(path.join(TEST_DIR, 'c.toml'), configC);
 
@@ -105,28 +140,29 @@ nickname = "cp-private"
 [roles.coordinator.iroh]
 enable_signalling = true
 enable_relay = true
-http_bind_address = "0.0.0.0:7676"
-quic_bind_address = "0.0.0.0:7677"
-community_registry_url = "http://127.0.0.1:7661"
+http_bind_address = "0.0.0.0:${ports.cpIrohHttpPort}"
+quic_bind_address = "0.0.0.0:${ports.cpIrohQuicPort}"
+info_http_bind_address = "0.0.0.0:0"
+community_registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
 share_in_registry = true
 
 [roles.coordinator.webrtc]
 enable_signalling = true
 enable_relay = true
-signalling_bind_address = "0.0.0.0:7673"
-bootstrap_page_bind_address = "0.0.0.0:7672"
+signalling_bind_address = "0.0.0.0:${ports.cpWebrtcSigPort}"
+bootstrap_page_bind_address = "0.0.0.0:${ports.cpWebrtcBootPort}"
 
 [parent_coordinator.iroh]
-url = "http://127.0.0.1:7664"
+url = "http://127.0.0.1:${ports.cIrohHttpPort}"
 
 [parent_coordinator.webrtc]
-signaling_url = "ws://127.0.0.1:7663/ws"
-bootstrap_url = "ws://127.0.0.1:7662"
+signaling_url = "ws://127.0.0.1:${ports.cWebrtcSigPort}/ws"
+bootstrap_url = "ws://127.0.0.1:${ports.cWebrtcBootPort}"
 stun_servers = ["stun:stun.l.google.com:19302"]
 
 [substrate]
 communication_interfaces = ["webrtc", "iroh"]
-registry_url = "http://127.0.0.1:7661"
+registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
 `;
   fs.writeFileSync(path.join(TEST_DIR, 'cp.toml'), configCp);
 
@@ -145,16 +181,16 @@ nickname = "sz-appnode"
 [roles.app_sandbox]
 
 [parent_coordinator.iroh]
-url = "http://127.0.0.1:7664"
+url = "http://127.0.0.1:${ports.cIrohHttpPort}"
 
 [parent_coordinator.webrtc]
-signaling_url = "ws://127.0.0.1:7673/ws"
-bootstrap_url = "ws://127.0.0.1:7672"
+signaling_url = "ws://127.0.0.1:${ports.cpWebrtcSigPort}/ws"
+bootstrap_url = "ws://127.0.0.1:${ports.cpWebrtcBootPort}"
 stun_servers = ["stun:stun.l.google.com:19302"]
 
 [substrate]
 communication_interfaces = ["webrtc", "iroh"]
-registry_url = "http://127.0.0.1:7661"
+registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
 `;
   fs.writeFileSync(path.join(TEST_DIR, 'sz.toml'), configSz);
 
@@ -173,20 +209,28 @@ nickname = "sx-appnode"
 [roles.app_sandbox]
 
 [parent_coordinator.iroh]
-url = "http://127.0.0.1:7664"
+url = "http://127.0.0.1:${ports.cIrohHttpPort}"
 
 [parent_coordinator.webrtc]
-signaling_url = "ws://127.0.0.1:7663/ws"
-bootstrap_url = "ws://127.0.0.1:7662"
+signaling_url = "ws://127.0.0.1:${ports.cWebrtcSigPort}/ws"
+bootstrap_url = "ws://127.0.0.1:${ports.cWebrtcBootPort}"
 stun_servers = ["stun:stun.l.google.com:19302"]
 
 [substrate]
 communication_interfaces = ["webrtc", "iroh"]
-registry_url = "http://127.0.0.1:7661"
+registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
 `;
   fs.writeFileSync(path.join(TEST_DIR, 'sx.toml'), configSx);
 
   console.log('Starting Coordinator C...');
+  await Promise.all([
+    cRegistryPortRes.release(),
+    cIrohHttpPortRes.release(),
+    cIrohQuicPortRes.release(),
+    cWebrtcSigPortRes.release(),
+    cWebrtcBootPortRes.release(),
+    cGatewayPortRes.release(),
+  ]);
   const cProcess = spawn(SUBSTRATE_BIN, ['run', '--config', path.join(TEST_DIR, 'c.toml')], {
     cwd: WORKSPACE_DIR,
     env: { ...process.env, RUST_LOG: 'info', NO_COLOR: '1' }
@@ -198,6 +242,12 @@ registry_url = "http://127.0.0.1:7661"
   await new Promise(r => setTimeout(r, 4000)); // Wait for C to start
 
   console.log('Starting Coordinator Cp...');
+  await Promise.all([
+    cpIrohHttpPortRes.release(),
+    cpIrohQuicPortRes.release(),
+    cpWebrtcSigPortRes.release(),
+    cpWebrtcBootPortRes.release(),
+  ]);
   const cpProcess = spawn(SUBSTRATE_BIN, ['run', '--config', path.join(TEST_DIR, 'cp.toml')], {
     cwd: WORKSPACE_DIR,
     env: { ...process.env, RUST_LOG: 'info', NO_COLOR: '1' }
@@ -257,14 +307,15 @@ registry_url = "http://127.0.0.1:7661"
         resolve();
       }
     });
-    sxProcess.stderr.on('data', data => process.stdout.write('[Sx ERR] ' + data.toString()));
+    szProcess.stderr.on('data', data => process.stdout.write('[Sx ERR] ' + data.toString()));
     sxProcess.on('error', err => { clearTimeout(timer); reject(err); });
   });
   console.log('Sx DID:', sxDid);
 
-  // Spawn a single miniapp demo1 on port 3000 (shared target for Sz and Sx)
-  console.log('Starting miniapp on port 3000...');
-  const miniapp1Process = spawn(MINIAPP_BIN, ['--port', '3000', '--data-dir', path.join(TEST_DIR, 'miniapp-data1')], {
+  // Spawn a single miniapp demo1 on dynamic port (shared target for Sz and Sx)
+  console.log(`Starting miniapp on port ${ports.miniappPort}...`);
+  await miniappPortRes.release();
+  const miniapp1Process = spawn(MINIAPP_BIN, ['--port', ports.miniappPort.toString(), '--https-port', '0', '--data-dir', path.join(TEST_DIR, 'miniapp-data1')], {
     cwd: WORKSPACE_DIR,
     env: { ...process.env, RUST_LOG: 'info' }
   });
@@ -285,8 +336,8 @@ registry_url = "http://127.0.0.1:7661"
   if (!alias1) throw new Error("Could not calculate demo1 alias");
   console.log('Demo1 App DID:', did1, 'Alias:', alias1);
 
-  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sz --api-url http://127.0.0.1:7661 registry register --identity demo1 --substrate ${szDid} --nickname demo1`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
-  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sz --api-url http://127.0.0.1:7661 --substrate ${szDid} --as owner svc deploy --svc-id ${did1} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sz --api-url http://127.0.0.1:${ports.cRegistryPort} registry register --identity demo1 --substrate ${szDid} --nickname demo1`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sz --api-url http://127.0.0.1:${ports.cRegistryPort} --substrate ${szDid} --as owner svc deploy --svc-id ${did1} --interfaces http --tcp 127.0.0.1:${ports.miniappPort}`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   // Initialize and Register demo2 for Sx
   console.log('Creating demo2 identity (Sx)...');
@@ -299,8 +350,8 @@ registry_url = "http://127.0.0.1:7661"
   if (!alias2) throw new Error("Could not calculate demo2 alias");
   console.log('Demo2 App DID:', did2, 'Alias:', alias2);
 
-  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sx --api-url http://127.0.0.1:7661 registry register --identity demo2 --substrate ${sxDid} --nickname demo2`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
-  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sx --api-url http://127.0.0.1:7661 --substrate ${sxDid} --as owner svc deploy --svc-id ${did2} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sx --api-url http://127.0.0.1:${ports.cRegistryPort} registry register --identity demo2 --substrate ${sxDid} --nickname demo2`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sx --api-url http://127.0.0.1:${ports.cRegistryPort} --substrate ${sxDid} --as owner svc deploy --svc-id ${did2} --interfaces http --tcp 127.0.0.1:${ports.miniappPort}`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   // Set env vars for Playwright specs
   process.env.SZ_DID = szDid;

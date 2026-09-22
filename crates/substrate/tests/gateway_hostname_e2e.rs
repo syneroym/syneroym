@@ -208,6 +208,7 @@ async fn submit_and_adopt(
 /// dialed. What crossing the real wire intact end to end can prove
 /// instead is that the header itself survives the gateway unmodified.
 async fn spawn_tcp_backend(port: u16, marker: &'static str) -> JoinHandle<()> {
+    common::release_held_ports(&[port]);
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = TcpListener::bind(addr).await.expect("bind tcp backend");
     tokio::spawn(async move {
