@@ -97,7 +97,7 @@ pub async fn serial_guard() -> MutexGuard<'static, ()> {
 /// made a hardcoded port in that range (`gateway_hostname_e2e.rs`'s old
 /// `42_600`) an intermittent CI failure.
 const PORT_POOL_START: u16 = 18_000;
-const PORT_POOL_END: u16 = 38_000;
+const PORT_POOL_END: u16 = 32_768;
 
 static NEXT_PORT_HINT: AtomicU16 = AtomicU16::new(0);
 

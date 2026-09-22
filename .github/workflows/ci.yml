@@ -75,8 +75,8 @@ jobs:
 
   # The Rust suite, split into shards by `cargo nextest --partition`. Each
   # shard builds the workspace and the WASM fixtures, then runs its slice of
-  # the tests (the `substrate-e2e` group stays serialised within a shard, so
-  # the shard count is really about spreading that group). Skipped when
+  # the tests (the `substrate-e2e-ci` group limits node-booting concurrency to
+  # 2 threads per shard). Skipped when
   # coverage is requested -- `cargo llvm-cov` runs the suite itself.
   test:
     name: Test ${{ matrix.shard }}/6
