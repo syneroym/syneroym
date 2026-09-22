@@ -25,7 +25,7 @@ git diff before-quality-round-2026-09-08 main
 | G6 | `clippy.toml` threshold ratchet + `cargo dupes check` | done | [#262](https://github.com/syneroym/syneroym/pull/262) |
 | G6b | Full-tree planning-ref gate (waits for the count to reach zero) | done | `chore/quality-full-tree-gate` |
 | G7 | Closing measurement: re-run the pass, commit `baseline-<date>/`, compare | done | `chore/quality-g7-baseline` |
-| G10 | Shared test helpers: `deploy_app`/`try_deploy_app` (7+3-copy), `one_service_manifest` (4-copy); lower duplication threshold | done | `chore/quality-shared-test-helpers` |
+| G10 | Shared test helpers: `deploy_app`/`try_deploy_app` (7+3-copy), `one_service_manifest` (4-copy); lower duplication threshold | done | [#273](https://github.com/syneroym/syneroym/pull/273) |
 
 G5 depends on nothing and can run at any time, in parallel with everything else.
 G6 and G7 come last.
