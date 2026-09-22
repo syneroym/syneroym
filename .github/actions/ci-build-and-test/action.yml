@@ -43,7 +43,7 @@ runs:
 
     # nextest runs every test binary in one parallel pool; `--partition`
     # then keeps only this shard's slice. `.config/nextest.toml`'s
-    # `substrate-e2e` group still serialises the node-booting tests within
+    # `substrate-e2e-ci` group limits node-booting tests to 2 threads within
     # the shard.
     - name: Run Tests
       run: >-

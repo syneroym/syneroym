@@ -7,21 +7,30 @@
 #
 # The substrate end-to-end suite tests boot full `syneroym-substrate` nodes
 # (iroh coordinator, registry, gateway, WASM sandbox). Ports are allocated
-# dynamically via `common::alloc_ports`, so tests no longer collide on static
-# ports. However, running too many nodes concurrently causes socket port
-# contention and exhausts operating system network buffers (mbufs).
+# dynamically via `common::alloc_ports`, eliminating static port collisions.
 #
-# Measured runtimes for syneroym-substrate:
+# Concurrency limits stem from two distinct factors:
+# 1. Port binding races (`EADDRINUSE`, os error 48): a check-then-use gap
+#    exists between `release_held_ports` dropping TCP probe listeners and the
+#    substrate daemon binding its sockets. Under high concurrency (e.g. 8
+#    threads), racing multi-node allocations collide during startup.
+# 2. Kernel network memory buffer pressure (`ENOBUFS`, error 55): booting
+#    many nodes concurrently risks exhausting OS mbufs.
+#
+# Measured runtimes for syneroym-substrate (local Apple silicon):
 #   1 thread:  ~2725s (baseline)
-#   2 threads: ~1369s (~2x speedup)
-#   4 threads: ~680s  (~4x speedup, clean passes, 0 mbuf denials)
-#   8 threads: port contention failures during startup (os error 48)
+#   2 threads: ~1369s (~2x speedup, 0 failures, 0 mbuf denials)
+#   4 threads: ~680s  (~4x speedup, 0 failures, 0 mbuf denials)
+#   8 threads: failed at 20s with EADDRINUSE startup port collisions
 #
-# Concurrency defaults to 4. Developers can override this via the
-# `SYNEROYM_E2E_THREADS` environment variable when running via mise.
+# Local runs use 4 threads. CI runners (2-core ubuntu-latest VMs already
+# sharded 6 ways) use a conservative 2 threads to prevent contention.
 
 [test-groups.substrate-e2e]
 max-threads = 4
+
+[test-groups.substrate-e2e-ci]
+max-threads = 2
 
 [profile.default]
 # A test that has not finished in 90s is reported; one still running at
@@ -44,5 +53,5 @@ failure-output = "immediate-final"
 # when a previous run left sockets behind). Two retries hide those without
 # hiding a real regression, which fails every time.
 filter = 'package(syneroym-substrate) & kind(test)'
-test-group = 'substrate-e2e'
+test-group = 'substrate-e2e-ci'
 retries = { backoff = "fixed", count = 2, delay = "5s" }
