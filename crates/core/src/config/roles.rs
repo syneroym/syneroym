@@ -287,6 +287,7 @@ pub struct CoordinatorIrohConfig {
     pub share_in_registry: bool,
     pub idle_timeout_secs: Option<u64>,
     pub max_connections: Option<usize>,
+    pub info_http_bind_address: Option<String>,
 }
 
 impl Default for CoordinatorIrohConfig {
@@ -300,6 +301,7 @@ impl Default for CoordinatorIrohConfig {
             share_in_registry: false,
             idle_timeout_secs: None,
             max_connections: None,
+            info_http_bind_address: None,
         }
     }
 }

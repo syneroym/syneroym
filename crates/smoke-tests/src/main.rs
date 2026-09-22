@@ -105,6 +105,7 @@ async fn setup_in_process_services(
             share_in_registry: true,
             idle_timeout_secs: Some(30),
             max_connections: Some(100),
+            ..Default::default()
         }),
         webrtc: None,
         transport_bridge: None,

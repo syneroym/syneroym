@@ -2,9 +2,10 @@ import { test, expect, Browser, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { readE2EPorts } from '../ports';
 
 const APP_URL = (forceTunnel: boolean) =>
-  `http://${process.env.WASM_APP_ALIAS}:7662/?force_tunnel=${forceTunnel}`;
+  `http://${process.env.WASM_APP_ALIAS}:${readE2EPorts().webrtcBootstrapPort}/?force_tunnel=${forceTunnel}`;
 
 // Opens a second, independent browser session on the same app and parks it on
 // the comments page -- cross-session behavior needs a genuinely different

@@ -24,7 +24,7 @@ use syneroym_sdk::{
 use tokio::time;
 
 mod common;
-use common::SubstrateTestContext;
+use common::{SubstrateTestContext, alloc_ports};
 
 fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: serde_json::Value) -> DeployManifest {
     DeployManifest {
@@ -60,7 +60,8 @@ async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManif
 #[tokio::test]
 async fn test_websocket_concurrency_limit_returns_503_with_retry_after() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup_with(23150, 23151, 23152, |config| {
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup_with(iroh_port, registry_port, gateway_port, |config| {
         config.roles.app_sandbox =
             Some(AppSandboxRole { max_concurrent_websockets_per_service: 1, ..Default::default() });
     })
@@ -204,7 +205,8 @@ fn build_masked_text_frame(payload: &[u8]) -> Vec<u8> {
 #[tokio::test]
 async fn test_websocket_echo_unicast() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(23200, 23201, 23202).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
 
     let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
         .expect("websocket_guest_test.wasm not built");
@@ -284,7 +286,8 @@ async fn test_websocket_echo_unicast() {
 #[tokio::test]
 async fn test_websocket_broadcast_pubsub() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(23250, 23251, 23252).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
 
     let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
         .expect("websocket_guest_test.wasm not built");
@@ -358,7 +361,8 @@ async fn test_websocket_broadcast_pubsub() {
 #[tokio::test]
 async fn test_websocket_upgrade_rejects_unauthenticated_anonymous_on_private_route() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(23300, 23301, 23302).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
 
     let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
         .expect("websocket_guest_test.wasm not built");
@@ -395,7 +399,8 @@ async fn test_websocket_upgrade_rejects_unauthenticated_anonymous_on_private_rou
 #[tokio::test]
 async fn test_websocket_teardown_on_undeploy() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(23350, 23351, 23352).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
 
     let wasm_bytes = std::fs::read(test_constants::websocket_guest_test_wasm_path())
         .expect("websocket_guest_test.wasm not built");

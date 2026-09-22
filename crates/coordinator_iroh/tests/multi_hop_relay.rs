@@ -322,6 +322,7 @@ async fn spawn_global_coordinator(
             idle_timeout_secs: None,
             share_in_registry: true,
             max_connections: None,
+            ..Default::default()
         }),
         ..Default::default()
     });
@@ -359,6 +360,7 @@ async fn spawn_private_coordinator(
             idle_timeout_secs: None,
             share_in_registry: true,
             max_connections: None,
+            ..Default::default()
         }),
         ..Default::default()
     });

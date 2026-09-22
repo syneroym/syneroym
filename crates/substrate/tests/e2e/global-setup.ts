@@ -1,6 +1,5 @@
 import { execSync, spawn } from 'child_process';
 import * as fs from 'fs';
-import * as net from 'net';
 import * as path from 'path';
 
 const TEST_DIR = path.join(process.cwd(), '.e2e-data');
@@ -14,35 +13,7 @@ const TEST_DIR = path.join(process.cwd(), '.e2e-data');
 const NPM_INSTALL = 'npm install --prefer-offline --no-audit --no-fund';
 const NPM_CI = 'npm ci --prefer-offline --no-audit --no-fund';
 
-// Ports the harness binds. If a previous run was killed before global-teardown
-// ran (so its substrate / miniapp were never reaped), one of these is still
-// held -- the miniapp then panics on its second `bind`, the tests run against
-// the zombie whose SQLite file this setup just deleted, and only the
-// DB-touching cases (POST, WS broadcast) fail, which looks like a WebRTC bug.
-// Fail loudly here instead.
-const REQUIRED_PORTS = [3000, 3001, 7660, 7661, 7662, 7663, 7664, 7665];
-
-function portInUse(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.once('error', (e: NodeJS.ErrnoException) => resolve(e.code === 'EADDRINUSE'));
-    srv.once('listening', () => srv.close(() => resolve(false)));
-    srv.listen(port, '0.0.0.0');
-  });
-}
-
-async function preflightPorts(): Promise<void> {
-  const busy: number[] = [];
-  for (const p of REQUIRED_PORTS) {
-    if (await portInUse(p)) busy.push(p);
-  }
-  if (busy.length > 0) {
-    throw new Error(
-      `E2E ports already in use: ${busy.join(', ')}. A previous run likely ` +
-      `left an orphaned substrate/miniapp. Kill it (e.g. ` +
-      `\`lsof -ti tcp:${busy[0]} | xargs kill -9\`) and re-run.`);
-  }
-}
+import { reserveTcpPort, reserveUdpPort } from './ports';
 
 async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -67,7 +38,28 @@ export default async function globalSetup() {
   }
   fs.mkdirSync(TEST_DIR, { recursive: true });
 
-  await preflightPorts();
+  console.log('Allocating dynamic ports...');
+  const registryPortRes = await reserveTcpPort();
+  const irohHttpPortRes = await reserveTcpPort();
+  const irohQuicPortRes = await reserveUdpPort();
+  const webrtcSigPortRes = await reserveTcpPort();
+  const webrtcBootPortRes = await reserveTcpPort();
+  const gatewayPortRes = await reserveTcpPort();
+  const miniappPortRes = await reserveTcpPort();
+
+  const ports = {
+    registryPort: registryPortRes.port,
+    irohHttpPort: irohHttpPortRes.port,
+    irohQuicPort: irohQuicPortRes.port,
+    webrtcSignalingPort: webrtcSigPortRes.port,
+    webrtcBootstrapPort: webrtcBootPortRes.port,
+    gatewayPort: gatewayPortRes.port,
+    miniappPort: miniappPortRes.port,
+  };
+
+  const portsJsonPath = path.join(TEST_DIR, 'ports.json');
+  fs.writeFileSync(portsJsonPath, JSON.stringify(ports, null, 2));
+  console.log('Allocated dynamic ports:', JSON.stringify(ports));
 
   const WORKSPACE_DIR = path.resolve(process.cwd(), '../../../../');
   const isRelease = process.env.CARGO_RELEASE_FLAG === '--release';
@@ -148,43 +140,52 @@ nickname = "e2e-tester"
 
 [roles.community_registry]
 access = "everyone"
-http_bind_address = "0.0.0.0:7661"
+http_bind_address = "0.0.0.0:${ports.registryPort}"
 
 [roles.coordinator.iroh]
 enable_signalling = true
 enable_relay = true
-http_bind_address = "0.0.0.0:7664"
-quic_bind_address = "0.0.0.0:7665"
+http_bind_address = "0.0.0.0:${ports.irohHttpPort}"
+quic_bind_address = "0.0.0.0:${ports.irohQuicPort}"
+info_http_bind_address = "0.0.0.0:0"
 
 [roles.coordinator.webrtc]
 enable_signalling = true
 enable_relay = true
-signalling_bind_address = "0.0.0.0:7663"
-bootstrap_page_bind_address = "0.0.0.0:7662"
+signalling_bind_address = "0.0.0.0:${ports.webrtcSignalingPort}"
+bootstrap_page_bind_address = "0.0.0.0:${ports.webrtcBootstrapPort}"
 
 [roles.client_gateway]
-http_port = 7660
+http_port = ${ports.gatewayPort}
 identity_mode = "login"
 
 [roles.auth]
 
 [parent_coordinator.iroh]
-url = "http://127.0.0.1:7664"
+url = "http://127.0.0.1:${ports.irohHttpPort}"
 
 [parent_coordinator.webrtc]
-signaling_url = "ws://127.0.0.1:7663/ws"
-bootstrap_url = "ws://127.0.0.1:7662"
+signaling_url = "ws://127.0.0.1:${ports.webrtcSignalingPort}/ws"
+bootstrap_url = "ws://127.0.0.1:${ports.webrtcBootstrapPort}"
 stun_servers = ["stun:stun.l.google.com:19302"]
 
 [substrate]
 communication_interfaces = ["webrtc", "iroh"]
-registry_url = "http://127.0.0.1:7661"
+registry_url = "http://127.0.0.1:${ports.registryPort}"
 
 `;
   const configPath = path.join(TEST_DIR, 'syneroym.toml');
   fs.writeFileSync(configPath, configContent);
 
   console.log('Starting Substrate...');
+  await Promise.all([
+    registryPortRes.release(),
+    irohHttpPortRes.release(),
+    irohQuicPortRes.release(),
+    webrtcSigPortRes.release(),
+    webrtcBootPortRes.release(),
+    gatewayPortRes.release(),
+  ]);
   // Send the substrate's stdout/stderr straight to a file, not to a pipe this
   // process reads. Every later step here shells out with `execSync`, which
   // freezes node's event loop -- so a captured pipe would stop being drained
@@ -226,9 +227,10 @@ registry_url = "http://127.0.0.1:7661"
   // Same reason as the substrate above: a captured pipe left undrained during
   // an `execSync` step would deadlock this long-lived process on a full stdout
   // buffer. Log to a file instead.
+  await miniappPortRes.release();
   const miniappLogPath = path.join(TEST_DIR, 'miniapp.log');
   const miniappLogFd = fs.openSync(miniappLogPath, 'a');
-  const miniappProcess = spawn(MINIAPP_BIN, ['--port', '3000', '--data-dir', path.join(TEST_DIR, 'miniapp-data')], {
+  const miniappProcess = spawn(MINIAPP_BIN, ['--port', ports.miniappPort.toString(), '--https-port', '0', '--data-dir', path.join(TEST_DIR, 'miniapp-data')], {
     cwd: WORKSPACE_DIR,
     env: { ...process.env, RUST_LOG: 'info' },
     stdio: ['ignore', miniappLogFd, miniappLogFd]
@@ -246,8 +248,8 @@ registry_url = "http://127.0.0.1:7661"
   // miniapp failed to start (e.g. a port collision) or the substrate never
   // finished wiring its registry, this surfaces it here instead of 18 tests
   // later.
-  await waitForHttp('http://127.0.0.1:3000/', 20000);        // miniapp
-  await waitForHttp('http://127.0.0.1:7661/', 20000);        // community registry
+  await waitForHttp(`http://127.0.0.1:${ports.miniappPort}/`, 20000);        // miniapp
+  await waitForHttp(`http://127.0.0.1:${ports.registryPort}/`, 20000);        // community registry
   await new Promise(r => setTimeout(r, 1000));
 
   // Fixed 32-byte Key Encryption Key (KEK). Required for WASM services because
@@ -255,7 +257,7 @@ registry_url = "http://127.0.0.1:7661"
   // Data Encryption Keys (DEKs) with the node's KEK before persisting blobs.
   const TEST_KEK = '21'.repeat(32);
   console.log('Injecting substrate KEK...');
-  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 ` +
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:${ports.registryPort} ` +
            `--substrate ${substrateDid} --as owner kek inject ${TEST_KEK}`,
            { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
@@ -278,13 +280,13 @@ registry_url = "http://127.0.0.1:7661"
 
   // Register in Community Registry FIRST
   console.log('Registering service in Community Registry...');
-  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 registry register --identity demo1 --substrate ${substrateDid} --nickname demo1`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:${ports.registryPort} registry register --identity demo1 --substrate ${substrateDid} --nickname demo1`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   // Deploy Passthrough Service.
   console.log('Deploying TCP Service (Passthrough)...');
   try {
     await new Promise(r => setTimeout(r, 2000));
-    execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 --substrate ${substrateDid} --as owner svc deploy --svc-id ${appDid} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+    execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:${ports.registryPort} --substrate ${substrateDid} --as owner svc deploy --svc-id ${appDid} --interfaces http --tcp 127.0.0.1:${ports.miniappPort}`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
   } catch (err: any) {
     console.error("Deploy failed!");
     throw err;
@@ -301,7 +303,7 @@ registry_url = "http://127.0.0.1:7661"
   console.log('WASM App DID:', wasmDid);
 
   console.log('Registering WASM service in Community Registry...');
-  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 registry register --identity demo1wasm --substrate ${substrateDid} --nickname demo1wasm`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:${ports.registryPort} registry register --identity demo1wasm --substrate ${substrateDid} --nickname demo1wasm`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   console.log('Calculating WASM app alias...');
   // `--interface http-native`: the HTTP bridge (assets, guest routes, SSE,
@@ -325,7 +327,7 @@ registry_url = "http://127.0.0.1:7661"
   ].join(',');
 
   console.log('Deploying WASM Service...');
-  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 ` +
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:${ports.registryPort} ` +
     `--substrate ${substrateDid} --as owner svc deploy --svc-id ${wasmDid} ` +
     `--interfaces ${WASM_IFACES} --wasm "${WASM_ARTIFACT}" ` +
     `--assets "${assetsArchive}" --asset-visibility public ` +
@@ -341,9 +343,9 @@ registry_url = "http://127.0.0.1:7661"
   // source/assets paths are workspace-root-relative, hence cwd: WORKSPACE_DIR.
   console.log('Deploying the Roym app (six services)...');
   execSync(
-    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 ` +
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:${ports.registryPort} ` +
     `--substrate ${substrateDid} --as owner app deploy roym crates/roym_core/app/roym.toml ` +
-    `--mint-masters --registry-url http://127.0.0.1:7661 ` +
+    `--mint-masters --registry-url http://127.0.0.1:${ports.registryPort} ` +
     `--journal-path "${path.join(TEST_DIR, 'roym-deployments.db')}"`,
     { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
@@ -373,7 +375,7 @@ registry_url = "http://127.0.0.1:7661"
   // operator-set annotation); add the one the gateway hostname scheme needs.
   console.log('Registering the Roym web service nickname...');
   execSync(
-    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 registry register ` +
+    `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:${ports.registryPort} registry register ` +
     `--identity "member-roym#web-0" --substrate ${substrateDid} --nickname roym`,
     { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
@@ -389,19 +391,19 @@ registry_url = "http://127.0.0.1:7661"
   console.log('Minting a delegated session key for owner...');
   execSync(
     `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --as owner session delegate ` +
-    `--registry-url http://127.0.0.1:7661 --out "${sessionKeyFile}"`,
+    `--registry-url http://127.0.0.1:${ports.registryPort} --out "${sessionKeyFile}"`,
     { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   console.log('Logging in session for owner...');
   execSync(
     `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --as owner session login ` +
-    `--gateway-url http://127.0.0.1:7660 --registry-url http://127.0.0.1:7661`,
+    `--gateway-url http://127.0.0.1:${ports.gatewayPort} --registry-url http://127.0.0.1:${ports.registryPort}`,
     { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   console.log('Enrolling record signing certificate for owner...');
   execSync(
     `"${ROYMCTL_BIN}" --dir ${TEST_DIR} --as owner roym enrol-signing ` +
-    `--master owner --gateway-url http://127.0.0.1:7660 --host ${roymWebAlias} --registry-url http://127.0.0.1:7661`,
+    `--master owner --gateway-url http://127.0.0.1:${ports.gatewayPort} --host ${roymWebAlias} --registry-url http://127.0.0.1:${ports.registryPort}`,
     { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   // Set environment variables for tests
@@ -413,7 +415,7 @@ registry_url = "http://127.0.0.1:7661"
   process.env.ROYM_WEB_DID = roymWebDid;
   process.env.ROYM_DIRECTORY_DID = roymDirectoryDid;
   process.env.ROYM_WEB_ALIAS = roymWebAlias;
-  process.env.ROYM_HUB_URL = `http://${roymWebAlias}:7660`;
+  process.env.ROYM_HUB_URL = `http://${roymWebAlias}:${ports.gatewayPort}`;
   process.env.ROYM_SESSION_KEY_FILE = sessionKeyFile;
 
   console.log('--- E2E Global Setup Complete ---\n');

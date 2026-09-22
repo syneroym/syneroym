@@ -29,7 +29,7 @@ use syneroym_sdk::{
 use tokio::time::timeout;
 
 mod common;
-use common::SubstrateTestContext;
+use common::{SubstrateTestContext, alloc_ports};
 
 fn miniapp_manifest_with_assets(
     wasm_bytes: Vec<u8>,
@@ -244,7 +244,8 @@ fn build_masked_text_frame(payload: &[u8]) -> Vec<u8> {
 #[tokio::test]
 async fn test_miniapp_demo1_wasm_static_asset_serving_zero_instantiations() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(23100, 23101, 23102).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("21".repeat(32)).await.expect("inject_kek failed");
 
     let wasm_bytes = std::fs::read(test_constants::miniapp_demo1_wasm_path())
@@ -303,7 +304,8 @@ async fn test_miniapp_demo1_wasm_static_asset_serving_zero_instantiations() {
 #[tokio::test]
 async fn test_miniapp_demo1_wasm_comments_spa_page() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(23103, 23104, 23105).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("21".repeat(32)).await.expect("inject_kek failed");
 
     let wasm_bytes = std::fs::read(test_constants::miniapp_demo1_wasm_path())
@@ -332,7 +334,8 @@ async fn test_miniapp_demo1_wasm_comments_spa_page() {
 #[tokio::test]
 async fn test_miniapp_demo1_wasm_rest_comments_lifecycle() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(23106, 23107, 23108).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("21".repeat(32)).await.expect("inject_kek failed");
 
     let wasm_bytes = std::fs::read(test_constants::miniapp_demo1_wasm_path())
@@ -417,7 +420,8 @@ async fn test_miniapp_demo1_wasm_rest_comments_lifecycle() {
 #[tokio::test]
 async fn test_miniapp_demo1_wasm_stream_upload_and_download() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(23109, 23110, 23111).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("21".repeat(32)).await.expect("inject_kek failed");
 
     let wasm_bytes = std::fs::read(test_constants::miniapp_demo1_wasm_path())
@@ -492,7 +496,8 @@ async fn test_miniapp_demo1_wasm_stream_upload_and_download() {
 #[tokio::test]
 async fn test_miniapp_demo1_wasm_sse_live_updates() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(23112, 23113, 23114).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("21".repeat(32)).await.expect("inject_kek failed");
 
     let wasm_bytes = std::fs::read(test_constants::miniapp_demo1_wasm_path())
@@ -550,7 +555,8 @@ async fn test_miniapp_demo1_wasm_sse_live_updates() {
 #[tokio::test]
 async fn test_miniapp_demo1_wasm_websocket_echo_and_updates() {
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(23115, 23116, 23117).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("21".repeat(32)).await.expect("inject_kek failed");
 
     let wasm_bytes = std::fs::read(test_constants::miniapp_demo1_wasm_path())

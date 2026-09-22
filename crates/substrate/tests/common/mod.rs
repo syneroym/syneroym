@@ -26,7 +26,10 @@ mod fixtures;
 
 use std::{
     net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
-    sync::atomic::{AtomicU16, Ordering},
+    sync::{
+        Mutex as StdMutex,
+        atomic::{AtomicU16, Ordering},
+    },
     time::Duration,
 };
 
@@ -103,6 +106,18 @@ fn probe_bind(port: u16) -> Option<StdTcpListener> {
 }
 
 /// Reserve `N` distinct free ports below the OS ephemeral range.
+///
+/// Ports are claimed via TCP probe listeners and kept open in
+/// [`PROBE_LISTENERS`] to prevent other test threads from claiming them.
+///
+/// # Port Allocation Nuance
+/// - **Check-then-use window**: Probe listeners hold the reserved ports until
+///   [`release_held_ports`] is called immediately prior to substrate daemon /
+///   service bind. This minimizes the gap to milliseconds for in-process binds
+///   (or seconds on the process-spawn path while child daemons boot), though it
+///   is not strictly zero until substrate supports binding port `:0` directly.
+/// - **Transport coverage**: Probes are TCP-only. QUIC/UDP listeners reuse the
+///   verified-free port number from the pool.
 pub fn alloc_ports<const N: usize>() -> [u16; N] {
     let span = PORT_POOL_END - PORT_POOL_START;
     let seed = (std::time::SystemTime::now()
@@ -134,14 +149,22 @@ pub fn alloc_ports<const N: usize>() -> [u16; N] {
             continue;
         }
 
-        let ports: Vec<u16> = listeners
-            .iter()
-            .take(N)
-            .map(|l| l.local_addr().expect("bound listener").port())
-            .collect();
-        drop(listeners);
+        let mut selected: Vec<StdTcpListener> = listeners.into_iter().take(N).collect();
+        let ports: Vec<u16> =
+            selected.iter().map(|l| l.local_addr().expect("bound listener").port()).collect();
+        PROBE_LISTENERS.lock().expect("probe listener registry").append(&mut selected);
         return ports.try_into().expect("exactly N ports collected");
     }
+}
+
+static PROBE_LISTENERS: StdMutex<Vec<StdTcpListener>> = StdMutex::new(Vec::new());
+
+/// Release any held probe listeners for the specified port numbers so the
+/// service can bind them.
+pub fn release_held_ports(ports: &[u16]) {
+    PROBE_LISTENERS.lock().expect("probe listener registry").retain(|l| {
+        if let Ok(addr) = l.local_addr() { !ports.contains(&addr.port()) } else { false }
+    });
 }
 
 pub struct SubstrateTestContext {
@@ -212,6 +235,7 @@ impl SubstrateTestContext {
                 enable_relay: true,
                 http_bind_address: format!("127.0.0.1:{iroh_port}"),
                 quic_bind_address: format!("127.0.0.1:{quic_port}"),
+                info_http_bind_address: Some("127.0.0.1:0".to_string()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -241,6 +265,7 @@ impl SubstrateTestContext {
         let substrate_service_id = substrate_identity_state.did.clone();
 
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        release_held_ports(&[iroh_port, registry_port, gateway_port, quic_port]);
         let runtime =
             syneroym_substrate::init(config.clone()).await.expect("Failed to initialize runtime");
 

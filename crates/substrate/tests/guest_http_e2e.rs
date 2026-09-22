@@ -41,7 +41,7 @@ use tokio::{
 };
 
 mod common;
-use common::SubstrateTestContext;
+use common::{SubstrateTestContext, alloc_ports};
 
 fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: serde_json::Value) -> DeployManifest {
     DeployManifest {
@@ -268,7 +268,8 @@ macro_rules! skip_if_missing {
 async fn test_anonymous_request_to_non_public_route_is_401_with_zero_instantiations() {
     let wasm_bytes = skip_if_missing!("test_anonymous_request_to_non_public_route_is_401");
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9200, 9201, 9202).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("30".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
@@ -301,7 +302,8 @@ async fn test_public_route_reaches_guest_and_whoami_reports_anonymous() {
     let wasm_bytes =
         skip_if_missing!("test_public_route_reaches_guest_and_whoami_reports_anonymous");
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9203, 9204, 9205).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("31".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
@@ -411,7 +413,8 @@ async fn test_through_the_gateway_a_non_public_route_is_reached_and_reports_self
 async fn test_reject_returns_the_guests_own_status_and_message() {
     let wasm_bytes = skip_if_missing!("test_reject_returns_the_guests_own_status_and_message");
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9209, 9210, 9211).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("33".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
@@ -442,7 +445,8 @@ async fn test_reject_returns_the_guests_own_status_and_message() {
 async fn test_over_cap_request_body_is_413_with_zero_instantiations() {
     let wasm_bytes = skip_if_missing!("test_over_cap_request_body_is_413");
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9212, 9213, 9214).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("34".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
@@ -478,7 +482,8 @@ async fn test_over_cap_request_body_is_413_with_zero_instantiations() {
 async fn test_trap_and_spin_return_500_and_a_new_stream_still_succeeds() {
     let wasm_bytes = skip_if_missing!("test_trap_and_spin_return_500");
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9215, 9216, 9217).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("35".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
@@ -529,7 +534,8 @@ async fn test_trap_and_spin_return_500_and_a_new_stream_still_succeeds() {
 async fn test_huge_and_bad_header_return_500_with_no_partial_body() {
     let wasm_bytes = skip_if_missing!("test_huge_and_bad_header_return_500");
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9218, 9219, 9220).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("36".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
@@ -575,7 +581,8 @@ async fn test_huge_and_bad_header_return_500_with_no_partial_body() {
 async fn test_guest_http_concurrency_limit_returns_503_with_retry_after() {
     let wasm_bytes = skip_if_missing!("test_guest_http_concurrency_limit_returns_503");
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup_with(9221, 9222, 9223, |config| {
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup_with(iroh_port, registry_port, gateway_port, |config| {
         config.roles.app_sandbox = Some(AppSandboxRole {
             max_concurrent_guest_http_per_service: 1,
             // The default (5s) is a *tighter* ceiling than this test's own
@@ -652,7 +659,8 @@ async fn test_guest_http_concurrency_limit_returns_503_with_retry_after() {
 async fn test_items_path_param_matches_the_captured_url_segment() {
     let wasm_bytes = skip_if_missing!("test_items_path_param_matches_the_captured_url_segment");
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9227, 9228, 9229).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("38".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
@@ -686,7 +694,8 @@ async fn test_framing_headers_are_stripped_and_content_length_is_the_hosts() {
     let wasm_bytes =
         skip_if_missing!("test_framing_headers_are_stripped_and_content_length_is_the_hosts");
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9230, 9231, 9232).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("39".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
@@ -731,7 +740,8 @@ async fn test_framing_headers_are_stripped_and_content_length_is_the_hosts() {
 async fn test_rejected_ucan_reports_self_asserted_not_ucan() {
     let wasm_bytes = skip_if_missing!("test_rejected_ucan_reports_self_asserted_not_ucan");
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9239, 9240, 9241).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("3c".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
@@ -787,7 +797,8 @@ async fn test_guest_http_requests_within_budget_all_succeed_via_queuing() {
     let wasm_bytes =
         skip_if_missing!("test_guest_http_requests_within_budget_all_succeed_via_queuing");
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup_with(9236, 9237, 9238, |config| {
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup_with(iroh_port, registry_port, gateway_port, |config| {
         config.roles.app_sandbox =
             Some(AppSandboxRole { max_concurrent_guest_http_per_service: 2, ..Default::default() });
     })
@@ -839,7 +850,8 @@ async fn test_guest_http_requests_within_budget_all_succeed_via_queuing() {
 async fn test_guest_route_and_data_layer_route_coexist() {
     let wasm_bytes = skip_if_missing!("test_guest_route_and_data_layer_route_coexist");
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9224, 9225, 9226).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("26".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
@@ -883,7 +895,8 @@ async fn test_guest_route_and_data_layer_route_coexist() {
 async fn test_guest_route_and_asset_bundle_coexist() {
     let wasm_bytes = skip_if_missing!("test_guest_route_and_asset_bundle_coexist");
     let _ = ring::default_provider().install_default();
-    let ctx = SubstrateTestContext::setup(9233, 9234, 9235).await;
+    let [iroh_port, registry_port, gateway_port] = alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
     ctx.substrate_client.inject_kek("3a".repeat(32)).await.expect("inject_kek failed");
 
     let app_identity = Identity::generate().unwrap();
