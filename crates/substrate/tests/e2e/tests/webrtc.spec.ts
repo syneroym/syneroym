@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
+import { readE2EPorts } from '../ports';
 
 [false, true].forEach(forceTunnel => {
   test.describe(`WebRTC Substrate E2E (forceTunnel=${forceTunnel})`, () => {
@@ -12,8 +13,7 @@ import * as path from 'path';
       const appAlias = process.env.APP_ALIAS;
       expect(appAlias).toBeDefined();
 
-      const portsPath = path.join(process.cwd(), '.e2e-data', 'ports.json');
-      const ports = JSON.parse(fs.readFileSync(portsPath, 'utf8'));
+      const ports = readE2EPorts();
       // The bootstrap page is served by the coordinator on its dynamic bootstrap port.
       // We access it via the alias hostname to ensure the coordinator can resolve it.
       const url = `http://${appAlias}:${ports.webrtcBootstrapPort}/?force_tunnel=${forceTunnel}`;

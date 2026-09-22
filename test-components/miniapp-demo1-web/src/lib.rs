@@ -357,13 +357,13 @@ pub async fn run_server(
         .layer(middleware::from_fn(print_request_log))
         .with_state(state);
 
-    info!("listening on http://{}", addr);
     let http_listener = TcpListener::bind(addr).await?;
+    info!("listening on http://{}", http_listener.local_addr()?);
 
     // HTTPS Setup
     let https_addr = SocketAddr::from(([0, 0, 0, 0], args.https_port));
-    info!("listening on https://{}", https_addr);
     let https_listener = TcpListener::bind(https_addr).await?;
+    info!("listening on https://{}", https_listener.local_addr()?);
 
     let cert_pem = include_str!("test_cert.pem");
     let key_pem = include_str!("test_key.pem");

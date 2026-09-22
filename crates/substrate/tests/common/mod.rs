@@ -106,6 +106,17 @@ fn probe_bind(port: u16) -> Option<StdTcpListener> {
 }
 
 /// Reserve `N` distinct free ports below the OS ephemeral range.
+///
+/// Ports are claimed via TCP probe listeners and kept open in
+/// [`PROBE_LISTENERS`] to prevent other test threads from claiming them.
+///
+/// # Port Allocation Nuance
+/// - **Check-then-use window**: Probe listeners hold the reserved ports until
+///   [`release_held_ports`] is called immediately prior to substrate daemon /
+///   service bind. This minimizes the gap to milliseconds, though it is not
+///   strictly zero until substrate supports binding port `:0` directly.
+/// - **Transport coverage**: Probes are TCP-only. QUIC/UDP listeners reuse the
+///   verified-free port number from the pool.
 pub fn alloc_ports<const N: usize>() -> [u16; N] {
     let span = PORT_POOL_END - PORT_POOL_START;
     let seed = (std::time::SystemTime::now()
@@ -140,9 +151,7 @@ pub fn alloc_ports<const N: usize>() -> [u16; N] {
         let mut selected: Vec<StdTcpListener> = listeners.into_iter().take(N).collect();
         let ports: Vec<u16> =
             selected.iter().map(|l| l.local_addr().expect("bound listener").port()).collect();
-        if let Ok(mut held) = PROBE_LISTENERS.lock() {
-            held.append(&mut selected);
-        }
+        PROBE_LISTENERS.lock().expect("probe listener registry").append(&mut selected);
         return ports.try_into().expect("exactly N ports collected");
     }
 }
@@ -152,11 +161,9 @@ static PROBE_LISTENERS: StdMutex<Vec<StdTcpListener>> = StdMutex::new(Vec::new()
 /// Release any held probe listeners for the specified port numbers so the
 /// service can bind them.
 pub fn release_held_ports(ports: &[u16]) {
-    if let Ok(mut listeners) = PROBE_LISTENERS.lock() {
-        listeners.retain(|l| {
-            if let Ok(addr) = l.local_addr() { !ports.contains(&addr.port()) } else { false }
-        });
-    }
+    PROBE_LISTENERS.lock().expect("probe listener registry").retain(|l| {
+        if let Ok(addr) = l.local_addr() { !ports.contains(&addr.port()) } else { false }
+    });
 }
 
 pub struct SubstrateTestContext {

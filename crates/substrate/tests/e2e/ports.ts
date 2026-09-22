@@ -3,6 +3,14 @@ import * as fs from 'fs';
 import * as net from 'net';
 import * as path from 'path';
 
+/**
+ * Represents a port held open by a probe socket until the daemon is ready to bind.
+ *
+ * Check-then-use gap nuance: The probe socket keeps the port bound while configs
+ * are written, and releases it immediately before process spawn. This minimizes
+ * the check-then-use window to milliseconds, though it is not strictly zero until
+ * the substrate supports native `:0` binding.
+ */
 export interface ReservedPort {
   port: number;
   release: () => Promise<void>;

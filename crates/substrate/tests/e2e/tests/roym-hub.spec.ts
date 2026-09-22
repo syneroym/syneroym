@@ -1,13 +1,8 @@
 import { test, expect, type Page } from '@playwright/test';
-import * as fs from 'fs';
-import * as path from 'path';
+import { readE2EPorts } from '../ports';
 
-const portsPath = path.join(process.cwd(), '.e2e-data', 'ports.json');
-const ports = fs.existsSync(portsPath)
-  ? JSON.parse(fs.readFileSync(portsPath, 'utf8'))
-  : { gatewayPort: 0 };
-const HUB_URL = process.env.ROYM_HUB_URL || `http://127.0.0.1:${ports.gatewayPort}`;
-const AUTH_ORIGIN = `http://auth.localhost:${ports.gatewayPort}`;
+let HUB_URL: string;
+let AUTH_ORIGIN: string;
 const SESSION_KEY_FILE = process.env.ROYM_SESSION_KEY_FILE;
 
 // Drive the real delegated-key login: hand the Hub the session-key.json that
@@ -22,6 +17,12 @@ async function loginWithDelegatedKey(page: Page) {
 }
 
 test.describe('Roym Hub', () => {
+  test.beforeAll(() => {
+    const ports = readE2EPorts();
+    HUB_URL = process.env.ROYM_HUB_URL || `http://127.0.0.1:${ports.gatewayPort}`;
+    AUTH_ORIGIN = `http://auth.localhost:${ports.gatewayPort}`;
+  });
+
   test.beforeEach(async ({ page }) => {
     page.on('console', msg => console.log('BROWSER:', msg.text()));
     expect(process.env.ROYM_WEB_ALIAS).toBeDefined();

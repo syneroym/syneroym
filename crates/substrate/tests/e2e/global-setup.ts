@@ -1,6 +1,5 @@
 import { execSync, spawn } from 'child_process';
 import * as fs from 'fs';
-import * as net from 'net';
 import * as path from 'path';
 
 const TEST_DIR = path.join(process.cwd(), '.e2e-data');

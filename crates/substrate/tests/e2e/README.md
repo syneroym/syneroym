@@ -28,12 +28,13 @@ The E2E test runs against a fully local, self-contained instance of the Syneroym
 1. **Clean Workspace Initialization:** Creates a temporary, isolated config directory (`.e2e-data`).
 2. **Infrastructure Initialization:** Generates a local node identity and sets up a local Substrate config.
 3. **Local Relays & Registries Boot:**
-   * Runs the **Community Registry** HTTP server (port `7661`).
-   * Runs the local **Iroh QUIC Relay** (port `7664`) and signalling server.
-   * Runs the local **WebRTC Signalling** WebSocket server (port `7663`) and Bootstrap HTTP server (port `7662`).
-   * Runs the **Client Gateway** reverse proxy (port `7660`).
-4. **Substrate Daemon Spin-up:** Spawns a background `syneroym-substrate` node configured with local relays and communication interfaces.
-5. **Mini-app Backend Boot:** Launches `miniapp-demo1-web` (listening on port `3000`).
+   * Allocates free ports dynamically (persisted to `.e2e-data/ports.json`).
+   * Runs the **Community Registry** HTTP server.
+   * Runs the local **Iroh QUIC Relay** and signalling server.
+   * Runs the local **WebRTC Signalling** WebSocket server and Bootstrap HTTP server.
+   * Runs the **Client Gateway** reverse proxy.
+4. **Substrate Daemon Spin-up:** Spawns a background `syneroym-substrate` node configured with local relays and communication interfaces using the allocated dynamic ports.
+5. **Mini-app Backend Boot:** Launches `miniapp-demo1-web` (listening on an allocated dynamic port).
 6. **E2E Deployment:** Injects substrate KEK, registers identities in local registry, deploys `miniapp-demo1-web` as a TCP passthrough service, and deploys `miniapp-demo1-wasm` as a sandboxed WASM component service with static asset bundle and route configuration.
 
 ## Test Scenarios Covered

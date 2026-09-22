@@ -307,7 +307,7 @@ registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
         resolve();
       }
     });
-    szProcess.stderr.on('data', data => process.stdout.write('[Sx ERR] ' + data.toString()));
+    sxProcess.stderr.on('data', data => process.stdout.write('[Sx ERR] ' + data.toString()));
     sxProcess.on('error', err => { clearTimeout(timer); reject(err); });
   });
   console.log('Sx DID:', sxDid);
