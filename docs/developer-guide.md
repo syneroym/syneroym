@@ -81,9 +81,18 @@ These verify code correctness in isolation. Unit tests cover individual helper m
 The runner is [`cargo-nextest`](https://nexte.st/). It runs every test binary
 in one parallel pool instead of `cargo test`'s one-binary-at-a-time, which is
 most of the wall-clock on a workspace this size. `.config/nextest.toml`
-serialises one group -- the substrate end-to-end tests, which each boot a full
-node -- and lets everything else run fully parallel. nextest does not run
+controls concurrency for the `substrate-e2e` test group (tests that boot a full
+substrate node), while every other test runs fully parallel. nextest does not run
 doctests, so `test:rust` runs a `cargo test --doc` pass after it.
+
+You can configure the substrate test concurrency using the `SYNEROYM_E2E_THREADS`
+environment variable. Machines with more CPU and network buffer memory can set
+this to a higher number to speed up local test runs:
+
+```bash
+# Example: run with 4 concurrent substrate tests
+SYNEROYM_E2E_THREADS=4 mise run test:rust
+```
 
 * **Run via Mise (Recommended):**
   ```bash
