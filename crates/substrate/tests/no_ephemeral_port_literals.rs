@@ -223,119 +223,168 @@ fn setup_call_literals_detection() {
     assert_eq!(res_ml2, vec![7946, 7947, 7948]);
 }
 
-#[test]
-fn no_typescript_e2e_spec_hardcodes_a_port() {
-    let e2e_specs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/e2e/tests");
+fn check_typescript_line(line: &str) -> Vec<String> {
     let mut violations = Vec::new();
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") || trimmed.starts_with('*') {
+        return violations;
+    }
 
-    let forbidden_static_ports =
-        [7660, 7661, 7662, 7663, 7664, 7665, 7960, 7961, 7962, 7963, 7964, 7965];
-
-    for entry in fs::read_dir(&e2e_specs_dir).expect("read e2e specs dir") {
-        let entry = entry.expect("dir entry");
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("ts") {
-            continue;
-        }
-
-        let contents = fs::read_to_string(&path).expect("read spec file");
-        for (line_no, line) in contents.lines().enumerate() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("//") || trimmed.starts_with('*') {
-                continue;
-            }
-
-            // 1. Check for URL with literal port: http(s)://...:<digits>
-            if let Some(pos) = line.find("http://").or_else(|| line.find("https://")) {
-                let rest = &line[pos..];
-                let end = rest.find(['\'', '"', '`', ' ', '\n', '\r', ';']).unwrap_or(rest.len());
-                let url = &rest[..end];
-                if let Some(colon_idx) = url.rfind(':')
-                    && colon_idx > 5
+    // 1. Check for URL with literal port: http(s)://...:<digits> or
+    //    ws(s)://...:<digits>
+    for scheme in ["http://", "https://", "ws://", "wss://"] {
+        if let Some(pos) = line.find(scheme) {
+            let rest = &line[pos..];
+            let end = rest.find(['\'', '"', '`', ' ', '\n', '\r', ';']).unwrap_or(rest.len());
+            let url = &rest[..end];
+            if let Some(colon_idx) = url.rfind(':')
+                && colon_idx > scheme.len() - 3
+            {
+                let after_colon = &url[colon_idx + 1..];
+                let port_digits: String =
+                    after_colon.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if !port_digits.is_empty()
+                    && let Ok(port) = port_digits.parse::<u32>()
+                    && port > 0
                 {
-                    let after_colon = &url[colon_idx + 1..];
-                    let port_digits: String =
-                        after_colon.chars().take_while(|c| c.is_ascii_digit()).collect();
-                    if !port_digits.is_empty()
-                        && let Ok(port) = port_digits.parse::<u32>()
-                        && port > 0
-                    {
-                        violations.push(format!(
-                            "{}:{}: hardcoded port {port} in URL \"{url}\" -- use \
-                             `readE2EPorts()` or `readMultihopPorts()` instead",
-                            path.display(),
-                            line_no + 1,
-                        ));
-                    }
-                }
-            }
-
-            // 2. Check for port-like assignments: e.g. gatewayPort: 7660, const port = 3000
-            for sep in [':', '='] {
-                let Some(sep_idx) = line.rfind(sep) else { continue };
-                let (before, after) = line.split_at(sep_idx);
-                let after = &after[1..];
-
-                let ident_is_port_like = before
-                    .trim_end()
-                    .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
-                    .next()
-                    .is_some_and(|word| {
-                        let lower = word.to_ascii_lowercase();
-                        lower.contains("port")
-                    });
-                if !ident_is_port_like {
-                    continue;
-                }
-
-                let digits: String = after
-                    .trim_start()
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit() || *c == '_')
-                    .collect();
-                if digits.is_empty() {
-                    continue;
-                }
-                if let Ok(value) = digits.replace('_', "").parse::<u32>() {
                     violations.push(format!(
-                        "{}:{}: hardcoded port literal {value} in TypeScript spec -- use \
-                         `readE2EPorts()` or `readMultihopPorts()` instead",
-                        path.display(),
-                        line_no + 1,
+                        "hardcoded port {port} in URL \"{url}\" -- use `readE2EPorts()` or \
+                         `readMultihopPorts()` instead"
                     ));
-                }
-            }
-
-            // 3. Check for any known static substrate port token
-            for &static_port in &forbidden_static_ports {
-                let s = static_port.to_string();
-                if line.contains(&s) {
-                    let mut start = 0;
-                    while let Some(idx) = line[start..].find(&s) {
-                        let abs_idx = start + idx;
-                        let before_char =
-                            if abs_idx > 0 { line[..abs_idx].chars().last() } else { None };
-                        let after_idx = abs_idx + s.len();
-                        let after_char = line[after_idx..].chars().next();
-                        let is_digit_before = before_char.is_some_and(|c| c.is_ascii_digit());
-                        let is_digit_after = after_char.is_some_and(|c| c.is_ascii_digit());
-                        if !is_digit_before && !is_digit_after {
-                            let msg = format!(
-                                "{}:{}: forbidden static port {static_port} found in TypeScript \
-                                 spec",
-                                path.display(),
-                                line_no + 1,
-                            );
-                            if !violations.contains(&msg) {
-                                violations.push(msg);
-                            }
-                        }
-                        start = after_idx;
-                    }
                 }
             }
         }
     }
 
+    // 2. Check for port-like assignments: e.g. gatewayPort: 7660, const port = 3000
+    for sep in [':', '='] {
+        let Some(sep_idx) = line.rfind(sep) else { continue };
+        let (before, after) = line.split_at(sep_idx);
+        let after = &after[1..];
+
+        let ident_is_port_like = before
+            .trim_end()
+            .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .next()
+            .is_some_and(|word| {
+                let lower = word.to_ascii_lowercase();
+                lower.contains("port")
+            });
+        if !ident_is_port_like {
+            continue;
+        }
+
+        let digits: String =
+            after.trim_start().chars().take_while(|c| c.is_ascii_digit() || *c == '_').collect();
+        if digits.is_empty() {
+            continue;
+        }
+        if let Ok(value) = digits.replace('_', "").parse::<u32>()
+            && value > 0
+        {
+            violations.push(format!(
+                "hardcoded port literal {value} in TypeScript file -- use `readE2EPorts()` or \
+                 `readMultihopPorts()` instead"
+            ));
+        }
+    }
+
+    // 3. Check for any known static substrate port token in a port/host context
+    let forbidden_static_ports =
+        [7660, 7661, 7662, 7663, 7664, 7665, 7960, 7961, 7962, 7963, 7964, 7965];
+    let lower_line = line.to_ascii_lowercase();
+    let has_port_context = lower_line.contains("port");
+
+    for &static_port in &forbidden_static_ports {
+        let s = static_port.to_string();
+        if line.contains(&s) {
+            let mut start = 0;
+            while let Some(idx) = line[start..].find(&s) {
+                let abs_idx = start + idx;
+                let before_char = if abs_idx > 0 { line[..abs_idx].chars().last() } else { None };
+                let after_idx = abs_idx + s.len();
+                let after_char = line[after_idx..].chars().next();
+
+                let is_word_char_before =
+                    before_char.is_some_and(|c| c.is_alphanumeric() || c == '_');
+                let is_word_char_after =
+                    after_char.is_some_and(|c| c.is_alphanumeric() || c == '_');
+
+                if !is_word_char_before && !is_word_char_after {
+                    let is_preceded_by_colon = before_char == Some(':')
+                        || (abs_idx >= 2 && line[..abs_idx].ends_with(":'")
+                            || line[..abs_idx].ends_with(":\""));
+                    if has_port_context || is_preceded_by_colon {
+                        let msg =
+                            format!("forbidden static port {static_port} found in TypeScript file");
+                        if !violations.contains(&msg) {
+                            violations.push(msg);
+                        }
+                    }
+                }
+                start = after_idx;
+            }
+        }
+    }
+
+    violations
+}
+
+#[test]
+fn no_typescript_e2e_file_hardcodes_a_port() {
+    let e2e_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/e2e");
+    let mut ts_files = Vec::new();
+
+    // Scan tests/e2e/*.ts (global setup, configs, ports helpers)
+    for entry in fs::read_dir(&e2e_dir).expect("read e2e dir") {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("ts") {
+            ts_files.push(path);
+        }
+    }
+
+    // Scan tests/e2e/tests/*.ts (test spec files)
+    let specs_dir = e2e_dir.join("tests");
+    if specs_dir.is_dir() {
+        for entry in fs::read_dir(&specs_dir).expect("read e2e specs dir") {
+            let entry = entry.expect("dir entry");
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("ts") {
+                ts_files.push(path);
+            }
+        }
+    }
+
+    let mut violations = Vec::new();
+
+    for path in ts_files {
+        let contents = fs::read_to_string(&path).expect("read ts file");
+        for (line_no, line) in contents.lines().enumerate() {
+            let line_violations = check_typescript_line(line);
+            for v in line_violations {
+                violations.push(format!("{}:{}: {v}", path.display(), line_no + 1));
+            }
+        }
+    }
+
     assert!(violations.is_empty(), "\n{}\n", violations.join("\n"));
+}
+
+#[test]
+fn typescript_line_detection() {
+    // False positive checks: DIDs and non-port numbers should NOT be flagged
+    assert!(check_typescript_line("const did = 'did:key:z6MkabcQ7660xyzHash';").is_empty());
+    assert!(check_typescript_line("const budgetMs = 7663;").is_empty());
+    assert!(check_typescript_line("http_port = 0").is_empty());
+    assert!(
+        check_typescript_line("http_bind_address = \"0.0.0.0:${ports.registryPort}\"").is_empty()
+    );
+
+    // True positive checks: URLs and hardcoded ports SHOULD be flagged
+    assert!(!check_typescript_line("const url = 'ws://host:19999';").is_empty());
+    assert!(!check_typescript_line("const setupUrl = 'http://127.0.0.1:7660/x';").is_empty());
+    assert!(!check_typescript_line("const gatewayPort = 7660;").is_empty());
+    assert!(!check_typescript_line("bind_address = \"0.0.0.0:7661\"").is_empty());
+    assert!(!check_typescript_line("spawn(BIN, ['--port', '7662'])").is_empty());
 }

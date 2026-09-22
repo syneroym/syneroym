@@ -113,8 +113,9 @@ fn probe_bind(port: u16) -> Option<StdTcpListener> {
 /// # Port Allocation Nuance
 /// - **Check-then-use window**: Probe listeners hold the reserved ports until
 ///   [`release_held_ports`] is called immediately prior to substrate daemon /
-///   service bind. This minimizes the gap to milliseconds, though it is not
-///   strictly zero until substrate supports binding port `:0` directly.
+///   service bind. This minimizes the gap to milliseconds for in-process binds
+///   (or seconds on the process-spawn path while child daemons boot), though it
+///   is not strictly zero until substrate supports binding port `:0` directly.
 /// - **Transport coverage**: Probes are TCP-only. QUIC/UDP listeners reuse the
 ///   verified-free port number from the pool.
 pub fn alloc_ports<const N: usize>() -> [u16; N] {

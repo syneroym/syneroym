@@ -8,7 +8,8 @@ import * as path from 'path';
  *
  * Check-then-use gap nuance: The probe socket keeps the port bound while configs
  * are written, and releases it immediately before process spawn. This minimizes
- * the check-then-use window to milliseconds, though it is not strictly zero until
+ * the check-then-use window to seconds on the process-spawn path (while child
+ * daemons boot and reach their bind calls), though it is not strictly zero until
  * the substrate supports native `:0` binding.
  */
 export interface ReservedPort {
