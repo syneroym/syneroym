@@ -23,8 +23,8 @@
 #   4 threads: ~680s  (~4x speedup, 0 failures, 0 mbuf denials)
 #   8 threads: failed at 20s with EADDRINUSE startup port collisions
 #
-# Local runs use 4 threads. CI runners (2-core ubuntu-latest VMs already
-# sharded 6 ways) use a conservative 2 threads to prevent contention.
+# Local runs use 4 threads. CI runners (ubuntu-latest VMs already sharded
+# 6 ways) use a conservative 2 threads to prevent contention.
 
 [test-groups.substrate-e2e]
 max-threads = 4
