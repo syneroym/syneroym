@@ -99,13 +99,6 @@ fn make_asset_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
     encoder.finish().unwrap()
 }
 
-async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManifest) {
-    let params = serde_json::to_value((service_id.to_string(), manifest)).unwrap();
-    let res =
-        client.request("orchestrator", "deploy", params).await.expect("deploy request failed");
-    assert_eq!(res.result, serde_json::json!({"status": "deployed"}), "deploy did not succeed");
-}
-
 struct HttpResponse {
     status: u16,
     headers: HashMap<String, String>,
@@ -277,7 +270,12 @@ async fn test_anonymous_request_to_non_public_route_is_401_with_zero_instantiati
     let routes = serde_json::json!({"http_routes": [
         {"method": "GET", "path": "/whoami", "target": "guest", "operation": "handle-request", "public": false}
     ]});
-    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -311,7 +309,12 @@ async fn test_public_route_reaches_guest_and_whoami_reports_anonymous() {
     let routes = serde_json::json!({"http_routes": [
         {"method": "GET", "path": "/whoami", "target": "guest", "operation": "handle-request", "public": true}
     ]});
-    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -345,7 +348,12 @@ async fn test_through_the_gateway_a_non_public_route_is_reached_and_reports_self
     let routes = serde_json::json!({"http_routes": [
         {"method": "GET", "path": "/whoami", "target": "guest", "operation": "handle-request", "public": false}
     ]});
-    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     // Publish the app's own endpoint record so the gateway's unscoped
     // `s<hash>.localhost` host form (ADR-0022 §7) can resolve it -- direct
@@ -422,7 +430,12 @@ async fn test_reject_returns_the_guests_own_status_and_message() {
     let routes = serde_json::json!({"http_routes": [
         {"method": "POST", "path": "/reject", "target": "guest", "operation": "handle-request", "public": false}
     ]});
-    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -454,7 +467,12 @@ async fn test_over_cap_request_body_is_413_with_zero_instantiations() {
     let routes = serde_json::json!({"http_routes": [
         {"method": "POST", "path": "/echo", "target": "guest", "operation": "handle-request", "public": false}
     ]});
-    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -493,7 +511,12 @@ async fn test_trap_and_spin_return_500_and_a_new_stream_still_succeeds() {
         {"method": "GET", "path": "/spin", "target": "guest", "operation": "handle-request", "public": false},
         {"method": "GET", "path": "/whoami", "target": "guest", "operation": "handle-request", "public": false}
     ]});
-    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -544,7 +567,12 @@ async fn test_huge_and_bad_header_return_500_with_no_partial_body() {
         {"method": "GET", "path": "/huge", "target": "guest", "operation": "handle-request", "public": false},
         {"method": "GET", "path": "/bad-header", "target": "guest", "operation": "handle-request", "public": false}
     ]});
-    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -602,7 +630,12 @@ async fn test_guest_http_concurrency_limit_returns_503_with_retry_after() {
     let routes = serde_json::json!({"http_routes": [
         {"method": "GET", "path": "/slow", "target": "guest", "operation": "handle-request", "public": false}
     ]});
-    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -668,7 +701,12 @@ async fn test_items_path_param_matches_the_captured_url_segment() {
     let routes = serde_json::json!({"http_routes": [
         {"method": "GET", "path": "/items/{id}", "target": "guest", "operation": "handle-request", "public": false}
     ]});
-    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -703,7 +741,12 @@ async fn test_framing_headers_are_stripped_and_content_length_is_the_hosts() {
     let routes = serde_json::json!({"http_routes": [
         {"method": "GET", "path": "/framing", "target": "guest", "operation": "handle-request", "public": false}
     ]});
-    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -749,7 +792,12 @@ async fn test_rejected_ucan_reports_self_asserted_not_ucan() {
     let routes = serde_json::json!({"http_routes": [
         {"method": "GET", "path": "/whoami", "target": "guest", "operation": "handle-request", "public": false}
     ]});
-    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -810,7 +858,12 @@ async fn test_guest_http_requests_within_budget_all_succeed_via_queuing() {
     let routes = serde_json::json!({"http_routes": [
         {"method": "GET", "path": "/slow", "target": "guest", "operation": "handle-request", "public": false}
     ]});
-    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -861,7 +914,12 @@ async fn test_guest_route_and_data_layer_route_coexist() {
         {"method": "GET", "path": "/items/{id}", "target": "data-layer", "operation": "get",
          "collection": "items"}
     ]});
-    deploy(&ctx.substrate_client, &app_service_id, guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -905,7 +963,7 @@ async fn test_guest_route_and_asset_bundle_coexist() {
         {"method": "GET", "path": "/whoami", "target": "guest", "operation": "handle-request", "public": true}
     ]});
     let archive = make_asset_archive(&[("index.html", b"<html>hi</html>")]);
-    deploy(
+    common::deploy_app(
         &ctx.substrate_client,
         &app_service_id,
         guest_wasm_manifest_with_assets(wasm_bytes, routes, archive),

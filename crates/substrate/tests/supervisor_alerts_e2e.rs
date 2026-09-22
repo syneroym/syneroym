@@ -20,14 +20,10 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use common::SubstrateNode;
 use rustls::crypto::ring;
-use semver::Version;
 use serde_json::{Map, json};
 use syneroym_app_orchestration::{
     AlertKind, LocalFilesystemCatalog, compile,
-    models::{
-        AppBlueprintId, AppInstanceId, LogicalServiceName, PlacementSelector, ServiceConfig,
-        ServiceSpec, ServiceType, SubstrateAlias, SynAppManifest,
-    },
+    models::{AppInstanceId, SynAppManifest},
 };
 use syneroym_app_supervisor::inventory::SupervisorInventoryEntry;
 use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
@@ -78,46 +74,6 @@ fn node_wide_supervisor_grant(
         vec![],
     )
     .expect("issue node-wide supervisor grant")
-}
-
-/// A single-service manifest, `backend` placed on `MANAGED_ALIAS`.
-fn one_service_manifest() -> SynAppManifest {
-    let mut services = BTreeMap::new();
-    services.insert(
-        LogicalServiceName::new("backend"),
-        ServiceSpec {
-            config: ServiceConfig {
-                service_type: ServiceType::Tcp,
-                source: "127.0.0.1:41601".to_string(),
-                hash: None,
-                interfaces: vec![],
-                env: BTreeMap::new(),
-                args: vec![],
-                custom_config: None,
-                quota: None,
-                schema: None,
-                rotation_policy: Default::default(),
-                fdae: None,
-                health_check: None,
-                assets: None,
-                visibility: Default::default(),
-            },
-            depends_on: vec![],
-            placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),
-            replicas: 1,
-            sharding_strategy: None,
-            schedule: None,
-            topology_visibility: Default::default(),
-        },
-    );
-    SynAppManifest {
-        id: AppBlueprintId::new("syneroym:a5c-alerts-test-app"),
-        version: Version::new(0, 1, 0),
-        description: None,
-        placement: None,
-        services,
-        dependencies: BTreeMap::new(),
-    }
 }
 
 async fn compiled_plan_json(manifest: &SynAppManifest, instance_id: &str) -> String {
@@ -184,7 +140,7 @@ async fn an_operator_subscribed_to_the_alert_topic_receives_an_opened_alert() {
     .unwrap();
 
     let instance_id = "a5c-alerts-inst";
-    let manifest = one_service_manifest();
+    let manifest = common::one_service_manifest("syneroym:a5c-alerts-test-app", "127.0.0.1:41601");
     let plan_json = compiled_plan_json(&manifest, instance_id).await;
     let submit_params = submission(instance_id, plan_json, inventory_json, 0);
 

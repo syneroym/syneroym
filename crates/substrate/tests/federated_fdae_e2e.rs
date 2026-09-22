@@ -97,13 +97,6 @@ fn deploy_manifest(policy_json: Option<String>) -> DeployManifest {
     }
 }
 
-async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManifest) {
-    let params = serde_json::to_value((service_id.to_string(), manifest)).unwrap();
-    let res =
-        client.request("orchestrator", "deploy", params).await.expect("deploy request failed");
-    assert_eq!(res.result, json!({"status": "deployed"}), "deploy did not succeed: {res:?}");
-}
-
 /// An app-scoped `orchestrator/{deploy,undeploy,status}` grant, issued by
 /// `node_owner`, letting `grantee_did` deploy (and later undeploy) exactly
 /// one app on `node_did` -- the same shape `deploy_grant.rs` already
@@ -270,7 +263,8 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
             }
         }
     }"#;
-    deploy(&hr_deployer, &hr_service_id, deploy_manifest(Some(hr_policy.to_string()))).await;
+    common::deploy_app(&hr_deployer, &hr_service_id, deploy_manifest(Some(hr_policy.to_string())))
+        .await;
     register_service(
         &hr_service_id,
         node_a.did(),
@@ -357,7 +351,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
             }}
         }}"#
     );
-    deploy(&alice_deployer, &app_service_id, deploy_manifest(Some(app_policy))).await;
+    common::deploy_app(&alice_deployer, &app_service_id, deploy_manifest(Some(app_policy))).await;
     register_service(
         &app_service_id,
         node_b.did(),
@@ -583,7 +577,12 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
         &bad_app_service_id,
     ));
     bad_app_deployer.connect().await.expect("failed to connect to node B for the mismatch deploy");
-    deploy(&bad_app_deployer, &bad_app_service_id, deploy_manifest(Some(bad_app_policy))).await;
+    common::deploy_app(
+        &bad_app_deployer,
+        &bad_app_service_id,
+        deploy_manifest(Some(bad_app_policy)),
+    )
+    .await;
     register_service(
         &bad_app_service_id,
         node_b.did(),

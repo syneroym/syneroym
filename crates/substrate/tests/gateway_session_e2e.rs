@@ -55,9 +55,7 @@ use syneroym_core::{
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SESSION_AUTH, substrate,
 };
-use syneroym_sdk::{
-    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, SyneroymClient, WasmManifest,
-};
+use syneroym_sdk::{ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest};
 use syneroym_ucan::{ChainVerifyOpts, SessionToken};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -95,13 +93,6 @@ fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: Value) -> DeployManifes
         registry_certificate: None,
         instance_certificate: None,
     }
-}
-
-async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManifest) {
-    let params = serde_json::to_value((service_id.to_string(), manifest)).unwrap();
-    let res =
-        client.request("orchestrator", "deploy", params).await.expect("deploy request failed");
-    assert_eq!(res.result, json!({"status": "deployed"}), "deploy did not succeed");
 }
 
 async fn setup_gateway_test_node(
@@ -144,7 +135,7 @@ async fn setup_gateway_test_node(
         ]
     });
     let manifest = guest_wasm_manifest(wasm_bytes, http_routes);
-    deploy(&ctx.substrate_client, &service_did, manifest).await;
+    common::deploy_app(&ctx.substrate_client, &service_did, manifest).await;
 
     // Register service endpoint in the registry so gateway can resolve alias/DID
     let info = EndpointInfo {
@@ -233,7 +224,7 @@ async fn setup_gateway_test_node_with_mode(
         ]
     });
     let manifest = guest_wasm_manifest(wasm_bytes, http_routes);
-    deploy(&ctx.substrate_client, &service_did, manifest).await;
+    common::deploy_app(&ctx.substrate_client, &service_did, manifest).await;
 
     let info = EndpointInfo {
         service_id: service_did.clone(),

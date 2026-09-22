@@ -501,7 +501,14 @@ fn check_file_lengths() -> Result<()> {
     Ok(())
 }
 
-const MAX_EXACT_DUPLICATE_PERCENT: &str = "9.5";
+/// Ceiling on exact duplicate code percentage across the workspace.
+///
+/// This is a ratchet guard, not a target: `cargo-dupes` normalises SQL
+/// strings (such as distinct `init_schema` definitions) and detects similar
+/// repetitive structure patterns across crates as duplicates. The threshold is
+/// set just above the measured baseline after deduplicating shared test
+/// helpers.
+const MAX_EXACT_DUPLICATE_PERCENT: &str = "9.1";
 
 fn check_duplication() -> Result<()> {
     println!("Checking exact-duplicate code percentage (max {MAX_EXACT_DUPLICATE_PERCENT}%)...");

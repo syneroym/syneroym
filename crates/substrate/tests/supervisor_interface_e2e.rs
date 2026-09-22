@@ -38,46 +38,6 @@ const MANAGED_ALIAS: &str = "managed";
 /// the production default.
 const POLL_INTERVAL_SECS: u64 = 30;
 
-/// A single-service manifest, `backend` placed on `MANAGED_ALIAS`.
-fn one_service_manifest() -> SynAppManifest {
-    let mut services = BTreeMap::new();
-    services.insert(
-        LogicalServiceName::new("backend"),
-        ServiceSpec {
-            config: ServiceConfig {
-                service_type: ServiceType::Tcp,
-                source: "127.0.0.1:41401".to_string(),
-                hash: None,
-                interfaces: vec![],
-                env: BTreeMap::new(),
-                args: vec![],
-                custom_config: None,
-                quota: None,
-                schema: None,
-                rotation_policy: Default::default(),
-                fdae: None,
-                health_check: None,
-                assets: None,
-                visibility: Default::default(),
-            },
-            depends_on: vec![],
-            placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),
-            replicas: 1,
-            sharding_strategy: None,
-            schedule: None,
-            topology_visibility: Default::default(),
-        },
-    );
-    SynAppManifest {
-        id: AppBlueprintId::new("syneroym:a5b-test-app"),
-        version: Version::new(0, 1, 0),
-        description: None,
-        placement: None,
-        services,
-        dependencies: BTreeMap::new(),
-    }
-}
-
 /// `frontend` (depends on `backend`), both placed on `MANAGED_ALIAS` -- "a
 /// bound app": one substrate, a real dependency between two members the
 /// supervisor deploys together.
@@ -184,7 +144,7 @@ async fn an_operator_submits_and_reads_back_status_over_the_supervisor_interface
     )
     .await;
 
-    let manifest = one_service_manifest();
+    let manifest = common::one_service_manifest("syneroym:a5b-test-app", "127.0.0.1:41401");
     let plan_json = compiled_plan_json(&manifest, "a5b-submit-inst").await;
 
     let res = submit_after_boot(
@@ -227,7 +187,7 @@ async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
     )
     .await;
 
-    let manifest = one_service_manifest();
+    let manifest = common::one_service_manifest("syneroym:a5b-test-app", "127.0.0.1:41401");
     let plan_json = compiled_plan_json(&manifest, "a5b-second-inst").await;
 
     // First supervisor submits and adopts, claiming generation 1.
@@ -348,7 +308,7 @@ async fn adopt_reads_the_held_generation_from_the_managed_node_and_claims_the_ne
     )
     .await;
 
-    let manifest = one_service_manifest();
+    let manifest = common::one_service_manifest("syneroym:a5b-test-app", "127.0.0.1:41401");
     let plan_json = compiled_plan_json(&manifest, "a5b-adopt-inst").await;
     submit_after_boot(
         &mut supervisor_node,
@@ -472,7 +432,7 @@ async fn a_supervisor_that_reads_a_higher_generation_marks_the_instance_supersed
     )
     .await;
 
-    let manifest = one_service_manifest();
+    let manifest = common::one_service_manifest("syneroym:a5b-test-app", "127.0.0.1:41401");
     let plan_json = compiled_plan_json(&manifest, "a5b-superseded-inst").await;
     submit_after_boot(
         &mut supervisor_node,

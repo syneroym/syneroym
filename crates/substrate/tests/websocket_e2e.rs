@@ -50,13 +50,6 @@ fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: serde_json::Value) -> D
     }
 }
 
-async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManifest) {
-    let params = serde_json::to_value((service_id.to_string(), manifest)).unwrap();
-    let res =
-        client.request("orchestrator", "deploy", params).await.expect("deploy request failed");
-    assert_eq!(res.result, serde_json::json!({"status": "deployed"}));
-}
-
 #[tokio::test]
 async fn test_websocket_concurrency_limit_returns_503_with_retry_after() {
     let _ = ring::default_provider().install_default();
@@ -76,7 +69,12 @@ async fn test_websocket_concurrency_limit_returns_503_with_retry_after() {
         ]
     });
 
-    deploy(&ctx.substrate_client, "test-ws-limit", guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        "test-ws-limit",
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     // First connection acquires the sole permit
     let (mut send1, mut recv1) = open_http_stream(
@@ -217,7 +215,12 @@ async fn test_websocket_echo_unicast() {
         ]
     });
 
-    deploy(&ctx.substrate_client, "test-ws-service", guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        "test-ws-service",
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let (mut send, mut recv) = open_http_stream(
         ctx.substrate_client.connection().as_ref().unwrap(),
@@ -298,7 +301,12 @@ async fn test_websocket_broadcast_pubsub() {
         ]
     });
 
-    deploy(&ctx.substrate_client, "test-ws-pubsub", guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        "test-ws-pubsub",
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let (mut send, mut recv) = open_http_stream(
         ctx.substrate_client.connection().as_ref().unwrap(),
@@ -374,7 +382,12 @@ async fn test_websocket_upgrade_rejects_unauthenticated_anonymous_on_private_rou
         ]
     });
 
-    deploy(&ctx.substrate_client, "test-ws-auth", guest_wasm_manifest(wasm_bytes, routes)).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        "test-ws-auth",
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     // Anonymous caller (no delegation/identity)
     let (mut send, mut recv) =
@@ -411,8 +424,12 @@ async fn test_websocket_teardown_on_undeploy() {
         ]
     });
 
-    deploy(&ctx.substrate_client, "test-ws-undeploy", guest_wasm_manifest(wasm_bytes, routes))
-        .await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        "test-ws-undeploy",
+        guest_wasm_manifest(wasm_bytes, routes),
+    )
+    .await;
 
     let (mut send, mut recv) = open_http_stream(
         ctx.substrate_client.connection().as_ref().unwrap(),
