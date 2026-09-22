@@ -97,7 +97,7 @@ depends = ["build:test-components", "build:roym", "check:roym-deps", "check:file
 # nextest runs every test binary in one parallel pool (see .config/nextest.toml);
 # it does not run doctests, so those follow in a second `cargo test --doc` pass.
 run = [
-  "cargo nextest run --workspace --config test-groups.substrate-e2e.max-threads=${SYNEROYM_E2E_THREADS:-4}",
+  "cargo nextest run --workspace",
   "cargo test --workspace --doc",
 ]
 
