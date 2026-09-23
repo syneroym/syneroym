@@ -451,11 +451,21 @@ fn count_production_lines(content: &str) -> usize {
     prod_lines
 }
 
+/// Maximum allowed production source lines (excluding `#[cfg(test)]` blocks).
+const MAX_PRODUCTION_LINES: usize = 800;
+
+/// Maximum allowed test file lines.
+///
+/// This is a ratchet: it moves down only. The intent is to bring it toward the
+/// 800-line production limit over time as large test files are decomposed.
+const MAX_TEST_LINES: usize = 1800;
+
 fn check_file_lengths() -> Result<()> {
-    println!("Checking production source file lengths...");
+    println!("Checking source file lengths...");
     let workspace_root = get_workspace_root();
     let mut violations = Vec::new();
-    let mut checked = 0;
+    let mut prod_checked = 0;
+    let mut test_checked = 0;
 
     for base_dir_name in ["crates", "apps"] {
         let base_dir = workspace_root.join(base_dir_name);
@@ -467,9 +477,12 @@ fn check_file_lengths() -> Result<()> {
             if !path.is_file()
                 || path.extension().and_then(|ext| ext.to_str()) != Some("rs")
                 || path.file_name().and_then(|n| n.to_str()) == Some("bindings.rs")
-                || !path.iter().any(|c| c == "src")
-                || is_test_path(path)
             {
+                continue;
+            }
+
+            let is_test = is_test_path(path);
+            if !is_test && !path.iter().any(|c| c == "src") {
                 continue;
             }
 
@@ -480,12 +493,24 @@ fn check_file_lengths() -> Result<()> {
                 Err(_) => continue,
             };
 
-            checked += 1;
-            let prod_lines = count_production_lines(&content);
-            if prod_lines > 800 {
-                violations.push(format!(
-                    "{rel_path}: {prod_lines} production lines (maximum allowed is 800)"
-                ));
+            if is_test {
+                test_checked += 1;
+                let test_lines = content.lines().count();
+                if test_lines > MAX_TEST_LINES {
+                    violations.push(format!(
+                        "{rel_path}: {test_lines} lines (maximum allowed for test files is \
+                         {MAX_TEST_LINES})"
+                    ));
+                }
+            } else {
+                prod_checked += 1;
+                let prod_lines = count_production_lines(&content);
+                if prod_lines > MAX_PRODUCTION_LINES {
+                    violations.push(format!(
+                        "{rel_path}: {prod_lines} production lines (maximum allowed is \
+                         {MAX_PRODUCTION_LINES})"
+                    ));
+                }
             }
         }
     }
@@ -497,7 +522,10 @@ fn check_file_lengths() -> Result<()> {
         bail!("File length check failed with {} violation(s)", violations.len());
     }
 
-    println!("All {checked} production source files adhere to the 800-line limit.");
+    println!(
+        "All {prod_checked} production files (<= {MAX_PRODUCTION_LINES} lines) and {test_checked} \
+         test files (<= {MAX_TEST_LINES} lines) adhere to length limits."
+    );
     Ok(())
 }
 
