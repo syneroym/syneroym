@@ -19,7 +19,7 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 | 9 | Split router tests/native_dispatch_identity.rs (2,877 lines) | done | d65b2168 | split into 5 modules + helpers under tests/native_dispatch_identity/, all <650 lines, count 2553 |
 | 10 | Split app_host_native tests/dual_build_parity.rs (2,441 lines) | done | e02d8f1e | split into 6 modules + helpers under tests/dual_build_parity/, all <900 lines, count 2553 |
 | 11 | Enforcement: file-length limit for test files | done | f95a5ecb | MAX_TEST_LINES=1800 ratchet added to xtask check-file-lengths, tested failure & pass |
-| 12 | Enforcement: cap number of suppressions | not started | | |
+| 12 | Enforcement: cap number of suppressions | done | da1f2c84 | MAX_TOO_MANY_LINES_SUPPRESSIONS=82 ratchet added, tested failure & pass |
 | 13 | Wire in and document | not started | | |
 | 14 | Final verification and pull request | not started | | |
 
@@ -57,6 +57,23 @@ Error: File length check failed with 1 violation(s)
 ```
 Checking source file lengths...
 All 408 production files (<= 800 lines) and 177 test files (<= 1800 lines) adhere to length limits.
+```
+
+### Unit 12 (cap number of suppressions)
+- Failure with extra suppression added (`crates/core/src/lib.rs`):
+```
+Checking clippy::too_many_lines suppressions (max 82)...
+Found 83 clippy::too_many_lines suppression(s) across tracked files.
+ERROR: too_many_lines suppressions (83) exceed maximum allowed (82):
+  crates/core/src/lib.rs:1
+  ...
+Error: Lint suppressions check failed: 83 exceeds maximum of 82
+```
+- Pass after removing extra suppression:
+```
+Checking clippy::too_many_lines suppressions (max 82)...
+Found 82 clippy::too_many_lines suppression(s) across tracked files.
+All clippy::too_many_lines suppressions are within the limit (82 <= 82).
 ```
 
 ## Problems and open questions
