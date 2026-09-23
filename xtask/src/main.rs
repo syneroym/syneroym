@@ -14,6 +14,7 @@ use walkdir::WalkDir;
 
 mod file_lengths;
 mod lint_suppressions;
+mod workspace_lints;
 
 fn get_git_commit() -> String {
     Command::new("git")

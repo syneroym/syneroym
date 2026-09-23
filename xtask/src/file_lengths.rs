@@ -52,34 +52,220 @@ pub(crate) fn is_test_file(path: &Path) -> bool {
     is_test_path(path)
 }
 
+fn skip_comment_in_sanitizer(bytes: &[u8], mut i: usize, out: &mut String) -> Option<usize> {
+    let len = bytes.len();
+    if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+        out.push(' ');
+        out.push(' ');
+        i += 2;
+        while i < len && bytes[i] != b'\n' {
+            out.push(' ');
+            i += 1;
+        }
+        return Some(i);
+    }
+    if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+        out.push(' ');
+        out.push(' ');
+        i += 2;
+        let mut depth = 1;
+        while i < len && depth > 0 {
+            if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                depth += 1;
+                out.push(' ');
+                out.push(' ');
+                i += 2;
+            } else if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                depth -= 1;
+                out.push(' ');
+                out.push(' ');
+                i += 2;
+            } else {
+                if bytes[i] == b'\n' {
+                    out.push('\n');
+                } else {
+                    out.push(' ');
+                }
+                i += 1;
+            }
+        }
+        return Some(i);
+    }
+    None
+}
+
+fn skip_string_in_sanitizer(bytes: &[u8], i: usize, out: &mut String) -> Option<usize> {
+    let len = bytes.len();
+    // Raw string: r#"..."#, br#"..."#, cr#"..."#
+    let (is_raw, start_r) =
+        if bytes[i] == b'r' && i + 1 < len && (bytes[i + 1] == b'"' || bytes[i + 1] == b'#') {
+            (true, i)
+        } else if (bytes[i] == b'b' || bytes[i] == b'c')
+            && i + 2 < len
+            && bytes[i + 1] == b'r'
+            && (bytes[i + 2] == b'"' || bytes[i + 2] == b'#')
+        {
+            (true, i + 1)
+        } else {
+            (false, 0)
+        };
+
+    if is_raw {
+        let mut hashes = 0;
+        let mut j = start_r + 1;
+        while j < len && bytes[j] == b'#' {
+            hashes += 1;
+            j += 1;
+        }
+        if j < len && bytes[j] == b'"' {
+            let quote_pos = j;
+            let mut k = quote_pos + 1;
+            while k < len {
+                if bytes[k] == b'"' {
+                    let mut match_hashes = true;
+                    for h in 0..hashes {
+                        if k + 1 + h >= len || bytes[k + 1 + h] != b'#' {
+                            match_hashes = false;
+                            break;
+                        }
+                    }
+                    if match_hashes {
+                        for &b in &bytes[i..=k + hashes] {
+                            if b == b'\n' {
+                                out.push('\n');
+                            } else {
+                                out.push(' ');
+                            }
+                        }
+                        return Some(k + hashes + 1);
+                    }
+                }
+                k += 1;
+            }
+        }
+    }
+
+    // Normal string or byte string: "..." or b"..."
+    let is_str = bytes[i] == b'"' || (bytes[i] == b'b' && i + 1 < len && bytes[i + 1] == b'"');
+    if is_str {
+        let str_start = if bytes[i] == b'"' { i } else { i + 1 };
+        let mut j = str_start + 1;
+        let mut escaped = false;
+        while j < len {
+            if escaped {
+                escaped = false;
+            } else if bytes[j] == b'\\' {
+                escaped = true;
+            } else if bytes[j] == b'"' {
+                for &b in &bytes[i..=j] {
+                    if b == b'\n' {
+                        out.push('\n');
+                    } else {
+                        out.push(' ');
+                    }
+                }
+                return Some(j + 1);
+            }
+            j += 1;
+        }
+    }
+
+    // Char literal: 'x' or '\n'
+    if bytes[i] == b'\'' {
+        if i + 2 < len && bytes[i + 1] != b'\\' && bytes[i + 2] == b'\'' {
+            out.push(' ');
+            out.push(' ');
+            out.push(' ');
+            return Some(i + 3);
+        }
+        if i + 3 < len && bytes[i + 1] == b'\\' && bytes[i + 3] == b'\'' {
+            out.push(' ');
+            out.push(' ');
+            out.push(' ');
+            out.push(' ');
+            return Some(i + 4);
+        }
+    }
+
+    None
+}
+
+pub(crate) fn sanitize_code(content: &str) -> String {
+    let bytes = content.as_bytes();
+    let len = bytes.len();
+    let mut out = String::with_capacity(len);
+    let mut i = 0;
+
+    while i < len {
+        if let Some(next_i) = skip_comment_in_sanitizer(bytes, i, &mut out) {
+            i = next_i;
+            continue;
+        }
+        if let Some(next_i) = skip_string_in_sanitizer(bytes, i, &mut out) {
+            i = next_i;
+            continue;
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+
+    out
+}
+
 pub(crate) fn count_production_lines(content: &str) -> usize {
+    let sanitized = sanitize_code(content);
     let mut prod_lines = 0;
     let mut in_cfg_test = false;
     let mut brace_depth: usize = 0;
+    let mut opened_brace = false;
 
-    for line in content.lines() {
+    for line in sanitized.lines() {
         let trimmed = line.trim();
-        if trimmed.contains("#[cfg(test)]") {
-            in_cfg_test = true;
-            brace_depth = 0;
-            continue;
-        }
 
-        if in_cfg_test {
-            for c in trimmed.chars() {
-                if c == '{' {
-                    brace_depth += 1;
-                } else if c == '}' {
-                    brace_depth = brace_depth.saturating_sub(1);
-                    if brace_depth == 0 {
+        if !in_cfg_test {
+            if trimmed.contains("#[cfg(test)]") {
+                in_cfg_test = true;
+                opened_brace = false;
+                brace_depth = 0;
+
+                let after_attr = if let Some(idx) = line.find("#[cfg(test)]") {
+                    &line[idx + "#[cfg(test)]".len()..]
+                } else {
+                    line
+                };
+
+                for c in after_attr.chars() {
+                    if c == '{' {
+                        opened_brace = true;
+                        brace_depth += 1;
+                    } else if c == '}' {
+                        brace_depth = brace_depth.saturating_sub(1);
+                        if brace_depth == 0 && opened_brace {
+                            in_cfg_test = false;
+                        }
+                    } else if c == ';' && !opened_brace {
                         in_cfg_test = false;
                     }
                 }
+                continue;
             }
-            continue;
-        }
 
-        prod_lines += 1;
+            prod_lines += 1;
+        } else {
+            for c in trimmed.chars() {
+                if c == '{' {
+                    opened_brace = true;
+                    brace_depth += 1;
+                } else if c == '}' {
+                    brace_depth = brace_depth.saturating_sub(1);
+                    if brace_depth == 0 && opened_brace {
+                        in_cfg_test = false;
+                    }
+                } else if c == ';' && !opened_brace {
+                    in_cfg_test = false;
+                }
+            }
+        }
     }
 
     prod_lines
@@ -109,8 +295,6 @@ fn load_oversized_test_files(workspace_root: &Path) -> Result<BTreeMap<String, u
                 )
             })?;
             files.insert(path.to_string(), max_lines);
-        } else if parts.len() == 1 {
-            files.insert(parts[0].to_string(), MAX_TEST_LINES);
         } else {
             bail!(
                 "invalid format at {}:{}: expected '<path> <max_lines>'",
@@ -274,4 +458,103 @@ pub fn check_file_lengths() -> Result<()> {
          xtask/oversized-test-files.txt) adhere to length limits."
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_count_production_lines_basic() {
+        let code = "pub fn foo() {\n    println!(\"hello\");\n}\n";
+        assert_eq!(count_production_lines(code), 3);
+    }
+
+    #[test]
+    fn test_count_production_lines_one_line_mod_tests() {
+        let code = r#"
+pub fn foo() {}
+
+#[cfg(test)]
+mod tests;
+
+pub fn bar() {
+    let x = 1;
+}
+"#;
+        assert_eq!(count_production_lines(code.trim()), 6);
+    }
+
+    #[test]
+    fn test_count_production_lines_block_tests() {
+        let code = r#"
+pub fn foo() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t1() {
+        assert!(true);
+    }
+}
+
+pub fn bar() {}
+"#;
+        assert_eq!(count_production_lines(code.trim()), 4);
+    }
+
+    #[test]
+    fn test_count_production_lines_ignores_cfg_test_in_comments_and_strings() {
+        let code = r##"
+/// Doc comment mentioning #[cfg(test)] blocks
+pub fn foo() {
+    let s = "#[cfg(test)] mod tests;";
+    let r = r#"#[cfg(test)]"#;
+}
+"##;
+        assert_eq!(count_production_lines(code.trim()), 5);
+    }
+
+    #[test]
+    fn test_count_production_lines_cfg_test_use() {
+        let code = r#"
+pub fn foo() {}
+
+#[cfg(test)]
+use some_crate::tests::*;
+
+pub fn bar() {}
+"#;
+        assert_eq!(count_production_lines(code.trim()), 4);
+    }
+
+    #[test]
+    fn test_count_production_lines_single_line_attr_and_mod() {
+        let code = r#"
+pub fn foo() {}
+#[cfg(test)] mod tests;
+pub fn bar() {}
+"#;
+        assert_eq!(count_production_lines(code.trim()), 2);
+    }
+
+    #[test]
+    fn test_load_oversized_test_files_requires_number() -> Result<()> {
+        let temp_dir = std::env::temp_dir().join(format!("xtask_test_{}", std::process::id()));
+        let xtask_dir = temp_dir.join("xtask");
+        fs::create_dir_all(&xtask_dir)?;
+        let list_file = xtask_dir.join("oversized-test-files.txt");
+
+        // Valid
+        fs::write(&list_file, "crates/foo/tests/bar.rs 900\n")?;
+        let map = load_oversized_test_files(&temp_dir)?;
+        assert_eq!(map.get("crates/foo/tests/bar.rs"), Some(&900));
+
+        // Missing number should fail
+        fs::write(&list_file, "crates/foo/tests/bar.rs\n")?;
+        assert!(load_oversized_test_files(&temp_dir).is_err());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
 }

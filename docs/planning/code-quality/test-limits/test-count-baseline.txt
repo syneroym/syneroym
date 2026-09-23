@@ -1,3 +1,3 @@
 2,553 = 2,552 listed + 1 ignored test (coordinator_iroh iroh_setup test_echo).
 
-Note: `cargo nextest list --workspace` lists all runnable tests across the workspace, which totals 2,552. One test in the workspace is marked `#[ignore]` (`crates/coordinator_iroh/tests/iroh_setup.rs: test_echo`, marked "not a required test, just a handy iroh sample for small experiments"), bringing the full test count to 2,553.
+Note: `cargo nextest list --workspace` lists all runnable tests across the workspace, which totals 2,552 on `main`. One test in the workspace is marked `#[ignore]` (`crates/coordinator_iroh/tests/iroh_setup.rs: test_echo`, marked "not a required test, just a handy iroh sample for small experiments"), bringing the baseline test count to 2,553. On `HEAD`, the runnable test count is 2,569 (+1 ignored = 2,570) reflecting 17 unit tests added in `xtask`.

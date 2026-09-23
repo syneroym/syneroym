@@ -1,7 +1,6 @@
-use std::{collections::HashSet, fs, path::Path, process::Command};
+use std::{fs, process::Command};
 
 use anyhow::{Result, bail};
-use toml::Value;
 
 /// Ceiling on clippy::too_many_lines suppressions across the workspace.
 ///
@@ -466,6 +465,51 @@ pub(crate) fn find_lint_actions(attr_body: &str, target_lint: &str) -> Vec<LintA
     actions
 }
 
+fn has_expect_reason(attr_body: &str) -> bool {
+    let bytes = attr_body.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'"' {
+            let mut dummy = 0;
+            i = skip_string_literal(bytes, i, &mut dummy);
+            continue;
+        }
+        if let Some(next_i) = skip_raw_string_if_starts(bytes, i, &mut 0) {
+            i = next_i;
+            continue;
+        }
+        if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+            let start = i;
+            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            if &attr_body[start..i] == "reason" {
+                let mut peek = i;
+                while peek < len && bytes[peek].is_ascii_whitespace() {
+                    peek += 1;
+                }
+                if peek < len && bytes[peek] == b'=' {
+                    peek += 1;
+                    while peek < len && bytes[peek].is_ascii_whitespace() {
+                        peek += 1;
+                    }
+                    if peek < len && (bytes[peek] == b'"' || bytes[peek] == b'r') {
+                        return true;
+                    }
+                }
+            }
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
 fn check_attribute(
     attr: &ParsedAttribute,
     content: &str,
@@ -477,6 +521,13 @@ fn check_attribute(
         if action == LintAction::Allow || action == LintAction::Expect {
             violations
                 .push(format!("{rel_path}:{}: attribute names clippy::pedantic", attr.line_no));
+        }
+    }
+
+    let warnings_actions = find_lint_actions(&attr.body, "warnings");
+    for action in warnings_actions {
+        if action == LintAction::Allow || action == LintAction::Expect {
+            violations.push(format!("{rel_path}:{}: attribute names warnings", attr.line_no));
         }
     }
 
@@ -506,6 +557,12 @@ fn check_attribute(
                          a function (AGENTS.md requires per-function exemption)",
                         attr.line_no
                     ));
+                } else if !has_expect_reason(&attr.body) {
+                    violations.push(format!(
+                        "{rel_path}:{}: #[expect(clippy::too_many_lines)] is missing `reason = \
+                         \"...\"` (AGENTS.md requires an explicit reason)",
+                        attr.line_no
+                    ));
                 } else {
                     too_many_lines_count += 1;
                 }
@@ -517,172 +574,6 @@ fn check_attribute(
     too_many_lines_count
 }
 
-fn check_clippy_toml(workspace_root: &Path, violations: &mut Vec<String>) -> Result<()> {
-    let output = Command::new("git")
-        .args(["ls-files", "--cached", "--others", "--exclude-standard", "*clippy.toml"])
-        .current_dir(workspace_root)
-        .output()?;
-    let out = String::from_utf8_lossy(&output.stdout);
-    for line in out.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if trimmed != "clippy.toml" {
-            violations.push(format!(
-                "forbidden crate-local clippy.toml found: {trimmed} (only root clippy.toml is \
-                 allowed)"
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn check_global_switches(workspace_root: &Path, violations: &mut Vec<String>) -> Result<()> {
-    // 1. Root clippy.toml: threshold must exist and be <= 100
-    let clippy_toml_path = workspace_root.join("clippy.toml");
-    if !clippy_toml_path.exists() {
-        violations.push("root clippy.toml is missing".to_string());
-    } else {
-        let content = fs::read_to_string(&clippy_toml_path)?;
-        let val: Value = toml::from_str(&content)?;
-        match val.get("too-many-lines-threshold").and_then(|v| v.as_integer()) {
-            Some(threshold) if threshold <= 100 => {}
-            Some(threshold) => {
-                violations.push(format!(
-                    "root clippy.toml too-many-lines-threshold is {threshold} (maximum allowed is \
-                     100)"
-                ));
-            }
-            None => {
-                violations.push(
-                    "root clippy.toml must define too-many-lines-threshold <= 100".to_string(),
-                );
-            }
-        }
-    }
-
-    // 2. Root Cargo.toml: workspace.lints.clippy.too_many_lines must not be "allow"
-    let cargo_toml_path = workspace_root.join("Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml_path)?;
-    let val: Value = toml::from_str(&content)?;
-    let clippy_lints =
-        val.get("workspace").and_then(|w| w.get("lints")).and_then(|l| l.get("clippy"));
-
-    if let Some(clippy) = clippy_lints {
-        let too_many_lines = clippy.get("too_many_lines");
-        match too_many_lines {
-            Some(Value::String(level)) => {
-                if level == "allow" {
-                    violations.push(
-                        "workspace.lints.clippy.too_many_lines must not be 'allow' in root \
-                         Cargo.toml"
-                            .to_string(),
-                    );
-                }
-            }
-            Some(Value::Table(tbl)) => {
-                if tbl.get("level").and_then(|v| v.as_str()) == Some("allow") {
-                    violations.push(
-                        "workspace.lints.clippy.too_many_lines must not be 'allow' in root \
-                         Cargo.toml"
-                            .to_string(),
-                    );
-                }
-            }
-            Some(_) => {}
-            None => {
-                violations.push(
-                    "workspace.lints.clippy.too_many_lines is missing in root Cargo.toml"
-                        .to_string(),
-                );
-            }
-        }
-    } else {
-        violations.push("workspace.lints.clippy is missing in root Cargo.toml".to_string());
-    }
-
-    Ok(())
-}
-
-fn check_workspace_lints(workspace_root: &Path, violations: &mut Vec<String>) -> Result<()> {
-    let root_manifest_path = workspace_root.join("Cargo.toml");
-    let content = fs::read_to_string(&root_manifest_path)?;
-    let val: Value = toml::from_str(&content)?;
-
-    let members = val
-        .get("workspace")
-        .and_then(|w| w.get("members"))
-        .and_then(|m| m.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let exclude: HashSet<String> = val
-        .get("workspace")
-        .and_then(|w| w.get("exclude"))
-        .and_then(|e| e.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.trim_end_matches('/').to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    for member_val in members {
-        let member_str = match member_val.as_str() {
-            Some(s) => s,
-            None => continue,
-        };
-
-        if member_str.contains('*') {
-            let prefix = member_str.trim_end_matches('*').trim_end_matches('/');
-            let dir = workspace_root.join(prefix);
-            if dir.is_dir() {
-                for entry in fs::read_dir(dir)? {
-                    let entry = entry?;
-                    let path = entry.path();
-                    if path.is_dir() && path.join("Cargo.toml").exists() {
-                        let rel = path
-                            .strip_prefix(workspace_root)
-                            .unwrap_or(&path)
-                            .to_string_lossy()
-                            .to_string();
-                        if !exclude.contains(&rel) {
-                            check_member_lints(&path, &rel, violations)?;
-                        }
-                    }
-                }
-            }
-        } else {
-            let path = workspace_root.join(member_str);
-            if path.join("Cargo.toml").exists() && !exclude.contains(member_str) {
-                check_member_lints(&path, member_str, violations)?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn check_member_lints(
-    member_dir: &Path,
-    member_name: &str,
-    violations: &mut Vec<String>,
-) -> Result<()> {
-    let manifest_path = member_dir.join("Cargo.toml");
-    let content = fs::read_to_string(&manifest_path)?;
-    let val: Value = toml::from_str(&content)?;
-
-    let has_workspace_lints =
-        val.get("lints").and_then(|l| l.get("workspace")).and_then(|w| w.as_bool()) == Some(true);
-
-    if !has_workspace_lints {
-        violations.push(format!("{member_name}/Cargo.toml is missing `[lints] workspace = true`"));
-    }
-
-    Ok(())
-}
-
 pub fn check_lint_suppressions() -> Result<()> {
     println!(
         "Checking clippy::too_many_lines suppressions (max {MAX_TOO_MANY_LINES_SUPPRESSIONS})..."
@@ -690,9 +581,7 @@ pub fn check_lint_suppressions() -> Result<()> {
     let workspace_root = crate::get_workspace_root();
     let mut violations = Vec::new();
 
-    check_global_switches(&workspace_root, &mut violations)?;
-    check_clippy_toml(&workspace_root, &mut violations)?;
-    check_workspace_lints(&workspace_root, &mut violations)?;
+    crate::workspace_lints::check_workspace_lint_config(&workspace_root, &mut violations)?;
 
     let output = Command::new("git")
         .args(["ls-files", "--cached", "--others", "--exclude-standard", "*.rs"])
@@ -892,5 +781,44 @@ pub(crate) async unsafe extern "C" fn qualified() {}
         let actions_deny =
             find_lint_actions(r#"cfg_attr(test, deny(clippy::too_many_lines))"#, "too_many_lines");
         assert_eq!(actions_deny, vec![LintAction::DenyOrWarn]);
+    }
+
+    #[test]
+    fn test_warnings_suppression_is_rejected() {
+        let code = r#"
+#[allow(warnings)]
+fn bad() {}
+"#;
+        let attrs = extract_attributes(code);
+        assert_eq!(attrs.len(), 1);
+        let mut violations = Vec::new();
+        check_attribute(&attrs[0], code, "test.rs", &mut violations);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("attribute names warnings"));
+
+        let code_inner = r#"
+#![allow(warnings)]
+fn bad2() {}
+"#;
+        let attrs_inner = extract_attributes(code_inner);
+        assert_eq!(attrs_inner.len(), 1);
+        let mut violations_inner = Vec::new();
+        check_attribute(&attrs_inner[0], code_inner, "test.rs", &mut violations_inner);
+        assert_eq!(violations_inner.len(), 1);
+        assert!(violations_inner[0].contains("attribute names warnings"));
+    }
+
+    #[test]
+    fn test_expect_missing_reason_is_rejected() {
+        let code = r#"
+#[expect(clippy::too_many_lines)]
+fn bad() {}
+"#;
+        let attrs = extract_attributes(code);
+        assert_eq!(attrs.len(), 1);
+        let mut violations = Vec::new();
+        check_attribute(&attrs[0], code, "test.rs", &mut violations);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("missing `reason = \"...\"`"));
     }
 }

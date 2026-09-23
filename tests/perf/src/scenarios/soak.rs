@@ -335,6 +335,9 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                         Err(e) => {
                             warn!("Deploy Churn Cycle {} failed to sign info: {:?}", cycle, e);
                             dep_err_clone.fetch_add(1, Ordering::Relaxed);
+                            let _ =
+                                orchestrator_client.undeploy(unique_service_id.clone(), 0).await;
+                            let _ = orchestrator_client.shutdown().await;
                             continue;
                         }
                     };
