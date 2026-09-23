@@ -465,6 +465,22 @@ pub(crate) fn find_lint_actions(attr_body: &str, target_lint: &str) -> Vec<LintA
     actions
 }
 
+/// Returns the text inside the string literal (plain or raw) that starts
+/// at `start`, or `None` if no complete string literal starts there.
+fn string_literal_content(body: &str, start: usize) -> Option<&str> {
+    let bytes = body.as_bytes();
+    let end = if bytes[start] == b'"' {
+        skip_string_literal(bytes, start, &mut 0)
+    } else {
+        skip_raw_string_if_starts(bytes, start, &mut 0)?
+    };
+    body.get(start..end)?
+        .trim_start_matches('r')
+        .trim_matches('#')
+        .strip_prefix('"')?
+        .strip_suffix('"')
+}
+
 fn has_expect_reason(attr_body: &str) -> bool {
     let bytes = attr_body.as_bytes();
     let len = bytes.len();
@@ -498,8 +514,9 @@ fn has_expect_reason(attr_body: &str) -> bool {
                     while peek < len && bytes[peek].is_ascii_whitespace() {
                         peek += 1;
                     }
-                    if peek < len && (bytes[peek] == b'"' || bytes[peek] == b'r') {
-                        return true;
+                    if peek < len {
+                        return string_literal_content(attr_body, peek)
+                            .is_some_and(|text| !text.trim().is_empty());
                     }
                 }
             }
@@ -559,8 +576,8 @@ fn check_attribute(
                     ));
                 } else if !has_expect_reason(&attr.body) {
                     violations.push(format!(
-                        "{rel_path}:{}: #[expect(clippy::too_many_lines)] is missing `reason = \
-                         \"...\"` (AGENTS.md requires an explicit reason)",
+                        "{rel_path}:{}: #[expect(clippy::too_many_lines)] is missing a non-empty \
+                         `reason = \"...\"` (AGENTS.md requires an explicit reason)",
                         attr.line_no
                     ));
                 } else {
@@ -819,6 +836,35 @@ fn bad() {}
         let mut violations = Vec::new();
         check_attribute(&attrs[0], code, "test.rs", &mut violations);
         assert_eq!(violations.len(), 1);
-        assert!(violations[0].contains("missing `reason = \"...\"`"));
+        assert!(violations[0].contains("missing a non-empty `reason = \"...\"`"));
+    }
+
+    #[test]
+    fn test_expect_reason_must_not_be_empty() {
+        let rejected = [
+            r##"#[expect(clippy::too_many_lines, reason = "")]"##,
+            r##"#[expect(clippy::too_many_lines, reason = "   ")]"##,
+            r##"#[expect(clippy::too_many_lines, reason = r#""#)]"##,
+            r##"#[expect(clippy::too_many_lines, reason = some_ident)]"##,
+        ];
+        let accepted = [
+            r##"#[expect(clippy::too_many_lines, reason = "linear scenario")]"##,
+            r##"#[expect(clippy::too_many_lines, reason = r#"has "quotes" inside"#)]"##,
+        ];
+        for attr in rejected {
+            let code = format!("{attr}\nfn f() {{}}\n");
+            let attrs = extract_attributes(&code);
+            let mut violations = Vec::new();
+            check_attribute(&attrs[0], &code, "test.rs", &mut violations);
+            assert_eq!(violations.len(), 1, "should reject: {attr}");
+        }
+        for attr in accepted {
+            let code = format!("{attr}\nfn f() {{}}\n");
+            let attrs = extract_attributes(&code);
+            let mut violations = Vec::new();
+            let counted = check_attribute(&attrs[0], &code, "test.rs", &mut violations);
+            assert!(violations.is_empty(), "should accept: {attr}");
+            assert_eq!(counted, 1);
+        }
     }
 }
