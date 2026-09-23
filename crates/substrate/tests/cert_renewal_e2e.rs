@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Unattended certificate renewal and instance-key revocation,
 //! proven against real, running `syneroym-substrate` instances rather than
 //! the in-process coverage `orchestration.rs` and `app_supervisor` already
@@ -122,6 +116,7 @@ fn delegated_preamble(
 /// harness for that arm is the same out-of-proportion item
 /// `instance_identity_e2e.rs` and three backlog rows already decline.
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear certificate renewal end-to-end scenario")]
 async fn renew_cert_installs_over_the_real_wire_and_refuses_a_certificate_for_the_wrong_derived_key()
  {
     let _serial_guard = common::serial_guard().await;

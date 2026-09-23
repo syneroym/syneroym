@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! UCAN context extraction and normalization: a client presents a UCAN,
 //! the gateway verifies the chain and normalizes claims/capabilities into
 //! a SessionContext.

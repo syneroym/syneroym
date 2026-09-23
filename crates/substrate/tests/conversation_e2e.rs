@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Durable 1:1 messaging, end to end across two real `syneroym-substrate`
 //! instances: A messages B while B is offline, the message stays `pending`
 //! in A's own outbox; A restarts and the same item is still there, not
@@ -207,6 +201,7 @@ fn fixture_wasm() -> Option<Vec<u8>> {
 /// duplicated. B then comes up; the message is delivered, verified on
 /// arrival, and no durable content ever reached the pub/sub broker.
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear conversation persistence and restart scenario")]
 async fn a_message_survives_a_restart_and_delivers_once_the_peer_exists() {
     let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();

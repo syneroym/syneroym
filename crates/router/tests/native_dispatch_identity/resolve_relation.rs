@@ -1,5 +1,10 @@
 use super::helpers::*;
 
+/// Fan-out containment: the A1 `ServiceStore::query` limit is
+/// `MAX_FETCH_IDS` (1000); when more rows are actually reachable,
+/// `next_cursor` comes back `Some`, and `resolve_relation` must map that
+/// to `quota-exceeded`, not silently return a truncated -- and therefore
+/// incomplete but misleadingly-final-looking -- 1000-id answer.
 #[tokio::test]
 async fn resolve_relation_a1_overflow_maps_to_quota_exceeded() {
     let service_id = "resolve-relation-a1-overflow-svc";
@@ -214,7 +219,7 @@ async fn resolve_relation_service_id_reused_by_a_different_owner_signs_distinctl
     );
 }
 
-/// B3-07: a capability scoped to a completely unrelated resource must not
+/// A capability scoped to a completely unrelated resource must not
 /// change the answer relative to holding zero capabilities -- it routes to
 /// A2 (structural resolution), the same as `zero_capability_caller` would,
 /// not to a real-but-irrelevant A1 grant check.

@@ -35,6 +35,9 @@ pub(crate) use syneroym_rpc::{
 };
 pub(crate) use syneroym_sandbox_wasm::AppSandboxEngine;
 
+/// A native-service double recording whether `dispatch` was ever invoked --
+/// proves rejection happens *before* the native service sees the request,
+/// not just that the envelope reports an error.
 #[derive(Debug, Default)]
 pub(crate) struct RecordingNativeService {
     pub(crate) invoked: AtomicBool,
@@ -322,7 +325,7 @@ pub(crate) fn employee_reader_caller(subject_did: &str, service_id: &str) -> Cal
 }
 
 /// A verified caller holding a capability scoped to a **different**
-/// resource entirely -- B3-07: the A1/A2 fork must key on capabilities
+/// resource entirely: the A1/A2 fork must key on capabilities
 /// scoped to *this* resource, not "holds any capability at all", so this
 /// caller correctly routes to A2 (as if capability-less for `employees`),
 /// not to a real-but-unrelated A1 grant check.

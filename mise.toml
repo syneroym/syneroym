@@ -78,7 +78,7 @@ description = "Check the Roym service crates' sibling/dependency hygiene"
 run = "cargo xtask check-roym-deps"
 
 [tasks."check:file-lengths"]
-description = "Ensure production files stay under 800 lines and test files under 1800 lines"
+description = "Ensure production and new test files stay under 800 lines (grandfathered tests under 1800 lines)"
 run = "cargo xtask check-file-lengths"
 
 [tasks."check:lint-suppressions"]

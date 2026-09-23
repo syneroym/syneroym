@@ -238,7 +238,6 @@ async fn scenario_128_quote_set_against_filed_request_parity() {
     );
 }
 
-#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn scenario_129_agreement_accept_provider_and_consumer_halves_parity() {
     let h = harness().await;

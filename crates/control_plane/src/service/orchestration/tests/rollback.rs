@@ -294,7 +294,7 @@ async fn test_redeploy_without_fdae_block_clears_previous_policy() {
     );
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "linear deployment rollback scenario")]
 #[tokio::test]
 async fn test_deploy_failure_restores_previous_fdae_policy_not_the_new_one() {
     let temp_dir = tempfile::tempdir().unwrap();
@@ -531,7 +531,7 @@ async fn test_deploy_failure_restores_a_policy_the_new_manifest_dropped() {
     );
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "linear deployment rollback scenario")]
 #[tokio::test]
 async fn test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_policy() {
     let temp_dir = tempfile::tempdir().unwrap();
@@ -680,7 +680,7 @@ async fn test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_po
     );
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "linear deployment rollback scenario")]
 #[tokio::test]
 async fn test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy() {
     // Regression: `deploy_tcp_service` used to have no rollback at all

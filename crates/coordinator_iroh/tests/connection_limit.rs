@@ -9,13 +9,7 @@
 //! `SETTLE_DEADLINE`): a single stalled attempt fails the test promptly with a
 //! clear message instead of hanging CI, which is what a missing timeout here
 //! used to do under load.
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::{path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};

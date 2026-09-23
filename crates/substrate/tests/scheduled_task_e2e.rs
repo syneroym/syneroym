@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! The reference scenario for scheduled tasks (ADR-0023 §6): one real
 //! substrate hosting a scheduled WASM service, one real supervisor evaluating
 //! and firing its schedule on its own reconcile pass. The restart test's
@@ -380,6 +374,10 @@ async fn a_scheduled_task_runs_on_its_own_cadence_and_only_once_per_tick() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear scheduled task recovery after supervisor restart"
+)]
 async fn a_supervisor_restart_skips_the_ticks_it_missed() {
     let _serial_guard = common::serial_guard().await;
     fail_if_fixture_missing();

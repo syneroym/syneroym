@@ -1,4 +1,4 @@
-pub(crate) use std::{
+pub(super) use std::{
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicUsize, Ordering},
@@ -6,39 +6,39 @@ pub(crate) use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) use dashmap::DashMap;
-pub(crate) use iroh::{EndpointAddr, SecretKey};
-pub(crate) use serde_json::Value;
-pub(crate) use syneroym_async_queue::QueueConfig;
-pub(crate) use syneroym_core::{
+pub(super) use dashmap::DashMap;
+pub(super) use iroh::{EndpointAddr, SecretKey};
+pub(super) use serde_json::Value;
+pub(super) use syneroym_async_queue::QueueConfig;
+pub(super) use syneroym_core::{
     config::RetryPolicy,
     dht_registry::{MasterAnchorPayload, RegistryClient},
     local_registry::{EndpointRegistry, SubstrateEndpoint},
     storage::MockStorage,
     util,
 };
-pub(crate) use syneroym_identity::{
+pub(super) use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
 };
-pub(crate) use syneroym_rpc::{
+pub(super) use syneroym_rpc::{
     AuthLevel, CallOrigin, CallerContext, CallerProof, JsonRpcRequest, NativeDispatchRegistry,
     NativeInvocation, NativeResponse, NativeService, ProxyError, ProxyProtocol,
     ProxyQueueInspector, ProxyRequest, QueuedCall, QueuedTarget, RpcError, RpcResult,
     SERVICE_NOT_FOUND_RPC_CODE, SagaBegin, SagaState as RpcSagaState, SagaStepRequest,
     ServiceProxy, SessionContext,
 };
-pub(crate) use tokio_util::sync::CancellationToken;
+pub(super) use tokio_util::sync::CancellationToken;
 
-pub(crate) use super::super::{
+pub(super) use super::super::{
     ProxyRouter, RemoteHop, merge_forward_result,
     proxy_outbox::{self, Disposition, ProxyOutbox},
     step_call_budget_ms, target_produced,
 };
-pub(crate) use crate::{
+pub(super) use crate::{
     HandshakeVerifier, MasterAnchorResolver, preamble::RoutePreamble, saga::SagaStore,
 };
 
-pub(crate) fn test_caller(did: &str) -> CallerContext {
+pub(super) fn test_caller(did: &str) -> CallerContext {
     CallerContext {
         caller_did: did.to_string(),
         app_instance: None,
@@ -48,7 +48,7 @@ pub(crate) fn test_caller(did: &str) -> CallerContext {
     }
 }
 
-pub(crate) fn base_request(target_service: &str, interface: &str) -> ProxyRequest {
+pub(super) fn base_request(target_service: &str, interface: &str) -> ProxyRequest {
     ProxyRequest {
         target_service: target_service.to_string(),
         interface: interface.to_string(),
@@ -63,20 +63,20 @@ pub(crate) fn base_request(target_service: &str, interface: &str) -> ProxyReques
     }
 }
 
-pub(crate) fn synthetic_addr() -> EndpointAddr {
+pub(super) fn synthetic_addr() -> EndpointAddr {
     let node_id = SecretKey::generate(&mut rand::rng()).public();
     EndpointAddr::new(node_id)
 }
 
-pub(crate) fn empty_registry() -> EndpointRegistry {
+pub(super) fn empty_registry() -> EndpointRegistry {
     EndpointRegistry::new_mock(Arc::new(MockStorage::new()))
 }
 
-pub(crate) fn empty_registry_client() -> Arc<RegistryClient> {
+pub(super) fn empty_registry_client() -> Arc<RegistryClient> {
     Arc::new(RegistryClient::new(false, None))
 }
 
-pub(crate) fn test_router(hop: Arc<dyn RemoteHop>, registry: EndpointRegistry) -> ProxyRouter {
+pub(super) fn test_router(hop: Arc<dyn RemoteHop>, registry: EndpointRegistry) -> ProxyRouter {
     let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
     ProxyRouter::new(
         registry,
@@ -94,14 +94,18 @@ pub(crate) fn test_router(hop: Arc<dyn RemoteHop>, registry: EndpointRegistry) -
     )
 }
 
-pub(crate) struct GuardedNode {
-    pub(crate) router: ProxyRouter,
-    pub(crate) service: Arc<RecordingNativeService>,
-    pub(crate) _native_dispatch: NativeDispatchRegistry,
-    pub(crate) _dir: tempfile::TempDir,
+/// A node whose registry holds `svc-a` as a native endpoint backed by
+/// `service`, with a dedup guard over a real (unencrypted) per-service
+/// store. Unencrypted deliberately: the fence's behavior is the
+/// subject here, and the SQLCipher half is pinned in the queue crate.
+pub(super) struct GuardedNode {
+    pub(super) router: ProxyRouter,
+    pub(super) service: Arc<RecordingNativeService>,
+    pub(super) _native_dispatch: NativeDispatchRegistry,
+    pub(super) _dir: tempfile::TempDir,
 }
 
-pub(crate) async fn guarded_node(with_store: bool) -> GuardedNode {
+pub(super) async fn guarded_node(with_store: bool) -> GuardedNode {
     use syneroym_async_queue::DedupConfig;
     use syneroym_data_db::SqliteStorageProvider;
     use syneroym_data_keystore::KeyStore;
@@ -153,26 +157,29 @@ pub(crate) async fn guarded_node(with_store: bool) -> GuardedNode {
     GuardedNode { router, service, _native_dispatch: native_dispatch, _dir: dir }
 }
 
-pub(crate) struct OutboxNode {
-    pub(crate) router: Arc<ProxyRouter>,
-    pub(crate) registry: EndpointRegistry,
-    pub(crate) resolver: Arc<syneroym_app_orchestration::LogicalResolver>,
-    pub(crate) target: Arc<RecordingNativeService>,
-    pub(crate) outbox: Arc<ProxyOutbox>,
-    pub(crate) provider: Arc<syneroym_data_db::SqliteStorageProvider>,
-    pub(crate) _native_dispatch: NativeDispatchRegistry,
-    pub(crate) dir: tempfile::TempDir,
+/// A node that can enqueue: a certified calling service, a real
+/// per-service store, and a resolver whose bindings a test can change
+/// between attempts.
+pub(super) struct OutboxNode {
+    pub(super) router: Arc<ProxyRouter>,
+    pub(super) registry: EndpointRegistry,
+    pub(super) resolver: Arc<syneroym_app_orchestration::LogicalResolver>,
+    pub(super) target: Arc<RecordingNativeService>,
+    pub(super) outbox: Arc<ProxyOutbox>,
+    pub(super) provider: Arc<syneroym_data_db::SqliteStorageProvider>,
+    pub(super) _native_dispatch: NativeDispatchRegistry,
+    pub(super) dir: tempfile::TempDir,
 }
 
-pub(crate) const CALLER: &str = "did:key:zCaller";
+pub(super) const CALLER: &str = "did:key:zCaller";
 
 /// `target_reachable` decides whether the immediate attempt succeeds:
 /// a registered native endpoint answers, while a WASM endpoint with no
 /// engine behind it fails with the retryable "sandbox engine
 /// unavailable" -- a shutdown-window state, which is exactly the shape
 /// that must queue rather than fail the caller.
-#[allow(clippy::too_many_lines)]
-pub(crate) async fn outbox_node(target_reachable: bool, max_attempts: u8) -> OutboxNode {
+#[expect(clippy::too_many_lines, reason = "complex test harness setup helper")]
+pub(super) async fn outbox_node(target_reachable: bool, max_attempts: u8) -> OutboxNode {
     use syneroym_app_orchestration::{
         AppInstanceId, LogicalResolver, LogicalServiceName, ServiceId, StaticInventory,
         TopologyEntry, TopologyEpoch, TopologyKey, TopologyMode,
@@ -301,7 +308,7 @@ pub(crate) async fn outbox_node(target_reachable: bool, max_attempts: u8) -> Out
     }
 }
 
-pub(crate) fn queued_call(target: QueuedTarget, key: &str) -> QueuedCall {
+pub(super) fn queued_call(target: QueuedTarget, key: &str) -> QueuedCall {
     QueuedCall {
         app_instance_id: Some("app-1".to_string()),
         caller_service_id: CALLER.to_string(),
@@ -317,21 +324,21 @@ pub(crate) fn queued_call(target: QueuedTarget, key: &str) -> QueuedCall {
 }
 
 impl OutboxNode {
-    pub(crate) async fn queued(&self) -> Vec<syneroym_async_queue::QueueItem> {
+    pub(super) async fn queued(&self) -> Vec<syneroym_async_queue::QueueItem> {
         self.outbox.queue_for(CALLER).await.unwrap().all().unwrap()
     }
 
-    pub(crate) async fn dead_letters(&self) -> Vec<syneroym_async_queue::DeadLetter> {
+    pub(super) async fn dead_letters(&self) -> Vec<syneroym_async_queue::DeadLetter> {
         self.outbox.queue_for(CALLER).await.unwrap().dead_letters().unwrap()
     }
 
-    pub(crate) fn queue_file_exists(&self) -> bool {
+    pub(super) fn queue_file_exists(&self) -> bool {
         self.dir.path().join("services").join(CALLER).join("async.db").exists()
     }
 }
 
 /// Polls until `check` holds or the budget runs out.
-pub(crate) async fn wait_for<F: FnMut() -> bool>(budget: Duration, mut check: F) -> bool {
+pub(super) async fn wait_for<F: FnMut() -> bool>(budget: Duration, mut check: F) -> bool {
     let deadline = std::time::Instant::now() + budget;
     while std::time::Instant::now() < deadline {
         if check() {
@@ -342,7 +349,20 @@ pub(crate) async fn wait_for<F: FnMut() -> bool>(budget: Duration, mut check: F)
     false
 }
 
-pub(crate) fn timing_out_guest_request(key: Option<&str>) -> ProxyRequest {
+/// A guest-origin call that failed for good, as the synchronous tier
+/// produces it. The target is registered and *answers* -- a refusal it
+/// produced itself -- because only a failure the target produced earns
+/// a dead letter: this node's own refusals have nothing to replay.
+/// A call that runs out of its own deadline against a target that
+/// never answers -- a transport-class failure, not a callee one.
+///
+/// This is the closest a unit fixture gets to "the budget ran out":
+/// the retry *loop* itself lives on the remote path, which needs a
+/// resolvable address this harness has no registry client for. What
+/// matters for the tier rule below is that the failure is one the
+/// caller is left holding and that a retry could plausibly have
+/// fixed, which a definitive callee refusal is not.
+pub(super) fn timing_out_guest_request(key: Option<&str>) -> ProxyRequest {
     let mut req = base_request("did:key:zTarget", "greeter");
     req.origin = CallOrigin::Guest { service_id: CALLER.to_string() };
     req.caller = CallerContext::service_system(CALLER);
@@ -352,7 +372,7 @@ pub(crate) fn timing_out_guest_request(key: Option<&str>) -> ProxyRequest {
     req
 }
 
-pub(crate) fn failing_guest_request(key: Option<&str>) -> ProxyRequest {
+pub(super) fn failing_guest_request(key: Option<&str>) -> ProxyRequest {
     let mut req = base_request("did:key:zTarget", "greeter");
     req.origin = CallOrigin::Guest { service_id: CALLER.to_string() };
     req.caller = CallerContext::service_system(CALLER);
@@ -360,7 +380,7 @@ pub(crate) fn failing_guest_request(key: Option<&str>) -> ProxyRequest {
     req
 }
 
-pub(crate) fn keyed_request(key: &str) -> ProxyRequest {
+pub(super) fn keyed_request(key: &str) -> ProxyRequest {
     let mut req = base_request("svc-a", "greeter");
     req.caller = CallerContext::service_system("svc-caller");
     req.idempotency_key = Some(key.to_string());
@@ -368,13 +388,23 @@ pub(crate) fn keyed_request(key: &str) -> ProxyRequest {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct RecordingNativeService {
-    pub(crate) invoked: AtomicUsize,
-    pub(crate) last_caller_did: Mutex<Option<String>>,
-    pub(crate) fail_with: std::sync::atomic::AtomicBool,
-    pub(crate) hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
-    pub(crate) answer_with: Mutex<Option<ProxyError>>,
-    pub(crate) last_invocation: Mutex<Option<(String, String, Value)>>,
+pub(super) struct RecordingNativeService {
+    pub(super) invoked: AtomicUsize,
+    pub(super) last_caller_did: Mutex<Option<String>>,
+    /// Makes the target answer definitively rather than being absent,
+    /// so the queued path's callee-error classification can be driven.
+    pub(super) fail_with: std::sync::atomic::AtomicBool,
+    /// When set, `dispatch` blocks until this is notified -- a
+    /// delivery that genuinely never resolves, which is the only way
+    /// to test that shutdown interrupts one.
+    pub(super) hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// When set, `dispatch` answers with this exact error, so a test
+    /// can drive a specific reserved code the receiver would produce.
+    pub(super) answer_with: Mutex<Option<ProxyError>>,
+    /// The `(interface, method, params)` of the most recent dispatch --
+    /// lets a saga test confirm the walk actually called
+    /// `saga-undo-<method>`, not the forward method again.
+    pub(super) last_invocation: Mutex<Option<(String, String, Value)>>,
 }
 
 #[async_trait::async_trait]
@@ -406,21 +436,21 @@ impl NativeService for RecordingNativeService {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum MockOutcome {
+pub(super) enum MockOutcome {
     Success(Value),
     Transport,
     Callee { code: i32, message: String },
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct MockHop {
-    pub(crate) calls: AtomicUsize,
-    pub(crate) last_preamble: Mutex<Option<RoutePreamble>>,
-    pub(crate) outcomes: Mutex<std::collections::VecDeque<MockOutcome>>,
+pub(super) struct MockHop {
+    pub(super) calls: AtomicUsize,
+    pub(super) last_preamble: Mutex<Option<RoutePreamble>>,
+    pub(super) outcomes: Mutex<std::collections::VecDeque<MockOutcome>>,
 }
 
 impl MockHop {
-    pub(crate) fn with_outcomes(outcomes: Vec<MockOutcome>) -> Self {
+    pub(super) fn with_outcomes(outcomes: Vec<MockOutcome>) -> Self {
         Self {
             calls: AtomicUsize::new(0),
             last_preamble: Mutex::new(None),
@@ -428,7 +458,7 @@ impl MockHop {
         }
     }
 
-    pub(crate) fn call_count(&self) -> usize {
+    pub(super) fn call_count(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
 }
@@ -457,7 +487,7 @@ impl RemoteHop for MockHop {
 }
 
 #[derive(Debug)]
-pub(crate) struct EmptyAnchorResolver;
+pub(super) struct EmptyAnchorResolver;
 #[async_trait::async_trait]
 impl MasterAnchorResolver for EmptyAnchorResolver {
     async fn resolve_master_anchor(
@@ -468,27 +498,31 @@ impl MasterAnchorResolver for EmptyAnchorResolver {
     }
 }
 
-pub(crate) struct SagaNode {
-    pub(crate) router: Arc<ProxyRouter>,
-    pub(crate) registry: EndpointRegistry,
-    pub(crate) target: Arc<RecordingNativeService>,
-    pub(crate) sagas: Arc<SagaStore>,
-    pub(crate) dedup_guard: Arc<crate::CallDedupGuard>,
-    pub(crate) _native_dispatch: NativeDispatchRegistry,
-    pub(crate) _dir: tempfile::TempDir,
+/// A node that can drive a saga: a certified calling service, a real
+/// per-service saga log, and a reachable target -- the same shape
+/// `outbox_node` builds for `enqueue`, since a saga step is `invoke`
+/// plus a log write over the identical wiring.
+pub(super) struct SagaNode {
+    pub(super) router: Arc<ProxyRouter>,
+    pub(super) registry: EndpointRegistry,
+    pub(super) target: Arc<RecordingNativeService>,
+    pub(super) sagas: Arc<SagaStore>,
+    pub(super) dedup_guard: Arc<crate::CallDedupGuard>,
+    pub(super) _native_dispatch: NativeDispatchRegistry,
+    pub(super) _dir: tempfile::TempDir,
 }
 
-pub(crate) const SAGA_CALLER: &str = "did:key:zSagaCaller";
-pub(crate) const SAGA_TARGET: &str = "did:key:zSagaTarget";
+pub(super) const SAGA_CALLER: &str = "did:key:zSagaCaller";
+pub(super) const SAGA_TARGET: &str = "did:key:zSagaTarget";
 
-pub(crate) fn saga_config(dispatch_epoch_timeout_secs: u64) -> syneroym_async_queue::SagaConfig {
+pub(super) fn saga_config(dispatch_epoch_timeout_secs: u64) -> syneroym_async_queue::SagaConfig {
     syneroym_async_queue::SagaConfig::from(&syneroym_core::config::AppSandboxRole {
         dispatch_epoch_timeout_secs,
         ..syneroym_core::config::AppSandboxRole::default()
     })
 }
 
-pub(crate) async fn saga_node(dispatch_epoch_timeout_secs: u64) -> SagaNode {
+pub(super) async fn saga_node(dispatch_epoch_timeout_secs: u64) -> SagaNode {
     use syneroym_data_db::SqliteStorageProvider;
     use syneroym_data_keystore::KeyStore;
 
@@ -579,7 +613,7 @@ pub(crate) async fn saga_node(dispatch_epoch_timeout_secs: u64) -> SagaNode {
     }
 }
 
-pub(crate) fn saga_step_request(saga_id: &str, target: &str) -> SagaStepRequest {
+pub(super) fn saga_step_request(saga_id: &str, target: &str) -> SagaStepRequest {
     SagaStepRequest {
         caller_service_id: SAGA_CALLER.to_string(),
         app_instance_id: None,
@@ -595,7 +629,7 @@ pub(crate) fn saga_step_request(saga_id: &str, target: &str) -> SagaStepRequest 
     }
 }
 
-pub(crate) async fn begun_saga(node: &SagaNode) -> String {
+pub(super) async fn begun_saga(node: &SagaNode) -> String {
     node.router
         .saga_begin(SagaBegin {
             caller_service_id: SAGA_CALLER.to_string(),
@@ -607,7 +641,7 @@ pub(crate) async fn begun_saga(node: &SagaNode) -> String {
         .unwrap()
 }
 
-pub(crate) async fn add_step(node: &SagaNode, saga_id: &str, item: &str) {
+pub(super) async fn add_step(node: &SagaNode, saga_id: &str, item: &str) {
     let mut req = saga_step_request(saga_id, SAGA_TARGET);
     req.params = serde_json::json!({"item": item});
     node.router.saga_step(req).await.unwrap();

@@ -272,7 +272,6 @@ pub(crate) const FORGED_ENVELOPE_SHAPES: &[&str] = &[
 /// `query-source`, not the source, is what must reject a forgery.
 /// Returned as the `Value::String` shape both real directory calls
 /// produce, so the two builds see byte-identical input.
-#[allow(clippy::too_many_lines)]
 pub(crate) fn hostile_source_response(target: &str) -> Option<Value> {
     if target == "did:key:hTrunc" {
         return Some(Value::String(
@@ -809,7 +808,6 @@ pub(crate) fn collect_ordered_ids(val: &Value, out: &mut Vec<String>) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) fn rewrite_ids(val: &mut Value, map: &HashMap<String, String>) {
     match val {
         Value::Object(m) => m.values_mut().for_each(|v| rewrite_ids(v, map)),
@@ -1038,7 +1036,7 @@ pub(crate) async fn harness() -> Harness {
     harness_with_unbound(None).await
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "complex dual-build harness builder")]
 pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness {
     let wasm_paths = [
         ("web", test_constants::roym_web_wasm_path()),

@@ -1,5 +1,4 @@
 #![allow(
-    clippy::too_many_lines,
     clippy::cognitive_complexity,
     clippy::unwrap_used,
     clippy::expect_used,
@@ -162,6 +161,7 @@ struct RoymDeployment {
     _person_identities_dir: tempfile::TempDir,
 }
 
+#[expect(clippy::too_many_lines, reason = "complex roym app deployment helper")]
 async fn deploy_roym_app() -> RoymDeployment {
     let _ = ring::default_provider().install_default();
     let [iroh_port, reg_port, gw_port] = alloc_ports::<3>();
@@ -300,6 +300,7 @@ async fn deploy_roym_app() -> RoymDeployment {
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear roym app lifecycle end-to-end scenario")]
 async fn test_roym_app_e2e_lifecycle() {
     let RoymDeployment {
         ctx,

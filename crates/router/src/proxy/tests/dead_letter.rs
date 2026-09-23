@@ -1,3 +1,5 @@
+//! Dead-letter rows: the two-tier rule.
+
 use super::helpers::*;
 
 /// The first tier, and the assertion that keeps the whole rule

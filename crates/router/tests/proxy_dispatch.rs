@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Universal Proxy dispatch integration tests -- drives the
 //! guest-facing `syneroym:proxy/proxy::call` host function end to end
 //! through a real `RouteHandler::init` composition (which wires
@@ -229,6 +223,7 @@ async fn test_route_handler_with_proxy_components() -> Option<RouteHandler> {
 /// with `target-kind = "dependency"` exercises the real host-side
 /// dependency-resolution path end to end, not just the Rust-level unit tests in
 /// `sandbox_wasm::host_capabilities`.
+#[expect(clippy::too_many_lines, reason = "complex test harness setup with bound dependencies")]
 async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, Arc<LogicalResolver>)>
 {
     let proxy_test_bytes = fs::read(test_constants::proxy_test_wasm_path()).ok()?;
@@ -554,6 +549,7 @@ fn self_proxy_items_policy() -> Policy {
 /// Also returns `storage_provider`/`key_store` so a test can seed a row
 /// directly (bypassing the guest's own `put`) to control exactly which
 /// principal a row belongs to.
+#[expect(clippy::too_many_lines, reason = "complex test harness setup with native data layer")]
 async fn test_route_handler_with_self_native_data_layer(
     fdae_policy: Option<Arc<Policy>>,
 ) -> Option<(RouteHandler, Arc<dyn StorageProvider>, Arc<KeyStore>)> {
@@ -680,6 +676,7 @@ async fn test_route_handler_with_self_native_data_layer(
 /// `syneroym:data-layer/authorizer` for exactly this reason -- Slice
 /// B4-fdae's router-side ingress-(ii) proof that a self-proxy `get` actually
 /// invokes the stage-4 after-step, not just the sieve.
+#[expect(clippy::too_many_lines, reason = "complex test harness setup with stage 4 fdae")]
 async fn test_route_handler_with_self_native_data_layer_and_stage4(
     fdae_policy: Arc<Policy>,
 ) -> Option<(RouteHandler, Arc<dyn StorageProvider>, Arc<KeyStore>)> {

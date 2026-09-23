@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Endpoint records published under the member master DID (ADR-0020 §6),
 //! proven across two genuinely independent `syneroym-substrate` instances --
 //! the mapping this test exists to prove, since nothing else lets a
@@ -112,6 +106,10 @@ fn far_future_not_after() -> u64 {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear member master did resolution and migration scenario"
+)]
 async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_across_nodes() {
     let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();

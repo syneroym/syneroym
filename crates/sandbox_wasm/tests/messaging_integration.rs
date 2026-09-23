@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Integration test: two deployed WASM components in
 //! different services exchange a message guest-to-guest, using the
 //! fully-qualified cross-service topic (a bare `subscribe-to("orders/new")`

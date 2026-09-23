@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Integration tests: `syneroym:http/incoming-handler#handle-request`
 //! driven end to end through `AppSandboxEngine::handle_guest_http_request`,
 //! bypassing the router/HTTP-bridge layer (covered separately by

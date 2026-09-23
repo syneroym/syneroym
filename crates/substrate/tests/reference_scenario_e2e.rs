@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! The reference scenario, end to
 //! end over two genuinely independent `syneroym-substrate` instances:
 //! `frontend` (a WASM `proxy-test` component) on `managed-a`, depending on
@@ -259,6 +253,10 @@ fn component_id_from_reply(reply: &str) -> String {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear reference scenario end-to-end across two substrates"
+)]
 async fn the_reference_scenario_runs_end_to_end_over_two_substrates() {
     assert!(test_constants::greeter_wasm_path().exists(), "greeter wasm artifact not built");
     assert!(test_constants::proxy_test_wasm_path().exists(), "proxy-test wasm artifact not built");

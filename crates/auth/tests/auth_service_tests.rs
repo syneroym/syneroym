@@ -1,9 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used)]
 
 use std::{
     fs,
@@ -55,6 +50,7 @@ impl MasterAnchorResolver for MockAnchorResolver {
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear delegated key login and refusal scenarios")]
 async fn delegated_key_login_flow_and_refusals() {
     let auth_id = Identity::generate().unwrap();
     let auth_did = substrate::derive_did_key(&auth_id.public_key());
@@ -317,6 +313,7 @@ async fn local_login_and_refusals() {
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear auth http interface endpoint scenarios")]
 async fn http_interface_endpoints_and_unknown_method() {
     let auth_id = Identity::generate().unwrap();
     let node_id = Identity::generate().unwrap();

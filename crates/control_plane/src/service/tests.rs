@@ -385,7 +385,7 @@ async fn security_is_denied_without_substrate_admin() {
 /// then exercise data-layer and blob-store entirely through
 /// `SynSvcNativeService::dispatch`, with no WASM component involved at
 /// all. Confirms `undeploy` removes the native dispatch registration.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "linear native dispatch scenario")]
 #[tokio::test]
 async fn test_native_dispatch_data_layer_and_blob_store_round_trip() {
     let temp_dir = tempfile::tempdir().unwrap();
@@ -653,7 +653,7 @@ async fn test_native_dispatch_data_layer_and_blob_store_round_trip() {
     );
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "linear native dispatch scenario")]
 #[tokio::test]
 async fn test_native_dispatch_create_collection_with_indexes_and_batch_mutate() {
     let temp_dir = tempfile::tempdir().unwrap();

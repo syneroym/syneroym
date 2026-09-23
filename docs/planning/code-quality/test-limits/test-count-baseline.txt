@@ -1,1 +1,3 @@
-2553
+2,553 = 2,552 listed + 1 ignored test (coordinator_iroh iroh_setup test_echo).
+
+Note: `cargo nextest list --workspace` lists all runnable tests across the workspace, which totals 2,552. One test in the workspace is marked `#[ignore]` (`crates/coordinator_iroh/tests/iroh_setup.rs: test_echo`, which requires external network/relay setup), bringing the full test count to 2,553.

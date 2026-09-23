@@ -13,6 +13,22 @@ use syneroym_rpc::AuthLevel;
 
 use super::{fixtures::*, helpers::*};
 
+// ---------------- directory ----------------
+//
+// A note on coverage. Directory scenarios run against three shapes of
+// source:
+//   - `wire_invoke` / `wire_invoke_as` -- a genuine
+//     `execute_wasm_json_from_wire` / `host_for_wire` round trip into this
+//     node's own directory, proving the admission table on both builds.
+//   - `did:key:hForeignWire` and `did:key:hForeignWire2` -- two
+//     independently-stored directories (`directory` and `directory2`) reached
+//     through the wire-flavoured proxy target, so a merge scenario can show two
+//     directories disagreeing about a version and that one source's results
+//     survive another's forgeries.
+//   - `did:key:hForeign` -- the degenerate loopback, routed back to this same
+//     directory over the local dispatch path, kept for the earlier client-half
+//     scenarios that a real second store would not change.
+
 #[tokio::test]
 async fn scenario_76_directory_info_over_the_wire_has_no_roster_parity() {
     let h = harness().await;
@@ -859,6 +875,19 @@ async fn scenario_117_directory_export_import_round_trip_reindexes_and_carries_t
     assert_eq!(stripped(&sw), stripped(&sn));
     assert_eq!(sw["result"]["hits"].as_array().unwrap().len(), 1, "{sw}");
 }
+
+// ---------------- directory: the two-directory scenarios ----------------
+//
+// These need a *second*, independently-stored directory -- one this node
+// does not own and cannot reach by a local dispatch. `did:key:hForeignWire`
+// routes, over a genuine `execute_wasm_json_from_wire` / `host_for_wire`
+// round trip with a verified caller, to this node's own directory;
+// `did:key:hForeignWire2` routes the same way to a second directory
+// instance holding its own store. `did:key:hForge1` / `hForge2` are canned
+// hostile sources that serve forgeries the consumer's own verification
+// rejects. Without this a merge scenario can only drive one directory
+// against itself, which never disagrees with itself about a version and
+// never crowds its own page.
 
 #[tokio::test]
 async fn scenario_98_two_directories_disagreeing_about_a_version_merge_to_one_hit_parity() {

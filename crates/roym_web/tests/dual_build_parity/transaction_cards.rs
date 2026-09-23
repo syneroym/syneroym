@@ -621,7 +621,6 @@ async fn scenario_145_currency_unknown_refused_and_jpy_accepted_parity() {
     assert_eq!(q_data_n["terms"]["amount_minor"], 5000);
 }
 
-#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn scenario_146_peer_replaying_older_request_or_quote_refused_parity() {
     let h = harness().await;
@@ -841,7 +840,7 @@ async fn scenario_147_replaying_declined_quote_preserves_decline_parity() {
     assert_eq!(tw2, tn2);
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "linear transaction cards expiry scenario")]
 #[tokio::test]
 async fn scenario_148_request_or_receipt_with_expiry_is_refused_parity() {
     let h = harness().await;

@@ -1,5 +1,4 @@
 #![allow(
-    clippy::too_many_lines,
     clippy::cognitive_complexity,
     clippy::unwrap_used,
     clippy::expect_used,
@@ -628,6 +627,7 @@ async fn deliver_one_message(from: &Node, to_label: &str, address: &str, body: &
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear roym directory search across three substrates")]
 async fn roym_directory_search_half_across_three_substrates() {
     let _guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();

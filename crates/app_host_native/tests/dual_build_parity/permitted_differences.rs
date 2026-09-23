@@ -1,3 +1,6 @@
+//! Permitted differences between the two builds, asserted explicitly rather
+//! than left latent.
+
 use syneroym_app_host::{AppBlobStore, AppBlobWriter};
 
 use super::helpers::*;
@@ -200,7 +203,6 @@ impl StorageProvider for TransientFdaeStorage {
 }
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
 async fn a_transient_fdae_policy_load_failure_is_not_memoized() {
     let dir = tempfile::tempdir().unwrap();
     let key_store = Arc::new(KeyStore::new());

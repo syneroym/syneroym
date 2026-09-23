@@ -1,13 +1,14 @@
 use super::helpers::*;
 
-/// `syneroym_rpc::resolve_fetches` orchestration instead of a hand-wired
-/// stand-in: `plan_read` (`crates/fdae`) -> `resolve_fetches` (a real
-/// `ProxyRouter` call, `CallOrigin::Native`, to hr-svc's native
-/// `resolve-relation`) -> `finalize` -> real SQL execution. Also proves a
-/// *successful* fetch leaves `DecisionTrace` provenance (ADR-0017 §6 reason
-/// 2), not just the deny path.
+/// The cross-service join relationship proof called out as missing during
+/// review, now through the real `syneroym_rpc::resolve_fetches` orchestration
+/// instead of a hand-wired stand-in: `plan_read` (`crates/fdae`) ->
+/// `resolve_fetches` (a real `ProxyRouter` call, `CallOrigin::Native`, to
+/// hr-svc's native `resolve-relation`) -> `finalize` -> real SQL execution.
+/// Also proves a *successful* fetch leaves `DecisionTrace` provenance
+/// (ADR-0017 §6 reason 2), not just the deny path.
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "linear cross-service fetch scenario")]
 async fn plan_read_resolve_fetches_finalize_join_end_to_end_through_a_real_proxy() {
     let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
     let owner_did = "did:key:zHrSvcOwner";
@@ -83,8 +84,8 @@ async fn plan_read_resolve_fetches_finalize_join_end_to_end_through_a_real_proxy
     assert_eq!(plan.fetches.len(), 1);
     let fetch = plan.fetches[0].clone();
     assert_eq!(fetch.service, "hr-svc");
-    assert_eq!(fetch.relation, "employee", "B3-02: the wire relation is the remote object type");
-    assert_eq!(fetch.principal_did, "did:key:alice", "B3-01: the fetch asks about the anchor");
+    assert_eq!(fetch.relation, "employee", "the wire relation is the remote object type");
+    assert_eq!(fetch.principal_did, "did:key:alice", "the fetch asks about the anchor");
 
     // Step 2: the real orchestration seam -- `resolve_fetches` issues the
     // fetch as `CallOrigin::Native` through the real `ProxyRouter`, which
@@ -147,8 +148,8 @@ async fn plan_read_resolve_fetches_finalize_join_end_to_end_through_a_real_proxy
     );
 
     // The successful fetch must also leave provenance in the sieve's own
-    // `DecisionTrace` (ADR-0017 §6 reason 2, B3-08's sibling requirement for
-    // the allow path) -- not just the deny path B3-08 already covers.
+    // `DecisionTrace` (ADR-0017 §6 reason 2, sibling requirement for
+    // the allow path) -- not just the deny path already covered.
     assert_eq!(sieve.trace.remote_fetches.len(), 1);
     assert_eq!(sieve.trace.remote_fetches[0].asserter_did, expected_asserter_did);
     assert!(sieve.trace.remote_fetches[0].valid_until_secs > 0);
@@ -163,7 +164,6 @@ async fn plan_read_resolve_fetches_finalize_join_end_to_end_through_a_real_proxy
 /// correctly-filtered rows via `store.query`) has coverage through the
 /// dispatch method too, not just through its individually-tested pieces.
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
 async fn native_dispatch_query_resolves_a_cross_service_fetch_end_to_end() {
     let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
     let (proxy_router, expected_asserter_did, _native_dispatch, _hr_temp_dir) =

@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! A caller declaring a protocol scheme this node does not
 //! speak (`wrpc://`, any `Other(_)` scheme) gets a typed *unsupported-
 //! protocol* JSON-RPC error (`-32091`), not the confusing "missing dir="

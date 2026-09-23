@@ -1,7 +1,6 @@
 use super::helpers::*;
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
 async fn native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_callers() {
     let (route_handler, _http_routes) = test_route_handler().await;
 
@@ -202,7 +201,6 @@ async fn native_fdae_policy_authorizes_writes_for_one_verified_caller_and_denies
 /// error, and that a denied `batch-mutate` rolls back a mutation earlier in
 /// the same batch that would otherwise have succeeded.
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
 async fn native_fdae_policy_denies_put_delete_and_batch_mutate_for_an_unreachable_row() {
     let (route_handler, _http_routes) = test_route_handler().await;
 
