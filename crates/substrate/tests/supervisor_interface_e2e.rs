@@ -17,7 +17,9 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use anyhow::Result;
-use common::{SubstrateNode, compiled_plan_json, submission, supervisor_and_managed};
+use common::{
+    MANAGED_ALIAS, SubstrateNode, compiled_plan_json, submission, supervisor_and_managed,
+};
 use semver::Version;
 use serde_json::json;
 use syneroym_app_orchestration::models::{
@@ -31,8 +33,6 @@ mod common;
 
 #[path = "common/retry.rs"]
 mod retry;
-
-const MANAGED_ALIAS: &str = "managed";
 
 /// No test here waits on the resident loop, so the poll interval stays near
 /// the production default.
@@ -144,7 +144,7 @@ async fn an_operator_submits_and_reads_back_status_over_the_supervisor_interface
     )
     .await;
 
-    let manifest = common::one_service_manifest("syneroym:a5b-test-app", "127.0.0.1:41401");
+    let manifest = common::one_service_manifest("syneroym:a5b-test-app");
     let plan_json = compiled_plan_json(&manifest, "a5b-submit-inst").await;
 
     let res = submit_after_boot(
@@ -187,7 +187,7 @@ async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
     )
     .await;
 
-    let manifest = common::one_service_manifest("syneroym:a5b-test-app", "127.0.0.1:41401");
+    let manifest = common::one_service_manifest("syneroym:a5b-test-app");
     let plan_json = compiled_plan_json(&manifest, "a5b-second-inst").await;
 
     // First supervisor submits and adopts, claiming generation 1.
@@ -308,7 +308,7 @@ async fn adopt_reads_the_held_generation_from_the_managed_node_and_claims_the_ne
     )
     .await;
 
-    let manifest = common::one_service_manifest("syneroym:a5b-test-app", "127.0.0.1:41401");
+    let manifest = common::one_service_manifest("syneroym:a5b-test-app");
     let plan_json = compiled_plan_json(&manifest, "a5b-adopt-inst").await;
     submit_after_boot(
         &mut supervisor_node,
@@ -432,7 +432,7 @@ async fn a_supervisor_that_reads_a_higher_generation_marks_the_instance_supersed
     )
     .await;
 
-    let manifest = common::one_service_manifest("syneroym:a5b-test-app", "127.0.0.1:41401");
+    let manifest = common::one_service_manifest("syneroym:a5b-test-app");
     let plan_json = compiled_plan_json(&manifest, "a5b-superseded-inst").await;
     submit_after_boot(
         &mut supervisor_node,

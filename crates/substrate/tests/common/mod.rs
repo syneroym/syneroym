@@ -24,8 +24,7 @@ mod node;
 #[cfg(feature = "supervisor")]
 mod fixtures;
 
-/// Shared deploy helpers and orchestration fixtures that are not
-/// supervisor-specific: `deploy_app`, `try_deploy_app`, `one_service_manifest`.
+/// Shared deploy helpers: `deploy_app`, `try_deploy_app`.
 mod deploy;
 
 use std::{

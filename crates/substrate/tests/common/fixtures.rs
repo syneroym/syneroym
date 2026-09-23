@@ -10,10 +10,14 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use rustls::crypto::ring;
+use semver::Version;
 use serde_json::{Map, Value, json};
 use syneroym_app_orchestration::{
     LocalFilesystemCatalog, compile,
-    models::{AppInstanceId, SynAppManifest},
+    models::{
+        AppBlueprintId, AppInstanceId, LogicalServiceName, PlacementSelector, ServiceConfig,
+        ServiceSpec, ServiceType, SubstrateAlias, SynAppManifest,
+    },
 };
 use syneroym_app_supervisor::inventory::SupervisorInventoryEntry;
 use syneroym_core::config::SupervisorRole;
@@ -21,6 +25,9 @@ use syneroym_identity::Identity;
 use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
 
 use crate::common::SubstrateNode;
+
+/// The default substrate alias for the managed node in supervisor fixtures.
+pub const MANAGED_ALIAS: &str = "managed";
 
 /// A `SupervisorRole` with the test-fast knobs every suite uses.
 /// `poll_interval_secs` is the one value they actually vary -- lowered from
@@ -98,6 +105,49 @@ pub fn submission(
         "inventory_json": inventory_json,
         "generation": generation,
     }])
+}
+
+/// A minimal single-service `SynAppManifest`: one `backend` service of type
+/// `Tcp` placed on `MANAGED_ALIAS`.
+///
+/// - `id`: the `AppBlueprintId` string (e.g. `"syneroym:my-test-app"`).
+pub fn one_service_manifest(id: &str) -> SynAppManifest {
+    let mut services = BTreeMap::new();
+    services.insert(
+        LogicalServiceName::new("backend"),
+        ServiceSpec {
+            config: ServiceConfig {
+                service_type: ServiceType::Tcp,
+                source: "127.0.0.1:41000".to_string(),
+                hash: None,
+                interfaces: vec![],
+                env: BTreeMap::new(),
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: Default::default(),
+                fdae: None,
+                health_check: None,
+                assets: None,
+                visibility: Default::default(),
+            },
+            depends_on: vec![],
+            placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),
+            replicas: 1,
+            sharding_strategy: None,
+            schedule: None,
+            topology_visibility: Default::default(),
+        },
+    );
+    SynAppManifest {
+        id: AppBlueprintId::new(id),
+        version: Version::new(0, 1, 0),
+        description: None,
+        placement: None,
+        services,
+        dependencies: BTreeMap::new(),
+    }
 }
 
 /// Boot a supervisor node (hosting the registry) and a managed node that

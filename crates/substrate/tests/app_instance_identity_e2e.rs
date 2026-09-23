@@ -8,21 +8,18 @@
 //! The app-instance master identity end to end, across two
 //! genuinely independent `syneroym-substrate` instances -- the operator's
 //! own sequence: `submit`, `adopt`, `status`, `export-master`, a second
-//! `adopt`. The supervisor/managed pair and the submit helpers come from
-//! `common`; `one_service_manifest` comes from `common` too. The test reads the
-//! supervisor node's `app_data_dir` to confirm `export-master` wrote a real
-//! file under its own `master_backup_dir`, not just that the RPC returned a
-//! path string.
+//! `one_service_manifest`, the supervisor/managed pair, and the submit
+//! helpers come from `common`. The test reads the supervisor node's
+//! `app_data_dir` to confirm `export-master` wrote a real file under its own
+//! `master_backup_dir`, not just that the RPC returned a path string.
 
 use std::path::PathBuf;
 
-use common::{compiled_plan_json, submission, supervisor_and_managed};
+use common::{MANAGED_ALIAS, compiled_plan_json, submission, supervisor_and_managed};
 use serde_json::json;
 use syneroym_identity::Identity;
 
 mod common;
-
-const MANAGED_ALIAS: &str = "managed";
 
 /// Nothing in this file waits on the resident loop, so the poll interval is
 /// left near the production default.
@@ -49,7 +46,7 @@ async fn an_adopted_app_instance_carries_an_exportable_master_did() {
     )
     .await;
 
-    let manifest = common::one_service_manifest("syneroym:a7-test-app", "127.0.0.1:41601");
+    let manifest = common::one_service_manifest("syneroym:a7-test-app");
     let plan_json = compiled_plan_json(&manifest, "a7-adopt-inst").await;
     let submit_params = submission("a7-adopt-inst", plan_json, inventory_json, 0);
     // `supervisor_node`'s connection was dialed and proven live by its own

@@ -10,7 +10,7 @@
 //! the app instance resolving "which supervisor holds this app" through the
 //! same registry every other DID in the system already uses.
 //!
-//! `one_service_manifest` and the supervisor/managed pair and the
+//! `one_service_manifest`, the supervisor/managed pair, and the
 //! submit helpers come from `common`. `poll_interval_secs` is lowered so the
 //! resident loop's own Tier-1 publish -- which nothing on the `supervisor`
 //! RPC surface triggers synchronously (`force-reconcile` calls
@@ -19,7 +19,7 @@
 
 use std::time::{Duration, Instant};
 
-use common::{compiled_plan_json, submission, supervisor_and_managed};
+use common::{MANAGED_ALIAS, compiled_plan_json, submission, supervisor_and_managed};
 use serde_json::json;
 use syneroym_core::dht_registry::{EndpointInfo, EndpointType, RegistryClient};
 use syneroym_identity::{Identity, substrate};
@@ -29,8 +29,6 @@ mod common;
 
 #[path = "common/retry.rs"]
 mod retry;
-
-const MANAGED_ALIAS: &str = "managed";
 
 /// The resident loop's own tick is what this test waits on, so the poll
 /// interval is short.
@@ -53,7 +51,7 @@ async fn an_app_did_resolves_to_its_supervising_node_through_the_registry() {
     )
     .await;
 
-    let manifest = common::one_service_manifest("syneroym:tier1-test-app", "127.0.0.1:41901");
+    let manifest = common::one_service_manifest("syneroym:tier1-test-app");
     let plan_json = compiled_plan_json(&manifest, "tier1-resolve-inst").await;
     // `supervisor_node`'s connection was dialed and proven live by its own
     // `wait_for_ready` during boot inside `supervisor_and_managed`, then sat

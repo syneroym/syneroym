@@ -19,14 +19,13 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rustls::crypto::ring;
-use serde_json::json;
 use syneroym_core::dht_registry::{
     DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType, RegistryClient,
 };
 use syneroym_identity::{Identity, substrate};
 use syneroym_sdk::{
-    DeployManifest, NetworkEndpoint, Publication, ServiceConfig, ServiceType, SyneroymClient,
-    TcpManifest, Visibility,
+    DeployManifest, NetworkEndpoint, Publication, ServiceConfig, ServiceType, TcpManifest,
+    Visibility,
 };
 
 mod common;
@@ -74,20 +73,6 @@ fn tcp_manifest(
     }
 }
 
-async fn deploy_raw(
-    client: &SyneroymClient,
-    service_id: &str,
-    manifest: DeployManifest,
-) -> anyhow::Result<()> {
-    let params = serde_json::to_value((service_id.to_string(), manifest))?;
-    let res = client.request("orchestrator", "deploy", params).await?;
-    if res.result == json!({"status": "deployed"}) {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("deploy did not report success: {:?}", res.result))
-    }
-}
-
 /// A service deployed with no declared visibility and no certificate is
 /// not published -- a registry lookup for it misses.
 #[tokio::test]
@@ -99,7 +84,7 @@ async fn undeclared_visibility_deploys_and_publishes_nothing() {
     let svc_identity = Identity::generate().unwrap();
     let svc_id = substrate::derive_did_key(&svc_identity.public_key());
 
-    deploy_raw(&ctx.substrate_client, &svc_id, tcp_manifest(45001, None, None))
+    common::try_deploy_app(&ctx.substrate_client, &svc_id, tcp_manifest(45001, None, None))
         .await
         .expect("a deploy with no visibility declaration and no certificate must succeed");
 
@@ -126,7 +111,7 @@ async fn declaring_public_with_no_certificate_is_refused() {
     let svc_identity = Identity::generate().unwrap();
     let svc_id = substrate::derive_did_key(&svc_identity.public_key());
 
-    let err = deploy_raw(
+    let err = common::try_deploy_app(
         &ctx.substrate_client,
         &svc_id,
         tcp_manifest(45002, Some(Visibility::Public), None),
@@ -163,7 +148,7 @@ async fn declaring_public_with_a_matching_certificate_publishes_and_resolves() {
     .sign(&svc_identity)
     .unwrap();
 
-    deploy_raw(
+    common::try_deploy_app(
         &ctx.substrate_client,
         &svc_id,
         tcp_manifest(
@@ -218,7 +203,7 @@ async fn a_public_service_redeployed_private_is_recorded_as_private() {
     .sign(&svc_identity)
     .unwrap();
 
-    deploy_raw(
+    common::try_deploy_app(
         &ctx.substrate_client,
         &svc_id,
         tcp_manifest(
@@ -237,7 +222,7 @@ async fn a_public_service_redeployed_private_is_recorded_as_private() {
         .await
         .expect("the service must be published after the first, public deploy");
 
-    deploy_raw(
+    common::try_deploy_app(
         &ctx.substrate_client,
         &svc_id,
         tcp_manifest(45004, Some(Visibility::Private), None),

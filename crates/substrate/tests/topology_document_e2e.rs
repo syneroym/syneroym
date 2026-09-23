@@ -14,31 +14,30 @@
 //! Both nodes come from `common::SubstrateNode`: a supervisor node hosting
 //! the registry and a managed node publishing into it through a shared relay.
 //! `common::serial_guard` keeps this binary's tests from running substrate
-//! stacks at once. `supervisor_role`, `boot_pair`, and the manifest helpers
-//! are still local -- the other supervisor suites carry their own copies.
+//! stacks at once. `boot_pair` delegates to
+//! `common::supervisor_and_managed`; the manifest helpers are local.
 
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use common::SubstrateNode;
-use rustls::crypto::ring;
+use common::{
+    MANAGED_ALIAS, SubstrateNode, compiled_plan_json, submission, supervisor_and_managed,
+};
 use semver::Version;
 use serde_json::{Map, json};
 use syneroym_app_orchestration::{
-    AppDid, LocalFilesystemCatalog, LogicalResolver, LogicalServiceName, SignedTopologyDocument,
-    StaticInventory, TopologyFetcher, TopologyVisibility, Visibility, compile,
+    AppDid, LogicalResolver, LogicalServiceName, SignedTopologyDocument, StaticInventory,
+    TopologyFetcher, TopologyVisibility, Visibility,
     models::{
-        AppBlueprintId, AppInstanceId, PlacementSelector, ServiceConfig, ServiceSpec, ServiceType,
-        SubstrateAlias, SynAppManifest,
+        AppBlueprintId, PlacementSelector, ServiceConfig, ServiceSpec, ServiceType, SubstrateAlias,
+        SynAppManifest,
     },
     register_verified,
 };
-use syneroym_app_supervisor::inventory::SupervisorInventoryEntry;
-use syneroym_core::{config::SupervisorRole, dht_registry::RegistryClient};
+use syneroym_core::dht_registry::RegistryClient;
 use syneroym_identity::{Identity, substrate};
 use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
 use syneroym_sdk::{RegistryTopologyFetcher, fetch_and_register};
@@ -48,52 +47,6 @@ mod common;
 
 #[path = "common/retry.rs"]
 mod retry;
-
-const MANAGED_ALIAS: &str = "managed";
-
-/// `poll_interval_secs` is lowered from the 30s default so this file's
-/// tests do not have to wait a full poll cycle for anything that depends
-/// on the resident loop (none of `resolve`'s own tests do -- it is a
-/// direct RPC, not loop-triggered -- but `boot_pair`'s shared shape keeps
-/// this for consistency with `tier1_endpoint_record_e2e.rs`).
-fn supervisor_role() -> SupervisorRole {
-    SupervisorRole {
-        poll_interval_secs: 2,
-        db_name: "supervisor.db".to_string(),
-        max_restart_attempts: 3,
-        restart_backoff_secs: 30,
-        alert_topic: "supervisor/alerts".to_string(),
-        master_backup_dir: "master-backups".to_string(),
-        ..SupervisorRole::default()
-    }
-}
-
-/// Node-wide `orchestrator/deploy` **and** `orchestrator/status` for
-/// `grantee_did` on `node_did` -- what a supervisor needs on every substrate
-/// it manages.
-fn node_wide_supervisor_grant(
-    node_owner: &Identity,
-    grantee_did: &str,
-    node_did: &str,
-) -> CapabilityToken {
-    let resource = ResourceUri::substrate(node_did);
-    CapabilityToken::issue(
-        node_owner,
-        grantee_did,
-        [Ability::ORCHESTRATOR_DEPLOY, Ability::ORCHESTRATOR_STATUS]
-            .into_iter()
-            .map(|a| Capability {
-                with: resource.clone(),
-                can: Ability(a.to_string()),
-                caveats: None,
-            })
-            .collect(),
-        Map::new(),
-        3600,
-        vec![],
-    )
-    .expect("issue node-wide supervisor grant")
-}
 
 /// `supervisor/resolve` on `synapp:<app_did>` (ADR-0022 §5), issued from
 /// the supervisor node's own owner -- which the node installs as
@@ -216,12 +169,6 @@ fn two_service_manifest_with_topology_vis(
     }
 }
 
-async fn compiled_plan_json(manifest: &SynAppManifest, instance_id: &str) -> String {
-    let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
-    let compiled = compile(AppInstanceId::new(instance_id), manifest, &catalog).await.unwrap();
-    compiled.plans.last().unwrap().to_json().unwrap()
-}
-
 /// Boots a supervisor node and a managed node (the managed one sharing the
 /// supervisor's registry and relay), grants the supervisor's own node-wide
 /// `orchestrator/deploy` on the managed node, and returns everything a test
@@ -230,49 +177,7 @@ async fn boot_pair(
     supervisor_owner: &Identity,
     managed_owner: &Identity,
 ) -> (SubstrateNode, SubstrateNode, String) {
-    let _ = ring::default_provider().install_default();
-
-    let supervisor_node = SubstrateNode::builder()
-        .owner(supervisor_owner)
-        .supervisor(supervisor_role())
-        .inject_kek()
-        .boot()
-        .await;
-    let managed_node = SubstrateNode::builder()
-        .owner(managed_owner)
-        .shared_registry(supervisor_node.registry_url())
-        .shared_relay(supervisor_node.relay_url())
-        .inject_kek()
-        .boot()
-        .await;
-
-    let grant =
-        node_wide_supervisor_grant(managed_owner, supervisor_node.did(), managed_node.did());
-    let inventory_json = serde_json::to_string(&BTreeMap::from([(
-        MANAGED_ALIAS.to_string(),
-        SupervisorInventoryEntry {
-            did: managed_node.did().to_string(),
-            api_url: Some(managed_node.registry_url().to_string()),
-            ucan: Some(grant),
-        },
-    )]))
-    .unwrap();
-
-    (supervisor_node, managed_node, inventory_json)
-}
-
-fn submission(
-    instance_id: &str,
-    plan_json: String,
-    inventory_json: String,
-    generation: u64,
-) -> serde_json::Value {
-    json!([{
-        "app_instance_id": instance_id,
-        "plan_json": plan_json,
-        "inventory_json": inventory_json,
-        "generation": generation,
-    }])
+    supervisor_and_managed(supervisor_owner, managed_owner, 2, MANAGED_ALIAS).await
 }
 
 async fn submit_and_adopt_with_manifest(
