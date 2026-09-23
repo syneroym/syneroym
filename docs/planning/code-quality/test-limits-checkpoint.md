@@ -18,7 +18,7 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 | 8 | Split router src/proxy/tests.rs (2,927 lines) | done | 03f04882 | split into 6 modules + helpers under proxy/tests/, all <620 lines, count 2553 |
 | 9 | Split router tests/native_dispatch_identity.rs (2,877 lines) | done | d65b2168 | split into 5 modules + helpers under tests/native_dispatch_identity/, all <650 lines, count 2553 |
 | 10 | Split app_host_native tests/dual_build_parity.rs (2,441 lines) | done | e02d8f1e | split into 6 modules + helpers under tests/dual_build_parity/, all <900 lines, count 2553 |
-| 11 | Enforcement: file-length limit for test files | not started | | |
+| 11 | Enforcement: file-length limit for test files | done | f95a5ecb | MAX_TEST_LINES=1800 ratchet added to xtask check-file-lengths, tested failure & pass |
 | 12 | Enforcement: cap number of suppressions | not started | | |
 | 13 | Wire in and document | not started | | |
 | 14 | Final verification and pull request | not started | | |
@@ -44,6 +44,20 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 - proxy::tests::<name> -> proxy::tests::{outbox, dead_letter, local_dispatch, remote_dispatch, sagas, saga_walk}::<name> (87 tests moved into submodules, Unit 8)
 - native_dispatch_identity::<name> -> native_dispatch_identity::{access_control, queries, fdae_enforcement, resolve_relation, cross_service_fetch}::<name> (39 tests moved into submodules, Unit 9)
 - dual_build_parity::<name> -> dual_build_parity::{conversation, data_layer, host_services, http, signing}::<name> (36 tests moved into submodules; 4 permitted_differences tests retained their module path, Unit 10)
+
+## Verification outputs
+### Unit 11 (file-length limit for test files)
+- Failure with 1900-line test file (`crates/substrate/tests/test_length_ratchet_failure.rs`):
+```
+Checking source file lengths...
+ERROR: crates/substrate/tests/test_length_ratchet_failure.rs: 1900 lines (maximum allowed for test files is 1800)
+Error: File length check failed with 1 violation(s)
+```
+- Pass after removing test file:
+```
+Checking source file lengths...
+All 408 production files (<= 800 lines) and 177 test files (<= 1800 lines) adhere to length limits.
+```
 
 ## Problems and open questions
 (none)
