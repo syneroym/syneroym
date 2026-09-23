@@ -62,6 +62,8 @@ jobs:
         run: cargo xtask check-roym-deps
       - name: Check File Lengths
         run: cargo xtask check-file-lengths
+      - name: Check Lint Suppressions
+        run: cargo xtask check-lint-suppressions
       - name: Install cargo-dupes
         run: cargo install cargo-dupes --version 0.2.1 --locked
       - name: Check Duplication
