@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../fixtures';
 import { readMultihopPorts } from '../ports';
 
 // Scenario 1: Inbound Path (Browser -> C -> Cp -> Sz)
@@ -6,7 +6,6 @@ test.describe('WebRTC Multi-Hop Inbound (Browser -> C -> Cp -> Sz)', () => {
   const forceTunnel = true;
 
   test.beforeEach(async ({ page }) => {
-    page.on('console', msg => console.log('BROWSER:', msg.text()));
     const demo1Did = process.env.DEMO1_DID;
     expect(demo1Did).toBeDefined();
 
@@ -48,7 +47,6 @@ test.describe('WebRTC Multi-Hop Reverse (Browser -> Cp -> C -> Sx)', () => {
   const forceTunnel = true;
 
   test.beforeEach(async ({ page }) => {
-    page.on('console', msg => console.log('BROWSER:', msg.text()));
     const demo2Did = process.env.DEMO2_DID;
     expect(demo2Did).toBeDefined();
 

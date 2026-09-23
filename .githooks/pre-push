@@ -7,14 +7,14 @@ echo "Running pre-push checks..."
 
 # Ensure formatting is correct (double check)
 echo "Checking cargo fmt..."
-if ! cargo fmt --all -- --check; then
+if ! cargo +nightly fmt --all -- --check; then
     echo "❌ cargo fmt failed! Please format your code before pushing."
     exit 1
 fi
 
 # Run clippy to catch common mistakes before code leaves the machine
 echo "Checking cargo clippy..."
-if ! cargo clippy --workspace --all-targets --all-features -- -D warnings; then
+if ! cargo clippy -q --workspace --all-targets --all-features -- -D warnings; then
     echo "❌ cargo clippy failed! Please fix the warnings before pushing."
     exit 1
 fi

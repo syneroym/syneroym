@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../fixtures';
 import { readE2EPorts } from '../ports';
 
 test.describe('Gateway Keep-Alive Session Routing (P1 Regression)', () => {
@@ -19,9 +19,6 @@ test.describe('Gateway Keep-Alive Session Routing (P1 Regression)', () => {
     // to the deployed application service via the client gateway.
     const response = await page.goto(`${appUrl}/`);
     expect(response?.status()).toBe(200);
-
-    page.on('console', msg => console.log('BROWSER:', msg.text()));
-    page.on('pageerror', err => console.log('PAGE ERROR:', err.message));
 
     // 2. From the loaded app page, fetch auth service challenge.
     // Under P1, reusing the existing connection to the previous upstream service would fail.

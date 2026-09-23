@@ -1,9 +1,47 @@
-import { execSync, spawn } from 'child_process';
+import { ChildProcess, execSync, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { reserveTcpPort, reserveUdpPort } from './ports';
 
 const TEST_DIR = path.join(process.cwd(), '.e2e-data-multihop');
+const LOG_DIR = path.join(process.cwd(), 'e2e-logs');
+const WORKSPACE_DIR = path.resolve(process.cwd(), '../../../../');
+
+function logPath(name: string): string {
+  return path.join(LOG_DIR, `multihop-${name}.log`);
+}
+
+// Each node logs to its own file under `e2e-logs/`, not to the Playwright
+// output. Four nodes at `info` buried the test results, and CI uploads
+// `e2e-logs/` anyway. A file also never blocks the writer: a pipe is not
+// drained while `execSync` freezes node's event loop, so a chatty node
+// could stall on a full pipe in the middle of an RPC.
+function spawnLogged(bin: string, args: string[], name: string): ChildProcess {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  const fd = fs.openSync(logPath(name), 'w');
+  const child = spawn(bin, args, {
+    cwd: WORKSPACE_DIR,
+    env: { ...process.env, RUST_LOG: 'info', NO_COLOR: '1' },
+    stdio: ['ignore', fd, fd],
+  });
+  fs.closeSync(fd);
+  return child;
+}
+
+// The node prints its DID once its identity is ready; poll its log for it.
+async function waitForDid(child: ChildProcess, name: string): Promise<string> {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error(`${name} exited with code ${child.exitCode}; see ${logPath(name)}`);
+    }
+    const match = fs.readFileSync(logPath(name), 'utf8')
+      .match(/substrate identity initialized(?:.*?)did:\s*(did:key:[a-z0-9]+)/i);
+    if (match) return match[1];
+    await new Promise(r => setTimeout(r, 200));
+  }
+  throw new Error(`Timeout waiting for ${name} DID; see ${logPath(name)}`);
+}
 
 // Offline-first install so a warm cache costs ~100 ms, not a registry
 // round trip that can eat the suite's `globalTimeout` (see global-setup.ts).
@@ -50,7 +88,6 @@ export default async function globalSetup() {
   fs.writeFileSync(portsJsonPath, JSON.stringify(ports, null, 2));
   console.log('Allocated dynamic ports for Multi-Hop:', JSON.stringify(ports));
 
-  const WORKSPACE_DIR = path.resolve(process.cwd(), '../../../../');
   const isRelease = process.env.CARGO_RELEASE_FLAG === '--release';
   const targetDir = isRelease ? 'target/release' : 'target/debug';
   const buildFlag = isRelease ? '--release' : '';
@@ -231,13 +268,8 @@ registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
     cWebrtcBootPortRes.release(),
     cGatewayPortRes.release(),
   ]);
-  const cProcess = spawn(SUBSTRATE_BIN, ['run', '--config', path.join(TEST_DIR, 'c.toml')], {
-    cwd: WORKSPACE_DIR,
-    env: { ...process.env, RUST_LOG: 'info', NO_COLOR: '1' }
-  });
+  const cProcess = spawnLogged(SUBSTRATE_BIN, ['run', '--config', path.join(TEST_DIR, 'c.toml')], 'c');
   (global as any).__C_PROCESS__ = cProcess;
-  cProcess.stdout.on('data', data => process.stdout.write('[C] ' + data.toString()));
-  cProcess.stderr.on('data', data => process.stdout.write('[C ERR] ' + data.toString()));
 
   await new Promise(r => setTimeout(r, 4000)); // Wait for C to start
 
@@ -248,80 +280,28 @@ registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
     cpWebrtcSigPortRes.release(),
     cpWebrtcBootPortRes.release(),
   ]);
-  const cpProcess = spawn(SUBSTRATE_BIN, ['run', '--config', path.join(TEST_DIR, 'cp.toml')], {
-    cwd: WORKSPACE_DIR,
-    env: { ...process.env, RUST_LOG: 'info', NO_COLOR: '1' }
-  });
+  const cpProcess = spawnLogged(SUBSTRATE_BIN, ['run', '--config', path.join(TEST_DIR, 'cp.toml')], 'cp');
   (global as any).__CP_PROCESS__ = cpProcess;
-  cpProcess.stdout.on('data', data => process.stdout.write('[Cp] ' + data.toString()));
-  cpProcess.stderr.on('data', data => process.stdout.write('[Cp ERR] ' + data.toString()));
 
   await new Promise(r => setTimeout(r, 4000)); // Wait for Cp to start
 
   console.log('Starting Sz Substrate...');
-  const szProcess = spawn(SUBSTRATE_BIN, ['run', '--config', path.join(TEST_DIR, 'sz.toml')], {
-    cwd: WORKSPACE_DIR,
-    env: { ...process.env, RUST_LOG: 'info', NO_COLOR: '1' }
-  });
+  const szProcess = spawnLogged(SUBSTRATE_BIN, ['run', '--config', path.join(TEST_DIR, 'sz.toml')], 'sz');
   (global as any).__SZ_PROCESS__ = szProcess;
-
-  let szDid = '';
-  let szOutputBuffer = '';
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Timeout waiting for Sz DID')), 20000);
-    szProcess.stdout.on('data', (data) => {
-      const output = data.toString();
-      szOutputBuffer += output;
-      process.stdout.write('[Sz] ' + output);
-      const match = szOutputBuffer.match(/substrate identity initialized(?:.*?)did:\s*(did:key:[a-z0-9]+)/i);
-      if (match && !szDid) {
-        szDid = match[1];
-        clearTimeout(timer);
-        resolve();
-      }
-    });
-    szProcess.stderr.on('data', data => process.stdout.write('[Sz ERR] ' + data.toString()));
-    szProcess.on('error', err => { clearTimeout(timer); reject(err); });
-  });
+  const szDid = await waitForDid(szProcess, 'sz');
   console.log('Sz DID:', szDid);
 
   console.log('Starting Sx Substrate...');
-  const sxProcess = spawn(SUBSTRATE_BIN, ['run', '--config', path.join(TEST_DIR, 'sx.toml')], {
-    cwd: WORKSPACE_DIR,
-    env: { ...process.env, RUST_LOG: 'info', NO_COLOR: '1' }
-  });
+  const sxProcess = spawnLogged(SUBSTRATE_BIN, ['run', '--config', path.join(TEST_DIR, 'sx.toml')], 'sx');
   (global as any).__SX_PROCESS__ = sxProcess;
-
-  let sxDid = '';
-  let sxOutputBuffer = '';
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Timeout waiting for Sx DID')), 20000);
-    sxProcess.stdout.on('data', (data) => {
-      const output = data.toString();
-      sxOutputBuffer += output;
-      process.stdout.write('[Sx] ' + output);
-      const match = sxOutputBuffer.match(/substrate identity initialized(?:.*?)did:\s*(did:key:[a-z0-9]+)/i);
-      if (match && !sxDid) {
-        sxDid = match[1];
-        clearTimeout(timer);
-        resolve();
-      }
-    });
-    sxProcess.stderr.on('data', data => process.stdout.write('[Sx ERR] ' + data.toString()));
-    sxProcess.on('error', err => { clearTimeout(timer); reject(err); });
-  });
+  const sxDid = await waitForDid(sxProcess, 'sx');
   console.log('Sx DID:', sxDid);
 
   // Spawn a single miniapp demo1 on dynamic port (shared target for Sz and Sx)
   console.log(`Starting miniapp on port ${ports.miniappPort}...`);
   await miniappPortRes.release();
-  const miniapp1Process = spawn(MINIAPP_BIN, ['--port', ports.miniappPort.toString(), '--https-port', '0', '--data-dir', path.join(TEST_DIR, 'miniapp-data1')], {
-    cwd: WORKSPACE_DIR,
-    env: { ...process.env, RUST_LOG: 'info' }
-  });
+  const miniapp1Process = spawnLogged(MINIAPP_BIN, ['--port', ports.miniappPort.toString(), '--https-port', '0', '--data-dir', path.join(TEST_DIR, 'miniapp-data1')], 'miniapp1');
   (global as any).__MINIAPP1_PROCESS__ = miniapp1Process;
-  miniapp1Process.stdout.on('data', data => process.stdout.write('[Miniapp1] ' + data.toString()));
-  miniapp1Process.stderr.on('data', data => process.stdout.write('[Miniapp1 ERR] ' + data.toString()));
 
   await new Promise(r => setTimeout(r, 4000));
 
