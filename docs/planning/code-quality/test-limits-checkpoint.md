@@ -9,9 +9,9 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 | Unit | What | Status | Commit | Notes |
 |---|---|---|---|---|
 | 1 | Baseline | done | 9efbe6ef | count 2553, branched at 743f74a0 |
-| 2 | Suppressions A-F | done | (pending commit) | 0 targeted allows needed for A-F crates except control_plane (6 hits) |
-| 3 | Suppressions G-R | done | (pending commit) | 1 targeted allow: router/proxy/tests.rs:outbox_node |
-| 4 | Suppressions S-Z, apps, tests, xtask | done | (pending commit) | 0 targeted allows needed |
+| 2 | Suppressions A-F | done | 8ef99594 | 6 targeted allows (4 orchestration, 2 service/tests) |
+| 3 | Suppressions G-R | done | 8ef99594 | 1 targeted allow: router/proxy/tests.rs:outbox_node |
+| 4 | Suppressions S-Z, apps, tests, xtask | done | 8ef99594 | 0 targeted allows needed |
 | 5 | Split control_plane orchestration/tests.rs (8,596 lines) | not started | | |
 | 6 | Split app_supervisor service/tests.rs (8,483 lines) | not started | | |
 | 7 | Split roym_web tests/dual_build_parity.rs (7,146 lines) | not started | | |
