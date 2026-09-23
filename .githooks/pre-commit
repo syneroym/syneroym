@@ -2,9 +2,9 @@
 
 # Ensure formatting is correct
 echo "Checking cargo fmt..."
-cargo fmt --all -- --check
+cargo +nightly fmt --all -- --check
 if [ $? -ne 0 ]; then
-    echo "❌ cargo fmt failed! Please format your code using 'cargo fmt'."
+    echo "❌ cargo fmt failed! Please format your code using 'cargo +nightly fmt --all'."
     exit 1
 fi
 
