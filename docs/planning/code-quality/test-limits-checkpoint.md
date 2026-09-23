@@ -17,14 +17,14 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 | 7 | Split roym_web tests/dual_build_parity.rs (7,146 lines) | done | f66619ca | split into 7 test modules + helpers + fixtures, all <=1,600 lines, count 2553 |
 | 8 | Split router src/proxy/tests.rs (2,927 lines) | done | 03f04882 | split into 6 modules + helpers under proxy/tests/, all <620 lines, count 2553 |
 | 9 | Split router tests/native_dispatch_identity.rs (2,877 lines) | done | d65b2168 | split into 5 modules + helpers under tests/native_dispatch_identity/, all <650 lines, count 2553 |
-| 10 | Split app_host_native tests/dual_build_parity.rs (2,441 lines) | not started | | |
+| 10 | Split app_host_native tests/dual_build_parity.rs (2,441 lines) | done | e02d8f1e | split into 6 modules + helpers under tests/dual_build_parity/, all <900 lines, count 2553 |
 | 11 | Enforcement: file-length limit for test files | not started | | |
 | 12 | Enforcement: cap number of suppressions | not started | | |
 | 13 | Wire in and document | not started | | |
 | 14 | Final verification and pull request | not started | | |
 
 ## Running numbers
-- Targeted allows added so far: 17 (4 in orchestration/tests/{rollback,assets}, 2 in app_supervisor/service/tests, 1 in router/proxy/tests.rs:outbox_node, 6 in roym_web/tests/dual_build_parity/{helpers,transaction,transaction_cards}, 4 in router/tests/native_dispatch_identity/{fdae_enforcement,cross_service_fetch})
+- Targeted allows added so far: 19 (4 in orchestration/tests/{rollback,assets}, 2 in app_supervisor/service/tests, 1 in router/proxy/tests.rs:outbox_node, 6 in roym_web/tests/dual_build_parity/{helpers,transaction,transaction_cards}, 4 in router/tests/native_dispatch_identity/{fdae_enforcement,cross_service_fetch}, 2 in app_host_native/tests/dual_build_parity/{permitted_differences,signing})
 - Files still holding a file-level allow: 0 (all removed)
 - Test count at last check: 2553 (matches baseline)
 
@@ -35,6 +35,7 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 - Unit 7: roym_web tests/dual_build_parity.rs split into profile, catalog, conversation, wire_origin, directory, transaction, transaction_cards, along with shared helpers and fixtures. All 147 tests preserved, none duplicated.
 - Unit 8: router src/proxy/tests.rs split into outbox, dead_letter, local_dispatch, remote_dispatch, sagas, saga_walk, and helpers. All 87 tests preserved, none duplicated.
 - Unit 9: router tests/native_dispatch_identity.rs split into access_control, queries, fdae_enforcement, resolve_relation, cross_service_fetch, and helpers. All 39 tests preserved, none duplicated.
+- Unit 10: app_host_native tests/dual_build_parity.rs split into conversation, data_layer, host_services, http, permitted_differences, signing, and helpers. All 40 tests preserved, none duplicated.
 
 ## Test renames so far
 - service::orchestration::tests::<name> -> service::orchestration::tests::{app_instance, assets, cert, deploy, fdae_policy, lifecycle, probes, proxy_queue, rollback, status}::<name> (177 tests moved into submodules, Unit 5)
@@ -42,6 +43,7 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 - dual_build_parity::<name> -> dual_build_parity::{profile, catalog, conversation, wire_origin, directory, transaction, transaction_cards}::<name> (147 tests moved into submodules, Unit 7)
 - proxy::tests::<name> -> proxy::tests::{outbox, dead_letter, local_dispatch, remote_dispatch, sagas, saga_walk}::<name> (87 tests moved into submodules, Unit 8)
 - native_dispatch_identity::<name> -> native_dispatch_identity::{access_control, queries, fdae_enforcement, resolve_relation, cross_service_fetch}::<name> (39 tests moved into submodules, Unit 9)
+- dual_build_parity::<name> -> dual_build_parity::{conversation, data_layer, host_services, http, signing}::<name> (36 tests moved into submodules; 4 permitted_differences tests retained their module path, Unit 10)
 
 ## Problems and open questions
 (none)
