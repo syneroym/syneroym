@@ -12,7 +12,7 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 | 2 | Suppressions A-F | done | 8ef99594 | 6 targeted allows (4 orchestration, 2 service/tests) |
 | 3 | Suppressions G-R | done | 8ef99594 | 1 targeted allow: router/proxy/tests.rs:outbox_node |
 | 4 | Suppressions S-Z, apps, tests, xtask | done | 8ef99594 | 0 targeted allows needed |
-| 5 | Split control_plane orchestration/tests.rs (8,596 lines) | not started | | |
+| 5 | Split control_plane orchestration/tests.rs (8,596 lines) | done | (pending commit) | split into 10 modules + helpers under tests/, all <1,500 lines, count 2553 |
 | 6 | Split app_supervisor service/tests.rs (8,483 lines) | not started | | |
 | 7 | Split roym_web tests/dual_build_parity.rs (7,146 lines) | not started | | |
 | 8 | Split router src/proxy/tests.rs (2,927 lines) | not started | | |
@@ -24,15 +24,16 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 | 14 | Final verification and pull request | not started | | |
 
 ## Running numbers
-- Targeted allows added so far: 7 (4 in orchestration/tests.rs, 2 in service/tests.rs, 1 in router/proxy/tests.rs)
+- Targeted allows added so far: 7 (4 in orchestration/tests/{rollback,assets}, 2 in service/tests.rs, 1 in router/proxy/tests.rs)
 - Files still holding a file-level allow: 0 (all removed)
-- Test count at last check: 2553 (pending re-verification after suppression changes)
+- Test count at last check: 2553 (matches baseline)
 
 ## Decisions made
 - GEMINI.md is a symlink to AGENTS.md; Unit 13 updates GEMINI.md/AGENTS.md
+- Unit 5: orchestration tests split into app_instance, assets, cert, deploy, fdae_policy, lifecycle, probes, proxy_queue, rollback, status, and helpers matching production module boundaries. All 177 tests preserved, none duplicated.
 
 ## Test renames so far
-(none yet)
+- service::orchestration::tests::<name> -> service::orchestration::tests::{app_instance, assets, cert, deploy, fdae_policy, lifecycle, probes, proxy_queue, rollback, status}::<name> (177 tests moved into submodules, Unit 5)
 
 ## Problems and open questions
 (none)
