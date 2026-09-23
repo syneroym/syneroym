@@ -568,11 +568,99 @@ fn check_duplication() -> Result<()> {
     Ok(())
 }
 
+/// Ceiling on clippy::too_many_lines suppressions across the workspace.
+///
+/// This is a ratchet: it moves down only. The intent is to cap existing
+/// suppressions and ratchet down as oversized functions are decomposed.
+const MAX_TOO_MANY_LINES_SUPPRESSIONS: usize = 82;
+
+fn check_lint_suppressions() -> Result<()> {
+    println!(
+        "Checking clippy::too_many_lines suppressions (max {MAX_TOO_MANY_LINES_SUPPRESSIONS})..."
+    );
+    let workspace_root = get_workspace_root();
+    let output = Command::new("git")
+        .args(["ls-files", "*.rs"])
+        .current_dir(&workspace_root)
+        .output()
+        .map_err(|e| anyhow::anyhow!("failed to run `git ls-files`: {e}"))?;
+
+    if !output.status.success() {
+        bail!("`git ls-files` failed");
+    }
+
+    let files_str = String::from_utf8_lossy(&output.stdout);
+    let mut suppressions = Vec::new();
+
+    for rel_path in files_str.lines() {
+        let path = workspace_root.join(rel_path);
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let mut in_allow = false;
+        let mut allow_start_line = 0;
+        let mut allow_buf = String::new();
+
+        for (line_no, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            if !in_allow {
+                if trimmed.starts_with("#[allow(") || trimmed.starts_with("#![allow(") {
+                    in_allow = true;
+                    allow_start_line = line_no + 1;
+                    allow_buf.clear();
+                    allow_buf.push_str(trimmed);
+                    if trimmed.ends_with(")]") {
+                        in_allow = false;
+                        if allow_buf.contains("too_many_lines") {
+                            suppressions.push((rel_path.to_string(), allow_start_line));
+                        }
+                    }
+                }
+            } else {
+                allow_buf.push(' ');
+                allow_buf.push_str(trimmed);
+                if trimmed.ends_with(")]") {
+                    in_allow = false;
+                    if allow_buf.contains("too_many_lines") {
+                        suppressions.push((rel_path.to_string(), allow_start_line));
+                    }
+                }
+            }
+        }
+    }
+
+    let total = suppressions.len();
+    println!("Found {total} clippy::too_many_lines suppression(s) across tracked files.");
+
+    if total > MAX_TOO_MANY_LINES_SUPPRESSIONS {
+        eprintln!(
+            "ERROR: too_many_lines suppressions ({total}) exceed maximum allowed \
+             ({MAX_TOO_MANY_LINES_SUPPRESSIONS}):"
+        );
+        for (file, line) in &suppressions {
+            eprintln!("  {file}:{line}");
+        }
+        bail!(
+            "Lint suppressions check failed: {total} exceeds maximum of \
+             {MAX_TOO_MANY_LINES_SUPPRESSIONS}"
+        );
+    }
+
+    println!(
+        "All clippy::too_many_lines suppressions are within the limit ({total} <= \
+         {MAX_TOO_MANY_LINES_SUPPRESSIONS})."
+    );
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("check-roym-deps") => check_roym_deps(),
         Some("check-file-lengths") => check_file_lengths(),
+        Some("check-lint-suppressions") => check_lint_suppressions(),
         Some("check-duplication") => check_duplication(),
         Some("perf-summary") | None => perf_summary(),
         Some(other) => bail!("Unknown xtask command: {other}"),
