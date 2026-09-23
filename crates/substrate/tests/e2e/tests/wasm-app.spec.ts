@@ -1,4 +1,4 @@
-import { test, expect, Browser, Page } from '@playwright/test';
+import { test, expect, Browser, Page } from '../fixtures';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -38,7 +38,6 @@ async function postComment(page: Page, text: string) {
     test.describe.configure({ timeout: 90_000 });
 
     test.beforeEach(async ({ page }) => {
-      page.on('console', msg => console.log('BROWSER:', msg.text()));
       const wasmAppDid = process.env.WASM_APP_DID;
       expect(wasmAppDid).toBeDefined();
 

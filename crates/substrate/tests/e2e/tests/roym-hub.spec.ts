@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../fixtures';
 import { readE2EPorts } from '../ports';
 
 let HUB_URL: string;
@@ -24,7 +24,6 @@ test.describe('Roym Hub', () => {
   });
 
   test.beforeEach(async ({ page }) => {
-    page.on('console', msg => console.log('BROWSER:', msg.text()));
     expect(process.env.ROYM_WEB_ALIAS).toBeDefined();
   });
 

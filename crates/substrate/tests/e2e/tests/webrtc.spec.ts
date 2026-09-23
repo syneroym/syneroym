@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../fixtures';
 import * as fs from 'fs';
 import * as path from 'path';
 import { readE2EPorts } from '../ports';
@@ -6,7 +6,6 @@ import { readE2EPorts } from '../ports';
 [false, true].forEach(forceTunnel => {
   test.describe(`WebRTC Substrate E2E (forceTunnel=${forceTunnel})`, () => {
     test.beforeEach(async ({ page }) => {
-      page.on('console', msg => console.log('BROWSER:', msg.text()));
       const appDid = process.env.APP_DID;
       expect(appDid).toBeDefined();
 

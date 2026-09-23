@@ -103,8 +103,9 @@ how the drift happened, so do not add one here without an enforcement path.**
   *Checked by:* `cargo xtask check-file-lengths` (and `mise run check:file-lengths`), and review.
 - **Look for an existing helper before writing a new one.** Duplication here is
   rarely a literal copy — it is the same shape with different names and config
-  values, which a text search misses. Run `cargo dupes report --exclude
-  'bindings.rs' --exclude 'target'` over your change before you finish.
+  values, which a text search misses. Run `cargo dupes report` over your
+  change before you finish (filtered to your files; recipe under **Context
+  Budget** below).
   *Checked by:* `cargo xtask check-duplication` (and `mise run
   check:duplication`), ratcheted at `--max-exact-percent 9.0` for now.
 - **Reuse the test harness.** Substrate integration tests use
@@ -153,6 +154,22 @@ On `exit=0` you are done (doctests still need a separate `cargo test --workspace
 ```bash
 grep -nE 'error\[|panicked|FAIL \[|^\s+FAIL|Summary' target/test-run.log
 ```
+
+`mise run test:rust` runs the same suite plus its build steps, straight to the terminal — redirect it the same way.
+
+The other commands that print a lot, and how to run them:
+
+- **Single tests: use nextest, not `cargo test`.** `cargo nextest run -p <crate> [--test <file>] <filter>` prints about 13 lines. `cargo test -p syneroym-substrate <filter>` prints an empty "running 0 tests" block for each of the crate's ~40 test binaries (~13 KB, every run). Keep `cargo test` for doctests only.
+- **Debug logging: always to a file, filtered by crate.** When you need `RUST_LOG` above `warn` or `--no-capture`, redirect and then `grep`/`tail` the file. Set the level per crate (`RUST_LOG=warn,syneroym_router=debug`), not globally: one multi-node test prints ~70 KB at global `info` and ~1.7 MB at global `debug`.
+- **Playwright e2e:** the node logs go to `crates/substrate/tests/e2e/e2e-logs/`, and the browser console is printed only for a failing test. Still redirect the run, because it includes cargo/npm build output:
+  ```bash
+  mise run test:e2e > target/e2e-run.log 2>&1; echo "exit=$?"; tail -n 15 target/e2e-run.log
+  ```
+- **Duplication report:** `cargo dupes report` lists every duplicate group in the workspace (~270 KB). Save it and look only at the lines for the files you changed, then `Read` the groups around those line numbers:
+  ```bash
+  cargo dupes report --exclude bindings.rs --exclude target > target/dupes.log; git diff --name-only main... -- '*.rs' > target/changed.txt; [ -s target/changed.txt ] && grep -nF -f target/changed.txt target/dupes.log
+  ```
+- **Clippy after a fresh build** prints a `Compiling`/`Checking` line for each of ~930 crates. `cargo clippy -q …` hides them and still shows every warning.
 
 The substrate's log level already defaults to `warn` (`.cargo/config.toml` `[env]`); don't add `RUST_LOG=info`/`debug` or `-- --nocapture` to a routine run — only when actively diagnosing a specific failure. Likewise prefer targeted `Read` ranges over re-reading whole files you've already seen, and push pure exploration/search legs of a task (finding call sites, scanning logs) into a subagent so only the distilled answer lands in the main thread.
 
