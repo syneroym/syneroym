@@ -20,7 +20,7 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 | 10 | Split app_host_native tests/dual_build_parity.rs (2,441 lines) | done | e02d8f1e | split into 6 modules + helpers under tests/dual_build_parity/, all <900 lines, count 2553 |
 | 11 | Enforcement: file-length limit for test files | done | f95a5ecb | MAX_TEST_LINES=1800 ratchet added to xtask check-file-lengths, tested failure & pass |
 | 12 | Enforcement: cap number of suppressions | done | da1f2c84 | MAX_TOO_MANY_LINES_SUPPRESSIONS=82 ratchet added, tested failure & pass |
-| 13 | Wire in and document | not started | | |
+| 13 | Wire in and document | done | 1b7f330d | wired check-lint-suppressions into ci.yml & mise.toml, updated AGENTS.md & deferred-backlog.md |
 | 14 | Final verification and pull request | not started | | |
 
 ## Running numbers
