@@ -14,8 +14,8 @@
 //! Both nodes come from `common::SubstrateNode`: a supervisor node hosting
 //! the registry and a managed node publishing into it through a shared relay.
 //! `common::serial_guard` keeps this binary's tests from running substrate
-//! stacks at once. `boot_pair` delegates to
-//! `common::supervisor_and_managed`; the manifest helpers are local.
+//! stacks at once. `common::supervisor_and_managed` boots the node pair;
+//! the manifest helpers are local.
 
 use std::{
     collections::BTreeMap,
@@ -169,17 +169,6 @@ fn two_service_manifest_with_topology_vis(
     }
 }
 
-/// Boots a supervisor node and a managed node (the managed one sharing the
-/// supervisor's registry and relay), grants the supervisor's own node-wide
-/// `orchestrator/deploy` on the managed node, and returns everything a test
-/// needs to call `submit`.
-async fn boot_pair(
-    supervisor_owner: &Identity,
-    managed_owner: &Identity,
-) -> (SubstrateNode, SubstrateNode, String) {
-    supervisor_and_managed(supervisor_owner, managed_owner, 2, MANAGED_ALIAS).await
-}
-
 async fn submit_and_adopt_with_manifest(
     supervisor_node: &mut SubstrateNode,
     instance_id: &str,
@@ -266,7 +255,7 @@ async fn an_outside_caller_resolves_an_apps_members_and_calls_one() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner).await;
+        supervisor_and_managed(&supervisor_owner, &managed_owner, 2, MANAGED_ALIAS).await;
 
     let app_did =
         submit_and_adopt(&mut supervisor_node, "resolve-outside-inst", inventory_json, 2).await;
@@ -308,7 +297,7 @@ async fn a_relayed_document_verifies_for_a_party_that_never_contacted_the_superv
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner).await;
+        supervisor_and_managed(&supervisor_owner, &managed_owner, 2, MANAGED_ALIAS).await;
 
     let app_did =
         submit_and_adopt(&mut supervisor_node, "relayed-doc-inst", inventory_json, 1).await;
@@ -346,7 +335,7 @@ async fn a_scaled_out_service_supersedes_the_cached_document_at_a_new_epoch() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner).await;
+        supervisor_and_managed(&supervisor_owner, &managed_owner, 2, MANAGED_ALIAS).await;
 
     let app_did =
         submit_and_adopt(&mut supervisor_node, "scale-out-inst", inventory_json.clone(), 1).await;
@@ -412,7 +401,7 @@ async fn a_cached_document_still_routes_after_the_supervisor_is_down() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner).await;
+        supervisor_and_managed(&supervisor_owner, &managed_owner, 2, MANAGED_ALIAS).await;
 
     let app_did =
         submit_and_adopt(&mut supervisor_node, "cached-survives-inst", inventory_json, 1).await;
@@ -451,7 +440,7 @@ async fn a_caller_with_no_cached_document_fails_cleanly_when_the_supervisor_is_d
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner).await;
+        supervisor_and_managed(&supervisor_owner, &managed_owner, 2, MANAGED_ALIAS).await;
 
     let app_did = submit_and_adopt(&mut supervisor_node, "no-cache-inst", inventory_json, 1).await;
 
@@ -483,7 +472,7 @@ async fn a_document_forged_under_a_different_key_is_rejected() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner).await;
+        supervisor_and_managed(&supervisor_owner, &managed_owner, 2, MANAGED_ALIAS).await;
 
     let app_did =
         submit_and_adopt(&mut supervisor_node, "forged-doc-inst", inventory_json, 1).await;
@@ -520,7 +509,7 @@ async fn an_outside_caller_resolves_an_open_apps_members_with_no_ucan_grant() {
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner).await;
+        supervisor_and_managed(&supervisor_owner, &managed_owner, 2, MANAGED_ALIAS).await;
 
     let manifest = service_manifest_with_vis(2, Visibility::Internal, TopologyVisibility::Open);
     let app_did = submit_and_adopt_with_manifest(
@@ -569,7 +558,7 @@ async fn an_outside_caller_gets_a_different_answer_per_logical_service_in_one_in
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
     let (mut supervisor_node, managed_node, inventory_json) =
-        boot_pair(&supervisor_owner, &managed_owner).await;
+        supervisor_and_managed(&supervisor_owner, &managed_owner, 2, MANAGED_ALIAS).await;
 
     let manifest = two_service_manifest_with_topology_vis(
         TopologyVisibility::Open,
