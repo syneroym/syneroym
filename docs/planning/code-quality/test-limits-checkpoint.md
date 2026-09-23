@@ -12,8 +12,8 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 | 2 | Suppressions A-F | done | 8ef99594 | 6 targeted allows (4 orchestration, 2 service/tests) |
 | 3 | Suppressions G-R | done | 8ef99594 | 1 targeted allow: router/proxy/tests.rs:outbox_node |
 | 4 | Suppressions S-Z, apps, tests, xtask | done | 8ef99594 | 0 targeted allows needed |
-| 5 | Split control_plane orchestration/tests.rs (8,596 lines) | done | (pending commit) | split into 10 modules + helpers under tests/, all <1,500 lines, count 2553 |
-| 6 | Split app_supervisor service/tests.rs (8,483 lines) | not started | | |
+| 5 | Split control_plane orchestration/tests.rs (8,596 lines) | done | 63a2eb1d | split into 10 modules + helpers under tests/, all <1,500 lines, count 2553 |
+| 6 | Split app_supervisor service/tests.rs (8,483 lines) | done | (pending commit) | split into 9 modules + helpers under tests/, all <1,300 lines, count 2553 |
 | 7 | Split roym_web tests/dual_build_parity.rs (7,146 lines) | not started | | |
 | 8 | Split router src/proxy/tests.rs (2,927 lines) | not started | | |
 | 9 | Split router tests/native_dispatch_identity.rs (2,877 lines) | not started | | |
@@ -31,9 +31,11 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 ## Decisions made
 - GEMINI.md is a symlink to AGENTS.md; Unit 13 updates GEMINI.md/AGENTS.md
 - Unit 5: orchestration tests split into app_instance, assets, cert, deploy, fdae_policy, lifecycle, probes, proxy_queue, rollback, status, and helpers matching production module boundaries. All 177 tests preserved, none duplicated.
+- Unit 6: app_supervisor service/tests.rs split into bindings, queue_worker, renewal, resident_loop, resolve, rotation, schedules, status, verbs, and helpers matching production module boundaries. All 216 tests preserved, none duplicated.
 
 ## Test renames so far
 - service::orchestration::tests::<name> -> service::orchestration::tests::{app_instance, assets, cert, deploy, fdae_policy, lifecycle, probes, proxy_queue, rollback, status}::<name> (177 tests moved into submodules, Unit 5)
+- service::tests::<name> -> service::tests::{bindings, queue_worker, renewal, resident_loop, resolve, rotation, schedules, status, verbs}::<name> (216 tests moved into submodules, Unit 6)
 
 ## Problems and open questions
 (none)
