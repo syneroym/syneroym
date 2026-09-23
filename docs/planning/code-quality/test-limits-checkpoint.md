@@ -15,7 +15,7 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 | 5 | Split control_plane orchestration/tests.rs (8,596 lines) | done | 63a2eb1d | split into 10 modules + helpers under tests/, all <1,500 lines, count 2553 |
 | 6 | Split app_supervisor service/tests.rs (8,483 lines) | done | 981474ad | split into 9 modules + helpers under tests/, all <1,300 lines, count 2553 |
 | 7 | Split roym_web tests/dual_build_parity.rs (7,146 lines) | done | f66619ca | split into 7 test modules + helpers + fixtures, all <=1,600 lines, count 2553 |
-| 8 | Split router src/proxy/tests.rs (2,927 lines) | done | (pending commit) | split into 6 modules + helpers under proxy/tests/, all <620 lines, count 2553 |
+| 8 | Split router src/proxy/tests.rs (2,927 lines) | done | 03f04882 | split into 6 modules + helpers under proxy/tests/, all <620 lines, count 2553 |
 | 9 | Split router tests/native_dispatch_identity.rs (2,877 lines) | not started | | |
 | 10 | Split app_host_native tests/dual_build_parity.rs (2,441 lines) | not started | | |
 | 11 | Enforcement: file-length limit for test files | not started | | |
