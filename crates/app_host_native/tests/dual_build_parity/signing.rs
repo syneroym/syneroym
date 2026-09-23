@@ -83,7 +83,7 @@ async fn sign_with_float_payload_is_refused_on_both_builds() {
 // payload, revoked keys, tampered payloads) are covered via unit tests in
 // `syneroym-signed-record`.
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "comprehensive dual-build signing parity scenarios")]
 async fn delegated_signing_scenarios_and_verify_failures_on_both_builds() {
     let h = harness().await;
     let wasm_id = assert_signing_identity("wasm", &h.wasm).await;

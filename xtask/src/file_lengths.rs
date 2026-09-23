@@ -1,11 +1,11 @@
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeMap, HashSet},
     fs,
     path::Path,
     process::Command,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 
 /// Maximum allowed production source lines (excluding `#[cfg(test)]` blocks).
 const MAX_PRODUCTION_LINES: usize = 800;
@@ -39,50 +39,85 @@ pub(crate) fn is_test_file(path: &Path) -> bool {
     if path.file_name().and_then(|n| n.to_str()) == Some("build.rs") {
         return false;
     }
-    is_test_path(path) || !path.iter().any(|c| c == "src")
+    let mut in_src = false;
+    for component in path.iter() {
+        if component == "src" {
+            in_src = true;
+            break;
+        }
+    }
+    if !in_src {
+        return true;
+    }
+    is_test_path(path)
 }
 
 pub(crate) fn count_production_lines(content: &str) -> usize {
     let mut prod_lines = 0;
-    let mut in_test = false;
-    let mut test_depth = 0;
-    let mut brace_depth = 0;
+    let mut in_cfg_test = false;
+    let mut brace_depth: usize = 0;
+
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.contains("#[cfg(test)]") {
-            in_test = true;
-            test_depth = brace_depth;
+            in_cfg_test = true;
+            brace_depth = 0;
+            continue;
         }
-        let open_b = line.matches('{').count();
-        let close_b = line.matches('}').count();
-        if in_test {
-            brace_depth = (brace_depth + open_b).saturating_sub(close_b);
-            if (open_b == 0 && trimmed.starts_with("mod ") && trimmed.ends_with(';'))
-                || (brace_depth <= test_depth && close_b > 0)
-            {
-                in_test = false;
+
+        if in_cfg_test {
+            for c in trimmed.chars() {
+                if c == '{' {
+                    brace_depth += 1;
+                } else if c == '}' {
+                    brace_depth = brace_depth.saturating_sub(1);
+                    if brace_depth == 0 {
+                        in_cfg_test = false;
+                    }
+                }
             }
-        } else {
-            brace_depth = (brace_depth + open_b).saturating_sub(close_b);
-            prod_lines += 1;
+            continue;
         }
+
+        prod_lines += 1;
     }
+
     prod_lines
 }
 
-fn load_oversized_test_files(workspace_root: &Path) -> Result<BTreeSet<String>> {
+fn load_oversized_test_files(workspace_root: &Path) -> Result<BTreeMap<String, usize>> {
     let list_path = workspace_root.join("xtask/oversized-test-files.txt");
     if !list_path.exists() {
-        return Ok(BTreeSet::new());
+        return Ok(BTreeMap::new());
     }
     let content = fs::read_to_string(&list_path)?;
-    let mut files = BTreeSet::new();
-    for line in content.lines() {
+    let mut files = BTreeMap::new();
+    for (line_no, line) in content.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        files.insert(trimmed.to_string());
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() == 2 {
+            let path = parts[0].trim_end_matches(':');
+            let max_lines: usize = parts[1].parse().map_err(|e| {
+                anyhow!(
+                    "invalid line limit '{}' at {}:{}: {e}",
+                    parts[1],
+                    list_path.display(),
+                    line_no + 1
+                )
+            })?;
+            files.insert(path.to_string(), max_lines);
+        } else if parts.len() == 1 {
+            files.insert(parts[0].to_string(), MAX_TEST_LINES);
+        } else {
+            bail!(
+                "invalid format at {}:{}: expected '<path> <max_lines>'",
+                list_path.display(),
+                line_no + 1
+            );
+        }
     }
     Ok(files)
 }
@@ -90,15 +125,20 @@ fn load_oversized_test_files(workspace_root: &Path) -> Result<BTreeSet<String>> 
 fn check_test_file_length(
     rel_path: &str,
     total_lines: usize,
-    oversized_files: &BTreeSet<String>,
+    oversized_files: &BTreeMap<String, usize>,
     seen_oversized: &mut HashSet<String>,
     violations: &mut Vec<String>,
 ) {
-    if oversized_files.contains(rel_path) {
+    if let Some(&recorded_limit) = oversized_files.get(rel_path) {
         seen_oversized.insert(rel_path.to_string());
         if total_lines <= STANDARD_TEST_LIMIT {
             violations.push(format!(
                 "{rel_path}: {total_lines} lines is <= {STANDARD_TEST_LIMIT}; remove from \
+                 xtask/oversized-test-files.txt"
+            ));
+        } else if total_lines > recorded_limit {
+            violations.push(format!(
+                "{rel_path}: {total_lines} lines exceeds recorded limit of {recorded_limit} in \
                  xtask/oversized-test-files.txt"
             ));
         } else if total_lines > MAX_TEST_LINES {
@@ -118,7 +158,7 @@ fn check_test_file_length(
 fn check_production_file_length(
     rel_path: &str,
     content: &str,
-    oversized_files: &BTreeSet<String>,
+    oversized_files: &BTreeMap<String, usize>,
     seen_oversized: &mut HashSet<String>,
     violations: &mut Vec<String>,
 ) {
@@ -131,12 +171,17 @@ fn check_production_file_length(
     }
 
     let inline_test_lines = total_lines.saturating_sub(prod_lines);
-    if oversized_files.contains(rel_path) {
+    if let Some(&recorded_limit) = oversized_files.get(rel_path) {
         seen_oversized.insert(rel_path.to_string());
         if inline_test_lines <= STANDARD_TEST_LIMIT {
             violations.push(format!(
                 "{rel_path}: inline test lines {inline_test_lines} <= {STANDARD_TEST_LIMIT}; \
                  remove from xtask/oversized-test-files.txt"
+            ));
+        } else if inline_test_lines > recorded_limit {
+            violations.push(format!(
+                "{rel_path}: {inline_test_lines} inline test lines exceeds recorded limit of \
+                 {recorded_limit} in xtask/oversized-test-files.txt"
             ));
         } else if inline_test_lines > MAX_TEST_LINES {
             violations.push(format!(
@@ -156,37 +201,36 @@ pub fn check_file_lengths() -> Result<()> {
     println!("Checking source file lengths...");
     let workspace_root = crate::get_workspace_root();
     let output = Command::new("git")
-        .args(["ls-files", "*.rs"])
+        .args(["ls-files", "--cached", "--others", "--exclude-standard", "*.rs"])
         .current_dir(&workspace_root)
         .output()
-        .map_err(|e| anyhow::anyhow!("failed to run `git ls-files`: {e}"))?;
+        .map_err(|e| anyhow!("failed to run `git ls-files`: {e}"))?;
 
     if !output.status.success() {
         bail!("`git ls-files` failed");
     }
 
-    let files_str = String::from_utf8_lossy(&output.stdout);
+    let files = String::from_utf8_lossy(&output.stdout);
     let oversized_files = load_oversized_test_files(&workspace_root)?;
     let mut seen_oversized = HashSet::new();
     let mut violations = Vec::new();
     let mut prod_checked = 0;
     let mut test_checked = 0;
 
-    for rel_path in files_str.lines() {
-        let path = workspace_root.join(rel_path);
-        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let is_test = is_test_file(&path);
-
-        if filename == "bindings.rs" && !is_test {
+    for line in files.lines() {
+        let rel_path = line.trim();
+        if rel_path.is_empty() {
             continue;
         }
 
-        let content = match fs::read_to_string(&path) {
+        let full_path = workspace_root.join(rel_path);
+        let content = match fs::read_to_string(&full_path) {
             Ok(c) => c,
             Err(_) => continue,
         };
 
-        if is_test {
+        let path = Path::new(rel_path);
+        if is_test_file(path) {
             test_checked += 1;
             let total_lines = content.lines().count();
             check_test_file_length(
@@ -208,7 +252,7 @@ pub fn check_file_lengths() -> Result<()> {
         }
     }
 
-    for listed in &oversized_files {
+    for listed in oversized_files.keys() {
         if !seen_oversized.contains(listed) {
             violations.push(format!(
                 "{listed}: listed in xtask/oversized-test-files.txt but does not exist in tracked \
@@ -226,7 +270,7 @@ pub fn check_file_lengths() -> Result<()> {
 
     println!(
         "All {prod_checked} production files (<= {MAX_PRODUCTION_LINES} lines) and {test_checked} \
-         test files (<= {STANDARD_TEST_LIMIT} lines, or <= {MAX_TEST_LINES} lines in \
+         test files (<= {STANDARD_TEST_LIMIT} lines, or within recorded limits in \
          xtask/oversized-test-files.txt) adhere to length limits."
     );
     Ok(())

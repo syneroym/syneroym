@@ -1,3 +1,9 @@
+// `dispatch.rs`'s native arm threads the router-verified `CallerContext`
+// into `NativeInvocation.caller` -- the one ingress ADR-0017 can honestly
+// claim as *enforced*. This is the headline proof: a deployed policy,
+// reached through the real `dispatch_json_rpc_once` path, row-filters and
+// column-masks for two distinct verified callers.
+
 use super::helpers::*;
 
 #[tokio::test]

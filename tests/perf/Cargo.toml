@@ -35,3 +35,6 @@ syneroym-mqtt-broker.workspace = true
 wasmtime.workspace = true
 tempfile.workspace = true
 # none for now
+
+[lints]
+workspace = true

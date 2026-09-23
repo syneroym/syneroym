@@ -69,6 +69,7 @@ fn calculate_slope(values: &[f64]) -> f64 {
     if denominator.abs() > 1e-6 { (n * sum_xy - sum_x * sum_y) / denominator } else { 0.0 }
 }
 
+#[expect(clippy::too_many_lines, reason = "comprehensive soak and endurance benchmark scenario")]
 pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     info!("Initializing Soak / Endurance Test Environment...");
     let mut env = TestEnvironment::new().await?;
@@ -79,7 +80,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
         "Failed to read compiled test WASM component. Ensure it has been built successfully.",
     )?;
 
-    let app_identity = Identity::generate().unwrap();
+    let app_identity = Identity::generate()?;
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     let registry_url = "http://127.0.0.1:7961".to_string();
@@ -122,7 +123,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
         not_after: u64::MAX / 2,
         generation: 0,
     };
-    let signed_info = info_reg.sign(&app_identity).unwrap();
+    let signed_info = info_reg.sign(&app_identity)?;
 
     let res =
         http_client.post(format!("{registry_url}/register")).json(&signed_info).send().await?;
@@ -279,7 +280,14 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
             cycle += 1;
             dep_cycles_clone.fetch_add(1, Ordering::Relaxed);
 
-            let churn_identity = Identity::generate().unwrap();
+            let churn_identity = match Identity::generate() {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!("Deploy Churn Cycle {} failed to generate identity: {:?}", cycle, e);
+                    dep_err_clone.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            };
             let unique_service_id = substrate::derive_did_key(&churn_identity.public_key());
             info!("Deploy Churn Cycle {}: Deploying {}", cycle, unique_service_id);
 
@@ -322,7 +330,14 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                         not_after: u64::MAX / 2,
                         generation: 0,
                     };
-                    let signed_info = info_reg.sign(&churn_identity).unwrap();
+                    let signed_info = match info_reg.sign(&churn_identity) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!("Deploy Churn Cycle {} failed to sign info: {:?}", cycle, e);
+                            dep_err_clone.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                    };
 
                     let reg_res = http_client
                         .post(format!("{registry_url_clone}/register"))
@@ -330,7 +345,11 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                         .send()
                         .await;
 
-                    if reg_res.is_err() || !reg_res.unwrap().status().is_success() {
+                    let reg_ok = match reg_res {
+                        Ok(ref res) => res.status().is_success(),
+                        Err(_) => false,
+                    };
+                    if !reg_ok {
                         warn!(
                             "Deploy Churn Cycle {} failed to register unique service in registry",
                             cycle

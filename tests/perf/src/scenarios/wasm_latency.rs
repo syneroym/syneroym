@@ -45,6 +45,7 @@ const BASELINE_FUEL: u64 = 10_000_000_000;
 /// epoch never advances and any positive deadline is safe here.
 const BASELINE_EPOCH_DEADLINE_TICKS: u64 = 1;
 
+#[expect(clippy::too_many_lines, reason = "wasm latency microbenchmark scenario")]
 pub async fn run_scenario() -> Result<()> {
     let mut env = TestEnvironment::new().await?;
     env.start_substrate().await?;
@@ -171,7 +172,7 @@ pub async fn run_scenario() -> Result<()> {
     );
 
     // 2. Via Substrate
-    let app_identity = Identity::generate().unwrap();
+    let app_identity = Identity::generate()?;
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     let registry_url = "http://127.0.0.1:7961".to_string();
@@ -212,7 +213,7 @@ pub async fn run_scenario() -> Result<()> {
         not_after: u64::MAX / 2,
         generation: 0,
     };
-    let signed_info = info.sign(&app_identity).unwrap();
+    let signed_info = info.sign(&app_identity)?;
 
     let res =
         http_client.post(format!("{registry_url}/register")).json(&signed_info).send().await?;

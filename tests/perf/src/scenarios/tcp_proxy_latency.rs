@@ -42,7 +42,7 @@ pub async fn run_scenario() -> Result<()> {
     );
 
     // Generate an identity for the TCP app
-    let app_identity = Identity::generate().unwrap();
+    let app_identity = Identity::generate()?;
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     // Default ports for dev mode
@@ -89,7 +89,7 @@ pub async fn run_scenario() -> Result<()> {
         not_after: u64::MAX / 2,
         generation: 0,
     };
-    let signed_info = info.sign(&app_identity).unwrap();
+    let signed_info = info.sign(&app_identity)?;
 
     let res =
         http_client.post(format!("{registry_url}/register")).json(&signed_info).send().await?;
@@ -100,8 +100,7 @@ pub async fn run_scenario() -> Result<()> {
         &app_service_id,
         Some("default"),
         "localhost",
-    )
-    .unwrap();
+    )?;
 
     // Warmup Via Substrate
     for _ in 0..10 {
