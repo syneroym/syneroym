@@ -1,4 +1,4 @@
-#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+#![allow(clippy::cognitive_complexity)]
 
 use std::{
     fs,
@@ -3554,6 +3554,7 @@ async fn test_redeploy_without_fdae_block_clears_previous_policy() {
     );
 }
 
+#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn test_deploy_failure_restores_previous_fdae_policy_not_the_new_one() {
     let temp_dir = tempfile::tempdir().unwrap();
@@ -3917,6 +3918,7 @@ impl EndpointStorage for FailingEndpointStorage {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_policy() {
     let temp_dir = tempfile::tempdir().unwrap();
@@ -4065,6 +4067,7 @@ async fn test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_po
     );
 }
 
+#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy() {
     // Regression: `deploy_tcp_service` used to have no rollback at all
@@ -5156,6 +5159,7 @@ async fn test_asset_bundle_redeploy_keeps_shared_blobs_and_drops_removed_ones() 
 /// blob the still-live previous generation references survives.
 /// `Wasm`, not `Tcp`, since an asset bundle is only accepted for a
 /// `Wasm` service as of the same review pass that added this test.
+#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn test_asset_bundle_rollback_on_a_real_deploy_failure_keeps_the_old_generation() {
     let temp_dir = tempfile::tempdir().unwrap();

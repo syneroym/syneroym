@@ -1,4 +1,4 @@
-#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+#![allow(clippy::cognitive_complexity)]
 
 use std::sync::{
     Mutex,
@@ -160,6 +160,7 @@ const CALLER: &str = "did:key:zCaller";
 /// engine behind it fails with the retryable "sandbox engine
 /// unavailable" -- a shutdown-window state, which is exactly the shape
 /// that must queue rather than fail the caller.
+#[allow(clippy::too_many_lines)]
 async fn outbox_node(target_reachable: bool, max_attempts: u8) -> OutboxNode {
     use syneroym_app_orchestration::{
         AppInstanceId, LogicalResolver, LogicalServiceName, ServiceId, StaticInventory,

@@ -3,7 +3,7 @@
 //! consuming file that only needs the macro below doesn't have to pull in
 //! (and trip dead-code warnings on) that unrelated struct.
 
-#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+#![allow(clippy::cognitive_complexity)]
 /// Runs a `SyneroymClient` call expression, retrying it once after an
 /// explicit reconnect if it fails.
 ///

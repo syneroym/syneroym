@@ -8,10 +8,10 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 
 | Unit | What | Status | Commit | Notes |
 |---|---|---|---|---|
-| 1 | Baseline | done | (pending commit) | count 2553, branched at 743f74a0 |
-| 2 | Suppressions A-F | not started | | |
-| 3 | Suppressions G-R | not started | | |
-| 4 | Suppressions S-Z, apps, tests, xtask | not started | | |
+| 1 | Baseline | done | 9efbe6ef | count 2553, branched at 743f74a0 |
+| 2 | Suppressions A-F | done | (pending commit) | 0 targeted allows needed for A-F crates except control_plane (6 hits) |
+| 3 | Suppressions G-R | done | (pending commit) | 1 targeted allow: router/proxy/tests.rs:outbox_node |
+| 4 | Suppressions S-Z, apps, tests, xtask | done | (pending commit) | 0 targeted allows needed |
 | 5 | Split control_plane orchestration/tests.rs (8,596 lines) | not started | | |
 | 6 | Split app_supervisor service/tests.rs (8,483 lines) | not started | | |
 | 7 | Split roym_web tests/dual_build_parity.rs (7,146 lines) | not started | | |
@@ -24,9 +24,9 @@ Baseline test count: 2553  (docs/planning/code-quality/test-limits/)
 | 14 | Final verification and pull request | not started | | |
 
 ## Running numbers
-- Targeted allows added so far: 0
-- Files still holding a file-level allow: 117 (approximately)
-- Test count at last check: 2553  (must equal baseline)
+- Targeted allows added so far: 7 (4 in orchestration/tests.rs, 2 in service/tests.rs, 1 in router/proxy/tests.rs)
+- Files still holding a file-level allow: 0 (all removed)
+- Test count at last check: 2553 (pending re-verification after suppression changes)
 
 ## Decisions made
 - GEMINI.md is a symlink to AGENTS.md; Unit 13 updates GEMINI.md/AGENTS.md
