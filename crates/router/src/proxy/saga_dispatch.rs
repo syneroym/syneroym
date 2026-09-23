@@ -685,7 +685,7 @@ const SAGA_SWEEP_LIMIT: u32 = 16;
 /// intent write) was spent, never `step_timeout_ms` plus that time. A slow
 /// cold open shortens the call the guest's epoch has room for; it does not
 /// borrow against the epoch.
-pub(super) fn step_call_budget_ms(step_timeout_ms: u64, bookkeeping: Duration) -> u64 {
+pub(crate) fn step_call_budget_ms(step_timeout_ms: u64, bookkeeping: Duration) -> u64 {
     step_timeout_ms.saturating_sub(bookkeeping.as_millis() as u64).max(MIN_STEP_CALL_BUDGET_MS)
 }
 
@@ -697,7 +697,7 @@ pub(super) fn step_call_budget_ms(step_timeout_ms: u64, bookkeeping: Duration) -
 /// binds to `none` for an `option<string>` parameter -- so an undo written
 /// as "ensure this is not in effect" works even for a step whose own
 /// result was never recorded.
-pub(super) fn merge_forward_result(params: &Value, result: Option<&Value>) -> Value {
+pub(crate) fn merge_forward_result(params: &Value, result: Option<&Value>) -> Value {
     let Some(result) = result else { return params.clone() };
     match params {
         Value::Object(map) => {

@@ -55,7 +55,7 @@ use crate::{
 ///
 /// Only the former is worth a dead letter: a dead letter exists to be
 /// replayed, and replaying a refusal just re-earns the refusal.
-fn target_produced(error: &ProxyError) -> bool {
+pub(crate) fn target_produced(error: &ProxyError) -> bool {
     match error {
         ProxyError::Callee { code, .. } => {
             *code != CALL_ALREADY_RUNNING_RPC_CODE && *code != CALL_RESULT_NOT_RETAINED_RPC_CODE
@@ -114,7 +114,7 @@ mod tests;
 
 pub use hop::*;
 #[cfg(test)]
-use saga_dispatch::{merge_forward_result, step_call_budget_ms};
+pub(crate) use saga_dispatch::{merge_forward_result, step_call_budget_ms};
 pub use state::*;
 
 /// avoid the `RouteHandlerInner -> ProxyRouter -> AppSandboxEngine ->
