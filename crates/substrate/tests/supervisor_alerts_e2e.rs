@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! The `messaging` registration and the publish/subscribe string symmetry,
 //! proven live across two real
 //! `syneroym-substrate` instances -- no unit test can prove the router's

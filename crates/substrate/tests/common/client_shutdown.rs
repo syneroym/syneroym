@@ -6,7 +6,7 @@
 //! needs this one helper shouldn't have to pull in (and trip dead-code
 //! warnings on) that unrelated struct.
 
-#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+#![allow(clippy::cognitive_complexity)]
 use std::sync::Arc;
 
 use syneroym_sdk::SyneroymClient;

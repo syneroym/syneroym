@@ -78,8 +78,12 @@ description = "Check the Roym service crates' sibling/dependency hygiene"
 run = "cargo xtask check-roym-deps"
 
 [tasks."check:file-lengths"]
-description = "Ensure no production source file exceeds 800 lines"
+description = "Ensure production and new test files stay under 800 lines (grandfathered tests under 1800 lines)"
 run = "cargo xtask check-file-lengths"
+
+[tasks."check:lint-suppressions"]
+description = "Ensure clippy::too_many_lines suppressions stay under the ratchet ceiling"
+run = "cargo xtask check-lint-suppressions"
 
 [tasks."check:duplication"]
 description = "Ensure exact-duplicate code stays under the ratchet ceiling"
@@ -93,7 +97,7 @@ run = """
 
 [tasks."test:rust"]
 description = "Run all Rust unit and integration tests"
-depends = ["build:test-components", "build:roym", "check:roym-deps", "check:file-lengths", "check:duplication", "test:roym-ui"]
+depends = ["build:test-components", "build:roym", "check:roym-deps", "check:file-lengths", "check:lint-suppressions", "check:duplication", "test:roym-ui"]
 # nextest runs every test binary in one parallel pool (see .config/nextest.toml);
 # it does not run doctests, so those follow in a second `cargo test --doc` pass.
 run = [

@@ -1,5 +1,4 @@
 #![allow(
-    clippy::too_many_lines,
     clippy::cognitive_complexity,
     clippy::unwrap_used,
     clippy::expect_used,
@@ -621,6 +620,10 @@ fn history_messages(result: &Value) -> Vec<Value> {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear roym conversation persistence and restart scenario"
+)]
 async fn roym_conversation_survives_restarts_blocks_and_round_trips() {
     let _guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();

@@ -1,5 +1,4 @@
 #![allow(
-    clippy::too_many_lines,
     clippy::cognitive_complexity,
     unsafe_code,
     clippy::unwrap_used,
@@ -29,6 +28,7 @@ const REGISTRY_PORT: u16 = 7971;
 const GATEWAY_PORT: u16 = 7970;
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear native subscriber push delivery scenario")]
 async fn test_native_subscriber_receives_push_delivery_and_close_unsubscribes() {
     let _ = ring::default_provider().install_default();
 

@@ -1,5 +1,6 @@
 use super::*;
 
+#[expect(clippy::too_many_lines, reason = "dispatch table matching all test-component RPC routes")]
 pub(super) async fn dispatch<H: AppHost>(
     host: &H,
     req: Request,

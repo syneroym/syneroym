@@ -1,5 +1,4 @@
 #![allow(
-    clippy::too_many_lines,
     clippy::cognitive_complexity,
     unsafe_code,
     clippy::unwrap_used,
@@ -393,6 +392,7 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
     debug!(">>> Finished WASM Scenario: Run via HTTP Proxy");
 }
 
+#[expect(clippy::too_many_lines, reason = "linear tcp service lifecycle scenario")]
 async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     debug!(">>> Starting TCP Scenario");
 

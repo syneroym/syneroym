@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! A partial deploy across two real managed substrates, one of which is
 //! down at `submit` time.
 //! `submit` now persists desired state before its own best-effort deploy
@@ -134,6 +128,10 @@ fn signal_of<'a>(services: &'a [serde_json::Value], logical_ref: &str) -> Option
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear degraded service retry without rollback scenario"
+)]
 async fn a_partial_deploy_is_degraded_and_its_failed_service_is_retried_without_rollback() {
     let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();

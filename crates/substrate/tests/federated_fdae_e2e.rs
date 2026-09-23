@@ -1,5 +1,4 @@
 #![allow(
-    clippy::too_many_lines,
     clippy::cognitive_complexity,
     unsafe_code,
     clippy::unwrap_used,
@@ -171,6 +170,7 @@ async fn register_service(
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear federated fdae cross-substrate scenario")]
 async fn federated_fdae_fetch_across_two_real_substrates() {
     let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();

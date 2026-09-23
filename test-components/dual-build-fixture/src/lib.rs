@@ -1,4 +1,4 @@
-#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+#![allow(clippy::cognitive_complexity)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! `syneroym-test-dual-build-fixture`: one source tree, built two ways --
 //! as a `wasm32-wasip2` component and linked into `syneroym-substrate`.

@@ -1,4 +1,4 @@
-#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+#![allow(clippy::cognitive_complexity)]
 
 use syneroym_core::record_signer::SigningPrincipal;
 use syneroym_rpc::PERMISSION_DENIED_CODE;

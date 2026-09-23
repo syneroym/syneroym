@@ -1,5 +1,4 @@
 #![allow(
-    clippy::too_many_lines,
     clippy::cognitive_complexity,
     clippy::unwrap_used,
     clippy::expect_used,
@@ -267,6 +266,7 @@ async fn login_local(gateway_url: &str, identity: &str) -> String {
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear roym identity lifecycle end-to-end scenario")]
 async fn test_roym_identity_e2e() {
     let RoymDeployment {
         ctx,

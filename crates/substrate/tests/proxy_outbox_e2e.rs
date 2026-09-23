@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! The guest-facing durable outbox, end to end across two real substrates
 //! (ADR-0023 §2, §4, §5).
 //!
@@ -300,6 +294,7 @@ fn artifacts() -> Option<(Vec<u8>, Vec<u8>)> {
 /// back, and the call lands -- with the outbox itself asserted at every
 /// stage rather than inferred.
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear queued call delivery after node recovery")]
 async fn a_queued_guest_call_to_an_offline_node_lands_after_it_returns() {
     let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();

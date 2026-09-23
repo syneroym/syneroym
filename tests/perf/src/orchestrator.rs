@@ -1,6 +1,6 @@
 use std::{
     env, fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, Instant},
 };
@@ -16,7 +16,7 @@ use tokio::{
 use tracing::info;
 
 fn get_cargo_bin(name: &str) -> PathBuf {
-    if let Some(path) = std::env::var_os(format!("CARGO_BIN_EXE_{name}")) {
+    if let Some(path) = env::var_os(format!("CARGO_BIN_EXE_{name}")) {
         PathBuf::from(path)
     } else {
         // Fall back to target/debug or target/release based on current executable
@@ -31,9 +31,12 @@ fn get_cargo_bin(name: &str) -> PathBuf {
         }
         // Fall back to workspace target/debug or target/release based on compilation
         // profile
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-        let workspace_target =
-            std::path::Path::new(&manifest_dir).parent().unwrap().parent().unwrap().join("target");
+        let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+        let workspace_target = Path::new(&manifest_dir)
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or_else(|| Path::new("."))
+            .join("target");
 
         let primary_profile = if cfg!(debug_assertions) { "debug" } else { "release" };
         let secondary_profile = if cfg!(debug_assertions) { "release" } else { "debug" };
@@ -48,6 +51,7 @@ fn get_cargo_bin(name: &str) -> PathBuf {
     }
 }
 
+#[derive(Debug)]
 pub struct TestEnvironment {
     substrate: Option<Child>,
     miniapp: Option<Child>,

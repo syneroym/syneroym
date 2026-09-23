@@ -1,4 +1,4 @@
-#![allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+#![allow(clippy::cognitive_complexity)]
 
 use syneroym_data_db::SqliteStorageProvider;
 use syneroym_rpc::SessionContext;

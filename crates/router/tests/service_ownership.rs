@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Substrate & service ownership attribution. Drives
 //! `ControlPlaneService::dispatch` (the public `NativeService` trait --
 //! `deploy`/`undeploy`/`list` themselves are behind a crate-private trait,

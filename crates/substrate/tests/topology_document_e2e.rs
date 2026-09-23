@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Tier 2 of the logical discovery overlay (ADR-0022 §3), proven across two
 //! genuinely independent `syneroym-substrate` instances -- the reference
 //! scenario, steps 3 through 8: a caller outside the app instance

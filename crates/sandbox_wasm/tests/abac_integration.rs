@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! End-to-end integration tests: a real `AppSandboxEngine`
 //! with the `abac-test` fixture component deployed (ADR-0017 §7), driving
 //! `HostState::store::Host` directly so the stage-4 after-step

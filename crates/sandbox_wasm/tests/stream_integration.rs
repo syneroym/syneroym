@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Integration tests (ADR-0014): `stream-cursor`
 //! (guest-as-source) and `stream-sink` (guest-as-sink) driven end to end
 //! through `AppSandboxEngine::handle_stream_protocol_request`, bypassing the

@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! The durable-outbox reference scenario, end to end over two
 //! real `syneroym-substrate` instances: `backend` (the dependency) on
 //! `managed-a`, `frontend` (the dependent) on `managed-b`. Both plain TCP
@@ -276,6 +270,7 @@ async fn active_alert_kinds(
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear outbox convergence after substrate restart")]
 async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
     let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
@@ -521,6 +516,7 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
 /// budget, and the item becomes visible and replayable rather than
 /// silently lost.
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear dead-letter queue replay scenario")]
 async fn a_permanently_unreachable_substrate_lands_in_the_dlq_and_replays() {
     let _serial_guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();

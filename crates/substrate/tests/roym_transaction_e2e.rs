@@ -1,5 +1,4 @@
 #![allow(
-    clippy::too_many_lines,
     clippy::cognitive_complexity,
     clippy::unwrap_used,
     clippy::expect_used,
@@ -561,6 +560,10 @@ async fn wait_delivered(node: &Node, message_id: &str) -> bool {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear roym transaction agreement across two installations"
+)]
 async fn an_offer_is_agreed_across_two_installations() {
     let _guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();

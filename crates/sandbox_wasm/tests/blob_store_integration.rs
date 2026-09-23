@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Integration test: exercises the real `Host`/`HostBlobWriter`/
 //! `HostBlobReader` WIT wiring in `crates/sandbox_wasm/src/engine.rs`
 //! directly against a `HostState` -- the same level

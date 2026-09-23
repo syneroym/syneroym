@@ -284,6 +284,7 @@ impl KeyStore {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use std::{fs, slice};
 
@@ -481,6 +482,9 @@ mod tests {
         // Zeroize in-place before Box deallocation to prevent stack move copies
         Zeroize::zeroize(&mut **old_kek_zeroizing);
 
+        // SAFETY: Verification test: pointer to zeroized buffer remains valid for
+        // assertion before drop.
+        #[allow(unsafe_code)]
         unsafe {
             let memory = slice::from_raw_parts(ptr, 32);
             assert_eq!(memory, &[0u8; 32]);

@@ -1,10 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! The `supervisor` interface end to end, across two genuinely
 //! independent `syneroym-substrate` instances: one running the supervisor
 //! role, one plain managed substrate. The pair and the submit helpers come
