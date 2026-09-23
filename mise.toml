@@ -119,6 +119,20 @@ dir = "crates/substrate/tests/e2e"
 description = "Run both Rust and browser E2E test suites"
 depends = ["test:rust", "test:e2e"]
 
+[tasks."verify"]
+description = """
+Run every AGENTS.md completion-checklist gate (fmt, clippy, the xtask
+checks, nextest, doctests, audit, license check, e2e) with quiet output:
+each gate's full log goes to target/gates/<gate>.log, and only a one-line
+summary (or, on failure, a short tail) prints. Pass --skip <gate>
+(repeatable) to skip gates while iterating locally.
+"""
+run = "cargo xtask verify ${@}"
+
+[tasks."agent-output-report"]
+description = "Summarize how much Bash output recent Claude Code sessions produced, grouped by command"
+run = "python3 scripts/agent-output-report.py ${@}"
+
 [tasks."bench:micro"]
 description = "Run Criterion micro-benchmarks across the workspace"
 run = "cargo bench --workspace"
