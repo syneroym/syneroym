@@ -90,13 +90,6 @@ fn wasm_manifest_without_assets(wasm_bytes: Vec<u8>) -> DeployManifest {
     }
 }
 
-async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManifest) {
-    let params = serde_json::to_value((service_id.to_string(), manifest)).unwrap();
-    let res =
-        client.request("orchestrator", "deploy", params).await.expect("deploy request failed");
-    assert_eq!(res.result, serde_json::json!({"status": "deployed"}), "deploy did not succeed");
-}
-
 /// A minimal gzip-compressed tar archive, one entry per `(path, bytes)`
 /// pair -- the same shape `syneroym_control_plane::assets`' own unit tests
 /// build.
@@ -234,7 +227,7 @@ async fn test_static_asset_serving_index_etag_and_directory_rewrite() {
         ("sub/index.html", b"<html>sub</html>"),
         ("assets/app.js", b"console.log(1)"),
     ]);
-    deploy(
+    common::deploy_app(
         &ctx.substrate_client,
         &app_service_id,
         wasm_asset_manifest(wasm_bytes, archive, Visibility::Public, None),
@@ -319,7 +312,7 @@ async fn test_static_asset_cross_service_isolation() {
     let identity_a = Identity::generate().unwrap();
     let service_a = substrate::derive_did_key(&identity_a.public_key());
     let archive_a = make_asset_archive(&[("secret.txt", b"service A's content")]);
-    deploy(
+    common::deploy_app(
         &ctx.substrate_client,
         &service_a,
         wasm_asset_manifest(wasm_bytes.clone(), archive_a, Visibility::Public, None),
@@ -329,7 +322,7 @@ async fn test_static_asset_cross_service_isolation() {
     let identity_b = Identity::generate().unwrap();
     let service_b = substrate::derive_did_key(&identity_b.public_key());
     let archive_b = make_asset_archive(&[("secret.txt", b"service B's content")]);
-    deploy(
+    common::deploy_app(
         &ctx.substrate_client,
         &service_b,
         wasm_asset_manifest(wasm_bytes, archive_b, Visibility::Public, None),
@@ -379,7 +372,7 @@ async fn test_static_asset_private_visibility_matches_no_bundle() {
     let private_identity = Identity::generate().unwrap();
     let private_service_id = substrate::derive_did_key(&private_identity.public_key());
     let archive = make_asset_archive(&[("index.html", b"<html>private</html>")]);
-    deploy(
+    common::deploy_app(
         &ctx.substrate_client,
         &private_service_id,
         wasm_asset_manifest(wasm_bytes.clone(), archive, Visibility::Private, None),
@@ -388,8 +381,12 @@ async fn test_static_asset_private_visibility_matches_no_bundle() {
 
     let no_assets_identity = Identity::generate().unwrap();
     let no_assets_service_id = substrate::derive_did_key(&no_assets_identity.public_key());
-    deploy(&ctx.substrate_client, &no_assets_service_id, wasm_manifest_without_assets(wasm_bytes))
-        .await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &no_assets_service_id,
+        wasm_manifest_without_assets(wasm_bytes),
+    )
+    .await;
 
     let mut private_peer = connect_peer(&private_service_id, &ctx.substrate_mechanisms);
     private_peer.connect().await.expect("private peer failed to connect");
@@ -431,7 +428,7 @@ async fn test_static_asset_multi_chunk_round_trip() {
     // streamed response spans several `read-chunk` native-dispatch calls.
     let big: Vec<u8> = (0..300_000usize).map(|i| (i % 251) as u8).collect();
     let archive = make_asset_archive(&[("big.bin", &big)]);
-    deploy(
+    common::deploy_app(
         &ctx.substrate_client,
         &app_service_id,
         wasm_asset_manifest(wasm_bytes, archive, Visibility::Public, None),
@@ -472,7 +469,7 @@ async fn test_static_assets_and_http_routes_coexist() {
              "operation": "query", "collection": "comments"},
         ]
     });
-    deploy(
+    common::deploy_app(
         &ctx.substrate_client,
         &app_service_id,
         wasm_asset_manifest(wasm_bytes, archive, Visibility::Public, Some(custom_config)),

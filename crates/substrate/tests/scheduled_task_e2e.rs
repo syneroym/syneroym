@@ -36,7 +36,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use common::{SubstrateNode, node_wide_supervisor_grant, supervisor_role};
+use common::{MANAGED_ALIAS, SubstrateNode, node_wide_supervisor_grant, supervisor_role};
 use rustls::crypto::ring;
 use semver::Version;
 use serde_json::{Value, json};
@@ -58,7 +58,6 @@ mod common;
 #[path = "common/retry.rs"]
 mod retry;
 
-const MANAGED_ALIAS: &str = "managed";
 const INSTANCE_ID: &str = "b3-scheduled-inst";
 
 /// `poll_interval_secs` of 10 sets the *floor* of the watermark's grace

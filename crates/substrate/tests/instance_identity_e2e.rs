@@ -44,13 +44,10 @@
 use common::SubstrateNode;
 use ed25519_dalek::VerifyingKey;
 use rustls::crypto::ring;
-use serde_json::json;
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
 };
-use syneroym_sdk::{
-    DeployManifest, NetworkEndpoint, ServiceConfig, ServiceType, SyneroymClient, TcpManifest,
-};
+use syneroym_sdk::{DeployManifest, NetworkEndpoint, ServiceConfig, ServiceType, TcpManifest};
 
 mod common;
 
@@ -86,20 +83,6 @@ fn bare_tcp_manifest(port: u16, instance_certificate: Option<String>) -> DeployM
         }),
         registry_certificate: None,
         instance_certificate,
-    }
-}
-
-async fn deploy(
-    client: &SyneroymClient,
-    service_id: &str,
-    manifest: DeployManifest,
-) -> anyhow::Result<()> {
-    let params = serde_json::to_value((service_id.to_string(), manifest))?;
-    let res = client.request("orchestrator", "deploy", params).await?;
-    if res.result == json!({"status": "deployed"}) {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("deploy did not report success: {:?}", res.result))
     }
 }
 
@@ -162,7 +145,7 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
     let wrong_scope_cert =
         DelegationCertificate::issue(&member_master, pubkey_a, 3600, "routing".to_string())
             .unwrap();
-    let rejected = deploy(
+    let rejected = common::try_deploy_app(
         &operator_a,
         &member_master_did,
         bare_tcp_manifest(40001, Some(wrong_scope_cert.to_json().unwrap())),
@@ -171,7 +154,7 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
     assert!(rejected.is_err(), "a routing-scoped certificate must be rejected at deploy");
 
     // The correctly-scoped certificate installs cleanly.
-    deploy(
+    common::try_deploy_app(
         &operator_a,
         &member_master_did,
         bare_tcp_manifest(40002, Some(cert_a.to_json().unwrap())),
@@ -213,7 +196,7 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
         SCOPE_SERVICE_INSTANCE.to_string(),
     )
     .unwrap();
-    deploy(
+    common::try_deploy_app(
         &operator_b,
         &member_master_did,
         bare_tcp_manifest(40003, Some(cert_b.to_json().unwrap())),

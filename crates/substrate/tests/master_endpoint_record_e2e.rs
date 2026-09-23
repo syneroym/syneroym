@@ -54,7 +54,6 @@ use common::SubstrateNode;
 use ed25519_dalek::VerifyingKey;
 use reqwest::Client as HttpClient;
 use rustls::crypto::ring;
-use serde_json::json;
 use syneroym_core::dht_registry::{
     DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType, RegistryClient,
 };
@@ -63,8 +62,7 @@ use syneroym_identity::{
 };
 use syneroym_router::net_iroh::resolve_iroh_addr;
 use syneroym_sdk::{
-    DeployManifest, NetworkEndpoint, ServiceConfig, ServiceType, SyneroymClient, TcpManifest,
-    Visibility,
+    DeployManifest, NetworkEndpoint, ServiceConfig, ServiceType, TcpManifest, Visibility,
 };
 
 mod common;
@@ -111,20 +109,6 @@ fn far_future_not_after() -> u64 {
         .unwrap()
         .as_secs()
         .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS)
-}
-
-async fn deploy(
-    client: &SyneroymClient,
-    service_id: &str,
-    manifest: DeployManifest,
-) -> anyhow::Result<()> {
-    let params = serde_json::to_value((service_id.to_string(), manifest))?;
-    let res = client.request("orchestrator", "deploy", params).await?;
-    if res.result == json!({"status": "deployed"}) {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("deploy did not report success: {:?}", res.result))
-    }
 }
 
 #[tokio::test]
@@ -204,7 +188,7 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
     .sign(&member_master)
     .expect("failed to sign the member's endpoint record with its master key");
 
-    deploy(
+    common::try_deploy_app(
         &operator_b,
         &member_master_did,
         bare_tcp_manifest(
@@ -316,7 +300,7 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
     .sign(&member_master)
     .expect("failed to sign the relocated record with the same master key");
 
-    deploy(
+    common::try_deploy_app(
         &operator_a,
         &member_master_did,
         bare_tcp_manifest(

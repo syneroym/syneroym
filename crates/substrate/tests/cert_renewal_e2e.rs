@@ -51,15 +51,12 @@ mod common;
 use common::SubstrateNode;
 use ed25519_dalek::VerifyingKey;
 use rustls::crypto::ring;
-use serde_json::json;
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
 };
 use syneroym_router::{RoutePreamble, handshake::HandshakeVerifier};
-use syneroym_sdk::{
-    DeployManifest, NetworkEndpoint, ServiceConfig, ServiceType, SyneroymClient, TcpManifest,
-};
+use syneroym_sdk::{DeployManifest, NetworkEndpoint, ServiceConfig, ServiceType, TcpManifest};
 
 /// A minimal TCP service, never actually dialed -- this fixture exercises
 /// only the orchestrator's certificate surface. One real endpoint is
@@ -88,20 +85,6 @@ fn bare_tcp_manifest(port: u16, instance_certificate: Option<String>) -> DeployM
         }),
         registry_certificate: None,
         instance_certificate,
-    }
-}
-
-async fn deploy(
-    client: &SyneroymClient,
-    service_id: &str,
-    manifest: DeployManifest,
-) -> anyhow::Result<()> {
-    let params = serde_json::to_value((service_id.to_string(), manifest))?;
-    let res = client.request("orchestrator", "deploy", params).await?;
-    if res.result == json!({"status": "deployed"}) {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("deploy did not report success: {:?}", res.result))
     }
 }
 
@@ -197,7 +180,7 @@ async fn renew_cert_installs_over_the_real_wire_and_refuses_a_certificate_for_th
         SCOPE_SERVICE_INSTANCE.to_string(),
     )
     .unwrap();
-    deploy(
+    common::try_deploy_app(
         &operator_b,
         &member_master_did,
         bare_tcp_manifest(43001, Some(first.to_json().unwrap())),

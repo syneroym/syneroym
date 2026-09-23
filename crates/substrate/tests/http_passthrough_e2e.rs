@@ -89,17 +89,6 @@ fn wasm_deploy_manifest(
     }
 }
 
-/// Deploys via the raw `orchestrator/deploy` request rather than
-/// `SyneroymClient::deploy_svc_{wasm,tcp}`, which hardcode
-/// `custom_config: None` -- the whole route-declaration mechanism lives
-/// inside `custom_config`.
-async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManifest) {
-    let params = serde_json::to_value((service_id.to_string(), manifest)).unwrap();
-    let res =
-        client.request("orchestrator", "deploy", params).await.expect("deploy request failed");
-    assert_eq!(res.result, serde_json::json!({"status": "deployed"}), "deploy did not succeed");
-}
-
 /// One parsed raw HTTP/1.1 response.
 struct HttpResponse {
     status: u16,
@@ -286,8 +275,12 @@ async fn test_signed_url_blob_get_resolves_end_to_end_and_meets_performance_budg
 
     let app_identity = Identity::generate().unwrap();
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
-    deploy(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(serde_json::json!({})))
-        .await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        tcp_deploy_manifest(serde_json::json!({})),
+    )
+    .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -348,8 +341,12 @@ async fn test_tampered_and_expired_signed_urls_are_rejected() {
 
     let app_identity = Identity::generate().unwrap();
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
-    deploy(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(serde_json::json!({})))
-        .await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &app_service_id,
+        tcp_deploy_manifest(serde_json::json!({})),
+    )
+    .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -410,11 +407,21 @@ async fn test_signed_url_rejected_when_svc_does_not_match_connected_service() {
 
     let service_a_identity = Identity::generate().unwrap();
     let service_a_id = substrate::derive_did_key(&service_a_identity.public_key());
-    deploy(&ctx.substrate_client, &service_a_id, tcp_deploy_manifest(serde_json::json!({}))).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &service_a_id,
+        tcp_deploy_manifest(serde_json::json!({})),
+    )
+    .await;
 
     let service_b_identity = Identity::generate().unwrap();
     let service_b_id = substrate::derive_did_key(&service_b_identity.public_key());
-    deploy(&ctx.substrate_client, &service_b_id, tcp_deploy_manifest(serde_json::json!({}))).await;
+    common::deploy_app(
+        &ctx.substrate_client,
+        &service_b_id,
+        tcp_deploy_manifest(serde_json::json!({})),
+    )
+    .await;
 
     let mut peer_a = connect_peer(&service_a_id, &ctx.substrate_mechanisms);
     peer_a.connect().await.expect("peer A failed to connect");
@@ -477,7 +484,8 @@ async fn test_data_layer_http_routes_error_mapping_and_fallthrough() {
              "operation": "put", "collection": "not valid!"},
         ]
     });
-    deploy(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes)).await;
+    common::deploy_app(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes))
+        .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -611,7 +619,8 @@ async fn test_sse_receives_message_published_via_http() {
              "operation": "subscribe-sse", "topic": "events"},
         ]
     });
-    deploy(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes)).await;
+    common::deploy_app(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes))
+        .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -658,7 +667,8 @@ async fn test_sse_rejects_missing_accept_header() {
              "operation": "subscribe-sse", "topic": "events"},
         ]
     });
-    deploy(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes)).await;
+    common::deploy_app(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes))
+        .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -694,7 +704,8 @@ async fn test_sse_permit_exhaustion_returns_503_service_unavailable() {
              "operation": "subscribe-sse", "topic": "events"},
         ]
     });
-    deploy(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes)).await;
+    common::deploy_app(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes))
+        .await;
 
     let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
     peer.connect().await.expect("peer failed to connect");
@@ -764,7 +775,7 @@ async fn test_chunked_upload_decline_and_round_trip_meets_performance_budget() {
              "operation": "accept-upload", "protocol": STREAM_PROTOCOL},
         ]
     });
-    deploy(
+    common::deploy_app(
         &ctx.substrate_client,
         &app_service_id,
         wasm_deploy_manifest(

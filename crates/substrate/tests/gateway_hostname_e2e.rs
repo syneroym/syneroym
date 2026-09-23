@@ -24,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use common::SubstrateNode;
+use common::{MANAGED_ALIAS, SubstrateNode};
 use reqwest::Client;
 use rustls::crypto::ring;
 use semver::Version;
@@ -47,8 +47,6 @@ use tokio::{
 };
 
 mod common;
-
-const MANAGED_ALIAS: &str = "managed";
 
 /// A bare `substrate:<supervisor_node_did>` capability with ability
 /// `supervisor/resolve`, issued to `grantee_did` by the supervisor node's

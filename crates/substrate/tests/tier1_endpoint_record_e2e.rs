@@ -10,25 +10,17 @@
 //! the app instance resolving "which supervisor holds this app" through the
 //! same registry every other DID in the system already uses.
 //!
-//! `one_service_manifest` is local; the supervisor/managed pair and the
+//! `one_service_manifest`, the supervisor/managed pair, and the
 //! submit helpers come from `common`. `poll_interval_secs` is lowered so the
 //! resident loop's own Tier-1 publish -- which nothing on the `supervisor`
 //! RPC surface triggers synchronously (`force-reconcile` calls
 //! `deploy_submission` directly, not the write-phase gate the resident loop
 //! evaluates) -- lands inside this test's own poll budget.
 
-use std::{
-    collections::BTreeMap,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
-use common::{compiled_plan_json, submission, supervisor_and_managed};
-use semver::Version;
+use common::{MANAGED_ALIAS, compiled_plan_json, submission, supervisor_and_managed};
 use serde_json::json;
-use syneroym_app_orchestration::models::{
-    AppBlueprintId, LogicalServiceName, PlacementSelector, ServiceConfig, ServiceSpec, ServiceType,
-    SubstrateAlias, SynAppManifest,
-};
 use syneroym_core::dht_registry::{EndpointInfo, EndpointType, RegistryClient};
 use syneroym_identity::{Identity, substrate};
 use tokio::time;
@@ -38,51 +30,9 @@ mod common;
 #[path = "common/retry.rs"]
 mod retry;
 
-const MANAGED_ALIAS: &str = "managed";
-
 /// The resident loop's own tick is what this test waits on, so the poll
 /// interval is short.
 const POLL_INTERVAL_SECS: u64 = 2;
-
-/// A single-service manifest, `backend` placed on `MANAGED_ALIAS`.
-fn one_service_manifest() -> SynAppManifest {
-    let mut services = BTreeMap::new();
-    services.insert(
-        LogicalServiceName::new("backend"),
-        ServiceSpec {
-            config: ServiceConfig {
-                service_type: ServiceType::Tcp,
-                source: "127.0.0.1:41901".to_string(),
-                hash: None,
-                interfaces: vec![],
-                env: BTreeMap::new(),
-                args: vec![],
-                custom_config: None,
-                quota: None,
-                schema: None,
-                rotation_policy: Default::default(),
-                fdae: None,
-                health_check: None,
-                assets: None,
-                visibility: Default::default(),
-            },
-            depends_on: vec![],
-            placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),
-            replicas: 1,
-            sharding_strategy: None,
-            schedule: None,
-            topology_visibility: Default::default(),
-        },
-    );
-    SynAppManifest {
-        id: AppBlueprintId::new("syneroym:tier1-test-app"),
-        version: Version::new(0, 1, 0),
-        description: None,
-        placement: None,
-        services,
-        dependencies: BTreeMap::new(),
-    }
-}
 
 /// The reference scenario's steps 1-2: submit and adopt an app instance,
 /// confirm the app master DID on `status`, then assert the Tier-1 record
@@ -101,7 +51,7 @@ async fn an_app_did_resolves_to_its_supervising_node_through_the_registry() {
     )
     .await;
 
-    let manifest = one_service_manifest();
+    let manifest = common::one_service_manifest("syneroym:tier1-test-app");
     let plan_json = compiled_plan_json(&manifest, "tier1-resolve-inst").await;
     // `supervisor_node`'s connection was dialed and proven live by its own
     // `wait_for_ready` during boot inside `supervisor_and_managed`, then sat

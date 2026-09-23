@@ -24,6 +24,9 @@ mod node;
 #[cfg(feature = "supervisor")]
 mod fixtures;
 
+/// Shared deploy helpers: `deploy_app`, `try_deploy_app`.
+mod deploy;
+
 use std::{
     net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
     sync::{
@@ -33,6 +36,8 @@ use std::{
     time::Duration,
 };
 
+#[allow(unused_imports)]
+pub use deploy::*;
 #[cfg(feature = "supervisor")]
 #[allow(unused_imports)]
 pub use fixtures::*;

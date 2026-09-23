@@ -106,7 +106,7 @@ how the drift happened, so do not add one here without an enforcement path.**
   values, which a text search misses. Run `cargo dupes report --exclude
   'bindings.rs' --exclude 'target'` over your change before you finish.
   *Checked by:* `cargo xtask check-duplication` (and `mise run
-  check:duplication`), ratcheted at `--max-exact-percent 9.5` for now.
+  check:duplication`), ratcheted at `--max-exact-percent 9.0` for now.
 - **Reuse the test harness.** Substrate integration tests use
   `crates/substrate/tests/common` (`SubstrateTestContext`, `alloc_ports`). Do not
   write your own `struct Node` / `fn boot`; extend the shared one if it does not

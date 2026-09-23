@@ -16,129 +16,17 @@
 //! the registry and a managed node publishing into it. `common::serial_guard`
 //! keeps this binary's tests from running substrate stacks at once.
 
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::time::Duration;
 
-use common::SubstrateNode;
-use rustls::crypto::ring;
-use semver::Version;
-use serde_json::{Map, json};
-use syneroym_app_orchestration::{
-    AlertKind, LocalFilesystemCatalog, compile,
-    models::{
-        AppBlueprintId, AppInstanceId, LogicalServiceName, PlacementSelector, ServiceConfig,
-        ServiceSpec, ServiceType, SubstrateAlias, SynAppManifest,
-    },
-};
-use syneroym_app_supervisor::inventory::SupervisorInventoryEntry;
+use common::{MANAGED_ALIAS, compiled_plan_json, submission, supervisor_and_managed};
+use serde_json::json;
+use syneroym_app_orchestration::AlertKind;
 use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
-use syneroym_core::config::SupervisorRole;
 use syneroym_identity::Identity;
 use syneroym_mqtt_broker::namespace_topic_for_publish;
-use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
 use tokio::time;
 
 mod common;
-
-const MANAGED_ALIAS: &str = "managed";
-
-fn supervisor_role() -> SupervisorRole {
-    SupervisorRole {
-        poll_interval_secs: 30,
-        db_name: "supervisor.db".to_string(),
-        max_restart_attempts: 3,
-        restart_backoff_secs: 30,
-        alert_topic: "supervisor/alerts".to_string(),
-        master_backup_dir: "master-backups".to_string(),
-        ..SupervisorRole::default()
-    }
-}
-
-/// Node-wide `orchestrator/deploy` **and** `orchestrator/status` for
-/// `grantee_did` on `node_did` -- what a supervisor needs on every substrate
-/// it manages (copied unchanged from `supervisor_interface_e2e.rs`).
-fn node_wide_supervisor_grant(
-    node_owner: &Identity,
-    grantee_did: &str,
-    node_did: &str,
-) -> CapabilityToken {
-    let resource = ResourceUri::substrate(node_did);
-    CapabilityToken::issue(
-        node_owner,
-        grantee_did,
-        [Ability::ORCHESTRATOR_DEPLOY, Ability::ORCHESTRATOR_STATUS]
-            .into_iter()
-            .map(|a| Capability {
-                with: resource.clone(),
-                can: Ability(a.to_string()),
-                caveats: None,
-            })
-            .collect(),
-        Map::new(),
-        3600,
-        vec![],
-    )
-    .expect("issue node-wide supervisor grant")
-}
-
-/// A single-service manifest, `backend` placed on `MANAGED_ALIAS`.
-fn one_service_manifest() -> SynAppManifest {
-    let mut services = BTreeMap::new();
-    services.insert(
-        LogicalServiceName::new("backend"),
-        ServiceSpec {
-            config: ServiceConfig {
-                service_type: ServiceType::Tcp,
-                source: "127.0.0.1:41601".to_string(),
-                hash: None,
-                interfaces: vec![],
-                env: BTreeMap::new(),
-                args: vec![],
-                custom_config: None,
-                quota: None,
-                schema: None,
-                rotation_policy: Default::default(),
-                fdae: None,
-                health_check: None,
-                assets: None,
-                visibility: Default::default(),
-            },
-            depends_on: vec![],
-            placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),
-            replicas: 1,
-            sharding_strategy: None,
-            schedule: None,
-            topology_visibility: Default::default(),
-        },
-    );
-    SynAppManifest {
-        id: AppBlueprintId::new("syneroym:a5c-alerts-test-app"),
-        version: Version::new(0, 1, 0),
-        description: None,
-        placement: None,
-        services,
-        dependencies: BTreeMap::new(),
-    }
-}
-
-async fn compiled_plan_json(manifest: &SynAppManifest, instance_id: &str) -> String {
-    let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
-    let compiled = compile(AppInstanceId::new(instance_id), manifest, &catalog).await.unwrap();
-    compiled.plans.last().unwrap().to_json().unwrap()
-}
-
-fn submission(
-    instance_id: &str,
-    plan_json: String,
-    inventory_json: String,
-    generation: u64,
-) -> serde_json::Value {
-    json!([{
-        "app_instance_id": instance_id,
-        "plan_json": plan_json,
-        "inventory_json": inventory_json,
-        "generation": generation,
-    }])
-}
 
 /// An operator connects to the supervisor node's own DID, subscribes over
 /// its `messaging` native capability to the alert topic, and receives the
@@ -151,40 +39,16 @@ fn submission(
 #[tokio::test]
 async fn an_operator_subscribed_to_the_alert_topic_receives_an_opened_alert() {
     let _serial_guard = common::serial_guard().await;
-    let _ = ring::default_provider().install_default();
 
     let supervisor_owner = Identity::generate().unwrap();
     let managed_owner = Identity::generate().unwrap();
 
-    let mut supervisor_node = SubstrateNode::builder()
-        .owner(&supervisor_owner)
-        .supervisor(supervisor_role())
-        .inject_kek()
-        .boot()
-        .await;
-    let managed_node = SubstrateNode::builder()
-        .owner(&managed_owner)
-        .shared_registry(supervisor_node.registry_url())
-        .shared_relay(supervisor_node.relay_url())
-        .inject_kek()
-        .boot()
-        .await;
+    let (mut supervisor_node, managed_node, inventory_json) =
+        supervisor_and_managed(&supervisor_owner, &managed_owner, 30, MANAGED_ALIAS).await;
     let managed_did = managed_node.did().to_string();
 
-    let grant =
-        node_wide_supervisor_grant(&managed_owner, supervisor_node.did(), managed_node.did());
-    let inventory_json = serde_json::to_string(&BTreeMap::from([(
-        MANAGED_ALIAS.to_string(),
-        SupervisorInventoryEntry {
-            did: managed_did.clone(),
-            api_url: Some(managed_node.registry_url().to_string()),
-            ucan: Some(grant),
-        },
-    )]))
-    .unwrap();
-
     let instance_id = "a5c-alerts-inst";
-    let manifest = one_service_manifest();
+    let manifest = common::one_service_manifest("syneroym:a5c-alerts-test-app");
     let plan_json = compiled_plan_json(&manifest, instance_id).await;
     let submit_params = submission(instance_id, plan_json, inventory_json, 0);
 

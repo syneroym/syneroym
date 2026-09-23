@@ -8,69 +8,22 @@
 //! The app-instance master identity end to end, across two
 //! genuinely independent `syneroym-substrate` instances -- the operator's
 //! own sequence: `submit`, `adopt`, `status`, `export-master`, a second
-//! `adopt`. The supervisor/managed pair and the submit helpers come from
-//! `common`; `one_service_manifest` is local. The test reads the supervisor
-//! node's `app_data_dir` to confirm `export-master` wrote a real file under
-//! its own `master_backup_dir`, not just that the RPC returned a path string.
+//! `one_service_manifest`, the supervisor/managed pair, and the submit
+//! helpers come from `common`. The test reads the supervisor node's
+//! `app_data_dir` to confirm `export-master` wrote a real file under its own
+//! `master_backup_dir`, not just that the RPC returned a path string.
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::path::PathBuf;
 
-use common::{compiled_plan_json, submission, supervisor_and_managed};
-use semver::Version;
+use common::{MANAGED_ALIAS, compiled_plan_json, submission, supervisor_and_managed};
 use serde_json::json;
-use syneroym_app_orchestration::models::{
-    AppBlueprintId, LogicalServiceName, PlacementSelector, ServiceConfig, ServiceSpec, ServiceType,
-    SubstrateAlias, SynAppManifest,
-};
 use syneroym_identity::Identity;
 
 mod common;
 
-const MANAGED_ALIAS: &str = "managed";
-
 /// Nothing in this file waits on the resident loop, so the poll interval is
 /// left near the production default.
 const POLL_INTERVAL_SECS: u64 = 30;
-
-/// A single-service manifest, `backend` placed on `MANAGED_ALIAS`.
-fn one_service_manifest() -> SynAppManifest {
-    let mut services = BTreeMap::new();
-    services.insert(
-        LogicalServiceName::new("backend"),
-        ServiceSpec {
-            config: ServiceConfig {
-                service_type: ServiceType::Tcp,
-                source: "127.0.0.1:41601".to_string(),
-                hash: None,
-                interfaces: vec![],
-                env: BTreeMap::new(),
-                args: vec![],
-                custom_config: None,
-                quota: None,
-                schema: None,
-                rotation_policy: Default::default(),
-                fdae: None,
-                health_check: None,
-                assets: None,
-                visibility: Default::default(),
-            },
-            depends_on: vec![],
-            placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),
-            replicas: 1,
-            sharding_strategy: None,
-            schedule: None,
-            topology_visibility: Default::default(),
-        },
-    );
-    SynAppManifest {
-        id: AppBlueprintId::new("syneroym:a7-test-app"),
-        version: Version::new(0, 1, 0),
-        description: None,
-        placement: None,
-        services,
-        dependencies: BTreeMap::new(),
-    }
-}
 
 /// The operator's own sequence over a real supervisor and a real
 /// managed substrate -- `submit`, `adopt`, then (a) `adopt`'s result
@@ -93,7 +46,7 @@ async fn an_adopted_app_instance_carries_an_exportable_master_did() {
     )
     .await;
 
-    let manifest = one_service_manifest();
+    let manifest = common::one_service_manifest("syneroym:a7-test-app");
     let plan_json = compiled_plan_json(&manifest, "a7-adopt-inst").await;
     let submit_params = submission("a7-adopt-inst", plan_json, inventory_json, 0);
     // `supervisor_node`'s connection was dialed and proven live by its own

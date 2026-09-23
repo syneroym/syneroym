@@ -23,8 +23,8 @@ use syneroym_identity::Identity;
 use syneroym_observability::MemoryRecorder;
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
 use syneroym_sdk::{
-    ArtifactSource, AssetBundle, DeployManifest, ServiceConfig, ServiceType, SyneroymClient,
-    TransportConnection, Visibility, WasmManifest,
+    ArtifactSource, AssetBundle, DeployManifest, ServiceConfig, ServiceType, TransportConnection,
+    Visibility, WasmManifest,
 };
 use tokio::time::timeout;
 
@@ -82,13 +82,6 @@ fn make_asset_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(&tar_bytes).unwrap();
     encoder.finish().unwrap()
-}
-
-async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManifest) {
-    let params = serde_json::to_value((service_id.to_string(), manifest)).unwrap();
-    let res =
-        client.request("orchestrator", "deploy", params).await.expect("deploy request failed");
-    assert_eq!(res.result, serde_json::json!({"status": "deployed"}), "deploy did not succeed");
 }
 
 struct HttpResponse {
@@ -259,7 +252,7 @@ async fn test_miniapp_demo1_wasm_static_asset_serving_zero_instantiations() {
     let routes: serde_json::Value =
         serde_json::from_str(test_constants::MINIAPP_DEMO1_WASM_ROUTES_JSON).unwrap();
 
-    deploy(
+    common::deploy_app(
         &ctx.substrate_client,
         "demo-app",
         miniapp_manifest_with_assets(wasm_bytes, routes, archive),
@@ -314,7 +307,7 @@ async fn test_miniapp_demo1_wasm_comments_spa_page() {
     let routes: serde_json::Value =
         serde_json::from_str(test_constants::MINIAPP_DEMO1_WASM_ROUTES_JSON).unwrap();
 
-    deploy(
+    common::deploy_app(
         &ctx.substrate_client,
         "demo-spa",
         miniapp_manifest_with_assets(wasm_bytes, routes, archive),
@@ -344,7 +337,7 @@ async fn test_miniapp_demo1_wasm_rest_comments_lifecycle() {
     let routes: serde_json::Value =
         serde_json::from_str(test_constants::MINIAPP_DEMO1_WASM_ROUTES_JSON).unwrap();
 
-    deploy(
+    common::deploy_app(
         &ctx.substrate_client,
         "demo-comments",
         miniapp_manifest_with_assets(wasm_bytes, routes, archive),
@@ -430,7 +423,7 @@ async fn test_miniapp_demo1_wasm_stream_upload_and_download() {
     let routes: serde_json::Value =
         serde_json::from_str(test_constants::MINIAPP_DEMO1_WASM_ROUTES_JSON).unwrap();
 
-    deploy(
+    common::deploy_app(
         &ctx.substrate_client,
         "demo-files",
         miniapp_manifest_with_assets(wasm_bytes, routes, archive),
@@ -506,7 +499,7 @@ async fn test_miniapp_demo1_wasm_sse_live_updates() {
     let routes: serde_json::Value =
         serde_json::from_str(test_constants::MINIAPP_DEMO1_WASM_ROUTES_JSON).unwrap();
 
-    deploy(
+    common::deploy_app(
         &ctx.substrate_client,
         "demo-sse",
         miniapp_manifest_with_assets(wasm_bytes, routes, archive),
@@ -565,7 +558,7 @@ async fn test_miniapp_demo1_wasm_websocket_echo_and_updates() {
     let routes: serde_json::Value =
         serde_json::from_str(test_constants::MINIAPP_DEMO1_WASM_ROUTES_JSON).unwrap();
 
-    deploy(
+    common::deploy_app(
         &ctx.substrate_client,
         "demo-ws",
         miniapp_manifest_with_assets(wasm_bytes, routes, archive),
