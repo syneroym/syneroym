@@ -57,6 +57,11 @@ const GATES: &[Gate] = &[
         commands: &[&["cargo", "xtask", "check-lint-suppressions"]],
     },
     Gate {
+        name: "module-layout",
+        skip_on_docs_only: false,
+        commands: &[&["cargo", "xtask", "check-module-layout"]],
+    },
+    Gate {
         name: "duplication",
         skip_on_docs_only: false,
         commands: &[&["cargo", "xtask", "check-duplication"]],

@@ -3,6 +3,8 @@
 //! must be denied outside an `init`/`migrate` context, and deploying a
 //! component that doesn't export `init`/`migrate` at all must not error.
 
+mod common;
+
 use std::{
     fs,
     path::Path,
@@ -20,11 +22,8 @@ use syneroym_rpc::{Ability, AuthLevel, CallerContext, Capability, ResourceUri, S
 use syneroym_sandbox_wasm::{
     AppSandboxEngine, HostState, MessagingContext, StreamContext, empty_service_proxy,
 };
-use syneroym_wit_interfaces::{
-    control_plane::exports::syneroym::control_plane::orchestrator::{
-        ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
-    },
-    host::syneroym::data_layer::store::{DataLayerError, Host as DataLayerHost, SqlValue},
+use syneroym_wit_interfaces::host::syneroym::data_layer::store::{
+    DataLayerError, Host as DataLayerHost, SqlValue,
 };
 
 fn test_messaging_context() -> MessagingContext {
@@ -70,30 +69,6 @@ async fn make_engine(dir: &Path) -> AppSandboxEngine {
     )
     .await
     .unwrap()
-}
-
-fn wasm_deploy_manifest(bytes: Vec<u8>, interfaces: Vec<String>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
-        service_type: ServiceType::Wasm(WasmManifest {
-            source: ArtifactSource::Binary(bytes),
-            hash: None,
-            interfaces,
-        }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
 }
 
 #[tokio::test]
@@ -309,8 +284,10 @@ async fn test_deploy_skips_lifecycle_hook_gracefully_for_component_without_it() 
         return;
     };
 
-    let manifest =
-        wasm_deploy_manifest(wasm_bytes, vec![test_constants::GREETER_INTERFACE_NAME.to_string()]);
+    let manifest = common::wasm_deploy_manifest(
+        wasm_bytes,
+        vec![test_constants::GREETER_INTERFACE_NAME.to_string()],
+    );
 
     // The greeter component exports no `init`/`migrate` -- deploy must
     // succeed without attempting (and failing on) those hooks.

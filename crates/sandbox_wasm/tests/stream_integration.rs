@@ -6,6 +6,8 @@
 //! `crates/substrate/tests/stream_client_e2e.rs`) so these tests focus on
 //! the Wasmtime/dynamic-invocation boundary.
 
+mod common;
+
 use std::{
     fs,
     path::Path,
@@ -28,9 +30,6 @@ use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::JsonRpcRequest;
 use syneroym_sandbox_wasm::{AppSandboxEngine, StreamRequestOutcome};
-use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
-};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::Barrier,
@@ -117,30 +116,6 @@ async fn make_engine_with_max_streams(dir: &Path, max: u32) -> Arc<AppSandboxEng
     .await
 }
 
-fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
-        service_type: ServiceType::Wasm(WasmManifest {
-            source: ArtifactSource::Binary(bytes),
-            hash: None,
-            interfaces: vec![TEST_DRIVER_INTERFACE.to_string()],
-        }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
-}
-
 async fn call(
     engine: &AppSandboxEngine,
     service_id: &str,
@@ -179,7 +154,9 @@ async fn test_register_stream_protocol_records_in_registry() {
     let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
     let engine = make_engine_with_registry(dir.path(), registry.clone()).await;
 
-    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
+    engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
 
     let (endpoint, canonical) = registry.lookup(SERVICE_A, PROTOCOL).expect("protocol registered");
     assert_eq!(canonical, PROTOCOL);
@@ -195,7 +172,9 @@ async fn test_cross_service_stream_protocol_isolation() {
     let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
     let engine = make_engine_with_registry(dir.path(), registry.clone()).await;
 
-    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
+    engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
 
     assert!(registry.lookup(SERVICE_A, PROTOCOL).is_some());
     assert!(
@@ -213,7 +192,9 @@ async fn test_stream_protocol_registration_survives_restart_replay() {
     let registry = EndpointRegistry::new(storage.clone()).await.unwrap();
 
     let engine = make_engine_with_registry(dir.path(), registry).await;
-    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
+    engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
 
     // Simulates a substrate restart: a brand-new `EndpointRegistry` backed
     // by the same persisted storage, replaying `load_from_db()` at
@@ -231,7 +212,9 @@ async fn test_download_direction_end_to_end() {
     let wasm_bytes = skip_if_missing!("test_download_direction_end_to_end");
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
-    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
+    engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
 
     let request_data = b"hello-download".to_vec();
     let expected = expected_download_payload("peer-1", &request_data);
@@ -270,7 +253,9 @@ async fn test_download_declined_by_guest_closes_stream_without_bytes() {
         skip_if_missing!("test_download_declined_by_guest_closes_stream_without_bytes");
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
-    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
+    engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
 
     let (peer, host_side) = tokio::io::duplex(65536);
     let (host_reader, host_writer) = tokio::io::split(host_side);
@@ -304,7 +289,9 @@ async fn test_upload_direction_end_to_end_commits_content() {
     let wasm_bytes = skip_if_missing!("test_upload_direction_end_to_end_commits_content");
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
-    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
+    engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
 
     let upload_content = b"content uploaded via stream-sink end to end".to_vec();
 
@@ -341,7 +328,9 @@ async fn test_upload_declined_by_guest_leaves_no_stored_content() {
     let wasm_bytes = skip_if_missing!("test_upload_declined_by_guest_leaves_no_stored_content");
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
-    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
+    engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
 
     let (mut peer, host_side) = tokio::io::duplex(65536);
     let (host_reader, host_writer) = tokio::io::split(host_side);
@@ -379,7 +368,9 @@ async fn test_upload_push_chunk_failure_aborts_without_finalize() {
     let wasm_bytes = skip_if_missing!("test_upload_push_chunk_failure_aborts_without_finalize");
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
-    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
+    engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
 
     let (mut peer, host_side) = tokio::io::duplex(65536);
     let (host_reader, host_writer) = tokio::io::split(host_side);
@@ -430,7 +421,9 @@ async fn test_download_next_chunk_failure_aborts_stream_cleanly() {
     let wasm_bytes = skip_if_missing!("test_download_next_chunk_failure_aborts_stream_cleanly");
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
-    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
+    engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
 
     let request_data = b"fail-after-first-chunk".to_vec();
     let expected_full = expected_download_payload("peer-1", &request_data);
@@ -487,7 +480,9 @@ async fn test_next_chunk_and_push_chunk_latency_budget() {
     let wasm_bytes = skip_if_missing!("test_next_chunk_and_push_chunk_latency_budget");
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
-    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
+    engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
 
     // The fixture chunks in 8-byte pieces; ~50 chunks needs ~400+ bytes of
     // downloaded content.
@@ -545,7 +540,9 @@ async fn test_long_running_stream_does_not_trap_on_epoch_deadline() {
     let wasm_bytes = skip_if_missing!("test_long_running_stream_does_not_trap_on_epoch_deadline");
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
-    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
+    engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
 
     let request_data = "y".repeat(56).into_bytes(); // ~9 chunks of 8 bytes
     let expected = expected_download_payload("peer-1", &request_data);
@@ -611,7 +608,9 @@ async fn test_concurrent_stream_requests_enforce_capacity_atomically() {
     let dir = tempfile::tempdir().unwrap();
     let max_concurrent = 4u32;
     let engine = make_engine_with_max_streams(dir.path(), max_concurrent).await;
-    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
+    engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
 
     let attempts = 20usize;
     let barrier = Arc::new(Barrier::new(attempts));
@@ -693,8 +692,12 @@ async fn test_stream_instances_across_services_bounded_by_shared_pool_budget() {
         Some(4),
     )
     .await;
-    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes.clone())).await.unwrap();
-    engine.deploy_wasm(SERVICE_B, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    let manifest_a =
+        common::wasm_deploy_manifest(wasm_bytes.clone(), vec![TEST_DRIVER_INTERFACE.to_string()]);
+    engine.deploy_wasm(SERVICE_A, &manifest_a).await.unwrap();
+    let manifest_b =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
+    engine.deploy_wasm(SERVICE_B, &manifest_b).await.unwrap();
 
     let spawn_held_upload = |service_id: &'static str, peer_id: &'static str| {
         let (peer, host_side) = tokio::io::duplex(65536);

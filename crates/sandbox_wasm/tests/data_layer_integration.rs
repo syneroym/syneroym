@@ -5,6 +5,8 @@
 //! host-injected `creator-id`, then re-deploy and verify `migrate()` runs
 //! instead of `init()` and prior data survives.
 
+mod common;
+
 use std::{fs, path::Path, sync::Arc};
 
 use syneroym_core::{
@@ -20,9 +22,6 @@ use syneroym_rpc::{
     Ability, AuthLevel, CallerContext, Capability, JsonRpcRequest, ResourceUri, SessionContext,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
-use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
-};
 
 const TEST_DRIVER_INTERFACE: &str = "syneroym-test:data-layer-test/test-driver@0.1.0";
 const SERVICE_ID: &str = "data-layer-test-svc";
@@ -56,30 +55,6 @@ async fn make_engine(dir: &Path) -> AppSandboxEngine {
     )
     .await
     .unwrap()
-}
-
-fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
-        service_type: ServiceType::Wasm(WasmManifest {
-            source: ArtifactSource::Binary(bytes),
-            hash: None,
-            interfaces: vec![TEST_DRIVER_INTERFACE.to_string()],
-        }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
 }
 
 async fn run_crud_scenario(engine: &AppSandboxEngine, count: u32) -> u32 {
@@ -247,7 +222,8 @@ async fn test_deploy_init_crud_creator_id_and_migrate() {
     let engine = make_engine(dir.path()).await;
 
     // First deploy: init() must run, creating the `profiles` collection.
-    let manifest = wasm_deploy_manifest(wasm_bytes.clone());
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes.clone(), vec![TEST_DRIVER_INTERFACE.to_string()]);
     engine.deploy_wasm(SERVICE_ID, &manifest).await.unwrap();
 
     // CRUD: put 100 records, then query them all back.
@@ -315,7 +291,8 @@ async fn test_deployed_policy_yields_empty_guest_originated_query_d04_02_h() {
         .await
         .unwrap();
 
-    let manifest = wasm_deploy_manifest(wasm_bytes);
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
     engine.deploy_wasm(SERVICE_ID, &manifest).await.unwrap();
 
     let store = storage_provider.open_service_db(SERVICE_ID, &key_store).await.unwrap();
@@ -393,7 +370,8 @@ async fn test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d
         .await
         .unwrap();
 
-    let manifest = wasm_deploy_manifest(wasm_bytes);
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
     engine.deploy_wasm(SERVICE_ID, &manifest).await.unwrap();
 
     const REAL_CALLER_DID: &str = "did:key:zRealCallerB35";
@@ -499,7 +477,8 @@ async fn test_deployed_policy_authorizes_guest_originated_writes_for_a_real_call
         .await
         .unwrap();
 
-    let manifest = wasm_deploy_manifest(wasm_bytes);
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
     engine.deploy_wasm(SERVICE_ID, &manifest).await.unwrap();
 
     const WRITER_DID: &str = "did:key:zWriterB5";

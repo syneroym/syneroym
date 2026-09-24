@@ -85,6 +85,10 @@ run = "cargo xtask check-file-lengths"
 description = "Ensure clippy::too_many_lines suppressions stay under the ratchet ceiling"
 run = "cargo xtask check-lint-suppressions"
 
+[tasks."check:module-layout"]
+description = "Ensure module entry points follow the sibling-file convention under src/ and avoid mod.rs"
+run = "cargo xtask check-module-layout"
+
 [tasks."check:duplication"]
 description = "Ensure exact-duplicate code stays under the ratchet ceiling"
 run = "cargo xtask check-duplication"
@@ -97,7 +101,7 @@ run = """
 
 [tasks."test:rust"]
 description = "Run all Rust unit and integration tests"
-depends = ["build:test-components", "build:roym", "check:roym-deps", "check:file-lengths", "check:lint-suppressions", "check:duplication", "test:roym-ui"]
+depends = ["build:test-components", "build:roym", "check:roym-deps", "check:file-lengths", "check:lint-suppressions", "check:module-layout", "check:duplication", "test:roym-ui"]
 # nextest runs every test binary in one parallel pool (see .config/nextest.toml);
 # it does not run doctests, so those follow in a second `cargo test --doc` pass.
 run = [

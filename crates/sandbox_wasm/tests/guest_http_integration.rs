@@ -6,6 +6,8 @@
 //! `crates/substrate/tests/guest_http_e2e.rs`) so these tests focus on the
 //! Wasmtime/dynamic-invocation boundary.
 
+mod common;
+
 use std::{fs, path::Path, sync::Arc};
 
 use syneroym_app_host::types::http::{CallerAuth, CallerIdentity, HttpRequest};
@@ -18,9 +20,6 @@ use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::{AuthLevel, CallerContext, JsonRpcRequest, SessionContext};
 use syneroym_sandbox_wasm::{AppSandboxEngine, GuestHttpFailure, GuestHttpOutcome};
-use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
-};
 
 const TEST_DRIVER_INTERFACE: &str = test_constants::HTTP_GUEST_TEST_DRIVER_INTERFACE;
 const SERVICE_ID: &str = "http-guest-svc";
@@ -60,30 +59,6 @@ async fn make_engine(dir: &Path) -> Arc<AppSandboxEngine> {
     );
     engine.self_weak.set(Arc::downgrade(&engine)).expect("self_weak set once");
     engine
-}
-
-fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
-        service_type: ServiceType::Wasm(WasmManifest {
-            source: ArtifactSource::Binary(bytes),
-            hash: None,
-            interfaces: vec![TEST_DRIVER_INTERFACE.to_string()],
-        }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
 }
 
 fn read_http_guest_test_wasm() -> Option<Vec<u8>> {
@@ -127,7 +102,13 @@ async fn echo_round_trips_every_request_field() {
     let wasm_bytes = skip_if_missing!("echo_round_trips_every_request_field");
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
-    engine.deploy_wasm(SERVICE_ID, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    engine
+        .deploy_wasm(
+            SERVICE_ID,
+            &common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]),
+        )
+        .await
+        .unwrap();
 
     let mut req = request("/echo");
     req.query = "a=b".to_string();
@@ -151,7 +132,13 @@ async fn last_request_persists_across_a_fresh_instantiation() {
     let wasm_bytes = skip_if_missing!("last_request_persists_across_a_fresh_instantiation");
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
-    engine.deploy_wasm(SERVICE_ID, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    engine
+        .deploy_wasm(
+            SERVICE_ID,
+            &common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]),
+        )
+        .await
+        .unwrap();
 
     let mut req = request("/items/42");
     req.route = "/items/{id}".to_string();
@@ -173,7 +160,13 @@ async fn reject_returns_the_guests_own_status_and_message() {
     let wasm_bytes = skip_if_missing!("reject_returns_the_guests_own_status_and_message");
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
-    engine.deploy_wasm(SERVICE_ID, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    engine
+        .deploy_wasm(
+            SERVICE_ID,
+            &common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]),
+        )
+        .await
+        .unwrap();
 
     let outcome =
         engine.handle_guest_http_request(SERVICE_ID, &request("/reject"), None).await.unwrap();
@@ -187,7 +180,13 @@ async fn fail_is_declined_with_the_guests_message() {
     let wasm_bytes = skip_if_missing!("fail_is_declined_with_the_guests_message");
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
-    engine.deploy_wasm(SERVICE_ID, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    engine
+        .deploy_wasm(
+            SERVICE_ID,
+            &common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]),
+        )
+        .await
+        .unwrap();
 
     let outcome =
         engine.handle_guest_http_request(SERVICE_ID, &request("/fail"), None).await.unwrap();
@@ -201,7 +200,13 @@ async fn whoami_reflects_the_forwarded_caller_identity() {
     let wasm_bytes = skip_if_missing!("whoami_reflects_the_forwarded_caller_identity");
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
-    engine.deploy_wasm(SERVICE_ID, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+    engine
+        .deploy_wasm(
+            SERVICE_ID,
+            &common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]),
+        )
+        .await
+        .unwrap();
 
     // Anonymous.
     let outcome =
@@ -247,9 +252,10 @@ async fn a_component_with_no_handler_export_fails_cleanly() {
     };
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
-    let mut manifest = wasm_deploy_manifest(wasm_bytes);
-    let ServiceType::Wasm(ref mut wasm_manifest) = manifest.service_type else { unreachable!() };
-    wasm_manifest.interfaces = vec![test_constants::GREETER_INTERFACE_NAME.to_string()];
+    let manifest = common::wasm_deploy_manifest(
+        wasm_bytes,
+        vec![test_constants::GREETER_INTERFACE_NAME.to_string()],
+    );
     engine.deploy_wasm(SERVICE_ID, &manifest).await.unwrap();
 
     let outcome =
