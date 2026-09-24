@@ -1,8 +1,6 @@
 //! Shared test fixtures and helpers for `crates/sandbox_wasm/tests/`
 //! integration tests.
 
-#![allow(dead_code)]
-
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
 };

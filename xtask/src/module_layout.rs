@@ -12,14 +12,27 @@ use std::{path::Path, process::Command};
 
 use anyhow::{Result, anyhow, bail};
 
-/// Returns true if a path refers to a `mod.rs` file located under a `src/`
-/// directory.
+/// Returns true if a path refers to a `mod.rs` file located under a crate's
+/// `src/` directory hierarchy.
+///
+/// Paths within integration test or benchmark directories (where a component
+/// named `tests` or `benches` appears before `src`) are permitted exceptions.
 pub(crate) fn is_src_mod_rs(path: &Path) -> bool {
     if path.file_name().and_then(|n| n.to_str()) != Some("mod.rs") {
         return false;
     }
 
-    path.iter().any(|c| c == "src")
+    for component in path.components() {
+        let s = component.as_os_str();
+        if s == "tests" || s == "benches" {
+            return false;
+        }
+        if s == "src" {
+            return true;
+        }
+    }
+
+    false
 }
 
 pub fn check_module_layout() -> Result<()> {
@@ -86,5 +99,8 @@ mod tests {
         assert!(!is_src_mod_rs(Path::new("crates/substrate/tests/common/mod.rs")));
         assert!(!is_src_mod_rs(Path::new("benches/common/mod.rs")));
         assert!(!is_src_mod_rs(Path::new("crates/router/src/proxy/tests.rs")));
+        assert!(!is_src_mod_rs(Path::new("crates/core/tests/src/mod.rs")));
+        assert!(!is_src_mod_rs(Path::new("tests/foo/src/mod.rs")));
+        assert!(!is_src_mod_rs(Path::new("crates/core/benches/src/mod.rs")));
     }
 }
