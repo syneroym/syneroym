@@ -14,6 +14,7 @@ use walkdir::WalkDir;
 
 mod file_lengths;
 mod lint_suppressions;
+mod verify;
 mod workspace_lints;
 
 fn get_git_commit() -> String {
@@ -457,6 +458,7 @@ fn main() -> Result<()> {
         Some("check-file-lengths") => file_lengths::check_file_lengths(),
         Some("check-lint-suppressions") => lint_suppressions::check_lint_suppressions(),
         Some("check-duplication") => check_duplication(),
+        Some("verify") => verify::run(args),
         Some("perf-summary") | None => perf_summary(),
         Some(other) => bail!("Unknown xtask command: {other}"),
     }

@@ -2,7 +2,7 @@
 
 ## General Instructions
 - Focus religiously on these code aspects: Simplicity, performance, readability, testability, overall beauty, robustness, scalability, reliability.
-- Follow standard Rust `clippy` guidelines. Before completion, confirm that `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, `cargo xtask check-file-lengths`, `cargo xtask check-lint-suppressions`, `cargo xtask check-duplication`, `cargo nextest run --workspace` (plus `cargo test --workspace --doc` for doctests), `cargo audit`, `cargo deny check licenses`, and `mise run test:e2e` succeed. As part of the same completion pass, update [docs/planning/deferred-backlog.md](docs/planning/deferred-backlog.md) if the change deferred or shortcut anything (see the Mandatory Deferred-Backlog Update rule under AI Agent Guidelines).
+- Follow standard Rust `clippy` guidelines. Before completion, run `mise run verify` and confirm every gate passes (see **Commands** and **Context Budget** below). As part of the same completion pass, update [docs/planning/deferred-backlog.md](docs/planning/deferred-backlog.md) if the change deferred or shortcut anything (see the Mandatory Deferred-Backlog Update rule under AI Agent Guidelines).
 - Try to use the latest stable versions of any library added.
 - Have extensive integration and end to end tests for end user facing interfaces.
 - Have solid unit tests for internal code if it is complex and delicate, even if it is not user facing.
@@ -25,6 +25,16 @@ Language level:
 
 ## Commands
 ```bash
+# Run the full completion checklist quietly: each gate's output goes to
+# target/gates/<gate>.log, and only a one-line summary (or, on failure, a
+# short tail) prints. This is what "Mandatory Pre-Completion Verification"
+# means below. --skip <gate> (repeatable) is for fast local iteration only.
+# It takes ~20 minutes end to end (nextest and e2e dominate) -- run it as a
+# background job and read the summary when it finishes, not in the
+# foreground: a foreground tool call has a shorter timeout than that.
+mise run verify
+mise run verify -- --skip e2e --skip nextest
+
 # Build the workspace
 cargo build
 
@@ -128,7 +138,7 @@ how the drift happened, so do not add one here without an enforcement path.**
 - The above docs are starting points for the implementation. It is likely that during implementation we deviate and improvise from those, and later get them in sync.
 
 ## AI Agent Guidelines
-- **Mandatory Pre-Completion Verification**: Before concluding any coding task, you MUST execute and confirm success for all standard quality gates: `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features` (confirming zero `clippy::too_many_lines` warnings and clean clippy with `-- -D warnings`), `cargo xtask check-file-lengths`, `cargo xtask check-lint-suppressions`, `cargo xtask check-duplication`, `cargo nextest run --workspace` and `cargo test --workspace --doc`, `cargo audit`, `cargo deny check licenses`, and `mise run test:e2e`. Do not skip `cargo audit` and `cargo deny check licenses`—they are fast, lightweight, and required for CI.
+- **Mandatory Pre-Completion Verification**: Before concluding any coding task, you MUST run `mise run verify` (`cargo xtask verify` — see **Commands**) and confirm it ends with every gate passing. It runs fmt, clippy (confirming zero `clippy::too_many_lines` warnings and clean clippy with `-- -D warnings`), the xtask checks, nextest, doctests, `cargo audit`, `cargo deny check licenses`, and `mise run test:e2e`, in that order, and does not skip any of them. It takes ~20 minutes end to end, longer than a foreground tool call's timeout, so run it as a background job and read its summary when it finishes. The final completion-pass run must not use `--skip`; that flag is only for fast local iteration while still working. A checklist command is added to `xtask/src/verify.rs`'s `GATES` list, not to this document.
 - **Mandatory Import Cleanup**: Before finishing any coding task, you MUST perform a dedicated final pass over the files you edited to clean up imports. You must strictly enforce the import rules (Types via standard `use`, Functions qualified by parent module) and proactively remove inline fully-qualified paths (lines with multiple `::`). For conflicting types like `Result` or `Error`, import their parent module (e.g., `use std::fmt;`) and use `fmt::Result` to avoid multiple `::`.
 - **Mandatory Deferred-Backlog Update**: Before finishing any task, do a final sanity pass (same discipline as the import cleanup) asking: *did this change postpone, shortcut, coarsely gate as a stand-in, or scope out anything?* If yes, record it in [docs/planning/deferred-backlog.md](docs/planning/deferred-backlog.md) — the single running backlog — under the right theme, with the reason, a target milestone/phase (or `TBD`), and a link to the source of record or `file.rs:line`. Every new open `TODO`/`FIXME` marker that encodes a real deferral needs a matching row in that doc's "Open in-code markers" section. Conversely, when you *resolve* a deferral, delete its code marker and move its backlog row to "Recently resolved". Keeping this doc current is part of "done," not optional.
 - **No Planning-Doc References in Code**: Never cite milestone/slice/task IDs (`M04A`, `Slice B6`, `B7a`, etc.) or planning-doc section numbers in code comments, doc comments, or test names. These docs get archived, renumbered, or deleted, so the reference rots and the comment becomes misleading noise. ADR references (`ADR-0014`) are fine since ADRs are stable, permanent records. Comments should explain the current WHY (invariant, constraint, non-obvious tradeoff) standing on its own — that context belongs in the commit message or PR description, not the code.
@@ -143,7 +153,7 @@ how the drift happened, so do not add one here without an enforcement path.**
   - For every spawned substrate node, allocate distinct ports for all listeners: Iroh HTTP relay, community registry, client gateway, and the QUIC listener (`quic_bind_address: format!("127.0.0.1:{quic_port}")`). Do not let the QUIC listener default to the fixed `0.0.0.0:7965`.
   - In TypeScript E2E tests (`crates/substrate/tests/e2e/`), never hardcode port numbers or fallback defaults (such as `7660`, `3000`). Global setups probe free ports via `reserveTcpPort` / `reserveUdpPort` from `./ports` and persist them to `.e2e-data/ports.json`. Spec files must read ports dynamically using `readE2EPorts()` or `readMultihopPorts()` from `../ports`, inside `beforeAll`, `beforeEach`, or lazy getters (never at module load time).
   - Ports in the OS ephemeral range (`32_768`–`60_999`) are strictly forbidden by `crates/substrate/tests/no_ephemeral_port_literals.rs`.
-- **Context Budget**: This is a large workspace, so avoid letting noise from clean runs fill the context window. When a workspace-wide command (`cargo nextest run --workspace`, `cargo clippy --workspace --all-targets --all-features`, `mise run test:all`, etc.) succeeds, don't paste its full passing/clean output — a short "N tests passed" / "clippy clean" suffices. The instant a command fails, show its full relevant output (the failing test's output, the clippy diagnostic, the panic/backtrace) — never trim or summarize a failure or anything you're actively diagnosing. Keep the *tool result itself* small. While iterating, prefer a targeted `cargo nextest run -p syneroym-<crate>`. For a full run, send everything to a file so only the exit code and a short tail enter context (nextest's own summary is compact, but the substrate's `tracing` output goes to the real stdout fd):
+- **Context Budget**: This is a large workspace, so avoid letting noise from clean runs fill the context window. `mise run verify` already does this for the full completion checklist (each gate's output goes to `target/gates/<gate>.log`, not to your context) — the guidance below is for the individual commands you run while debugging a single gate. When a workspace-wide command (`cargo nextest run --workspace`, `cargo clippy --workspace --all-targets --all-features`, `mise run test:all`, etc.) succeeds, don't paste its full passing/clean output — a short "N tests passed" / "clippy clean" suffices. The instant a command fails, show its full relevant output (the failing test's output, the clippy diagnostic, the panic/backtrace) — never trim or summarize a failure or anything you're actively diagnosing. Keep the *tool result itself* small. While iterating, prefer a targeted `cargo nextest run -p syneroym-<crate>`. For a full run, send everything to a file so only the exit code and a short tail enter context (nextest's own summary is compact, but the substrate's `tracing` output goes to the real stdout fd):
 
 ```bash
 cargo nextest run --workspace > target/test-run.log 2>&1; echo "exit=$?"; tail -n 20 target/test-run.log
@@ -170,6 +180,7 @@ The other commands that print a lot, and how to run them:
   cargo dupes report --exclude bindings.rs --exclude target > target/dupes.log; git diff --name-only main... -- '*.rs' > target/changed.txt; [ -s target/changed.txt ] && grep -nF -f target/changed.txt target/dupes.log
   ```
 - **Clippy after a fresh build** prints a `Compiling`/`Checking` line for each of ~930 crates. `cargo clippy -q …` hides them and still shows every warning.
+- **Which commands are actually generating the noise?** `mise run agent-output-report` (`scripts/agent-output-report.py`) reads recent Claude Code session transcripts and prints a table of Bash commands by total/largest output size. Run it during a code-quality round, or whenever a session feels noisier than expected, to see what to quiet next.
 
 The substrate's log level already defaults to `warn` (`.cargo/config.toml` `[env]`); don't add `RUST_LOG=info`/`debug` or `-- --nocapture` to a routine run — only when actively diagnosing a specific failure. Likewise prefer targeted `Read` ranges over re-reading whole files you've already seen, and push pure exploration/search legs of a task (finding call sites, scanning logs) into a subagent so only the distilled answer lands in the main thread.
 

@@ -23,5 +23,19 @@
             "Bash(sudo:*)",
             "Bash(curl:*)"
         ]
+    },
+    "hooks": {
+        "PreToolUse": [
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-cargo-test-without-doc.sh\"",
+                        "timeout": 5
+                    }
+                ]
+            }
+        ]
     }
 }
