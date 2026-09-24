@@ -1490,8 +1490,9 @@ roymctl roym backup restore-data    --in <archive.json> --recovery-key <key>
   *"Your history and records are restored and can be read. Conversations
   from before the restore cannot continue: this installation has new
   addresses. Share your new address with the people you talk to, and
-  start new conversations with them."* (`deferred-backlog.md` §5, the
-  IMPORTANT row). Keep the sentence as a `const` in `backup.rs` and assert
+  start new conversations with them."* (`deferred-backlog.md` §5, the row
+  *"Conversations cannot continue after a substrate moves to a new
+  machine"*). Keep the sentence as a `const` in `backup.rs` and assert
   it in the CLI test.
 - The archive deliberately does **not** include the member master keys:
   restoring them without a re-pin mechanism blocks even a fresh start
@@ -1869,7 +1870,7 @@ Each with a backlog row (§17):
 | No consumer-signed cancellation; a consumer asks in chat (`D-C8-14`) | The card set is reopened |
 | No signed cancellation deadline; the Hub cannot say when cancelling stops being guaranteed | A provider wants a deadline enforced |
 | The encrypted archive is `roymctl`-only (`D-C8-17`) | A person without shell access needs a backup |
-| ~~A restored node cannot continue its live conversations~~ — **already added 2026-09-24** as the IMPORTANT row at the top of `deferred-backlog.md` §5 (target `blocks-prod`, before C10). Do not add a second row; when C8 lands, only check that the row's claim about `restore-data`'s notice is true | — |
+| ~~A restored node cannot continue its live conversations~~ — **already added 2026-09-24** as the first row of `deferred-backlog.md` §5, *"Conversations cannot continue after a substrate moves to a new machine"* (target TBD, with an interim product mitigation described in the row). Do not add a second row; when C8 lands, only check that the row's claim about `restore-data`'s notice is true | — |
 | `directory`'s bundle is unsigned | C9 gives `directory` a signing identity of its own |
 | `max_per_booking` is unread; one booking = one seat | A listing sells more than one unit per booking |
 | A late signed record after a track's terminal is shown but moves nothing (`D-C8-15`) | A payee confirms after the window and the state looks wrong to them |
