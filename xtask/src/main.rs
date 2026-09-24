@@ -14,6 +14,7 @@ use walkdir::WalkDir;
 
 mod file_lengths;
 mod lint_suppressions;
+mod module_layout;
 mod verify;
 mod workspace_lints;
 
@@ -417,7 +418,7 @@ fn perf_summary() -> Result<()> {
 /// This value is a ratchet guard against regrowth, not a target: `cargo-dupes`
 /// normalises SQL strings (such as distinct `init_schema` definitions) and
 /// detects similar repetitive structure patterns across crates as duplicates.
-const MAX_EXACT_DUPLICATE_PERCENT: &str = "9.0";
+const MAX_EXACT_DUPLICATE_PERCENT: &str = "8.9";
 
 fn check_duplication() -> Result<()> {
     println!("Checking exact-duplicate code percentage (max {MAX_EXACT_DUPLICATE_PERCENT}%)...");
@@ -457,6 +458,7 @@ fn main() -> Result<()> {
         Some("check-roym-deps") => check_roym_deps(),
         Some("check-file-lengths") => file_lengths::check_file_lengths(),
         Some("check-lint-suppressions") => lint_suppressions::check_lint_suppressions(),
+        Some("check-module-layout") => module_layout::check_module_layout(),
         Some("check-duplication") => check_duplication(),
         Some("verify") => verify::run(args),
         Some("perf-summary") | None => perf_summary(),

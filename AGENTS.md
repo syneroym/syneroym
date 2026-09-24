@@ -51,6 +51,9 @@ cargo audit
 # License check (SPDX compliance against deny.toml)
 cargo deny check licenses
 
+# Module layout check (enforce sibling-file convention under src/)
+cargo xtask check-module-layout
+
 # Full Rust test suite -- nextest runs every test binary in one parallel
 # pool (see .config/nextest.toml); it does not run doctests.
 cargo nextest run --workspace
@@ -109,15 +112,17 @@ how the drift happened, so do not add one here without an enforcement path.**
   *Checked by:* `cargo clippy --workspace --all-targets --all-features` (enforced via workspace `clippy.toml` `too-many-lines-threshold = 100`) and `cargo xtask check-lint-suppressions`.
 - **Match arms are not a place to put a function.** Match arms must not exceed ~10 lines. Extract complex match arm bodies into named helper functions or methods on the type they work with, so the `match` reads as a table of contents.
   *Checked by:* `clippy::too_many_lines`, `clippy::cognitive_complexity`, and review.
-- **File size.** Production source files must not exceed 800 lines; prefer new sibling files over expanding existing ones. Test files (under `tests/`, `benches/`, and in-tree tests) must not exceed 800 lines for all new files. The oversized list (`xtask/oversized-test-files.txt`) ratchets downward; listed files are capped at their recorded line count (up to 1,800 lines). When splitting an oversized file `foo.rs`, keep `foo.rs` as the module entry and place tests in `foo/tests/<topic>.rs` (NOT by moving unit tests out of the crate into `tests/`).
+- **File size.** Production source files must not exceed 800 lines; prefer new sibling files over expanding existing ones. Test files (under `tests/`, `benches/`, and in-tree tests) must not exceed 800 lines for all new files. The oversized list (`xtask/oversized-test-files.txt`) ratchets downward; listed files are capped at their recorded line count (up to 1,800 lines). When splitting an oversized file `foo.rs`, place tests in `foo/tests/<topic>.rs` (NOT by moving unit tests out of the crate into `tests/`).
   *Checked by:* `cargo xtask check-file-lengths` (and `mise run check:file-lengths`), and review.
+- **Module layout.** In `src/`, a module's entry point is always `<name>.rs` beside its `<name>/` directory. This holds at every depth: `foo.rs` + `foo/`, `foo/tests.rs` + `foo/tests/`, and so on. `mod.rs` is never used anywhere under `src/`. The single exception is `tests/<name>/mod.rs` for code shared between integration tests, where cargo requires it because any `.rs` file placed directly under `tests/` is compiled as its own test binary.
+  *Checked by:* `cargo xtask check-module-layout` (and `mise run check:module-layout`), and review.
 - **Look for an existing helper before writing a new one.** Duplication here is
   rarely a literal copy — it is the same shape with different names and config
   values, which a text search misses. Run `cargo dupes report` over your
   change before you finish (filtered to your files; recipe under **Context
   Budget** below).
   *Checked by:* `cargo xtask check-duplication` (and `mise run
-  check:duplication`), ratcheted at `--max-exact-percent 9.0` for now.
+  check:duplication`), ratcheted at `--max-exact-percent 8.9` for now.
 - **Reuse the test harness.** Substrate integration tests use
   `crates/substrate/tests/common` (`SubstrateTestContext`, `alloc_ports`). Do not
   write your own `struct Node` / `fn boot`; extend the shared one if it does not

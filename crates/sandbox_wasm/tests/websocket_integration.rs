@@ -2,6 +2,8 @@
 //! Integration tests for `syneroym:http/websocket-handler` dynamic
 //! marshalling.
 
+mod common;
+
 use std::{fs, path::Path, sync::Arc};
 
 use syneroym_core::{
@@ -12,9 +14,6 @@ use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_sandbox_wasm::{AppSandboxEngine, FrameKind};
-use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
-};
 
 const SERVICE_ID: &str = "websocket-guest-svc";
 
@@ -56,30 +55,6 @@ async fn make_engine(dir: &Path) -> Arc<AppSandboxEngine> {
     engine
 }
 
-fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
-        service_type: ServiceType::Wasm(WasmManifest {
-            source: ArtifactSource::Binary(bytes),
-            hash: None,
-            interfaces: vec!["syneroym:http/websocket-handler@0.1.0".to_string()],
-        }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_websocket_marshalling() {
     let wasm_bytes = fs::read(test_constants::websocket_guest_test_wasm_path()).expect(
@@ -89,7 +64,10 @@ async fn test_websocket_marshalling() {
     let temp_dir = tempfile::tempdir().unwrap();
     let engine = make_engine(temp_dir.path()).await;
 
-    let manifest = wasm_deploy_manifest(wasm_bytes);
+    let manifest = common::wasm_deploy_manifest(
+        wasm_bytes,
+        vec!["syneroym:http/websocket-handler@0.1.0".to_string()],
+    );
     engine.deploy_wasm(SERVICE_ID, &manifest).await.unwrap();
 
     let conn_id = "test-conn-1";

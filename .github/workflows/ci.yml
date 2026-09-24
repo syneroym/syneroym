@@ -64,6 +64,8 @@ jobs:
         run: cargo xtask check-file-lengths
       - name: Check Lint Suppressions
         run: cargo xtask check-lint-suppressions
+      - name: Check Module Layout
+        run: cargo xtask check-module-layout
       - name: Install cargo-dupes
         run: cargo install cargo-dupes --version 0.2.1 --locked
       - name: Check Duplication

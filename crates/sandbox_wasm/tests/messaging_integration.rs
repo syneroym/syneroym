@@ -6,6 +6,8 @@
 //! namespace and never see the publish -- see ADR-0010's Topic Namespace
 //! Isolation section).
 
+mod common;
+
 use std::{fs, path::Path, sync::Arc, time::Duration};
 
 use syneroym_core::{
@@ -17,9 +19,6 @@ use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::JsonRpcRequest;
 use syneroym_sandbox_wasm::AppSandboxEngine;
-use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
-};
 
 const TEST_DRIVER_INTERFACE: &str = "syneroym-test:messaging-pubsub-test/test-driver@0.1.0";
 const SERVICE_A: &str = "messaging-svc-a";
@@ -66,30 +65,6 @@ async fn make_engine(dir: &Path) -> Arc<AppSandboxEngine> {
     engine
 }
 
-fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
-        service_type: ServiceType::Wasm(WasmManifest {
-            source: ArtifactSource::Binary(bytes),
-            hash: None,
-            interfaces: vec![TEST_DRIVER_INTERFACE.to_string()],
-        }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
-}
-
 async fn call(
     engine: &AppSandboxEngine,
     service_id: &str,
@@ -120,7 +95,8 @@ async fn test_guest_to_guest_cross_service_message_delivery() {
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
 
-    let manifest = wasm_deploy_manifest(wasm_bytes);
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
     engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
     engine.deploy_wasm(SERVICE_B, &manifest).await.unwrap();
 
@@ -170,7 +146,8 @@ async fn test_publish_cannot_spoof_another_services_namespace() {
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
 
-    let manifest = wasm_deploy_manifest(wasm_bytes);
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
     engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
     engine.deploy_wasm(SERVICE_B, &manifest).await.unwrap();
 
@@ -206,7 +183,8 @@ async fn test_guest_delivery_latency_budget() {
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path()).await;
 
-    let manifest = wasm_deploy_manifest(wasm_bytes);
+    let manifest =
+        common::wasm_deploy_manifest(wasm_bytes, vec![TEST_DRIVER_INTERFACE.to_string()]);
     engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
     engine.deploy_wasm(SERVICE_B, &manifest).await.unwrap();
 

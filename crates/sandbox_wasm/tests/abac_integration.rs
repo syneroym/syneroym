@@ -7,6 +7,8 @@
 //! `row_authorizer` wired to the real deployed engine instead of
 //! `empty_row_authorizer()`.
 
+mod common;
+
 use std::{
     fs,
     path::Path,
@@ -31,11 +33,8 @@ use syneroym_rpc::{
 use syneroym_sandbox_wasm::{
     AppSandboxEngine, HostState, MessagingContext, StreamContext, empty_service_proxy,
 };
-use syneroym_wit_interfaces::{
-    control_plane::exports::syneroym::control_plane::orchestrator::{
-        ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
-    },
-    host::syneroym::data_layer::store::{DataLayerError, Host as DataLayerHost, QueryOptions},
+use syneroym_wit_interfaces::host::syneroym::data_layer::store::{
+    DataLayerError, Host as DataLayerHost, QueryOptions,
 };
 
 const SERVICE_ID: &str = "abac-test-svc";
@@ -147,30 +146,6 @@ async fn make_engine_with_storage(
     (Arc::new(engine), storage_provider, key_store, blob_provider)
 }
 
-fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
-        service_type: ServiceType::Wasm(WasmManifest {
-            source: ArtifactSource::Binary(bytes),
-            hash: None,
-            interfaces: vec![],
-        }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
-}
-
 fn real_caller(did: &str) -> CallerContext {
     CallerContext {
         caller_did: did.to_string(),
@@ -258,7 +233,7 @@ async fn deploy_with_mode(dir: &Path, mode: &str) -> Option<Deployed> {
         .await
         .unwrap();
 
-    let manifest = wasm_deploy_manifest(wasm_bytes);
+    let manifest = common::wasm_deploy_manifest(wasm_bytes, vec![]);
     engine.deploy_wasm(SERVICE_ID, &manifest).await.unwrap();
 
     let store = storage_provider.open_service_db(SERVICE_ID, &key_store).await.unwrap();
@@ -778,7 +753,7 @@ async fn stage4_missing_export_under_an_opted_in_policy_denies_closed() {
     let config_generation =
         storage_provider.save_config_generation(GREETER_SERVICE_ID, "{}").await.unwrap();
 
-    let manifest = wasm_deploy_manifest(greeter_bytes);
+    let manifest = common::wasm_deploy_manifest(greeter_bytes, vec![]);
     engine.deploy_wasm(GREETER_SERVICE_ID, &manifest).await.unwrap();
 
     let store = storage_provider.open_service_db(GREETER_SERVICE_ID, &key_store).await.unwrap();
