@@ -214,7 +214,7 @@ tests before the next begins.
 > | Release | Slices |
 > |---|---|
 > | R1 — a usable local guild | **Passed (2026-09-08)**. **C4** (identity, profile, contacts, safety), **C5** (catalog, conversation), **C6** (directory search), **C7** (request → quote → agreement, cards). R1's gate closed at the end of C7 |
-> | R2 — the transaction vertical | **C8** |
+> | R2 — the transaction vertical | **Passed (2026-09-24). C8** |
 > | R3 — cross-installation trust | **C9** |
 > | R4 — private group chat | **C10** |
 >
@@ -239,15 +239,15 @@ tests before the next begins.
 | A person can find a provider through a group | Directory `search` by category, area, and filters, returning source and freshness | Consumer searches, sees results with trust evidence | Ranking; paid placement; free-text intent parsing | **Passed (C6).** Results state their source and age; missing evidence shows as unknown, never as positive |
 | People are safe from unwanted contact | Block, report, per-sender contact rate limits, listing publication limits | Consumer blocks a provider and reports a listing | Automated moderation; appeals workflow | **Passed (C4, C5).** A blocked sender's messages never reach the recipient's inbox; the recipient keeps its transaction records |
 
-### R2 — The transaction vertical
+### R2 — The transaction vertical (**Passed 2026-09-24**)
 
 | Goal | Required contract | User scenario | Excluded | Acceptance test |
 |---|---|---|---|---|
-| An agreement becomes scheduled work | Transaction state machine with named writer, permitted transitions, expiry, idempotency key, conflict rule | Consumer books a slot; a second consumer tries the same slot | Recurring bookings; multi-part jobs | Two concurrent bookings of one slot produce one confirmation and one named conflict, never two confirmations |
-| Payment can be recorded honestly | `payment-acknowledgement` record, separate from settlement; payment instruction bound into the signed agreement | Provider requests payment, consumer pays outside Roym, both acknowledge | Provider-verified settlement; escrow; refunds | The UI never labels an acknowledgement as verified payment; the payee shown matches the agreement |
-| Completion is recorded | Mutually signed `fulfilment-receipt` | Both sides sign off completed work | Ratings; feedback scores | Neither party can alter a signed receipt; corrections appear as separate records |
-| A person can leave with their data | Versioned, integrity-checked export of conversations, agreements, and receipts | Consumer exports everything, imports on a new install | Selective export; redaction | A same-version export/import round-trip passes; import reproduces verification status. **Reworded 2026-08-24** (M06C `D-06C-2`): this read *"Cross-version fixture test passes"*, which G5 going out of scope makes unmeetable — see [G5](#g5--public-contract-versioning). R1's listing row is unaffected and stands as written, since a same-version round-trip that preserves the version field is not cross-version work |
-| A person can recover from device loss | Encrypted backup with a tested restore path | Provider loses their machine and restores | Automatic cloud backup | Restore on a clean node passes the durability suite with no acknowledged transaction lost |
+| An agreement becomes scheduled work | Transaction state machine with named writer, permitted transitions, expiry, idempotency key, conflict rule | Consumer books a slot; a second consumer tries the same slot | Recurring bookings; multi-part jobs | **Passed (C8).** Two concurrent bookings of one slot produce one confirmation and one named conflict, never two confirmations |
+| Payment can be recorded honestly | `payment-acknowledgement` record, separate from settlement; payment instruction bound into the signed agreement | Provider requests payment, consumer pays outside Roym, both acknowledge | Provider-verified settlement; escrow; refunds | **Passed (C8).** The UI never labels an acknowledgement as verified payment; the payee shown matches the agreement |
+| Completion is recorded | Mutually signed `fulfilment-receipt` | Both sides sign off completed work | Ratings; feedback scores | **Passed (C8).** Neither party can alter a signed receipt; corrections appear as separate records |
+| A person can leave with their data | Versioned, integrity-checked export of conversations, agreements, and receipts | Consumer exports everything, imports on a new install | Selective export; redaction | **Passed (C8).** A same-version export/import round-trip passes; import reproduces verification status. **Reworded 2026-08-24** (M06C `D-06C-2`): this read *"Cross-version fixture test passes"*, which G5 going out of scope makes unmeetable — see [G5](#g5--public-contract-versioning). R1's listing row is unaffected and stands as written, since a same-version round-trip that preserves the version field is not cross-version work |
+| A person can recover from device loss | Encrypted backup with a tested restore path | Provider loses their machine and restores | Automatic cloud backup | **Passed (C8).** Restore on a clean node passes the durability suite with no acknowledged transaction lost |
 
 ### R3 — Cross-installation trust
 
@@ -471,6 +471,7 @@ one.
 | `payment-acknowledgement` | Each side, separately | Each party stated what they observed about a payment | **That money moved.** Only a supported payment provider's own attestation could show that, and none is integrated |
 | `fulfilment-receipt` | Both | Both parties agreed the work was done | Quality, or that no dispute follows |
 | `moderation-decision` | SynOrg | This group applied this rule to this member at this time | Global truth; another group is free to disagree |
+| `bundle-manifest` | The person | This person exported these sections with these content hashes | That the export is complete, or that any section's content is honest |
 
 **What "Signed by: Both" means** — recorded 2026-09-04 (M06C `D-06C-12`).
 Every envelope carries one issuer and one signature. A record signed by both
@@ -521,25 +522,40 @@ service on the provider's substrate**. The consumer's client sends requests;
 the Transaction service decides.
 
 ```
-  requested ──▶ quoted ──▶ agreed ──▶ scheduled ──▶ in-progress
+  requested ──▶ quoted ──▶ agreed ──▶ scheduled ──▶ in-progress ──▶ completed
                   │           │           │              │
                   ▼           ▼           ▼              ▼
-              expired    cancelled    cancelled      completed
+              expired    cancelled    conflict    ended-unconfirmed
 ```
 
 - **Writer:** the provider's Transaction service, always. There is no
   multi-master merge for transactions.
+- **A quote that names a provider's availability slot is booked by its own
+  acceptance** (M06C `D-C8-2`): the provider's Transaction service decides the
+  booking the moment it files the consumer's signed acceptance, claiming the
+  slot under the same single-writer fence a concurrent booking needs. There is
+  no separate wire-reachable "book" step; a quote with no slot is `scheduled`
+  on countersign, exactly as before.
 - **Idempotency:** every state-changing request carries an idempotency key.
   A retry after a lost connection reaches the same final state; it never
-  creates a second booking.
+  creates a second booking. **Read 2026-09-24** (M06C `D-C8-6`) as the
+  record's own content-derived identity, not a client-supplied token: a
+  second call for the same state change answers with the record already
+  made, never a duplicate.
 - **Expiry:** a quote has an explicit expiry. An unaccepted quote expires
   rather than sitting open forever.
 - **Conflicts:** two consumers booking the same slot produce one `scheduled`
-  and one named conflict returned to the loser. Last-write-wins is not
+  and one named `conflict` returned to the loser. Last-write-wins is not
   acceptable here.
 - **Cancellation:** permitted states and actors are explicit and are part of
-  the agreed terms. A consumer can cancel a still-pending request, and the UI
-  shows when cancellation is no longer guaranteed.
+  the agreed terms. Only the provider cancels, and only while neither the
+  payment nor fulfilment track has moved (M06C `D-C8-14`); a consumer asks in
+  the conversation. The UI shows when cancellation is no longer guaranteed.
+- **Tracks end:** payment and fulfilment each end at their own named terminal
+  30 days after the booking's schedule (or 30 days after scheduling, for a
+  quote with no schedule), holding whatever claim exists rather than sitting
+  open forever. A booking whose tracks both end this way, without both being
+  acknowledged, reaches `ended-unconfirmed` (M06C `D-C8-15`).
 - **Audit:** transitions are append-only. Corrections never rewrite a
   previously signed fact.
 

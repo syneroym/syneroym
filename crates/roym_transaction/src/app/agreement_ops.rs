@@ -9,6 +9,7 @@ use syneroym_app_host::{
     types::signing::{Principal, RecordDraft},
 };
 use syneroym_roym_core::{
+    booking::BookingState,
     card::{self, CARD_CONTENT_TYPE},
     clock,
     envelope::{Request, Response},
@@ -21,9 +22,9 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, QUOTE_HISTORY, collect_typed, conversation_call, default_list_limit,
-    ensure_collections, file_own_card, get_bytes, get_row, put_row, resolve_principal_and_owner,
-    send_card_and_file,
+    AGREEMENTS, AgreementRow, QUOTE_HISTORY, booking_ops, collect_typed, conversation_call,
+    default_list_limit, ensure_collections, file_own_card, get_bytes, get_row, put_row,
+    resolve_principal_and_owner, send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -97,12 +98,30 @@ pub(crate) async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Res
     )
     .await;
 
+    let mut booking_view_val = Value::Null;
+    if role == Role::Provider && row.consumer.is_some() {
+        match booking_ops::decide_booking(host, &row, &quote_payload, now).await {
+            Ok(b) => {
+                booking_view_val = booking_ops::booking_view(
+                    &params.quote_record_id,
+                    Some(&b.snapshot),
+                    Some(&b.progress_record_id),
+                    Some("self"),
+                    &row,
+                    Role::Provider,
+                );
+            }
+            Err(e) => return Response::internal_error(e),
+        }
+    }
+
     let pair = pair_state(row.consumer.as_ref(), row.provider.as_ref());
     let mut out = json!({
         "quote_record_id": params.quote_record_id,
         "role": role,
         "record_id": record_id,
         "pair": pair,
+        "booking": booking_view_val,
         "message_id": message_id,
         "state": state,
     });
@@ -352,6 +371,9 @@ pub(crate) async fn agreement_list<H: AppHost>(host: &H, req: &Request) -> Respo
     Response::ok(json!({ "agreements": page }))
 }
 
+/// Attempts to countersign an agreement on the provider's node when the
+/// consumer has accepted. Refused, and left to the person, when the slot the
+/// quote names is already full.
 pub(crate) async fn maybe_countersign<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
@@ -373,6 +395,10 @@ pub(crate) async fn maybe_countersign<H: AppHost>(
         None => return Ok(false),
     };
     if now >= row.terms.quote_expires_at_secs {
+        return Ok(false);
+    }
+    let booking = booking_ops::decide_booking(host, row, q_payload, now).await?;
+    if booking.state == BookingState::Conflict {
         return Ok(false);
     }
     let (principal, _master) = match signing::person_principal(host, now).await {

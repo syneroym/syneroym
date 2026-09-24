@@ -13,7 +13,7 @@ use zeroize::Zeroizing;
 
 use super::{
     mutation::{
-        do_authorized_delete, do_authorized_patch, do_authorized_put, do_batch_mutate,
+        do_authorized_delete, do_authorized_patch, do_authorized_put, do_batch_mutate, do_create,
         do_delete_many,
     },
     query::{do_aggregate, do_check_access, do_get, do_list_collections, do_query},
@@ -88,6 +88,13 @@ pub(super) enum DbCommand {
         sieve: Option<Box<CompiledSieve>>,
         resp: oneshot::Sender<Result<(), host_store::DataLayerError>>,
     },
+    Create {
+        collection: String,
+        values: Vec<host_store::RecordWriteValue>,
+        creator_id: String,
+        sieve: Option<Box<CompiledSieve>>,
+        resp: oneshot::Sender<Result<Option<String>, host_store::DataLayerError>>,
+    },
 }
 
 pub(super) fn run_writer_loop(
@@ -147,6 +154,15 @@ pub(super) fn run_writer_loop(
                     &mut conn,
                     &collection,
                     &mutations,
+                    &creator_id,
+                    sieve.as_deref(),
+                ));
+            }
+            DbCommand::Create { collection, values, creator_id, sieve, resp } => {
+                let _ = resp.send(do_create(
+                    &mut conn,
+                    &collection,
+                    &values,
                     &creator_id,
                     sieve.as_deref(),
                 ));
@@ -465,6 +481,29 @@ impl ServiceStore for SqliteServiceStore {
         .await
     }
 
+    async fn create(
+        &self,
+        collection: &str,
+        values: &[host_store::RecordWriteValue],
+        creator_id: &str,
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<Option<String>, host_store::DataLayerError> {
+        let sieve =
+            compile_sieve_for_op(auth, collection, Ability::DATA_LAYER_WRITE, Mode::Filter)?
+                .map(Box::new);
+        let collection = collection.to_string();
+        let values = values.to_vec();
+        let creator_id = creator_id.to_string();
+        send_write_command(&self.writer_tx, |resp| DbCommand::Create {
+            collection,
+            values,
+            creator_id,
+            sieve,
+            resp,
+        })
+        .await
+    }
+
     async fn query_raw(
         &self,
         sql: &str,
@@ -644,6 +683,16 @@ impl ServiceStore for Arc<SqliteServiceStore> {
         auth: Option<&QueryAuth<'_>>,
     ) -> Result<(), host_store::DataLayerError> {
         self.as_ref().batch_mutate(collection, mutations, creator_id, auth).await
+    }
+
+    async fn create(
+        &self,
+        collection: &str,
+        values: &[host_store::RecordWriteValue],
+        creator_id: &str,
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<Option<String>, host_store::DataLayerError> {
+        self.as_ref().create(collection, values, creator_id, auth).await
     }
 
     async fn query_raw(

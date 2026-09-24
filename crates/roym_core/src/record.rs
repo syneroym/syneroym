@@ -26,6 +26,8 @@ pub const RECORD_TYPES: &[(&str, u32)] = &[
     ("payment-acknowledgement", 1),
     ("fulfilment-receipt", 1),
     ("moderation-decision", 1),
+    ("payment-request", 1),
+    ("bundle-manifest", 1),
 ];
 
 pub const RECORD_PROFILE: &str = "profile";
@@ -33,6 +35,14 @@ pub const RECORD_LISTING: &str = "listing";
 pub const RECORD_REQUEST: &str = "request";
 pub const RECORD_QUOTE: &str = "quote";
 pub const RECORD_AGREEMENT_RECEIPT: &str = "agreement-receipt";
+pub const RECORD_PAYMENT_REQUEST: &str = "payment-request";
+pub const RECORD_PAYMENT_ACKNOWLEDGEMENT: &str = "payment-acknowledgement";
+pub const RECORD_FULFILMENT_RECEIPT: &str = "fulfilment-receipt";
+pub const RECORD_BUNDLE_MANIFEST: &str = "bundle-manifest";
+/// Signed by the provider's transaction service, not by a person, and
+/// deliberately absent from `RECORD_TYPES`: it is derived state that
+/// names its writer, never evidence of anything.
+pub const RECORD_BOOKING_PROGRESS: &str = "booking-progress";
 
 pub fn is_known_record(record_type: &str, version: u32) -> bool {
     RECORD_TYPES.iter().any(|&(t, v)| t == record_type && v == version)

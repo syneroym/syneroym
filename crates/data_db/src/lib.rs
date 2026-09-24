@@ -17,6 +17,8 @@ pub use syneroym_wit_interfaces::vault::syneroym::vault::vault as wit_vault;
 pub use traits::{ServiceStore, StorageProvider};
 
 #[cfg(test)]
+mod tests_create;
+#[cfg(test)]
 mod tests_crud;
 #[cfg(test)]
 mod tests_fdae;

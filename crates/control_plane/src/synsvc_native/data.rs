@@ -199,6 +199,7 @@ impl SynSvcNativeService {
             "batch-mutate" | "batch_mutate" => {
                 self.data_batch_mutate(invocation, store.as_ref()).await
             }
+            "create" => self.data_create(invocation, store.as_ref()).await,
             "execute-ddl" | "execute_ddl" => {
                 self.data_execute_ddl(invocation, store.as_ref()).await
             }
@@ -584,6 +585,38 @@ impl SynSvcNativeService {
             .await
             .map_err(data_layer_error)?;
         to_payload(&())
+    }
+
+    async fn data_create(
+        &self,
+        invocation: NativeInvocation,
+        store: &dyn ServiceStore,
+    ) -> RpcResult<NativeResponse> {
+        #[derive(serde::Deserialize)]
+        struct Req {
+            collection: String,
+            values: Vec<RecordWriteValue>,
+        }
+        #[derive(serde::Serialize)]
+        struct Res {
+            existing: Option<String>,
+        }
+        let req: Req = parse_params(&invocation)?;
+        let creator = invocation.caller.write_attribution(&self.service_id);
+        let auth = self
+            .resolve_query_auth(
+                &invocation,
+                &req.collection,
+                &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+                Mode::Filter,
+            )
+            .await
+            .map_err(data_layer_error)?;
+        let existing = store
+            .create(&req.collection, &req.values, &creator, auth.as_ref())
+            .await
+            .map_err(data_layer_error)?;
+        to_payload(&Res { existing })
     }
 
     /// Admin-capability gate (ADR-0015/0016, replaces the former

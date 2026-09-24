@@ -102,6 +102,10 @@ pub enum Request {
         id_a: String,
         id_b: String,
     },
+    /// data-layer: call `create` twice with one shared id.
+    CreateFence {
+        id: String,
+    },
     /// data-layer: write a row, then `delete-many` with an empty (match-all)
     /// filter.
     DeleteMany {

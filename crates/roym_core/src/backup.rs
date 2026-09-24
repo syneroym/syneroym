@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use syneroym_signed_record::{EnvelopeError, content_digest};
 
+use crate::record::{self, RECORD_BUNDLE_MANIFEST, VerifyOptions};
+
 pub const BUNDLE_VERSION: u32 = 1;
+pub const BUNDLE_MANIFEST_VERSION: u32 = 1;
 pub const SECTION_PROFILE: &str = "profile";
 pub const SECTION_CONTACTS: &str = "contacts";
 pub const SECTION_BLOCKS: &str = "blocks";
@@ -19,9 +22,16 @@ pub const SECTION_PUBLICATIONS: &str = "publications";
 pub const SECTION_PUBLICATION_LOG: &str = "publication_log";
 pub const SECTION_SOURCES: &str = "sources";
 pub const SECTION_REQUESTS: &str = "requests";
+pub const SECTION_REQUEST_HISTORY: &str = "request_history";
 pub const SECTION_QUOTES: &str = "quotes";
+pub const SECTION_QUOTE_HISTORY: &str = "quote_history";
 pub const SECTION_AGREEMENTS: &str = "agreements";
 pub const SECTION_CARDS: &str = "cards";
+pub const SECTION_LEDGER: &str = "ledger";
+pub const SECTION_BOOKINGS: &str = "bookings";
+pub const SECTION_PROGRESS: &str = "progress";
+pub const SECTION_PAYMENTS: &str = "payments";
+pub const SECTION_FULFILMENTS: &str = "fulfilments";
 /// The digest prefix, so a section digest can never be mistaken for a
 /// record id or a report id.
 pub const SECTION_DIGEST_PREFIX: &str = "sec_";
@@ -53,6 +63,11 @@ pub struct Bundle {
     /// Section name -> the section's documents, in the order the exporter
     /// wrote them. Order is part of the hashed bytes.
     pub sections: BTreeMap<String, Vec<Value>>,
+    /// A `bundle-manifest` envelope over `manifest`, signed by the person
+    /// the bundle belongs to. Absent only for a service that signs nothing
+    /// as the person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_signature: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -71,6 +86,14 @@ pub enum BundleError {
     DigestMismatch { section: String },
     #[error("bundle belongs to '{subject}', this node holds '{holder}'")]
     WrongSubject { subject: String, holder: String },
+    #[error("bundle is unsigned")]
+    Unsigned,
+    #[error("bundle manifest signature is invalid: {0}")]
+    SignatureInvalid(String),
+    #[error("signer '{issuer}' is not the bundle subject '{subject}'")]
+    SignerNotSubject { issuer: String, subject: String },
+    #[error("signed manifest does not match the bundle manifest")]
+    SignedManifestDiffers,
 }
 
 impl From<EnvelopeError> for BundleError {
@@ -126,6 +149,54 @@ impl Bundle {
     pub fn from_json(s: &str) -> Result<Self, BundleError> {
         serde_json::from_str(s).map_err(|e| BundleError::Json(e.to_string()))
     }
+
+    /// The manifest as the JSON string a `bundle-manifest` record signs.
+    pub fn manifest_payload(&self) -> Result<String, BundleError> {
+        serde_json::to_string(&self.manifest).map_err(|e| BundleError::Json(e.to_string()))
+    }
+
+    /// Signature present, verifies, is a `bundle-manifest` v1, its issuer
+    /// is `manifest.subject_did`, and its payload equals `manifest`
+    /// (compared as canonical JSON values).
+    pub fn verify_manifest_signature(&self, now_secs: u64) -> Result<(), BundleError> {
+        let sig = self.manifest_signature.as_deref().ok_or(BundleError::Unsigned)?;
+        let opts = VerifyOptions::new(now_secs);
+        let verified = record::verify_json(sig, &opts)
+            .map_err(|e| BundleError::SignatureInvalid(e.to_string()))?;
+        if verified.record_type != RECORD_BUNDLE_MANIFEST
+            || verified.version != BUNDLE_MANIFEST_VERSION
+        {
+            return Err(BundleError::SignatureInvalid(
+                "unexpected record type or version".to_string(),
+            ));
+        }
+        if verified.issuer != self.manifest.subject_did {
+            return Err(BundleError::SignerNotSubject {
+                issuer: verified.issuer,
+                subject: self.manifest.subject_did.clone(),
+            });
+        }
+        let expected_payload =
+            serde_json::to_value(&self.manifest).map_err(|e| BundleError::Json(e.to_string()))?;
+        if verified.payload != expected_payload {
+            return Err(BundleError::SignedManifestDiffers);
+        }
+        Ok(())
+    }
+}
+
+/// What every person-signed service's `import` runs before touching a row:
+/// integrity, signature, and that the bundle is this node owner's.
+pub fn check_signed_bundle(bundle: &Bundle, owner: &str, now_secs: u64) -> Result<(), BundleError> {
+    bundle.check_integrity()?;
+    if bundle.manifest.subject_did != owner {
+        return Err(BundleError::WrongSubject {
+            subject: bundle.manifest.subject_did.clone(),
+            holder: owner.to_string(),
+        });
+    }
+    bundle.verify_manifest_signature(now_secs)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -149,6 +220,7 @@ mod tests {
                 sections: sections_digest,
             },
             sections: sections_data,
+            manifest_signature: None,
         }
     }
 
@@ -236,6 +308,7 @@ mod tests {
                 sections: digests,
             },
             sections: data,
+            manifest_signature: None,
         }
     }
 
@@ -255,6 +328,13 @@ mod tests {
             SECTION_QUOTES,
             SECTION_AGREEMENTS,
             SECTION_CARDS,
+            SECTION_REQUEST_HISTORY,
+            SECTION_QUOTE_HISTORY,
+            SECTION_LEDGER,
+            SECTION_BOOKINGS,
+            SECTION_PROGRESS,
+            SECTION_PAYMENTS,
+            SECTION_FULFILMENTS,
         ] {
             assert!(
                 single_section_bundle(section).check_integrity().is_ok(),
@@ -271,5 +351,50 @@ mod tests {
             b.check_integrity(),
             Err(BundleError::MissingSection(SECTION_MESSAGES.to_string()))
         );
+    }
+
+    #[test]
+    fn manifest_signature_verification() {
+        use syneroym_identity::{Identity, substrate};
+        use syneroym_signed_record::{Envelope, RecordDraft};
+
+        let key = Identity::generate().unwrap();
+        let issuer = substrate::derive_did_key(&key.public_key());
+
+        let mut b = sample_bundle();
+        b.manifest.subject_did = issuer.clone();
+
+        // Unsigned bundle fails verification
+        assert!(matches!(b.verify_manifest_signature(1000), Err(BundleError::Unsigned)));
+
+        // Sign manifest
+        let draft = RecordDraft {
+            version: BUNDLE_MANIFEST_VERSION,
+            record_type: RECORD_BUNDLE_MANIFEST.to_string(),
+            subject: issuer.clone(),
+            payload: serde_json::to_value(&b.manifest).unwrap(),
+            expires_at_secs: None,
+            supersedes: None,
+        };
+        let (mut env, bytes) = Envelope::unsigned(draft, issuer.clone(), None, 1000).unwrap();
+        let sig = z32::encode(&key.sign(&bytes).to_bytes());
+        env.attach_signature(sig).unwrap();
+        b.manifest_signature = Some(env.to_json().unwrap());
+
+        assert!(b.verify_manifest_signature(1000).is_ok());
+        assert!(check_signed_bundle(&b, &issuer, 1000).is_ok());
+
+        // Wrong owner
+        assert!(matches!(
+            check_signed_bundle(&b, "did:key:zOther", 1000),
+            Err(BundleError::WrongSubject { .. })
+        ));
+
+        // Mutated manifest after signing
+        b.manifest.produced_at_secs = 9999;
+        assert!(matches!(
+            b.verify_manifest_signature(1000),
+            Err(BundleError::SignedManifestDiffers)
+        ));
     }
 }

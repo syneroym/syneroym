@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fs,
     sync::{
         Arc, Weak,
@@ -124,15 +123,23 @@ pub(crate) fn strip_volatile(val: &mut Value) {
             // neither of which is the pinned signing clock. The signed
             // listing envelope stays compared byte for byte -- its
             // timestamp is the pinned `RecordClock`.
-            map.remove("stored_at_secs");
-            map.remove("opened_at_secs");
-            map.remove("updated_at_secs");
-            map.remove("deleted_at_secs");
-            // Host wall-clock written at the moment the decline row is
-            // persisted — not derived from the pinned RecordClock, so it
-            // can differ by a second between WASM and native builds.
-            map.remove("declined_at_secs");
-            map.remove("last_activity_ms");
+            for k in [
+                "stored_at_secs",
+                "opened_at_secs",
+                "updated_at_secs",
+                "created_at_secs",
+                "observed_at_secs",
+                "deleted_at_secs",
+                "declined_at_secs",
+                "last_activity_ms",
+                "track_window_ends_at_secs",
+                "progress_record_id",
+            ] {
+                map.remove(k);
+            }
+            if map.contains_key("seq") && map.contains_key("snapshot") {
+                map.remove("message_id");
+            }
             // A section digest folds in every row's bytes, including the
             // wall-clock fields removed above, so it is volatile too. The
             // raw bundle's own `check_integrity` runs before any strip.
@@ -768,58 +775,9 @@ pub(crate) fn unwrap_payload(v: Value) -> Value {
     }
 }
 
-/// Replaces every host message id with `<msg:N>` -- N being the row's
-/// position once `messages` / `matches` rows are in their own sort order,
-/// which the service already returns them in. Host message ids fold in a
-/// random nonce, so they differ between the two stacks; a positional
-/// rewrite keeps "two messages merged into one row" detectable where a
-/// blanket strip would hide it. Returns the count of distinct ids mapped.
-pub(crate) fn normalize_message_ids(val: &mut Value) -> usize {
-    let mut order: Vec<String> = Vec::new();
-    collect_ordered_ids(val, &mut order);
-    let map: HashMap<String, String> =
-        order.iter().enumerate().map(|(i, id)| (id.clone(), format!("<msg:{i}>"))).collect();
-    rewrite_ids(val, &map);
-    map.len()
-}
-
-pub(crate) fn collect_ordered_ids(val: &Value, out: &mut Vec<String>) {
-    match val {
-        Value::Object(map) => {
-            for (k, v) in map {
-                if (k == "messages" || k == "matches" || k == "cards")
-                    && let Value::Array(rows) = v
-                {
-                    for row in rows {
-                        let maybe_id =
-                            row.get("id").or_else(|| row.get("message_id")).and_then(Value::as_str);
-                        if let Some(id) = maybe_id
-                            && !out.iter().any(|e| e == id)
-                        {
-                            out.push(id.to_string());
-                        }
-                    }
-                }
-                collect_ordered_ids(v, out);
-            }
-        }
-        Value::Array(arr) => arr.iter().for_each(|v| collect_ordered_ids(v, out)),
-        _ => {}
-    }
-}
-
-pub(crate) fn rewrite_ids(val: &mut Value, map: &HashMap<String, String>) {
-    match val {
-        Value::Object(m) => m.values_mut().for_each(|v| rewrite_ids(v, map)),
-        Value::Array(a) => a.iter_mut().for_each(|v| rewrite_ids(v, map)),
-        Value::String(s) => {
-            if let Some(replacement) = map.get(s) {
-                *s = replacement.clone();
-            }
-        }
-        _ => {}
-    }
-}
+#[path = "normalize.rs"]
+pub(crate) mod normalize;
+pub(crate) use normalize::*;
 
 impl Drop for Harness {
     fn drop(&mut self) {

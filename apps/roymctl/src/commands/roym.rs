@@ -9,6 +9,8 @@ use serde_json::json;
 use crate::DEFAULT_GATEWAY_URL;
 
 pub mod address;
+pub mod backup;
+pub mod booking;
 pub mod directory;
 pub mod signing;
 pub mod transaction;
@@ -18,6 +20,10 @@ mod tests;
 
 #[cfg(test)]
 pub(crate) use address::find_roym_service;
+pub use backup::{
+    ARCHIVE_INFO, ARCHIVE_VERSION, BackupCommands, RESTORE_DATA_SUCCESS_NOTICE, RoymArchive,
+};
+pub use booking::{BookingCommands, FulfilmentCommands, PaymentCommands};
 pub use directory::{DirectoryCommands, MemberCommands};
 #[cfg(test)]
 pub(crate) use syneroym_sdk::DeployedService;
@@ -68,6 +74,11 @@ pub enum RoymCommands {
     Transaction {
         #[command(subcommand)]
         command: Box<TransactionCommands>,
+    },
+    /// Create or restore encrypted backups of Roym identity and service data.
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommands,
     },
 }
 
@@ -127,6 +138,9 @@ pub async fn handle(
         }
         RoymCommands::Address { domain } => {
             address::handle_address(domain, api_url, substrate_opt, dir, run_as, ucan_path).await
+        }
+        RoymCommands::Backup { command } => {
+            backup::handle_backup(command, dir, run_as, ucan_path).await
         }
     }
 }

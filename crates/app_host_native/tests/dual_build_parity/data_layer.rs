@@ -116,3 +116,15 @@ async fn malformed_params_frame_is_invalid_params_not_internal_error() {
     let err = h.native.fixture.dispatch(inv).await.unwrap_err();
     assert!(matches!(err, RpcError::InvalidParams(_)), "got {err:?}");
 }
+
+#[tokio::test]
+async fn both_builds_create_fence_round_trip() {
+    let h = harness().await;
+    let wasm_res = h.wasm.run(r#"{"op":"create-fence","id":"cf1"}"#).await.unwrap();
+    let native_res = h.native.run(r#"{"op":"create-fence","id":"cf1"}"#).await.unwrap();
+    let expected = serde_json::json!([null, "cf1"]);
+    let wasm_val: Value = serde_json::from_str(&wasm_res).unwrap();
+    let native_val: Value = serde_json::from_str(&native_res).unwrap();
+    assert_eq!(wasm_val["ok"], expected);
+    assert_eq!(native_val["ok"], expected);
+}

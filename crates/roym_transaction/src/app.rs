@@ -2,6 +2,11 @@
 
 pub mod agreement_ops;
 pub mod backup;
+pub mod booking_ops;
+pub mod fulfilment_ops;
+pub mod ledger;
+pub mod payment_ops;
+pub mod progress;
 pub mod quote_ops;
 pub mod request_ops;
 pub mod sync;
@@ -21,18 +26,20 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     admit,
+    booking::{self, BookingProgressPayload, BookingState},
     card::{self, CARD_CONTENT_TYPE},
     clock,
     conversation::Direction,
     envelope::{Request, Response},
+    fulfilment,
     record::Envelope,
     services,
     signing::{self, CertificateError},
     transaction::{self, AgreedTerms, ReceiptHalf, Role},
 };
 
-// Schema version 2: the service gains its first state.
-pub const SCHEMA_VERSION: u32 = 2;
+// Schema version 3: booking vertical, payments, fulfilments, and ledger.
+pub const SCHEMA_VERSION: u32 = 3;
 
 pub(crate) const REQUESTS: &str = "requests";
 pub(crate) const REQUEST_HISTORY: &str = "request_history";
@@ -41,6 +48,11 @@ pub(crate) const QUOTE_HISTORY: &str = "quote_history";
 pub(crate) const AGREEMENTS: &str = "agreements";
 pub(crate) const CARDS: &str = "cards";
 pub(crate) const SYNC_STATE: &str = "sync_state";
+pub(crate) const LEDGER: &str = "ledger";
+pub(crate) const BOOKINGS: &str = "bookings";
+pub(crate) const PROGRESS: &str = "progress";
+pub(crate) const PAYMENTS: &str = "payments";
+pub(crate) const FULFILMENTS: &str = "fulfilments";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RecordPointerRow {
@@ -122,11 +134,65 @@ pub(crate) struct CardRow {
     pub(crate) declined: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) version_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) agreement_payee: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) agreement_payment_methods: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SyncStateRow {
     pub(crate) scanned_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct BookingRow {
+    pub(crate) agreement: String,
+    pub(crate) conversation: String,
+    pub(crate) state: BookingState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) slot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) seat: Option<u32>,
+    pub(crate) snapshot: BookingProgressPayload,
+    pub(crate) progress_record_id: String,
+    pub(crate) updated_at_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ProgressRow {
+    pub(crate) agreement: String,
+    pub(crate) conversation: String,
+    pub(crate) seq: u32,
+    pub(crate) snapshot: BookingProgressPayload,
+    pub(crate) envelope: String,
+    pub(crate) record_id: String,
+    pub(crate) writer: String,
+    pub(crate) received_at_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub(crate) struct PaymentsRow {
+    pub(crate) agreement: String,
+    pub(crate) conversation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) request: Option<ReceiptHalf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) consumer: Vec<ReceiptHalf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) provider: Vec<ReceiptHalf>,
+    pub(crate) updated_at_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub(crate) struct FulfilmentsRow {
+    pub(crate) agreement: String,
+    pub(crate) conversation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) consumer: Option<ReceiptHalf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) provider: Option<ReceiptHalf>,
+    pub(crate) updated_at_secs: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,7 +228,8 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
     }
 
     match req.method.as_str() {
-        "request.ping" | "quote.ping" | "agreement.ping" | "receipt.ping" => {
+        "request.ping" | "quote.ping" | "agreement.ping" | "receipt.ping" | "booking.ping"
+        | "payment.ping" | "fulfilment.ping" => {
             Response::ok(json!({ "service": services::TRANSACTION.name }))
         }
         "request.set" => request_ops::request_set(host, &req).await,
@@ -182,6 +249,22 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
         "agreement.get" => agreement_ops::agreement_get(host, &req).await,
         "agreement.list" => agreement_ops::agreement_list(host, &req).await,
         "agreement.verify" => verify_verb(host, &req, RecordKind::AgreementReceipt).await,
+
+        "booking.get" => booking_ops::booking_get(host, &req).await,
+        "booking.list" => booking_ops::booking_list(host, &req).await,
+        "booking.start" => booking_ops::booking_start(host, &req).await,
+        "booking.cancel" => booking_ops::booking_cancel(host, &req).await,
+        "booking.history" => booking_ops::booking_history(host, &req).await,
+        "booking.verify" => verify_verb(host, &req, RecordKind::BookingProgress).await,
+
+        "payment.request" => payment_ops::payment_request(host, &req).await,
+        "payment.acknowledge" => payment_ops::payment_acknowledge(host, &req).await,
+        "payment.get" => payment_ops::payment_get(host, &req).await,
+        "payment.verify" => payment_ops::payment_verify(host, &req).await,
+
+        "fulfilment.sign" => fulfilment_ops::fulfilment_sign(host, &req).await,
+        "fulfilment.get" => fulfilment_ops::fulfilment_get(host, &req).await,
+        "fulfilment.verify" => verify_verb(host, &req, RecordKind::FulfilmentReceipt).await,
 
         "transaction.sync" => sync::sync(host, &req).await,
         "transaction.thread" => thread::thread(host, &req).await,
@@ -225,6 +308,8 @@ pub(crate) enum RecordKind {
     Request,
     Quote,
     AgreementReceipt,
+    BookingProgress,
+    FulfilmentReceipt,
 }
 
 async fn verify_verb<H: AppHost>(host: &H, req: &Request, kind: RecordKind) -> Response {
@@ -243,6 +328,12 @@ async fn verify_verb<H: AppHost>(host: &H, req: &Request, kind: RecordKind) -> R
         RecordKind::Quote => Response::ok(json!(transaction::verify_quote(&env_str, now))),
         RecordKind::AgreementReceipt => {
             Response::ok(json!(transaction::verify_agreement_receipt(&env_str, now)))
+        }
+        RecordKind::BookingProgress => {
+            Response::ok(json!(booking::verify_booking_progress(&env_str, now)))
+        }
+        RecordKind::FulfilmentReceipt => {
+            Response::ok(json!(fulfilment::verify_fulfilment_receipt(&env_str, now)))
         }
     }
 }
@@ -287,6 +378,25 @@ pub(crate) async fn ensure_collections<H: AppHost>(host: &H) -> Result<(), Strin
     )
     .await?;
     ensure_coll(host, SYNC_STATE, &[]).await?;
+    ensure_coll(
+        host,
+        LEDGER,
+        &[idx("kind", IndexType::String), idx("agreement", IndexType::String)],
+    )
+    .await?;
+    ensure_coll(
+        host,
+        BOOKINGS,
+        &[
+            idx("conversation", IndexType::String),
+            idx("state", IndexType::String),
+            idx("slot_id", IndexType::String),
+        ],
+    )
+    .await?;
+    ensure_coll(host, PROGRESS, &[idx("conversation", IndexType::String)]).await?;
+    ensure_coll(host, PAYMENTS, &[idx("conversation", IndexType::String)]).await?;
+    ensure_coll(host, FULFILMENTS, &[idx("conversation", IndexType::String)]).await?;
     Ok(())
 }
 
@@ -424,16 +534,18 @@ pub(crate) async fn count_cards_for_conversation<H: AppHost>(
     Ok(count)
 }
 
-pub(crate) async fn conversation_call<H: AppHost>(
+pub(crate) async fn sibling_call<H: AppHost>(
     host: &H,
+    service: &str,
+    interface: &str,
     method: &str,
     params: Value,
 ) -> Result<Response, String> {
     let req = json!({ "method": method, "params": params }).to_string();
     let raw = host
         .call(
-            CallTarget::Dependency(services::CONVERSATION.name.to_string()),
-            services::CONVERSATION.interface.to_string(),
+            CallTarget::Dependency(service.to_string()),
+            interface.to_string(),
             "invoke".to_string(),
             json!([req]).to_string(),
             None,
@@ -441,6 +553,29 @@ pub(crate) async fn conversation_call<H: AppHost>(
         .await
         .map_err(|e| format!("{method}: {e:?}"))?;
     serde_json::from_str(&raw).map_err(|e| e.to_string())
+}
+
+pub(crate) async fn conversation_call<H: AppHost>(
+    host: &H,
+    method: &str,
+    params: Value,
+) -> Result<Response, String> {
+    sibling_call(
+        host,
+        services::CONVERSATION.name,
+        services::CONVERSATION.interface,
+        method,
+        params,
+    )
+    .await
+}
+
+pub(crate) async fn catalog_call<H: AppHost>(
+    host: &H,
+    method: &str,
+    params: Value,
+) -> Result<Response, String> {
+    sibling_call(host, services::CATALOG.name, services::CATALOG.interface, method, params).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -474,6 +609,8 @@ pub(crate) async fn file_own_card<H: AppHost>(
         data: Some(envelope.payload),
         stored_at_secs: now,
         declined: None,
+        agreement_payee: None,
+        agreement_payment_methods: Vec::new(),
         version_count,
     };
     put_row(host, CARDS, message_id, &card_row).await

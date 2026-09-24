@@ -74,6 +74,7 @@ pub(in crate::app) async fn export<H: AppHost>(host: &H) -> Response {
             sections: manifest_sections,
         },
         sections,
+        manifest_signature: None,
     };
     match serde_json::to_value(&bundle) {
         Ok(v) => Response::ok(v),

@@ -55,6 +55,7 @@ fn sample_quote(issuer: &str, consumer_did: &str) -> QuotePayload {
         sequence,
         request_record_id: "rec_req123".to_string(),
         listing_id: Some("lst_abc123".to_string()),
+        slot_id: None,
         consumer_did: consumer_did.to_string(),
         terms: sample_terms(),
     }
@@ -796,14 +797,12 @@ fn the_ui_notices_match_this_crate() {
         let mut quote_char = ' ';
         let mut end_idx = slice.len();
         for (i, c) in slice.char_indices() {
-            if in_quote {
-                if c == quote_char {
-                    in_quote = false;
-                }
-            } else if c == '"' || c == '\'' {
+            if in_quote && c == quote_char {
+                in_quote = false;
+            } else if !in_quote && (c == '"' || c == '\'') {
                 in_quote = true;
                 quote_char = c;
-            } else if c == ';' {
+            } else if !in_quote && c == ';' {
                 end_idx = i;
                 break;
             }

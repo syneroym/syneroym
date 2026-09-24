@@ -288,6 +288,7 @@ async fn scenario_62_inbound_deletion_request_honoured_only_for_own_message_pari
 #[tokio::test]
 async fn scenario_63_conversation_export_integrity_parity() {
     let h = harness().await;
+    enrol_signing(&h, "conversation").await;
     let conv = "conv-63";
     h.deliver(true, inbound("m-63", conv, "did:key:zPeer63", 1_000, "archive me")).await;
     h.deliver(false, inbound("m-63", conv, "did:key:zPeer63", 1_000, "archive me")).await;
@@ -307,6 +308,7 @@ async fn scenario_63_conversation_export_integrity_parity() {
 #[tokio::test]
 async fn scenario_64_conversation_import_roundtrip_parity() {
     let h = harness().await;
+    enrol_signing(&h, "conversation").await;
     let conv = "conv-64";
     h.deliver(true, inbound("m-64", conv, "did:key:zPeer64", 1_000, "restore me")).await;
     h.deliver(false, inbound("m-64", conv, "did:key:zPeer64", 1_000, "restore me")).await;
@@ -329,6 +331,7 @@ async fn scenario_64_conversation_import_roundtrip_parity() {
 #[tokio::test]
 async fn scenario_65_conversation_import_tampered_message_refused_parity() {
     let h = harness().await;
+    enrol_signing(&h, "conversation").await;
     let conv = "conv-65";
     h.deliver(true, inbound("m-65", conv, "did:key:zPeer65", 1_000, "original")).await;
     h.deliver(false, inbound("m-65", conv, "did:key:zPeer65", 1_000, "original")).await;

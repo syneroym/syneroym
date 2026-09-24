@@ -314,3 +314,14 @@ fn absent_blocks_contribute_no_bytes() {
     let reparsed: ListingPayload = serde_json::from_value(with_nulls).unwrap();
     assert_eq!(serde_json::to_value(&reparsed).unwrap(), serde_json::to_value(core()).unwrap());
 }
+
+#[test]
+fn derive_slot_id_is_stable_and_scoped() {
+    let s1 = derive_slot_id("lst_abc", 1000, 2000).unwrap();
+    assert_eq!(s1, derive_slot_id("lst_abc", 1000, 2000).unwrap());
+    assert!(s1.starts_with("slot_"));
+    let s2 = derive_slot_id("lst_abc", 1000, 3000).unwrap();
+    assert_ne!(s1, s2);
+    let s3 = derive_slot_id("lst_other", 1000, 2000).unwrap();
+    assert_ne!(s1, s3);
+}

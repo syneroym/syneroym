@@ -9,12 +9,20 @@ pub(crate) mod fixtures;
 #[path = "dual_build_parity/helpers.rs"]
 pub(crate) mod helpers;
 
+#[path = "dual_build_parity/booking.rs"]
+mod booking;
+#[path = "dual_build_parity/bundles.rs"]
+mod bundles;
 #[path = "dual_build_parity/catalog.rs"]
 mod catalog;
 #[path = "dual_build_parity/conversation.rs"]
 mod conversation;
 #[path = "dual_build_parity/directory.rs"]
 mod directory;
+#[path = "dual_build_parity/fulfilment.rs"]
+mod fulfilment;
+#[path = "dual_build_parity/payment.rs"]
+mod payment;
 #[path = "dual_build_parity/profile.rs"]
 mod profile;
 #[path = "dual_build_parity/transaction.rs"]

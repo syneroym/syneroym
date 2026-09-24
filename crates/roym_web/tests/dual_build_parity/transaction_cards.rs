@@ -365,10 +365,10 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
         let bundle: Bundle = serde_json::from_value(side["result"].clone()).unwrap();
         bundle.check_integrity().expect("exported bundle must pass integrity");
         let sections = &bundle.manifest.sections;
-        assert_eq!(sections["requests"].schema_version, 2);
-        assert_eq!(sections["quotes"].schema_version, 2);
-        assert_eq!(sections["agreements"].schema_version, 2);
-        assert_eq!(sections["cards"].schema_version, 2);
+        assert_eq!(sections["requests"].schema_version, 3);
+        assert_eq!(sections["quotes"].schema_version, 3);
+        assert_eq!(sections["agreements"].schema_version, 3);
+        assert_eq!(sections["cards"].schema_version, 3);
     }
 
     let bundle_val = exp_w["result"].clone();
@@ -378,10 +378,11 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
     assert_eq!(iw, in_);
     assert_eq!(iw["result"]["imported"], true);
 
-    // Tampered quotes envelope refuses the whole import naming the id
+    // A tampered quotes section, with its own digest recomputed to match,
+    // still fails the bundle's overall signed manifest (it was signed
+    // over the untampered manifest) and refuses the whole import.
     let mut tampered_bundle: Bundle = serde_json::from_value(bundle_val.clone()).unwrap();
     let quote_rows = tampered_bundle.sections.get_mut("quotes").unwrap();
-    let tampered_id = quote_rows[0].get("id").unwrap().as_str().unwrap().to_string();
     let mut payload = quote_rows[0].get("payload").unwrap().clone();
     let env_str = payload["envelope"].as_str().unwrap();
     let mut env: Value = serde_json::from_str(env_str).unwrap();
@@ -394,12 +395,11 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
     let (tw, tn) = both_rpc(&h, "transaction.import", json!({ "bundle": tampered_bundle })).await;
     assert_eq!(tw, tn);
     assert_eq!(tw["error"]["code"], -32602);
-    assert!(tw["error"]["message"].as_str().unwrap().contains(&tampered_id));
+    assert!(tw["error"]["message"].as_str().unwrap().contains("signed manifest"));
 
-    // Tampered agreement half refuses the whole import naming the id
+    // Same for a tampered agreement half.
     let mut tampered_bundle_agr: Bundle = serde_json::from_value(bundle_val).unwrap();
     let agr_rows = tampered_bundle_agr.sections.get_mut("agreements").unwrap();
-    let tampered_agr_id = agr_rows[0].get("id").unwrap().as_str().unwrap().to_string();
     let mut agr_payload = agr_rows[0].get("payload").unwrap().clone();
     let consumer_env_str = agr_payload["consumer"]["envelope"].as_str().unwrap();
     let mut c_env: Value = serde_json::from_str(consumer_env_str).unwrap();
@@ -413,7 +413,7 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
         both_rpc(&h, "transaction.import", json!({ "bundle": tampered_bundle_agr })).await;
     assert_eq!(aw, an);
     assert_eq!(aw["error"]["code"], -32602);
-    assert!(aw["error"]["message"].as_str().unwrap().contains(&tampered_agr_id));
+    assert!(aw["error"]["message"].as_str().unwrap().contains("signed manifest"));
 }
 
 #[tokio::test]

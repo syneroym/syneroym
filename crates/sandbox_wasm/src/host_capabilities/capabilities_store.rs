@@ -484,6 +484,31 @@ impl store::Host for HostState {
         store.batch_mutate(&collection, &mutations, &creator_id, query_auth.as_ref()).await
     }
 
+    async fn create(
+        &mut self,
+        collection: String,
+        values: Vec<RecordWriteValue>,
+    ) -> Result<Option<String>, DataLayerError> {
+        if self.read_only {
+            return Err(DataLayerError::PermissionDenied);
+        }
+        let creator_id = self.caller.write_attribution(&self.component_id);
+        let store = open_store(
+            self.component_id.clone(),
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+        )
+        .await?;
+        let query_auth = self
+            .resolve_query_auth(
+                &collection,
+                &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+                Mode::Filter,
+            )
+            .await?;
+        store.create(&collection, &values, &creator_id, query_auth.as_ref()).await
+    }
+
     async fn execute_ddl(&mut self, sql: String) -> Result<(), DataLayerError> {
         if self.read_only {
             return Err(DataLayerError::PermissionDenied);

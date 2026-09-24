@@ -180,11 +180,10 @@ async fn scenario_8_status_on_all_six_services() {
         assert_eq!(wasm_status, native_status, "status mismatch on service {}", svc.name);
         let val: Value = serde_json::from_str(&wasm_status).unwrap();
         assert_eq!(val["service"], svc.name);
-        // profile, catalog, conversation, transaction and directory carry real state
-        // now.
+        // profile, catalog, conversation, transaction and directory carry real state.
         let expected_schema_version = match svc.name {
-            "directory" => 3,
-            "profile" | "catalog" | "conversation" | "transaction" => 2,
+            "directory" | "transaction" => 3,
+            "profile" | "catalog" | "conversation" => 2,
             _ => 1,
         };
         assert_eq!(val["schema_version"], expected_schema_version);
@@ -651,6 +650,7 @@ async fn scenario_22_report_create_get_withdraw_and_refile_refusal_parity() {
 #[tokio::test]
 async fn scenario_23_profile_export_and_import_parity() {
     let h = harness().await;
+    enrol_signing(&h, "profile").await;
 
     let exp_req = json!({ "method": "profile.export", "params": {} }).to_string().into_bytes();
     let wasm_exp = h.wasm_http.post("/rpc", exp_req.clone(), Some(caller())).await;
@@ -1098,6 +1098,7 @@ async fn the_parity_comparison_detects_a_divergence() {
 #[tokio::test]
 async fn scenario_36_profile_import_foreign_subject_refused_parity() {
     let h = harness().await;
+    enrol_signing(&h, "profile").await;
 
     let exp_req = json!({ "method": "profile.export", "params": {} }).to_string().into_bytes();
     let wasm_exp = h.wasm_http.post("/rpc", exp_req, Some(caller())).await;
@@ -1106,12 +1107,9 @@ async fn scenario_36_profile_import_foreign_subject_refused_parity() {
 
     bundle["manifest"]["subject_did"] = json!("did:key:zOtherStranger");
 
-    let imp_req = json!({
-        "method": "profile.import",
-        "params": { "bundle": bundle }
-    })
-    .to_string()
-    .into_bytes();
+    let imp_req = json!({ "method": "profile.import", "params": { "bundle": bundle } })
+        .to_string()
+        .into_bytes();
     let wasm_imp = h.wasm_http.post("/rpc", imp_req.clone(), Some(caller())).await;
     let native_imp = h.native_http.post("/rpc", imp_req, Some(caller())).await;
     assert_eq!(wasm_imp.body, native_imp.body);

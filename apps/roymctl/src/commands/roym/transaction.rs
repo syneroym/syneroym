@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 use syneroym_roym_core::{money, transaction};
 
@@ -15,6 +15,49 @@ use super::{
     parse_near,
 };
 use crate::{DEFAULT_GATEWAY_URL, commands::session};
+
+#[derive(Args, Debug, Clone)]
+pub struct QuoteArgs {
+    #[arg(long)]
+    pub request: String,
+    #[arg(long)]
+    pub scope: String,
+    #[arg(long)]
+    pub currency: String,
+    #[arg(long)]
+    pub amount: String,
+    #[arg(long)]
+    pub payee: String,
+    #[arg(long)]
+    pub tax: Option<String>,
+    #[arg(long)]
+    pub fees: Option<String>,
+    #[arg(long = "method")]
+    pub methods: Vec<String>,
+    #[arg(long)]
+    pub timing: String,
+    /// `earliest,latest` in unix seconds.
+    #[arg(long)]
+    pub schedule: Option<String>,
+    #[arg(long = "where")]
+    pub where_: String,
+    #[arg(long)]
+    pub address: Option<String>,
+    #[arg(long)]
+    pub cancellation_file: PathBuf,
+    #[arg(long)]
+    pub refund_file: PathBuf,
+    #[arg(long)]
+    pub dispute: String,
+    #[arg(long)]
+    pub expires_hours: u64,
+    #[arg(long)]
+    pub slot: Option<String>,
+    #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
+    pub gateway_url: String,
+    #[arg(long)]
+    pub host: Option<String>,
+}
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum TransactionCommands {
@@ -44,45 +87,7 @@ pub enum TransactionCommands {
         host: Option<String>,
     },
     /// Send a signed quote card answering a request.
-    Quote {
-        #[arg(long)]
-        request: String,
-        #[arg(long)]
-        scope: String,
-        #[arg(long)]
-        currency: String,
-        #[arg(long)]
-        amount: String,
-        #[arg(long)]
-        payee: String,
-        #[arg(long)]
-        tax: Option<String>,
-        #[arg(long)]
-        fees: Option<String>,
-        #[arg(long = "method")]
-        methods: Vec<String>,
-        #[arg(long)]
-        timing: String,
-        /// `earliest,latest` in unix seconds.
-        #[arg(long)]
-        schedule: Option<String>,
-        #[arg(long = "where")]
-        where_: String,
-        #[arg(long)]
-        address: Option<String>,
-        #[arg(long)]
-        cancellation_file: PathBuf,
-        #[arg(long)]
-        refund_file: PathBuf,
-        #[arg(long)]
-        dispute: String,
-        #[arg(long)]
-        expires_hours: u64,
-        #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
-        gateway_url: String,
-        #[arg(long)]
-        host: Option<String>,
-    },
+    Quote(Box<QuoteArgs>),
     /// Accept an offered quote, signing an agreement receipt.
     Accept {
         #[arg(long)]
@@ -132,6 +137,21 @@ pub enum TransactionCommands {
         gateway_url: String,
         #[arg(long)]
         host: Option<String>,
+    },
+    /// Booking operations: get, list, start, cancel, history.
+    Booking {
+        #[command(subcommand)]
+        command: super::booking::BookingCommands,
+    },
+    /// Payment operations: request, ack, get, verify.
+    Payment {
+        #[command(subcommand)]
+        command: super::booking::PaymentCommands,
+    },
+    /// Fulfilment operations: sign, get.
+    Fulfilment {
+        #[command(subcommand)]
+        command: super::booking::FulfilmentCommands,
     },
 }
 
@@ -194,6 +214,7 @@ fn build_quote_params(
     refund_file: &Path,
     dispute: &str,
     expires_hours: u64,
+    slot: Option<&str>,
 ) -> Result<Value> {
     let curr = currency.trim().to_uppercase();
     let exp = money::currency_minor_exponent(&curr).ok_or_else(|| {
@@ -251,11 +272,16 @@ fn build_quote_params(
         terms["schedule"] = parse_window(s)?;
     }
 
-    Ok(json!({
+    let mut quote_params = json!({
         "request_record_id": request,
         "expires_in_secs": expires_hours * 3600,
         "terms": terms,
-    }))
+    });
+    if let Some(sl) = slot {
+        quote_params["slot_id"] = json!(sl);
+    }
+
+    Ok(quote_params)
 }
 
 async fn handle_decline(
@@ -392,45 +418,28 @@ pub(super) async fn handle_transaction(
             )
             .await?;
         }
-        TransactionCommands::Quote {
-            request,
-            scope,
-            currency,
-            amount,
-            payee,
-            tax,
-            fees,
-            methods,
-            timing,
-            schedule,
-            where_,
-            address,
-            cancellation_file,
-            refund_file,
-            dispute,
-            expires_hours,
-            gateway_url,
-            host,
-        } => {
+        TransactionCommands::Quote(args) => {
             let params = build_quote_params(
-                request,
-                scope,
-                currency,
-                amount,
-                payee,
-                tax.as_deref(),
-                fees.as_deref(),
-                methods,
-                timing,
-                schedule.as_deref(),
-                where_,
-                address.as_deref(),
-                cancellation_file,
-                refund_file,
-                dispute,
-                *expires_hours,
+                &args.request,
+                &args.scope,
+                &args.currency,
+                &args.amount,
+                &args.payee,
+                args.tax.as_deref(),
+                args.fees.as_deref(),
+                &args.methods,
+                &args.timing,
+                args.schedule.as_deref(),
+                &args.where_,
+                args.address.as_deref(),
+                &args.cancellation_file,
+                &args.refund_file,
+                &args.dispute,
+                args.expires_hours,
+                args.slot.as_deref(),
             )?;
-            call_and_print(ctx, gateway_url, host.as_deref(), "quote.set", params).await?;
+            call_and_print(ctx, &args.gateway_url, args.host.as_deref(), "quote.set", params)
+                .await?;
         }
         TransactionCommands::Accept { quote, gateway_url, host } => {
             let params = json!({ "quote_record_id": quote });
@@ -449,6 +458,15 @@ pub(super) async fn handle_transaction(
         TransactionCommands::Agreement { quote, gateway_url, host } => {
             let params = json!({ "quote_record_id": quote });
             call_and_print(ctx, gateway_url, host.as_deref(), "agreement.get", params).await?;
+        }
+        TransactionCommands::Booking { command } => {
+            super::booking::handle_booking(command, dir, run_as, ucan_path).await?;
+        }
+        TransactionCommands::Payment { command } => {
+            super::booking::handle_payment(command, dir, run_as, ucan_path).await?;
+        }
+        TransactionCommands::Fulfilment { command } => {
+            super::booking::handle_fulfilment(command, dir, run_as, ucan_path).await?;
         }
     }
     Ok(())
