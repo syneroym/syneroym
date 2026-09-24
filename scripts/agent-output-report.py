@@ -2,10 +2,12 @@
 """Summarize how much Bash output recent Claude Code sessions produced.
 
 Reads this project's session transcripts from
-``~/.claude/projects/<sanitized-cwd>/*.jsonl`` (Claude Code's own log
-format), matches each Bash tool call to its result, groups by a command key
-(the first few whitespace-separated tokens, e.g. ``cargo test -p``), and
-prints a table sorted by total output size. Use it during a code-quality
+``~/.claude/projects/<sanitized-cwd>/**/*.jsonl`` (Claude Code's own log
+format, including subagent transcripts under `<session-uuid>/subagents/`),
+matches each Bash tool call to its result, groups by a command key (the
+first few whitespace-separated tokens after stripping a leading `cd <dir>
+;`/`&&` or `VAR=value`, e.g. ``cargo test -p``), and prints a table sorted
+by total output size. Use it during a code-quality
 round, or whenever a session feels noisier than it should, to see which
 commands are worth quieting next (see AGENTS.md's "Context Budget" rules).
 
@@ -20,9 +22,28 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+# A leading `cd <dir>` followed by `;`, `&&`, or a plain newline (Claude
+# Code often writes multi-line commands as "cd <dir>\n<rest>"), and a
+# leading `VAR=value` assignment, stripped (repeatedly) before grouping --
+# otherwise `cd /repo && git status` and a bare `git status` land in
+# different rows.
+_LEADING_CD_RE = re.compile(r"^\s*cd\s+\S+\s*(?:;|&&|\n)\s*")
+_LEADING_ENV_VAR_RE = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_]*=\S*\s+")
+
+
+def strip_command_prefix(command: str) -> str:
+    stripped = command
+    while True:
+        without_cd = _LEADING_CD_RE.sub("", stripped, count=1)
+        without_env = _LEADING_ENV_VAR_RE.sub("", without_cd, count=1)
+        if without_env == stripped:
+            return stripped
+        stripped = without_env
 
 # Matches Claude Code's own transcript-directory naming: the project's
 # absolute path with every "/" replaced by "-" (e.g. "/Users/a/b" ->
@@ -41,7 +62,7 @@ class CommandStats:
 
 
 def command_key(command: str, key_tokens: int) -> str:
-    tokens = command.split()
+    tokens = strip_command_prefix(command).split()
     return " ".join(tokens[:key_tokens]) if tokens else "(empty)"
 
 
@@ -108,7 +129,10 @@ def collect_stats(root: Path, days: int, key_tokens: int) -> dict[str, CommandSt
     cutoff = time.time() - days * 86400
     if not root.is_dir():
         return stats
-    for path in root.glob("*.jsonl"):
+    # rglob, not glob: subagent transcripts live under
+    # <session-uuid>/subagents/*.jsonl, not directly in `root`, and they
+    # carry their own Bash tool calls worth counting.
+    for path in root.rglob("*.jsonl"):
         if path.stat().st_mtime < cutoff:
             continue
         scan_transcript(path, stats, key_tokens)
