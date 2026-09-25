@@ -8,7 +8,11 @@ async fn setup_active_agreement(h: &Harness, conv: &str, timing: &str) -> (Strin
     let (req_rec_id, _req_env) = setup_peer_request(h, conv).await;
     let mut q_params = valid_quote_params(conv, &req_rec_id);
     q_params["terms"]["payment_timing"] = json!(timing);
-    let (qw, _) = both_rpc(h, "quote.set", q_params).await;
+    let (qw, qn) = both_rpc(h, "quote.set", q_params).await;
+    assert_eq!(
+        qw["result"]["record_id"], qn["result"]["record_id"],
+        "quote.set record_id parity failed: qw: {qw}, qn: {qn}"
+    );
     let quote_rec_id = qw["result"]["record_id"].as_str().unwrap().to_string();
     let quote_id = qw["result"]["quote_id"].as_str().unwrap().to_string();
 
@@ -211,7 +215,11 @@ async fn scenario_165_track_window_expiration_and_late_half_parity() {
         "earliest_secs": 1_000,
         "latest_secs": 2_000,
     });
-    let (qw, _) = both_rpc(&h, "quote.set", q_params).await;
+    let (qw, qn) = both_rpc(&h, "quote.set", q_params).await;
+    assert_eq!(
+        qw["result"]["record_id"], qn["result"]["record_id"],
+        "quote.set record_id parity failed: qw: {qw}, qn: {qn}"
+    );
     let quote_rec_id = qw["result"]["record_id"].as_str().unwrap().to_string();
     let quote_id = qw["result"]["quote_id"].as_str().unwrap().to_string();
 
@@ -241,12 +249,12 @@ async fn scenario_165_track_window_expiration_and_late_half_parity() {
 
     // Booking.get detects track window expiration
     let (bw, bn) = both_rpc(&h, "booking.get", json!({ "agreement": quote_rec_id })).await;
-    assert_eq!(bw["result"]["state"], "ended-unconfirmed");
-    assert_eq!(bn["result"]["state"], "ended-unconfirmed");
-    assert_eq!(bw["result"]["payment"], "unconfirmed");
-    assert_eq!(bn["result"]["payment"], "unconfirmed");
-    assert_eq!(bw["result"]["fulfilment"], "unconfirmed");
-    assert_eq!(bn["result"]["fulfilment"], "unconfirmed");
+    assert_eq!(bw["result"]["state"], "ended-unconfirmed", "bw: {bw}");
+    assert_eq!(bn["result"]["state"], "ended-unconfirmed", "bn: {bn}");
+    assert_eq!(bw["result"]["payment"], "unconfirmed", "bw: {bw}");
+    assert_eq!(bn["result"]["payment"], "unconfirmed", "bn: {bn}");
+    assert_eq!(bw["result"]["fulfilment"], "unconfirmed", "bw: {bw}");
+    assert_eq!(bn["result"]["fulfilment"], "unconfirmed", "bn: {bn}");
 
     // Late half arriving after terminal state does not alter terminal state
     let (late_cf_id, late_cf_env) = peer_signed_fulfilment(
@@ -271,8 +279,8 @@ async fn scenario_165_track_window_expiration_and_late_half_parity() {
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
 
     let (b2w, b2n) = both_rpc(&h, "booking.get", json!({ "agreement": quote_rec_id })).await;
-    assert_eq!(b2w["result"]["state"], "ended-unconfirmed");
-    assert_eq!(b2n["result"]["state"], "ended-unconfirmed");
+    assert_eq!(b2w["result"]["state"], "ended-unconfirmed", "b2w: {b2w}");
+    assert_eq!(b2n["result"]["state"], "ended-unconfirmed", "b2n: {b2n}");
 }
 
 #[tokio::test]

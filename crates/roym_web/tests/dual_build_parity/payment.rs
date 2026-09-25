@@ -7,7 +7,11 @@ use super::{fixtures::*, helpers::*};
 async fn setup_active_agreement(h: &Harness, conv: &str) -> (String, Value) {
     let (req_rec_id, _req_env) = setup_peer_request(h, conv).await;
     let q_params = valid_quote_params(conv, &req_rec_id);
-    let (qw, _) = both_rpc(h, "quote.set", q_params).await;
+    let (qw, qn) = both_rpc(h, "quote.set", q_params).await;
+    assert_eq!(
+        qw["result"]["record_id"], qn["result"]["record_id"],
+        "quote.set record_id parity failed: qw: {qw}, qn: {qn}"
+    );
     let quote_rec_id = qw["result"]["record_id"].as_str().unwrap().to_string();
     let quote_id = qw["result"]["quote_id"].as_str().unwrap().to_string();
 
@@ -237,8 +241,11 @@ async fn scenario_161_payment_correction_round_trip_parity() {
         }),
     )
     .await;
-    let rec1 = a1w["result"]["record_id"].as_str().unwrap().to_string();
-    assert_eq!(a1w["result"]["record_id"], a1n["result"]["record_id"]);
+    assert_eq!(a1w["result"]["record_id"], a1n["result"]["record_id"], "a1w: {a1w}, a1n: {a1n}");
+    let rec1 = a1w["result"]["record_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("missing record_id in a1w: {a1w}"))
+        .to_string();
 
     // Provider correction superseding rec1
     let (a2w, a2n) = both_rpc(
@@ -253,10 +260,13 @@ async fn scenario_161_payment_correction_round_trip_parity() {
         }),
     )
     .await;
-    assert_eq!(a2w["result"]["role"], "provider");
-    assert_eq!(a2n["result"]["role"], "provider");
-    let rec2 = a2w["result"]["record_id"].as_str().unwrap().to_string();
-    assert_ne!(rec1, rec2);
+    assert_eq!(a2w["result"]["role"], "provider", "a2w: {a2w}");
+    assert_eq!(a2n["result"]["role"], "provider", "a2n: {a2n}");
+    let rec2 = a2w["result"]["record_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("missing record_id in a2w: {a2w}"))
+        .to_string();
+    assert_ne!(rec1, rec2, "a2w: {a2w}");
 
     // Stale supersedes reference is refused
     let (stale_w, stale_n) = both_rpc(
@@ -293,8 +303,8 @@ async fn scenario_162_payment_acknowledge_duplicate_already_recorded_parity() {
         json!({ "agreement": agr_rec, "method": "cash", "reference": "tx-1" }),
     )
     .await;
-    assert_eq!(a1w["result"]["role"], "provider");
-    assert_eq!(a1n["result"]["role"], "provider");
+    assert_eq!(a1w["result"]["role"], "provider", "a1w: {a1w}");
+    assert_eq!(a1n["result"]["role"], "provider", "a1n: {a1n}");
 
     // Second acknowledge with no supersedes -> already-recorded
     let (a2w, a2n) = both_rpc(
@@ -303,10 +313,10 @@ async fn scenario_162_payment_acknowledge_duplicate_already_recorded_parity() {
         json!({ "agreement": agr_rec, "method": "cash", "reference": "tx-1" }),
     )
     .await;
-    assert_eq!(a2w["result"]["state"], "already-recorded");
-    assert_eq!(a2n["result"]["state"], "already-recorded");
-    assert_eq!(a2w["result"]["record_id"], a1w["result"]["record_id"]);
-    assert_eq!(a2n["result"]["record_id"], a1n["result"]["record_id"]);
+    assert_eq!(a2w["result"]["state"], "already-recorded", "a2w: {a2w}");
+    assert_eq!(a2n["result"]["state"], "already-recorded", "a2n: {a2n}");
+    assert_eq!(a2w["result"]["record_id"], a1w["result"]["record_id"], "a2w: {a2w}, a1w: {a1w}");
+    assert_eq!(a2n["result"]["record_id"], a1n["result"]["record_id"], "a2n: {a2n}, a1n: {a1n}");
 }
 
 #[tokio::test]
@@ -318,7 +328,11 @@ async fn scenario_166_payment_half_before_agreement_deferred_parity() {
 
     let (req_rec_id, _req_env) = setup_peer_request(&h, &conv).await;
     let q_params = valid_quote_params(&conv, &req_rec_id);
-    let (qw, _) = both_rpc(&h, "quote.set", q_params).await;
+    let (qw, qn) = both_rpc(&h, "quote.set", q_params).await;
+    assert_eq!(
+        qw["result"]["record_id"], qn["result"]["record_id"],
+        "quote.set record_id parity failed: qw: {qw}, qn: {qn}"
+    );
     let quote_rec_id = qw["result"]["record_id"].as_str().unwrap().to_string();
     let quote_id = qw["result"]["quote_id"].as_str().unwrap().to_string();
 
@@ -349,22 +363,24 @@ async fn scenario_166_payment_half_before_agreement_deferred_parity() {
     );
 
     // Deliver payment ack BEFORE consumer agreement receipt
-    deliver_peer_card(
-        &h,
+    let card_pay = inbound_card(
         &format!("m-defer-pay-{c_ack_id}"),
         &conv,
         &peer_did(),
+        2_000,
         syneroym_roym_core::record::RECORD_PAYMENT_ACKNOWLEDGEMENT,
         syneroym_roym_core::payment::PAYMENT_ACKNOWLEDGEMENT_VERSION,
         &c_ack_env,
-    )
-    .await;
+    );
+    h.deliver(true, card_pay.clone()).await;
+    h.deliver(false, card_pay).await;
+
     let (s1w, s1n) =
         both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
-    assert_eq!(s1w["result"]["deferred"], 1);
-    assert_eq!(s1n["result"]["deferred"], 1);
+    assert_eq!(s1w["result"]["deferred"], 1, "s1w: {s1w}");
+    assert_eq!(s1n["result"]["deferred"], 1, "s1n: {s1n}");
 
-    // Agreement card now arrives
+    // Agreement card now arrives with earlier sender timestamp 1_000
     let (agr_id, agr_env) = peer_signed_consumer_receipt(
         &conv,
         &quote_rec_id,
@@ -373,26 +389,27 @@ async fn scenario_166_payment_half_before_agreement_deferred_parity() {
         terms,
         1_001_000,
     );
-    deliver_peer_card(
-        &h,
+    let card_agr = inbound_card(
         &format!("m-agr-{agr_id}"),
         &conv,
         &peer_did(),
+        1_000,
         transaction::RECORD_AGREEMENT_RECEIPT,
         transaction::AGREEMENT_RECEIPT_VERSION,
         &agr_env,
-    )
-    .await;
+    );
+    h.deliver(true, card_agr.clone()).await;
+    h.deliver(false, card_agr).await;
 
     // Next sync files both agreement and the deferred payment ack
     let (s2w, s2n) =
         both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
-    assert_eq!(s2w["result"]["filed"], 2);
-    assert_eq!(s2n["result"]["filed"], 2);
+    assert_eq!(s2w["result"]["filed"], 2, "s2w: {s2w}");
+    assert_eq!(s2n["result"]["filed"], 2, "s2n: {s2n}");
 
     let (pw, pn) = both_rpc(&h, "payment.get", json!({ "agreement": quote_rec_id })).await;
-    assert_eq!(pw["result"]["track"], "claimed");
-    assert_eq!(pn["result"]["track"], "claimed");
+    assert_eq!(pw["result"]["track"], "claimed", "pw: {pw}");
+    assert_eq!(pn["result"]["track"], "claimed", "pn: {pn}");
 }
 
 #[tokio::test]
@@ -408,16 +425,22 @@ async fn scenario_171_payment_fence_unblocks_after_refused_call_parity() {
     let long_note = "a".repeat(513);
     let (err_w, err_n) =
         both_rpc(&h, "payment.request", json!({ "agreement": agr_rec, "note": long_note })).await;
-    assert_eq!(err_w["error"]["code"], -32602);
-    assert_eq!(err_n["error"]["code"], -32602);
+    assert_eq!(err_w["error"]["code"], -32602, "err_w: {err_w}");
+    assert_eq!(err_n["error"]["code"], -32602, "err_n: {err_n}");
     assert!(err_w["error"]["message"].as_str().unwrap().contains("512"));
 
     // 2. Valid retry succeeds (fence was not leaked)
     let (req_w, req_n) =
         both_rpc(&h, "payment.request", json!({ "agreement": agr_rec, "note": "Valid note" }))
             .await;
-    assert_eq!(req_w["result"]["record_id"], req_n["result"]["record_id"]);
-    assert_eq!(req_w["result"]["state"], req_n["result"]["state"]);
+    assert_eq!(
+        req_w["result"]["record_id"], req_n["result"]["record_id"],
+        "req_w: {req_w}, req_n: {req_n}"
+    );
+    assert_eq!(
+        req_w["result"]["state"], req_n["result"]["state"],
+        "req_w: {req_w}, req_n: {req_n}"
+    );
 
     // 3. Refused payment.acknowledge (method not in terms)
     let (ack_err_w, ack_err_n) = both_rpc(
@@ -426,12 +449,23 @@ async fn scenario_171_payment_fence_unblocks_after_refused_call_parity() {
         json!({ "agreement": agr_rec, "method": "unsupported-payment-method-xyz" }),
     )
     .await;
-    assert_eq!(ack_err_w["error"]["code"], -32602);
-    assert_eq!(ack_err_n["error"]["code"], -32602);
+    assert_eq!(ack_err_w["error"]["code"], -32602, "ack_err_w: {ack_err_w}");
+    assert_eq!(ack_err_n["error"]["code"], -32602, "ack_err_n: {ack_err_n}");
     assert!(ack_err_w["error"]["message"].as_str().unwrap().contains("method-not-in-terms"));
 
     // 4. Valid retry succeeds (fence was not leaked)
-    let (ack_w, ack_n) = both_rpc(&h, "payment.acknowledge", json!({ "agreement": agr_rec })).await;
-    assert_eq!(ack_w["result"]["record_id"], ack_n["result"]["record_id"]);
-    assert_eq!(ack_w["result"]["state"], ack_n["result"]["state"]);
+    let (ack_w, ack_n) = both_rpc(
+        &h,
+        "payment.acknowledge",
+        json!({ "agreement": agr_rec, "observed_at_secs": 1_002_000 }),
+    )
+    .await;
+    assert_eq!(
+        ack_w["result"]["record_id"], ack_n["result"]["record_id"],
+        "ack_w: {ack_w}, ack_n: {ack_n}"
+    );
+    assert_eq!(
+        ack_w["result"]["state"], ack_n["result"]["state"],
+        "ack_w: {ack_w}, ack_n: {ack_n}"
+    );
 }

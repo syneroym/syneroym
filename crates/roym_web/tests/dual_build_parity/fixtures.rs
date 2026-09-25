@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use syneroym_identity::{
@@ -29,9 +29,15 @@ impl<D: Driver> Driver for Mutant<'_, D> {
 /// POSTs one JSON-RPC method to both stacks' `/rpc` with the owner session
 /// and returns each build's parsed response.
 pub(crate) async fn both_rpc(h: &Harness, method: &str, params: Value) -> (Value, Value) {
+    let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_millis();
+    if ms >= 850 {
+        tokio::time::sleep(Duration::from_millis((1005 - ms) as u64)).await;
+    }
     let req = json!({ "method": method, "params": params }).to_string().into_bytes();
-    let w = h.wasm_http.post("/rpc", req.clone(), Some(h.caller())).await;
-    let n = h.native_http.post("/rpc", req, Some(h.caller())).await;
+    let (w, n) = tokio::join!(
+        h.wasm_http.post("/rpc", req.clone(), Some(h.caller())),
+        h.native_http.post("/rpc", req, Some(h.caller())),
+    );
     (serde_json::from_slice(&w.body).unwrap(), serde_json::from_slice(&n.body).unwrap())
 }
 
@@ -765,11 +771,7 @@ pub(crate) fn peer_signed_progress(
 
 pub(crate) fn valid_quote_params(conv: &str, req_rec_id: &str) -> Value {
     let _ = conv;
-    json!({
-        "request_record_id": req_rec_id,
-        "expires_in_secs": 3600,
-        "terms": sample_quote_terms(),
-    })
+    json!({ "request_record_id": req_rec_id, "expires_in_secs": 3600, "terms": sample_quote_terms() })
 }
 
 pub(crate) async fn deliver_peer_card(
@@ -781,7 +783,10 @@ pub(crate) async fn deliver_peer_card(
     version: u32,
     env_json: &str,
 ) {
-    let card_msg = inbound_card(msg_id, conv, sender_did, 1_000, record_type, version, env_json);
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static TS: AtomicI64 = AtomicI64::new(1_000);
+    let ts = TS.fetch_add(10, Ordering::Relaxed);
+    let card_msg = inbound_card(msg_id, conv, sender_did, ts, record_type, version, env_json);
     h.deliver(true, card_msg.clone()).await;
     h.deliver(false, card_msg).await;
 }
