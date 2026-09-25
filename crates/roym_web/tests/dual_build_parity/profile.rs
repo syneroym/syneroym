@@ -657,6 +657,8 @@ async fn scenario_23_profile_export_and_import_parity() {
     let native_exp = h.native_http.post("/rpc", exp_req, Some(caller())).await;
     let mut wasm_exp_val: Value = serde_json::from_slice(&wasm_exp.body).unwrap();
     let mut native_exp_val: Value = serde_json::from_slice(&native_exp.body).unwrap();
+    verify_and_strip_manifest_signature(&mut wasm_exp_val);
+    verify_and_strip_manifest_signature(&mut native_exp_val);
     strip_volatile(&mut wasm_exp_val);
     strip_volatile(&mut native_exp_val);
     assert_eq!(wasm_exp_val, native_exp_val);

@@ -1,5 +1,4 @@
 use serde_json::json;
-use syneroym_roym_core::backup::Bundle;
 use syneroym_rpc::{ConversationDeliveryState, ConversationHost, ConversationMessage};
 
 use super::{fixtures::*, helpers::*};
@@ -294,10 +293,8 @@ async fn scenario_63_conversation_export_integrity_parity() {
     h.deliver(false, inbound("m-63", conv, "did:key:zPeer63", 1_000, "archive me")).await;
 
     let (mut w, mut n) = both_rpc(&h, "conversation.export", json!({})).await;
-    for side in [&w, &n] {
-        let bundle: Bundle = serde_json::from_value(side["result"].clone()).unwrap();
-        bundle.check_integrity().expect("conversation bundle integrity");
-    }
+    verify_and_strip_manifest_signature(&mut w);
+    verify_and_strip_manifest_signature(&mut n);
     strip_volatile(&mut w);
     strip_volatile(&mut n);
     assert_eq!(normalize_message_ids(&mut w), 1);

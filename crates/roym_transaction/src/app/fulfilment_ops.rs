@@ -3,8 +3,11 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use syneroym_app_host::{
-    AppHost, AppSigning,
-    types::signing::{Principal, RecordDraft},
+    AppDataLayer, AppHost, AppSigning,
+    types::{
+        data_layer::RecordWriteValue,
+        signing::{Principal, RecordDraft},
+    },
 };
 use syneroym_roym_core::{
     booking::{BookingEvent, BookingState, Track, TrackState},
@@ -16,8 +19,10 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, FULFILMENTS, FulfilmentsRow, PROGRESS, ProgressRow, booking_ops,
-    get_row, ledger::load_booking, put_row, resolve_principal_and_owner, send_card_and_file,
+    AGREEMENTS, AgreementRow, FULFILMENTS, FulfilmentsRow, LEDGER, PROGRESS, ProgressRow,
+    booking_ops, get_row,
+    ledger::{LedgerKind, LedgerRow, load_booking},
+    put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -65,21 +70,17 @@ pub(crate) async fn fulfilment_sign<H: AppHost>(host: &H, req: &Request) -> Resp
         Role::Provider => &fulfilments.provider,
     };
     if let Some(half) = existing {
-        if owner == agr.provider_did {
-            let _ = booking_ops::transition(
-                host,
-                &p.agreement,
-                BookingEvent::Half { track: Track::Fulfilment, role: Role::Provider },
-                now,
-            )
-            .await;
-        }
-        return Response::ok(json!({
-            "record_id": half.record_id,
-            "role": role,
-            "message_id": Value::Null,
-            "state": "already-recorded",
-        }));
+        let record_id = half.record_id.clone();
+        return already_recorded_fulfilment_response(
+            host,
+            &p.agreement,
+            &owner,
+            &agr.provider_did,
+            role,
+            &record_id,
+            now,
+        )
+        .await;
     }
 
     let payload = FulfilmentReceiptPayload {
@@ -106,6 +107,14 @@ pub(crate) async fn fulfilment_sign<H: AppHost>(host: &H, req: &Request) -> Resp
         issuer: env.issuer,
         issued_at_secs: env.issued_at_secs,
     };
+
+    if let Err(resp) =
+        claim_fulfilment_fence(host, &p.agreement, role, &half, now, &owner, &agr.provider_did)
+            .await
+    {
+        return resp;
+    }
+
     match role {
         Role::Consumer => fulfilments.consumer = Some(half),
         Role::Provider => fulfilments.provider = Some(half),
@@ -120,21 +129,49 @@ pub(crate) async fn fulfilment_sign<H: AppHost>(host: &H, req: &Request) -> Resp
         send_card_and_file(host, &agr.conversation, "fulfilment-receipt", 1, &env_json, now, None)
             .await;
 
-    if owner == agr.provider_did {
-        let _ = booking_ops::transition(
-            host,
-            &p.agreement,
-            BookingEvent::Half { track: Track::Fulfilment, role: Role::Provider },
-            now,
-        )
-        .await;
-    }
+    maybe_transition_provider_fulfilment(host, &p.agreement, &owner, &agr.provider_did, now).await;
 
     Response::ok(json!({
         "record_id": record_id,
         "role": role,
         "message_id": message_id,
         "state": send_state,
+    }))
+}
+
+async fn maybe_transition_provider_fulfilment<H: AppHost>(
+    host: &H,
+    agreement: &str,
+    owner: &str,
+    provider_did: &str,
+    now: u64,
+) {
+    if owner == provider_did {
+        let _ = booking_ops::transition(
+            host,
+            agreement,
+            BookingEvent::Half { track: Track::Fulfilment, role: Role::Provider },
+            now,
+        )
+        .await;
+    }
+}
+
+async fn already_recorded_fulfilment_response<H: AppHost>(
+    host: &H,
+    agreement: &str,
+    owner: &str,
+    provider_did: &str,
+    role: Role,
+    record_id: &str,
+    now: u64,
+) -> Response {
+    maybe_transition_provider_fulfilment(host, agreement, owner, provider_did, now).await;
+    Response::ok(json!({
+        "record_id": record_id,
+        "role": role,
+        "message_id": Value::Null,
+        "state": "already-recorded",
     }))
 }
 
@@ -261,4 +298,54 @@ async fn sign_fulfilment_receipt<H: AppHost>(
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     Ok((env_json, env, record_id))
+}
+
+async fn claim_fulfilment_fence<H: AppHost>(
+    host: &H,
+    agreement: &str,
+    role: Role,
+    half: &ReceiptHalf,
+    now: u64,
+    owner: &str,
+    provider_did: &str,
+) -> Result<(), Response> {
+    let role_str = match role {
+        Role::Consumer => "consumer",
+        Role::Provider => "provider",
+    };
+    let fence_key = format!("fulfil:{agreement}:{role_str}");
+    let fence_row = LedgerRow {
+        kind: LedgerKind::Fence,
+        agreement: agreement.to_string(),
+        slot_id: None,
+        seat: None,
+        step: None,
+        half: Some(half.clone()),
+        created_at_secs: now,
+    };
+    let fence_write = match serde_json::to_vec(&fence_row) {
+        Ok(b) => RecordWriteValue { id: fence_key.clone(), payload: b },
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+    match AppDataLayer::create(host, LEDGER.to_string(), vec![fence_write]).await {
+        Ok(None) => Ok(()),
+        Ok(Some(_)) => {
+            if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, &fence_key).await
+                && let Some(existing) = &fence.half
+            {
+                return Err(already_recorded_fulfilment_response(
+                    host,
+                    agreement,
+                    owner,
+                    provider_did,
+                    role,
+                    &existing.record_id,
+                    now,
+                )
+                .await);
+            }
+            Err(Response::invalid_params("fulfilment-sign-in-flight"))
+        }
+        Err(e) => Err(Response::internal_error(e.to_string())),
+    }
 }

@@ -3,7 +3,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteValue};
-use syneroym_roym_core::booking::{self, BookingProgressPayload, BookingState, ConflictReason};
+use syneroym_roym_core::{
+    booking::{self, BookingProgressPayload, BookingState, ConflictReason},
+    transaction::ReceiptHalf,
+};
 
 use super::{BOOKINGS, BookingRow, LEDGER, catalog_call, get_row, put_row};
 
@@ -26,6 +29,8 @@ pub(crate) struct LedgerRow {
     pub(crate) seat: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) step: Option<StepRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) half: Option<ReceiptHalf>,
     pub(crate) created_at_secs: u64,
 }
 
@@ -73,6 +78,7 @@ pub(crate) async fn claim_decision<H: AppHost>(
         slot_id: slot_id.map(ToString::to_string),
         seat,
         step: None,
+        half: None,
         created_at_secs: now,
     };
     let step_row = LedgerRow {
@@ -88,6 +94,7 @@ pub(crate) async fn claim_decision<H: AppHost>(
             record_id: scheduled_env.1.clone(),
             message_id: None,
         }),
+        half: None,
         created_at_secs: now,
     };
 
@@ -170,6 +177,7 @@ async fn try_claim_seat<H: AppHost>(
         slot_id: Some(slot.to_string()),
         seat: Some(n),
         step: None,
+        half: None,
         created_at_secs: now,
     };
     let seat_row = LedgerRow {
@@ -178,6 +186,7 @@ async fn try_claim_seat<H: AppHost>(
         slot_id: Some(slot.to_string()),
         seat: Some(n),
         step: None,
+        half: None,
         created_at_secs: now,
     };
     let step_row = LedgerRow {
@@ -193,6 +202,7 @@ async fn try_claim_seat<H: AppHost>(
             record_id: scheduled_env.1.clone(),
             message_id: None,
         }),
+        half: None,
         created_at_secs: now,
     };
 

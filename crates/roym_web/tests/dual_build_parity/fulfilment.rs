@@ -274,3 +274,26 @@ async fn scenario_165_track_window_expiration_and_late_half_parity() {
     assert_eq!(b2w["result"]["state"], "ended-unconfirmed");
     assert_eq!(b2n["result"]["state"], "ended-unconfirmed");
 }
+
+#[tokio::test]
+async fn scenario_172_fulfilment_sign_retry_returns_the_fenced_record_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "conversation").await;
+    enrol_signing(&h, "transaction").await;
+    let conv = open_conv(&h, &peer_did()).await;
+
+    let (agr_rec, _terms) = setup_active_agreement(&h, &conv, "after-work").await;
+    both_rpc(&h, "booking.start", json!({ "agreement": agr_rec })).await;
+
+    let (fw1, fn1) = both_rpc(&h, "fulfilment.sign", json!({ "agreement": agr_rec })).await;
+    assert_eq!(fw1["result"]["record_id"], fn1["result"]["record_id"]);
+    assert_eq!(fw1["result"]["state"], fn1["result"]["state"]);
+
+    // A retry -- the fenced record, not a freshly signed one -- comes back
+    // with the same record id on both builds.
+    let (fw2, fn2) = both_rpc(&h, "fulfilment.sign", json!({ "agreement": agr_rec })).await;
+    assert_eq!(fw2["result"]["record_id"], fw1["result"]["record_id"]);
+    assert_eq!(fn2["result"]["record_id"], fn1["result"]["record_id"]);
+    assert_eq!(fw2["result"]["state"], "already-recorded");
+    assert_eq!(fn2["result"]["state"], "already-recorded");
+}

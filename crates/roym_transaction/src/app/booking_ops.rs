@@ -148,6 +148,7 @@ pub(crate) async fn transition<H: AppHost>(
             slot_id: row.slot_id.clone(),
             seat: row.seat,
             step: Some(step),
+            half: None,
             created_at_secs: now,
         };
 

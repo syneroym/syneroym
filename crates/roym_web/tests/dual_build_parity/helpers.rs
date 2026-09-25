@@ -35,7 +35,7 @@ use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_roym_catalog::native::NativeCatalog;
 use syneroym_roym_conversation::native::NativeConversation;
-use syneroym_roym_core::services;
+use syneroym_roym_core::{backup::Bundle, services};
 use syneroym_roym_directory::native::NativeDirectory;
 use syneroym_roym_profile::native::NativeProfile;
 use syneroym_roym_transaction::native::NativeTransaction;
@@ -46,6 +46,7 @@ use syneroym_rpc::{
     ProxyError, ProxyRequest, ServiceProxy, SessionContext, WebSocketSenders,
 };
 use syneroym_sandbox_wasm::{AppSandboxEngine, GuestHttpOutcome};
+use syneroym_signed_record::Envelope;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
 };
@@ -199,6 +200,40 @@ pub(crate) fn stripped(v: &Value) -> Value {
     let mut c = v.clone();
     strip_volatile(&mut c);
     c
+}
+
+/// Verifies each build's exported bundle integrity and manifest signature
+/// independently, then strips `manifest_signature` so that differences in
+/// volatile row timestamps (which change section digests) do not cause false
+/// parity comparison failures.
+pub(crate) fn verify_and_strip_manifest_signature(val: &mut Value) {
+    let bundle_val = if let Some(res) = val.get_mut("result")
+        && res.is_object()
+        && res.get("manifest").is_some()
+    {
+        res
+    } else {
+        val
+    };
+
+    let bundle: Bundle = match serde_json::from_value(bundle_val.clone()) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+
+    bundle.check_integrity().expect("exported bundle must pass integrity check");
+
+    if let Some(sig) = &bundle.manifest_signature {
+        let env: Envelope =
+            serde_json::from_str(sig).expect("manifest_signature must be valid envelope JSON");
+        bundle
+            .verify_manifest_signature(env.issued_at_secs)
+            .expect("manifest_signature must verify against bundle manifest");
+    }
+
+    if let Value::Object(map) = bundle_val {
+        map.remove("manifest_signature");
+    }
 }
 
 pub(crate) fn caller() -> CallerContext {

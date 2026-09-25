@@ -82,10 +82,6 @@ pub(crate) async fn payment_request<H: AppHost>(host: &H, req: &Request) -> Resp
         }));
     }
 
-    if let Err(resp) = claim_payment_request_fence(host, &p.agreement, now).await {
-        return resp;
-    }
-
     let payload = PaymentRequestPayload {
         agreement: p.agreement.clone(),
         conversation: agr.conversation.clone(),
@@ -105,12 +101,18 @@ pub(crate) async fn payment_request<H: AppHost>(host: &H, req: &Request) -> Resp
             Err(resp) => return resp,
         };
 
-    payments.request = Some(ReceiptHalf {
+    let half = ReceiptHalf {
         record_id: record_id.clone(),
         envelope: env_json.clone(),
         issuer: env.issuer,
         issued_at_secs: env.issued_at_secs,
-    });
+    };
+
+    if let Err(resp) = claim_payment_request_fence(host, &p.agreement, &half, now).await {
+        return resp;
+    }
+
+    payments.request = Some(half);
     payments.updated_at_secs = now;
     if let Err(e) = put_row(host, PAYMENTS, &p.agreement, &payments).await {
         return Response::internal_error(e);
@@ -227,20 +229,6 @@ pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> 
         return early_resp;
     }
 
-    if let Err(resp) = claim_payment_ack_fence(
-        host,
-        &p.agreement,
-        role,
-        p.supersedes.as_deref(),
-        now,
-        &owner,
-        &agr.provider_did,
-    )
-    .await
-    {
-        return resp;
-    }
-
     let payload = match build_payment_ack_payload(&p, &agr, role, now) {
         Ok(pl) => pl,
         Err(resp) => return resp,
@@ -253,7 +241,8 @@ pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> 
     }
 
     let (env_json, env, record_id) =
-        match sign_payment_ack(host, &p.agreement, &payload, p.supersedes, principal).await {
+        match sign_payment_ack(host, &p.agreement, &payload, p.supersedes.clone(), principal).await
+        {
             Ok(triplet) => triplet,
             Err(resp) => return resp,
         };
@@ -264,6 +253,18 @@ pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> 
         issuer: env.issuer,
         issued_at_secs: env.issued_at_secs,
     };
+
+    let ack_fence_claim = AckFenceClaim {
+        agreement: &p.agreement,
+        role,
+        supersedes: p.supersedes.as_deref(),
+        owner: &owner,
+        provider_did: &agr.provider_did,
+    };
+    if let Err(resp) = claim_payment_ack_fence(host, ack_fence_claim, &half, now).await {
+        return resp;
+    }
+
     let (message_id, send_state) = match record_and_send_ack(
         host,
         &p.agreement,
@@ -629,6 +630,7 @@ async fn record_and_send_ack<H: AppHost>(
 async fn claim_payment_request_fence<H: AppHost>(
     host: &H,
     agreement: &str,
+    half: &ReceiptHalf,
     now: u64,
 ) -> Result<(), Response> {
     let fence_key = format!("payreq:{agreement}");
@@ -638,15 +640,25 @@ async fn claim_payment_request_fence<H: AppHost>(
         slot_id: None,
         seat: None,
         step: None,
+        half: Some(half.clone()),
         created_at_secs: now,
     };
     let fence_write = match serde_json::to_vec(&fence_row) {
-        Ok(b) => RecordWriteValue { id: fence_key, payload: b },
+        Ok(b) => RecordWriteValue { id: fence_key.clone(), payload: b },
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     match AppDataLayer::create(host, LEDGER.to_string(), vec![fence_write]).await {
         Ok(None) => Ok(()),
         Ok(Some(_)) => {
+            if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, &fence_key).await
+                && let Some(existing) = &fence.half
+            {
+                return Err(Response::ok(json!({
+                    "record_id": existing.record_id,
+                    "message_id": Value::Null,
+                    "state": "already-recorded",
+                })));
+            }
             if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, agreement).await
                 && let Some(existing) = &py.request
             {
@@ -662,15 +674,21 @@ async fn claim_payment_request_fence<H: AppHost>(
     }
 }
 
+struct AckFenceClaim<'a> {
+    agreement: &'a str,
+    role: Role,
+    supersedes: Option<&'a str>,
+    owner: &'a str,
+    provider_did: &'a str,
+}
+
 async fn claim_payment_ack_fence<H: AppHost>(
     host: &H,
-    agreement: &str,
-    role: Role,
-    supersedes: Option<&str>,
+    claim: AckFenceClaim<'_>,
+    half: &ReceiptHalf,
     now: u64,
-    owner: &str,
-    provider_did: &str,
 ) -> Result<(), Response> {
+    let AckFenceClaim { agreement, role, supersedes, owner, provider_did } = claim;
     let ver_tag = supersedes.unwrap_or("first");
     let role_str = match role {
         Role::Consumer => "consumer",
@@ -683,15 +701,35 @@ async fn claim_payment_ack_fence<H: AppHost>(
         slot_id: None,
         seat: None,
         step: None,
+        half: Some(half.clone()),
         created_at_secs: now,
     };
     let ack_fence_write = match serde_json::to_vec(&ack_fence_row) {
-        Ok(b) => RecordWriteValue { id: ack_fence_key, payload: b },
+        Ok(b) => RecordWriteValue { id: ack_fence_key.clone(), payload: b },
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     match AppDataLayer::create(host, LEDGER.to_string(), vec![ack_fence_write]).await {
         Ok(None) => Ok(()),
         Ok(Some(_)) => {
+            if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, &ack_fence_key).await
+                && let Some(h) = &fence.half
+            {
+                if owner == provider_did {
+                    let _ = booking_ops::transition(
+                        host,
+                        agreement,
+                        BookingEvent::Half { track: Track::Payment, role: Role::Provider },
+                        now,
+                    )
+                    .await;
+                }
+                return Err(Response::ok(json!({
+                    "record_id": h.record_id,
+                    "role": role,
+                    "message_id": Value::Null,
+                    "state": "already-recorded",
+                })));
+            }
             if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, agreement).await {
                 let v = match role {
                     Role::Consumer => &py.consumer,

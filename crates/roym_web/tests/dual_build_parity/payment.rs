@@ -394,3 +394,44 @@ async fn scenario_166_payment_half_before_agreement_deferred_parity() {
     assert_eq!(pw["result"]["track"], "claimed");
     assert_eq!(pn["result"]["track"], "claimed");
 }
+
+#[tokio::test]
+async fn scenario_171_payment_fence_unblocks_after_refused_call_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "conversation").await;
+    enrol_signing(&h, "transaction").await;
+    let conv = open_conv(&h, &peer_did()).await;
+
+    let (agr_rec, _terms) = setup_active_agreement(&h, &conv).await;
+
+    // 1. Refused payment.request (note exceeds 512 chars)
+    let long_note = "a".repeat(513);
+    let (err_w, err_n) =
+        both_rpc(&h, "payment.request", json!({ "agreement": agr_rec, "note": long_note })).await;
+    assert_eq!(err_w["error"]["code"], -32602);
+    assert_eq!(err_n["error"]["code"], -32602);
+    assert!(err_w["error"]["message"].as_str().unwrap().contains("512"));
+
+    // 2. Valid retry succeeds (fence was not leaked)
+    let (req_w, req_n) =
+        both_rpc(&h, "payment.request", json!({ "agreement": agr_rec, "note": "Valid note" }))
+            .await;
+    assert_eq!(req_w["result"]["record_id"], req_n["result"]["record_id"]);
+    assert_eq!(req_w["result"]["state"], req_n["result"]["state"]);
+
+    // 3. Refused payment.acknowledge (method not in terms)
+    let (ack_err_w, ack_err_n) = both_rpc(
+        &h,
+        "payment.acknowledge",
+        json!({ "agreement": agr_rec, "method": "unsupported-payment-method-xyz" }),
+    )
+    .await;
+    assert_eq!(ack_err_w["error"]["code"], -32602);
+    assert_eq!(ack_err_n["error"]["code"], -32602);
+    assert!(ack_err_w["error"]["message"].as_str().unwrap().contains("method-not-in-terms"));
+
+    // 4. Valid retry succeeds (fence was not leaked)
+    let (ack_w, ack_n) = both_rpc(&h, "payment.acknowledge", json!({ "agreement": agr_rec })).await;
+    assert_eq!(ack_w["result"]["record_id"], ack_n["result"]["record_id"]);
+    assert_eq!(ack_w["result"]["state"], ack_n["result"]["state"]);
+}
